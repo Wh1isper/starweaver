@@ -1,0 +1,19 @@
+[package]
+name = "starweaver-agent-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Agent platform foundations for Starweaver"
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+starweaver-core.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,37 @@
+[workspace]
+members = [
+    "crates/starweaver-agent-platform",
+    "crates/starweaver-claw",
+    "crates/starweaver-cli",
+    "crates/starweaver-core",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["wh1isper"]
+license = "MIT"
+repository = "https://github.com/Wh1isper/starweaver"
+homepage = "https://github.com/Wh1isper/starweaver"
+description = "Rust agent SDK workspace for Starweaver"
+readme = "README.md"
+keywords = ["agent", "sdk", "ai", "runtime"]
+categories = ["development-tools"]
+
+[workspace.dependencies]
+starweaver-agent-platform = { path = "crates/starweaver-agent-platform", version = "0.1.0" }
+starweaver-claw = { path = "crates/starweaver-claw", version = "0.1.0" }
+starweaver-core = { path = "crates/starweaver-core", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+unwrap_used = "warn"
+expect_used = "warn"

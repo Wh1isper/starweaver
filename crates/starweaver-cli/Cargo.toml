@@ -1,0 +1,23 @@
+[package]
+name = "starweaver-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Command-line interface for Starweaver"
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "starweaver"
+path = "src/main.rs"
+
+[dependencies]
+starweaver-core.workspace = true
+
+[lints]
+workspace = true
