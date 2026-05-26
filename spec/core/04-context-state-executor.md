@@ -1,6 +1,6 @@
 # Context, State, and Executor Evidence
 
-`AgentContext` is the run-local and session-local evidence carrier. It is the shared substrate for dependencies, state, events, messages, notes, usage, environment bindings, and durable execution records.
+`AgentContext` is the run-local and session-local evidence carrier. It is the shared substrate for dependencies, state, events, messages, notes, usage, environment bindings, trace context, and durable execution records.
 
 ## Context Responsibilities
 
@@ -13,6 +13,7 @@
 - Publish typed events through `EventBus`.
 - Queue steering, coordination, and sideband messages through `MessageBus`.
 - Export and restore `ResumableState`.
+- Carry trace parent context and span correlation identifiers.
 - Derive child contexts for subagents and absorb durable child state after completion.
 
 ## Context Shape
@@ -31,6 +32,7 @@ classDiagram
         MessageBus messages
         Metadata metadata
         DependencyStore dependencies
+        TraceContext trace_context
     }
 
     class ResumableState {
@@ -43,6 +45,7 @@ classDiagram
         NoteStore notes
         MessageBus message_bus
         Metadata metadata
+        TraceSnapshot trace_snapshot
     }
 
     AgentContext --> ResumableState
@@ -59,6 +62,7 @@ classDiagram
 - skill registry state
 - durable executor cursors
 - service runtime metadata
+- trace correlation ids
 
 Typed dependencies remain process-local and are rehydrated by the application or service runtime after restore.
 
@@ -131,6 +135,30 @@ Checkpoint fields:
 - environment provider state reference
 - stream cursor
 
+## SessionStore Fit
+
+A ya-claw-style `SessionStore` should be an upper-layer consumer of `AgentContext`, `StateStore`, event records, executor checkpoints, environment state, and trace ids. The core contract supports this shape by keeping serializable state separate from process-local dependencies and by assigning stable run, conversation, checkpoint, and stream cursor identifiers.
+
+```mermaid
+flowchart TD
+    session[SessionStore]
+    state[AgentContext StateStore]
+    messages[Model history]
+    events[Stream events]
+    checkpoints[Executor checkpoints]
+    env[Environment state]
+    traces[Trace ids]
+
+    state --> session
+    messages --> session
+    events --> session
+    checkpoints --> session
+    env --> session
+    traces --> session
+```
+
+The store should be able to project compact run traces for tools and UI, while full nested spans live in an OpenTelemetry backend. Store adapters can add indexes for session id, run id, parent run id, conversation id, checkpoint id, trace id, and span id.
+
 ## Environment State Reference
 
 Environment-backed tools should store durable handles in context state:
@@ -164,3 +192,5 @@ The environment provider owns concrete restoration semantics. The context stores
 - usage absorption tests
 - executor checkpoint serialization tests
 - environment state reference tests before `starweaver-environment` graduation
+- trace context export/restore tests
+- SessionStore contract tests before `starweaver-claw` graduation

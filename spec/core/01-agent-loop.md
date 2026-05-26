@@ -103,7 +103,27 @@ Runtime streaming exposes stable records for:
 - output retry events
 - checkpoint and suspend events
 
-Streaming APIs should support both collected streams and externally handled streams. The service runtime can replay persisted events as SSE or AGUI from stored runtime evidence.
+Streaming APIs should support both collected streams and externally handled streams. The service runtime can replay persisted events as SSE from stored runtime evidence, and platform adapters can translate the same event records into external UI protocols.
+
+## Observability Seam
+
+The runtime should create or receive a trace context through `AgentContext` and emit spans that follow OpenTelemetry GenAI semantics. The agent loop span is the parent for model request spans, tool execution spans, output validation spans, and subagent spans. Service runtimes may create an outer coordinator span and pass it to the SDK as the parent context.
+
+```mermaid
+flowchart TD
+    root[External root trace or coordinator span]
+    agent[Agent loop span]
+    model[Model request span]
+    tool[Tool execution span]
+    subagent[Subagent loop span]
+
+    root --> agent
+    agent --> model
+    agent --> tool
+    agent --> subagent
+```
+
+Span records should carry run id, conversation id, agent id, checkpoint id, model provider, model name, tool name, tool call id, usage, finish reason, and error type when available. Content attributes are controlled by a redaction policy.
 
 ## Durable Executor Seam
 

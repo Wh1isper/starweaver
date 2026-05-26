@@ -10,7 +10,7 @@ These notes capture reference mapping and phase-specific implementation observat
 | Pydantic Graph  | Explicit graph loop semantics, node state, dependency separation, replayable execution, and persistence boundaries                                                                                                        |
 | ya-agent-sdk    | Lifecycle-wide context, agent assembly, streaming runs, tool bundles, approval policies, subagents, session export/restore, and environment abstraction                                                                   |
 | ya-mono runtime | Event bus, message bus, resumable resources, service execution, interruption, and workspace/environment patterns                                                                                                          |
-| MCP protocol    | Tool discovery/call lifecycle, transports, resources, prompts, sampling, elicitation, and provider-native MCP mapping                                                                                                     |
+| MCP protocol    | Official `rmcp` SDK, tool discovery/call lifecycle, transports, resources, prompts, sampling, roots, notifications, long-running tasks, and provider-native MCP mapping                                                   |
 
 ## Current Implementation Snapshot
 
@@ -69,7 +69,8 @@ These notes capture reference mapping and phase-specific implementation observat
 - checkpoint persistence adapters
 - interruption and resume semantics
 - event replay stream
-- SSE and AGUI contracts
+- SSE stream contracts
+- A2A and AGUI platform adapter contracts
 
 ## Pre-1.0 Cleanup Reminder
 

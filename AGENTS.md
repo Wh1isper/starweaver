@@ -31,7 +31,8 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-tools`: tool schema, toolsets, metadata, tool context, and protocol-level tool execution primitives.
 - `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage limits, streaming events, and executor checkpoints.
 - `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, and policy presets.
-- `starweaver-claw`: durable sessions, service execution, checkpoint storage, interruption, resume, SSE, and AGUI adapters.
+- `starweaver-claw`: durable sessions, `SessionStore`, service execution, checkpoint storage, interruption, resume, SSE, trace correlation, and storage adapters.
+- `starweaver-platform`: hosted orchestration and external protocol adapters such as A2A and AGUI.
 
 ## Documentation Workflow
 
@@ -62,7 +63,7 @@ Current docs:
 - `docs/durability.md` — executor checkpoints
 - `docs/sdk-app.md` — `AgentApp` usage
 - `docs/subagents.md` — SDK-level subagent delegation
-- `docs/mcp.md` — MCP foundations
+- `docs/mcp.md` — MCP foundations and official `rmcp` direction
 - `docs/testing.md` — deterministic testing and request guard
 
 ## Spec Workflow
@@ -86,8 +87,9 @@ Current specs:
 - `spec/sdk/05-ya-agent-sdk-integration-map.md` — ya-agent-sdk module integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 - `spec/ops/README.md` — operational layer scope and readiness model
 - `spec/ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
-- `spec/ops/02-durable-service-runtime.md` — durable sessions, execution records, resume, interruption, SSE, AGUI, and storage contracts
+- `spec/ops/02-durable-service-runtime.md` — durable sessions, `SessionStore`, execution records, resume, interruption, SSE, trace ids, and storage contracts
 - `spec/ops/03-cli-product.md` — CLI Product surface built over SDK, environment providers, and service runtime contracts
+- `spec/ops/04-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 
 Use `memos/` for working notes, design comparisons, implementation evidence, and release-preparation reminders. The current detailed implementation roadmap is `memos/implementation-todo.md`.
 
@@ -146,8 +148,8 @@ make lint
 - Use English for code, documentation, commit messages, and file names.
 - Keep workspace metadata consistent across `Cargo.toml`, crate manifests, `Makefile`, `.pre-commit-config.yaml`, and `.github/workflows/ci.yml`.
 - Keep early abstractions minimal and add SDK concepts as concrete needs emerge.
-- Treat runtime primitives as first-class: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, executor checkpoints, and environment resources.
+- Treat runtime primitives as first-class: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, executor checkpoints, trace context, `SessionStore` contracts, and environment resources.
 - Add crates from specs when the boundary has clear responsibilities, call sites, and validation commands.
 - Model transport must support injectable HTTP clients, custom headers, extra body fields, endpoint overrides, and audit/gateway routing requirements.
-- Core runtime should prioritize prompt runs, model history, static and dynamic instructions, structured output retry, per-tool retry, capability hooks and bundles, prepare-tools hooks, settings/params forwarding, skip responses, tool execution, explicit tool-call boundaries, and checkpoint emission.
-- SDK and platform layers should deepen tool implementations, MCP live transports, subagent task protocols, live model delta streams, dependency-aware hooks, durable sessions, SSE, and AGUI adapters.
+- Core runtime should prioritize prompt runs, model history, static and dynamic instructions, structured output retry, per-tool retry, capability hooks and bundles, prepare-tools hooks, settings/params forwarding, skip responses, tool execution, explicit tool-call boundaries, checkpoint emission, and OpenTelemetry GenAI span seams.
+- SDK and platform layers should deepen tool implementations, official `rmcp` MCP live transports, subagent task protocols, live model delta streams, dependency-aware hooks, durable sessions, SSE, OpenTelemetry GenAI traces, and external protocol adapters.

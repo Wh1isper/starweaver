@@ -1,6 +1,6 @@
 # Starweaver Implementation TODO
 
-This memo is the detailed working roadmap for implementing the architecture in `spec/`. It replaces the earlier SDK implementation roadmap and tracks landed work, missing replay coverage, Pydantic AI feature coverage, ya-agent-sdk integration, and validation gates.
+This memo is the detailed working roadmap for implementing the architecture in `spec/`. It replaces the earlier SDK implementation roadmap and tracks landed work, missing replay coverage, Pydantic AI feature coverage, ya-agent-sdk integration, SessionStore readiness, observability, MCP direction, and validation gates.
 
 ## Current Validation Commands
 
@@ -98,7 +98,7 @@ Provider replay items to migrate from Pydantic AI-style coverage:
 
 - safety block fixture
 - finish reason safety and max token fixtures
-- function call without id fixture
+- function call with missing id fixture
 - tool config / function calling mode fixture
 - code execution native tool fixture
 - Google search native tool fixture
@@ -132,37 +132,38 @@ Provider replay items to migrate from Pydantic AI-style coverage:
 
 The core layer should cover the important concepts documented by Pydantic AI.
 
-| Pydantic AI docs area | Starweaver target                                   | Status  | Next work                                               |
-| --------------------- | --------------------------------------------------- | ------- | ------------------------------------------------------- |
-| Agents                | runtime agent and SDK builder                       | partial | align run APIs, iter/graph inspection, stream events    |
-| Dependencies          | `AgentContext` typed/named dependencies             | partial | dependency-aware hooks and output validators docs/tests |
-| Output                | schemas, typed output, validators, output functions | partial | SDK `OutputPolicy` ergonomics                           |
-| Capabilities          | capability bundles                                  | partial | configuration loading and ordered hooks                 |
-| Hooks                 | lifecycle hooks                                     | partial | complete hook taxonomy and event evidence               |
-| Agent Specs           | serializable app/subagent specs                     | partial | agent spec loader and validation                        |
-| Message History       | canonical messages and processors                   | partial | docs parity and additional processors                   |
-| Direct                | direct model/tool execution                         | planned | direct run APIs over model/tools                        |
-| Models overview       | model adapters/profiles                             | partial | more profiles and provider aliases                      |
-| OpenAI                | Chat/Responses support                              | partial | finish replay TODOs and docs                            |
-| Anthropic             | Messages support                                    | partial | thinking and stream replay                              |
-| Google/Gemini         | generateContent support                             | partial | native tools and safety replay                          |
-| Bedrock               | Converse support                                    | partial | strict tools and gateway docs                           |
-| Tools                 | function tools                                      | partial | advanced schema/function signature ergonomics           |
-| Advanced tools        | retries, prepare, context                           | partial | complete docs and test matrix                           |
-| Toolsets              | toolset composition                                 | partial | dynamic/live toolsets and search                        |
-| Deferred tools        | control-flow metadata                               | partial | durable approval/deferred resume                        |
-| Native tools          | provider native tools                               | partial | response parsing and more request fixtures              |
-| Common tools          | first-party bundles                                 | planned | filesystem, shell, search, media, task, notes           |
-| Third-party tools     | external toolsets                                   | planned | proxy and MCP integration                               |
-| Input                 | multimodal input                                    | partial | canonical media input and replay fixtures               |
-| Thinking              | thinking parts                                      | partial | provider replay and stream handling                     |
-| Retries               | model/tool/output retries                           | partial | provider retry fixtures and SDK policy                  |
-| Extensibility         | custom models/tools/hooks                           | partial | public extension docs                                   |
-| Multi-agent patterns  | subagents                                           | partial | unified delegation and inherited tools                  |
-| Web/UI                | service stream adapters                             | planned | SSE/AGUI specs and tests                                |
-| Embeddings            | embeddings APIs                                     | planned | defer until core agent loop stable                      |
-| Testing               | test models/request guard                           | partial | replay fixture tooling and snapshots                    |
-| MCP                   | static foundations                                  | partial | live client and transports                              |
+| Pydantic AI docs area | Starweaver target                                   | Status  | Next work                                                                                                           |
+| --------------------- | --------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------- |
+| Agents                | runtime agent and SDK builder                       | partial | align run APIs, iter/graph inspection, stream events                                                                |
+| Dependencies          | `AgentContext` typed/named dependencies             | partial | dependency-aware hooks and output validators docs/tests                                                             |
+| Output                | schemas, typed output, validators, output functions | partial | SDK `OutputPolicy` ergonomics                                                                                       |
+| Capabilities          | capability bundles                                  | partial | configuration loading and ordered hooks                                                                             |
+| Hooks                 | lifecycle hooks                                     | partial | complete hook taxonomy and event evidence                                                                           |
+| Agent Specs           | serializable app/subagent specs                     | partial | agent spec loader and validation                                                                                    |
+| Message History       | canonical messages and processors                   | partial | docs parity and additional processors                                                                               |
+| Direct                | direct model/tool execution                         | planned | direct run APIs over model/tools                                                                                    |
+| Models overview       | model adapters/profiles                             | partial | more profiles and provider aliases                                                                                  |
+| OpenAI                | Chat/Responses support                              | partial | finish replay TODOs and docs                                                                                        |
+| Anthropic             | Messages support                                    | partial | thinking and stream replay                                                                                          |
+| Google/Gemini         | generateContent support                             | partial | native tools and safety replay                                                                                      |
+| Bedrock               | Converse support                                    | partial | strict tools and gateway docs                                                                                       |
+| Tools                 | function tools                                      | partial | advanced schema/function signature ergonomics                                                                       |
+| Advanced tools        | retries, prepare, context                           | partial | complete docs and test matrix                                                                                       |
+| Toolsets              | toolset composition                                 | partial | dynamic/live toolsets and search                                                                                    |
+| Deferred tools        | control-flow metadata                               | partial | durable approval/deferred resume                                                                                    |
+| Native tools          | provider native tools                               | partial | response parsing and more request fixtures                                                                          |
+| Common tools          | first-party bundles                                 | planned | filesystem, shell, search, media, task, notes                                                                       |
+| Third-party tools     | external toolsets                                   | planned | proxy and MCP integration                                                                                           |
+| Input                 | multimodal input                                    | partial | canonical media input and replay fixtures                                                                           |
+| Thinking              | thinking parts                                      | partial | provider replay and stream handling                                                                                 |
+| Retries               | model/tool/output retries                           | partial | provider retry fixtures and SDK policy                                                                              |
+| Extensibility         | custom models/tools/hooks                           | partial | public extension docs                                                                                               |
+| Multi-agent patterns  | subagents                                           | partial | unified delegation and inherited tools                                                                              |
+| Web/UI                | service stream adapters                             | planned | SSE and CLI renderer tests                                                                                          |
+| Observability         | OTel GenAI spans and Langfuse-friendly OTLP export  | planned | trace propagation and span snapshot tests                                                                           |
+| Embeddings            | embeddings APIs                                     | planned | defer until core agent loop stable                                                                                  |
+| Testing               | test models/request guard                           | partial | replay fixture tooling and snapshots                                                                                |
+| MCP                   | static foundations                                  | partial | official `rmcp` live client, transports, resources, prompts, sampling, roots, notifications, and long-running tasks |
 
 ## ya-agent-sdk Integration TODO
 
@@ -184,6 +185,8 @@ Reference modules and Starweaver targets:
 - add task manager state/tool parity
 - define context serialization versioning
 - define dependency rehydration contract
+- add trace context export/restore
+- keep `StateStore` domains ready for ya-claw-style `SessionStore` projection
 
 ### Filters as Capabilities
 
@@ -211,6 +214,7 @@ Reference modules and Starweaver targets:
 - shell sandbox integration
 - background process state export/restore
 - environment state domain in `AgentContext`
+- environment provider ids stored in execution records and trace attributes
 
 ### Toolsets
 
@@ -219,6 +223,8 @@ Reference modules and Starweaver targets:
 - skill toolsets
 - tool search
 - tool proxy
+- official `rmcp` live MCP client wrapper
+- MCP stdio and streamable HTTP deterministic tests
 - deterministic eval-style tests for tool search
 
 ### Subagents
@@ -231,6 +237,7 @@ Reference modules and Starweaver targets:
 - lifecycle event propagation
 - nested delegation guardrails
 - durable subagent polling extension
+- nested OpenTelemetry span propagation
 
 ### Media
 
@@ -238,6 +245,19 @@ Reference modules and Starweaver targets:
 - image compression capability
 - media upload capability
 - file/resource references through environment provider
+
+### Observability
+
+- accept external root trace or parent span context in SDK/session run APIs
+- create OTel GenAI `invoke_agent` spans for agent loops
+- create OTel GenAI `inference` spans for model requests
+- create OTel GenAI `execute_tool` spans for tool calls
+- recursively nest subagent spans under parent agent spans
+- map usage and model settings into OTel GenAI attributes
+- store trace id and span id on execution records
+- add compact run trace projection for session tools and UI
+- add Langfuse-friendly OTLP metadata adapter
+- add redaction/truncation policy for content attributes
 
 ### Config and Presets
 
@@ -297,7 +317,7 @@ Status: current batch.
 - skill bundle
 - tool search/proxy bundle
 
-### Batch F: Subagents and Skills
+### Batch F: Subagents, Skills, and Observability
 
 - inherited tool policy
 - unified delegation tool
@@ -305,15 +325,27 @@ Status: current batch.
 - nested delegation guardrails
 - skill parser and registry
 - durable subagent extension points
+- trace parent propagation for subagents
+- OTel GenAI span snapshots for model/tool/subagent paths
 
 ### Batch G: Durable Service Runtime
 
+- ya-claw-inspired `SessionStore` contract
 - session storage contract
 - checkpoint store
 - event replay
 - approval/deferred resume
 - environment provider restoration
-- SSE and AGUI adapters
+- trace id/span id persistence
+- compact run trace projection
+- SSE stream replay
+
+### Batch G2: Platform Adapter Layer
+
+- A2A adapter over service/session contracts
+- AGUI adapter over service/session/event contracts
+- use Pydantic AI A2A and AGUI demos as reference adapters
+- adapter conformance tests after core SDK and service runtime stabilize
 
 ### Batch H: CLI Product
 
@@ -325,7 +357,21 @@ Status: current batch.
 - diagnostics
 - replay-check command
 
-## Documentation TODO
+## Documentation and Project UX TODO
+
+Project-facing surfaces to revise after spec review:
+
+- `README.md`: concise product introduction, docs site link, quick start, status, and validation commands
+- `CONTRIBUTING.md`: contributor workflow, spec workflow, replay workflow, docs workflow, and external protocol boundaries
+- `AGENTS.md`: repository memory aligned with current crate responsibilities, planned layers, validation gates, and design decisions
+- `docs/SUMMARY.md` and `docs/nav.json`: layered information architecture from overview to core concepts to SDK tasks to operations
+- `book.toml` and docs deployment metadata: site title, canonical URL, sitemap, robots, and edit links
+
+Docs site surfaces to add or revise after spec review:
+
+- layered docs UX from overview to core concepts to SDK tasks to operations
+- site navigation that clearly separates core foundation, SDK layer, environment/tool bundles, durability, observability, and CLI
+- docs landing page that routes users by goal: build an agent, add tools, test providers, persist sessions, inspect traces, and operate the CLI
 
 Core docs to add or revise after spec review:
 
@@ -347,6 +393,7 @@ SDK docs to add or revise after spec review:
 - `docs/skills.md`
 - `docs/durability.md`
 - `docs/cli.md`
+- `docs/observability.md`
 
 ## Open Design Questions
 
@@ -354,9 +401,12 @@ SDK docs to add or revise after spec review:
 - state domain schema for environment resources and background shell handles
 - checkpoint granularity for model streaming deltas
 - unified delegation schema for subagent selection and task metadata
-- typed output ergonomics in Rust without excessive generic complexity
+- typed output ergonomics in Rust with manageable generic complexity
 - skill package format and precedence across project/global/builtin scopes
 - durable resume semantics for already-started external shell processes
+- exact trace parent API shape across `AgentApp`, `AgentSession`, runtime, and model requests
+- Langfuse extension attribute names and redaction defaults
+- compact run trace projection schema for session tools
 
 ## Review Checklist
 
@@ -369,3 +419,6 @@ Before implementation resumes:
 - confirm SDK/core crate split
 - confirm replay TODO priority order
 - confirm docs plan
+- confirm official `rmcp` MCP integration plan
+- confirm OTel/Langfuse observability plan
+- confirm A2A/AGUI platform adapter timing

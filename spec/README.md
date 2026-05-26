@@ -28,8 +28,9 @@ Working evidence, reference comparisons, migration notes, and release TODOs live
 
 - `ops/README.md` — operational layer scope and readiness model
 - `ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
-- `ops/02-durable-service-runtime.md` — durable sessions, execution records, resume, interruption, SSE, AGUI, and storage contracts
+- `ops/02-durable-service-runtime.md` — durable sessions, SessionStore, execution records, resume, interruption, SSE, and storage contracts
 - `ops/03-cli-product.md` — CLI Product surface built over SDK, environment providers, and service runtime contracts
+- `ops/04-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 
 ## System Shape
 
@@ -82,8 +83,9 @@ flowchart TD
 - `starweaver-runtime` owns deterministic agent loop semantics: model request, tool execution, output handling, retry, streaming, history, capability hooks, and checkpoint emission.
 - `starweaver-agent` is the first-party SDK facade for app builders, sessions, presets, subagents, capabilities, environment-backed tool bundles, and policy ergonomics.
 - `starweaver-environment` provides file, shell, process, resource, sandbox, and environment state abstractions through an `EnvironmentProvider` boundary.
-- `starweaver-claw` persists and resumes sessions over stable context, environment, event, and checkpoint contracts.
+- `starweaver-claw` persists and resumes sessions over stable context, environment, event, checkpoint, trace, and SessionStore contracts.
 - `starweaver-cli` is a product surface over the SDK, environment providers, and durable service contracts.
+- `starweaver-platform` hosts external protocol adapters such as A2A and AGUI over SDK, service, session, event, and trace contracts. Pydantic AI's A2A and AGUI examples serve as adapter demos for this layer.
 
 ## Reference Coverage Targets
 
@@ -99,6 +101,8 @@ The SDK layer tracks ya-agent-sdk concepts:
 - `create_agent`, `stream_agent`, `AgentContext`, resumable state, message bus, notes, tasks, usage snapshots
 - lifecycle hooks, stream cancellation/resume, compaction, guards, model wrappers, presets
 - environment providers, local/process/sandbox execution, virtual file operators, shell sandbox integration
+- SessionStore-backed durable services, run trace projection, session tools, execution records, and workspace binding evidence
+- OpenTelemetry GenAI traces, external root trace propagation, Langfuse-friendly OTLP export, and nested subagent spans
 - first-party toolsets, tool search, skill loading, media handling, tool proxy, subagents, unified delegation
 
 ## Maintenance Rules

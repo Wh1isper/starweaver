@@ -57,7 +57,8 @@ This spec maps Pydantic AI's documented feature surface to Starweaver's core arc
 | Streaming            | model deltas, runtime records, service stream replay | stream fixture tests and SSE tests               |
 | Graph iteration      | runtime graph state inspection                       | graph/iter API tests                             |
 | Multi-agent patterns | subagent specs, registry, unified delegation         | subagent lifecycle and inherited tool tests      |
-| Web/UI               | service stream adapters and CLI renderer             | SSE, AGUI, and CLI tests                         |
+| Web/UI               | service stream adapters and CLI renderer             | SSE and CLI tests                                |
+| Observability        | OTel GenAI spans and Langfuse-friendly OTLP metadata | trace propagation and span snapshot tests        |
 | Embeddings           | future model-adjacent crate or module                | postponed until core agent loop review completes |
 | Evals                | future evaluation layer                              | postponed until SDK surface stabilizes           |
 

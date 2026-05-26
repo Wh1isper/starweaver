@@ -1,17 +1,39 @@
 # Durable Service Runtime
 
-The durable service runtime persists and resumes Starweaver executions. It builds on the core runtime's checkpoint and context evidence, plus the SDK's environment provider contracts.
+The durable service runtime persists and resumes Starweaver executions. It builds on the core runtime's checkpoint, context, event, trace, and usage evidence, plus the SDK's environment provider contracts. ya-claw's session service is the reference shape for this layer.
 
 ## Service Responsibilities
 
-- Manage durable sessions.
+- Manage durable sessions through a `SessionStore` contract.
 - Persist `AgentContext` state and executor checkpoints.
 - Persist stream events for replay.
+- Persist trace correlation ids for external observability systems.
 - Handle interruption, cancellation, approval, and deferred tool calls.
 - Restore typed dependencies and environment providers through application configuration.
 - Resume from checkpoints when supported by the runtime state.
-- Serve SSE and AGUI-compatible event streams.
+- Serve SSE event streams from persisted runtime evidence.
 - Provide storage adapters.
+
+## SessionStore Contract
+
+`SessionStore` is the service storage boundary. It should support local SQLite, production PostgreSQL, and application-defined stores while preserving the same logical operations.
+
+Required operations:
+
+- create session
+- load session
+- append turn or run
+- append stream event
+- append checkpoint
+- update context state
+- update environment state
+- update execution status
+- attach trace identifiers
+- list session turns
+- get compact run trace
+- compact or archive session evidence
+
+The store owns persistence concerns. The core runtime owns deterministic state transitions and checkpoint emission. The SDK/service layer maps them together.
 
 ## Durable Session Shape
 
@@ -25,6 +47,7 @@ classDiagram
         EnvironmentState environment_state
         Vec~ExecutorCheckpoint~ checkpoints
         Vec~AgentStreamRecord~ events
+        TraceId? trace_id
         SessionStatus status
     }
 
@@ -33,6 +56,8 @@ classDiagram
         TaskId? task_id
         CheckpointId latest_checkpoint
         Usage usage
+        TraceId? trace_id
+        SpanId? span_id
         ExecutionStatus status
     }
 
@@ -72,21 +97,48 @@ Suspend reasons:
 
 Every suspend record includes enough metadata for UI, CLI, or API clients to present action choices and resume safely.
 
-## Storage Contracts
+## Run Trace Projection
 
-Storage adapters should support:
+A compact run trace projection should expose model boundaries, tool calls, tool results, approval/deferred records, checkpoint ids, and child run references. This projection supports session tools and UI inspection. Full nested timing and span metadata live in the OpenTelemetry backend.
 
-- create session
-- load session
-- append event
-- append checkpoint
-- update context state
-- update environment state
-- update execution status
-- list executions
-- compact or archive session evidence
+Trace projection shape:
+
+- run id
+- parent run id
+- trace id
+- span id
+- item type
+- model provider or tool name
+- tool call id
+- checkpoint id
+- content preview
+- truncation flag
+- timestamp
 
 SQLite should be the first local storage target. PostgreSQL should be the production storage target after schema stabilizes.
+
+## Observability Integration
+
+The service runtime may create a coordinator span when an execution request begins. That span becomes the parent for the SDK agent loop span. Model requests, tool executions, and subagent runs become nested child spans through the trace context carried by `AgentContext`.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Service
+    participant Store
+    participant SDK
+    participant Runtime
+
+    Client->>Service: execute(input, trace_parent)
+    Service->>Service: start coordinator span
+    Service->>Store: create run with trace ids
+    Service->>SDK: run with parent span context
+    SDK->>Runtime: agent loop span
+    Runtime-->>Store: checkpoints, events, trace ids
+    Service-->>Client: stream/result
+```
+
+Langfuse is the recommended backend through OTLP export. Other collectors can receive the same OpenTelemetry spans.
 
 ## Environment Provider Integration
 
@@ -111,4 +163,6 @@ Provider state can include:
 - environment state restore tests
 - storage adapter contract tests
 - SSE stream tests
+- compact run trace projection tests
+- trace id persistence tests
 - CLI session inspect tests after CLI integration

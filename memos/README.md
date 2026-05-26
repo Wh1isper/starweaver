@@ -6,5 +6,5 @@ Use `memos/` for material that helps design work today and can be curated before
 
 Current memos:
 
-- `implementation-todo.md` — detailed implementation roadmap, replay TODO matrix, Pydantic AI feature coverage, ya-agent-sdk integration plan, validation gates, and review checklist.
+- `implementation-todo.md` — detailed implementation roadmap, replay TODO matrix, Pydantic AI feature coverage, ya-agent-sdk integration plan, observability plan, validation gates, and review checklist.
 - `pre-1.0-reference-notes.md` — reference notes and release preparation reminders.

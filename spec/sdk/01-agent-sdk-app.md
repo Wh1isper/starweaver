@@ -10,6 +10,7 @@
 - `SubagentRegistry`: SDK-level delegation registry.
 - policy presets: model, output, tools, approvals, streaming, environment, durability.
 - capability bundles: first-party and application-defined behavior.
+- observability controls: trace parent propagation, span export hooks, content redaction, and Langfuse-friendly OTLP metadata.
 
 ## Builder Flow
 
@@ -68,6 +69,7 @@ SDK policy presets configure common app behavior while runtime semantics remain 
 - approval presets for shell, edit, file write, network, and deferred tools
 - retry presets for model, tool, and output validation
 - streaming presets for event collection, event handling, and service stream adapters
+- observability presets for OTel GenAI spans, Langfuse metadata, and content redaction
 - environment presets for local, process, sandbox, and composite providers
 - model presets for provider aliases and gateway routes
 
@@ -86,6 +88,7 @@ The SDK docs should cover:
 - SDK app and sessions
 - subagents
 - MCP and environment-backed tools
+- observability and trace propagation
 
 All Rust examples in docs must compile through `scripts/check-docs-examples.py`.
 
@@ -96,3 +99,4 @@ All Rust examples in docs must compile through `scripts/check-docs-examples.py`.
 - facade re-export tests for public SDK types
 - builder tests for model, tools, capabilities, settings, output, and overrides
 - dependency and state behavior documented through examples
+- trace parent propagation tests

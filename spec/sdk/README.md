@@ -35,7 +35,7 @@ flowchart TD
 
 - Provide ergonomic builders over the core runtime.
 - Provide application sessions with context export/restore.
-- Provide policy presets for model, tools, approval, output, streaming, and durability.
+- Provide policy presets for model, tools, approval, output, streaming, observability, and durability.
 - Assemble first-party capability bundles and toolsets.
 - Bind environment providers to filesystem, shell, process, resource, and sandbox tools.
 - Load serializable subagent and skill specs.
@@ -59,6 +59,7 @@ The SDK maps ya-agent-sdk concepts into Rust-native surfaces:
 | notes/tasks/bus      | context stores and first-party tool bundles               |
 | skills               | serializable skill specs and tool bundles                 |
 | tool search/proxy    | first-party toolset features                              |
+| observability        | OTel GenAI spans, Langfuse metadata, trace propagation    |
 
 ## SDK Acceptance Gates
 

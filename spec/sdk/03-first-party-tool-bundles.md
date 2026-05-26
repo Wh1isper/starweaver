@@ -114,6 +114,20 @@ Tools:
 
 Skill state lives in a context state domain and SDK config.
 
+### MCP Bundle
+
+The live MCP client should use the official Model Context Protocol Rust SDK at <https://github.com/modelcontextprotocol/rust-sdk> through the `rmcp` crate. Starweaver should wrap `rmcp` behind SDK toolset contracts so MCP tools, resources, prompts, sampling, roots, logging, completions, notifications, subscriptions, and long-running tasks can participate in Starweaver policy, context, tracing, and replay tests.
+
+Responsibilities:
+
+- discover MCP tools and convert them into `ToolDefinition` values
+- call MCP tools with `gen_ai.execute_tool` spans and Starweaver run ids
+- expose MCP resources and prompts through SDK bundle APIs
+- map MCP roots to `EnvironmentProvider` workspace bindings
+- route MCP sampling through configured Starweaver model adapters
+- preserve MCP progress/cancellation events in `AgentContext` events
+- test stdio and streamable HTTP transports with deterministic servers
+
 ### Tool Search and Proxy Bundle
 
 Tools:
@@ -169,4 +183,5 @@ Policies are represented as tool metadata and capability settings so runtime and
 - approval/deferred behavior tests
 - context state mutation tests
 - event emission tests
+- official `rmcp` client integration tests
 - docs examples for each public bundle

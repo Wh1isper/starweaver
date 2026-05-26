@@ -30,6 +30,7 @@ sequenceDiagram
 
     Parent->>Registry: delegate_task(name, task, parent_context)
     Registry->>ParentContext: emit subagent_started
+    Registry->>ParentContext: start child invoke_agent span
     Registry->>ParentContext: derive child context
     Registry->>Child: run_with_context(prompt, child_context)
     Child-->>Registry: AgentResult
@@ -109,6 +110,7 @@ Subagent and skill execution should record:
 - notes/state changes
 - environment state references
 - checkpoint references
+- trace id and span id references
 
 Durable service runtime can use this record for polling, resume, cancellation, and audit.
 
@@ -124,3 +126,4 @@ Durable service runtime can use this record for polling, resume, cancellation, a
 - unified delegation tool tests
 - skill parser and toolset tests
 - nested delegation guard tests
+- nested span propagation tests

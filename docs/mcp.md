@@ -29,4 +29,4 @@ assert_eq!(toolset.tools().len(), 1);
 
 `NativeMcpServer` maps MCP server metadata into provider-native tool definitions for providers that execute MCP directly.
 
-Live MCP clients, transports, resources, prompts, sampling, elicitation, and protocol tests are tracked in `spec/sdk/03-first-party-tool-bundles.md` and `memos/implementation-todo.md`.
+Live MCP clients, transports, resources, prompts, sampling, roots, logging, completions, notifications, subscriptions, long-running tasks, and protocol tests are tracked in `spec/sdk/03-first-party-tool-bundles.md` and `memos/implementation-todo.md`. Starweaver's live MCP work should use the official Model Context Protocol Rust SDK at <https://github.com/modelcontextprotocol/rust-sdk> through the `rmcp` crate.
