@@ -1,0 +1,183 @@
+{
+  "model": "gemini-pro",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "Use tools when needed."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Look up Paris weather."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "response",
+      "parts": [
+        {
+          "kind": "tool_call",
+          "id": "call_1",
+          "name": "lookup_weather",
+          "arguments": {
+            "city": "Paris"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "tool_return",
+          "tool_call_id": "call_1",
+          "name": "lookup_weather",
+          "content": {
+            "weather": "clear",
+            "temperature_c": 18
+          }
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "tools": [
+    {
+      "name": "lookup_weather",
+      "description": "Look up weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "Use tools when needed."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Look up Paris weather."
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "lookup_weather",
+              "args": {
+                "city": "Paris"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "parts": [
+          {
+            "functionResponse": {
+              "name": "lookup_weather",
+              "response": {
+                "content": {
+                  "temperature_c": 18,
+                  "weather": "clear"
+                }
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 64,
+      "temperature": 0.2
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "lookup_weather",
+            "description": "Look up weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "finishReason": "STOP",
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "Paris is clear and 18C."
+            }
+          ]
+        }
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 30,
+      "candidatesTokenCount": 6,
+      "totalTokens": 36
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Paris is clear and 18C."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 30,
+      "output_tokens": 6,
+      "total_tokens": 36,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "stop"
+  }
+}

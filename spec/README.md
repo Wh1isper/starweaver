@@ -1,49 +1,49 @@
 # Starweaver Architecture Specs
 
-This directory defines Starweaver's long-lived architecture baseline. The specs describe product boundaries, runtime contracts, SDK responsibilities, and crate graduation rules before public APIs stabilize.
+This directory defines Starweaver's long-lived architecture baseline. The new layout separates the core agent engine, the first-party SDK surface, and operational products so each layer can evolve with clear responsibilities and review gates.
 
-Working notes, design comparisons, implementation evidence, and release-preparation reminders live in `memos/`.
+Working evidence, reference comparisons, migration notes, and release TODOs live in `memos/`.
 
 ## Spec Map
 
-### Foundation
+### Core Agent Foundation
 
-- `00-repository.md` — repository role, workspace map, and governance rules
-- `01-sdk-vision-and-boundaries.md` — SDK vision, product layers, and ownership boundaries
-- `02-crate-map.md` — crate dependency map, graduation criteria, features, and milestones
+- `core/README.md` — core scope, contracts, and acceptance gates
+- `core/01-agent-loop.md` — deterministic run loop, graph states, retries, streaming, and durable execution seam
+- `core/02-model-provider-replay.md` — provider-neutral model protocol, replay fixtures, transport, settings, profiles, and CI gates
+- `core/03-tools-output-capabilities.md` — tool schema, tool loop, structured output, output functions, validators, hooks, and capability bundles
+- `core/04-context-state-executor.md` — `AgentContext`, `StateStore`, events, messages, notes, usage, checkpoints, and executor preparation
+- `core/05-pydantic-ai-feature-map.md` — Pydantic AI feature coverage map across agents, providers, tools, output, streaming, and testing
 
-### Runtime Kernel
+### First-Party Agent SDK
 
-- `03-model-and-transport.md` — provider-neutral model protocol and transport boundary
-- `04-agent-runtime-loop.md` — deterministic agent loop, transitions, retries, streams, and checkpoints
-- `05-tools-output-and-capabilities.md` — tools, toolsets, structured output, validators, and capability bundles
-- `06-context-state-and-events.md` — lifecycle context, typed dependencies, state, events, messages, and usage
+- `sdk/README.md` — SDK product boundary and application-facing contract
+- `sdk/01-agent-sdk-app.md` — `AgentBuilder`, `AgentApp`, `AgentSession`, policy presets, app composition, and docs surface
+- `sdk/02-environment-provider.md` — `EnvironmentProvider`, filesystem, shell, resources, environment state, policies, and sandbox mapping
+- `sdk/03-first-party-tool-bundles.md` — filesystem, shell, search, media, task, skill, and tool-proxy bundles implemented through capabilities and context
+- `sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
+- `sdk/05-ya-agent-sdk-integration-map.md` — ya-agent-sdk module integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 
-### SDK Layer
+### Operations, Durability, and Products
 
-- `07-agent-sdk.md` — public SDK surface, app assembly, output policy, and subagent protocol
-- `08-environment-and-tool-bundles.md` — environment abstraction, policies, and first-party tool bundles
-- `09-mcp-strategy.md` — MCP protocol boundary, live client architecture, and split criteria
-
-### Product Extensions
-
-- `10-readiness-and-capability-status.md` — readiness levels and capability acceptance gates
-- `11-durability-and-service-runtime.md` — session durability, interruption, resume, and streaming contracts
-- `12-cli-product.md` — CLI product surface, configuration, local runs, sessions, approvals, and diagnostics
+- `ops/README.md` — operational layer scope and readiness model
+- `ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
+- `ops/02-durable-service-runtime.md` — durable sessions, execution records, resume, interruption, SSE, AGUI, and storage contracts
+- `ops/03-cli-product.md` — CLI Product surface built over SDK, environment providers, and service runtime contracts
 
 ## System Shape
 
 ```mermaid
 flowchart TD
     app[Application]
-    sdk[starweaver-agent]
+    sdk[starweaver-agent SDK]
     runtime[starweaver-runtime]
     model[starweaver-model]
     tools[starweaver-tools]
     context[starweaver-context]
     core[starweaver-core]
     env[starweaver-environment]
-    service[starweaver-claw]
+    claw[starweaver-claw]
     cli[starweaver-cli]
     platform[starweaver-platform]
 
@@ -55,36 +55,56 @@ flowchart TD
     runtime --> model
     runtime --> tools
     runtime --> context
+    runtime --> core
     model --> core
     tools --> core
-    tools --> model
     tools --> context
     context --> core
     env --> core
+    env --> context
     env --> tools
-    service --> sdk
-    service --> runtime
-    service --> context
-    service --> env
+    claw --> sdk
+    claw --> runtime
+    claw --> context
+    claw --> env
     cli --> sdk
-    platform --> service
+    cli --> env
+    cli --> claw
+    platform --> claw
 ```
 
-## Architecture Rules
+## Layer Principles
 
-- `starweaver-agent` is the public SDK entrypoint.
-- `starweaver-runtime` owns deterministic execution semantics.
-- `starweaver-model` owns provider protocol translation and transport behavior.
-- `starweaver-tools` owns protocol-level tool definitions, toolsets, and MCP foundations.
-- `starweaver-context` owns lifecycle state, typed dependencies, events, messages, and usage.
-- Environment-backed tools are assembled above the runtime kernel.
-- Service runtimes persist and resume runtime evidence through stable checkpoints.
-- CLI product work builds on SDK app contracts, environment policy, and service runtime boundaries.
+- `starweaver-core` defines shared identifiers, metadata, usage, serializable envelopes, and cross-layer contracts.
+- `starweaver-model` owns provider protocol translation, profiles, request settings, transports, replay fixtures, and production-request guards.
+- `starweaver-tools` owns provider-neutral tool definitions, toolsets, execution context, tool metadata, retries, approval/deferred metadata, and MCP foundations.
+- `starweaver-context` owns lifecycle context, typed dependencies, state, events, message bus, notes, usage, and exportable runtime evidence.
+- `starweaver-runtime` owns deterministic agent loop semantics: model request, tool execution, output handling, retry, streaming, history, capability hooks, and checkpoint emission.
+- `starweaver-agent` is the first-party SDK facade for app builders, sessions, presets, subagents, capabilities, environment-backed tool bundles, and policy ergonomics.
+- `starweaver-environment` provides file, shell, process, resource, sandbox, and environment state abstractions through an `EnvironmentProvider` boundary.
+- `starweaver-claw` persists and resumes sessions over stable context, environment, event, and checkpoint contracts.
+- `starweaver-cli` is a product surface over the SDK, environment providers, and durable service contracts.
+
+## Reference Coverage Targets
+
+The core layer tracks Pydantic AI concepts:
+
+- agents, dependencies, outputs, capabilities, hooks, message history, direct runs
+- model providers, settings, request parameters, profiles, native tools, thinking, retries, gateway routing
+- function tools, advanced tools, toolsets, deferred tools, common tools, third-party tools, MCP
+- streaming events, graph iteration, structured output, testing, and multi-agent patterns
+
+The SDK layer tracks ya-agent-sdk concepts:
+
+- `create_agent`, `stream_agent`, `AgentContext`, resumable state, message bus, notes, tasks, usage snapshots
+- lifecycle hooks, stream cancellation/resume, compaction, guards, model wrappers, presets
+- environment providers, local/process/sandbox execution, virtual file operators, shell sandbox integration
+- first-party toolsets, tool search, skill loading, media handling, tool proxy, subagents, unified delegation
 
 ## Maintenance Rules
 
-- Use English in spec files.
-- Prefer mermaid diagrams for architecture flows.
-- Keep `02-crate-map.md` as the dependency and graduation source of truth.
-- Keep phase notes and implementation snapshots in `memos/`.
-- Update `AGENTS.md` and `README.md` when spec structure, crate boundaries, or validation commands change.
+- Use English in spec and memo files.
+- Prefer mermaid diagrams for flows.
+- Keep reference evidence and implementation snapshots in `memos/`.
+- Update `AGENTS.md`, `README.md`, and CI when spec structure, validation commands, or crate boundaries change.
+- Public APIs graduate from specs after their responsibilities, call sites, test fixtures, and docs examples are clear.

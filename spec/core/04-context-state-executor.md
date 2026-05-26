@@ -1,0 +1,166 @@
+# Context, State, and Executor Evidence
+
+`AgentContext` is the run-local and session-local evidence carrier. It is the shared substrate for dependencies, state, events, messages, notes, usage, environment bindings, and durable execution records.
+
+## Context Responsibilities
+
+- Identify the active agent, run, and conversation.
+- Store canonical model history.
+- Track usage across runs and subagent delegation.
+- Carry typed and named dependencies for tools, hooks, validators, and dynamic instructions.
+- Persist `StateStore` domains for application state.
+- Persist `NoteStore` entries for lightweight session memory.
+- Publish typed events through `EventBus`.
+- Queue steering, coordination, and sideband messages through `MessageBus`.
+- Export and restore `ResumableState`.
+- Derive child contexts for subagents and absorb durable child state after completion.
+
+## Context Shape
+
+```mermaid
+classDiagram
+    class AgentContext {
+        AgentId agent_id
+        RunId? run_id
+        ConversationId conversation_id
+        Vec~ModelMessage~ message_history
+        Usage usage
+        StateStore state
+        NoteStore notes
+        EventBus events
+        MessageBus messages
+        Metadata metadata
+        DependencyStore dependencies
+    }
+
+    class ResumableState {
+        AgentId agent_id
+        RunId? run_id
+        ConversationId conversation_id
+        Vec~ModelMessage~ message_history
+        Usage usage
+        StateStore state
+        NoteStore notes
+        MessageBus message_bus
+        Metadata metadata
+    }
+
+    AgentContext --> ResumableState
+```
+
+## State Domains
+
+`StateStore` stores JSON values under stable domain keys. Domains should be used for state that can survive process boundaries:
+
+- session preferences
+- tool bundle state
+- environment state references
+- task manager records
+- skill registry state
+- durable executor cursors
+- service runtime metadata
+
+Typed dependencies remain process-local and are rehydrated by the application or service runtime after restore.
+
+## Notes and Context Instructions
+
+`NoteStore` is serializable session memory. Model-facing context instructions expose note keys and metadata while keeping note values available to tools and application code through context APIs.
+
+This shape supports ya-agent-sdk-style persistent notes and future user-controlled memory tools.
+
+## Event and Message Buses
+
+```mermaid
+flowchart LR
+    runtime[Runtime]
+    tools[Tools]
+    subagents[Subagents]
+    env[EnvironmentProvider]
+    events[EventBus]
+    messages[MessageBus]
+    service[Service runtime]
+    app[Application]
+
+    runtime --> events
+    tools --> events
+    subagents --> events
+    env --> events
+    app --> messages
+    service --> messages
+    messages --> runtime
+```
+
+Events are append-only run evidence. Messages are queued sideband inputs that may steer or coordinate future work.
+
+## Subagent Context Policy
+
+A child context receives:
+
+- parent conversation id
+- inherited usage baseline
+- state snapshot
+- notes snapshot
+- typed dependencies
+- parent metadata references
+
+A child context starts with:
+
+- empty model history
+- empty event bus
+- empty message bus
+- a fresh run id assigned when the child run starts
+
+After successful delegation, the parent absorbs child usage and notes. Additional state absorption should be policy-driven when subagents begin modifying shared domains.
+
+## Executor Evidence
+
+The runtime should produce checkpoint records that can be persisted alongside context state.
+
+Checkpoint fields:
+
+- checkpoint id
+- run id
+- conversation id
+- graph state
+- model request attempt index
+- tool call batch id
+- output validation attempt index
+- pending approval or deferred call metadata
+- usage snapshot
+- context state hash or revision
+- environment provider state reference
+- stream cursor
+
+## Environment State Reference
+
+Environment-backed tools should store durable handles in context state:
+
+```mermaid
+flowchart TD
+    context[AgentContext StateStore]
+    env_state[environment domain]
+    provider[EnvironmentProvider]
+    file_state[File system state]
+    shell_state[Shell process state]
+    resources[Resource handles]
+
+    context --> env_state
+    env_state --> provider
+    provider --> file_state
+    provider --> shell_state
+    provider --> resources
+```
+
+The environment provider owns concrete restoration semantics. The context stores serializable identifiers, policies, and resource references.
+
+## Acceptance Gates
+
+- context export/restore tests
+- note export/restore tests
+- dependency access tests
+- message bus tests
+- event bus tests
+- subagent context derivation tests
+- usage absorption tests
+- executor checkpoint serialization tests
+- environment state reference tests before `starweaver-environment` graduation

@@ -195,7 +195,9 @@ assert_eq!(result.output, "test response");
 
 ## Documentation
 
-User-facing docs live under `docs/` and include runnable Rust examples. Start with:
+User-facing docs live under `docs/` and include runnable Rust examples. The published site uses mdBook with `book.toml` and `docs/SUMMARY.md`; `make docs-build` also writes `sitemap.xml` and `robots.txt` into the generated `book/` directory.
+
+Start with:
 
 - `docs/index.md`
 - `docs/agent.md`
@@ -204,10 +206,11 @@ User-facing docs live under `docs/` and include runnable Rust examples. Start wi
 - `docs/output.md`
 - `docs/testing.md`
 
-Validate docs examples with:
+Validate docs examples and build the static site with:
 
 ```bash
 python3 scripts/check-docs-examples.py
+make docs-build
 ```
 
 ## Specs
@@ -217,11 +220,15 @@ Specs live under `spec/` and capture product and architecture decisions before p
 Start with:
 
 - `spec/README.md`
-- `spec/01-sdk-vision-and-boundaries.md`
-- `spec/02-crate-map.md`
-- `spec/07-agent-sdk.md`
-- `spec/10-readiness-and-capability-status.md`
-- `spec/11-durability-and-service-runtime.md`
+- `spec/core/README.md`
+- `spec/core/01-agent-loop.md`
+- `spec/core/02-model-provider-replay.md`
+- `spec/core/05-pydantic-ai-feature-map.md`
+- `spec/sdk/README.md`
+- `spec/sdk/02-environment-provider.md`
+- `spec/sdk/05-ya-agent-sdk-integration-map.md`
+- `spec/ops/01-ci-readiness.md`
+- `memos/implementation-todo.md`
 
 ## Development
 
@@ -239,15 +246,18 @@ make ci
 
 Useful commands:
 
-| Command          | Description                                |
-| ---------------- | ------------------------------------------ |
-| `make fmt`       | Format Rust code                           |
-| `make fmt-check` | Check Rust formatting                      |
-| `make check`     | Run cargo check and clippy                 |
-| `make test`      | Run workspace tests                        |
-| `make build`     | Build the workspace                        |
-| `make lint`      | Run pre-commit hooks across the repository |
-| `make run-cli`   | Run the `starweaver` CLI                   |
+| Command             | Description                                                |
+| ------------------- | ---------------------------------------------------------- |
+| `make fmt`          | Format Rust code                                           |
+| `make fmt-check`    | Check Rust formatting                                      |
+| `make check`        | Run cargo check and clippy                                 |
+| `make replay-check` | Run model replay and request-parameter compatibility tests |
+| `make docs-check`   | Compile Rust examples from docs                            |
+| `make docs-build`   | Build the mdBook documentation site                        |
+| `make test`         | Run workspace tests                                        |
+| `make build`        | Build the workspace                                        |
+| `make lint`         | Run pre-commit hooks across the repository                 |
+| `make run-cli`      | Run the `starweaver` CLI                                   |
 
 ## License
 

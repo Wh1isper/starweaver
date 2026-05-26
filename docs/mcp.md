@@ -29,4 +29,4 @@ assert_eq!(toolset.tools().len(), 1);
 
 `NativeMcpServer` maps MCP server metadata into provider-native tool definitions for providers that execute MCP directly.
 
-Live MCP clients, transports, resources, prompts, sampling, elicitation, and protocol tests are tracked in `spec/09-mcp-strategy.md`.
+Live MCP clients, transports, resources, prompts, sampling, elicitation, and protocol tests are tracked in `spec/sdk/03-first-party-tool-bundles.md` and `memos/implementation-todo.md`.

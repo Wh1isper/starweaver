@@ -1,0 +1,137 @@
+{
+  "model": "gemini-pro",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "Use tools when needed."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Look up Paris weather."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "tools": [
+    {
+      "name": "lookup_weather",
+      "description": "Look up weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "Use tools when needed."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Look up Paris weather."
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 64,
+      "temperature": 0.2
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "lookup_weather",
+            "description": "Look up weather",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "finishReason": "STOP",
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "functionCall": {
+                "id": "call_1",
+                "name": "lookup_weather",
+                "args": {
+                  "city": "Paris"
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 12,
+      "candidatesTokenCount": 4,
+      "totalTokens": 16
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "tool_call",
+        "id": "call_1",
+        "name": "lookup_weather",
+        "arguments": {
+          "city": "Paris"
+        }
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 12,
+      "output_tokens": 4,
+      "total_tokens": 16,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "stop"
+  }
+}

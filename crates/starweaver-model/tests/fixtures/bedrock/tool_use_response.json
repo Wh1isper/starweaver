@@ -1,0 +1,140 @@
+{
+  "model": "anthropic.claude-3-5-sonnet",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "Use tools when needed."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Look up Paris weather."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "tools": [
+    {
+      "name": "lookup_weather",
+      "description": "Look up weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "modelId": "anthropic.claude-3-5-sonnet",
+    "system": [
+      {
+        "text": "Use tools when needed."
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Look up Paris weather."
+          }
+        ]
+      }
+    ],
+    "inferenceConfig": {
+      "maxTokens": 64,
+      "temperature": 0.2
+    },
+    "toolConfig": {
+      "tools": [
+        {
+          "toolSpec": {
+            "name": "lookup_weather",
+            "description": "Look up weather",
+            "inputSchema": {
+              "json": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "toolu_1",
+              "name": "lookup_weather",
+              "input": {
+                "city": "Paris"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "stopReason": "tool_use",
+    "usage": {
+      "inputTokens": 12,
+      "outputTokens": 4,
+      "totalTokens": 16
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_tool_1"
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "tool_call",
+        "id": "toolu_1",
+        "name": "lookup_weather",
+        "arguments": {
+          "city": "Paris"
+        }
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 12,
+      "output_tokens": 4,
+      "total_tokens": 16,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_tool_1"
+    },
+    "finish_reason": "tool_calls"
+  }
+}

@@ -1,0 +1,165 @@
+{
+  "model": "claude-sonnet-4",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "Use tools when needed."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Look up Paris weather."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "response",
+      "parts": [
+        {
+          "kind": "tool_call",
+          "id": "toolu_1",
+          "name": "lookup_weather",
+          "arguments": {
+            "city": "Paris"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "tool_return",
+          "tool_call_id": "toolu_1",
+          "name": "lookup_weather",
+          "content": {
+            "weather": "clear",
+            "temperature_c": 18
+          }
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "tools": [
+    {
+      "name": "lookup_weather",
+      "description": "Look up weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "model": "claude-sonnet-4",
+    "system": "Use tools when needed.",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Look up Paris weather."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "lookup_weather",
+            "input": {
+              "city": "Paris"
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "{\"temperature_c\":18,\"weather\":\"clear\"}",
+            "is_error": false
+          }
+        ]
+      }
+    ],
+    "max_tokens": 64,
+    "temperature": 0.2,
+    "tools": [
+      {
+        "name": "lookup_weather",
+        "description": "Look up weather",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ]
+        }
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "msg_final_1",
+    "model": "claude-sonnet-4",
+    "content": [
+      {
+        "type": "text",
+        "text": "Paris is clear and 18C."
+      }
+    ],
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 30,
+      "output_tokens": 6
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Paris is clear and 18C."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 30,
+      "output_tokens": 6,
+      "total_tokens": 36,
+      "tool_calls": 0
+    },
+    "model_name": "claude-sonnet-4",
+    "provider": {
+      "name": "anthropic",
+      "response_id": "msg_final_1"
+    },
+    "finish_reason": "stop"
+  }
+}

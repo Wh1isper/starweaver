@@ -1,0 +1,90 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - "book.toml"
+      - "docs/**"
+      - "scripts/check-docs-examples.py"
+      - "scripts/finalize-docs-site.py"
+      - ".github/workflows/docs.yml"
+      - "Makefile"
+  push:
+    branches: [main]
+    paths:
+      - "book.toml"
+      - "docs/**"
+      - "scripts/check-docs-examples.py"
+      - "scripts/finalize-docs-site.py"
+      - ".github/workflows/docs.yml"
+      - "Makefile"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install mdBook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5.3
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check docs examples
+        run: python3 scripts/check-docs-examples.py
+
+      - name: Build docs site
+        run: |
+          mdbook build
+          python3 scripts/finalize-docs-site.py
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: book
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy docs
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: docs
+      url: https://starweaver.wh1isper.top
+    steps:
+      - name: Download docs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-site
+          path: book
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy book --project-name=starweaver-docs --branch=main

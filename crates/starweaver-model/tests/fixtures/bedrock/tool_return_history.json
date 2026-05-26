@@ -1,0 +1,190 @@
+{
+  "model": "anthropic.claude-3-5-sonnet",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "Use tools when needed."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Look up Paris weather."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "response",
+      "parts": [
+        {
+          "kind": "tool_call",
+          "id": "toolu_1",
+          "name": "lookup_weather",
+          "arguments": {
+            "city": "Paris"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "tool_return",
+          "tool_call_id": "toolu_1",
+          "name": "lookup_weather",
+          "content": {
+            "weather": "clear",
+            "temperature_c": 18
+          }
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "tools": [
+    {
+      "name": "lookup_weather",
+      "description": "Look up weather",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "modelId": "anthropic.claude-3-5-sonnet",
+    "system": [
+      {
+        "text": "Use tools when needed."
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Look up Paris weather."
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "toolu_1",
+              "name": "lookup_weather",
+              "input": {
+                "city": "Paris"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "toolu_1",
+              "content": [
+                {
+                  "json": {
+                    "temperature_c": 18,
+                    "weather": "clear"
+                  }
+                }
+              ],
+              "status": "success"
+            }
+          }
+        ]
+      }
+    ],
+    "inferenceConfig": {
+      "maxTokens": 64,
+      "temperature": 0.2
+    },
+    "toolConfig": {
+      "tools": [
+        {
+          "toolSpec": {
+            "name": "lookup_weather",
+            "description": "Look up weather",
+            "inputSchema": {
+              "json": {
+                "type": "object",
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Paris is clear and 18C."
+          }
+        ]
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 30,
+      "outputTokens": 6,
+      "totalTokens": 36
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_final_1"
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Paris is clear and 18C."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 30,
+      "output_tokens": 6,
+      "total_tokens": 36,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_final_1"
+    },
+    "finish_reason": "stop"
+  }
+}

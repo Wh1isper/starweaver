@@ -1,4 +1,5 @@
 /target/
+/book/
 /.idea/
 /.vscode/
 *.swp

@@ -39,10 +39,21 @@ build: ## Build the workspace
 	@echo "Building Rust workspace"
 	@cargo build --workspace --all-targets --all-features --locked
 
+.PHONY: replay-check
+replay-check: ## Run model replay and request-parameter compatibility tests
+	@echo "Checking model replay fixtures"
+	@cargo test -p starweaver-model --test replay --test request_parameters --locked
+
 .PHONY: docs-check
 docs-check: ## Compile Rust examples from docs
 	@echo "Checking docs examples"
 	@python3 scripts/check-docs-examples.py
+
+.PHONY: docs-build
+docs-build: ## Build the static documentation site
+	@echo "Building docs site"
+	@mdbook build
+	@python3 scripts/finalize-docs-site.py
 
 .PHONY: lint
 lint: docs-check ## Run pre-commit hooks and docs example checks across the repository
@@ -50,7 +61,7 @@ lint: docs-check ## Run pre-commit hooks and docs example checks across the repo
 	@pre-commit run -a
 
 .PHONY: ci
-ci: fmt-check check test docs-check ## Run the same core checks as CI
+ci: fmt-check check replay-check test docs-check docs-build ## Run the same core checks as CI
 
 .PHONY: run-cli
 run-cli: ## Run the Starweaver CLI

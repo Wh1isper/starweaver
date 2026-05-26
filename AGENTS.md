@@ -35,7 +35,7 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 
 ## Documentation Workflow
 
-Use `docs/` for user-facing guides and examples. The organization follows a docs-site shape with `docs/nav.json` plus focused topic pages.
+Use `docs/` for user-facing guides and examples. The docs site is built with mdBook from `book.toml`, `docs/SUMMARY.md`, and focused topic pages. Keep `docs/nav.json` aligned for repository tooling that consumes the docs map.
 
 Documentation maintenance rules:
 
@@ -43,7 +43,8 @@ Documentation maintenance rules:
 - Put Rust examples in fenced `rust` blocks.
 - Use hidden `# async fn example() -> Result<..., ...>` wrappers for async examples so `scripts/check-docs-examples.py` can compile them.
 - Run `python3 scripts/check-docs-examples.py` after changing docs examples.
-- Update `docs/nav.json` when adding, removing, or renaming docs pages.
+- Run `make docs-build` after changing the docs site structure, mdBook configuration, sitemap generation, or deployment metadata.
+- Update `docs/SUMMARY.md` and `docs/nav.json` when adding, removing, or renaming docs pages.
 - Keep `docs/` user-facing and keep architecture decisions in `spec/`.
 - Prefer mermaid diagrams for architecture flows.
 
@@ -71,21 +72,24 @@ Use `spec/` for product and architecture decisions before introducing new crates
 Current specs:
 
 - `spec/README.md` — architecture baseline map and design rules
-- `spec/00-repository.md` — repository state, current workspace, and crate graduation rule
-- `spec/01-sdk-vision-and-boundaries.md` — SDK product vision and layer boundaries
-- `spec/02-crate-map.md` — current and planned crate map, dependencies, features, and milestones
-- `spec/03-model-and-transport.md` — provider-neutral model protocol, settings, profiles, transport, and test models
-- `spec/04-agent-runtime-loop.md` — graph loop, tool loop boundary, output retry, usage limits, stream records, and checkpoints
-- `spec/05-tools-output-and-capabilities.md` — tools, toolsets, structured output, validators, history processors, and capability bundles
-- `spec/06-context-state-and-events.md` — AgentContext, typed dependencies, state store, event bus, message bus, and resumable state
-- `spec/07-agent-sdk.md` — AgentBuilder, AgentApp, facade policy, presets, subagents, and application protocols
-- `spec/08-environment-and-tool-bundles.md` — environment abstraction, filesystem/shell/resources, policies, and first-party tool bundles
-- `spec/09-mcp-strategy.md` — MCP foundations, live client path, and split triggers
-- `spec/10-readiness-and-capability-status.md` — readiness levels, capability gates, and validation commands
-- `spec/11-durability-and-service-runtime.md` — executor checkpoints, resumable sessions, service runtime, SSE, and AGUI direction
-- `spec/12-cli-product.md` — CLI product surface, configuration, local runs, sessions, approvals, and diagnostics
+- `spec/core/README.md` — core scope, contracts, and acceptance gates
+- `spec/core/01-agent-loop.md` — deterministic run loop, graph states, retries, streaming, and durable execution seam
+- `spec/core/02-model-provider-replay.md` — provider-neutral model protocol, replay fixtures, transport, settings, profiles, and CI gates
+- `spec/core/03-tools-output-capabilities.md` — tool schema, tool loop, structured output, output functions, validators, hooks, and capability bundles
+- `spec/core/04-context-state-executor.md` — AgentContext, StateStore, events, messages, notes, usage, checkpoints, and executor preparation
+- `spec/core/05-pydantic-ai-feature-map.md` — Pydantic AI feature coverage map across agents, providers, tools, output, streaming, and testing
+- `spec/sdk/README.md` — SDK product boundary and application-facing contract
+- `spec/sdk/01-agent-sdk-app.md` — AgentBuilder, AgentApp, AgentSession, policy presets, app composition, and docs surface
+- `spec/sdk/02-environment-provider.md` — EnvironmentProvider, filesystem, shell, resources, environment state, policies, and sandbox mapping
+- `spec/sdk/03-first-party-tool-bundles.md` — filesystem, shell, search, media, task, skill, and tool-proxy bundles implemented through capabilities and context
+- `spec/sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
+- `spec/sdk/05-ya-agent-sdk-integration-map.md` — ya-agent-sdk module integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
+- `spec/ops/README.md` — operational layer scope and readiness model
+- `spec/ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
+- `spec/ops/02-durable-service-runtime.md` — durable sessions, execution records, resume, interruption, SSE, AGUI, and storage contracts
+- `spec/ops/03-cli-product.md` — CLI Product surface built over SDK, environment providers, and service runtime contracts
 
-Use `memos/` for working notes, design comparisons, implementation evidence, and release-preparation reminders.
+Use `memos/` for working notes, design comparisons, implementation evidence, and release-preparation reminders. The current detailed implementation roadmap is `memos/implementation-todo.md`.
 
 After changing repository structure, workspace boundaries, command behavior, CI, or planned module responsibilities, review and update:
 
@@ -111,6 +115,18 @@ After changing docs examples, run:
 
 ```bash
 python3 scripts/check-docs-examples.py
+```
+
+After changing docs site structure or mdBook configuration, run:
+
+```bash
+make docs-build
+```
+
+For focused model/provider replay validation, run:
+
+```bash
+make replay-check
 ```
 
 For full local validation, run:
