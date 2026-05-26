@@ -1,8 +1,8 @@
 # Starweaver Agent SDK
 
-Starweaver is a Rust monorepo for building agent SDK primitives, command-line tooling, runtime services, and agent platform foundations.
+Starweaver is a Rust monorepo for building an agent SDK, command-line tooling, and planned runtime/platform capabilities.
 
-The repository starts with a minimal workspace and keeps the early surface focused on repository automation, CI, and command entry points.
+The repository starts with a minimal executable workspace and keeps planned architecture in `spec/` until crate boundaries have clear responsibilities and validation paths.
 
 ## Workspace
 
@@ -10,20 +10,30 @@ The repository starts with a minimal workspace and keeps the early surface focus
 flowchart TD
     core[starweaver-core]
     cli[starweaver-cli]
-    claw[starweaver-claw]
-    platform[starweaver-agent-platform]
 
     cli --> core
-    claw --> core
-    platform --> core
 ```
 
-Workspace members:
+Current workspace members:
 
-- `crates/starweaver-core` — core SDK primitives and shared abstractions
+- `crates/starweaver-core` — shared SDK identity and early core primitives
 - `crates/starweaver-cli` — `starweaver` command-line entry point
-- `crates/starweaver-claw` — runtime service foundations
-- `crates/starweaver-agent-platform` — agent platform foundations
+
+Planned areas are tracked in `spec/`:
+
+- Core abstractions
+- CLI workflows
+- Claw runtime services
+- Agent platform capabilities
+
+## Specs
+
+Specs live under `spec/` and capture product and architecture decisions before new crates or public APIs are introduced.
+
+Start with:
+
+- `spec/README.md`
+- `spec/00-repository.md`
 
 ## Development
 
@@ -37,6 +47,12 @@ Run the core local checks:
 
 ```bash
 make ci
+```
+
+Run repository-wide hooks:
+
+```bash
+make lint
 ```
 
 Run the CLI:

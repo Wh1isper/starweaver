@@ -2,14 +2,39 @@
 
 ## Repository Overview
 
-`starweaver-agent-sdk` is a Rust workspace for agent SDK primitives, command-line tooling, runtime services, and agent platform foundations.
+`starweaver-agent-sdk` is a Rust workspace for building Starweaver, an agent SDK with CLI tooling and planned runtime/platform capabilities.
 
-Workspace members:
+Current workspace members:
 
-- `crates/starweaver-core` — core SDK primitives and shared abstractions
+- `crates/starweaver-core` — shared SDK identity and early core primitives
 - `crates/starweaver-cli` — `starweaver` command-line entry point
-- `crates/starweaver-claw` — runtime service foundations
-- `crates/starweaver-agent-platform` — agent platform foundations
+
+Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
+
+- Core abstractions
+- CLI workflows
+- Claw runtime services
+- Agent platform capabilities
+
+## Spec Workflow
+
+Use `spec/` for product and architecture decisions before introducing new crates or public APIs.
+
+Current specs:
+
+- `spec/README.md` — spec index and planned area map
+- `spec/00-repository.md` — repository scaffold, current workspace shape, and planned areas
+
+After changing repository structure, workspace boundaries, command behavior, CI, or planned module responsibilities, review and update:
+
+- `spec/*`
+- `README.md`
+- `AGENTS.md`
+- `Cargo.toml`
+- crate manifests under `crates/*/Cargo.toml`
+- `Makefile`
+- `.pre-commit-config.yaml`
+- `.github/workflows/*.yml`
 
 ## Development Workflow
 
@@ -25,9 +50,15 @@ For full local validation, run:
 make ci
 ```
 
+For repository-wide hooks, run:
+
+```bash
+make lint
+```
+
 ## Coding Conventions
 
 - Use English for code, documentation, commit messages, and file names.
 - Keep workspace metadata aligned across `Cargo.toml`, crate manifests, `Makefile`, `.pre-commit-config.yaml`, and `.github/workflows/ci.yml`.
-- Prefer small crates with explicit boundaries and shared primitives in `starweaver-core`.
 - Keep early abstractions minimal and add SDK concepts as concrete needs emerge.
+- Add crates from specs when the boundary has clear responsibilities, call sites, and validation commands.

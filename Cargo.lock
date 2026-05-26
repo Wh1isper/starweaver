@@ -3,20 +3,6 @@
 version = 3
 
 [[package]]
-name = "starweaver-agent-platform"
-version = "0.1.0"
-dependencies = [
- "starweaver-core",
-]
-
-[[package]]
-name = "starweaver-claw"
-version = "0.1.0"
-dependencies = [
- "starweaver-core",
-]
-
-[[package]]
 name = "starweaver-cli"
 version = "0.1.0"
 dependencies = [
