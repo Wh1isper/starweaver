@@ -1,0 +1,89 @@
+{
+  "model": "gemini-pro",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "expected_provider_request": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are concise."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "maxOutputTokens": 64,
+      "temperature": 0.2
+    }
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "finishReason": "STOP",
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "4"
+            }
+          ]
+        }
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 5,
+      "candidatesTokenCount": 1,
+      "totalTokens": 6
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "4"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 1,
+      "total_tokens": 6,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "stop"
+  }
+}

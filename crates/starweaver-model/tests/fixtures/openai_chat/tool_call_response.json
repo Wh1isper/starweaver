@@ -1,0 +1,151 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Look up the current weather for Paris."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Look up a value",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ],
+  "request_parameters": {
+    "tools": [
+      {
+        "name": "lookup",
+        "description": "Look up a value",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  },
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are concise."
+      },
+      {
+        "role": "user",
+        "content": "Look up the current weather for Paris."
+      }
+    ],
+    "max_tokens": 64,
+    "temperature": 0.2,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "lookup",
+          "description": "Look up a value",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "chatcmpl_tool_1",
+    "model": "gpt-4.1-mini",
+    "choices": [
+      {
+        "finish_reason": "tool_calls",
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "lookup",
+                "arguments": "{\"query\":\"weather Paris\"}"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 20,
+      "completion_tokens": 7,
+      "total_tokens": 27
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "tool_call",
+        "id": "call_1",
+        "name": "lookup",
+        "arguments": {
+          "query": "weather Paris"
+        }
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 20,
+      "output_tokens": 7,
+      "total_tokens": 27,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "chatcmpl_tool_1"
+    },
+    "finish_reason": "tool_calls"
+  }
+}

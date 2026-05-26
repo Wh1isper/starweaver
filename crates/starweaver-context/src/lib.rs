@@ -8,32 +8,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub use starweaver_core::AgentId;
 use starweaver_core::{ConversationId, Metadata, RunId, Usage};
 use starweaver_model::ModelMessage;
-
-/// Runtime agent identifier.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-pub struct AgentId(String);
-
-impl AgentId {
-    /// Create an identifier from a caller-provided string.
-    #[must_use]
-    pub fn from_string(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    /// Return the string representation.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Default for AgentId {
-    fn default() -> Self {
-        Self("main".to_string())
-    }
-}
 
 /// In-memory state store for context domains.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -188,6 +165,63 @@ impl MessageBus {
     }
 }
 
+/// Serializable note store carried by context state.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NoteStore {
+    notes: BTreeMap<String, String>,
+}
+
+impl NoteStore {
+    /// Create an empty note store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set a note value.
+    pub fn set(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.notes.insert(key.into(), value.into());
+    }
+
+    /// Get a note value.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.notes.get(key).map(String::as_str)
+    }
+
+    /// Delete a note value and return whether it existed.
+    pub fn delete(&mut self, key: &str) -> bool {
+        self.notes.remove(key).is_some()
+    }
+
+    /// Return all notes sorted by key.
+    #[must_use]
+    pub fn list_all(&self) -> Vec<(String, String)> {
+        self.notes
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    /// Return a serializable copy of all notes.
+    #[must_use]
+    pub fn export_notes(&self) -> BTreeMap<String, String> {
+        self.notes.clone()
+    }
+
+    /// Restore notes from exported data.
+    #[must_use]
+    pub const fn from_exported(notes: BTreeMap<String, String>) -> Self {
+        Self { notes }
+    }
+
+    /// Return whether the store has no notes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.notes.is_empty()
+    }
+}
+
 /// Serializable state used to restore an agent context.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResumableState {
@@ -208,6 +242,9 @@ pub struct ResumableState {
     /// State domains.
     #[serde(default)]
     pub state: StateStore,
+    /// Persisted notes.
+    #[serde(default, skip_serializing_if = "NoteStore::is_empty")]
+    pub notes: NoteStore,
     /// Pending bus messages.
     #[serde(default)]
     pub message_bus: MessageBus,
@@ -315,6 +352,9 @@ pub struct AgentContext {
     /// Event bus.
     #[serde(default)]
     pub events: EventBus,
+    /// Persisted notes.
+    #[serde(default, skip_serializing_if = "NoteStore::is_empty")]
+    pub notes: NoteStore,
     /// Message bus.
     #[serde(default)]
     pub messages: MessageBus,
@@ -338,6 +378,7 @@ impl AgentContext {
             usage: Usage::default(),
             state: StateStore::new(),
             events: EventBus::new(),
+            notes: NoteStore::new(),
             messages: MessageBus::new(),
             metadata: Metadata::default(),
             dependencies: DependencyStore::new(),
@@ -355,6 +396,7 @@ impl AgentContext {
             usage: state.usage,
             state: state.state,
             events: EventBus::new(),
+            notes: state.notes,
             messages: state.message_bus,
             metadata: state.metadata,
             dependencies: DependencyStore::new(),
@@ -371,6 +413,7 @@ impl AgentContext {
             message_history: self.message_history.clone(),
             usage: self.usage.clone(),
             state: self.state.clone(),
+            notes: self.notes.clone(),
             message_bus: self.messages.clone(),
             metadata: self.metadata.clone(),
         }
@@ -379,6 +422,46 @@ impl AgentContext {
     /// Replace context with serialized state.
     pub fn restore_state(&mut self, state: ResumableState) {
         *self = Self::from_state(state);
+    }
+
+    /// Create a child context for subagent execution.
+    ///
+    /// The child receives long-lived runtime state needed for delegation: the parent
+    /// conversation id, accumulated usage, state domains, notes, and typed dependencies.
+    /// Per-run queues and histories start empty so delegated runs have an isolated model
+    /// history and do not duplicate pending parent steering messages.
+    #[must_use]
+    pub fn subagent_context(&self, agent_id: impl Into<String>) -> Self {
+        let mut metadata = self.metadata.clone();
+        metadata.insert(
+            "parent_agent_id".to_string(),
+            serde_json::json!(self.agent_id.as_str()),
+        );
+        if let Some(run_id) = &self.run_id {
+            metadata.insert(
+                "parent_run_id".to_string(),
+                serde_json::json!(run_id.as_str()),
+            );
+        }
+        Self {
+            agent_id: AgentId::from_string(agent_id),
+            run_id: None,
+            conversation_id: self.conversation_id.clone(),
+            message_history: Vec::new(),
+            usage: self.usage.clone(),
+            state: self.state.clone(),
+            events: EventBus::new(),
+            notes: self.notes.clone(),
+            messages: MessageBus::new(),
+            metadata,
+            dependencies: self.dependencies.clone(),
+        }
+    }
+
+    /// Absorb child context state that should survive successful subagent execution.
+    pub fn absorb_subagent_context(&mut self, child: &Self) {
+        self.usage = child.usage.clone();
+        self.notes = child.notes.clone();
     }
 
     /// Record a model message in context history.
@@ -433,6 +516,22 @@ impl AgentContext {
         T: Send + Sync + 'static,
     {
         self.dependencies.get_named::<T>(name)
+    }
+
+    /// Render context instructions for model-facing user prompts.
+    #[must_use]
+    pub fn context_instructions(&self, is_user_prompt: bool) -> Option<String> {
+        if !is_user_prompt || self.notes.is_empty() {
+            return None;
+        }
+        let entries = self.notes.list_all();
+        let mut keys = String::new();
+        for (key, _value) in &entries {
+            keys.push_str("<note key=\"");
+            keys.push_str(key);
+            keys.push_str("\" />");
+        }
+        Some(format!("<notes count=\"{}\">{keys}</notes>", entries.len()))
     }
 }
 

@@ -1,0 +1,196 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Look up the current weather for Paris."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "response",
+      "parts": [
+        {
+          "kind": "tool_call",
+          "id": "call_1",
+          "name": "lookup",
+          "arguments": {
+            "query": "weather Paris"
+          }
+        }
+      ],
+      "usage": {
+        "requests": 1,
+        "input_tokens": 20,
+        "output_tokens": 7,
+        "total_tokens": 27,
+        "tool_calls": 0
+      },
+      "model_name": "gpt-4.1-mini",
+      "provider": {
+        "name": "openai",
+        "response_id": "chatcmpl_tool_1"
+      },
+      "finish_reason": "tool_calls"
+    },
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "tool_return",
+          "tool_call_id": "call_1",
+          "name": "lookup",
+          "content": {
+            "temperature": "18C",
+            "condition": "clear"
+          }
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Look up a value",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ],
+  "request_parameters": {
+    "tools": [
+      {
+        "name": "lookup",
+        "description": "Look up a value",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  },
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are concise."
+      },
+      {
+        "role": "user",
+        "content": "Look up the current weather for Paris."
+      },
+      {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "lookup",
+              "arguments": "{\"query\":\"weather Paris\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "{\"condition\":\"clear\",\"temperature\":\"18C\"}"
+      }
+    ],
+    "max_tokens": 64,
+    "temperature": 0.2,
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "lookup",
+          "description": "Look up a value",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "query"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "chatcmpl_final_1",
+    "model": "gpt-4.1-mini",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "Paris is clear and 18C."
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 38,
+      "completion_tokens": 7,
+      "total_tokens": 45
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Paris is clear and 18C."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 38,
+      "output_tokens": 7,
+      "total_tokens": 45,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "chatcmpl_final_1"
+    },
+    "finish_reason": "stop"
+  }
+}

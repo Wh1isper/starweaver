@@ -1,6 +1,7 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use starweaver_context::{AgentContext, AgentEvent, AgentId, BusMessage, ResumableState};
+use starweaver_core::Usage;
 use starweaver_model::{ModelMessage, ModelRequest};
 
 #[test]
@@ -83,4 +84,87 @@ fn dependencies_are_not_serialized_in_resumable_state() {
     let restored = AgentContext::from_state(context.export_state());
 
     assert!(restored.dependency::<WeatherService>().is_none());
+}
+
+#[test]
+fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
+    let mut context = AgentContext::new(AgentId::from_string("parent"));
+    context.run_id = Some(starweaver_core::RunId::from_string("run-parent"));
+    context.push_message(ModelMessage::Request(ModelRequest::user_text(
+        "parent history",
+    )));
+    context.enqueue_message(BusMessage::new(
+        "steering",
+        serde_json::json!({"text": "parent only"}),
+    ));
+    context
+        .state
+        .set("domain", serde_json::json!({"value": 42}));
+    context.notes.set("lang", "Chinese");
+    context.usage = Usage {
+        requests: 2,
+        input_tokens: 10,
+        output_tokens: 4,
+        total_tokens: 14,
+        tool_calls: 1,
+    };
+    context.insert_dependency(WeatherService {
+        city: "Paris".to_string(),
+    });
+    context.insert_named_dependency("answer", 42_u32);
+
+    let child = context.subagent_context("researcher");
+
+    assert_eq!(child.agent_id.as_str(), "researcher");
+    assert_eq!(child.metadata["parent_agent_id"], "parent");
+    assert_eq!(child.metadata["parent_run_id"], "run-parent");
+    assert_eq!(child.conversation_id, context.conversation_id);
+    assert_eq!(child.usage, context.usage);
+    assert_eq!(child.state.get("domain"), context.state.get("domain"));
+    assert_eq!(child.notes.get("lang"), Some("Chinese"));
+    assert_eq!(child.dependency::<WeatherService>().unwrap().city, "Paris");
+    assert_eq!(*child.named_dependency::<u32>("answer").unwrap(), 42);
+    assert!(child.message_history.is_empty());
+    assert!(child.messages.is_empty());
+    assert!(child.events.events().is_empty());
+}
+
+#[test]
+fn parent_absorbs_subagent_usage_and_notes_after_success() {
+    let mut parent = AgentContext::default();
+    parent.notes.set("lang", "Chinese");
+    parent.usage = Usage {
+        requests: 1,
+        input_tokens: 3,
+        output_tokens: 2,
+        total_tokens: 5,
+        tool_calls: 0,
+    };
+    let mut child = parent.subagent_context("debugger");
+    child.notes.set("lang", "English");
+    child.notes.set("debug", "enabled");
+    child.usage.add_assign(&Usage {
+        requests: 2,
+        input_tokens: 4,
+        output_tokens: 6,
+        total_tokens: 10,
+        tool_calls: 1,
+    });
+    child.push_message(ModelMessage::Request(ModelRequest::user_text(
+        "child history",
+    )));
+    child.enqueue_message(BusMessage::new(
+        "child",
+        serde_json::json!({"text": "local"}),
+    ));
+
+    parent.absorb_subagent_context(&child);
+
+    assert_eq!(parent.usage.requests, 3);
+    assert_eq!(parent.usage.total_tokens, 15);
+    assert_eq!(parent.usage.tool_calls, 1);
+    assert_eq!(parent.notes.get("lang"), Some("English"));
+    assert_eq!(parent.notes.get("debug"), Some("enabled"));
+    assert!(parent.message_history.is_empty());
+    assert!(parent.messages.is_empty());
 }

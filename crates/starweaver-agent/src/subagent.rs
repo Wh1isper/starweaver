@@ -3,14 +3,19 @@
 use std::sync::Arc;
 
 use starweaver_context::AgentContext;
+use starweaver_core::{SubagentLifecycleEvent, SubagentLifecycleKind, TaskId};
 use starweaver_model::ModelMessage;
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentError, AgentResult, AgentStreamRecord, AgentStreamResult,
 };
 
+use crate::session::AgentSession;
+
 /// Application-level task envelope used for SDK subagent delegation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SubagentTask {
+    /// Stable task identifier shared across runtime, service, and SDK layers.
+    pub id: TaskId,
     /// Prompt delegated to the subagent.
     pub prompt: String,
     /// Application metadata carried with the delegated task.
@@ -22,9 +27,17 @@ impl SubagentTask {
     #[must_use]
     pub fn new(prompt: impl Into<String>) -> Self {
         Self {
+            id: TaskId::new(),
             prompt: prompt.into(),
             metadata: serde_json::Value::Object(serde_json::Map::new()),
         }
+    }
+
+    /// Set a caller-provided task identifier.
+    #[must_use]
+    pub fn with_id(mut self, id: TaskId) -> Self {
+        self.id = id;
+        self
     }
 
     /// Attach application metadata to the delegated task.
@@ -94,6 +107,24 @@ impl AgentApp {
     #[must_use]
     pub const fn subagents(&self) -> &SubagentRegistry {
         &self.subagents
+    }
+
+    /// Create a context-backed SDK session with a fresh context.
+    #[must_use]
+    pub fn session(&self) -> AgentSession {
+        AgentSession::new(self.agent.clone())
+    }
+
+    /// Create a context-backed SDK session from caller-provided context.
+    #[must_use]
+    pub fn session_with_context(&self, context: AgentContext) -> AgentSession {
+        AgentSession::with_context(self.agent.clone(), context)
+    }
+
+    /// Restore a context-backed SDK session from exported state.
+    #[must_use]
+    pub fn session_from_state(&self, state: starweaver_context::ResumableState) -> AgentSession {
+        AgentSession::from_state(self.agent.clone(), state)
     }
 
     /// Run the underlying runtime agent with a user prompt.
@@ -254,26 +285,47 @@ impl SubagentRegistry {
         task: SubagentTask,
         parent_context: &mut AgentContext,
     ) -> Result<SubagentResult, AgentError> {
-        let subagent = self
-            .subagent(name)
-            .ok_or_else(|| AgentError::Capability(format!("missing subagent {name}")))?;
-        let mut child_context = AgentContext {
-            usage: parent_context.usage.clone(),
-            dependencies: parent_context.dependencies.clone(),
-            ..AgentContext::default()
+        let Some(subagent) = self.subagent(name) else {
+            parent_context.publish_event(starweaver_context::AgentEvent::new(
+                "subagent_failed",
+                serde_json::to_value(
+                    SubagentLifecycleEvent::new(
+                        SubagentLifecycleKind::Failed,
+                        name,
+                        task.id.clone(),
+                    )
+                    .with_metadata(serde_json::json!({"error": "missing_subagent"})),
+                )
+                .unwrap_or_else(|_| serde_json::json!({"name": name})),
+            ));
+            return Err(AgentError::Capability(format!("missing subagent {name}")));
         };
+        parent_context.publish_event(starweaver_context::AgentEvent::new(
+            "subagent_started",
+            serde_json::to_value(
+                SubagentLifecycleEvent::new(SubagentLifecycleKind::Started, name, task.id.clone())
+                    .with_metadata(task.metadata.clone()),
+            )
+            .unwrap_or_else(|_| serde_json::json!({"name": name})),
+        ));
+        let mut child_context = parent_context.subagent_context(name);
         let result = subagent
             .agent
             .run_with_context(task.prompt.clone(), &mut child_context)
             .await?;
-        parent_context.usage = result.state.usage.clone();
+        parent_context.absorb_subagent_context(&child_context);
         parent_context.publish_event(starweaver_context::AgentEvent::new(
-            "subagent_complete",
-            serde_json::json!({
-                "name": name,
-                "run_id": result.state.run_id.as_str(),
-                "task": task.metadata,
-            }),
+            "subagent_completed",
+            serde_json::to_value(
+                SubagentLifecycleEvent::new(
+                    SubagentLifecycleKind::Completed,
+                    name,
+                    task.id.clone(),
+                )
+                .with_run_id(result.state.run_id.clone())
+                .with_metadata(task.metadata.clone()),
+            )
+            .unwrap_or_else(|_| serde_json::json!({"name": name})),
         ));
         Ok(SubagentResult {
             name: name.to_string(),

@@ -1,0 +1,100 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "instructions": "You are concise.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "provider_response": {
+    "id": "resp_1",
+    "model": "gpt-4.1-mini",
+    "status": "completed",
+    "output": [
+      {
+        "type": "message",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Need lookup"
+          }
+        ]
+      },
+      {
+        "type": "function_call",
+        "call_id": "call_1",
+        "name": "lookup",
+        "arguments": "{\"query\":\"2+2\"}"
+      }
+    ],
+    "usage": {
+      "input_tokens": 7,
+      "output_tokens": 4,
+      "total_tokens": 11
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Need lookup"
+      },
+      {
+        "kind": "tool_call",
+        "id": "call_1",
+        "name": "lookup",
+        "arguments": {
+          "query": "2+2"
+        }
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 7,
+      "output_tokens": 4,
+      "total_tokens": 11,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "resp_1"
+    },
+    "finish_reason": "stop"
+  }
+}

@@ -32,7 +32,7 @@ Use `SubagentTask` when the application wants to attach task metadata and receiv
 ```rust
 use std::sync::Arc;
 
-use starweaver_agent::{AgentBuilder, SubagentConfig, SubagentTask, TestModel};
+use starweaver_agent::{AgentBuilder, SubagentConfig, SubagentTask, TaskId, TestModel};
 use starweaver_context::AgentContext;
 
 # async fn example() -> Result<(), starweaver_agent::AgentError> {
@@ -43,16 +43,80 @@ let app = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
 
 let mut context = AgentContext::default();
 let task = SubagentTask::new("collect facts")
-    .with_metadata(serde_json::json!({"task_id": "research-1"}));
+    .with_id(TaskId::from_string("research-1"))
+    .with_metadata(serde_json::json!({"source": "docs"}));
 let delegated = app
     .subagents()
     .delegate_task("research", task, &mut context)
     .await?;
 
 assert_eq!(delegated.name, "research");
+assert_eq!(delegated.task.id.as_str(), "research-1");
 assert_eq!(delegated.output(), "child");
 # Ok(())
 # }
 ```
 
 The registry shares usage and dependencies with child contexts. The task envelope is the extension point for lifecycle, cancellation, polling, and nested delegation guardrails.
+
+## Lifecycle Events
+
+Delegation publishes typed lifecycle payloads through the parent context event bus. Applications can observe `subagent_started`, `subagent_completed`, and `subagent_failed` records and deserialize the payload as `SubagentLifecycleEvent`.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{
+    AgentBuilder, SubagentConfig, SubagentLifecycleEvent, SubagentLifecycleKind, SubagentTask,
+    TaskId, TestModel,
+};
+use starweaver_context::AgentContext;
+
+# async fn example() -> Result<(), starweaver_agent::AgentError> {
+let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+let app = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
+    .subagent(SubagentConfig::new("research", child))
+    .build_app();
+let task = SubagentTask::new("collect facts")
+    .with_id(TaskId::from_string("research-1"));
+let mut context = AgentContext::default();
+
+app.subagents()
+    .delegate_task("research", task, &mut context)
+    .await?;
+
+let started: SubagentLifecycleEvent =
+    serde_json::from_value(context.events.events()[0].payload.clone()).unwrap();
+assert_eq!(started.kind, SubagentLifecycleKind::Started);
+assert_eq!(started.task_id.as_str(), "research-1");
+# Ok(())
+# }
+```
+
+## Markdown Configuration
+
+`SubagentSpec` is the serializable portion of a subagent definition. It can be loaded from markdown frontmatter and passed to service or CLI layers without carrying a runtime agent handle.
+
+```rust
+use starweaver_agent::parse_subagent_markdown;
+
+let spec = parse_subagent_markdown(r"
+---
+name: debugger
+description: Debug code issues
+tools:
+  - grep
+  - view
+optional_tools: edit, shell
+model: anthropic:claude-sonnet-4
+---
+You are a debugging expert.
+").unwrap();
+
+assert_eq!(spec.name, "debugger");
+assert_eq!(spec.tools, vec!["grep", "view"]);
+assert_eq!(spec.optional_tools, vec!["edit", "shell"]);
+assert_eq!(spec.system_prompt, "You are a debugging expert.");
+```
+
+Runtime `SubagentConfig` keeps the executable agent handle in programmatic code. This split lets files, services, and CLI commands exchange serializable specs while applications decide how each spec maps to a concrete runtime agent.

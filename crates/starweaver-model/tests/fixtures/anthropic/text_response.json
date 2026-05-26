@@ -1,0 +1,80 @@
+{
+  "model": "claude-sonnet-4",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "expected_provider_request": {
+    "model": "claude-sonnet-4",
+    "system": "You are concise.",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "provider_response": {
+    "id": "msg_1",
+    "model": "claude-sonnet-4",
+    "content": [
+      {
+        "type": "text",
+        "text": "4"
+      }
+    ],
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 9,
+      "output_tokens": 1
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "4"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 9,
+      "output_tokens": 1,
+      "total_tokens": 10,
+      "tool_calls": 0
+    },
+    "model_name": "claude-sonnet-4",
+    "provider": {
+      "name": "anthropic",
+      "response_id": "msg_1"
+    },
+    "finish_reason": "stop"
+  }
+}

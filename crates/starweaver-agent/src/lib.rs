@@ -1,6 +1,8 @@
 //! Ergonomic SDK facade over the Starweaver bare runtime.
 
+pub mod session;
 pub mod subagent;
+pub mod subagent_config;
 
 use std::sync::Arc;
 
@@ -8,6 +10,12 @@ use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
 use starweaver_runtime::{Agent as RuntimeAgent, AgentRuntimePolicy};
 use starweaver_tools::{DynTool, DynToolset};
 
+pub use session::AgentSession;
+pub use starweaver_context::{AgentContext, ResumableState};
+pub use starweaver_core::{
+    AgentId, ConversationId, RunId, SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec,
+    TaskId, Usage,
+};
 pub use starweaver_model::{FunctionModel, FunctionModelInfo, TestModel};
 pub use starweaver_runtime::{
     AgentCapability, AgentError, AgentOverride, AgentResult, AgentRunState, AgentStreamEvent,
@@ -25,6 +33,9 @@ pub use starweaver_tools::{
     ToolInstruction, ToolRegistry, ToolResult, Toolset,
 };
 pub use subagent::{AgentApp, SubagentConfig, SubagentRegistry, SubagentResult, SubagentTask};
+pub use subagent_config::{
+    load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown, SubagentConfigError,
+};
 
 /// Builder for a reusable Starweaver agent.
 pub struct AgentBuilder {

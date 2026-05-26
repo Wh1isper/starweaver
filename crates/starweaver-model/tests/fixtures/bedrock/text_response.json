@@ -1,0 +1,90 @@
+{
+  "model": "anthropic.claude-3-5-sonnet",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "expected_provider_request": {
+    "modelId": "anthropic.claude-3-5-sonnet",
+    "system": [
+      {
+        "text": "You are concise."
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "inferenceConfig": {
+      "maxTokens": 64,
+      "temperature": 0.2
+    }
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "4"
+          }
+        ]
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 8,
+      "outputTokens": 1,
+      "totalTokens": 9
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_1"
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "4"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 8,
+      "output_tokens": 1,
+      "total_tokens": 9,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_1"
+    },
+    "finish_reason": "stop"
+  }
+}

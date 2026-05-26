@@ -1,0 +1,369 @@
+#![allow(missing_docs, clippy::unwrap_used)]
+
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
+
+use async_trait::async_trait;
+use serde_json::{json, Map, Value};
+use starweaver_core::{ConversationId, RunId};
+use starweaver_model::{
+    ContentPart, HttpModelConfig, HttpRequest, HttpRequestOptions, HttpResponse,
+    MessageNormalization, ModelAdapter, ModelError, ModelHttpClient, ModelMessage, ModelProfile,
+    ModelRequest, ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelSettings,
+    NativeToolDefinition, ProtocolFamily, ProtocolModelClient, StructuredOutputMode, ToolChoice,
+    ToolDefinition,
+};
+
+#[derive(Clone, Default)]
+struct CaptureHttpClient {
+    requests: Arc<Mutex<Vec<HttpRequest>>>,
+    response: Arc<Mutex<Option<HttpResponse>>>,
+}
+
+impl CaptureHttpClient {
+    fn with_response(response: HttpResponse) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            response: Arc::new(Mutex::new(Some(response))),
+        }
+    }
+
+    fn last_request(&self) -> HttpRequest {
+        self.requests.lock().unwrap().last().cloned().unwrap()
+    }
+}
+
+#[async_trait]
+impl ModelHttpClient for CaptureHttpClient {
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ModelError> {
+        self.requests.lock().unwrap().push(request);
+        Ok(self.response.lock().unwrap().clone().unwrap())
+    }
+}
+
+fn history() -> Vec<ModelMessage> {
+    vec![ModelMessage::Request(ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "You are concise.".to_string(),
+                metadata: Map::new(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "What is 2+2?".to_string(),
+                }],
+                name: None,
+                metadata: Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    })]
+}
+
+fn context() -> ModelRequestContext {
+    ModelRequestContext {
+        run_id: RunId::from_string("run_params"),
+        conversation_id: ConversationId::from_string("conv_params"),
+    }
+}
+
+const fn text_response(body: Value) -> HttpResponse {
+    HttpResponse::ok(body)
+}
+
+#[test]
+fn model_request_parameters_serialize_round_trip() {
+    let mut native_config = Map::new();
+    native_config.insert("search_context_size".to_string(), json!("low"));
+    let mut native_metadata = Map::new();
+    native_metadata.insert("source".to_string(), json!("builtin"));
+
+    let mut extra_body = Map::new();
+    extra_body.insert("metadata".to_string(), json!({"tenant": "default"}));
+
+    let params = ModelRequestParameters {
+        tools: vec![ToolDefinition {
+            name: "lookup".to_string(),
+            description: Some("Look up a value".to_string()),
+            parameters: json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"]
+            }),
+            metadata: Map::from_iter([("tier".to_string(), json!("required"))]),
+        }],
+        native_tools: vec![NativeToolDefinition::new("web_search_preview")
+            .with_config(native_config)
+            .with_metadata(native_metadata)],
+        output_schema: Some(json!({
+            "name": "answer",
+            "schema": {"type": "object", "required": ["answer"]},
+            "strict": true
+        })),
+        http: HttpRequestOptions {
+            headers: BTreeMap::from([("x-trace-id".to_string(), "trace_1".to_string())]),
+            extra_body: Map::from_iter([("audit".to_string(), json!({"mode": "strict"}))]),
+            endpoint_url: Some("https://gateway.example.test/v1/responses".to_string()),
+            timeout_ms: Some(42_000),
+            metadata: Map::from_iter([("route".to_string(), json!("audit"))]),
+        },
+        extra_body,
+    };
+
+    let encoded = serde_json::to_value(&params).unwrap();
+    let decoded: ModelRequestParameters = serde_json::from_value(encoded.clone()).unwrap();
+
+    assert_eq!(decoded, params);
+    assert_eq!(encoded["tools"][0]["name"], "lookup");
+    assert_eq!(
+        encoded["native_tools"][0]["tool_type"],
+        "web_search_preview"
+    );
+    assert_eq!(encoded["output_schema"]["name"], "answer");
+    assert_eq!(
+        encoded["http"]["endpoint_url"],
+        "https://gateway.example.test/v1/responses"
+    );
+}
+
+#[test]
+fn model_settings_merge_preserves_defaults_and_overlays_request_values() {
+    let base = ModelSettings {
+        max_tokens: Some(128),
+        temperature: Some(0.2),
+        tool_choice: Some(ToolChoice::Auto),
+        stop_sequences: vec!["base".to_string()],
+        extra_headers: BTreeMap::from([("x-default".to_string(), "yes".to_string())]),
+        extra_body: Map::from_iter([("default_body".to_string(), json!(true))]),
+        ..ModelSettings::default()
+    };
+    let overlay = ModelSettings {
+        temperature: Some(0.7),
+        top_p: Some(0.9),
+        tool_choice: Some(ToolChoice::Tool {
+            name: "lookup".to_string(),
+        }),
+        extra_headers: BTreeMap::from([("x-request".to_string(), "yes".to_string())]),
+        extra_body: Map::from_iter([("request_body".to_string(), json!(true))]),
+        ..ModelSettings::default()
+    };
+
+    let merged = base.merge(&overlay);
+
+    assert_eq!(merged.max_tokens, Some(128));
+    assert_eq!(merged.temperature, Some(0.7));
+    assert_eq!(merged.top_p, Some(0.9));
+    assert_eq!(
+        merged.tool_choice,
+        Some(ToolChoice::Tool {
+            name: "lookup".to_string()
+        })
+    );
+    assert_eq!(merged.stop_sequences, vec!["base"]);
+    assert_eq!(merged.extra_headers["x-default"], "yes");
+    assert_eq!(merged.extra_headers["x-request"], "yes");
+    assert_eq!(merged.extra_body["default_body"], true);
+    assert_eq!(merged.extra_body["request_body"], true);
+}
+
+#[test]
+fn profile_defaults_encode_provider_capability_contracts() {
+    let openai_chat = ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions);
+    assert_eq!(
+        openai_chat.default_structured_output_mode,
+        StructuredOutputMode::NativeJsonSchema
+    );
+    assert_eq!(
+        openai_chat.message_normalization,
+        MessageNormalization::MergeAdjacentSameRole
+    );
+    assert!(openai_chat.supports_tools);
+    assert!(openai_chat.supports_json_schema_output);
+
+    let openai_responses = ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses);
+    assert_eq!(
+        openai_responses.default_structured_output_mode,
+        StructuredOutputMode::NativeJsonSchema
+    );
+    assert_eq!(
+        openai_responses.message_normalization,
+        MessageNormalization::PreserveItems
+    );
+    assert!(openai_responses.supports_thinking);
+
+    let anthropic = ModelProfile::for_protocol(ProtocolFamily::AnthropicMessages);
+    assert_eq!(
+        anthropic.default_structured_output_mode,
+        StructuredOutputMode::Tool
+    );
+    assert_eq!(
+        anthropic.message_normalization,
+        MessageNormalization::SystemField
+    );
+    assert!(anthropic.supports_thinking);
+
+    let gemini = ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent);
+    assert_eq!(
+        gemini.message_normalization,
+        MessageNormalization::SystemInstruction
+    );
+    assert!(gemini.supports_json_object_output);
+
+    let bedrock = ModelProfile::for_protocol(ProtocolFamily::BedrockConverse);
+    assert_eq!(
+        bedrock.default_structured_output_mode,
+        StructuredOutputMode::Tool
+    );
+    assert_eq!(
+        bedrock.message_normalization,
+        MessageNormalization::SystemField
+    );
+}
+
+#[tokio::test]
+async fn protocol_client_merges_default_and_request_settings_into_wire_request() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_settings",
+        "model": "gpt-4.1-mini",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "4"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
+    })));
+    let default_settings = ModelSettings {
+        max_tokens: Some(128),
+        temperature: Some(0.2),
+        extra_headers: BTreeMap::from([("x-default".to_string(), "yes".to_string())]),
+        extra_body: Map::from_iter([("default_body".to_string(), json!(true))]),
+        ..ModelSettings::default()
+    };
+    let request_settings = ModelSettings {
+        temperature: Some(0.7),
+        top_p: Some(0.9),
+        extra_headers: BTreeMap::from([("x-request".to_string(), "yes".to_string())]),
+        extra_body: Map::from_iter([("request_body".to_string(), json!(true))]),
+        ..ModelSettings::default()
+    };
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-4.1-mini",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        HttpModelConfig::new("https://api.openai.test/v1", "chat/completions"),
+        Arc::new(http.clone()),
+    )
+    .with_default_settings(default_settings);
+
+    let response = client
+        .request(
+            history(),
+            Some(request_settings),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.text_output(), "4");
+    let request = http.last_request();
+    assert_eq!(request.body["max_tokens"], 128);
+    assert_eq!(request.body["temperature"], 0.7);
+    assert_eq!(request.body["top_p"], 0.9);
+    assert_eq!(request.body["default_body"], true);
+    assert_eq!(request.body["request_body"], true);
+    assert_eq!(request.headers["x-default"], "yes");
+    assert_eq!(request.headers["x-request"], "yes");
+}
+
+#[tokio::test]
+async fn protocol_client_maps_output_schema_for_openai_responses() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "resp_schema",
+        "model": "gpt-4.1-mini",
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "{\"answer\":\"4\"}"}]}],
+        "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-4.1-mini",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        HttpModelConfig::new("https://api.openai.test/v1", "responses"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            None,
+            ModelRequestParameters {
+                output_schema: Some(json!({
+                    "name": "answer",
+                    "schema": {"type": "object", "required": ["answer"]},
+                    "strict": true,
+                })),
+                ..ModelRequestParameters::default()
+            },
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["text"]["format"]["type"], "json_schema");
+    assert_eq!(request.body["text"]["format"]["name"], "answer");
+    assert_eq!(
+        request.body["text"]["format"]["schema"]["required"],
+        json!(["answer"])
+    );
+    assert_eq!(request.body["text"]["format"]["strict"], true);
+}
+
+#[tokio::test]
+async fn protocol_client_maps_output_schema_for_gemini() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "candidates": [{
+            "content": {"parts": [{"text": "{\"answer\":\"4\"}"}]},
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3, "totalTokenCount": 8}
+    })));
+    let client = ProtocolModelClient::new(
+        "gemini",
+        "gemini-1.5-flash",
+        ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent),
+        HttpModelConfig::new(
+            "https://generativelanguage.googleapis.com/v1beta",
+            "models/gemini-1.5-flash:generateContent",
+        ),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            None,
+            ModelRequestParameters {
+                output_schema: Some(json!({
+                    "schema": {"type": "object", "required": ["answer"]}
+                })),
+                ..ModelRequestParameters::default()
+            },
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(
+        request.body["generationConfig"]["responseMimeType"],
+        "application/json"
+    );
+    assert_eq!(
+        request.body["generationConfig"]["responseSchema"]["required"],
+        json!(["answer"])
+    );
+}
