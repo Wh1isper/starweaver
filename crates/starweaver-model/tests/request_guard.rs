@@ -24,10 +24,10 @@ impl ModelHttpClient for PanicHttpClient {
 }
 
 fn context() -> ModelRequestContext {
-    ModelRequestContext {
-        run_id: RunId::from_string("run_guard"),
-        conversation_id: ConversationId::from_string("conv_guard"),
-    }
+    ModelRequestContext::new(
+        RunId::from_string("run_guard"),
+        ConversationId::from_string("conv_guard"),
+    )
 }
 
 #[tokio::test]

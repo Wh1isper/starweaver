@@ -13,7 +13,8 @@ pub mod usage;
 
 pub use agent::{Agent, AgentError, AgentOverride, AgentResult, AgentRuntimePolicy};
 pub use capability::{
-    AgentCapability, CapabilityBundle, CapabilityError, CapabilityResult, StaticCapabilityBundle,
+    AgentCapability, CapabilityBundle, CapabilityError, CapabilityResult, RetryEventKind,
+    StaticCapabilityBundle,
 };
 pub use executor::{
     AgentCheckpoint, AgentExecutionDecision, AgentExecutionNode, AgentExecutor, AgentExecutorError,

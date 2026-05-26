@@ -9,10 +9,10 @@ use starweaver_model::{
 };
 
 fn context() -> ModelRequestContext {
-    ModelRequestContext {
-        run_id: starweaver_core::RunId::from_string("run_test"),
-        conversation_id: starweaver_core::ConversationId::from_string("conv_test"),
-    }
+    ModelRequestContext::new(
+        starweaver_core::RunId::from_string("run_test"),
+        starweaver_core::ConversationId::from_string("conv_test"),
+    )
 }
 
 #[tokio::test]

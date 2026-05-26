@@ -9,7 +9,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub use starweaver_core::AgentId;
-use starweaver_core::{ConversationId, Metadata, RunId, Usage};
+use starweaver_core::{ConversationId, Metadata, RunId, TraceContext, Usage};
 use starweaver_model::ModelMessage;
 
 /// In-memory state store for context domains.
@@ -248,6 +248,9 @@ pub struct ResumableState {
     /// Pending bus messages.
     #[serde(default)]
     pub message_bus: MessageBus,
+    /// Trace correlation snapshot.
+    #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
+    pub trace_snapshot: TraceContext,
     /// Run metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
@@ -358,6 +361,9 @@ pub struct AgentContext {
     /// Message bus.
     #[serde(default)]
     pub messages: MessageBus,
+    /// Trace correlation context.
+    #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
+    pub trace_context: TraceContext,
     /// Context metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
@@ -380,6 +386,7 @@ impl AgentContext {
             events: EventBus::new(),
             notes: NoteStore::new(),
             messages: MessageBus::new(),
+            trace_context: TraceContext::default(),
             metadata: Metadata::default(),
             dependencies: DependencyStore::new(),
         }
@@ -398,6 +405,7 @@ impl AgentContext {
             events: EventBus::new(),
             notes: state.notes,
             messages: state.message_bus,
+            trace_context: state.trace_snapshot,
             metadata: state.metadata,
             dependencies: DependencyStore::new(),
         }
@@ -415,6 +423,7 @@ impl AgentContext {
             state: self.state.clone(),
             notes: self.notes.clone(),
             message_bus: self.messages.clone(),
+            trace_snapshot: self.trace_context.clone(),
             metadata: self.metadata.clone(),
         }
     }
@@ -453,6 +462,7 @@ impl AgentContext {
             events: EventBus::new(),
             notes: self.notes.clone(),
             messages: MessageBus::new(),
+            trace_context: self.trace_context.clone(),
             metadata,
             dependencies: self.dependencies.clone(),
         }
@@ -462,6 +472,18 @@ impl AgentContext {
     pub fn absorb_subagent_context(&mut self, child: &Self) {
         self.usage = child.usage.clone();
         self.notes = child.notes.clone();
+    }
+
+    /// Attach trace correlation context.
+    #[must_use]
+    pub fn with_trace_context(mut self, trace_context: TraceContext) -> Self {
+        self.trace_context = trace_context;
+        self
+    }
+
+    /// Replace trace correlation context.
+    pub fn set_trace_context(&mut self, trace_context: TraceContext) {
+        self.trace_context = trace_context;
     }
 
     /// Record a model message in context history.

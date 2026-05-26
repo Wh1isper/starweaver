@@ -9,7 +9,11 @@ use starweaver_model::{
     ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily,
     ToolCallPart,
 };
-use starweaver_runtime::{Agent, AgentStreamEvent, OutputSchema};
+use starweaver_runtime::{
+    Agent, AgentCapability, AgentCheckpoint, AgentError, AgentExecutionDecision,
+    AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentStreamEvent, AgentStreamRecord,
+    CapabilityResult, OutputSchema, StaticCapabilityBundle,
+};
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 
 #[derive(Clone)]
@@ -80,23 +84,33 @@ async fn run_stream_collects_text_run_events() {
     .unwrap();
 
     assert_eq!(stream.result.output, "hello");
-    assert_eq!(stream.events.len(), 4);
     assert_eq!(stream.events[0].sequence, 0);
     assert!(matches!(
         stream.events[0].event,
         AgentStreamEvent::RunStart { .. }
     ));
-    assert!(matches!(
-        stream.events[1].event,
-        AgentStreamEvent::ModelRequest { step: 0 }
-    ));
-    assert!(matches!(
-        stream.events[2].event,
+    assert!(stream.events.iter().any(|record| matches!(
+        record.event,
+        AgentStreamEvent::Checkpoint {
+            node: AgentExecutionNode::RunStart,
+            step: 0
+        }
+    )));
+    assert!(stream
+        .events
+        .iter()
+        .any(|record| matches!(record.event, AgentStreamEvent::ModelRequest { step: 0 })));
+    assert!(stream.events.iter().any(|record| matches!(
+        record.event,
         AgentStreamEvent::ModelResponse { step: 1, .. }
-    ));
+    )));
     assert!(
-        matches!(stream.events[3].event, AgentStreamEvent::RunComplete { ref output, .. } if output == "hello")
+        matches!(stream.events.last().unwrap().event, AgentStreamEvent::RunComplete { ref output, .. } if output == "hello")
     );
+    assert!(stream
+        .events
+        .windows(2)
+        .all(|window| window[0].sequence + 1 == window[1].sequence));
 }
 
 #[tokio::test]
@@ -170,5 +184,127 @@ async fn run_with_context_can_collect_stream_events() {
 
     assert_eq!(result.output, "context");
     assert_eq!(context.events.events().len(), 2);
-    assert_eq!(events.len(), 4);
+    assert!(events.iter().any(|record| matches!(
+        record.event,
+        AgentStreamEvent::Checkpoint {
+            node: AgentExecutionNode::RunComplete,
+            ..
+        }
+    )));
+    assert!(matches!(
+        events.last().unwrap().event,
+        AgentStreamEvent::RunComplete { .. }
+    ));
+}
+
+struct SuspendAtBeforeModelRequest;
+
+#[async_trait]
+impl AgentExecutor for SuspendAtBeforeModelRequest {
+    async fn checkpoint(
+        &self,
+        checkpoint: AgentCheckpoint,
+    ) -> Result<AgentExecutionDecision, AgentExecutorError> {
+        if checkpoint.node == AgentExecutionNode::BeforeModelRequest {
+            return Ok(AgentExecutionDecision::Suspend {
+                reason: "waiting for approval".to_string(),
+            });
+        }
+        Ok(AgentExecutionDecision::Continue)
+    }
+}
+
+#[tokio::test]
+async fn stream_events_include_checkpoints_and_suspension() {
+    let mut context = AgentContext::default();
+    let mut events = Vec::new();
+    let error = Agent::new(Arc::new(ScriptedModel::new(vec![ModelResponse::text(
+        "never reached",
+    )])))
+    .with_executor(Arc::new(SuspendAtBeforeModelRequest))
+    .run_with_context_and_stream_events("hi", &mut context, &mut events)
+    .await;
+
+    assert!(matches!(
+        error,
+        Err(AgentError::ExecutionSuspended {
+            node: AgentExecutionNode::BeforeModelRequest,
+            ..
+        })
+    ));
+    assert!(events.iter().any(|record| matches!(
+        record.event,
+        AgentStreamEvent::Checkpoint {
+            node: AgentExecutionNode::RunStart,
+            step: 0,
+        }
+    )));
+    assert!(events.iter().any(|record| matches!(
+        record.event,
+        AgentStreamEvent::Checkpoint {
+            node: AgentExecutionNode::BeforeModelRequest,
+            step: 0,
+        }
+    )));
+    assert!(events.iter().any(|record| matches!(
+        record.event,
+        AgentStreamEvent::Suspended {
+            node: AgentExecutionNode::BeforeModelRequest,
+            ref reason,
+        } if reason == "waiting for approval"
+    )));
+}
+
+#[tokio::test]
+async fn capability_bundle_stream_observer_sees_recorded_events() {
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let observer = Arc::new(StreamObserverRecorder {
+        events: events.clone(),
+    });
+    let bundle = StaticCapabilityBundle::new("stream-observer").with_stream_observer(observer);
+
+    let result = Agent::new(Arc::new(ScriptedModel::new(vec![ModelResponse::text(
+        "observed",
+    )])))
+    .with_capability_bundle(&bundle)
+    .run_stream("hi")
+    .await
+    .unwrap();
+
+    assert_eq!(result.result.output, "observed");
+    let recorded_kinds = events.lock().unwrap().clone();
+    assert!(recorded_kinds.iter().any(|kind| kind == "run_start"));
+    assert!(recorded_kinds.iter().any(|kind| kind == "checkpoint"));
+    assert!(recorded_kinds.iter().any(|kind| kind == "model_request"));
+    assert!(recorded_kinds.iter().any(|kind| kind == "model_response"));
+    assert!(recorded_kinds.iter().any(|kind| kind == "run_complete"));
+}
+
+struct StreamObserverRecorder {
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl AgentCapability for StreamObserverRecorder {
+    async fn on_stream_event(
+        &self,
+        _state: &starweaver_runtime::AgentRunState,
+        event: &AgentStreamRecord,
+    ) -> CapabilityResult<()> {
+        self.events.lock().unwrap().push(
+            match &event.event {
+                AgentStreamEvent::RunStart { .. } => "run_start",
+                AgentStreamEvent::ModelRequest { .. } => "model_request",
+                AgentStreamEvent::ModelResponse { .. } => "model_response",
+                AgentStreamEvent::Checkpoint { .. } => "checkpoint",
+                AgentStreamEvent::Suspended { .. } => "suspended",
+                AgentStreamEvent::ToolCall { .. } => "tool_call",
+                AgentStreamEvent::ToolReturn { .. } => "tool_return",
+                AgentStreamEvent::OutputRetry { .. } => "output_retry",
+                AgentStreamEvent::RunComplete { .. } => "run_complete",
+            }
+            .to_string(),
+        );
+        Ok(())
+    }
 }

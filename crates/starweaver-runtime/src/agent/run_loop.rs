@@ -12,8 +12,8 @@ use crate::{
         helpers::{is_tool_retry_return, mark_tool_retry_return, record_tool_control_flow},
         Agent, AgentError, AgentResult,
     },
-    capability::CapabilityError,
-    executor::AgentExecutionNode,
+    capability::{CapabilityError, RetryEventKind},
+    executor::{AgentExecutionDecision, AgentExecutionNode},
     run::{AgentRunState, RunStatus},
     stream::{push_stream_event, AgentStreamEvent, AgentStreamRecord, AgentStreamResult},
 };
@@ -128,6 +128,44 @@ impl Agent {
         context: &mut AgentContext,
         mut stream_events: Option<&mut Vec<AgentStreamRecord>>,
     ) -> Result<AgentResult, AgentError> {
+        macro_rules! stream_event {
+            ($state:expr, $event:expr) => {{
+                let event = $event;
+                push_stream_event(&mut stream_events, event);
+                if let Some(record) = stream_events
+                    .as_deref()
+                    .and_then(|events| events.last())
+                    .cloned()
+                {
+                    self.call_stream_observers($state, context, &record).await?;
+                }
+            }};
+        }
+
+        macro_rules! checkpoint {
+            ($node:expr, $state:expr) => {{
+                let node = $node;
+                let decision = self.checkpoint(node, $state, context).await?;
+                stream_event!(
+                    $state,
+                    AgentStreamEvent::Checkpoint {
+                        node,
+                        step: $state.run_step,
+                    }
+                );
+                if let AgentExecutionDecision::Suspend { reason } = decision {
+                    stream_event!(
+                        $state,
+                        AgentStreamEvent::Suspended {
+                            node,
+                            reason: reason.clone(),
+                        }
+                    );
+                    return Err(AgentError::ExecutionSuspended { node, reason });
+                }
+            }};
+        }
+
         let run_id = RunId::new();
         context.run_id = Some(run_id.clone());
         let conversation_id = context.conversation_id.clone();
@@ -140,16 +178,15 @@ impl Agent {
             "run_start",
             serde_json::json!({"run_id": run_id.as_str()}),
         ));
-        push_stream_event(
-            &mut stream_events,
+        stream_event!(
+            &state,
             AgentStreamEvent::RunStart {
                 run_id: run_id.clone(),
                 conversation_id: conversation_id.clone(),
-            },
+            }
         );
         self.call_run_start(&mut state, context).await?;
-        self.checkpoint(AgentExecutionNode::RunStart, &state)
-            .await?;
+        checkpoint!(AgentExecutionNode::RunStart, &state);
 
         let mut next_prompt = prompt.into();
         let mut output_retries_used = 0;
@@ -163,8 +200,7 @@ impl Agent {
                 });
             }
 
-            self.checkpoint(AgentExecutionNode::PrepareModelRequest, &state)
-                .await?;
+            checkpoint!(AgentExecutionNode::PrepareModelRequest, &state);
             let mut request = self
                 .prepare_request(&state, &next_prompt, &run_id, &conversation_id)
                 .await?;
@@ -174,15 +210,14 @@ impl Agent {
                 .await?;
             state.message_history.push(ModelMessage::Request(request));
             context.message_history.clone_from(&state.message_history);
-            push_stream_event(
-                &mut stream_events,
+            stream_event!(
+                &state,
                 AgentStreamEvent::ModelRequest {
                     step: state.run_step,
-                },
+                }
             );
             state.pending_tool_returns.clear();
-            self.checkpoint(AgentExecutionNode::BeforeModelRequest, &state)
-                .await?;
+            checkpoint!(AgentExecutionNode::BeforeModelRequest, &state);
 
             let response = if let Some(response) = skipped_response {
                 response
@@ -195,26 +230,23 @@ impl Agent {
                         messages,
                         settings,
                         params,
-                        ModelRequestContext {
-                            run_id: run_id.clone(),
-                            conversation_id: conversation_id.clone(),
-                        },
+                        ModelRequestContext::new(run_id.clone(), conversation_id.clone())
+                            .with_trace_context(context.trace_context.clone()),
                     )
                     .await?
             };
             state.run_step += 1;
             let response_usage = response.usage.clone();
-            push_stream_event(
-                &mut stream_events,
+            stream_event!(
+                &state,
                 AgentStreamEvent::ModelResponse {
                     step: state.run_step,
                     response: response.clone(),
-                },
+                }
             );
             state.apply_model_response(response);
             context.add_usage(&response_usage);
-            self.checkpoint(AgentExecutionNode::ModelResponse, &state)
-                .await?;
+            checkpoint!(AgentExecutionNode::ModelResponse, &state);
             self.check_usage(&state)?;
             context.message_history.clone_from(&state.message_history);
 
@@ -234,19 +266,18 @@ impl Agent {
                         state.structured_output = structured_output;
                         state.status = RunStatus::Completed;
                         self.call_run_complete(&mut state, context).await?;
-                        self.checkpoint(AgentExecutionNode::RunComplete, &state)
-                            .await?;
+                        checkpoint!(AgentExecutionNode::RunComplete, &state);
                         context.message_history.clone_from(&state.message_history);
                         context.publish_event(AgentEvent::new(
                             "run_complete",
                             serde_json::json!({"run_id": run_id.as_str()}),
                         ));
-                        push_stream_event(
-                            &mut stream_events,
+                        stream_event!(
+                            &state,
                             AgentStreamEvent::RunComplete {
                                 run_id: run_id.clone(),
                                 output: output.clone(),
-                            },
+                            }
                         );
                         return Ok(AgentResult {
                             output,
@@ -265,12 +296,20 @@ impl Agent {
                             });
                         }
                         output_retries_used += 1;
-                        push_stream_event(
-                            &mut stream_events,
+                        self.call_retry(
+                            &mut state,
+                            context,
+                            RetryEventKind::Output,
+                            output_retries_used,
+                            &message,
+                        )
+                        .await?;
+                        stream_event!(
+                            &state,
                             AgentStreamEvent::OutputRetry {
                                 retries: output_retries_used,
                                 prompt: message.clone(),
-                            },
+                            }
                         );
                         next_prompt = message;
                         continue;
@@ -288,25 +327,31 @@ impl Agent {
                     .count() as u64;
                 self.check_tool_calls(&state, projected_successful_tool_calls)?;
                 for call in &tool_calls {
-                    self.checkpoint(AgentExecutionNode::ToolCall, &state)
-                        .await?;
-                    push_stream_event(
-                        &mut stream_events,
+                    checkpoint!(AgentExecutionNode::ToolCall, &state);
+                    stream_event!(
+                        &state,
                         AgentStreamEvent::ToolCall {
                             step: state.run_step,
                             call: call.clone(),
-                        },
+                        }
                     );
                     let tool_retry = *tool_retries.get(&call.name).unwrap_or(&0);
                     let tool_max_retries = self.tools.max_retries_for(&call.name);
-                    let tool_context = ToolContext::new(
+                    let mut tool_context = ToolContext::new(
                         state.run_id.clone(),
                         state.conversation_id.clone(),
                         state.run_step,
                     )
                     .with_dependencies(context.dependencies.clone())
+                    .with_state(context.state.clone())
+                    .with_notes(context.notes.clone())
+                    .with_trace_context(context.trace_context.clone())
                     .with_retry_budget(tool_retry, tool_max_retries);
+                    self.call_before_tool_execution(&mut state, context, &mut tool_context, call)
+                        .await?;
                     let mut tool_return = self.tools.execute_call(tool_context, call).await;
+                    self.call_after_tool_result(&mut state, context, call, &mut tool_return)
+                        .await?;
                     if tool_return.is_error && is_tool_retry_return(&tool_return) {
                         if tool_retry >= tool_max_retries {
                             state.status = RunStatus::Failed;
@@ -317,14 +362,22 @@ impl Agent {
                         }
                         let next_retry = tool_retry.saturating_add(1);
                         tool_retries.insert(call.name.clone(), next_retry);
+                        self.call_retry(
+                            &mut state,
+                            context,
+                            RetryEventKind::Tool,
+                            next_retry,
+                            &call.name,
+                        )
+                        .await?;
                         mark_tool_retry_return(&mut tool_return, next_retry, tool_max_retries);
                     }
-                    push_stream_event(
-                        &mut stream_events,
+                    stream_event!(
+                        &state,
                         AgentStreamEvent::ToolReturn {
                             step: state.run_step,
                             tool_return: tool_return.clone(),
-                        },
+                        }
                     );
                     record_tool_control_flow(&mut state, &tool_return);
                     if !tool_return.is_error {
@@ -332,16 +385,14 @@ impl Agent {
                         context.usage.tool_calls = context.usage.tool_calls.saturating_add(1);
                     }
                     state.pending_tool_returns.push(tool_return);
-                    self.checkpoint(AgentExecutionNode::ToolReturn, &state)
-                        .await?;
+                    checkpoint!(AgentExecutionNode::ToolReturn, &state);
                 }
                 next_prompt.clear();
                 continue;
             }
 
             let output = response.text_output();
-            self.checkpoint(AgentExecutionNode::ValidateOutput, &state)
-                .await?;
+            checkpoint!(AgentExecutionNode::ValidateOutput, &state);
             match self
                 .validate_final_output(&mut state, context, &output)
                 .await
@@ -350,19 +401,18 @@ impl Agent {
                     state.output = Some(output.clone());
                     state.status = RunStatus::Completed;
                     self.call_run_complete(&mut state, context).await?;
-                    self.checkpoint(AgentExecutionNode::RunComplete, &state)
-                        .await?;
+                    checkpoint!(AgentExecutionNode::RunComplete, &state);
                     context.message_history.clone_from(&state.message_history);
                     context.publish_event(AgentEvent::new(
                         "run_complete",
                         serde_json::json!({"run_id": run_id.as_str()}),
                     ));
-                    push_stream_event(
-                        &mut stream_events,
+                    stream_event!(
+                        &state,
                         AgentStreamEvent::RunComplete {
                             run_id: run_id.clone(),
                             output: output.clone(),
-                        },
+                        }
                     );
                     return Ok(AgentResult {
                         output,
@@ -380,12 +430,20 @@ impl Agent {
                         });
                     }
                     output_retries_used += 1;
-                    push_stream_event(
-                        &mut stream_events,
+                    self.call_retry(
+                        &mut state,
+                        context,
+                        RetryEventKind::Output,
+                        output_retries_used,
+                        &message,
+                    )
+                    .await?;
+                    stream_event!(
+                        &state,
                         AgentStreamEvent::OutputRetry {
                             retries: output_retries_used,
                             prompt: message.clone(),
-                        },
+                        }
                     );
                     next_prompt = message;
                 }

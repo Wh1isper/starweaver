@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use starweaver_core::{ConversationId, Metadata, RunId};
+use starweaver_core::{CheckpointId, ConversationId, Metadata, RunId};
 use thiserror::Error;
 
 use crate::run::AgentRunState;
@@ -36,6 +36,8 @@ pub enum AgentExecutionNode {
 /// Serializable checkpoint emitted at a durable execution boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentCheckpoint {
+    /// Checkpoint identifier.
+    pub checkpoint_id: CheckpointId,
     /// Run identifier.
     pub run_id: RunId,
     /// Conversation identifier.
@@ -56,6 +58,7 @@ impl AgentCheckpoint {
     #[must_use]
     pub fn new(node: AgentExecutionNode, state: &AgentRunState) -> Self {
         Self {
+            checkpoint_id: CheckpointId::new(),
             run_id: state.run_id.clone(),
             conversation_id: state.conversation_id.clone(),
             node,

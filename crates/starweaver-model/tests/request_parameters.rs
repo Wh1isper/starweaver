@@ -67,10 +67,10 @@ fn history() -> Vec<ModelMessage> {
 }
 
 fn context() -> ModelRequestContext {
-    ModelRequestContext {
-        run_id: RunId::from_string("run_params"),
-        conversation_id: ConversationId::from_string("conv_params"),
-    }
+    ModelRequestContext::new(
+        RunId::from_string("run_params"),
+        ConversationId::from_string("conv_params"),
+    )
 }
 
 const fn text_response(body: Value) -> HttpResponse {

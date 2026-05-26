@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 
-use starweaver_agent::{AgentBuilder, SubagentConfig, SubagentRegistry, SubagentTask, TestModel};
+use starweaver_agent::{
+    AgentBuilder, AgentRuntimePolicy, SubagentConfig, SubagentRegistry, SubagentTask, TestModel,
+};
 use starweaver_context::AgentContext;
 use starweaver_core::{SubagentLifecycleEvent, SubagentLifecycleKind, TaskId};
 
@@ -77,4 +79,42 @@ fn subagent_lifecycle_event_serializes_as_core_contract() {
     assert_eq!(encoded["kind"], "started");
     assert_eq!(encoded["name"], "researcher");
     assert_eq!(encoded["task_id"], "task-1");
+}
+
+#[tokio::test]
+async fn failing_subagent_emits_failed_lifecycle_event() {
+    let child = Arc::new(
+        AgentBuilder::new(Arc::new(TestModel::with_text("never finished")))
+            .policy(AgentRuntimePolicy {
+                max_steps: 0,
+                output_retries: 0,
+            })
+            .build(),
+    );
+    let registry = SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child));
+    let mut context = AgentContext::default();
+    let task = SubagentTask::new("hello").with_id(TaskId::from_string("task-fail"));
+
+    let error = registry
+        .delegate_task("child", task, &mut context)
+        .await
+        .unwrap_err();
+
+    let events = context.events.events();
+    let started: SubagentLifecycleEvent =
+        serde_json::from_value(events[0].payload.clone()).unwrap();
+    let failed: SubagentLifecycleEvent = serde_json::from_value(events[1].payload.clone()).unwrap();
+
+    assert_eq!(events[0].kind, "subagent_started");
+    assert_eq!(events[1].kind, "subagent_failed");
+    assert_eq!(started.kind, SubagentLifecycleKind::Started);
+    assert_eq!(failed.kind, SubagentLifecycleKind::Failed);
+    assert_eq!(failed.name, "child");
+    assert_eq!(failed.task_id.as_str(), "task-fail");
+    assert!(failed.run_id.is_some());
+    assert!(failed.metadata["error"]
+        .as_str()
+        .unwrap()
+        .contains("step limit exceeded"));
+    assert!(error.to_string().contains("step limit exceeded"));
 }

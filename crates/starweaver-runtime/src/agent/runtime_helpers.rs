@@ -11,7 +11,7 @@ use starweaver_model::{
 
 use crate::{
     agent::{Agent, AgentError},
-    capability::CapabilityError,
+    capability::{CapabilityError, RetryEventKind},
     executor::{AgentCheckpoint, AgentExecutionDecision, AgentExecutionNode},
     history::HistoryProcessorError,
     instructions::DynamicInstructionError,
@@ -88,17 +88,16 @@ impl Agent {
         &self,
         node: AgentExecutionNode,
         state: &AgentRunState,
-    ) -> Result<(), AgentError> {
-        match self
-            .executor
-            .checkpoint(AgentCheckpoint::new(node, state))
-            .await?
-        {
-            AgentExecutionDecision::Continue => Ok(()),
-            AgentExecutionDecision::Suspend { reason } => {
-                Err(AgentError::ExecutionSuspended { node, reason })
-            }
+        context: &AgentContext,
+    ) -> Result<AgentExecutionDecision, AgentError> {
+        let checkpoint = AgentCheckpoint::new(node, state);
+        for capability in &self.capabilities {
+            capability
+                .on_checkpoint_with_context(state, context, &checkpoint)
+                .await
+                .map_err(Self::capability_error)?;
         }
+        Ok(self.executor.checkpoint(checkpoint).await?)
     }
 
     pub(super) async fn dynamic_instructions(
@@ -267,6 +266,38 @@ impl Agent {
         Ok(())
     }
 
+    pub(super) async fn call_before_tool_execution(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        tool_context: &mut starweaver_tools::ToolContext,
+        call: &starweaver_model::ToolCallPart,
+    ) -> Result<(), AgentError> {
+        for capability in &self.capabilities {
+            capability
+                .before_tool_execution_with_context(state, context, tool_context, call)
+                .await
+                .map_err(Self::capability_error)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn call_after_tool_result(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        call: &starweaver_model::ToolCallPart,
+        tool_return: &mut starweaver_model::ToolReturnPart,
+    ) -> Result<(), AgentError> {
+        for capability in &self.capabilities {
+            capability
+                .after_tool_result_with_context(state, context, call, tool_return)
+                .await
+                .map_err(Self::capability_error)?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn try_call_output_function(
         &self,
         state: &AgentRunState,
@@ -307,11 +338,29 @@ impl Agent {
         context: &mut AgentContext,
         output: &str,
     ) -> Result<(), CapabilityError> {
+        self.call_before_output_validation(state, context, output)
+            .await?;
         let parsed = parse_output(output, self.output_schema.as_ref())
             .map_err(Self::output_validation_error)?;
         state.structured_output = parsed.as_json().cloned();
         self.call_output_validators(state, &parsed).await?;
-        self.call_validate_output(state, context, output).await
+        self.call_validate_output(state, context, output).await?;
+        self.call_after_output_validation(state, context, output)
+            .await
+    }
+
+    pub(super) async fn call_before_output_validation(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        output: &str,
+    ) -> Result<(), CapabilityError> {
+        for capability in &self.capabilities {
+            capability
+                .before_output_validation_with_context(state, context, output)
+                .await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn call_output_validators(
@@ -338,6 +387,52 @@ impl Agent {
             capability
                 .validate_output_with_context(state, context, output)
                 .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn call_after_output_validation(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        output: &str,
+    ) -> Result<(), CapabilityError> {
+        for capability in &self.capabilities {
+            capability
+                .after_output_validation_with_context(state, context, output)
+                .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn call_retry(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        kind: RetryEventKind,
+        retries: usize,
+        message: &str,
+    ) -> Result<(), AgentError> {
+        for capability in &self.capabilities {
+            capability
+                .on_retry_with_context(state, context, kind, retries, message)
+                .await
+                .map_err(Self::capability_error)?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn call_stream_observers(
+        &self,
+        state: &AgentRunState,
+        context: &AgentContext,
+        event: &crate::stream::AgentStreamRecord,
+    ) -> Result<(), AgentError> {
+        for observer in &self.stream_observers {
+            observer
+                .on_stream_event_with_context(state, context, event)
+                .await
+                .map_err(Self::capability_error)?;
         }
         Ok(())
     }

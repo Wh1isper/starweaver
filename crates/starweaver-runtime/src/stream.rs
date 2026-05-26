@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{ModelResponse, ToolCallPart, ToolReturnPart};
 
-use crate::AgentResult;
+use crate::{executor::AgentExecutionNode, AgentResult};
 
 /// Typed event emitted by the agent runtime while a run progresses.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -28,6 +28,20 @@ pub enum AgentStreamEvent {
         step: usize,
         /// Canonical model response.
         response: ModelResponse,
+    },
+    /// A durable execution checkpoint was persisted or inspected.
+    Checkpoint {
+        /// Execution boundary.
+        node: AgentExecutionNode,
+        /// Completed run step at this boundary.
+        step: usize,
+    },
+    /// Execution was suspended at a durable checkpoint.
+    Suspended {
+        /// Execution boundary that requested suspension.
+        node: AgentExecutionNode,
+        /// Human-readable suspend reason.
+        reason: String,
     },
     /// A model requested a function tool call.
     ToolCall {

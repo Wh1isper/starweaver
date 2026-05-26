@@ -71,10 +71,10 @@ fn history() -> Vec<ModelMessage> {
 }
 
 fn context() -> ModelRequestContext {
-    ModelRequestContext {
-        run_id: RunId::from_string("run_client"),
-        conversation_id: ConversationId::from_string("conv_client"),
-    }
+    ModelRequestContext::new(
+        RunId::from_string("run_client"),
+        ConversationId::from_string("conv_client"),
+    )
 }
 
 #[tokio::test]

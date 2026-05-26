@@ -3,18 +3,22 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use starweaver_context::AgentContext;
 use starweaver_model::{
-    ModelRequest, ModelRequestParameters, ModelResponse, ModelSettings, ToolDefinition,
+    ModelRequest, ModelRequestParameters, ModelResponse, ModelSettings, ToolCallPart,
+    ToolDefinition, ToolReturnPart,
 };
-use starweaver_tools::{DynTool, DynToolset, ToolRegistry};
+use starweaver_tools::{DynTool, DynToolset, ToolContext, ToolRegistry};
 use thiserror::Error;
 
 use crate::{
+    executor::AgentCheckpoint,
     history::HistoryProcessor,
     instructions::DynDynamicInstruction,
     output::{DynOutputFunction, OutputValidator},
     run::AgentRunState,
+    stream::AgentStreamRecord,
     usage::UsageLimits,
 };
 
@@ -34,6 +38,16 @@ pub enum CapabilityError {
 
 /// Capability hook result.
 pub type CapabilityResult<T> = Result<T, CapabilityError>;
+
+/// Runtime retry boundary observed by capability hooks.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryEventKind {
+    /// Output validation or output function validation requested another model turn.
+    Output,
+    /// A tool requested semantic retry through structured metadata.
+    Tool,
+}
 
 /// Hook interface for runtime extension points.
 #[async_trait]
@@ -102,6 +116,48 @@ pub trait AgentCapability: Send + Sync {
         Ok(())
     }
 
+    /// Called before a tool call is executed.
+    async fn before_tool_execution(
+        &self,
+        _state: &mut AgentRunState,
+        _tool_context: &mut ToolContext,
+        _call: &ToolCallPart,
+    ) -> CapabilityResult<()> {
+        Ok(())
+    }
+
+    /// Context-aware before-tool-execution hook.
+    async fn before_tool_execution_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        tool_context: &mut ToolContext,
+        call: &ToolCallPart,
+    ) -> CapabilityResult<()> {
+        self.before_tool_execution(state, tool_context, call).await
+    }
+
+    /// Called after a tool result is produced and before it is applied to run state.
+    async fn after_tool_result(
+        &self,
+        _state: &mut AgentRunState,
+        _call: &ToolCallPart,
+        _tool_return: &mut ToolReturnPart,
+    ) -> CapabilityResult<()> {
+        Ok(())
+    }
+
+    /// Context-aware after-tool-result hook.
+    async fn after_tool_result_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        call: &ToolCallPart,
+        tool_return: &mut ToolReturnPart,
+    ) -> CapabilityResult<()> {
+        self.after_tool_result(state, call, tool_return).await
+    }
+
     /// Context-aware after-model-response hook.
     async fn after_model_response_with_context(
         &self,
@@ -111,6 +167,25 @@ pub trait AgentCapability: Send + Sync {
     ) -> CapabilityResult<()> {
         let _ = context;
         self.after_model_response(state, response).await
+    }
+
+    /// Called before final output validation begins.
+    async fn before_output_validation(
+        &self,
+        _state: &mut AgentRunState,
+        _output: &str,
+    ) -> CapabilityResult<()> {
+        Ok(())
+    }
+
+    /// Context-aware before-output-validation hook.
+    async fn before_output_validation_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        output: &str,
+    ) -> CapabilityResult<()> {
+        self.before_output_validation(state, output).await
     }
 
     /// Called after output text is selected and before finalization.
@@ -131,6 +206,86 @@ pub trait AgentCapability: Send + Sync {
     ) -> CapabilityResult<()> {
         let _ = context;
         self.validate_output(state, output).await
+    }
+
+    /// Called after output validation accepts the output.
+    async fn after_output_validation(
+        &self,
+        _state: &mut AgentRunState,
+        _output: &str,
+    ) -> CapabilityResult<()> {
+        Ok(())
+    }
+
+    /// Context-aware after-output-validation hook.
+    async fn after_output_validation_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        output: &str,
+    ) -> CapabilityResult<()> {
+        self.after_output_validation(state, output).await
+    }
+
+    /// Called after an executor checkpoint is emitted.
+    async fn on_checkpoint(
+        &self,
+        _state: &AgentRunState,
+        _checkpoint: &AgentCheckpoint,
+    ) -> CapabilityResult<()> {
+        Ok(())
+    }
+
+    /// Context-aware checkpoint hook.
+    async fn on_checkpoint_with_context(
+        &self,
+        state: &AgentRunState,
+        _context: &AgentContext,
+        checkpoint: &AgentCheckpoint,
+    ) -> CapabilityResult<()> {
+        self.on_checkpoint(state, checkpoint).await
+    }
+
+    /// Called when semantic retry is scheduled.
+    async fn on_retry(
+        &self,
+        _state: &mut AgentRunState,
+        _kind: RetryEventKind,
+        _retries: usize,
+        _message: &str,
+    ) -> CapabilityResult<()> {
+        Ok(())
+    }
+
+    /// Called after a stream event is recorded.
+    async fn on_stream_event(
+        &self,
+        _state: &AgentRunState,
+        _event: &AgentStreamRecord,
+    ) -> CapabilityResult<()> {
+        Ok(())
+    }
+
+    /// Context-aware stream observer hook.
+    async fn on_stream_event_with_context(
+        &self,
+        state: &AgentRunState,
+        _context: &AgentContext,
+        event: &AgentStreamRecord,
+    ) -> CapabilityResult<()> {
+        self.on_stream_event(state, event).await
+    }
+
+    /// Context-aware retry hook.
+    async fn on_retry_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        kind: RetryEventKind,
+        retries: usize,
+        message: &str,
+    ) -> CapabilityResult<()> {
+        self.on_retry(state, kind, retries, message).await
     }
 
     /// Called when a run completes.
@@ -156,6 +311,11 @@ pub trait CapabilityBundle: Send + Sync {
 
     /// Capability hooks contributed by this bundle.
     fn hooks(&self) -> Vec<Arc<dyn AgentCapability>> {
+        Vec::new()
+    }
+
+    /// Stream observer hooks contributed by this bundle.
+    fn stream_observers(&self) -> Vec<Arc<dyn AgentCapability>> {
         Vec::new()
     }
 
@@ -210,6 +370,7 @@ pub trait CapabilityBundle: Send + Sync {
 pub struct StaticCapabilityBundle {
     name: String,
     hooks: Vec<Arc<dyn AgentCapability>>,
+    stream_observers: Vec<Arc<dyn AgentCapability>>,
     instructions: Vec<String>,
     dynamic_instructions: Vec<DynDynamicInstruction>,
     tools: ToolRegistry,
@@ -228,6 +389,7 @@ impl StaticCapabilityBundle {
         Self {
             name: name.into(),
             hooks: Vec::new(),
+            stream_observers: Vec::new(),
             instructions: Vec::new(),
             dynamic_instructions: Vec::new(),
             tools: ToolRegistry::new(),
@@ -244,6 +406,13 @@ impl StaticCapabilityBundle {
     #[must_use]
     pub fn with_hook(mut self, hook: Arc<dyn AgentCapability>) -> Self {
         self.hooks.push(hook);
+        self
+    }
+
+    /// Add a stream observer hook.
+    #[must_use]
+    pub fn with_stream_observer(mut self, observer: Arc<dyn AgentCapability>) -> Self {
+        self.stream_observers.push(observer);
         self
     }
 
@@ -325,6 +494,10 @@ impl CapabilityBundle for StaticCapabilityBundle {
 
     fn hooks(&self) -> Vec<Arc<dyn AgentCapability>> {
         self.hooks.clone()
+    }
+
+    fn stream_observers(&self) -> Vec<Arc<dyn AgentCapability>> {
+        self.stream_observers.clone()
     }
 
     fn instructions(&self) -> Vec<String> {

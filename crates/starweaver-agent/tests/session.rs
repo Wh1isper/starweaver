@@ -1,8 +1,10 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use starweaver_agent::{AgentBuilder, AgentContext, AgentSession, AgentStreamEvent, FunctionModel};
+use starweaver_agent::{
+    AgentBuilder, AgentContext, AgentSession, AgentStreamEvent, FunctionModel, TraceContext,
+};
 use starweaver_core::{AgentId, Usage};
 use starweaver_model::ModelResponse;
 
@@ -90,4 +92,53 @@ async fn session_stream_uses_session_context() {
         stream.events().last().unwrap().event,
         AgentStreamEvent::RunComplete { .. }
     ));
+}
+
+#[tokio::test]
+async fn session_propagates_trace_context_to_model_requests() {
+    let observed = Arc::new(Mutex::new(Vec::<TraceContext>::new()));
+    let observed_model = observed.clone();
+    let model = FunctionModel::new(move |_messages, _settings, info| {
+        observed_model
+            .lock()
+            .unwrap()
+            .push(info.context.trace_context);
+        Ok(ModelResponse {
+            usage: Usage {
+                requests: 1,
+                ..Usage::default()
+            },
+            ..ModelResponse::text("traced")
+        })
+    });
+    let trace_context = TraceContext::from_trace_id("trace-session")
+        .with_span_id("span-session")
+        .with_parent_span_id("root-span");
+    let mut session = AgentSession::new(AgentBuilder::new(Arc::new(model)).build())
+        .with_trace_context(trace_context.clone());
+
+    let result = session.run("hello").await.unwrap();
+
+    assert_eq!(result.output, "traced");
+    assert_eq!(session.context().trace_context, trace_context);
+    assert_eq!(observed.lock().unwrap().as_slice(), &[trace_context]);
+}
+
+#[tokio::test]
+async fn session_accepts_w3c_trace_parent_header() {
+    let mut session =
+        AgentSession::new(AgentBuilder::new(Arc::new(reusable_text_model("ok"))).build())
+            .with_trace_parent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+
+    let result = session.run("hello").await.unwrap();
+
+    assert_eq!(result.output, "ok");
+    assert_eq!(
+        session.context().trace_context.trace_id.as_deref(),
+        Some("4bf92f3577b34da6a3ce929d0e0e4736")
+    );
+    assert_eq!(
+        session.context().trace_context.parent_span_id.as_deref(),
+        Some("00f067aa0ba902b7")
+    );
 }

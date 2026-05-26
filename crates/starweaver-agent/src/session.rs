@@ -1,6 +1,7 @@
 //! SDK session wrapper for context-backed multi-run applications.
 
 use starweaver_context::{AgentContext, ResumableState};
+use starweaver_core::TraceContext;
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentError, AgentResult, AgentStreamRecord, AgentStreamResult,
 };
@@ -53,6 +54,24 @@ impl AgentSession {
     #[must_use]
     pub fn export_state(&self) -> ResumableState {
         self.context.export_state()
+    }
+
+    /// Attach trace correlation context to the session.
+    #[must_use]
+    pub fn with_trace_context(mut self, trace_context: TraceContext) -> Self {
+        self.context.set_trace_context(trace_context);
+        self
+    }
+
+    /// Attach an external traceparent header or trace id to the session.
+    #[must_use]
+    pub fn with_trace_parent(self, trace_parent: impl Into<String>) -> Self {
+        self.with_trace_context(TraceContext::from_trace_parent(trace_parent))
+    }
+
+    /// Replace trace correlation context on the session.
+    pub fn set_trace_context(&mut self, trace_context: TraceContext) {
+        self.context.set_trace_context(trace_context);
     }
 
     /// Run the session agent with the session context.

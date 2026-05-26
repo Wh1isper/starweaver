@@ -39,6 +39,7 @@ pub struct Agent {
     history_processors: Vec<Arc<dyn HistoryProcessor>>,
     tools: ToolRegistry,
     capabilities: Vec<Arc<dyn AgentCapability>>,
+    stream_observers: Vec<Arc<dyn AgentCapability>>,
     executor: DynAgentExecutor,
     policy: AgentRuntimePolicy,
 }
@@ -60,6 +61,7 @@ impl Agent {
             history_processors: Vec::new(),
             tools: ToolRegistry::new(),
             capabilities: Vec::new(),
+            stream_observers: Vec::new(),
             executor: Arc::new(DirectAgentExecutor),
             policy: AgentRuntimePolicy::default(),
         }
@@ -149,6 +151,13 @@ impl Agent {
         self
     }
 
+    /// Add a stream observer hook.
+    #[must_use]
+    pub fn with_stream_observer(mut self, observer: Arc<dyn AgentCapability>) -> Self {
+        self.stream_observers.push(observer);
+        self
+    }
+
     /// Apply a composable capability bundle.
     #[must_use]
     pub fn with_capability_bundle(mut self, bundle: &dyn CapabilityBundle) -> Self {
@@ -178,6 +187,7 @@ impl Agent {
 
     fn apply_capability_bundle(&mut self, bundle: &dyn CapabilityBundle) {
         self.capabilities.extend(bundle.hooks());
+        self.stream_observers.extend(bundle.stream_observers());
         self.instructions.extend(bundle.instructions());
         self.dynamic_instructions
             .extend(bundle.dynamic_instructions());

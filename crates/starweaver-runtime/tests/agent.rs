@@ -10,6 +10,7 @@ use starweaver_model::{
 };
 use starweaver_runtime::{
     Agent, AgentCapability, AgentError, AgentRuntimePolicy, CapabilityError, CapabilityResult,
+    RetryEventKind,
 };
 
 #[derive(Clone)]
@@ -222,6 +223,92 @@ impl AgentCapability for RewriteAndRecord {
         _state: &mut starweaver_runtime::AgentRunState,
     ) -> CapabilityResult<()> {
         self.events.lock().unwrap().push("complete");
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn capability_hooks_observe_retry_and_output_validation_boundaries() {
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse::text("bad"),
+        ModelResponse::text("good"),
+    ]));
+    let hook = Arc::new(RetryAndOutputBoundaryRecorder::default());
+    let agent = Agent::new(model).with_capability(hook.clone());
+
+    let result = agent.run("Produce accepted output").await.unwrap();
+
+    assert_eq!(result.output, "good");
+    assert_eq!(
+        hook.events.lock().unwrap().as_slice(),
+        [
+            "before_output:bad",
+            "retry:output:1:Return exactly good",
+            "before_output:good",
+            "after_output:good",
+        ]
+    );
+}
+
+#[derive(Default)]
+struct RetryAndOutputBoundaryRecorder {
+    events: Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl AgentCapability for RetryAndOutputBoundaryRecorder {
+    async fn before_output_validation(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        output: &str,
+    ) -> CapabilityResult<()> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("before_output:{output}"));
+        Ok(())
+    }
+
+    async fn validate_output(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        output: &str,
+    ) -> CapabilityResult<()> {
+        if output == "good" {
+            Ok(())
+        } else {
+            Err(CapabilityError::ModelRetry(
+                "Return exactly good".to_string(),
+            ))
+        }
+    }
+
+    async fn after_output_validation(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        output: &str,
+    ) -> CapabilityResult<()> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("after_output:{output}"));
+        Ok(())
+    }
+
+    async fn on_retry(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        kind: RetryEventKind,
+        retries: usize,
+        message: &str,
+    ) -> CapabilityResult<()> {
+        self.events.lock().unwrap().push(format!(
+            "retry:{}:{retries}:{message}",
+            match kind {
+                RetryEventKind::Output => "output",
+                RetryEventKind::Tool => "tool",
+            }
+        ));
         Ok(())
     }
 }

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use starweaver_core::{ConversationId, RunId, Usage};
+use starweaver_core::{ConversationId, RunId, TraceContext, Usage};
 use thiserror::Error;
 
 use crate::{
@@ -182,6 +182,28 @@ pub struct ModelRequestContext {
     pub run_id: RunId,
     /// Conversation identifier.
     pub conversation_id: ConversationId,
+    /// Trace correlation context propagated from the runtime context.
+    #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
+    pub trace_context: TraceContext,
+}
+
+impl ModelRequestContext {
+    /// Build request context for one model call.
+    #[must_use]
+    pub fn new(run_id: RunId, conversation_id: ConversationId) -> Self {
+        Self {
+            run_id,
+            conversation_id,
+            trace_context: TraceContext::default(),
+        }
+    }
+
+    /// Attach trace correlation context.
+    #[must_use]
+    pub fn with_trace_context(mut self, trace_context: TraceContext) -> Self {
+        self.trace_context = trace_context;
+        self
+    }
 }
 
 /// Provider-neutral model adapter.

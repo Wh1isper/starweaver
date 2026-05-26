@@ -1,11 +1,14 @@
 //! Runtime per-tool retry budget tests.
 
+#![allow(clippy::unwrap_used)]
+
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, TestModel, ToolCallPart,
 };
-use starweaver_runtime::{Agent, AgentError};
+use starweaver_runtime::{Agent, AgentCapability, AgentError, CapabilityResult, RetryEventKind};
 use starweaver_tools::{
     FunctionTool, StaticToolset, ToolContext, ToolError, ToolRegistry, ToolResult, Toolset,
 };
@@ -199,4 +202,112 @@ async fn toolset_retry_default_is_used_for_member_tools() {
             .map_or_else(|_| Vec::new(), |observed| observed.clone()),
         vec![(0, 2), (1, 2), (2, 2)]
     );
+}
+
+#[tokio::test]
+async fn capability_hooks_observe_tool_execution_and_retry_boundaries() {
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let tool_events = events.clone();
+    let tool = FunctionTool::new(
+        "flaky",
+        Some("Retry once".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |ctx: ToolContext, args: serde_json::Value| {
+            let tool_events = tool_events.clone();
+            async move {
+                tool_events
+                    .lock()
+                    .unwrap()
+                    .push(format!("execute:{}", ctx.retry));
+                if ctx.retry == 0 {
+                    Err(ToolError::ModelRetry {
+                        tool: "flaky".to_string(),
+                        message: "again".to_string(),
+                    })
+                } else {
+                    Ok(ToolResult::new(args))
+                }
+            }
+        },
+    )
+    .with_max_retries(1);
+    let model = Arc::new(TestModel::with_responses(vec![
+        retry_response("call_1", "flaky"),
+        retry_response("call_2", "flaky"),
+        ModelResponse::text("done"),
+    ]));
+    let hook = Arc::new(ToolBoundaryRecorder {
+        events: events.clone(),
+    });
+
+    let result = Agent::new(model)
+        .with_tools(ToolRegistry::new().with_tool(Arc::new(tool)))
+        .with_capability(hook)
+        .run("call flaky")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(
+        events.lock().unwrap().as_slice(),
+        [
+            "before:flaky:0",
+            "execute:0",
+            "after:flaky:true",
+            "retry:tool:1:flaky",
+            "before:flaky:1",
+            "execute:1",
+            "after:flaky:false",
+        ]
+    );
+}
+
+struct ToolBoundaryRecorder {
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl AgentCapability for ToolBoundaryRecorder {
+    async fn before_tool_execution(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        tool_context: &mut ToolContext,
+        call: &ToolCallPart,
+    ) -> CapabilityResult<()> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("before:{}:{}", call.name, tool_context.retry));
+        Ok(())
+    }
+
+    async fn after_tool_result(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        call: &ToolCallPart,
+        tool_return: &mut starweaver_model::ToolReturnPart,
+    ) -> CapabilityResult<()> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("after:{}:{}", call.name, tool_return.is_error));
+        Ok(())
+    }
+
+    async fn on_retry(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        kind: RetryEventKind,
+        retries: usize,
+        message: &str,
+    ) -> CapabilityResult<()> {
+        self.events.lock().unwrap().push(format!(
+            "retry:{}:{retries}:{message}",
+            match kind {
+                RetryEventKind::Output => "output",
+                RetryEventKind::Tool => "tool",
+            }
+        ));
+        Ok(())
+    }
 }

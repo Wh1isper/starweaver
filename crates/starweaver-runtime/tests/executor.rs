@@ -1,12 +1,14 @@
 //! Durable executor tests.
 
+#![allow(clippy::unwrap_used)]
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use starweaver_model::{ModelResponse, TestModel};
 use starweaver_runtime::{
-    Agent, AgentCheckpoint, AgentError, AgentExecutionDecision, AgentExecutionNode, AgentExecutor,
-    AgentExecutorError,
+    Agent, AgentCapability, AgentCheckpoint, AgentError, AgentExecutionDecision,
+    AgentExecutionNode, AgentExecutor, AgentExecutorError, CapabilityResult,
 };
 
 #[derive(Default)]
@@ -80,4 +82,70 @@ async fn executor_can_suspend_at_checkpoint() {
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn executor_checkpoint_has_stable_identifier_and_serializes() {
+    let state = starweaver_runtime::AgentRunState::new(
+        starweaver_core::RunId::from_string("run-checkpoint"),
+        starweaver_core::ConversationId::from_string("conv-checkpoint"),
+    );
+
+    let checkpoint = AgentCheckpoint::new(AgentExecutionNode::RunStart, &state);
+    let encoded = serde_json::to_value(&checkpoint).unwrap();
+
+    assert!(checkpoint.checkpoint_id.as_str().starts_with("ckpt_"));
+    assert_eq!(encoded["checkpoint_id"], checkpoint.checkpoint_id.as_str());
+    assert_eq!(encoded["node"], "run_start");
+}
+
+#[tokio::test]
+async fn capability_hooks_observe_executor_checkpoints() {
+    let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hook = Arc::new(CheckpointRecorder {
+        nodes: observed.clone(),
+    });
+
+    let result = Agent::new(Arc::new(TestModel::with_responses(vec![
+        ModelResponse::text("done"),
+    ])))
+    .with_capability(hook)
+    .run("hello")
+    .await;
+
+    assert!(result.is_ok());
+    assert_eq!(
+        observed.lock().unwrap().as_slice(),
+        [
+            "run_start",
+            "prepare_model_request",
+            "before_model_request",
+            "model_response",
+            "validate_output",
+            "run_complete",
+        ]
+    );
+}
+
+struct CheckpointRecorder {
+    nodes: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl AgentCapability for CheckpointRecorder {
+    async fn on_checkpoint(
+        &self,
+        _state: &starweaver_runtime::AgentRunState,
+        checkpoint: &AgentCheckpoint,
+    ) -> CapabilityResult<()> {
+        self.nodes.lock().unwrap().push(
+            serde_json::to_value(checkpoint.node)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+        assert!(checkpoint.checkpoint_id.as_str().starts_with("ckpt_"));
+        Ok(())
+    }
 }

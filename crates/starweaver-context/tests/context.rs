@@ -1,7 +1,7 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use starweaver_context::{AgentContext, AgentEvent, AgentId, BusMessage, ResumableState};
-use starweaver_core::Usage;
+use starweaver_core::{TraceContext, Usage};
 use starweaver_model::{ModelMessage, ModelRequest};
 
 #[test]
@@ -15,6 +15,11 @@ fn context_exports_and_restores_state() {
         "steering",
         serde_json::json!({"text": "continue"}),
     ));
+    context.set_trace_context(
+        TraceContext::from_trace_id("trace-main")
+            .with_span_id("span-main")
+            .with_trace_state("state-main"),
+    );
 
     let exported = context.export_state();
     let restored = AgentContext::from_state(exported);
@@ -26,6 +31,15 @@ fn context_exports_and_restores_state() {
         Some(&serde_json::json!({"answer": 42}))
     );
     assert_eq!(restored.messages.len(), 1);
+    assert_eq!(
+        restored.trace_context.trace_id.as_deref(),
+        Some("trace-main")
+    );
+    assert_eq!(restored.trace_context.span_id.as_deref(), Some("span-main"));
+    assert_eq!(
+        restored.trace_context.trace_state.as_deref(),
+        Some("state-main")
+    );
 }
 
 #[test]
@@ -112,6 +126,11 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
         city: "Paris".to_string(),
     });
     context.insert_named_dependency("answer", 42_u32);
+    context.set_trace_context(
+        TraceContext::from_trace_id("trace-parent")
+            .with_span_id("span-parent")
+            .with_parent_span_id("root-span"),
+    );
 
     let child = context.subagent_context("researcher");
 
@@ -124,6 +143,7 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
     assert_eq!(child.notes.get("lang"), Some("Chinese"));
     assert_eq!(child.dependency::<WeatherService>().unwrap().city, "Paris");
     assert_eq!(*child.named_dependency::<u32>("answer").unwrap(), 42);
+    assert_eq!(child.trace_context, context.trace_context);
     assert!(child.message_history.is_empty());
     assert!(child.messages.is_empty());
     assert!(child.events.events().is_empty());

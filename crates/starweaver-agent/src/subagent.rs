@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use starweaver_context::AgentContext;
-use starweaver_core::{SubagentLifecycleEvent, SubagentLifecycleKind, TaskId};
+use starweaver_core::{Metadata, SubagentLifecycleEvent, SubagentLifecycleKind, TaskId};
 use starweaver_model::ModelMessage;
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentError, AgentResult, AgentStreamRecord, AgentStreamResult,
@@ -309,10 +309,37 @@ impl SubagentRegistry {
             .unwrap_or_else(|_| serde_json::json!({"name": name})),
         ));
         let mut child_context = parent_context.subagent_context(name);
-        let result = subagent
+        let result = match subagent
             .agent
             .run_with_context(task.prompt.clone(), &mut child_context)
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                let mut metadata = Metadata::default();
+                metadata.insert("error".to_string(), serde_json::json!(error.to_string()));
+                if let Some(run_id) = child_context.run_id.clone() {
+                    metadata.insert(
+                        "child_run_id".to_string(),
+                        serde_json::json!(run_id.as_str()),
+                    );
+                }
+                parent_context.publish_event(starweaver_context::AgentEvent::new(
+                    "subagent_failed",
+                    serde_json::to_value(
+                        SubagentLifecycleEvent::new(
+                            SubagentLifecycleKind::Failed,
+                            name,
+                            task.id.clone(),
+                        )
+                        .with_run_id(child_context.run_id.clone().unwrap_or_default())
+                        .with_metadata(serde_json::Value::Object(metadata)),
+                    )
+                    .unwrap_or_else(|_| serde_json::json!({"name": name})),
+                ));
+                return Err(error);
+            }
+        };
         parent_context.absorb_subagent_context(&child_context);
         parent_context.publish_event(starweaver_context::AgentEvent::new(
             "subagent_completed",
