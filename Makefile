@@ -39,13 +39,18 @@ build: ## Build the workspace
 	@echo "Building Rust workspace"
 	@cargo build --workspace --all-targets --all-features --locked
 
+.PHONY: docs-check
+docs-check: ## Compile Rust examples from docs
+	@echo "Checking docs examples"
+	@python3 scripts/check-docs-examples.py
+
 .PHONY: lint
-lint: ## Run pre-commit hooks across the repository
+lint: docs-check ## Run pre-commit hooks and docs example checks across the repository
 	@echo "Running pre-commit"
 	@pre-commit run -a
 
 .PHONY: ci
-ci: fmt-check check test ## Run the same core checks as CI
+ci: fmt-check check test docs-check ## Run the same core checks as CI
 
 .PHONY: run-cli
 run-cli: ## Run the Starweaver CLI

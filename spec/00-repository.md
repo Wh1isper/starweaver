@@ -1,56 +1,69 @@
-# Repository Scaffold
+# 00 - Repository
 
-## Purpose
+## Motivation
 
-`starweaver-agent-sdk` is a Rust monorepo for developing Starweaver, an agent SDK inspired by practical lessons from the Python implementation in `ya-mono` and by a closer study of Pydantic AI concepts.
+The repository is the shared home for the Starweaver Agent SDK, its runtime kernel, user-facing documentation, design specs, and future product extensions. The layout should keep foundational crates stable while leaving room for service and CLI products to grow as SDK consumers.
 
-The initial repository focuses on:
-
-- Rust workspace initialization
-- CI and local validation commands
-- pre-commit integration
-- a minimal CLI entry point
-- a place for specs before crate boundaries harden
-
-## Current Workspace
+## Workspace Shape
 
 ```mermaid
 flowchart TD
-    cli[crates/starweaver-cli]
     core[crates/starweaver-core]
+    model[crates/starweaver-model]
+    context[crates/starweaver-context]
+    tools[crates/starweaver-tools]
+    runtime[crates/starweaver-runtime]
+    agent[crates/starweaver-agent]
+    cli[crates/starweaver-cli]
 
+    model --> core
+    context --> core
+    context --> model
+    tools --> core
+    tools --> model
+    tools --> context
+    runtime --> core
+    runtime --> model
+    runtime --> tools
+    runtime --> context
+    agent --> runtime
+    agent --> model
+    agent --> tools
+    agent --> context
     cli --> core
 ```
 
-Current members:
+## Repository Areas
 
-- `crates/starweaver-core` — shared SDK identity and early core primitives
-- `crates/starweaver-cli` — `starweaver` command-line entry point
+| Area       | Role                                                                                |
+| ---------- | ----------------------------------------------------------------------------------- |
+| `crates/`  | Rust workspace crates and crate-local tests                                         |
+| `docs/`    | user-facing guides with compiled Rust examples                                      |
+| `spec/`    | architecture baseline and crate boundary decisions                                  |
+| `memos/`   | working notes, comparisons, implementation snapshots, and release-preparation notes |
+| `scripts/` | repository automation and validation helpers                                        |
+| `.github/` | CI workflows                                                                        |
 
-## Planned Runtime Areas
+## Governance
 
-Planned areas describe product and architecture directions. They are tracked in specs before dedicated crates are added.
+Repository changes should preserve three sources of truth:
 
-- Model layer — provider-neutral messages, model settings, model profiles, and model adapters
-- Agent runtime — graph loop, executor, events, message bus, checkpoints, and tool orchestration
-- Context and state — lifecycle-wide AgentContext, StateStore, EventBus, MessageBus, usage, notes, tasks, and resumability
-- Environment — filesystem, shell, processes, resources, path policy, and sandbox mapping
-- Tools — definitions, schemas, execution, approvals, and built-in toolsets
-- Agent facade — high-level builder, presets, lifecycle extensions, and subagents
-- CLI — local developer workflows and command entry points
-- Claw runtime — service runtime, sessions, workspace execution, storage, and operations
-- Agent platform — higher-level orchestration and hosted platform capabilities
+1. `spec/` defines stable architecture and crate ownership.
+2. `docs/` explains user-facing behavior with runnable examples.
+3. local and CI commands validate code, tests, and docs examples.
 
-## Boundary Rule
+## Crate Graduation Rule
 
-Add a workspace crate when a planned area has:
+A planned area can become a crate when it has:
 
-1. a spec with responsibilities and scope
-2. one or more concrete call sites or integration paths
-3. local validation commands that cover the new boundary
-4. README or spec updates explaining how the crate fits the workspace
+- a spec section with ownership and dependency direction
+- concrete call sites or integration paths
+- a public module skeleton
+- tests covering the first stable boundary
+- workspace validation through existing commands
+- documentation or spec updates explaining its role
 
-## Repository Automation
+## Automation
 
 The repository uses:
 

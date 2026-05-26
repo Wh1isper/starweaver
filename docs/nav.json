@@ -1,0 +1,36 @@
+[
+  {
+    "label": "Overview",
+    "items": [
+      "index",
+      "install",
+      "testing"
+    ]
+  },
+  {
+    "label": "Core Concepts",
+    "items": [
+      "agent",
+      "models",
+      "tools",
+      "output",
+      "message-history",
+      "dependencies",
+      "capabilities",
+      "durability"
+    ]
+  },
+  {
+    "label": "SDK Layer",
+    "items": [
+      "sdk-app",
+      "subagents"
+    ]
+  },
+  {
+    "label": "MCP",
+    "items": [
+      "mcp"
+    ]
+  }
+]

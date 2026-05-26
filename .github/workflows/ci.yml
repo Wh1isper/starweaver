@@ -21,6 +21,11 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
@@ -35,6 +40,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked
+
+      - name: Check docs examples
+        run: python3 scripts/check-docs-examples.py
 
   pre-commit:
     name: Pre-commit
