@@ -27,11 +27,16 @@ Current members:
 - `crates/starweaver-core` — shared SDK identity and early core primitives
 - `crates/starweaver-cli` — `starweaver` command-line entry point
 
-## Planned Areas
+## Planned Runtime Areas
 
-Planned areas describe likely product and architecture directions. They are tracked in specs before dedicated crates are added.
+Planned areas describe product and architecture directions. They are tracked in specs before dedicated crates are added.
 
-- Core abstractions — agent, model, tool, context, event, state, and runtime interfaces
+- Model layer — provider-neutral messages, model settings, model profiles, and model adapters
+- Agent runtime — graph loop, executor, events, message bus, checkpoints, and tool orchestration
+- Context and state — lifecycle-wide AgentContext, StateStore, EventBus, MessageBus, usage, notes, tasks, and resumability
+- Environment — filesystem, shell, processes, resources, path policy, and sandbox mapping
+- Tools — definitions, schemas, execution, approvals, and built-in toolsets
+- Agent facade — high-level builder, presets, lifecycle extensions, and subagents
 - CLI — local developer workflows and command entry points
 - Claw runtime — service runtime, sessions, workspace execution, storage, and operations
 - Agent platform — higher-level orchestration and hosted platform capabilities

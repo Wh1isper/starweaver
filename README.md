@@ -21,7 +21,12 @@ Current workspace members:
 
 Planned areas are tracked in `spec/`:
 
-- Core abstractions
+- Model layer
+- Runtime graph and executor
+- Context, state, events, and message bus
+- Filesystem, shell, resources, and sandbox mapping
+- Tool definitions and execution
+- Agent facade and lifecycle extensions
 - CLI workflows
 - Claw runtime services
 - Agent platform capabilities
@@ -33,7 +38,11 @@ Specs live under `spec/` and capture product and architecture decisions before n
 Start with:
 
 - `spec/README.md`
-- `spec/00-repository.md`
+- `spec/01-runtime-architecture.md`
+- `spec/02-model-layer.md`
+- `spec/03-agent-runtime.md`
+- `spec/04-context-state-environment.md`
+- `spec/05-crate-plan.md`
 
 ## Development
 
