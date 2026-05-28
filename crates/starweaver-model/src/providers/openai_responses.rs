@@ -9,8 +9,8 @@ use crate::{
         ToolCallPart,
     },
     providers::{
-        apply_common_settings, finish_reason_openai, parse_tool_call_arguments, text_from_content,
-        usage_from_openai,
+        apply_common_settings, finish_reason_openai, openai_responses_content,
+        parse_tool_call_arguments, usage_from_openai,
     },
     ModelError, ModelSettings,
 };
@@ -40,10 +40,12 @@ impl OpenAiResponsesAdapter {
                     for part in &request.parts {
                         match part {
                             ModelRequestPart::SystemPrompt { text, .. }
-                            | ModelRequestPart::Instruction { text, .. } => instructions.push(text.clone()),
+                            | ModelRequestPart::Instruction { text, .. } => {
+                                instructions.push(text.clone());
+                            }
                             ModelRequestPart::UserPrompt { content, .. } => input.push(json!({
                                 "role": "user",
-                                "content": [{"type": "input_text", "text": text_from_content(content)}]
+                                "content": openai_responses_content(content)
                             })),
                             ModelRequestPart::ToolReturn(tool_return) => input.push(json!({
                                 "type": "function_call_output",
@@ -84,6 +86,12 @@ impl OpenAiResponsesAdapter {
             request.insert("instructions".to_string(), json!(instructions.join("\n\n")));
         }
         apply_common_settings(&mut request, settings);
+        if let Some(tool_choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {
+            request.insert(
+                "tool_choice".to_string(),
+                crate::providers::openai_responses_tool_choice(tool_choice),
+            );
+        }
         let tool_defs = response_tool_defs(tools, native_tools);
         if !tool_defs.is_empty() {
             request.insert("tools".to_string(), json!(tool_defs));
@@ -104,44 +112,7 @@ impl OpenAiResponsesAdapter {
             .into_iter()
             .flatten()
         {
-            match item.get("type").and_then(Value::as_str) {
-                Some("message") => {
-                    for content in item
-                        .get("content")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                    {
-                        if matches!(
-                            content.get("type").and_then(Value::as_str),
-                            Some("output_text")
-                        ) {
-                            if let Some(text) = content.get("text").and_then(Value::as_str) {
-                                parts.push(ModelResponsePart::Text {
-                                    text: text.to_string(),
-                                });
-                            }
-                        }
-                    }
-                }
-                Some("function_call") => parts.push(ModelResponsePart::ToolCall(ToolCallPart {
-                    id: item
-                        .get("call_id")
-                        .or_else(|| item.get("id"))
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    name: item
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    arguments: parse_tool_call_arguments(
-                        item.get("arguments").unwrap_or(&Value::Null),
-                    ),
-                })),
-                _ => {}
-            }
+            parse_response_item(item, &mut parts);
         }
 
         Ok(ModelResponse {
@@ -164,6 +135,116 @@ impl OpenAiResponsesAdapter {
             conversation_id: None,
             metadata: serde_json::Map::new(),
         })
+    }
+}
+
+fn parse_response_item(item: &Value, parts: &mut Vec<ModelResponsePart>) {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") => push_message_content_parts(item, parts),
+        Some("refusal") => push_refusal_part(item, parts),
+        Some("function_call") => push_function_call_part(item, parts),
+        Some("reasoning") => push_reasoning_part(item, parts),
+        Some("web_search_call" | "mcp_call" | "mcp_approval_request") => {
+            push_native_tool_call(item, parts);
+        }
+        Some("image_generation_call" | "file_search_call") => {
+            push_native_tool_call(item, parts);
+            push_result_file_part(item, parts);
+        }
+        _ => {}
+    }
+}
+
+fn push_message_content_parts(item: &Value, parts: &mut Vec<ModelResponsePart>) {
+    for content in item
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if matches!(
+            content.get("type").and_then(Value::as_str),
+            Some("output_text")
+        ) {
+            if let Some(text) = content.get("text").and_then(Value::as_str) {
+                parts.push(ModelResponsePart::Text {
+                    text: text.to_string(),
+                });
+            }
+        }
+    }
+}
+
+fn push_refusal_part(item: &Value, parts: &mut Vec<ModelResponsePart>) {
+    if let Some(text) = item
+        .get("refusal")
+        .or_else(|| item.get("content"))
+        .and_then(Value::as_str)
+    {
+        parts.push(ModelResponsePart::Text {
+            text: text.to_string(),
+        });
+    }
+}
+
+fn push_function_call_part(item: &Value, parts: &mut Vec<ModelResponsePart>) {
+    parts.push(ModelResponsePart::ToolCall(ToolCallPart {
+        id: item
+            .get("call_id")
+            .or_else(|| item.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        name: item
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        arguments: parse_tool_call_arguments(item.get("arguments").unwrap_or(&Value::Null)),
+    }));
+}
+
+fn push_reasoning_part(item: &Value, parts: &mut Vec<ModelResponsePart>) {
+    let text = item
+        .get("summary")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|summary| summary.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    if !text.is_empty() {
+        parts.push(ModelResponsePart::Thinking {
+            text,
+            signature: item.get("id").and_then(Value::as_str).map(str::to_string),
+        });
+    }
+}
+
+fn push_native_tool_call(item: &Value, parts: &mut Vec<ModelResponsePart>) {
+    parts.push(ModelResponsePart::NativeToolCall {
+        tool_type: item
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        payload: item.clone(),
+    });
+}
+
+fn push_result_file_part(item: &Value, parts: &mut Vec<ModelResponsePart>) {
+    if let Some(url) = item.get("result").and_then(Value::as_str) {
+        parts.push(ModelResponsePart::File {
+            url: url.to_string(),
+            media_type: item
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or("application/octet-stream")
+                .to_string(),
+        });
     }
 }
 

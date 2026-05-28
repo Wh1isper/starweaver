@@ -6,7 +6,7 @@ use crate::{
     adapter::ToolDefinition,
     message::{
         FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
-        ProviderInfo, ToolCallPart,
+        ProviderInfo, ToolCallPart, ToolReturnPart,
     },
     providers::{collect_system_and_non_system, text_from_content, usage_from_named},
     ModelError, ModelSettings,
@@ -42,12 +42,9 @@ impl AnthropicMessagesAdapter {
                             } => {
                                 content.push(json!({"type": "text", "text": text_from_content(user_content)}));
                             }
-                            ModelRequestPart::ToolReturn(tool_return) => content.push(json!({
-                                "type": "tool_result",
-                                "tool_use_id": tool_return.tool_call_id,
-                                "content": tool_return.content.to_string(),
-                                "is_error": tool_return.is_error,
-                            })),
+                            ModelRequestPart::ToolReturn(tool_return) => {
+                                content.push(anthropic_tool_result(tool_return));
+                            }
                             ModelRequestPart::RetryPrompt { text, .. } => {
                                 content.push(json!({"type": "text", "text": text}));
                             }
@@ -72,6 +69,13 @@ impl AnthropicMessagesAdapter {
                                 "name": call.name,
                                 "input": call.arguments,
                             })),
+                            ModelResponsePart::Thinking { text, signature } => {
+                                let mut thinking = json!({"type": "thinking", "thinking": text});
+                                if let Some(signature) = signature {
+                                    thinking["signature"] = json!(signature);
+                                }
+                                content.push(thinking);
+                            }
                             _ => {}
                         }
                     }
@@ -92,33 +96,8 @@ impl AnthropicMessagesAdapter {
         if !system.is_empty() {
             request.insert("system".to_string(), json!(system.join("\n\n")));
         }
-        if let Some(settings) = settings {
-            if let Some(temperature) = settings.temperature {
-                request.insert("temperature".to_string(), json!(temperature));
-            }
-            if let Some(top_p) = settings.top_p {
-                request.insert("top_p".to_string(), json!(top_p));
-            }
-            if let Some(top_k) = settings.top_k {
-                request.insert("top_k".to_string(), json!(top_k));
-            }
-            if !settings.stop_sequences.is_empty() {
-                request.insert("stop_sequences".to_string(), json!(settings.stop_sequences));
-            }
-        }
-        if !tools.is_empty() {
-            request.insert(
-                "tools".to_string(),
-                json!(tools
-                    .iter()
-                    .map(|tool| json!({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "input_schema": tool.parameters,
-                    }))
-                    .collect::<Vec<_>>()),
-            );
-        }
+        apply_anthropic_settings(&mut request, settings);
+        append_anthropic_tools(&mut request, tools);
         Ok(Value::Object(request))
     }
 
@@ -195,4 +174,64 @@ impl AnthropicMessagesAdapter {
             metadata: serde_json::Map::new(),
         })
     }
+}
+
+fn apply_anthropic_settings(
+    request: &mut serde_json::Map<String, Value>,
+    settings: Option<&ModelSettings>,
+) {
+    let Some(settings) = settings else {
+        return;
+    };
+    if let Some(thinking) = &settings.thinking {
+        request.insert(
+            "thinking".to_string(),
+            json!({
+                "type": "enabled",
+                "budget_tokens": thinking.budget_tokens.unwrap_or(1024),
+            }),
+        );
+    }
+    if let Some(temperature) = settings.temperature {
+        request.insert("temperature".to_string(), json!(temperature));
+    }
+    if let Some(top_p) = settings.top_p {
+        request.insert("top_p".to_string(), json!(top_p));
+    }
+    if let Some(top_k) = settings.top_k {
+        request.insert("top_k".to_string(), json!(top_k));
+    }
+    if !settings.stop_sequences.is_empty() {
+        request.insert("stop_sequences".to_string(), json!(settings.stop_sequences));
+    }
+}
+
+fn append_anthropic_tools(request: &mut serde_json::Map<String, Value>, tools: &[ToolDefinition]) {
+    if tools.is_empty() {
+        return;
+    }
+    request.insert(
+        "tools".to_string(),
+        json!(tools
+            .iter()
+            .map(|tool| json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.parameters,
+            }))
+            .collect::<Vec<_>>()),
+    );
+}
+
+fn anthropic_tool_result(tool_return: &ToolReturnPart) -> Value {
+    let mut result = json!({
+        "type": "tool_result",
+        "tool_use_id": tool_return.tool_call_id,
+        "content": tool_return.content.to_string(),
+        "is_error": tool_return.is_error,
+    });
+    if let Some(cache_control) = tool_return.metadata.get("cache_control") {
+        result["cache_control"] = cache_control.clone();
+    }
+    result
 }

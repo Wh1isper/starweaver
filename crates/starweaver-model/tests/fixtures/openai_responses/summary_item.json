@@ -1,0 +1,99 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "instructions": "You are concise.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "resp_summary",
+    "model": "gpt-4.1-mini",
+    "status": "completed",
+    "output": [
+      {
+        "type": "reasoning",
+        "id": "rs_summary",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "Calculate directly."
+          },
+          {
+            "type": "summary_text",
+            "text": "Return the number."
+          }
+        ]
+      },
+      {
+        "type": "message",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "4"
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 6,
+      "total_tokens": 16
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "thinking",
+        "text": "Calculate directly.\nReturn the number.",
+        "signature": "rs_summary"
+      },
+      {
+        "kind": "text",
+        "text": "4"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 10,
+      "output_tokens": 6,
+      "total_tokens": 16,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "resp_summary"
+    },
+    "finish_reason": "stop"
+  }
+}

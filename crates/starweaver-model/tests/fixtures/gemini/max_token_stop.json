@@ -1,0 +1,80 @@
+{
+  "model": "gemini-1.5-flash",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are concise."
+        }
+      ]
+    }
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "Partial"
+            }
+          ]
+        },
+        "finishReason": "MAX_TOKENS"
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 5,
+      "candidatesTokenCount": 2,
+      "totalTokenCount": 7
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Partial"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 2,
+      "total_tokens": 7,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "length"
+  }
+}

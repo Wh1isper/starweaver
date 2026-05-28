@@ -1,0 +1,83 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Create image"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Create image"
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "resp_img",
+    "model": "gpt-4.1-mini",
+    "status": "completed",
+    "output": [
+      {
+        "type": "image_generation_call",
+        "id": "img_1",
+        "result": "https://example.test/out.png",
+        "media_type": "image/png"
+      }
+    ],
+    "usage": {
+      "input_tokens": 5,
+      "output_tokens": 1,
+      "total_tokens": 6
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "native_tool_call",
+        "tool_type": "image_generation_call",
+        "payload": {
+          "type": "image_generation_call",
+          "id": "img_1",
+          "result": "https://example.test/out.png",
+          "media_type": "image/png"
+        }
+      },
+      {
+        "kind": "file",
+        "url": "https://example.test/out.png",
+        "media_type": "image/png"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 1,
+      "total_tokens": 6,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "resp_img"
+    },
+    "finish_reason": "stop"
+  }
+}

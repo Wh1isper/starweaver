@@ -1,0 +1,79 @@
+{
+  "model": "gemini-1.5-flash",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "search"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "native_tools": [
+    {
+      "tool_type": "google_search"
+    }
+  ],
+  "expected_provider_request": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "search"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "googleSearch": {}
+      }
+    ]
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "result"
+            }
+          ]
+        },
+        "finishReason": "STOP"
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 3,
+      "candidatesTokenCount": 1,
+      "totalTokenCount": 4
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "result"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 3,
+      "output_tokens": 1,
+      "total_tokens": 4,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "stop"
+  }
+}

@@ -1,0 +1,121 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "tool_choice": {
+      "kind": "required"
+    }
+  },
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Look up a value",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "instructions": "You are concise.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "tool_choice": "required",
+    "tools": [
+      {
+        "type": "function",
+        "name": "lookup",
+        "description": "Look up a value",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "resp_tc",
+    "model": "gpt-4.1-mini",
+    "status": "completed",
+    "output": [
+      {
+        "type": "message",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "4"
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "total_tokens": 11
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "4"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 10,
+      "output_tokens": 1,
+      "total_tokens": 11,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "resp_tc"
+    },
+    "finish_reason": "stop"
+  }
+}

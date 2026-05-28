@@ -8,7 +8,7 @@ use crate::{
         FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
         ProviderInfo, ToolCallPart,
     },
-    providers::{collect_system_and_non_system, text_from_content, usage_from_named},
+    providers::{bedrock_content_from_content, collect_system_and_non_system, usage_from_named},
     ModelError, ModelSettings,
 };
 
@@ -41,7 +41,7 @@ impl BedrockConverseAdapter {
                                 content: user_content,
                                 ..
                             } => {
-                                content.push(json!({"text": text_from_content(user_content)}));
+                                content.extend(bedrock_content_from_content(user_content));
                             }
                             ModelRequestPart::ToolReturn(tool_return) => content.push(json!({
                                 "toolResult": {
@@ -116,23 +116,45 @@ impl BedrockConverseAdapter {
                     Value::Object(inference_config),
                 );
             }
+            if let Some(options) = settings
+                .provider_options
+                .as_ref()
+                .and_then(Value::as_object)
+            {
+                if !options.is_empty() {
+                    request.insert("additionalModelRequestFields".to_string(), json!(options));
+                }
+            }
+            if let Some(fields) = settings.extra_body.get("additionalModelResponseFieldPaths") {
+                request.insert(
+                    "additionalModelResponseFieldPaths".to_string(),
+                    fields.clone(),
+                );
+            }
         }
         if !tools.is_empty() {
-            request.insert(
-                "toolConfig".to_string(),
-                json!({
-                    "tools": tools
-                        .iter()
-                        .map(|tool| json!({
-                            "toolSpec": {
-                                "name": tool.name,
-                                "description": tool.description,
-                                "inputSchema": {"json": tool.parameters},
-                            }
-                        }))
-                        .collect::<Vec<_>>()
-                }),
-            );
+            let mut tool_config = json!({
+                "tools": tools
+                    .iter()
+                    .map(|tool| json!({
+                        "toolSpec": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "inputSchema": {"json": tool.parameters},
+                        }
+                    }))
+                    .collect::<Vec<_>>()
+            });
+            if let Some(choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {
+                tool_config["toolChoice"] = match choice {
+                    crate::settings::ToolChoice::Auto | crate::settings::ToolChoice::None => {
+                        json!({"auto": {}})
+                    }
+                    crate::settings::ToolChoice::Required => json!({"any": {}}),
+                    crate::settings::ToolChoice::Tool { name } => json!({"tool": {"name": name}}),
+                };
+            }
+            request.insert("toolConfig".to_string(), tool_config);
         }
         Ok(Value::Object(request))
     }
@@ -190,13 +212,35 @@ impl BedrockConverseAdapter {
                 Some("end_turn") => Some(FinishReason::Stop),
                 Some("max_tokens") => Some(FinishReason::Length),
                 Some("tool_use") => Some(FinishReason::ToolCalls),
+                Some("guardrail_intervened" | "content_filtered") => {
+                    Some(FinishReason::ContentFilter)
+                }
                 Some(_) => Some(FinishReason::Unknown),
                 None => None,
             },
             timestamp: None,
             run_id: None,
             conversation_id: None,
-            metadata: serde_json::Map::new(),
+            metadata: bedrock_metadata(value),
         })
     }
+}
+
+fn bedrock_metadata(value: &Value) -> serde_json::Map<String, Value> {
+    let mut metadata = serde_json::Map::new();
+    if let Some(fields) = value.get("additionalModelResponseFields") {
+        metadata.insert(
+            "additional_model_response_fields".to_string(),
+            fields.clone(),
+        );
+    }
+    if let Some(metrics) = value.get("metrics") {
+        metadata.insert("metrics".to_string(), metrics.clone());
+    }
+    if value.get("metrics").is_some() {
+        if let Some(response_metadata) = value.get("ResponseMetadata") {
+            metadata.insert("response_metadata".to_string(), response_metadata.clone());
+        }
+    }
+    metadata
 }

@@ -3,12 +3,12 @@
 use serde_json::{json, Value};
 
 use crate::{
-    adapter::ToolDefinition,
+    adapter::{NativeToolDefinition, ToolDefinition},
     message::{
         FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
         ProviderInfo, ToolCallPart,
     },
-    providers::{collect_system_and_non_system, text_from_content, usage_from_named},
+    providers::{collect_system_and_non_system, gemini_parts_from_content, usage_from_named},
     ModelError, ModelSettings,
 };
 
@@ -26,6 +26,20 @@ impl GeminiGenerateContentAdapter {
         settings: Option<&ModelSettings>,
         tools: &[ToolDefinition],
     ) -> Result<Value, ModelError> {
+        Self::build_request_with_native_tools(messages, settings, tools, &[])
+    }
+
+    /// Build a provider wire request including native Gemini tools.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when canonical history cannot be mapped into Gemini contents.
+    pub fn build_request_with_native_tools(
+        messages: &[ModelMessage],
+        settings: Option<&ModelSettings>,
+        tools: &[ToolDefinition],
+        native_tools: &[NativeToolDefinition],
+    ) -> Result<Value, ModelError> {
         let (system, rest) = collect_system_and_non_system(messages);
         let mut contents = Vec::new();
 
@@ -36,7 +50,7 @@ impl GeminiGenerateContentAdapter {
                     for part in &request.parts {
                         match part {
                             ModelRequestPart::UserPrompt { content, .. } => {
-                                parts.push(json!({"text": text_from_content(content)}));
+                                parts.extend(gemini_parts_from_content(content));
                             }
                             ModelRequestPart::ToolReturn(tool_return) => parts.push(json!({
                                 "functionResponse": {
@@ -84,44 +98,8 @@ impl GeminiGenerateContentAdapter {
                 json!({"parts": [{"text": system.join("\n\n")}] }),
             );
         }
-        if let Some(settings) = settings {
-            let mut generation_config = serde_json::Map::new();
-            if let Some(max_tokens) = settings.max_tokens {
-                generation_config.insert("maxOutputTokens".to_string(), json!(max_tokens));
-            }
-            if let Some(temperature) = settings.temperature {
-                generation_config.insert("temperature".to_string(), json!(temperature));
-            }
-            if let Some(top_p) = settings.top_p {
-                generation_config.insert("topP".to_string(), json!(top_p));
-            }
-            if let Some(top_k) = settings.top_k {
-                generation_config.insert("topK".to_string(), json!(top_k));
-            }
-            if !settings.stop_sequences.is_empty() {
-                generation_config
-                    .insert("stopSequences".to_string(), json!(settings.stop_sequences));
-            }
-            if !generation_config.is_empty() {
-                request.insert(
-                    "generationConfig".to_string(),
-                    Value::Object(generation_config),
-                );
-            }
-        }
-        if !tools.is_empty() {
-            request.insert(
-                "tools".to_string(),
-                json!([{ "functionDeclarations": tools
-                    .iter()
-                    .map(|tool| json!({
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    }))
-                    .collect::<Vec<_>>() }]),
-            );
-        }
+        append_gemini_generation_config(&mut request, settings);
+        append_gemini_tools(&mut request, settings, tools, native_tools);
         Ok(Value::Object(request))
     }
 
@@ -179,13 +157,110 @@ impl GeminiGenerateContentAdapter {
             finish_reason: match candidate.get("finishReason").and_then(Value::as_str) {
                 Some("STOP") => Some(FinishReason::Stop),
                 Some("MAX_TOKENS") => Some(FinishReason::Length),
+                Some("SAFETY" | "RECITATION" | "PROHIBITED_CONTENT") => {
+                    Some(FinishReason::ContentFilter)
+                }
                 Some(_) => Some(FinishReason::Unknown),
                 None => None,
             },
             timestamp: None,
             run_id: None,
             conversation_id: None,
-            metadata: serde_json::Map::new(),
+            metadata: gemini_metadata(value, candidate),
         })
+    }
+}
+
+fn append_gemini_generation_config(
+    request: &mut serde_json::Map<String, Value>,
+    settings: Option<&ModelSettings>,
+) {
+    let Some(settings) = settings else {
+        return;
+    };
+    let mut generation_config = serde_json::Map::new();
+    if let Some(max_tokens) = settings.max_tokens {
+        generation_config.insert("maxOutputTokens".to_string(), json!(max_tokens));
+    }
+    if let Some(temperature) = settings.temperature {
+        generation_config.insert("temperature".to_string(), json!(temperature));
+    }
+    if let Some(top_p) = settings.top_p {
+        generation_config.insert("topP".to_string(), json!(top_p));
+    }
+    if let Some(top_k) = settings.top_k {
+        generation_config.insert("topK".to_string(), json!(top_k));
+    }
+    if !settings.stop_sequences.is_empty() {
+        generation_config.insert("stopSequences".to_string(), json!(settings.stop_sequences));
+    }
+    if !generation_config.is_empty() {
+        request.insert(
+            "generationConfig".to_string(),
+            Value::Object(generation_config),
+        );
+    }
+}
+
+fn append_gemini_tools(
+    request: &mut serde_json::Map<String, Value>,
+    settings: Option<&ModelSettings>,
+    tools: &[ToolDefinition],
+    native_tools: &[NativeToolDefinition],
+) {
+    let mut tool_defs = Vec::new();
+    if !tools.is_empty() {
+        tool_defs.push(json!({ "functionDeclarations": tools
+            .iter()
+            .map(|tool| json!({
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }))
+            .collect::<Vec<_>>() }));
+        if let Some(choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {
+            request.insert(
+                "toolConfig".to_string(),
+                json!({"functionCallingConfig": gemini_tool_choice(choice)}),
+            );
+        }
+    }
+    tool_defs.extend(native_tools.iter().map(gemini_native_tool));
+    if !tool_defs.is_empty() {
+        request.insert("tools".to_string(), Value::Array(tool_defs));
+    }
+}
+
+fn gemini_tool_choice(choice: &crate::settings::ToolChoice) -> Value {
+    match choice {
+        crate::settings::ToolChoice::Auto => json!({"mode": "AUTO"}),
+        crate::settings::ToolChoice::None => json!({"mode": "NONE"}),
+        crate::settings::ToolChoice::Required => json!({"mode": "ANY"}),
+        crate::settings::ToolChoice::Tool { name } => {
+            json!({"mode": "ANY", "allowedFunctionNames": [name]})
+        }
+    }
+}
+
+fn gemini_metadata(value: &Value, candidate: &Value) -> serde_json::Map<String, Value> {
+    let mut metadata = serde_json::Map::new();
+    if let Some(ratings) = candidate.get("safetyRatings") {
+        metadata.insert("safety_ratings".to_string(), ratings.clone());
+    }
+    if let Some(feedback) = value.get("promptFeedback") {
+        metadata.insert("prompt_feedback".to_string(), feedback.clone());
+    }
+    metadata
+}
+
+fn gemini_native_tool(tool: &NativeToolDefinition) -> Value {
+    match tool.tool_type.as_str() {
+        "google_search" => json!({"googleSearch": tool.config}),
+        "code_execution" => json!({"codeExecution": tool.config}),
+        _ => {
+            let mut object = serde_json::Map::new();
+            object.insert(tool.tool_type.clone(), Value::Object(tool.config.clone()));
+            Value::Object(object)
+        }
     }
 }

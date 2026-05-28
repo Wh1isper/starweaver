@@ -1,0 +1,70 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "bad"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "claude-3-5-sonnet-latest",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "bad"
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024
+  },
+  "provider_response": {
+    "id": "msg_safety",
+    "model": "claude-3-5-sonnet-latest",
+    "content": [
+      {
+        "type": "text",
+        "text": "I cannot help with that."
+      }
+    ],
+    "stop_reason": "refusal",
+    "usage": {
+      "input_tokens": 5,
+      "output_tokens": 4
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I cannot help with that."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 4,
+      "total_tokens": 9,
+      "tool_calls": 0
+    },
+    "model_name": "claude-3-5-sonnet-latest",
+    "provider": {
+      "name": "anthropic",
+      "response_id": "msg_safety"
+    },
+    "finish_reason": "unknown"
+  }
+}

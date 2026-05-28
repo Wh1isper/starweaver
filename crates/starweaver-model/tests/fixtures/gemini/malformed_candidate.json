@@ -1,0 +1,57 @@
+{
+  "model": "gemini-1.5-flash",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "bad"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "bad"
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "finishReason": "STOP"
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 1,
+      "candidatesTokenCount": 0,
+      "totalTokenCount": 1
+    }
+  },
+  "expected_response": {
+    "parts": [],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 1,
+      "output_tokens": 0,
+      "total_tokens": 1,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "stop"
+  }
+}

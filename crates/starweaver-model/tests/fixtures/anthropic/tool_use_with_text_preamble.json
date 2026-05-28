@@ -1,0 +1,120 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "lookup"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Look up a value",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "model": "claude-3-5-sonnet-latest",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "lookup"
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024,
+    "tools": [
+      {
+        "name": "lookup",
+        "description": "Look up a value",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "msg_preamble",
+    "model": "claude-3-5-sonnet-latest",
+    "content": [
+      {
+        "type": "text",
+        "text": "I will look it up."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_1",
+        "name": "lookup",
+        "input": {
+          "query": "Paris"
+        }
+      }
+    ],
+    "stop_reason": "tool_use",
+    "usage": {
+      "input_tokens": 8,
+      "output_tokens": 6
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I will look it up."
+      },
+      {
+        "kind": "tool_call",
+        "id": "toolu_1",
+        "name": "lookup",
+        "arguments": {
+          "query": "Paris"
+        }
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 8,
+      "output_tokens": 6,
+      "total_tokens": 14,
+      "tool_calls": 0
+    },
+    "model_name": "claude-3-5-sonnet-latest",
+    "provider": {
+      "name": "anthropic",
+      "response_id": "msg_preamble"
+    },
+    "finish_reason": "tool_calls"
+  }
+}

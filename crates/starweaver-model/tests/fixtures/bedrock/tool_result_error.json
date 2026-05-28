@@ -1,0 +1,82 @@
+{
+  "model": "us.amazon.nova-micro-v1:0",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "tool_return",
+          "tool_call_id": "tool_1",
+          "name": "lookup",
+          "content": {
+            "error": "not found"
+          },
+          "is_error": true
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "modelId": "us.amazon.nova-micro-v1:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "toolResult": {
+              "toolUseId": "tool_1",
+              "content": [
+                {
+                  "json": {
+                    "error": "not found"
+                  }
+                }
+              ],
+              "status": "error"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Tool failed."
+          }
+        ]
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 8,
+      "outputTokens": 3,
+      "totalTokens": 11
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_tool_error"
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Tool failed."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 8,
+      "output_tokens": 3,
+      "total_tokens": 11,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_tool_error"
+    },
+    "finish_reason": "stop"
+  }
+}

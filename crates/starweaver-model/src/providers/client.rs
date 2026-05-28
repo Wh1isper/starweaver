@@ -214,7 +214,12 @@ impl ProtocolModelClient {
                 &params.tools,
             ),
             ProtocolFamily::GeminiGenerateContent => {
-                GeminiGenerateContentAdapter::build_request(messages, settings, &params.tools)
+                GeminiGenerateContentAdapter::build_request_with_native_tools(
+                    messages,
+                    settings,
+                    &params.tools,
+                    &params.native_tools,
+                )
             }
             ProtocolFamily::BedrockConverse => BedrockConverseAdapter::build_request(
                 &self.model_name,

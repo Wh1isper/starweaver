@@ -1,0 +1,103 @@
+{
+  "model": "us.amazon.nova-micro-v1:0",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "provider_options": {
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 512
+      }
+    }
+  },
+  "expected_provider_request": {
+    "modelId": "us.amazon.nova-micro-v1:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "system": [
+      {
+        "text": "You are concise."
+      }
+    ],
+    "additionalModelRequestFields": {
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 512
+      }
+    }
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "4"
+          }
+        ]
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 5,
+      "outputTokens": 1,
+      "totalTokens": 6
+    },
+    "additionalModelResponseFields": {
+      "thinking": "brief"
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_fields"
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "4"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 1,
+      "total_tokens": 6,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_fields"
+    },
+    "finish_reason": "stop",
+    "metadata": {
+      "additional_model_response_fields": {
+        "thinking": "brief"
+      }
+    }
+  }
+}

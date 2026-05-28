@@ -1,0 +1,90 @@
+{
+  "model": "gemini-1.5-flash",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Describe this image: "
+            },
+            {
+              "kind": "image_url",
+              "url": "https://example.test/cat.png"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Describe this image: "
+          },
+          {
+            "fileData": {
+              "fileUri": "https://example.test/cat.png",
+              "mimeType": "image/*"
+            }
+          }
+        ]
+      }
+    ],
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are concise."
+        }
+      ]
+    }
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "A cat."
+            }
+          ]
+        },
+        "finishReason": "STOP"
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 20,
+      "candidatesTokenCount": 3,
+      "totalTokenCount": 23
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "A cat."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 20,
+      "output_tokens": 3,
+      "total_tokens": 23,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "stop"
+  }
+}

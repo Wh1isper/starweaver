@@ -9,8 +9,8 @@ use crate::{
         ToolCallPart,
     },
     providers::{
-        apply_common_settings, finish_reason_openai, parse_tool_call_arguments, text_from_content,
-        usage_from_openai,
+        apply_common_settings, finish_reason_openai, openai_chat_content,
+        parse_tool_call_arguments, usage_from_openai,
     },
     ModelError, ModelSettings,
 };
@@ -42,7 +42,7 @@ impl OpenAiChatAdapter {
                             }
                             ModelRequestPart::UserPrompt { content, .. } => {
                                 wire_messages.push(
-                                    json!({"role": "user", "content": text_from_content(content)}),
+                                    json!({"role": "user", "content": openai_chat_content(content)}),
                                 );
                             }
                             ModelRequestPart::ToolReturn(tool_return) => {
@@ -88,6 +88,12 @@ impl OpenAiChatAdapter {
         request.insert("model".to_string(), json!(model));
         request.insert("messages".to_string(), json!(wire_messages));
         apply_common_settings(&mut request, settings);
+        if let Some(tool_choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {
+            request.insert(
+                "tool_choice".to_string(),
+                crate::providers::openai_chat_tool_choice(tool_choice),
+            );
+        }
         if !tools.is_empty() {
             request.insert(
                 "tools".to_string(),
@@ -127,6 +133,13 @@ impl OpenAiChatAdapter {
             if !content.is_empty() {
                 parts.push(ModelResponsePart::Text {
                     text: content.to_string(),
+                });
+            }
+        }
+        if let Some(refusal) = message.get("refusal").and_then(Value::as_str) {
+            if !refusal.is_empty() {
+                parts.push(ModelResponsePart::Text {
+                    text: refusal.to_string(),
                 });
             }
         }

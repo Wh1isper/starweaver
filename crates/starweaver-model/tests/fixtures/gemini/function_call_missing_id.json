@@ -1,0 +1,127 @@
+{
+  "model": "gemini-1.5-flash",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Look up a value",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are concise."
+        }
+      ]
+    },
+    "tools": [
+      {
+        "functionDeclarations": [
+          {
+            "name": "lookup",
+            "description": "Look up a value",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "query"
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "functionCall": {
+                "name": "lookup",
+                "args": {
+                  "query": "2+2"
+                }
+              }
+            }
+          ]
+        },
+        "finishReason": "STOP"
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 10,
+      "candidatesTokenCount": 4,
+      "totalTokenCount": 14
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "tool_call",
+        "id": "lookup",
+        "name": "lookup",
+        "arguments": {
+          "query": "2+2"
+        }
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 10,
+      "output_tokens": 4,
+      "total_tokens": 14,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "stop"
+  }
+}

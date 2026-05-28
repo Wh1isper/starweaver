@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use crate::{
     message::{ContentPart, FinishReason, ModelMessage, ModelRequestPart},
+    settings::ToolChoice,
     ModelSettings,
 };
 
@@ -23,6 +24,75 @@ fn text_from_content(content: &[ContentPart]) -> String {
         })
         .collect::<Vec<_>>()
         .join("")
+}
+
+pub(crate) fn openai_chat_content(content: &[ContentPart]) -> Value {
+    if content.len() == 1 {
+        if let ContentPart::Text { text } = &content[0] {
+            return json!(text);
+        }
+    }
+    Value::Array(
+        content
+            .iter()
+            .map(|part| match part {
+                ContentPart::Text { text } => json!({"type": "text", "text": text}),
+                ContentPart::ImageUrl { url } => {
+                    json!({"type": "image_url", "image_url": {"url": url}})
+                }
+                ContentPart::FileUrl { url, media_type } => json!({
+                    "type": "file",
+                    "file": {"file_data": url, "media_type": media_type}
+                }),
+            })
+            .collect(),
+    )
+}
+
+pub(crate) fn openai_responses_content(content: &[ContentPart]) -> Vec<Value> {
+    content
+        .iter()
+        .map(|part| match part {
+            ContentPart::Text { text } => json!({"type": "input_text", "text": text}),
+            ContentPart::ImageUrl { url } => json!({"type": "input_image", "image_url": url}),
+            ContentPart::FileUrl { url, media_type } => json!({
+                "type": "input_file",
+                "file_url": url,
+                "media_type": media_type
+            }),
+        })
+        .collect()
+}
+
+pub(crate) fn gemini_parts_from_content(content: &[ContentPart]) -> Vec<Value> {
+    content
+        .iter()
+        .map(|part| match part {
+            ContentPart::Text { text } => json!({"text": text}),
+            ContentPart::ImageUrl { url } => json!({
+                "fileData": {"fileUri": url, "mimeType": "image/*"}
+            }),
+            ContentPart::FileUrl { url, media_type } => json!({
+                "fileData": {"fileUri": url, "mimeType": media_type}
+            }),
+        })
+        .collect()
+}
+
+pub(crate) fn bedrock_content_from_content(content: &[ContentPart]) -> Vec<Value> {
+    content
+        .iter()
+        .map(|part| match part {
+            ContentPart::Text { text } => json!({"text": text}),
+            ContentPart::ImageUrl { url } => json!({"image": {"source": {"bytes": url}}}),
+            ContentPart::FileUrl { url, media_type } => json!({
+                "document": {
+                    "format": media_type,
+                    "source": {"bytes": url},
+                }
+            }),
+        })
+        .collect()
 }
 
 fn collect_system_and_non_system(messages: &[ModelMessage]) -> (Vec<String>, Vec<&ModelMessage>) {
@@ -123,6 +193,45 @@ fn apply_common_settings(
         if !settings.stop_sequences.is_empty() {
             target.insert("stop".to_string(), json!(settings.stop_sequences));
         }
+        if let Some(parallel_tool_calls) = settings.parallel_tool_calls {
+            target.insert(
+                "parallel_tool_calls".to_string(),
+                json!(parallel_tool_calls),
+            );
+        }
+        if let Some(options) = settings
+            .provider_options
+            .as_ref()
+            .and_then(Value::as_object)
+        {
+            for (key, value) in options {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+pub(crate) fn openai_chat_tool_choice(choice: &ToolChoice) -> Value {
+    match choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::Tool { name } => json!({
+            "type": "function",
+            "function": {"name": name}
+        }),
+    }
+}
+
+pub(crate) fn openai_responses_tool_choice(choice: &ToolChoice) -> Value {
+    match choice {
+        ToolChoice::Auto => json!("auto"),
+        ToolChoice::None => json!("none"),
+        ToolChoice::Required => json!("required"),
+        ToolChoice::Tool { name } => json!({
+            "type": "function",
+            "name": name,
+        }),
     }
 }
 

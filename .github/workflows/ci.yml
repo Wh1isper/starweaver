@@ -44,7 +44,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Check model replay fixtures
-        run: cargo test -p starweaver-model --test replay --test request_parameters --locked
+        run: make replay-check
 
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked

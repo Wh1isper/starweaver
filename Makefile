@@ -42,7 +42,7 @@ build: ## Build the workspace
 .PHONY: replay-check
 replay-check: ## Run model replay and request-parameter compatibility tests
 	@echo "Checking model replay fixtures"
-	@cargo test -p starweaver-model --test replay --test request_parameters --locked
+	@cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
 
 .PHONY: docs-check
 docs-check: ## Compile Rust examples from docs

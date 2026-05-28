@@ -1,0 +1,87 @@
+{
+  "model": "us.amazon.nova-micro-v1:0",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 2
+  },
+  "expected_provider_request": {
+    "modelId": "us.amazon.nova-micro-v1:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "system": [
+      {
+        "text": "You are concise."
+      }
+    ],
+    "inferenceConfig": {
+      "maxTokens": 2
+    }
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "Partial"
+          }
+        ]
+      }
+    },
+    "stopReason": "max_tokens",
+    "usage": {
+      "inputTokens": 5,
+      "outputTokens": 2,
+      "totalTokens": 7
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_length"
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Partial"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 2,
+      "total_tokens": 7,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_length"
+    },
+    "finish_reason": "length"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "tool_return",
+          "tool_call_id": "toolu_1",
+          "name": "lookup",
+          "content": {
+            "error": "not found"
+          },
+          "is_error": true,
+          "metadata": {
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "claude-3-5-sonnet-latest",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_1",
+            "content": "{\"error\":\"not found\"}",
+            "is_error": true,
+            "cache_control": {
+              "type": "ephemeral"
+            }
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024
+  },
+  "provider_response": {
+    "id": "msg_error",
+    "model": "claude-3-5-sonnet-latest",
+    "content": [
+      {
+        "type": "text",
+        "text": "Tool failed."
+      }
+    ],
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 8,
+      "output_tokens": 3
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "Tool failed."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 8,
+      "output_tokens": 3,
+      "total_tokens": 11,
+      "tool_calls": 0
+    },
+    "model_name": "claude-3-5-sonnet-latest",
+    "provider": {
+      "name": "anthropic",
+      "response_id": "msg_error"
+    },
+    "finish_reason": "stop"
+  }
+}

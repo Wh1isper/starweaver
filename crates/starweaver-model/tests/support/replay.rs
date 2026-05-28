@@ -32,11 +32,29 @@ pub struct ReplayFixture {
     pub expected_response: ModelResponse,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct ErrorFixture {
+    #[serde(flatten)]
+    pub request: RequestFixture,
+    pub provider_response: Value,
+    pub expected_error: ExpectedError,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ExpectedError {
+    pub kind: String,
+    pub message: String,
+}
+
 pub fn load_request_fixture(provider: &str, name: &str) -> RequestFixture {
     load_fixture(&fixture_path(provider, name))
 }
 
 pub fn load_replay_fixture(provider: &str, name: &str) -> ReplayFixture {
+    load_fixture(&fixture_path(provider, name))
+}
+
+pub fn load_error_fixture(provider: &str, name: &str) -> ErrorFixture {
     load_fixture(&fixture_path(provider, name))
 }
 

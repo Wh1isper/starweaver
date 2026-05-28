@@ -1,0 +1,89 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "instructions": "You are concise.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "resp_mcp",
+    "model": "gpt-4.1-mini",
+    "status": "completed",
+    "output": [
+      {
+        "type": "mcp_approval_request",
+        "id": "mcp_approval_1",
+        "server_label": "deepwiki",
+        "name": "read_wiki",
+        "arguments": {
+          "page": "Starweaver"
+        }
+      }
+    ],
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 2,
+      "total_tokens": 12
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "native_tool_call",
+        "tool_type": "mcp_approval_request",
+        "payload": {
+          "type": "mcp_approval_request",
+          "id": "mcp_approval_1",
+          "server_label": "deepwiki",
+          "name": "read_wiki",
+          "arguments": {
+            "page": "Starweaver"
+          }
+        }
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 10,
+      "output_tokens": 2,
+      "total_tokens": 12,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "resp_mcp"
+    },
+    "finish_reason": "stop"
+  }
+}

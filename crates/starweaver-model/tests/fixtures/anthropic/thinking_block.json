@@ -1,0 +1,85 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "claude-3-5-sonnet-latest",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024,
+    "system": "You are concise."
+  },
+  "provider_response": {
+    "id": "msg_think",
+    "model": "claude-3-5-sonnet-latest",
+    "content": [
+      {
+        "type": "thinking",
+        "thinking": "Need arithmetic.",
+        "signature": "sig_1"
+      },
+      {
+        "type": "text",
+        "text": "4"
+      }
+    ],
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 5
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "thinking",
+        "text": "Need arithmetic.",
+        "signature": "sig_1"
+      },
+      {
+        "kind": "text",
+        "text": "4"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "total_tokens": 15,
+      "tool_calls": 0
+    },
+    "model_name": "claude-3-5-sonnet-latest",
+    "provider": {
+      "name": "anthropic",
+      "response_id": "msg_think"
+    },
+    "finish_reason": "stop"
+  }
+}

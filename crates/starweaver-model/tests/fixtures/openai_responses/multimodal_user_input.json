@@ -1,0 +1,88 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Describe this image: "
+            },
+            {
+              "kind": "image_url",
+              "url": "https://example.test/cat.png"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "instructions": "You are concise.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Describe this image: "
+          },
+          {
+            "type": "input_image",
+            "image_url": "https://example.test/cat.png"
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "resp_mm",
+    "model": "gpt-4.1-mini",
+    "status": "completed",
+    "output": [
+      {
+        "type": "message",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "A cat."
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 20,
+      "output_tokens": 3,
+      "total_tokens": 23
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "A cat."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 20,
+      "output_tokens": 3,
+      "total_tokens": 23,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "resp_mm"
+    },
+    "finish_reason": "stop"
+  }
+}

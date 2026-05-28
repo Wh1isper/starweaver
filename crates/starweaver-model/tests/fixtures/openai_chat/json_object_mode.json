@@ -1,0 +1,85 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "provider_options": {
+      "response_format": {
+        "type": "json_object"
+      }
+    }
+  },
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are concise."
+      },
+      {
+        "role": "user",
+        "content": "What is 2+2?"
+      }
+    ],
+    "response_format": {
+      "type": "json_object"
+    }
+  },
+  "provider_response": {
+    "id": "chatcmpl_json",
+    "model": "gpt-4.1-mini",
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "message": {
+          "role": "assistant",
+          "content": "{\"answer\":\"4\"}"
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 4,
+      "total_tokens": 14
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "{\"answer\":\"4\"}"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 10,
+      "output_tokens": 4,
+      "total_tokens": 14,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "chatcmpl_json"
+    },
+    "finish_reason": "stop"
+  }
+}

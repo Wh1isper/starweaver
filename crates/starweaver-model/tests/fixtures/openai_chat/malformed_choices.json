@@ -1,0 +1,56 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are concise."
+      },
+      {
+        "role": "user",
+        "content": "What is 2+2?"
+      }
+    ],
+    "max_tokens": 64,
+    "temperature": 0.2
+  },
+  "provider_response": {
+    "id": "chatcmpl_malformed_choices",
+    "model": "gpt-4.1-mini",
+    "choices": [],
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 0,
+      "total_tokens": 10
+    }
+  },
+  "expected_error": {
+    "kind": "response_parsing",
+    "message": "missing choices[0]"
+  }
+}

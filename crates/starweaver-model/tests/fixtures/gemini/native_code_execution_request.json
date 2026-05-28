@@ -1,0 +1,79 @@
+{
+  "model": "gemini-1.5-flash",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "run code"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "native_tools": [
+    {
+      "tool_type": "code_execution"
+    }
+  ],
+  "expected_provider_request": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "run code"
+          }
+        ]
+      }
+    ],
+    "tools": [
+      {
+        "codeExecution": {}
+      }
+    ]
+  },
+  "provider_response": {
+    "candidates": [
+      {
+        "content": {
+          "parts": [
+            {
+              "text": "done"
+            }
+          ]
+        },
+        "finishReason": "STOP"
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 3,
+      "candidatesTokenCount": 1,
+      "totalTokenCount": 4
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "done"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 3,
+      "output_tokens": 1,
+      "total_tokens": 4,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "gemini"
+    },
+    "finish_reason": "stop"
+  }
+}

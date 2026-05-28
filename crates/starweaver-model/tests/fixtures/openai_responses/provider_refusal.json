@@ -1,0 +1,70 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "bad"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "bad"
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "resp_refusal",
+    "model": "gpt-4.1-mini",
+    "status": "incomplete",
+    "output": [
+      {
+        "type": "refusal",
+        "refusal": "I cannot help with that."
+      }
+    ],
+    "usage": {
+      "input_tokens": 5,
+      "output_tokens": 4,
+      "total_tokens": 9
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "I cannot help with that."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 4,
+      "total_tokens": 9,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "resp_refusal"
+    },
+    "finish_reason": "unknown"
+  }
+}

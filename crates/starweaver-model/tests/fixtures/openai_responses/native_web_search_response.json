@@ -1,0 +1,94 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "instructions": "You are concise.",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ]
+  },
+  "provider_response": {
+    "id": "resp_web",
+    "model": "gpt-4.1-mini",
+    "status": "completed",
+    "output": [
+      {
+        "type": "web_search_call",
+        "id": "ws_1",
+        "status": "completed"
+      },
+      {
+        "type": "message",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "Found result."
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 4,
+      "total_tokens": 14
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "native_tool_call",
+        "tool_type": "web_search_call",
+        "payload": {
+          "type": "web_search_call",
+          "id": "ws_1",
+          "status": "completed"
+        }
+      },
+      {
+        "kind": "text",
+        "text": "Found result."
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 10,
+      "output_tokens": 4,
+      "total_tokens": 14,
+      "tool_calls": 0
+    },
+    "model_name": "gpt-4.1-mini",
+    "provider": {
+      "name": "openai",
+      "response_id": "resp_web"
+    },
+    "finish_reason": "stop"
+  }
+}

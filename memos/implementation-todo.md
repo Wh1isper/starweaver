@@ -18,7 +18,7 @@ make ci
 `make replay-check` is the focused model compatibility gate:
 
 ```bash
-cargo test -p starweaver-model --test replay --test request_parameters --locked
+cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
 ```
 
 ## Landed Replay Coverage
@@ -49,7 +49,7 @@ Current fixture-driven replay coverage:
 | Structured output | OpenAI Responses request mapping | landed |
 | Structured output | Gemini request mapping           | landed |
 
-Current replay test count: 18 in `crates/starweaver-model/tests/replay.rs` plus 6 in `crates/starweaver-model/tests/request_parameters.rs`.
+Current replay test count: 24 in `crates/starweaver-model/tests/replay.rs` plus 1 replay tooling test in `crates/starweaver-model/tests/replay_tooling.rs` plus 6 in `crates/starweaver-model/tests/request_parameters.rs` plus 4 in `crates/starweaver-model/tests/stream_replay.rs` plus 1 fixture schema validation test in `crates/starweaver-model/tests/fixture_schema.rs`.
 
 ## Unmigrated Replay TODO
 
@@ -57,76 +57,76 @@ Provider replay items to migrate from Pydantic AI-style coverage:
 
 ### OpenAI Chat
 
-- structured output request fixture through `response_format`
-- JSON object mode fixture
-- tool choice fixture: auto, none, required, named tool
-- parallel tool calls setting fixture
-- refusal/content-filter response fixture
-- malformed choices fixture
-- streaming text delta fixture
-- streaming tool-call argument delta fixture
-- usage-at-stream-end fixture
-- multimodal user input fixture
+- structured output request fixture through `response_format` — landed
+- JSON object mode fixture — landed
+- tool choice fixture: auto, none, required, named tool — landed
+- parallel tool calls setting fixture — landed
+- refusal/content-filter response fixture — landed
+- malformed choices fixture — landed
+- streaming text delta fixture — landed
+- streaming tool-call argument delta fixture — landed
+- usage-at-stream-end fixture — landed
+- multimodal user input fixture — landed
 
 ### OpenAI Responses
 
-- structured output response fixture
-- reasoning item fixture
-- thinking/summary item fixture when canonical type is available
-- native web search response fixture
-- native MCP call/approval response fixture
-- file/image output fixture when canonical type is stable
-- tool choice fixture
-- provider refusal fixture
-- streaming output text delta fixture
-- streaming function-call delta fixture
-- status error fixture
+- structured output response fixture — landed
+- reasoning item fixture — landed
+- thinking/summary item fixture — landed
+- native web search response fixture — landed
+- native MCP call/approval response fixture — landed
+- file/image output fixture — landed
+- tool choice fixture — landed
+- provider refusal fixture — landed
+- streaming output text delta fixture — landed
+- streaming function-call delta fixture — landed
+- status error fixture — landed
 
 ### Anthropic Messages
 
-- thinking block fixture
-- thinking signature fixture
-- tool use with text preamble fixture
-- tool result error fixture
-- image input fixture
-- cache control/provider metadata fixture
-- max token stop fixture
-- refusal/safety-style fixture when provider shape is confirmed
-- stream delta fixture
+- thinking block fixture — landed
+- thinking signature fixture — landed
+- tool use with text preamble fixture — landed
+- tool result error fixture — landed
+- image input fixture — landed
+- cache control/provider metadata fixture — landed
+- max token stop fixture — landed
+- refusal/safety-style fixture — landed
+- stream delta fixture — landed
 
 ### Gemini generateContent
 
-- safety block fixture
-- finish reason safety and max token fixtures
-- function call with missing id fixture
-- tool config / function calling mode fixture
-- code execution native tool fixture
-- Google search native tool fixture
-- multimodal input fixture
-- stream delta fixture
-- malformed candidate fixture
+- safety block fixture — landed
+- finish reason safety and max token fixtures — landed
+- function call with missing id fixture — landed
+- tool config / function calling mode fixture — landed
+- code execution native tool fixture — landed
+- Google search native tool fixture — landed
+- multimodal input fixture — landed
+- stream delta fixture — landed
+- malformed candidate fixture — landed
 
 ### Bedrock Converse
 
-- strict tool call fixture
-- tool result error fixture
-- max token stop fixture
-- content block variants fixture
-- Converse additional model response fields fixture
-- provider status error fixture
-- stream delta fixture
-- SigV4/gateway metadata fixture
+- strict tool call fixture — landed
+- tool result error fixture — landed
+- max token stop fixture — landed
+- content block variants fixture — landed
+- Converse additional model response fields fixture — landed
+- provider status error fixture — landed
+- stream delta fixture — landed
+- SigV4/gateway metadata fixture — landed
 
 ### Cross-provider
 
-- cassette import utility
-- cassette scrub utility
-- fixture schema validator
-- snapshot summary generator
-- provider error and retry fixtures
-- request parameter merge precedence across defaults, agent, run, and protocol client
-- model alias/profile resolution fixtures
-- native tool serialization for every supported native tool type
+- cassette import utility — landed
+- cassette scrub utility — landed
+- fixture schema validator — landed
+- snapshot summary generator — landed
+- provider error and retry fixtures — landed
+- request parameter merge precedence across defaults, agent, run, and protocol client — landed
+- model alias/profile resolution fixtures — landed
+- native tool serialization for OpenAI Responses and Gemini native tool types — landed
 
 ## Pydantic AI Core Coverage TODO
 

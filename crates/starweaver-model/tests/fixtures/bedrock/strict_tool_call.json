@@ -1,0 +1,142 @@
+{
+  "model": "us.amazon.nova-micro-v1:0",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "tool_choice": {
+      "kind": "tool",
+      "name": "lookup"
+    }
+  },
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Look up a value",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "modelId": "us.amazon.nova-micro-v1:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "system": [
+      {
+        "text": "You are concise."
+      }
+    ],
+    "toolConfig": {
+      "tools": [
+        {
+          "toolSpec": {
+            "name": "lookup",
+            "description": "Look up a value",
+            "inputSchema": {
+              "json": {
+                "type": "object",
+                "properties": {
+                  "query": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "toolChoice": {
+        "tool": {
+          "name": "lookup"
+        }
+      }
+    }
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "tool_1",
+              "name": "lookup",
+              "input": {
+                "query": "2+2"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "stopReason": "tool_use",
+    "usage": {
+      "inputTokens": 10,
+      "outputTokens": 5,
+      "totalTokens": 15
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_tool"
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "tool_call",
+        "id": "tool_1",
+        "name": "lookup",
+        "arguments": {
+          "query": "2+2"
+        }
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "total_tokens": 15,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_tool"
+    },
+    "finish_reason": "tool_calls"
+  }
+}

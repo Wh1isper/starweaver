@@ -1,0 +1,99 @@
+{
+  "model": "us.amazon.nova-micro-v1:0",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "extra_body": {
+      "additionalModelResponseFieldPaths": [
+        "/trace"
+      ]
+    }
+  },
+  "expected_provider_request": {
+    "modelId": "us.amazon.nova-micro-v1:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "additionalModelResponseFieldPaths": [
+      "/trace"
+    ]
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "content": [
+          {
+            "text": "4"
+          }
+        ]
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 5,
+      "outputTokens": 1,
+      "totalTokens": 6
+    },
+    "metrics": {
+      "latencyMs": 25
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_gateway",
+      "HTTPHeaders": {
+        "x-amzn-requestid": "aws_gateway"
+      }
+    }
+  },
+  "expected_response": {
+    "parts": [
+      {
+        "kind": "text",
+        "text": "4"
+      }
+    ],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 1,
+      "total_tokens": 6,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_gateway"
+    },
+    "finish_reason": "stop",
+    "metadata": {
+      "metrics": {
+        "latencyMs": 25
+      },
+      "response_metadata": {
+        "RequestId": "aws_gateway",
+        "HTTPHeaders": {
+          "x-amzn-requestid": "aws_gateway"
+        }
+      }
+    }
+  }
+}

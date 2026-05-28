@@ -1,0 +1,72 @@
+{
+  "model": "us.amazon.nova-micro-v1:0",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "modelId": "us.amazon.nova-micro-v1:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "system": [
+      {
+        "text": "You are concise."
+      }
+    ]
+  },
+  "provider_response": {
+    "output": {
+      "message": {
+        "content": []
+      }
+    },
+    "stopReason": "guardrail_intervened",
+    "usage": {
+      "inputTokens": 5,
+      "outputTokens": 0,
+      "totalTokens": 5
+    },
+    "ResponseMetadata": {
+      "RequestId": "aws_filter"
+    }
+  },
+  "expected_response": {
+    "parts": [],
+    "usage": {
+      "requests": 1,
+      "input_tokens": 5,
+      "output_tokens": 0,
+      "total_tokens": 5,
+      "tool_calls": 0
+    },
+    "provider": {
+      "name": "bedrock",
+      "response_id": "aws_filter"
+    },
+    "finish_reason": "content_filter"
+  }
+}
