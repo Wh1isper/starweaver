@@ -17,7 +17,7 @@ Current workspace members:
 - `crates/starweaver-runtime` — core agent loop, graph state machine, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage/tool-call/cost budgets, typed stream events, scoped overrides, context integration, capability hooks, capability bundles, and durable executor checkpoints
 - `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, and execution primitives
 - `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, and application-facing helpers
-- `crates/starweaver-cli` — `starweaver` command-line entry point
+- `crates/starweaver-cli` — `starweaver-cli` command-line entry point
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
 
@@ -42,8 +42,8 @@ Documentation maintenance rules:
 
 - Keep examples concise, complete, and runnable.
 - Put Rust examples in fenced `rust` blocks.
-- Use hidden `# async fn example() -> Result<..., ...>` wrappers for async examples so `scripts/check-docs-examples.py` can compile them.
-- Run `python3 scripts/check-docs-examples.py` after changing docs examples.
+- Use hidden `# async fn example() -> Result<..., ...>` wrappers for async examples so `make docs-check` can compile them.
+- Run `make docs-check` after changing docs examples.
 - Run `make docs-build` after changing the docs site structure, mdBook configuration, sitemap generation, or deployment metadata.
 - Update `docs/SUMMARY.md` and `docs/nav.json` when adding, removing, or renaming docs pages.
 - Keep `docs/` user-facing and keep architecture decisions in `spec/`.
@@ -64,7 +64,8 @@ Current docs:
 - `docs/sdk-app.md` — `AgentApp` usage
 - `docs/subagents.md` — SDK-level subagent delegation
 - `docs/mcp.md` — MCP foundations and official `rmcp` direction
-- `docs/testing.md` — deterministic testing and request guard
+- `docs/testing.md` — deterministic testing, request guard, scripts, and coverage
+- `docs/release.md` — release, upversion, crate publishing, and binary artifact workflow
 
 ## Spec Workflow
 
@@ -116,7 +117,7 @@ After changing code, run:
 After changing docs examples, run:
 
 ```bash
-python3 scripts/check-docs-examples.py
+make docs-check
 ```
 
 After changing docs site structure or mdBook configuration, run:
@@ -136,6 +137,29 @@ For full local validation, run:
 ```bash
 make ci
 ```
+
+For coverage validation, run:
+
+```bash
+make coverage-core
+make coverage-agent
+make coverage-service
+make coverage-ci
+```
+
+For repository automation, run:
+
+```bash
+make scripts-check
+```
+
+To ask the assistant to prepare a unified-version release, use GitHub CLI from the repository root:
+
+```bash
+gh workflow run prepare-release.yml -f version=0.2.0 -f run_full_ci=true
+```
+
+This creates a `release/v0.2.0` pull request. After the pull request merges, `draft-release.yml` creates a draft GitHub Release with `starweaver-cli` binary assets. Publishing that draft release triggers `release.yml`, which publishes crates through the `Release` environment.
 
 For repository-wide hooks, run:
 

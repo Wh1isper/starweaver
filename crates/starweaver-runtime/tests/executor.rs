@@ -97,6 +97,8 @@ async fn executor_checkpoint_has_stable_identifier_and_serializes() {
     assert!(checkpoint.checkpoint_id.as_str().starts_with("ckpt_"));
     assert_eq!(encoded["checkpoint_id"], checkpoint.checkpoint_id.as_str());
     assert_eq!(encoded["node"], "run_start");
+    assert_eq!(encoded["resume"]["node"], "run_start");
+    assert_eq!(encoded["resume"]["cursor"]["message_cursor"], 0);
 }
 
 #[tokio::test]

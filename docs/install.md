@@ -1,14 +1,19 @@
 # Install
 
-Starweaver is currently a workspace crate set. Add the SDK facade from the workspace or consume the lower-level crates directly while APIs stabilize.
+Starweaver is a workspace crate set. Add the SDK facade from the workspace or consume the lower-level crates directly.
 
 ## Workspace development
+
+Install Rust, mdBook, and cargo-llvm-cov for the full local gate.
 
 ```bash
 git clone https://github.com/Wh1isper/starweaver
 cd starweaver
+cargo install cargo-llvm-cov
 make ci
 ```
+
+`make ci` runs the core local gate. `make ci-all` also runs the coverage gate.
 
 ## Crate layers
 
@@ -26,6 +31,15 @@ make ci
 make fmt-check
 make check
 make test
+make scripts-check
+make docs-check
 ```
 
-`make ci` runs the full local validation sequence.
+Coverage uses `cargo-llvm-cov`:
+
+```bash
+make coverage-ci
+make coverage
+```
+
+`make ci` runs formatting, Rust checks, replay checks, tests, script checks, and docs checks/build. `make ci-all` runs `make ci` plus coverage.

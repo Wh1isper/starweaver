@@ -4,7 +4,8 @@
     "items": [
       "index",
       "install",
-      "testing"
+      "testing",
+      "release"
     ]
   },
   {
@@ -12,11 +13,13 @@
     "items": [
       "agent",
       "models",
+      "direct",
       "tools",
       "output",
       "message-history",
       "dependencies",
       "capabilities",
+      "graph",
       "durability"
     ]
   },

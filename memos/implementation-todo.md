@@ -8,10 +8,12 @@ Use these commands while executing TODO items:
 
 ```bash
 make replay-check
+make coverage-ci
 make fmt-check
 make check
 make test
-python3 scripts/check-docs-examples.py
+make scripts-check
+make docs-check
 make ci
 ```
 
@@ -20,6 +22,14 @@ make ci
 ```bash
 cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
 ```
+
+`make coverage-ci` is the focused coverage gate:
+
+```bash
+cargo llvm-cov --workspace --all-features --locked --fail-under-lines 70 --summary-only
+```
+
+Current measured workspace line coverage: 83.08% with the default 70% gate.
 
 ## Landed Replay Coverage
 
@@ -134,14 +144,14 @@ The core layer should cover the important concepts documented by Pydantic AI.
 
 | Pydantic AI docs area | Starweaver target                                   | Status  | Next work                                                                                                           |
 | --------------------- | --------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------- |
-| Agents                | runtime agent and SDK builder                       | partial | align run APIs, iter/graph inspection, stream events                                                                |
+| Agents                | runtime agent and SDK builder                       | partial | graph inspection and provider stream event forwarding landed; next expand iter-style live APIs                      |
 | Dependencies          | `AgentContext` typed/named dependencies             | partial | dependency-aware hooks and output validators docs/tests                                                             |
-| Output                | schemas, typed output, validators, output functions | partial | SDK `OutputPolicy` ergonomics                                                                                       |
+| Output                | schemas, typed output, validators, output functions | partial | `OutputPolicy` groups schema, validators, functions, and retry budget                                               |
 | Capabilities          | capability bundles                                  | partial | configuration loading and ordered hooks                                                                             |
 | Hooks                 | lifecycle hooks                                     | partial | complete hook taxonomy and event evidence                                                                           |
 | Agent Specs           | serializable app/subagent specs                     | partial | agent spec loader and validation                                                                                    |
 | Message History       | canonical messages and processors                   | partial | docs parity and additional processors                                                                               |
-| Direct                | direct model/tool execution                         | planned | direct run APIs over model/tools                                                                                    |
+| Direct                | direct model/tool execution                         | landed  | `model_request`, `model_request_stream`, and `tool_call` are re-exported by `starweaver-agent`                      |
 | Models overview       | model adapters/profiles                             | partial | more profiles and provider aliases                                                                                  |
 | OpenAI                | Chat/Responses support                              | partial | finish replay TODOs and docs                                                                                        |
 | Anthropic             | Messages support                                    | partial | thinking and stream replay                                                                                          |
@@ -274,27 +284,31 @@ Reference modules and Starweaver targets:
 
 Status: current batch.
 
-- maintain `make replay-check`
-- keep CI replay check before full tests
-- add fixture schema validation
+- maintain `make replay-check` — landed
+- maintain `make coverage-ci` — landed
+- split CI into focused format, check, test, scripts, replay, coverage, docs, and pre-commit workflows — landed
+- migrate repository automation to Rust xtask — landed
+- add fixture schema validation — landed
+- add first-party record/scrub/import cassette workflow — landed
 - add missing replay categories from unmigrated replay TODO
-- add cassette import/scrub tooling
+- add cassette import/scrub tooling — landed
+- add cassette record tooling — landed
 
 ### Batch B: Core Agent Loop Solidification
 
-- fill Pydantic AI feature coverage gaps in runtime loop
-- add graph/iter inspection API
-- complete stream event model for provider deltas
-- harden output policy and validator retry semantics
-- complete direct run APIs
-- extend checkpoint shape for resume
+- fill Pydantic AI feature coverage gaps in runtime loop — landed for graph inspection, direct APIs, output policy, stream deltas, and resume evidence
+- add graph/iter inspection API — landed via `AgentGraphTrace`, `AgentGraphStep`, `inspect_graph`, `inspect_next_node`, `Agent::inspect_graph`, `AgentIterationTrace`, and `run_iter`
+- complete stream event model for provider deltas — landed via `ModelAdapter::request_stream` and `AgentStreamEvent::ModelStream`
+- harden output policy and validator retry semantics — landed via `OutputPolicy` and tests
+- complete direct run APIs — landed via direct model request, direct stream request, and direct tool call helpers
+- extend checkpoint shape for resume — landed via `AgentResumeEvidence` and `AgentResumeCursor` on `AgentCheckpoint`
 
 ### Batch C: SDK Ergonomics
 
-- design `OutputPolicy`
+- design `OutputPolicy` — landed
 - add SDK presets
-- expand `AgentSession`
-- improve public re-exports
+- expand `AgentSession` with more durable service conveniences
+- improve public re-exports — landed for direct APIs, graph evidence, output policy, and resume evidence
 - add agent spec loader
 - update user-facing docs
 

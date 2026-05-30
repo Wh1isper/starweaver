@@ -37,6 +37,12 @@ Run focused replay validation:
 make replay-check
 ```
 
+Run repository script validation:
+
+```bash
+make scripts-check
+```
+
 Run docs validation:
 
 ```bash
@@ -50,16 +56,34 @@ Run the full local gate:
 make ci
 ```
 
+Run coverage:
+
+```bash
+cargo install cargo-llvm-cov
+make coverage-ci
+make coverage
+```
+
 ## Documentation Rules
 
 - Keep user-facing docs in `docs/`.
 - Keep architecture decisions in `spec/`.
 - Keep roadmap and review notes in `memos/`.
 - Put Rust examples in fenced `rust` blocks.
-- Use hidden async wrappers for docs examples compiled by `scripts/check-docs-examples.py`.
+- Use hidden async wrappers for docs examples compiled by `make docs-check`.
 - Update `docs/SUMMARY.md` and `docs/nav.json` when adding, removing, or renaming docs pages.
 - Run `make docs-build` after changing mdBook structure, sitemap generation, deployment metadata, or `book.toml`.
 - Use mermaid diagrams for architecture and flow documentation.
+
+## Repository Automation
+
+Repository automation lives in the Rust `xtask` crate and is wrapped by Makefile targets.
+
+```bash
+make scripts-check
+```
+
+CI and local workflows use the same Rust automation entry point.
 
 ## Replay and Provider Compatibility
 
@@ -67,8 +91,9 @@ Provider mapping changes need replay evidence:
 
 1. Add or update a replay fixture.
 2. Assert canonical request or response shape.
-3. Run `make replay-check`.
-4. Update `memos/implementation-todo.md` when a captured provider behavior remains queued.
+3. Record or scrub cassettes with `make record-model-cassette`, `make scrub-model-cassette`, and `make import-model-cassette`.
+4. Run `make replay-check`.
+5. Update `memos/implementation-todo.md` when a captured provider behavior remains queued.
 
 Replay tests cover the compatibility boundary for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, Gemini generateContent, Bedrock Converse, request parameters, model settings, and provider profiles.
 

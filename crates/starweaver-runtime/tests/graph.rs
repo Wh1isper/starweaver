@@ -2,7 +2,9 @@
 
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{message::ToolCallPart, ModelResponse, ModelResponsePart, ToolReturnPart};
-use starweaver_runtime::{next_node, AgentNode, AgentRunState, RunStatus};
+use starweaver_runtime::{
+    inspect_graph, inspect_next_node, next_node, AgentNode, AgentRunState, RunStatus,
+};
 
 fn state() -> AgentRunState {
     AgentRunState::new(
@@ -132,4 +134,29 @@ fn transitions_max_step_path_to_finalize() {
             .next,
         AgentNode::FinalizeRun
     );
+}
+
+#[test]
+fn inspect_next_node_returns_graph_step_evidence() {
+    let state = state();
+    let step = inspect_next_node(AgentNode::StartRun, &state, 8).unwrap();
+
+    assert_eq!(step.index, 0);
+    assert_eq!(step.current, AgentNode::StartRun);
+    assert_eq!(step.decision.next, AgentNode::PrepareRequest);
+    assert!(step.decision.checkpoint);
+    assert_eq!(step.run_step, 0);
+}
+
+#[test]
+fn inspect_graph_returns_compact_trace() {
+    let mut state = state();
+    state.output = Some("done".to_string());
+
+    let trace = inspect_graph(AgentNode::FinalizeRun, &state, 8, 4).unwrap();
+
+    assert_eq!(trace.steps().len(), 2);
+    assert!(trace.is_complete());
+    assert_eq!(trace.steps()[0].current, AgentNode::FinalizeRun);
+    assert_eq!(trace.terminal, AgentNode::Complete);
 }

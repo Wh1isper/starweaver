@@ -18,15 +18,18 @@ pub use starweaver_core::{
 };
 pub use starweaver_model::{FunctionModel, FunctionModelInfo, TestModel};
 pub use starweaver_runtime::{
-    AgentCapability, AgentError, AgentOverride, AgentResult, AgentRunState, AgentRuntimePolicy,
-    AgentStreamEvent, AgentStreamRecord, AgentStreamResult, CapabilityBundle, CapabilityResult,
-    CostBudget, DynamicInstruction, DynamicInstructionError, DynamicInstructionResult,
-    FunctionDynamicInstruction, FunctionHistoryProcessor, FunctionOutputFunction,
-    FunctionOutputValidator, HistoryProcessor, HistoryProcessorError, HistoryProcessorResult,
-    OutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputSchema,
-    OutputValidationError, OutputValidationResult, OutputValidator, OutputValue,
-    ReinjectSystemPromptProcessor, RetryEventKind, StaticCapabilityBundle, UsageLimitError,
-    UsageLimits,
+    model_request, model_request_stream, tool_call, AgentCapability, AgentCheckpoint, AgentError,
+    AgentExecutionDecision, AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentGraphStep,
+    AgentGraphTrace, AgentIterResult, AgentIterationKind, AgentIterationStep, AgentIterationTrace,
+    AgentNode, AgentOverride, AgentResult, AgentResumeCursor, AgentResumeEvidence, AgentRunState,
+    AgentRuntimePolicy, AgentStreamEvent, AgentStreamRecord, AgentStreamResult, CapabilityBundle,
+    CapabilityResult, CostBudget, DirectModelRequest, DynamicInstruction, DynamicInstructionError,
+    DynamicInstructionResult, FunctionDynamicInstruction, FunctionHistoryProcessor,
+    FunctionOutputFunction, FunctionOutputValidator, GraphError, HistoryProcessor,
+    HistoryProcessorError, HistoryProcessorResult, OutputFunction, OutputFunctionContext,
+    OutputFunctionDefinition, OutputPolicy, OutputSchema, OutputValidationError,
+    OutputValidationResult, OutputValidator, OutputValue, ReinjectSystemPromptProcessor,
+    RetryEventKind, StaticCapabilityBundle, UsageLimitError, UsageLimits,
 };
 pub use starweaver_tools::{
     mcp_tool_definition, FunctionTool, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport,
@@ -45,6 +48,7 @@ pub struct AgentBuilder {
     model_settings: Option<ModelSettings>,
     request_params: ModelRequestParameters,
     output_schema: Option<OutputSchema>,
+    output_policy: Option<OutputPolicy>,
     output_validators: Vec<Arc<dyn OutputValidator>>,
     output_functions: Vec<Arc<dyn OutputFunction>>,
     dynamic_instructions: Vec<Arc<dyn DynamicInstruction>>,
@@ -67,6 +71,7 @@ impl AgentBuilder {
             model_settings: None,
             request_params: ModelRequestParameters::default(),
             output_schema: None,
+            output_policy: None,
             output_validators: Vec::new(),
             output_functions: Vec::new(),
             dynamic_instructions: Vec::new(),
@@ -112,6 +117,13 @@ impl AgentBuilder {
     #[must_use]
     pub fn output_schema(mut self, schema: OutputSchema) -> Self {
         self.output_schema = Some(schema);
+        self
+    }
+
+    /// Apply a complete output policy.
+    #[must_use]
+    pub fn output_policy(mut self, policy: OutputPolicy) -> Self {
+        self.output_policy = Some(policy);
         self
     }
 
@@ -237,6 +249,9 @@ impl AgentBuilder {
         }
         if let Some(schema) = self.output_schema {
             agent = agent.with_output_schema(schema);
+        }
+        if let Some(policy) = self.output_policy {
+            agent = agent.with_output_policy(policy);
         }
         if let Some(limits) = self.usage_limits {
             agent = agent.with_usage_limits(limits);

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use starweaver_core::{ConversationId, RunId};
-use starweaver_model::{ModelResponse, ToolCallPart, ToolReturnPart};
+use starweaver_model::{ModelResponse, ModelResponseStreamEvent, ToolCallPart, ToolReturnPart};
 
 use crate::{executor::AgentExecutionNode, AgentResult};
 
@@ -21,6 +21,13 @@ pub enum AgentStreamEvent {
     ModelRequest {
         /// Completed run step before sending the request.
         step: usize,
+    },
+    /// A model response stream event was received.
+    ModelStream {
+        /// Completed run step for the active model request.
+        step: usize,
+        /// Canonical model stream event.
+        event: ModelResponseStreamEvent,
     },
     /// A model response was received.
     ModelResponse {

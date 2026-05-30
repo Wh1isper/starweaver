@@ -52,13 +52,16 @@ assert_eq!(result.output, "Paris");
 ## Documentation map
 
 - [Install](install.md)
+- [Testing](testing.md)
 - [Agents](agent.md)
 - [Models](models.md)
+- [Direct APIs](direct.md)
 - [Tools](tools.md)
 - [Structured output](output.md)
 - [Message history](message-history.md)
 - [Dependencies](dependencies.md)
 - [Capabilities](capabilities.md)
+- [Graph inspection](graph.md)
 - [Durability](durability.md)
 - [SDK apps](sdk-app.md)
 - [Subagents](subagents.md)

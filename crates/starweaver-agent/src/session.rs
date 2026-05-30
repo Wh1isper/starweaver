@@ -3,7 +3,8 @@
 use starweaver_context::{AgentContext, ResumableState};
 use starweaver_core::TraceContext;
 use starweaver_runtime::{
-    Agent as RuntimeAgent, AgentError, AgentResult, AgentStreamRecord, AgentStreamResult,
+    Agent as RuntimeAgent, AgentError, AgentIterResult, AgentResult, AgentStreamRecord,
+    AgentStreamResult,
 };
 
 /// Context-backed SDK session for repeated runs through one agent.
@@ -98,5 +99,21 @@ impl AgentSession {
             .run_with_context_and_stream_events(prompt, &mut self.context, &mut events)
             .await?;
         Ok(AgentStreamResult { result, events })
+    }
+}
+
+impl AgentSession {
+    /// Run the session agent and collect compact iteration inspection records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime run fails.
+    pub async fn run_iter(
+        &mut self,
+        prompt: impl Into<String>,
+    ) -> Result<AgentIterResult, AgentError> {
+        self.agent
+            .run_with_context_iter(prompt, &mut self.context)
+            .await
     }
 }

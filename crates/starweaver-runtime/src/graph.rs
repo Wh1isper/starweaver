@@ -38,6 +38,44 @@ pub struct GraphDecision {
     pub checkpoint: bool,
 }
 
+/// One inspected graph transition.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentGraphStep {
+    /// Step index within the inspected graph walk.
+    pub index: usize,
+    /// Node inspected for this transition.
+    pub current: AgentNode,
+    /// Transition decision returned by the graph.
+    pub decision: GraphDecision,
+    /// Completed runtime step from the inspected state.
+    pub run_step: usize,
+    /// Runtime status from the inspected state.
+    pub status: RunStatus,
+}
+
+/// A compact graph inspection report.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentGraphTrace {
+    /// Transition steps in walk order.
+    pub steps: Vec<AgentGraphStep>,
+    /// Last node reached by the inspection.
+    pub terminal: AgentNode,
+}
+
+impl AgentGraphTrace {
+    /// Return all inspected steps.
+    #[must_use]
+    pub fn steps(&self) -> &[AgentGraphStep] {
+        &self.steps
+    }
+
+    /// Return whether the trace reached the complete node.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        matches!(self.terminal, AgentNode::Complete)
+    }
+}
+
 impl GraphDecision {
     const fn checkpoint(next: AgentNode) -> Self {
         Self {
@@ -147,4 +185,62 @@ pub fn next_node(
         }
         AgentNode::Complete => Ok(GraphDecision::step(AgentNode::Complete)),
     }
+}
+
+/// Inspect the next graph transition from a node and state.
+///
+/// # Errors
+///
+/// Returns an error when the current node requires state produced by an earlier handler.
+pub fn inspect_next_node(
+    current: AgentNode,
+    state: &AgentRunState,
+    max_steps: usize,
+) -> Result<AgentGraphStep, GraphError> {
+    let decision = next_node(current, state, max_steps)?;
+    Ok(AgentGraphStep {
+        index: 0,
+        current,
+        decision,
+        run_step: state.run_step,
+        status: state.status,
+    })
+}
+
+/// Walk graph transitions for inspection using a static state snapshot.
+///
+/// This is intended for application debuggers and durable runtime diagnostics. Runtime handlers mutate
+/// state between nodes during a real run, so this helper stops at the first transition that needs state
+/// produced by an earlier handler.
+///
+/// # Errors
+///
+/// Returns an error when the inspected transition is invalid for the provided state snapshot.
+pub fn inspect_graph(
+    start: AgentNode,
+    state: &AgentRunState,
+    max_steps: usize,
+    max_transitions: usize,
+) -> Result<AgentGraphTrace, GraphError> {
+    let mut current = start;
+    let mut steps = Vec::new();
+    for index in 0..max_transitions {
+        let decision = next_node(current, state, max_steps)?;
+        let next = decision.next;
+        steps.push(AgentGraphStep {
+            index,
+            current,
+            decision,
+            run_step: state.run_step,
+            status: state.status,
+        });
+        current = next;
+        if matches!(current, AgentNode::Complete) {
+            break;
+        }
+    }
+    Ok(AgentGraphTrace {
+        steps,
+        terminal: current,
+    })
 }

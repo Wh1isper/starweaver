@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use starweaver_core::{CheckpointId, ConversationId, Metadata, RunId};
+use starweaver_core::{CheckpointId, ConversationId, Metadata, RunId, TraceContext, Usage};
 use thiserror::Error;
 
-use crate::run::AgentRunState;
+use crate::run::{AgentRunState, RunStatus};
 
 /// Named execution boundary in the agent loop.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -33,6 +33,110 @@ pub enum AgentExecutionNode {
     RunFailed,
 }
 
+/// Compact cursor values durable stores use to resume and audit a run.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentResumeCursor {
+    /// Index of the next model request attempt.
+    pub model_request_attempt: usize,
+    /// Current tool call batch identifier when the run is inside a tool boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_batch_id: Option<String>,
+    /// Index of the next output validation attempt.
+    pub output_validation_attempt: usize,
+    /// Cursor of the last persisted stream event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_cursor: Option<usize>,
+    /// Last canonical message index persisted by the runtime.
+    pub message_cursor: usize,
+}
+
+/// Stable resume evidence for durable service runtimes and external `SessionStore` implementations.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentResumeEvidence {
+    /// Execution boundary captured by this checkpoint.
+    pub node: AgentExecutionNode,
+    /// Current run status.
+    pub status: RunStatus,
+    /// Completed run step at this boundary.
+    pub run_step: usize,
+    /// Resume cursors for replay and continuation.
+    pub cursor: AgentResumeCursor,
+    /// Accumulated usage snapshot.
+    pub usage: Usage,
+    /// Context state revision or hash provided by a service layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_revision: Option<String>,
+    /// Environment provider state reference provided by a service layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_ref: Option<String>,
+    /// Pending approval count.
+    pub pending_approval_count: usize,
+    /// Deferred tool return count.
+    pub deferred_tool_count: usize,
+    /// Trace correlation snapshot.
+    #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
+    pub trace_context: TraceContext,
+    /// Resume metadata for `SessionStore` implementations.
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
+}
+
+impl AgentResumeEvidence {
+    /// Build resume evidence from run state and boundary metadata.
+    #[must_use]
+    pub fn new(node: AgentExecutionNode, state: &AgentRunState) -> Self {
+        Self {
+            node,
+            status: state.status,
+            run_step: state.run_step,
+            cursor: AgentResumeCursor {
+                model_request_attempt: state.run_step,
+                tool_call_batch_id: (!state.pending_tool_calls.is_empty())
+                    .then(|| format!("tool_batch_{}", state.run_step)),
+                output_validation_attempt: 0,
+                stream_cursor: None,
+                message_cursor: state.message_history.len(),
+            },
+            usage: state.usage.clone(),
+            context_revision: state
+                .metadata
+                .get("context_revision")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            environment_ref: state
+                .metadata
+                .get("environment_ref")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            pending_approval_count: state.pending_approval_tool_returns.len(),
+            deferred_tool_count: state.deferred_tool_returns.len(),
+            trace_context: TraceContext::default(),
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Attach stream cursor.
+    #[must_use]
+    pub const fn with_stream_cursor(mut self, stream_cursor: usize) -> Self {
+        self.cursor.stream_cursor = Some(stream_cursor);
+        self
+    }
+
+    /// Attach trace context.
+    #[must_use]
+    pub fn with_trace_context(mut self, trace_context: TraceContext) -> Self {
+        self.trace_context = trace_context;
+        self
+    }
+
+    /// Attach evidence metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+}
+
 /// Serializable checkpoint emitted at a durable execution boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentCheckpoint {
@@ -46,6 +150,8 @@ pub struct AgentCheckpoint {
     pub node: AgentExecutionNode,
     /// Completed run step at this boundary.
     pub run_step: usize,
+    /// Stable resume evidence for durable services.
+    pub resume: AgentResumeEvidence,
     /// Full checkpointable run state.
     pub state: AgentRunState,
     /// Boundary metadata for node-specific details.
@@ -63,6 +169,7 @@ impl AgentCheckpoint {
             conversation_id: state.conversation_id.clone(),
             node,
             run_step: state.run_step,
+            resume: AgentResumeEvidence::new(node, state),
             state: state.clone(),
             metadata: Metadata::default(),
         }

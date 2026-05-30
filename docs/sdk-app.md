@@ -85,3 +85,31 @@ assert_eq!(restored.context().usage.requests, 2);
 # Ok(())
 # }
 ```
+
+## Smooth durable application shape
+
+A production application can depend on `starweaver-agent` for the programming surface and keep service concerns in its own `SessionStore` implementation.
+
+```mermaid
+flowchart TD
+    User[User request] --> App[AgentApp or AgentSession]
+    App --> Runtime[Runtime Agent]
+    Runtime --> Model[ModelAdapter]
+    Runtime --> Tools[ToolRegistry]
+    Runtime --> Stream[AgentStreamRecord]
+    Runtime --> Checkpoint[AgentCheckpoint]
+    Stream --> Store[SessionStore]
+    Checkpoint --> Store
+    App --> Context[AgentContext export]
+    Context --> Store
+```
+
+Recommended shape for Claw, CLI, and external services:
+
+1. Build an agent through `AgentBuilder` and policies from application configuration.
+2. Create an `AgentSession` per conversation and persist `session.export_state()` after each run.
+3. Use `run_stream` for UI/SSE output and persist each `AgentStreamRecord` by sequence.
+4. Install an `AgentExecutor` that writes every `AgentCheckpoint` and `AgentResumeEvidence` to the store.
+5. Persist environment references, trace ids, and approval/deferred metadata in the service layer alongside checkpoint ids.
+
+This keeps the SDK surface small for application programmers: `AgentBuilder`, `AgentSession`, stream events, checkpoints, and direct APIs cover most durable app needs.

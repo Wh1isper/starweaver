@@ -90,7 +90,8 @@ impl Agent {
         state: &AgentRunState,
         context: &AgentContext,
     ) -> Result<AgentExecutionDecision, AgentError> {
-        let checkpoint = AgentCheckpoint::new(node, state);
+        let mut checkpoint = AgentCheckpoint::new(node, state);
+        checkpoint.resume.trace_context = context.trace_context.clone();
         for capability in &self.capabilities {
             capability
                 .on_checkpoint_with_context(state, context, &checkpoint)

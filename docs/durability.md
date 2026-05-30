@@ -6,9 +6,9 @@ Durable execution is handled through `AgentExecutor`. The runtime emits checkpoi
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use starweaver_agent::{AgentBuilder, TestModel};
-use starweaver_runtime::{
-    AgentCheckpoint, AgentExecutionDecision, AgentExecutionNode, AgentExecutor, AgentExecutorError,
+use starweaver_agent::{
+    AgentBuilder, AgentCheckpoint, AgentExecutionDecision, AgentExecutionNode, AgentExecutor,
+    AgentExecutorError, TestModel,
 };
 
 #[derive(Default)]
@@ -40,4 +40,58 @@ assert!(executor.nodes.lock().expect("nodes lock").contains(&AgentExecutionNode:
 # }
 ```
 
-Future service runtimes can persist `AgentCheckpoint` values, suspend on interruption, and resume from stored state.
+Service runtimes can persist `AgentCheckpoint` values, suspend on interruption, and resume from stored state.
+
+## Resume evidence for SessionStore implementations
+
+Every `AgentCheckpoint` includes `resume: AgentResumeEvidence`. This compact evidence is designed for service runtimes such as Starweaver Claw, the CLI, and external applications that implement a real `SessionStore`.
+
+A durable store should persist these records together:
+
+- session id and conversation id
+- exported `AgentContext` state
+- `AgentStreamRecord` events with sequence numbers
+- `AgentCheckpoint` values and their `resume` evidence
+- environment state reference from the service layer
+- trace id and span ids from the service tracer
+
+```rust
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use starweaver_agent::{
+    AgentBuilder, AgentCheckpoint, AgentExecutionDecision, AgentExecutor, AgentExecutorError,
+    TestModel,
+};
+
+#[derive(Default)]
+struct SessionStoreExecutor {
+    checkpoints: Mutex<Vec<AgentCheckpoint>>,
+}
+
+#[async_trait]
+impl AgentExecutor for SessionStoreExecutor {
+    async fn checkpoint(
+        &self,
+        checkpoint: AgentCheckpoint,
+    ) -> Result<AgentExecutionDecision, AgentExecutorError> {
+        self.checkpoints.lock().expect("checkpoint lock").push(checkpoint);
+        Ok(AgentExecutionDecision::Continue)
+    }
+}
+
+# async fn example() -> Result<(), starweaver_agent::AgentError> {
+let store = Arc::new(SessionStoreExecutor::default());
+let agent = AgentBuilder::new(Arc::new(TestModel::with_text("ok")))
+    .build()
+    .with_executor(store.clone());
+
+agent.run("hello").await?;
+let checkpoints = store.checkpoints.lock().expect("checkpoint lock");
+let final_checkpoint = checkpoints.last().expect("checkpoint exists");
+assert_eq!(final_checkpoint.resume.cursor.message_cursor, final_checkpoint.state.message_history.len());
+# Ok(())
+# }
+```
+
+`resume` gives durable runtimes a stable cursor contract. The full `state` field remains available for exact runtime restoration and audit archives.

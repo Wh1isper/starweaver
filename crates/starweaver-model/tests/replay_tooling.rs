@@ -1,6 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::{path::Path, process::Command};
+use std::{env, path::Path, process::Command};
 
 use serde_json::{json, Value};
 
@@ -37,8 +37,25 @@ fn cassette_tools_import_scrub_and_summarize_replay_fixtures() {
     )
     .unwrap();
 
-    let import_output = Command::new("python3")
-        .arg(repo_root.join("scripts/import-model-cassettes.py"))
+    let xtask = repo_root.join("target/debug/xtask");
+    if !xtask.exists() {
+        let build = Command::new(env!("CARGO"))
+            .arg("build")
+            .arg("-p")
+            .arg("xtask")
+            .arg("--locked")
+            .current_dir(repo_root)
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+    }
+
+    let import_output = Command::new(&xtask)
+        .arg("import-model-cassettes")
         .arg(&cassette_path)
         .arg("--fixtures-root")
         .arg(temp_dir.join("fixtures"))
@@ -50,8 +67,8 @@ fn cassette_tools_import_scrub_and_summarize_replay_fixtures() {
         .unwrap()
         .contains("tooling_import_check.json"));
 
-    let scrub_output = Command::new("python3")
-        .arg(repo_root.join("scripts/scrub-model-cassette.py"))
+    let scrub_output = Command::new(&xtask)
+        .arg("scrub-model-cassette")
         .arg(&cassette_path)
         .output()
         .unwrap();
@@ -64,8 +81,8 @@ fn cassette_tools_import_scrub_and_summarize_replay_fixtures() {
     assert_eq!(scrubbed["provider_response"]["created"], "NORMALIZED");
     assert_eq!(scrubbed["provider_response"]["id"], "chatcmpl_REDACTED");
 
-    let summary_output = Command::new("python3")
-        .arg(repo_root.join("scripts/summarize-model-fixtures.py"))
+    let summary_output = Command::new(&xtask)
+        .arg("summarize-model-fixtures")
         .arg("--fixtures-root")
         .arg(manifest_dir.join("tests/fixtures"))
         .output()

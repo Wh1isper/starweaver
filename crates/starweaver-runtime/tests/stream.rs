@@ -295,6 +295,7 @@ impl AgentCapability for StreamObserverRecorder {
             match &event.event {
                 AgentStreamEvent::RunStart { .. } => "run_start",
                 AgentStreamEvent::ModelRequest { .. } => "model_request",
+                AgentStreamEvent::ModelStream { .. } => "model_stream",
                 AgentStreamEvent::ModelResponse { .. } => "model_response",
                 AgentStreamEvent::Checkpoint { .. } => "checkpoint",
                 AgentStreamEvent::Suspended { .. } => "suspended",

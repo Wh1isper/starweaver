@@ -8,8 +8,9 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use starweaver_agent::{AgentBuilder, FunctionTool, TestModel, ToolContext, ToolRegistry, ToolResult};
-use starweaver_context::AgentContext;
+use starweaver_agent::{
+    AgentBuilder, AgentContext, FunctionTool, TestModel, ToolContext, ToolRegistry, ToolResult,
+};
 
 #[derive(Debug)]
 struct Tenant(String);
@@ -45,7 +46,7 @@ Dependencies are process-local and skipped during serialization. Service runtime
 `AgentContext` also carries serializable notes for lightweight session memory. Notes round-trip through `ResumableState`; context instructions expose note keys while keeping note values out of model-facing prompt text.
 
 ```rust
-use starweaver_context::AgentContext;
+use starweaver_agent::AgentContext;
 
 let mut context = AgentContext::default();
 context.notes.set("lang", "Chinese");

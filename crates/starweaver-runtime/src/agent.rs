@@ -9,9 +9,10 @@ use crate::{
     agent::helpers::merge_request_params,
     capability::{AgentCapability, CapabilityBundle},
     executor::{DirectAgentExecutor, DynAgentExecutor},
+    graph::{inspect_graph, AgentGraphTrace, AgentNode, GraphError},
     history::HistoryProcessor,
     instructions::DynDynamicInstruction,
-    output::{DynOutputFunction, OutputSchema, OutputValidator},
+    output::{DynOutputFunction, OutputPolicy, OutputSchema, OutputValidator},
     usage::UsageLimits,
 };
 
@@ -116,6 +117,21 @@ impl Agent {
         self
     }
 
+    /// Apply a complete output policy.
+    #[must_use]
+    pub fn with_output_policy(mut self, policy: OutputPolicy) -> Self {
+        let (schema, validators, functions, retries) = policy.into_parts();
+        if let Some(schema) = schema {
+            self.output_schema = Some(schema);
+        }
+        self.output_validators.extend(validators);
+        self.output_functions.extend(functions);
+        if let Some(retries) = retries {
+            self.policy.output_retries = retries;
+        }
+        self
+    }
+
     /// Add an output validator.
     #[must_use]
     pub fn with_output_validator(mut self, validator: Arc<dyn OutputValidator>) -> Self {
@@ -177,6 +193,24 @@ impl Agent {
     pub const fn with_policy(mut self, policy: AgentRuntimePolicy) -> Self {
         self.policy = policy;
         self
+    }
+
+    /// Inspect graph transitions from a state snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the inspected transition is invalid for the provided state.
+    pub fn inspect_graph(
+        &self,
+        start: AgentNode,
+        state: &crate::run::AgentRunState,
+    ) -> Result<AgentGraphTrace, GraphError> {
+        inspect_graph(
+            start,
+            state,
+            self.policy.max_steps,
+            self.policy.max_steps.saturating_mul(4),
+        )
     }
 
     /// Create a scoped override builder for tests and alternate run contexts.

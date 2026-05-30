@@ -6,9 +6,9 @@ Capabilities are runtime extension hooks. They can inspect context, annotate too
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use starweaver_agent::{AgentBuilder, AgentCapability, CapabilityResult, TestModel};
-use starweaver_context::AgentContext;
-use starweaver_runtime::AgentRunState;
+use starweaver_agent::{
+    AgentBuilder, AgentCapability, AgentContext, AgentRunState, CapabilityResult, TestModel,
+};
 
 struct CompleteMarker;
 

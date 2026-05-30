@@ -90,7 +90,7 @@ The SDK docs should cover:
 - MCP and environment-backed tools
 - observability and trace propagation
 
-All Rust examples in docs must compile through `scripts/check-docs-examples.py`.
+All Rust examples in docs must compile through `make docs-check` and the Rust `xtask` crate.
 
 ## Acceptance Gates
 

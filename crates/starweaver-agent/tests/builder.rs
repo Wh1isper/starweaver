@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use starweaver_agent::{
     AgentBuilder, AgentRunState, FunctionDynamicInstruction, FunctionHistoryProcessor,
-    FunctionTool, OutputSchema, StaticCapabilityBundle, TestModel, ToolContext, ToolRegistry,
-    ToolResult, UsageLimits,
+    FunctionOutputFunction, FunctionOutputValidator, FunctionTool, OutputFunctionDefinition,
+    OutputSchema, OutputValue, StaticCapabilityBundle, StaticToolset, TestModel, ToolContext,
+    ToolRegistry, ToolResult, UsageLimits,
 };
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
@@ -145,4 +146,87 @@ async fn builder_applies_dynamic_instruction() {
         .unwrap();
 
     assert_eq!(result.output, r#"{"answer":"ok"}"#);
+}
+
+#[tokio::test]
+async fn builder_applies_settings_params_validators_functions_and_toolsets() {
+    let model = Arc::new(CaptureModel {
+        captured_params: Arc::new(Mutex::new(Vec::new())),
+    });
+    let tool = Arc::new(FunctionTool::new(
+        "extra",
+        Some("Extra tool".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let toolset_tool = Arc::new(FunctionTool::new(
+        "toolset_extra",
+        Some("Toolset extra tool".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let toolset: starweaver_tools::DynToolset =
+        Arc::new(StaticToolset::new("extras").with_tool(toolset_tool));
+    let mut params = ModelRequestParameters::default();
+    params
+        .extra_body
+        .insert("route".to_string(), serde_json::json!("sdk"));
+    let validator =
+        FunctionOutputValidator::new(|_state: &mut AgentRunState, output: &OutputValue| {
+            let text = output.as_text();
+            std::future::ready({
+                assert!(text.contains("answer"));
+                Ok(())
+            })
+        });
+    let output_function = FunctionOutputFunction::new(
+        OutputFunctionDefinition::new("final_answer", serde_json::json!({"type": "object"})),
+        |_ctx, args: serde_json::Value| async move { Ok(OutputValue::Json(args)) },
+    );
+
+    let result = AgentBuilder::new(model.clone())
+        .model_settings(ModelSettings {
+            temperature: Some(0.3),
+            ..ModelSettings::default()
+        })
+        .request_params(params)
+        .output_validator(Arc::new(validator))
+        .output_function(Arc::new(output_function))
+        .tool(tool)
+        .toolset(&toolset)
+        .tool_retries(2)
+        .build()
+        .run("hello")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, r#"{"answer":"ok"}"#);
+    let params = model.captured_params.lock().unwrap()[0].clone();
+    let tool_names = params
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(tool_names.contains(&"extra"));
+    assert!(tool_names.contains(&"toolset_extra"));
+    assert!(tool_names.contains(&"final_answer"));
+    assert_eq!(params.extra_body["route"], "sdk");
+}
+
+#[test]
+fn builder_replaces_subagent_registry_and_policy() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+    let mut registry = starweaver_agent::SubagentRegistry::new();
+    registry.insert(starweaver_agent::SubagentConfig::new("child", child));
+
+    let builder = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
+        .subagent_registry(registry)
+        .policy(starweaver_agent::AgentRuntimePolicy {
+            max_steps: 3,
+            output_retries: 2,
+        });
+    let app = builder.build_app();
+
+    assert_eq!(app.subagents().subagents().len(), 1);
+    assert!(app.subagents().subagent("child").is_some());
 }

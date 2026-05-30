@@ -13,7 +13,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [[bin]]
-name = "starweaver"
+name = "starweaver-cli"
 path = "src/main.rs"
 
 [dependencies]

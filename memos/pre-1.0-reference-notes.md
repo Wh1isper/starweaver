@@ -16,7 +16,7 @@ These notes capture reference mapping and phase-specific implementation observat
 
 - Runtime kernel foundation exists and is covered by local tests.
 - SDK facade exists through `AgentBuilder`, `AgentApp`, and subagent registry.
-- Docs examples compile through `scripts/check-docs-examples.py`.
+- Docs examples compile through `make docs-check` and the Rust `xtask` crate.
 - GitHub CI includes docs example validation.
 - `make ci` passes in the current milestone.
 

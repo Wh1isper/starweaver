@@ -1,0 +1,55 @@
+name: Model Replay
+
+on:
+  pull_request:
+    paths:
+      - "crates/starweaver-model/**"
+      - "xtask/**"
+      - "Makefile"
+      - ".github/workflows/replay.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/starweaver-model/**"
+      - "xtask/**"
+      - "Makefile"
+      - ".github/workflows/replay.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: replay-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  replay:
+    name: Model replay
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check model replay fixtures
+        run: make replay-check
+
+      - name: Write replay summary
+        run: make replay-summary ARGS="--output target/replay-summary.json"
+
+      - name: Upload replay summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: replay-summary
+          path: target/replay-summary.json
+          if-no-files-found: error

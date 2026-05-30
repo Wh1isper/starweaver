@@ -55,5 +55,7 @@ A feature moves from planned to accepted when it has:
 - `make fmt-check`
 - `make check`
 - `make test`
-- `python3 scripts/check-docs-examples.py`
+- `make scripts-check`
+- `make docs-check`
+- `make coverage-ci`
 - `make ci`

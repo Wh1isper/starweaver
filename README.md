@@ -15,6 +15,13 @@ Planned layers are specified before public API graduation:
 - `starweaver-claw`: durable sessions, `SessionStore`, service execution, interruption, resume, and stream replay.
 - `starweaver-platform`: hosted orchestration and external protocol adapters.
 
+## Design References
+
+Starweaver builds on ideas proven in two reference projects:
+
+- [Pydantic AI](https://github.com/pydantic/pydantic-ai) for core agent concepts, model abstraction, tool schema, output validation, retries, capabilities, and testing patterns.
+- [ya-mono](https://github.com/Wh1isper/ya-mono) for application runtime, context, tool implementations, interruption, resumable execution, and service patterns.
+
 ## Documentation
 
 Published docs: <https://starweaver.wh1isper.top>
@@ -29,6 +36,7 @@ Useful starting points:
 - [docs/tools.md](docs/tools.md)
 - [docs/output.md](docs/output.md)
 - [docs/testing.md](docs/testing.md)
+- [docs/release.md](docs/release.md)
 - [spec/README.md](spec/README.md)
 - [memos/implementation-todo.md](memos/implementation-todo.md)
 
@@ -60,8 +68,25 @@ Focused commands:
 
 ```bash
 make replay-check
+make coverage-core
+make coverage-agent
+make coverage-service
+make coverage-ci
+make coverage
+make scripts-check
 make docs-check
 make docs-build
+make upversion VERSION=0.2.0
+```
+
+## Repository Automation
+
+Repository automation is implemented in the Rust `xtask` crate and wrapped by Makefile targets.
+
+```bash
+make scripts-check
+make replay-summary
+make record-model-cassette ARGS="request.json --provider openai_chat --output cassette.json"
 ```
 
 ## Contributing

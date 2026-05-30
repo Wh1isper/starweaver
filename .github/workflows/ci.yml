@@ -8,9 +8,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  rust:
-    name: Rust
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -19,46 +27,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install mdBook
-        uses: taiki-e/install-action@v2
-        with:
-          tool: mdbook@0.5.3
+          components: rustfmt
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: make fmt-check
 
-      - name: Check workspace
-        run: cargo check --workspace --all-targets --all-features --locked
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-
-      - name: Check model replay fixtures
-        run: make replay-check
-
-      - name: Run tests
-        run: cargo test --workspace --all-targets --all-features --locked
-
-      - name: Check docs examples
-        run: python3 scripts/check-docs-examples.py
-
-      - name: Build docs site
-        run: |
-          mdbook build
-          python3 scripts/finalize-docs-site.py
-
-  pre-commit:
-    name: Pre-commit
+  check:
+    name: Check and clippy
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -67,15 +45,62 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+          components: clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run pre-commit
-        uses: pre-commit/action@v3.0.1
+      - name: Check workspace and clippy
+        run: make check
+
+  test:
+    name: Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: make test
+
+  cross-platform-tests:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets --all-features --locked
+
+  xtask:
+    name: Xtask
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate xtask automation
+        run: make scripts-check

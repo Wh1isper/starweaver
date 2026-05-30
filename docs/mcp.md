@@ -1,6 +1,6 @@
 # MCP
 
-Starweaver currently supports MCP foundations in `starweaver-tools` and provider-native MCP request metadata in `starweaver-model`.
+Starweaver supports MCP foundations in `starweaver-tools` and provider-native MCP request metadata in `starweaver-model`.
 
 ## Static MCP toolset
 

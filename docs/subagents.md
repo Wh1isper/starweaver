@@ -5,8 +5,7 @@ Subagents are SDK-level application protocols. Register named runtime agents in 
 ```rust
 use std::sync::Arc;
 
-use starweaver_agent::{AgentBuilder, SubagentConfig, TestModel};
-use starweaver_context::AgentContext;
+use starweaver_agent::{AgentBuilder, AgentContext, SubagentConfig, TestModel};
 
 # async fn example() -> Result<(), starweaver_agent::AgentError> {
 let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
@@ -32,8 +31,7 @@ Use `SubagentTask` when the application wants to attach task metadata and receiv
 ```rust
 use std::sync::Arc;
 
-use starweaver_agent::{AgentBuilder, SubagentConfig, SubagentTask, TaskId, TestModel};
-use starweaver_context::AgentContext;
+use starweaver_agent::{AgentBuilder, AgentContext, SubagentConfig, SubagentTask, TaskId, TestModel};
 
 # async fn example() -> Result<(), starweaver_agent::AgentError> {
 let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
@@ -68,9 +66,8 @@ use std::sync::Arc;
 
 use starweaver_agent::{
     AgentBuilder, SubagentConfig, SubagentLifecycleEvent, SubagentLifecycleKind, SubagentTask,
-    TaskId, TestModel,
+    AgentContext, TaskId, TestModel,
 };
-use starweaver_context::AgentContext;
 
 # async fn example() -> Result<(), starweaver_agent::AgentError> {
 let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());

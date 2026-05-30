@@ -1,23 +1,27 @@
 # CI Readiness and Coverage Gates
 
-CI must prove that Starweaver's core provider compatibility and SDK examples stay healthy. Replay fixtures are a first-class gate because provider correctness underpins the runtime, SDK, MCP, durable service, and CLI layers.
+CI must prove that Starweaver's core provider compatibility, SDK examples, and test coverage stay healthy. Replay fixtures are a first-class gate because provider correctness underpins the runtime, SDK, MCP, durable service, and CLI layers.
 
 ## Required CI Steps
 
 ```mermaid
 flowchart TD
     fmt[format check]
-    check[cargo check]
-    clippy[clippy]
+    check[cargo check and clippy]
+    scripts[xtask automation validation]
     replay[model replay check]
     tests[workspace tests]
-    docs[docs examples]
+    coverage[coverage gate]
+    docs[docs examples and site]
+    precommit[pre-commit]
 
     fmt --> check
-    check --> clippy
-    clippy --> replay
-    replay --> tests
-    tests --> docs
+    fmt --> scripts
+    fmt --> replay
+    fmt --> tests
+    fmt --> coverage
+    fmt --> docs
+    fmt --> precommit
 ```
 
 CI commands:
@@ -26,9 +30,12 @@ CI commands:
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --all-features --locked
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test -p starweaver-model --test replay --test request_parameters --locked
+cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
 cargo test --workspace --all-targets --all-features --locked
-python3 scripts/check-docs-examples.py
+make coverage-ci
+make scripts-check
+make docs-check
+mdbook build
 ```
 
 Local aggregate:
@@ -37,10 +44,22 @@ Local aggregate:
 make ci
 ```
 
-Focused replay gate:
+Focused gates:
 
 ```bash
 make replay-check
+make coverage-ci
+make scripts-check
+make docs-check
+```
+
+Replay fixture recording helpers:
+
+```bash
+make record-model-cassette ARGS="request.json --provider openai_chat --output cassette.json"
+make scrub-model-cassette ARGS="cassette.json --output cassette.scrubbed.json"
+make import-model-cassette ARGS="cassette.scrubbed.json"
+make scripts-check
 ```
 
 ## Replay Readiness
@@ -70,6 +89,8 @@ The TODO memo owns the working matrix for:
 Before a release candidate:
 
 - all CI gates pass
+- coverage gate passes
+- script smoke tests pass
 - docs examples pass
 - feature matrix has status for every Pydantic AI core docs page
 - feature matrix has status for every ya-agent-sdk first-party module family

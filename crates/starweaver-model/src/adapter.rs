@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::{
     message::ModelMessage, profile::ModelProfile, settings::ModelSettings,
-    transport::HttpRequestOptions, ModelResponse,
+    stream::ModelResponseStreamEvent, transport::HttpRequestOptions, ModelResponse,
 };
 
 static ALLOW_REAL_MODEL_REQUESTS: AtomicBool = AtomicBool::new(true);
@@ -229,6 +229,18 @@ pub trait ModelAdapter: Send + Sync {
         params: ModelRequestParameters,
         context: ModelRequestContext,
     ) -> Result<ModelResponse, ModelError>;
+
+    /// Stream a model request as canonical response part deltas.
+    async fn request_stream(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        let response = self.request(messages, settings, params, context).await?;
+        Ok(vec![ModelResponseStreamEvent::FinalResult(response)])
+    }
 
     /// Count tokens for a request where provider support exists.
     async fn count_tokens(

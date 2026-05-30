@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use starweaver_context::{AgentContext, AgentEvent};
 use starweaver_core::RunId;
-use starweaver_model::{ModelMessage, ModelRequestContext};
+use starweaver_model::{ModelMessage, ModelRequestContext, ModelResponseStreamEvent};
 use starweaver_tools::ToolContext;
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
     },
     capability::{CapabilityError, RetryEventKind},
     executor::{AgentExecutionDecision, AgentExecutionNode},
+    iteration::{AgentIterResult, AgentIterationTrace},
     run::{AgentRunState, RunStatus},
     stream::{push_stream_event, AgentStreamEvent, AgentStreamRecord, AgentStreamResult},
 };
@@ -28,6 +29,22 @@ impl Agent {
         self.run_with_history(prompt, Vec::new()).await
     }
 
+    /// Run the agent and collect a compact iteration trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
+    pub async fn run_iter(&self, prompt: impl Into<String>) -> Result<AgentIterResult, AgentError> {
+        let mut events = Vec::new();
+        let result = self.run_with_stream_events(prompt, &mut events).await?;
+        let iterations = AgentIterationTrace::from_stream_records(&events);
+        Ok(AgentIterResult {
+            result,
+            iterations,
+            events,
+        })
+    }
+
     /// Run the agent and collect typed stream events emitted during execution.
     ///
     /// # Errors
@@ -40,6 +57,28 @@ impl Agent {
         let mut events = Vec::new();
         let result = self.run_with_stream_events(prompt, &mut events).await?;
         Ok(AgentStreamResult { result, events })
+    }
+
+    /// Run the agent with prior history and collect a compact iteration trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
+    pub async fn run_with_history_iter(
+        &self,
+        prompt: impl Into<String>,
+        message_history: Vec<ModelMessage>,
+    ) -> Result<AgentIterResult, AgentError> {
+        let mut events = Vec::new();
+        let result = self
+            .run_with_history_and_stream_events(prompt, message_history, &mut events)
+            .await?;
+        let iterations = AgentIterationTrace::from_stream_records(&events);
+        Ok(AgentIterResult {
+            result,
+            iterations,
+            events,
+        })
     }
 
     /// Run the agent with an explicit typed stream event collector.
@@ -90,6 +129,28 @@ impl Agent {
             ..AgentContext::default()
         };
         self.run_with_context(prompt, &mut context).await
+    }
+
+    /// Run the agent using a lifecycle-wide context and collect a compact iteration trace.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
+    pub async fn run_with_context_iter(
+        &self,
+        prompt: impl Into<String>,
+        context: &mut AgentContext,
+    ) -> Result<AgentIterResult, AgentError> {
+        let mut events = Vec::new();
+        let result = self
+            .run_with_context_and_stream_events(prompt, context, &mut events)
+            .await?;
+        let iterations = AgentIterationTrace::from_stream_records(&events);
+        Ok(AgentIterResult {
+            result,
+            iterations,
+            events,
+        })
     }
 
     /// Run the agent using a lifecycle-wide context and typed stream event collector.
@@ -225,15 +286,37 @@ impl Agent {
                 self.check_before_request(&state)?;
                 let messages = self.process_history(&state).await?;
                 let params = self.effective_request_params(&state, context).await?;
-                self.model
-                    .request(
-                        messages,
-                        settings,
-                        params,
-                        ModelRequestContext::new(run_id.clone(), conversation_id.clone())
-                            .with_trace_context(context.trace_context.clone()),
-                    )
-                    .await?
+                let request_context =
+                    ModelRequestContext::new(run_id.clone(), conversation_id.clone())
+                        .with_trace_context(context.trace_context.clone());
+                if stream_events.is_some() {
+                    let mut response = None;
+                    for model_event in self
+                        .model
+                        .request_stream(messages, settings, params, request_context)
+                        .await?
+                    {
+                        stream_event!(
+                            &state,
+                            AgentStreamEvent::ModelStream {
+                                step: state.run_step,
+                                event: model_event.clone(),
+                            }
+                        );
+                        if let ModelResponseStreamEvent::FinalResult(final_response) = model_event {
+                            response = Some(final_response);
+                        }
+                    }
+                    response.ok_or_else(|| {
+                        AgentError::Capability(
+                            "model stream did not produce a final result".to_string(),
+                        )
+                    })?
+                } else {
+                    self.model
+                        .request(messages, settings, params, request_context)
+                        .await?
+                }
             };
             state.run_step += 1;
             let response_usage = response.usage.clone();
