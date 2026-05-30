@@ -64,6 +64,18 @@ classDiagram
     DurableSession --> ExecutionRecord
 ```
 
+## Checkpoint Reload and Stream Persistence
+
+A durable service stores three related evidence streams:
+
+- session state: exported `AgentContext` plus environment state references
+- execution checkpoints: safe runtime boundaries with resume evidence, message cursor, stream cursor, trace context, usage, approvals, deferred calls, and environment refs
+- stream records: delivery-oriented records for SSE/UI replay, persisted incrementally as events are observed
+
+Reload starts from `resume_snapshot(session_id, run_id)`: load the session, load the latest checkpoint, and replay stream records after the checkpoint stream cursor. The runtime can continue from checkpoint state when the node is resumable, while clients can reconnect from stream cursor without duplicating already delivered events.
+
+Stores should make stream append idempotent by run id and sequence. Checkpoint append remains append-only so operators can inspect the exact boundary history.
+
 ## Resume Flow
 
 ```mermaid

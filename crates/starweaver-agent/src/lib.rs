@@ -1,5 +1,7 @@
 //! Ergonomic SDK facade over the Starweaver bare runtime.
 
+pub mod bundles;
+pub mod presets;
 pub mod session;
 pub mod subagent;
 pub mod subagent_config;
@@ -8,8 +10,15 @@ use std::sync::Arc;
 
 use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
 use starweaver_runtime::Agent as RuntimeAgent;
-use starweaver_tools::{DynTool, DynToolset};
+use starweaver_tools::DynTool;
 
+pub use bundles::{
+    attach_environment, core_toolsets, filesystem_tools, host_operation_tools, namespaced_toolset,
+    shell_tools, task_tools, tool_proxy_toolset, EnvironmentHandle, ToolProxyToolset,
+};
+pub use presets::{
+    text_output_preset, AgentSpec, AgentSpecError, AgentSpecRegistry, ModelPreset, SdkPreset,
+};
 pub use session::AgentSession;
 pub use starweaver_context::{AgentContext, ResumableState};
 pub use starweaver_core::{
@@ -18,23 +27,26 @@ pub use starweaver_core::{
 };
 pub use starweaver_model::{FunctionModel, FunctionModelInfo, TestModel};
 pub use starweaver_runtime::{
-    model_request, model_request_stream, tool_call, AgentCapability, AgentCheckpoint, AgentError,
-    AgentExecutionDecision, AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentGraphStep,
-    AgentGraphTrace, AgentIterResult, AgentIterationKind, AgentIterationStep, AgentIterationTrace,
-    AgentNode, AgentOverride, AgentResult, AgentResumeCursor, AgentResumeEvidence, AgentRunState,
-    AgentRuntimePolicy, AgentStreamEvent, AgentStreamRecord, AgentStreamResult, CapabilityBundle,
-    CapabilityResult, CostBudget, DirectModelRequest, DynamicInstruction, DynamicInstructionError,
-    DynamicInstructionResult, FunctionDynamicInstruction, FunctionHistoryProcessor,
-    FunctionOutputFunction, FunctionOutputValidator, GraphError, HistoryProcessor,
-    HistoryProcessorError, HistoryProcessorResult, OutputFunction, OutputFunctionContext,
-    OutputFunctionDefinition, OutputPolicy, OutputSchema, OutputValidationError,
-    OutputValidationResult, OutputValidator, OutputValue, ReinjectSystemPromptProcessor,
-    RetryEventKind, StaticCapabilityBundle, UsageLimitError, UsageLimits,
+    model_request, model_request_stream, tool_call, AdapterTraceRecorder, AgentCapability,
+    AgentCheckpoint, AgentError, AgentExecutionDecision, AgentExecutionNode, AgentExecutor,
+    AgentExecutorError, AgentGraphStep, AgentGraphTrace, AgentIterResult, AgentIterationKind,
+    AgentIterationStep, AgentIterationTrace, AgentNode, AgentOverride, AgentResult,
+    AgentResumeCursor, AgentResumeEvidence, AgentRunState, AgentRuntimePolicy, AgentStreamEvent,
+    AgentStreamRecord, AgentStreamResult, CapabilityBundle, CapabilityResult, CostBudget,
+    DirectModelRequest, DynamicInstruction, DynamicInstructionError, DynamicInstructionResult,
+    FunctionDynamicInstruction, FunctionHistoryProcessor, FunctionOutputFunction,
+    FunctionOutputValidator, GraphError, HistoryProcessor, HistoryProcessorError,
+    HistoryProcessorResult, OutputFunction, OutputFunctionContext, OutputFunctionDefinition,
+    OutputPolicy, OutputSchema, OutputValidationError, OutputValidationResult, OutputValidator,
+    OutputValue, RecordedSpan, ReinjectSystemPromptProcessor, RetryEventKind, SpanEvent,
+    SpanHandle, SpanKind, SpanSpec, SpanStatus, StaticCapabilityBundle, TraceLevel, TraceRecorder,
+    UsageLimitError, UsageLimits,
 };
 pub use starweaver_tools::{
-    mcp_tool_definition, FunctionTool, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport,
-    NativeMcpServer, PrefixedTool, PrefixedToolset, StaticToolset, Tool, ToolContext, ToolError,
-    ToolInstruction, ToolRegistry, ToolResult, Toolset,
+    mcp_tool_definition, typed_tool, DynToolset, EmptyToolArgs, FunctionTool, McpToolSpec,
+    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset,
+    StaticToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolRegistry, ToolResult,
+    Toolset, TypedFunctionTool,
 };
 pub use subagent::{AgentApp, SubagentConfig, SubagentRegistry, SubagentResult, SubagentTask};
 pub use subagent_config::{
@@ -58,6 +70,7 @@ pub struct AgentBuilder {
     capabilities: Vec<Arc<dyn AgentCapability>>,
     capability_bundles: Vec<Arc<dyn CapabilityBundle>>,
     subagents: SubagentRegistry,
+    trace_recorder: Option<starweaver_runtime::DynTraceRecorder>,
     policy: AgentRuntimePolicy,
 }
 
@@ -81,6 +94,7 @@ impl AgentBuilder {
             capabilities: Vec::new(),
             capability_bundles: Vec::new(),
             subagents: SubagentRegistry::new(),
+            trace_recorder: None,
             policy: AgentRuntimePolicy::default(),
         }
     }
@@ -211,6 +225,13 @@ impl AgentBuilder {
         self
     }
 
+    /// Set runtime trace recorder.
+    #[must_use]
+    pub fn trace_recorder(mut self, recorder: starweaver_runtime::DynTraceRecorder) -> Self {
+        self.trace_recorder = Some(recorder);
+        self
+    }
+
     /// Set runtime policy.
     #[must_use]
     pub const fn policy(mut self, policy: AgentRuntimePolicy) -> Self {
@@ -270,6 +291,9 @@ impl AgentBuilder {
         }
         for bundle in self.capability_bundles {
             agent = agent.with_capability_bundle(bundle.as_ref());
+        }
+        if let Some(recorder) = self.trace_recorder {
+            agent = agent.with_trace_recorder(recorder);
         }
         agent
     }

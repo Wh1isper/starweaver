@@ -7,22 +7,25 @@
 ```rust
 use std::sync::Arc;
 
-use serde_json::json;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use starweaver_agent::{
-    AgentBuilder, AgentContext, FunctionTool, TestModel, ToolContext, ToolRegistry, ToolResult,
+    typed_tool, AgentBuilder, AgentContext, TestModel, ToolContext, ToolRegistry, ToolResult,
 };
 
 #[derive(Debug)]
 struct Tenant(String);
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct TenantArgs {}
+
 # async fn example() -> Result<(), starweaver_agent::AgentError> {
-let tool = FunctionTool::new(
+let tool = typed_tool::<TenantArgs, _, _>(
     "tenant",
     Some("Return tenant".to_string()),
-    json!({"type": "object"}),
-    |ctx: ToolContext, _args: serde_json::Value| async move {
+    |ctx: ToolContext, _args: TenantArgs| async move {
         let tenant = ctx.dependency::<Tenant>().expect("tenant dependency");
-        Ok(ToolResult::new(json!({"tenant": tenant.0})))
+        Ok(ToolResult::new(serde_json::json!({"tenant": tenant.0})))
     },
 );
 

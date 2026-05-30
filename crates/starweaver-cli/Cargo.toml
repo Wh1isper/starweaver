@@ -17,7 +17,10 @@ name = "starweaver-cli"
 path = "src/main.rs"
 
 [dependencies]
+starweaver-agent.workspace = true
 starweaver-core.workspace = true
+starweaver-model.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

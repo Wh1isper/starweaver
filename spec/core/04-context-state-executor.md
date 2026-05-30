@@ -70,7 +70,7 @@ Typed dependencies remain process-local and are rehydrated by the application or
 
 `NoteStore` is serializable session memory. Model-facing context instructions expose note keys and metadata while keeping note values available to tools and application code through context APIs.
 
-This shape supports ya-agent-sdk-style persistent notes and future user-controlled memory tools.
+This shape supports persistent notes and future user-controlled memory tools.
 
 ## Event and Message Buses
 
@@ -115,6 +115,12 @@ A child context starts with:
 - a fresh run id assigned when the child run starts
 
 After successful delegation, the parent absorbs child usage and notes. Additional state absorption should be policy-driven when subagents begin modifying shared domains.
+
+## Native Environment and Context Boundary
+
+`AgentContext` is the short-lived run/session evidence carrier. `EnvironmentProvider` is the long-lived resource owner. The SDK should bind an environment into context through typed dependencies and persist only serializable environment references in `StateStore`.
+
+This keeps the core context native to the runtime while allowing SDK apps, service runtimes, and downstream products to restore local, Docker, sandbox, or remote environments with application-specific factories. The context should expose small helpers for environment state snapshots, trace parents, messages, notes, and durable cursors; concrete filesystem, shell, media, and resource behavior belongs to environment providers and tool bundles.
 
 ## Executor Evidence
 

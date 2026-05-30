@@ -1,6 +1,6 @@
 # Agent SDK App Surface
 
-`starweaver-agent` is the public SDK facade. It should provide a small, ergonomic surface over a highly testable core runtime, matching the application role that ya-agent-sdk plays while retaining Rust-native types and composition.
+`starweaver-agent` is the public SDK facade. It should provide a small, ergonomic surface over a highly testable core runtime while retaining Rust-native types and composition.
 
 ## Public Surfaces
 

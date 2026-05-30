@@ -22,7 +22,7 @@ let toolset = McpToolset::new(
 );
 
 assert_eq!(toolset.name(), "docs");
-assert_eq!(toolset.tools().len(), 1);
+assert_eq!(toolset.get_tools().len(), 1);
 ```
 
 ## Provider-native MCP

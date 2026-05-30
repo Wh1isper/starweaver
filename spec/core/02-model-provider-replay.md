@@ -23,6 +23,15 @@ The model layer is the compatibility boundary between Starweaver's canonical age
 | Gemini             | generateContent         | text, function call, function response, system instruction, generation config, usage |
 | Bedrock            | Converse                | text, tool use, tool result, system field, inference config, usage                   |
 
+## Trace and Replay Evidence
+
+Model calls produce two evidence layers:
+
+1. Canonical model evidence from the runtime: provider-neutral messages, settings, request parameters, canonical stream events, canonical response, usage, finish reason, provider metadata, run id, conversation id, and trace context. This is info-level telemetry and is enabled by default.
+2. Raw LLM-request evidence from the protocol client: exact HTTP request, merged headers/body/options, raw provider response, provider status, and future raw stream chunks. This is debug-level telemetry and is enabled by application policy.
+
+Replay fixtures continue to use canonical history plus expected provider request/response. The debug recorder provides a direct capture path for generating or auditing fixtures. Sensitive headers and prompt content pass through redaction before exporter delivery; local fixture import keeps scrub rules in the replay tooling.
+
 ## Replay Fixture Contract
 
 Every replay fixture stores the full compatibility surface in JSON:

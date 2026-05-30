@@ -59,7 +59,7 @@ async fn prefixed_toolset_prefixes_tools_and_instruction_groups() {
     let definitions = registry.definitions();
     assert_eq!(definitions.len(), 1);
     assert_eq!(definitions[0].name, "api_conditions");
-    assert_eq!(registry.instructions(), vec!["Use weather tools."]);
+    assert_eq!(registry.get_instructions(), vec!["Use weather tools."]);
     let call = starweaver_model::ToolCallPart {
         id: "call_1".to_string(),
         name: "api_conditions".to_string(),

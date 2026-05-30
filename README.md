@@ -2,17 +2,18 @@
 
 Starweaver is a Rust agent SDK for building provider-neutral AI agents with a solid core runtime, reusable tool schema, first-party SDK ergonomics, and durable execution foundations.
 
-The project focuses on four layers:
+The project focuses on these workspace layers:
 
 - `starweaver-model`: provider-neutral model messages, settings, profiles, transport, and replay-tested provider mappings.
 - `starweaver-tools`: function tools, toolsets, MCP foundations, tool metadata, approval/deferred markers, and execution primitives.
-- `starweaver-runtime`: the deterministic agent loop, tool loop, output validation, retries, stream records, capability hooks, and executor checkpoints.
-- `starweaver-agent`: the public SDK facade with `AgentBuilder`, `AgentApp`, SDK sessions, subagents, and application-facing helpers.
+- `starweaver-runtime`: the deterministic agent loop, tool loop, output validation, retries, stream records, capability hooks, trace recording, and executor checkpoints.
+- `starweaver-agent`: the public SDK facade with `AgentBuilder`, `AgentApp`, SDK sessions, spec presets, first-party tool bundles, subagents, and application-facing helpers.
+- `starweaver-environment`: filesystem, shell, resources, policy, state snapshots, virtual provider tests, and local provider foundations.
+- `starweaver-claw`: durable session foundations with `SessionStore`, run records, checkpoint storage, stream replay, and compact run projections.
+- `starweaver-cli`: local CLI entry point for version, run, diagnostics, and replay-check helpers.
 
 Planned layers are specified before public API graduation:
 
-- `starweaver-environment`: filesystem, shell, resources, processes, sandbox, and `EnvironmentProvider` abstractions.
-- `starweaver-claw`: durable sessions, `SessionStore`, service execution, interruption, resume, and stream replay.
 - `starweaver-platform`: hosted orchestration and external protocol adapters.
 
 ## Design References

@@ -17,6 +17,7 @@ use crate::{
     iteration::{AgentIterResult, AgentIterationTrace},
     run::{AgentRunState, RunStatus},
     stream::{push_stream_event, AgentStreamEvent, AgentStreamRecord, AgentStreamResult},
+    trace::{SpanEvent, SpanKind, SpanSpec, SpanStatus},
 };
 
 impl Agent {
@@ -227,6 +228,13 @@ impl Agent {
             }};
         }
 
+        let run_span = self.trace_recorder.start_span(
+            SpanSpec::new("gen_ai.invoke_agent")
+                .with_attribute("gen_ai.operation.name", serde_json::json!("invoke_agent")),
+            &context.trace_context,
+        );
+        let previous_trace_context = context.trace_context.clone();
+        context.trace_context = run_span.context().clone();
         let run_id = RunId::new();
         context.run_id = Some(run_id.clone());
         let conversation_id = context.conversation_id.clone();
@@ -254,7 +262,25 @@ impl Agent {
         let mut tool_retries = BTreeMap::<String, usize>::new();
 
         loop {
+            let step_span = self.trace_recorder.start_span(
+                SpanSpec::new("starweaver.loop.step")
+                    .with_attribute("starweaver.run.step", serde_json::json!(state.run_step)),
+                run_span.context(),
+            );
             if state.run_step >= self.policy.max_steps {
+                self.trace_recorder.close_span(
+                    &step_span,
+                    SpanStatus::Error {
+                        error_type: "step_limit_exceeded".to_string(),
+                    },
+                );
+                self.trace_recorder.close_span(
+                    &run_span,
+                    SpanStatus::Error {
+                        error_type: "step_limit_exceeded".to_string(),
+                    },
+                );
+                context.trace_context = previous_trace_context;
                 state.status = RunStatus::Failed;
                 return Err(AgentError::StepLimitExceeded {
                     steps: state.run_step,
@@ -284,11 +310,26 @@ impl Agent {
                 response
             } else {
                 self.check_before_request(&state)?;
-                let messages = self.process_history(&state).await?;
+                let messages = self.process_history(&state, context).await?;
                 let params = self.effective_request_params(&state, context).await?;
+                let mut model_spec = SpanSpec::new("gen_ai.inference")
+                    .with_kind(SpanKind::Client)
+                    .with_attribute("gen_ai.operation.name", serde_json::json!("chat"))
+                    .with_attribute(
+                        "gen_ai.request.model",
+                        serde_json::json!(self.model.model_name()),
+                    );
+                if let Some(provider_name) = self.model.provider_name() {
+                    model_spec = model_spec
+                        .with_attribute("gen_ai.provider.name", serde_json::json!(provider_name));
+                }
+                let model_span = self
+                    .trace_recorder
+                    .start_span(model_spec, step_span.context());
+                self.record_model_request_event(&model_span, &messages, settings.as_ref(), &params);
                 let request_context =
                     ModelRequestContext::new(run_id.clone(), conversation_id.clone())
-                        .with_trace_context(context.trace_context.clone());
+                        .with_trace_context(model_span.context().clone());
                 if stream_events.is_some() {
                     let mut response = None;
                     for model_event in self
@@ -303,19 +344,27 @@ impl Agent {
                                 event: model_event.clone(),
                             }
                         );
+                        self.record_model_stream_event(&model_span, &model_event);
                         if let ModelResponseStreamEvent::FinalResult(final_response) = model_event {
                             response = Some(final_response);
                         }
                     }
-                    response.ok_or_else(|| {
+                    let response = response.ok_or_else(|| {
                         AgentError::Capability(
                             "model stream did not produce a final result".to_string(),
                         )
-                    })?
+                    })?;
+                    self.record_model_response_event(&model_span, &response);
+                    self.trace_recorder.close_span(&model_span, SpanStatus::Ok);
+                    response
                 } else {
-                    self.model
+                    let response = self
+                        .model
                         .request(messages, settings, params, request_context)
-                        .await?
+                        .await?;
+                    self.record_model_response_event(&model_span, &response);
+                    self.trace_recorder.close_span(&model_span, SpanStatus::Ok);
+                    response
                 }
             };
             state.run_step += 1;
@@ -362,6 +411,9 @@ impl Agent {
                                 output: output.clone(),
                             }
                         );
+                        self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                        self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                        context.trace_context = previous_trace_context;
                         return Ok(AgentResult {
                             output,
                             structured_output: state.structured_output.clone(),
@@ -395,6 +447,7 @@ impl Agent {
                             }
                         );
                         next_prompt = message;
+                        self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
                         continue;
                     }
                     Err(error) => return Err(Self::capability_error(error)),
@@ -420,19 +473,60 @@ impl Agent {
                     );
                     let tool_retry = *tool_retries.get(&call.name).unwrap_or(&0);
                     let tool_max_retries = self.tools.max_retries_for(&call.name);
+                    let tool_span = self.trace_recorder.start_span(
+                        SpanSpec::new("gen_ai.execute_tool")
+                            .with_attribute(
+                                "gen_ai.tool.name",
+                                serde_json::json!(call.name.clone()),
+                            )
+                            .with_attribute(
+                                "gen_ai.tool.call.id",
+                                serde_json::json!(call.id.clone()),
+                            ),
+                        step_span.context(),
+                    );
+                    let mut tool_dependencies = context.dependencies.clone();
+                    tool_dependencies.insert(context.clone());
                     let mut tool_context = ToolContext::new(
                         state.run_id.clone(),
                         state.conversation_id.clone(),
                         state.run_step,
                     )
-                    .with_dependencies(context.dependencies.clone())
-                    .with_state(context.state.clone())
-                    .with_notes(context.notes.clone())
-                    .with_trace_context(context.trace_context.clone())
+                    .with_dependencies(tool_dependencies)
+                    .with_trace_context(tool_span.context().clone())
                     .with_retry_budget(tool_retry, tool_max_retries);
                     self.call_before_tool_execution(&mut state, context, &mut tool_context, call)
                         .await?;
+                    self.trace_recorder.record_event(
+                        &tool_span,
+                        SpanEvent::new("starweaver.tool.call")
+                            .with_attribute("gen_ai.tool.call.arguments", call.arguments.clone()),
+                    );
                     let mut tool_return = self.tools.execute_call(tool_context, call).await;
+                    self.trace_recorder.record_event(
+                        &tool_span,
+                        SpanEvent::new("starweaver.tool.return")
+                            .with_attribute("gen_ai.tool.call.result", tool_return.content.clone())
+                            .with_attribute(
+                                "starweaver.tool.is_error",
+                                serde_json::json!(tool_return.is_error),
+                            ),
+                    );
+                    if tool_return.is_error {
+                        self.trace_recorder.close_span(
+                            &tool_span,
+                            SpanStatus::Error {
+                                error_type: tool_return
+                                    .metadata
+                                    .get("error_kind")
+                                    .and_then(serde_json::Value::as_str)
+                                    .unwrap_or("tool_error")
+                                    .to_string(),
+                            },
+                        );
+                    } else {
+                        self.trace_recorder.close_span(&tool_span, SpanStatus::Ok);
+                    }
                     self.call_after_tool_result(&mut state, context, call, &mut tool_return)
                         .await?;
                     if tool_return.is_error && is_tool_retry_return(&tool_return) {
@@ -471,6 +565,7 @@ impl Agent {
                     checkpoint!(AgentExecutionNode::ToolReturn, &state);
                 }
                 next_prompt.clear();
+                self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
                 continue;
             }
 
@@ -497,6 +592,9 @@ impl Agent {
                             output: output.clone(),
                         }
                     );
+                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                    self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                    context.trace_context = previous_trace_context;
                     return Ok(AgentResult {
                         output,
                         structured_output: state.structured_output.clone(),
@@ -529,6 +627,7 @@ impl Agent {
                         }
                     );
                     next_prompt = message;
+                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
                 }
                 Err(error) => return Err(Self::capability_error(error)),
             }

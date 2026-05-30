@@ -79,7 +79,7 @@ The TODO memo owns the working matrix for:
 
 - Pydantic AI docs features
 - Pydantic AI provider tests
-- ya-agent-sdk modules and tests
+- first-party SDK modules and tests
 - Starweaver specs
 - current implementation status
 - next implementation batch
@@ -93,6 +93,6 @@ Before a release candidate:
 - script smoke tests pass
 - docs examples pass
 - feature matrix has status for every Pydantic AI core docs page
-- feature matrix has status for every ya-agent-sdk first-party module family
+- feature matrix has status for every first-party SDK module family
 - replay matrix includes supported provider families and known gaps
 - specs reflect all public crate boundaries

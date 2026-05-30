@@ -106,9 +106,9 @@ impl Toolset for PrefixedToolset {
         &self.name
     }
 
-    fn tools(&self) -> Vec<DynTool> {
+    fn get_tools(&self) -> Vec<DynTool> {
         self.toolset
-            .tools()
+            .get_tools()
             .into_iter()
             .map(|tool| Arc::new(PrefixedTool::new(self.prefix.clone(), tool)) as DynTool)
             .collect()
@@ -118,9 +118,13 @@ impl Toolset for PrefixedToolset {
         self.toolset.max_retries()
     }
 
-    fn instructions(&self) -> Vec<ToolInstruction> {
+    fn id(&self) -> Option<&str> {
+        Some(&self.name)
+    }
+
+    fn get_instructions(&self) -> Vec<ToolInstruction> {
         self.toolset
-            .instructions()
+            .get_instructions()
             .into_iter()
             .map(|instruction| ToolInstruction {
                 group: prefixed_name(&self.prefix, &instruction.group),

@@ -6,7 +6,7 @@ use starweaver_context::AgentContext;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelResponse,
-    ModelSettings, ToolDefinition,
+    ModelResponseStreamEvent, ModelSettings, ToolDefinition,
 };
 
 use crate::{
@@ -19,6 +19,7 @@ use crate::{
         parse_output, OutputFunctionContext, OutputSchema, OutputValidationError, OutputValue,
     },
     run::AgentRunState,
+    trace::{SpanEvent, SpanSpec, SpanStatus},
 };
 
 impl Agent {
@@ -44,12 +45,15 @@ impl Agent {
                     metadata: serde_json::Map::new(),
                 }
             }));
-            parts.extend(self.tools.instructions().into_iter().map(|instruction| {
-                ModelRequestPart::Instruction {
-                    text: instruction,
-                    metadata: serde_json::Map::new(),
-                }
-            }));
+            parts.extend(
+                self.tools
+                    .get_instructions()
+                    .into_iter()
+                    .map(|instruction| ModelRequestPart::Instruction {
+                        text: instruction,
+                        metadata: serde_json::Map::new(),
+                    }),
+            );
         }
         if !state.pending_tool_returns.is_empty() {
             parts.extend(
@@ -90,15 +94,31 @@ impl Agent {
         state: &AgentRunState,
         context: &AgentContext,
     ) -> Result<AgentExecutionDecision, AgentError> {
+        let checkpoint_span = self.trace_recorder.start_span(
+            SpanSpec::new("starweaver.checkpoint")
+                .with_attribute("starweaver.checkpoint.node", serde_json::json!(node)),
+            &context.trace_context,
+        );
         let mut checkpoint = AgentCheckpoint::new(node, state);
-        checkpoint.resume.trace_context = context.trace_context.clone();
+        checkpoint.resume.trace_context = checkpoint_span.context().clone();
+        checkpoint.metadata.insert(
+            "trace_id".to_string(),
+            serde_json::json!(checkpoint_span.context().trace_id),
+        );
+        checkpoint.metadata.insert(
+            "span_id".to_string(),
+            serde_json::json!(checkpoint_span.context().span_id),
+        );
         for capability in &self.capabilities {
             capability
                 .on_checkpoint_with_context(state, context, &checkpoint)
                 .await
                 .map_err(Self::capability_error)?;
         }
-        Ok(self.executor.checkpoint(checkpoint).await?)
+        let decision = self.executor.checkpoint(checkpoint).await?;
+        self.trace_recorder
+            .close_span(&checkpoint_span, SpanStatus::Ok);
+        Ok(decision)
     }
 
     pub(super) async fn dynamic_instructions(
@@ -158,15 +178,106 @@ impl Agent {
     pub(super) async fn process_history(
         &self,
         state: &AgentRunState,
+        context: &AgentContext,
     ) -> Result<Vec<ModelMessage>, AgentError> {
         let mut messages = state.message_history.clone();
         for processor in &self.history_processors {
+            let before_count = messages.len();
             messages = processor
                 .process(state, messages)
                 .await
                 .map_err(Self::history_processor_error)?;
+            let after_count = messages.len();
+            if before_count != after_count {
+                let span = self.trace_recorder.start_span(
+                    SpanSpec::new("starweaver.history.compaction")
+                        .with_attribute(
+                            "starweaver.capability.name",
+                            serde_json::json!("history_processor"),
+                        )
+                        .with_attribute(
+                            "starweaver.history.messages.before",
+                            serde_json::json!(before_count),
+                        )
+                        .with_attribute(
+                            "starweaver.history.messages.after",
+                            serde_json::json!(after_count),
+                        ),
+                    &context.trace_context,
+                );
+                self.trace_recorder.close_span(&span, SpanStatus::Ok);
+            }
         }
         Ok(messages)
+    }
+
+    pub(super) fn record_model_request_event(
+        &self,
+        span: &crate::trace::SpanHandle,
+        messages: &[ModelMessage],
+        settings: Option<&ModelSettings>,
+        params: &ModelRequestParameters,
+    ) {
+        self.trace_recorder.record_event(
+            span,
+            SpanEvent::new("starweaver.model.request")
+                .with_attribute(
+                    "starweaver.model.message_count",
+                    serde_json::json!(messages.len()),
+                )
+                .with_attribute(
+                    "starweaver.model.tool_count",
+                    serde_json::json!(params.tools.len()),
+                )
+                .with_attribute(
+                    "starweaver.model.native_tool_count",
+                    serde_json::json!(params.native_tools.len()),
+                )
+                .with_attribute(
+                    "starweaver.model.has_output_schema",
+                    serde_json::json!(params.output_schema.is_some()),
+                )
+                .with_attribute(
+                    "gen_ai.request",
+                    serde_json::json!({
+                        "messages": messages,
+                        "settings": settings,
+                        "params": params,
+                    }),
+                ),
+        );
+    }
+
+    pub(super) fn record_model_response_event(
+        &self,
+        span: &crate::trace::SpanHandle,
+        response: &ModelResponse,
+    ) {
+        self.trace_recorder.record_event(
+            span,
+            SpanEvent::new("starweaver.model.response")
+                .with_attribute("gen_ai.response", serde_json::json!(response))
+                .with_attribute(
+                    "gen_ai.usage.input_tokens",
+                    serde_json::json!(response.usage.input_tokens),
+                )
+                .with_attribute(
+                    "gen_ai.usage.output_tokens",
+                    serde_json::json!(response.usage.output_tokens),
+                ),
+        );
+    }
+
+    pub(super) fn record_model_stream_event(
+        &self,
+        span: &crate::trace::SpanHandle,
+        event: &ModelResponseStreamEvent,
+    ) {
+        self.trace_recorder.record_event(
+            span,
+            SpanEvent::new("starweaver.model.stream_event")
+                .with_attribute("gen_ai.response.stream_event", serde_json::json!(event)),
+        );
     }
 
     pub(super) async fn effective_request_params(

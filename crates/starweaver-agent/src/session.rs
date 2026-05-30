@@ -1,6 +1,10 @@
 //! SDK session wrapper for context-backed multi-run applications.
 
-use starweaver_context::{AgentContext, ResumableState};
+use serde_json::Value;
+use starweaver_context::{AgentContext, BusMessage, ResumableState};
+use starweaver_environment::DynEnvironmentProvider;
+
+use crate::attach_environment;
 use starweaver_core::TraceContext;
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentError, AgentIterResult, AgentResult, AgentStreamRecord,
@@ -55,6 +59,39 @@ impl AgentSession {
     #[must_use]
     pub fn export_state(&self) -> ResumableState {
         self.context.export_state()
+    }
+
+    /// Set a serializable state domain value.
+    pub fn set_state(&mut self, key: impl Into<String>, value: Value) {
+        self.context.state.set(key, value);
+    }
+
+    /// Set a persistent note.
+    pub fn set_note(&mut self, key: impl Into<String>, value: impl Into<String>) {
+        self.context.notes.set(key, value);
+    }
+
+    /// Enqueue a session message.
+    pub fn enqueue_message(&mut self, topic: impl Into<String>, payload: Value) {
+        self.context
+            .enqueue_message(BusMessage::new(topic, payload));
+    }
+
+    /// Attach session metadata.
+    pub fn set_metadata(&mut self, key: impl Into<String>, value: Value) {
+        self.context.metadata.insert(key.into(), value);
+    }
+
+    /// Attach the active environment provider to the session context.
+    #[must_use]
+    pub fn with_environment(mut self, provider: DynEnvironmentProvider) -> Self {
+        attach_environment(&mut self.context, provider);
+        self
+    }
+
+    /// Replace the active environment provider on the session context.
+    pub fn set_environment(&mut self, provider: DynEnvironmentProvider) {
+        attach_environment(&mut self.context, provider);
     }
 
     /// Attach trace correlation context to the session.

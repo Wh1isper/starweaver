@@ -44,10 +44,12 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1.89"
+schemars = {{ version = "0.8.22", features = ["derive"] }}
 serde = {{ version = "1.0.228", features = ["derive"] }}
 serde_json = "1.0.145"
 starweaver-agent = {{ path = "{}" }}
 starweaver-context = {{ path = "{}" }}
+starweaver-environment = {{ path = "{}" }}
 starweaver-model = {{ path = "{}" }}
 starweaver-runtime = {{ path = "{}" }}
 starweaver-tools = {{ path = "{}" }}
@@ -55,6 +57,7 @@ tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
 "#,
             root.join("crates/starweaver-agent").display(),
             root.join("crates/starweaver-context").display(),
+            root.join("crates/starweaver-environment").display(),
             root.join("crates/starweaver-model").display(),
             root.join("crates/starweaver-runtime").display(),
             root.join("crates/starweaver-tools").display(),

@@ -1,6 +1,6 @@
 # First-Party Tool Bundles
 
-First-party tool bundles make Starweaver useful out of the box. They integrate ya-agent-sdk-style tools through capabilities, `AgentContext`, and `EnvironmentProvider`, while keeping the runtime kernel generic.
+First-party tool bundles make Starweaver useful out of the box. They integrate application-facing capabilities through `AgentContext`, `EnvironmentProvider`, and normal toolsets while keeping the runtime kernel generic.
 
 ## Bundle Architecture
 
@@ -25,7 +25,8 @@ Each bundle should expose:
 
 - tool definitions
 - tool implementations
-- tool instructions
+- grouped tool instructions with stable deduplication keys
+- prompt-ready usage guidance that can be injected through SDK presets
 - approval metadata
 - retry policy
 - context dependencies
@@ -39,31 +40,31 @@ Each bundle should expose:
 
 Tools:
 
-- read file
-- write file
-- append file
-- edit file
-- list directory
-- glob
-- grep
-- stat
-- snapshot/checksum
+- `view`: read focused UTF-8 files after discovery
+- `write`: write intentional provider-scoped file contents with approval metadata when configured
+- `edit`: apply exact replacements or create files
+- `multi_edit`: apply multiple exact replacements atomically
+- `ls`: list provider-scoped entries
+- `glob`: discover candidate paths with ripgrep-style glob semantics
+- `grep`: search provider-scoped text with regex line matching, include globs, context lines, and max-result controls
+- `mkdir`, `delete`, `move`, `copy`: emit host/provider filesystem operation envelopes
+- `resource_ref`: create durable provider resource references
 
-Backed by `EnvironmentProvider.file_ops()`.
+Backed by `EnvironmentProvider` file/search operations. Local providers should use native Rust libraries for grep/glob acceleration: `globset` for path matching, `grep-regex` and `grep-matcher` for line regex search, and `ignore` for traversal and ignore-file semantics. Virtual and sandbox providers should preserve the same result schema for deterministic tests and durable replay.
 
 ### Shell Bundle
 
 Tools:
 
-- exec command
-- spawn background process
-- input to process
-- signal process
-- kill process
-- process status
-- collect output
+- `shell_exec`: bounded one-shot command execution
+- `shell_exec` with `background=true`: create a durable process handle for long-running commands
+- `shell_input`: send stdin to a background process
+- `shell_signal`: send a signal to a background process
+- `shell_kill`: terminate and clean up a background process
+- `shell_status`: inspect process state
+- `shell_wait`: wait for or poll background output
 
-Backed by `EnvironmentProvider.shell()`.
+Backed by `EnvironmentProvider` shell operations. Local desktop-style execution should use `SandboxedShellProvider` so command execution sees the same workspace mounts as filesystem tools while policy and diagnostics remain provider-owned.
 
 ### Resource and Media Bundle
 
@@ -81,27 +82,26 @@ Backed by `EnvironmentProvider.resources()` and media capability hooks.
 
 Tools:
 
-- web search
-- page fetch
-- page scrape
-- resource download
+- `search`: web search
+- `search_stock_image`: royalty-free stock image search
+- `search_image`: real-time image search
+- `fetch`: page or resource fetch
+- `scrape`: page-to-Markdown scrape
+- `download`: resource download
 - citation metadata capture
 
 The bundle should support gateway routing and deterministic tests through injectable clients.
 
-### Task and Note Bundle
+### Task Bundle
 
 Tools:
 
-- create task
-- update task
-- list tasks
-- set note
-- get note
-- delete note
-- list notes
+- `task_create`: create a lightweight task operation envelope
+- `task_get`: get task details by id
+- `task_update`: update task status, content, or dependencies
+- `task_list`: list known tasks
 
-Backed by `AgentContext` state and note stores.
+Backed by `AgentContext` task state or an SDK host task service. Notes and arbitrary state stay on `AgentContext` as SDK data accessed through typed dependencies by custom tools.
 
 ### Skill Bundle
 
@@ -128,16 +128,16 @@ Responsibilities:
 - preserve MCP progress/cancellation events in `AgentContext` events
 - test stdio and streamable HTTP transports with deterministic servers
 
-### Tool Search and Proxy Bundle
+### Tool Proxy Bundle
 
 Tools:
 
-- search tool catalog
-- proxy remote tool call
+- `search_tools`: search the wrapped tool catalog and return XML with full schemas
+- `call_tool`: invoke a wrapped tool by name with JSON arguments
 - expose ranked tool metadata
-- route dynamic toolsets
+- route large dynamic toolsets through a stable two-tool model-facing surface
 
-This bundle keeps large tool surfaces manageable and matches ya-agent-sdk tool-search patterns.
+This bundle keeps large tool surfaces manageable through a stable two-tool proxy. Tool schemas are returned in search results, and provider/private built-in tool search stays in the model native-tool layer. `ToolProxyToolset` lives in the core tool crate as a generic toolset combinator; SDK users can wrap it with `PrefixedToolset` when they need multiple proxy surfaces.
 
 ## Capability Integration
 

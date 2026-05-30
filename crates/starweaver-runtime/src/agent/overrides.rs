@@ -48,7 +48,7 @@ impl AgentOverride {
 
     /// Override runtime tools.
     #[must_use]
-    pub fn tools(mut self, tools: ToolRegistry) -> Self {
+    pub fn with_tools(mut self, tools: ToolRegistry) -> Self {
         self.agent.tools = tools;
         self
     }
@@ -69,7 +69,7 @@ impl AgentOverride {
 
     /// Override static instructions.
     #[must_use]
-    pub fn instructions(mut self, instructions: Vec<String>) -> Self {
+    pub fn with_instructions(mut self, instructions: Vec<String>) -> Self {
         self.agent.instructions = instructions;
         self
     }

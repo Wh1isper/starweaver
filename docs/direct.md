@@ -63,17 +63,25 @@ assert!(matches!(events.last(), Some(ModelResponseStreamEvent::FinalResult(_))))
 ```rust
 use std::sync::Arc;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use starweaver_agent::{
-    tool_call, ConversationId, FunctionTool, RunId, ToolContext, ToolRegistry, ToolResult,
+    tool_call, typed_tool, ConversationId, RunId, ToolContext, ToolRegistry, ToolResult,
 };
 use starweaver_model::ToolCallPart;
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct EchoArgs {
+    value: i64,
+}
+
 # async fn example() -> Result<(), starweaver_agent::AgentError> {
-let tool = FunctionTool::new(
+let tool = typed_tool::<EchoArgs, _, _>(
     "echo",
     Some("Echo arguments".to_string()),
-    serde_json::json!({"type": "object"}),
-    |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    |_ctx: ToolContext, args: EchoArgs| async move {
+        Ok(ToolResult::new(serde_json::json!({"value": args.value})))
+    },
 );
 let tools = ToolRegistry::new().with_tool(Arc::new(tool));
 let context = ToolContext::new(RunId::new(), ConversationId::new(), 0);

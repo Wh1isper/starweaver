@@ -312,7 +312,7 @@ impl Toolset for McpToolset {
         &self.config.id
     }
 
-    fn tools(&self) -> Vec<DynTool> {
+    fn get_tools(&self) -> Vec<DynTool> {
         self.config
             .tools
             .iter()
@@ -321,7 +321,11 @@ impl Toolset for McpToolset {
             .collect()
     }
 
-    fn instructions(&self) -> Vec<ToolInstruction> {
+    fn id(&self) -> Option<&str> {
+        Some(&self.config.id)
+    }
+
+    fn get_instructions(&self) -> Vec<ToolInstruction> {
         if self.config.include_instructions {
             self.config
                 .instructions

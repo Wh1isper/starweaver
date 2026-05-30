@@ -82,9 +82,10 @@ async fn runtime_passes_state_and_notes_to_tools() {
         Some("Return context state and note snapshots".to_string()),
         serde_json::json!({"type": "object"}),
         |ctx: ToolContext, _args| async move {
+            let agent_context = ctx.dependency::<AgentContext>().unwrap();
             Ok(ToolResult::new(serde_json::json!({
-                "workspace": ctx.state.get("workspace").unwrap()["root"],
-                "language": ctx.notes.get("language").unwrap(),
+                "workspace": agent_context.state.get("workspace").unwrap()["root"],
+                "language": agent_context.notes.get("language").unwrap(),
             })))
         },
     );

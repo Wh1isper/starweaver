@@ -64,7 +64,7 @@ impl ToolRegistry {
     /// Insert all tools and instructions from a toolset.
     pub fn insert_toolset(&mut self, toolset: &DynToolset) {
         let max_retries = toolset.max_retries();
-        for tool in toolset.tools() {
+        for tool in toolset.get_tools() {
             if let Some(max_retries) = max_retries {
                 if tool.max_retries().is_none() {
                     self.toolset_max_retries
@@ -73,7 +73,7 @@ impl ToolRegistry {
             }
             self.insert(tool);
         }
-        for instruction in toolset.instructions() {
+        for instruction in toolset.get_instructions() {
             self.insert_instruction(instruction);
         }
     }
@@ -96,7 +96,7 @@ impl ToolRegistry {
 
     /// Return instruction text in stable group order.
     #[must_use]
-    pub fn instructions(&self) -> Vec<String> {
+    pub fn get_instructions(&self) -> Vec<String> {
         self.instructions.values().cloned().collect()
     }
 

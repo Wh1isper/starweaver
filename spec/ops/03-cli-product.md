@@ -33,6 +33,10 @@ flowchart TD
     cli --> render
 ```
 
+## Application Design Notes
+
+Local-first usage should validate the SDK through commands that bind a local or virtual environment, load project/global config, create an `AgentApp`, run with collected or rendered streams, persist session state, and inspect compact traces. CLI commands should use the same `SessionStore` and environment-provider contracts as service workflows so local and service runs share checkpoint/reload semantics.
+
 ## Commands
 
 Initial command families:

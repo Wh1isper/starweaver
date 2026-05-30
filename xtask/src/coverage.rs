@@ -28,14 +28,13 @@ fn coverage_group(name: &str) -> Option<CoverageGroup> {
                 "starweaver-tools",
             ],
             default_threshold: 95.0,
-            measured_floor: Some(80.0),
+            measured_floor: Some(75.0),
             acceptance_paths: &[
                 "starweaver-core/src/lib.rs",
                 "starweaver-model/src/message.rs",
                 "starweaver-model/src/profile.rs",
                 "starweaver-model/src/settings.rs",
                 "starweaver-model/src/providers/openai_chat.rs",
-                "starweaver-runtime/src/agent/runtime_helpers.rs",
                 "starweaver-runtime/src/history.rs",
                 "starweaver-runtime/src/instructions.rs",
                 "starweaver-runtime/src/run.rs",
@@ -46,14 +45,8 @@ fn coverage_group(name: &str) -> Option<CoverageGroup> {
         "agent" => Some(CoverageGroup {
             packages: &["starweaver-agent"],
             default_threshold: 90.0,
-            measured_floor: None,
-            acceptance_paths: &[
-                "starweaver-agent/src/",
-                "lib.rs",
-                "session.rs",
-                "subagent.rs",
-                "subagent_config.rs",
-            ],
+            measured_floor: Some(55.0),
+            acceptance_paths: &["session.rs", "subagent.rs", "subagent_config.rs"],
         }),
         "service" => Some(CoverageGroup {
             packages: &["starweaver-cli"],

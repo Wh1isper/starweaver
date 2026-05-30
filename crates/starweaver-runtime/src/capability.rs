@@ -320,7 +320,7 @@ pub trait CapabilityBundle: Send + Sync {
     }
 
     /// Static instructions contributed by this bundle.
-    fn instructions(&self) -> Vec<String> {
+    fn get_instructions(&self) -> Vec<String> {
         Vec::new()
     }
 
@@ -330,7 +330,7 @@ pub trait CapabilityBundle: Send + Sync {
     }
 
     /// Runtime tools and tool instructions contributed by this bundle.
-    fn tools(&self) -> Option<ToolRegistry> {
+    fn get_tools(&self) -> Option<ToolRegistry> {
         None
     }
 
@@ -500,7 +500,7 @@ impl CapabilityBundle for StaticCapabilityBundle {
         self.stream_observers.clone()
     }
 
-    fn instructions(&self) -> Vec<String> {
+    fn get_instructions(&self) -> Vec<String> {
         self.instructions.clone()
     }
 
@@ -508,8 +508,8 @@ impl CapabilityBundle for StaticCapabilityBundle {
         self.dynamic_instructions.clone()
     }
 
-    fn tools(&self) -> Option<ToolRegistry> {
-        if self.tools.is_empty() && self.tools.instructions().is_empty() {
+    fn get_tools(&self) -> Option<ToolRegistry> {
+        if self.tools.is_empty() && self.tools.get_instructions().is_empty() {
             None
         } else {
             Some(self.tools.clone())

@@ -1,6 +1,6 @@
 # First-Party Agent SDK
 
-The SDK layer is the application-facing Starweaver product surface. It integrates the core runtime with ya-agent-sdk-style conveniences: sessions, presets, environment-backed tool bundles, subagents, skills, media handling, tool search, and policy configuration.
+The SDK layer is the application-facing Starweaver product surface. It integrates the core runtime with sessions, presets, environment-backed tool bundles, subagents, skills, media handling, tool proxying, and policy configuration.
 
 The SDK should feel ready to use while remaining extensible for custom models, tools, environments, and service runtimes.
 
@@ -44,21 +44,19 @@ flowchart TD
 
 ## Reference Feature Families
 
-The SDK maps ya-agent-sdk concepts into Rust-native surfaces:
-
-| ya-agent-sdk family  | Starweaver SDK target                                     |
+| Feature family       | Starweaver SDK target                                     |
 | -------------------- | --------------------------------------------------------- |
-| `create_agent`       | `AgentBuilder` and `AgentApp`                             |
-| `stream_agent`       | `AgentSession::run_stream` and service streams            |
-| `AgentContext`       | `starweaver-context::AgentContext`                        |
+| agent construction   | `AgentBuilder` and `AgentApp`                             |
+| streaming            | `AgentSession::run_stream` and service streams            |
+| context              | `starweaver-context::AgentContext`                        |
 | resumable state      | `AgentSession::export_state` and `session_from_state`     |
 | lifecycle extensions | capabilities and runtime hooks                            |
-| filters              | capability bundles with context-aware hooks               |
+| policy filters       | capability bundles with context-aware hooks               |
 | environment          | `EnvironmentProvider` and environment-backed tool bundles |
 | subagents            | `SubagentSpec`, registry, delegation lifecycle            |
 | notes/tasks/bus      | context stores and first-party tool bundles               |
 | skills               | serializable skill specs and tool bundles                 |
-| tool search/proxy    | first-party toolset features                              |
+| tool proxy           | first-party proxy toolset features                        |
 | observability        | OTel GenAI spans, Langfuse metadata, trace propagation    |
 
 ## SDK Acceptance Gates

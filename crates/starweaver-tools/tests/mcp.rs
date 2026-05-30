@@ -42,7 +42,7 @@ fn mcp_toolset_exposes_declared_tools_and_instructions() {
     assert_eq!(definitions[0].metadata["mcp_transport"], "streamable_http");
     assert_eq!(definitions[0].metadata["mcp_tool_name"], "forecast");
     assert_eq!(definitions[0].metadata["mcp_task"], true);
-    assert_eq!(registry.instructions(), vec!["Use weather MCP tools."]);
+    assert_eq!(registry.get_instructions(), vec!["Use weather MCP tools."]);
 }
 
 #[tokio::test]

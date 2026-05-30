@@ -181,6 +181,13 @@ impl AgentCheckpoint {
         self.metadata = metadata;
         self
     }
+
+    /// Attach the last persisted stream cursor.
+    #[must_use]
+    pub fn with_stream_cursor(mut self, stream_cursor: usize) -> Self {
+        self.resume = self.resume.with_stream_cursor(stream_cursor);
+        self
+    }
 }
 
 /// Decision returned by an execution checkpoint handler.

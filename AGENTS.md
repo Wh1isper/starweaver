@@ -14,23 +14,24 @@ Current workspace members:
 - `crates/starweaver-core` — shared SDK identity, IDs, metadata, and usage primitives
 - `crates/starweaver-model` — provider-neutral model messages, settings, profiles, native tool request definitions, protocol clients, injectable HTTP transport, deterministic test models, production-request guard, and replay tests
 - `crates/starweaver-context` — AgentContext, typed dependencies, resumable state, state store, event bus, message bus, and usage ledger
-- `crates/starweaver-runtime` — core agent loop, graph state machine, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage/tool-call/cost budgets, typed stream events, scoped overrides, context integration, capability hooks, capability bundles, and durable executor checkpoints
+- `crates/starweaver-runtime` — core agent loop, graph state machine, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage/tool-call/cost budgets, typed stream events, scoped overrides, context integration, capability hooks, capability bundles, trace recording, and durable executor checkpoints
 - `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, and execution primitives
-- `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, and application-facing helpers
+- `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, first-party tool bundles, spec presets, session helpers, and application-facing helpers
+- `crates/starweaver-environment` — `EnvironmentProvider`, virtual and local provider foundations, file and shell policies, resource references, and environment state snapshots
+- `crates/starweaver-claw` — durable session foundations, `SessionStore`, run records, checkpoint storage, stream replay, and compact run trace projections
 - `crates/starweaver-cli` — `starweaver-cli` command-line entry point
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
 
-- Filesystem, shell, resources, and sandbox mapping (`starweaver-environment`)
-- Claw runtime services (`starweaver-claw`)
 - Agent platform capabilities (`starweaver-platform`)
 
 ## Layering Rules
 
 - `starweaver-model`: provider-neutral model protocol, settings, profiles, transports, and provider request mapping.
 - `starweaver-tools`: tool schema, toolsets, metadata, tool context, and protocol-level tool execution primitives.
-- `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage limits, streaming events, and executor checkpoints.
+- `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage limits, streaming events, trace spans, and executor checkpoints.
 - `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, and policy presets.
+- `starweaver-environment`: environment provider contracts, file/shell policy, resource references, and resumable environment state snapshots.
 - `starweaver-claw`: durable sessions, `SessionStore`, service execution, checkpoint storage, interruption, resume, SSE, trace correlation, and storage adapters.
 - `starweaver-platform`: hosted orchestration and external protocol adapters such as A2A and AGUI.
 
@@ -85,7 +86,7 @@ Current specs:
 - `spec/sdk/02-environment-provider.md` — EnvironmentProvider, filesystem, shell, resources, environment state, policies, and sandbox mapping
 - `spec/sdk/03-first-party-tool-bundles.md` — filesystem, shell, search, media, task, skill, and tool-proxy bundles implemented through capabilities and context
 - `spec/sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
-- `spec/sdk/05-ya-agent-sdk-integration-map.md` — ya-agent-sdk module integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
+- `spec/sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 - `spec/ops/README.md` — operational layer scope and readiness model
 - `spec/ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `spec/ops/02-durable-service-runtime.md` — durable sessions, `SessionStore`, execution records, resume, interruption, SSE, trace ids, and storage contracts

@@ -31,7 +31,7 @@ fn registry_collects_toolsets_and_deduplicates_instructions() {
 
     assert_eq!(registry.definitions().len(), 2);
     assert_eq!(
-        registry.instructions(),
+        registry.get_instructions(),
         vec!["Use example tools.".to_string()]
     );
 }

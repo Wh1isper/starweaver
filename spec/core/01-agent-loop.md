@@ -107,23 +107,31 @@ Streaming APIs should support both collected streams and externally handled stre
 
 ## Observability Seam
 
-The runtime should create or receive a trace context through `AgentContext` and emit spans that follow OpenTelemetry GenAI semantics. The agent loop span is the parent for model request spans, tool execution spans, output validation spans, and subagent spans. Service runtimes may create an outer coordinator span and pass it to the SDK as the parent context.
+The runtime should create or receive a trace context through `AgentContext` and emit spans that follow OpenTelemetry GenAI semantics. One trace contains the full agent loop. The agent run span is the parent for loop-step spans, each loop-step span groups its model request, sibling tool executions, output validation, and retry events, and subagent spans recurse under the parent agent span. Service runtimes may create an outer coordinator span and pass it to the SDK as the parent context.
 
 ```mermaid
 flowchart TD
     root[External root trace or coordinator span]
-    agent[Agent loop span]
-    model[Model request span]
-    tool[Tool execution span]
-    subagent[Subagent loop span]
+    agent[gen_ai.invoke_agent]
+    step[starweaver.loop.step]
+    model[gen_ai.inference]
+    toolA[gen_ai.execute_tool]
+    toolB[gen_ai.execute_tool]
+    output[starweaver.output_validation]
+    checkpoint[starweaver.checkpoint]
+    subagent[child gen_ai.invoke_agent]
 
     root --> agent
-    agent --> model
-    agent --> tool
+    agent --> step
+    step --> model
+    step --> toolA
+    step --> toolB
+    step --> output
+    agent --> checkpoint
     agent --> subagent
 ```
 
-Span records should carry run id, conversation id, agent id, checkpoint id, model provider, model name, tool name, tool call id, usage, finish reason, and error type when available. Content attributes are controlled by a redaction policy.
+The runtime should depend on a small trace recorder contract. The first implementation should include an in-memory recorder for deterministic span-tree snapshot tests, followed by feature-gated `tracing`, OpenTelemetry, OTLP, and Langfuse-friendly adapters. Span records should carry run id, conversation id, agent id, checkpoint id, model provider, model name, tool name, tool call id, usage, finish reason, retry metadata, and error type when available. Content attributes are controlled by a redaction policy.
 
 ## Durable Executor Seam
 
@@ -154,6 +162,26 @@ A checkpoint includes:
 - usage snapshot
 - environment state reference when an environment provider participates
 - suspend reason when approval, deferral, cancellation, or external resource wait occurs
+
+## Streaming Checkpoints
+
+A streaming run has two durable cursors: canonical message cursor and stream cursor. The runtime emits ordered `AgentStreamRecord` values for run start, model request, model deltas, tool calls, tool returns, checkpoints, suspensions, retries, and completion. A service runtime persists stream records incrementally and stores the latest persisted sequence in checkpoint resume evidence.
+
+Resume uses this lifecycle:
+
+```mermaid
+sequenceDiagram
+    participant Runtime
+    participant Executor
+    participant Store
+    Runtime->>Store: append stream records as they are observed
+    Runtime->>Executor: checkpoint with stream cursor
+    Executor->>Store: append checkpoint
+    Store-->>Runtime: continue or suspend
+    Store->>Store: expose replay after cursor for clients
+```
+
+This keeps checkpoint reload independent from UI/SSE replay. The checkpoint captures safe execution state, while stream replay captures delivery state for clients that reconnect during service-managed runs.
 
 ## Acceptance Gates
 

@@ -44,6 +44,7 @@ test: ## Run workspace tests
 .PHONY: coverage
 coverage: ## Generate workspace LCOV coverage report
 	@echo "Generating workspace LCOV coverage"
+	@mkdir -p target/llvm-cov
 	@cargo llvm-cov --workspace --all-features --locked --lcov --output-path target/llvm-cov/lcov.info
 
 .PHONY: coverage-core

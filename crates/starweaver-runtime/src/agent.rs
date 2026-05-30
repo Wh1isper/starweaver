@@ -13,6 +13,7 @@ use crate::{
     history::HistoryProcessor,
     instructions::DynDynamicInstruction,
     output::{DynOutputFunction, OutputPolicy, OutputSchema, OutputValidator},
+    trace::{DynTraceRecorder, NoopTraceRecorder},
     usage::UsageLimits,
 };
 
@@ -42,6 +43,7 @@ pub struct Agent {
     capabilities: Vec<Arc<dyn AgentCapability>>,
     stream_observers: Vec<Arc<dyn AgentCapability>>,
     executor: DynAgentExecutor,
+    trace_recorder: DynTraceRecorder,
     policy: AgentRuntimePolicy,
 }
 
@@ -64,6 +66,7 @@ impl Agent {
             capabilities: Vec::new(),
             stream_observers: Vec::new(),
             executor: Arc::new(DirectAgentExecutor),
+            trace_recorder: Arc::new(NoopTraceRecorder),
             policy: AgentRuntimePolicy::default(),
         }
     }
@@ -188,6 +191,13 @@ impl Agent {
         self
     }
 
+    /// Set runtime trace recorder.
+    #[must_use]
+    pub fn with_trace_recorder(mut self, recorder: DynTraceRecorder) -> Self {
+        self.trace_recorder = recorder;
+        self
+    }
+
     /// Set runtime policy.
     #[must_use]
     pub const fn with_policy(mut self, policy: AgentRuntimePolicy) -> Self {
@@ -222,10 +232,10 @@ impl Agent {
     fn apply_capability_bundle(&mut self, bundle: &dyn CapabilityBundle) {
         self.capabilities.extend(bundle.hooks());
         self.stream_observers.extend(bundle.stream_observers());
-        self.instructions.extend(bundle.instructions());
+        self.instructions.extend(bundle.get_instructions());
         self.dynamic_instructions
             .extend(bundle.dynamic_instructions());
-        if let Some(tools) = bundle.tools() {
+        if let Some(tools) = bundle.get_tools() {
             self.tools.insert_registry(&tools);
         }
         if let Some(settings) = bundle.model_settings() {

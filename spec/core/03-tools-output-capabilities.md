@@ -1,11 +1,11 @@
 # Tools, Output, and Capabilities
 
-Tools, output policies, and capabilities form the core extension system. This layer follows Pydantic AI's separation between function tools, toolsets, structured output, output functions, validators, hooks, and reusable capability bundles.
+Tools, output policies, and capabilities form the core extension system. This layer separates function tools, toolsets, structured output, output functions, validators, hooks, and reusable capability bundles.
 
 ## Responsibilities
 
 - Represent provider-neutral tool schemas and runtime tool metadata.
-- Execute dynamic tools with `ToolContext` access to `AgentContext` dependencies, state, notes, and policy metadata.
+- Execute dynamic tools with `ToolContext` access to execution metadata and typed dependencies, including the active `AgentContext` when running inside an agent.
 - Compose tools through registries, toolsets, prefixed toolsets, and MCP-backed toolsets.
 - Support tool retry budgets, approval-required markers, and deferred execution markers.
 - Represent final output through text, JSON schema, typed parsing, validators, and output functions.
@@ -116,7 +116,7 @@ A capability bundle can contribute:
 - usage limits
 - stream observers
 
-Capabilities are the integration point for ya-agent-sdk-style filters and product features. A filter that injects environment instructions, handles media uploads, normalizes reasoning, or switches models becomes a capability with explicit context access and tests.
+Capabilities are the integration point for product features. A feature that injects environment instructions, handles media uploads, normalizes reasoning, or switches models becomes a capability with explicit context access and tests.
 
 ## Hook Points
 

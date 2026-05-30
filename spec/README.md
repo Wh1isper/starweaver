@@ -22,7 +22,7 @@ Working evidence, reference comparisons, migration notes, and release TODOs live
 - `sdk/02-environment-provider.md` — `EnvironmentProvider`, filesystem, shell, resources, environment state, policies, and sandbox mapping
 - `sdk/03-first-party-tool-bundles.md` — filesystem, shell, search, media, task, skill, and tool-proxy bundles implemented through capabilities and context
 - `sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
-- `sdk/05-ya-agent-sdk-integration-map.md` — ya-agent-sdk module integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
+- `sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 
 ### Operations, Durability, and Products
 
@@ -96,14 +96,14 @@ The core layer tracks Pydantic AI concepts:
 - function tools, advanced tools, toolsets, deferred tools, common tools, third-party tools, MCP
 - streaming events, graph iteration, structured output, testing, and multi-agent patterns
 
-The SDK layer tracks ya-agent-sdk concepts:
+The SDK layer tracks application-facing agent concepts:
 
-- `create_agent`, `stream_agent`, `AgentContext`, resumable state, message bus, notes, tasks, usage snapshots
+- agent construction, streaming runs, context, resumable state, message bus, notes, tasks, usage snapshots
 - lifecycle hooks, stream cancellation/resume, compaction, guards, model wrappers, presets
 - environment providers, local/process/sandbox execution, virtual file operators, shell sandbox integration
 - SessionStore-backed durable services, run trace projection, session tools, execution records, and workspace binding evidence
 - OpenTelemetry GenAI traces, external root trace propagation, Langfuse-friendly OTLP export, and nested subagent spans
-- first-party toolsets, tool search, skill loading, media handling, tool proxy, subagents, unified delegation
+- first-party toolsets, skill loading, media handling, tool proxy, subagents, unified delegation
 
 ## Maintenance Rules
 

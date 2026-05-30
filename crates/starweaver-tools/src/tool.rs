@@ -1,9 +1,10 @@
 //! Tool trait, function-backed tools, and tool result values.
 
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use schemars::{schema_for, JsonSchema};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_core::Metadata;
 use starweaver_model::ToolDefinition;
@@ -39,6 +40,10 @@ impl From<Value> for ToolResult {
         Self::new(value)
     }
 }
+
+/// Empty object arguments for tools without input fields.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct EmptyToolArgs {}
 
 /// Provider-neutral function tool trait.
 #[async_trait]
@@ -84,7 +89,7 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// Function-backed tool.
+/// Function-backed tool with a caller-provided JSON schema.
 pub struct FunctionTool<F> {
     name: String,
     description: Option<String>,
@@ -159,6 +164,98 @@ where
     }
 }
 
+/// Function-backed tool that derives its argument schema from a typed Rust input object.
+pub struct TypedFunctionTool<Args, F> {
+    name: String,
+    description: Option<String>,
+    parameters: Value,
+    metadata: Metadata,
+    max_retries: Option<usize>,
+    function: F,
+    _args: PhantomData<fn(Args)>,
+}
+
+impl<Args, F> TypedFunctionTool<Args, F>
+where
+    Args: JsonSchema,
+{
+    /// Build a typed function-backed tool.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<Option<String>>,
+        function: F,
+    ) -> Self {
+        let schema = schema_for!(Args);
+        let parameters = serde_json::to_value(schema).unwrap_or_else(|_| {
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+            })
+        });
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+            metadata: Metadata::default(),
+            max_retries: None,
+            function,
+            _args: PhantomData,
+        }
+    }
+
+    /// Attach runtime metadata to this tool.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Override the retry budget for this tool.
+    #[must_use]
+    pub const fn with_max_retries(mut self, max_retries: usize) -> Self {
+        self.max_retries = Some(max_retries);
+        self
+    }
+}
+
+#[async_trait]
+impl<Args, F, Fut> Tool for TypedFunctionTool<Args, F>
+where
+    Args: DeserializeOwned + JsonSchema + Send + 'static,
+    F: Send + Sync + Fn(ToolContext, Args) -> Fut,
+    Fut: Send + std::future::Future<Output = Result<ToolResult, ToolError>>,
+{
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    fn parameters_schema(&self) -> Value {
+        self.parameters.clone()
+    }
+
+    fn metadata(&self) -> Metadata {
+        self.metadata.clone()
+    }
+
+    fn max_retries(&self) -> Option<usize> {
+        self.max_retries
+    }
+
+    async fn call(&self, context: ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
+        let args =
+            serde_json::from_value(arguments).map_err(|error| ToolError::InvalidArguments {
+                tool: self.name.clone(),
+                message: error.to_string(),
+            })?;
+        (self.function)(context, args).await
+    }
+}
+
 /// Create a plain JSON-returning tool from an async function.
 #[must_use]
 pub fn string_tool<F, Fut>(
@@ -172,4 +269,19 @@ where
     Fut: Send + std::future::Future<Output = Result<ToolResult, ToolError>>,
 {
     FunctionTool::new(name, description, parameters, function)
+}
+
+/// Create a typed JSON-returning tool from an async function.
+#[must_use]
+pub fn typed_tool<Args, F, Fut>(
+    name: impl Into<String>,
+    description: impl Into<Option<String>>,
+    function: F,
+) -> TypedFunctionTool<Args, impl Send + Sync + Fn(ToolContext, Args) -> Fut>
+where
+    Args: DeserializeOwned + JsonSchema + Send + 'static,
+    F: Send + Sync + Fn(ToolContext, Args) -> Fut,
+    Fut: Send + std::future::Future<Output = Result<ToolResult, ToolError>>,
+{
+    TypedFunctionTool::new(name, description, function)
 }

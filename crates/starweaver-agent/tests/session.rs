@@ -142,3 +142,22 @@ async fn session_accepts_w3c_trace_parent_header() {
         Some("00f067aa0ba902b7")
     );
 }
+
+#[test]
+fn session_helpers_update_metadata_notes_state_and_bus() {
+    let mut session =
+        AgentSession::new(AgentBuilder::new(Arc::new(reusable_text_model("ok"))).build());
+
+    session.set_state("workspace", serde_json::json!({"root": "/repo"}));
+    session.set_note("language", "Chinese");
+    session.enqueue_message("task", serde_json::json!({"id": 1}));
+    session.set_metadata("owner", serde_json::json!("sdk"));
+
+    assert_eq!(
+        session.context().state.get("workspace").unwrap()["root"],
+        "/repo"
+    );
+    assert_eq!(session.context().notes.get("language"), Some("Chinese"));
+    assert_eq!(session.context().messages.len(), 1);
+    assert_eq!(session.context().metadata["owner"], "sdk");
+}

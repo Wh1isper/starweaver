@@ -11,6 +11,7 @@ pub mod iteration;
 pub mod output;
 pub mod run;
 pub mod stream;
+pub mod trace;
 pub mod usage;
 
 pub use agent::{Agent, AgentError, AgentOverride, AgentResult, AgentRuntimePolicy};
@@ -43,4 +44,8 @@ pub use output::{
 };
 pub use run::{AgentRunResult, AgentRunState, RunStatus};
 pub use stream::{AgentStreamEvent, AgentStreamRecord, AgentStreamResult};
+pub use trace::{
+    AdapterTraceRecorder, DynTraceRecorder, InMemoryTraceRecorder, NoopTraceRecorder, RecordedSpan,
+    SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus, TraceLevel, TraceRecorder,
+};
 pub use usage::{CostBudget, UsageLimitError, UsageLimits};

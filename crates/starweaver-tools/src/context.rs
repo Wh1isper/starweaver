@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use starweaver_context::{DependencyStore, NoteStore, StateStore};
+use starweaver_context::DependencyStore;
 use starweaver_core::{ConversationId, Metadata, RunId, TraceContext};
 
 /// Context passed into tool execution.
@@ -19,12 +19,6 @@ pub struct ToolContext {
     pub retry: usize,
     /// Maximum retries allowed for this specific tool.
     pub max_retries: usize,
-    /// Serializable application state snapshot.
-    #[serde(default)]
-    pub state: StateStore,
-    /// Serializable note snapshot.
-    #[serde(default, skip_serializing_if = "NoteStore::is_empty")]
-    pub notes: NoteStore,
     /// Trace correlation context propagated from the runtime context.
     #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
     pub trace_context: TraceContext,
@@ -46,8 +40,6 @@ impl ToolContext {
             run_step,
             retry: 0,
             max_retries: 0,
-            state: StateStore::new(),
-            notes: NoteStore::new(),
             trace_context: TraceContext::default(),
             metadata: Metadata::default(),
             dependencies: DependencyStore::new(),
@@ -58,20 +50,6 @@ impl ToolContext {
     #[must_use]
     pub fn with_dependencies(mut self, dependencies: DependencyStore) -> Self {
         self.dependencies = dependencies;
-        self
-    }
-
-    /// Attach serializable state snapshot.
-    #[must_use]
-    pub fn with_state(mut self, state: StateStore) -> Self {
-        self.state = state;
-        self
-    }
-
-    /// Attach serializable note snapshot.
-    #[must_use]
-    pub fn with_notes(mut self, notes: NoteStore) -> Self {
-        self.notes = notes;
         self
     }
 
