@@ -5,7 +5,8 @@ use std::sync::Arc;
 use starweaver_model::{
     latest_user_text, tool_call_response, FunctionModel, ModelAdapter, ModelError, ModelMessage,
     ModelProfile, ModelRequestContext, ModelRequestParameters, ModelResponse, ModelResponsePart,
-    ModelSettings, ProtocolFamily, TestModel,
+    ModelResponseStreamEvent, ModelSettings, PartDelta, PartEnd, PartStart, ProtocolFamily,
+    TestModel,
 };
 
 fn context() -> ModelRequestContext {
@@ -40,6 +41,65 @@ async fn test_model_returns_scripted_responses_and_captures_requests() {
 }
 
 #[tokio::test]
+async fn test_model_streams_scripted_events_and_captures_requests() {
+    let model = TestModel::with_stream_events(vec![vec![
+        ModelResponseStreamEvent::PartStart(PartStart {
+            index: 0,
+            part_kind: "text".to_string(),
+        }),
+        ModelResponseStreamEvent::PartDelta(PartDelta {
+            index: 0,
+            delta: "stream".to_string(),
+        }),
+        ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+        ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("stream"))),
+    ]]);
+
+    let events = model
+        .request_stream(
+            vec![ModelMessage::Request(
+                starweaver_model::ModelRequest::user_text("hello"),
+            )],
+            None,
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(events[1], ModelResponseStreamEvent::PartDelta(_)));
+    assert!(matches!(
+        events.last().unwrap(),
+        ModelResponseStreamEvent::FinalResult(response) if response.text_output() == "stream"
+    ));
+    assert_eq!(model.captured_messages().len(), 1);
+}
+
+#[tokio::test]
+async fn test_model_request_stream_falls_back_to_scripted_response_final_result() {
+    let model = TestModel::with_responses(vec![ModelResponse::text("final")]);
+
+    let events = model
+        .request_stream(
+            vec![ModelMessage::Request(
+                starweaver_model::ModelRequest::user_text("hello"),
+            )],
+            None,
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        events,
+        vec![ModelResponseStreamEvent::FinalResult(Box::new(
+            ModelResponse::text("final")
+        ))]
+    );
+}
+
+#[tokio::test]
 async fn function_model_builds_responses_from_messages_and_params() {
     let model = FunctionModel::new(|messages, settings, info| {
         assert_eq!(latest_user_text(&messages).unwrap(), "hello");
@@ -67,6 +127,49 @@ async fn function_model_builds_responses_from_messages_and_params() {
         .unwrap();
 
     assert_eq!(response.text_output(), r#"{"answer":"ok"}"#);
+    assert_eq!(model.captured_params().len(), 1);
+}
+
+#[tokio::test]
+async fn function_model_streams_events_from_messages_and_params() {
+    let model = FunctionModel::streaming(|messages, settings, info| {
+        assert_eq!(latest_user_text(&messages).unwrap(), "hello");
+        assert_eq!(settings.unwrap().max_tokens, Some(32));
+        assert_eq!(info.params.extra_body["mode"], "stream");
+        Ok(vec![
+            ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "text".to_string(),
+            }),
+            ModelResponseStreamEvent::PartDelta(PartDelta {
+                index: 0,
+                delta: "ok".to_string(),
+            }),
+            ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+            ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("ok"))),
+        ])
+    });
+    let mut params = ModelRequestParameters::default();
+    params
+        .extra_body
+        .insert("mode".to_string(), serde_json::json!("stream"));
+
+    let events = model
+        .request_stream(
+            vec![ModelMessage::Request(
+                starweaver_model::ModelRequest::user_text("hello"),
+            )],
+            Some(ModelSettings {
+                max_tokens: Some(32),
+                ..ModelSettings::default()
+            }),
+            params,
+            context(),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(events[1], ModelResponseStreamEvent::PartDelta(_)));
     assert_eq!(model.captured_params().len(), 1);
 }
 

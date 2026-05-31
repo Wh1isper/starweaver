@@ -64,7 +64,7 @@ impl ModelAdapter for StreamingModel {
                 delta: "lo".to_string(),
             }),
             ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
-            ModelResponseStreamEvent::FinalResult(ModelResponse::text("hello")),
+            ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("hello"))),
         ])
     }
 }

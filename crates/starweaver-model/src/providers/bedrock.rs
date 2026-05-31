@@ -8,7 +8,10 @@ use crate::{
         FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
         ProviderInfo, ToolCallPart,
     },
-    providers::{bedrock_content_from_content, collect_system_and_non_system, usage_from_named},
+    providers::{
+        bedrock_content_from_content, collect_system_and_non_system, insert_optional_description,
+        provider_tool_parameters, usage_from_named,
+    },
     ModelError, ModelSettings,
 };
 
@@ -136,13 +139,16 @@ impl BedrockConverseAdapter {
             let mut tool_config = json!({
                 "tools": tools
                     .iter()
-                    .map(|tool| json!({
-                        "toolSpec": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "inputSchema": {"json": tool.parameters},
-                        }
-                    }))
+                    .map(|tool| {
+                        let mut spec = serde_json::Map::new();
+                        spec.insert("name".to_string(), json!(tool.name));
+                        insert_optional_description(&mut spec, tool.description.as_ref());
+                        spec.insert(
+                            "inputSchema".to_string(),
+                            json!({"json": provider_tool_parameters(&tool.parameters)}),
+                        );
+                        json!({"toolSpec": spec})
+                    })
                     .collect::<Vec<_>>()
             });
             if let Some(choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {

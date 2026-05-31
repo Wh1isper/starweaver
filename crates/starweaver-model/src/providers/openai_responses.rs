@@ -9,8 +9,9 @@ use crate::{
         ToolCallPart,
     },
     providers::{
-        apply_common_settings, finish_reason_openai, openai_responses_content,
-        parse_tool_call_arguments, usage_from_openai,
+        apply_common_settings, finish_reason_openai, insert_optional_description,
+        openai_responses_content, parse_tool_call_arguments, provider_tool_parameters,
+        usage_from_openai,
     },
     ModelError, ModelSettings,
 };
@@ -255,12 +256,15 @@ fn response_tool_defs(
     let mut definitions = tools
         .iter()
         .map(|tool| {
-            json!({
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            })
+            let mut definition = serde_json::Map::new();
+            definition.insert("type".to_string(), json!("function"));
+            definition.insert("name".to_string(), json!(tool.name));
+            insert_optional_description(&mut definition, tool.description.as_ref());
+            definition.insert(
+                "parameters".to_string(),
+                provider_tool_parameters(&tool.parameters),
+            );
+            Value::Object(definition)
         })
         .collect::<Vec<_>>();
     definitions.extend(native_tools.iter().map(native_response_tool_def));

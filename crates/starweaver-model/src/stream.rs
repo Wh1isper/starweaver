@@ -15,7 +15,7 @@ pub enum ModelResponseStreamEvent {
     /// A response part ended.
     PartEnd(PartEnd),
     /// Final response is available.
-    FinalResult(ModelResponse),
+    FinalResult(Box<ModelResponse>),
 }
 
 /// Part start event.

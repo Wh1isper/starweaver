@@ -12,7 +12,7 @@ This memo tracks the execution roadmap for the architecture in `spec/`. It is or
 - SDK facade foundations are landed: `AgentBuilder`, `AgentApp`, `AgentSession`, context export/restore, direct API re-exports, first-party tool bundles, agent spec presets, subagent registry foundations, and markdown subagent config parsing.
 - Environment foundations are landed in `starweaver-environment`: provider trait, file and shell policies, resource references, state snapshots, virtual provider, and local provider with policy-aware read/write/list/glob support.
 - Durable session foundations are landed in `starweaver-claw`: `SessionStore`, in-memory store, session/run records, checkpoint append/load/latest, stream replay, resume snapshots, and compact run trace projection.
-- CLI foundations are landed: `version`, `run`, `diagnostics`, `session inspect`, and replay-check guidance with deterministic tests.
+- Command-line foundations are landed: `version`, `run`, `diagnostics`, `session inspect`, and replay-check guidance with deterministic tests.
 - First-party tool abstraction foundations are landed: typed tool argument schemas via `schemars`, `Toolset::get_tools`, `Toolset::get_instructions`, registry-level instruction aggregation, `PrefixedToolset`, and core `ToolProxyToolset`.
 - Specs are organized across `spec/core`, `spec/sdk`, and `spec/ops` with matching roadmap ownership.
 
@@ -101,13 +101,13 @@ Status: first implementation landed.
 
 - Filesystem bundle with `view`, `ls`, `write`, `edit`, `multi_edit`, `glob`, `grep`, `mkdir`, `delete`, `move`, `copy`, and `resource_ref` over `EnvironmentProvider` through `AgentContext` dependencies.
 - Filesystem execution state: `view`, `ls`, `write`, `edit`, `multi_edit`, `glob`, `grep`, and `resource_ref` execute against the active provider; `mkdir`, `delete`, `move`, and `copy` emit operation envelopes pending richer provider operation traits.
-- Shell bundle with `shell_exec`, background execution envelopes, `shell_wait`, `shell_status`, `shell_input`, `shell_signal`, `shell_kill`, stdout/stderr/status evidence, and approval metadata.
-- Shell execution state: foreground `shell_exec` executes through `EnvironmentProvider::run_shell`; background `shell_exec` and lifecycle tools emit durable operation envelopes pending a process-capable provider.
+- Shell bundle with `shell_exec`, `shell_wait`, `shell_status`, `shell_input`, `shell_signal`, `shell_kill`, stdout/stderr/status evidence, and approval metadata.
+- Shell execution state: foreground `shell_exec` executes through `EnvironmentProvider::run_shell`; background `shell_exec` returns an explicit durable-shell-provider requirement, and lifecycle tools emit durable operation envelopes pending a process-capable provider.
 - Task bundle with `task_create`, `task_get`, `task_update`, and `task_list` operation envelopes.
 - Host-operation bundle with web, image search, fetch/scrape/download, document conversion, media, summarize, note, thinking, and to-do operation envelopes.
 - Core tool proxy foundation through fixed `search_tools` and `call_tool` via `ToolProxyToolset`, plus `PrefixedToolset`/`namespaced_toolset` for namespace-prefixed proxy surfaces or wrapped tools.
 - Bundle APIs return `DynToolset` for direct `ToolRegistry` and `AgentBuilder` registration.
-- Tests cover stable tool names, instructions, fake-backed execution, resource refs, background shell handles, context propagation, proxy search/call, namespacing, and agent builder registration.
+- Tests cover stable tool names, instructions, fake-backed execution, resource refs, explicit background-shell provider requirements, context propagation, proxy search/call, namespacing, and agent builder registration.
 
 ### M4 Durable Session Runtime
 
@@ -120,7 +120,7 @@ Status: first implementation landed and refined.
 - Compact projections include run id, checkpoint ids, latest checkpoint id, stream event count, stream cursor, and trace context.
 - Tests cover session save/load, run append, checkpoint persistence/load/latest, runtime executor persistence, stream replay, replay after cursor, and compact projection.
 
-### M5 Observability and CLI Inspection
+### M5 Observability and Command-Line Inspection
 
 Status: first implementation landed and refined.
 
@@ -131,7 +131,7 @@ Status: first implementation landed and refined.
 - Tool spans record tool call arguments and tool return result events.
 - Trace context propagation into model request contexts, tool contexts, checkpoints, and compact run projections.
 - Nested span tests cover agent, loop step, model, tool, checkpoint spans, and the adapter seam in one trace.
-- CLI commands cover local run, diagnostics, version, session inspect, and replay-check guidance with deterministic tests.
+- Command-line commands cover local run, diagnostics, version, session inspect, and replay-check guidance with deterministic tests.
 
 ### M6 Toolset and Tool Registration Alignment
 
@@ -149,7 +149,7 @@ Status: first implementation landed.
 
 ### N1 Agent SDK Foundation Hardening
 
-This is the recommended next implementation milestone. See `memos/agent-sdk-foundation-plan.md` for the detailed execution plan.
+This is the active implementation milestone. See `memos/agent-sdk-foundation-plan.md` for the detailed execution plan and reference audit evidence.
 
 Current substrate:
 
@@ -164,7 +164,7 @@ Target outcome:
 - Audit reference Agent SDK and pydantic-ai agent/toolset patterns carefully against the Starweaver SDK surface.
 - Refine SDK API boundaries for reusable agent configuration, per-run/session overrides, environment composition, toolsets, and subagents.
 - Add strong focused tests for public SDK contracts, composition order, override precedence, tool inheritance, approval metadata, and session/context behavior.
-- Keep Claw, CLI, service orchestration, and platform adapters sequenced after foundational SDK/runtime/tool work is solid.
+- Keep durable sessions, command-line workflows, service orchestration, and platform adapters sequenced after foundational SDK/runtime/tool work is solid.
 
 Proposed N1 implementation slices:
 
@@ -181,15 +181,23 @@ Proposed N1 implementation slices:
 - Keep provider-scoped `glob` and `grep` backed by native Rust matchers (`globset`, `grep-regex`, `grep-matcher`) and provider traversal (`ignore` for local files) as the baseline search operator.
 - Align first-party bundle instructions around one compact instruction group per bundle, concrete tool selection guidance, stable deduplication keys, and prompt text that can migrate into SDK presets.
 - Deepen media/search/document host-operation bundles with host-backed execution adapters.
+- Replace ya-agent-sdk web/search/crawler placeholders with host-backed Starweaver adapters:
+  - `search(query, num)`: injectable web-search client with provider priority, timeout, quota, citations, and deterministic fixtures.
+  - `search_stock_image(query)` and `search_image(query, limit, size)`: injectable image-search clients with result URL accessibility validation.
+  - `fetch(url, head_only)`: HTTP `HEAD`/`GET`, redirect checks, SSRF policy, streaming limits, text truncation, binary size guards, and content-type metadata.
+  - `scrape(url)`: crawler or page-to-Markdown adapter with fixture-backed deterministic tests.
+  - `download(urls, save_dir)`: streamed downloads into the active `EnvironmentProvider` or resource store with safe filenames and metadata.
+  - `load_media_url(url)`: URL classification for image, video, audio, and document content mapped into provider media capabilities.
+  - Keep provider-native OpenAI/Gemini web, fetch, file-search, and URL-context tools in the model native-tool layer with replay fixtures.
 - Add a skill bundle and skill-contributed toolsets.
 - Add richer tool proxy execution evidence, including search result ranking tests and namespace-description tests.
 - Add background shell lifecycle handles, stdin/signal/status/output cursor tools, and resumable process state through a process-capable provider.
 - Add `SandboxedShellProvider` design and implementation: local file operator plus sandboxed shell runtime, workspace mounts, policy profiles, diagnostics, and environment state export.
 - Add sandbox mount mapping and environment state-domain restore helpers.
 
-### N3 Documentation and Examples
+### N3 SDK Documentation and Examples
 
-- Deepen docs for `AgentSpec`, SDK presets, first-party tool bundles, environment providers, runtime tracing, durable sessions, checkpoint reload, streaming persistence, and future CLI workflows.
+- Deepen docs for `AgentSpec`, SDK presets, first-party tool bundles, environment providers, runtime tracing hooks, session helpers, subagents, and streaming helpers.
 - Keep new examples runnable through `make docs-check`.
 
 ## Later Milestones
@@ -213,15 +221,15 @@ Proposed N1 implementation slices:
 
 - Add SQLite storage adapter first, then PostgreSQL after schema stabilizes.
 - Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs.
-- Add trace/session inspection surfaces shared by CLI and service layers.
+- Add trace/session inspection surfaces shared by command-line and service layers.
 - Add environment state persistence and restore factory hooks.
 
-### Application Surfaces: CLI and Service Runtime
+### Application Surfaces: Command-Line and Service Runtime
 
 - Define app profile loading over `AgentApp`, environment providers, first-party bundles, and `SessionStore`.
-- Add CLI session create/list/resume/inspect with compact trace projection and stream replay.
+- Add command-line session create/list/resume/inspect with compact trace projection and stream replay.
 - Define service coordinator span, run records, session state storage, SSE replay, approval endpoints, and workspace provider factories.
-- Add local-first and service-backed command parity so CLI and service share persistence and checkpoint semantics.
+- Add local-first and service-backed command parity so command-line and service flows share persistence and checkpoint semantics.
 - Add deployment metadata propagation into trace/session records: profile, workspace provider, build version, release, user id, and tags.
 
 ### Subagents and Skills
@@ -236,7 +244,7 @@ Proposed N1 implementation slices:
 
 - Add `starweaver.filter.all` debug-level tracing for all filter/capability input-output snapshots.
 - Add provider raw streaming debug capture for SSE/chunked APIs before canonical normalization.
-- Add compact trace projection tools for CLI/UI inspection with content previews and truncation flags.
+- Add compact trace projection tools for command-line/UI inspection with content previews and truncation flags.
 - Add OTel semantic convention conformance tests and GenAI attribute mapping coverage.
 
 ### Advanced Provider Coverage
@@ -248,7 +256,7 @@ Proposed N1 implementation slices:
 ### Embeddings, Evals, and Retrieval
 
 - Add embeddings and retrieval APIs after core agent, environment, and service contracts stabilize.
-- Add evaluation layer after SDK and CLI surfaces are stable enough for repeatable benchmark workflows.
+- Add evaluation layer after SDK and command-line surfaces are stable enough for repeatable benchmark workflows.
 
 ### Platform Adapter Layer
 
@@ -267,8 +275,8 @@ Proposed N1 implementation slices:
 - Skill package format and precedence across project, global, and builtin scopes.
 - Trace redaction policy API and default sensitive-key list.
 - Langfuse extension attribute names and release/session/user mapping.
-- Compact run trace projection schema for model/tool/content previews across session tools, CLI, and UI.
-- CLI configuration format for model/profile/environment/session settings.
+- Compact run trace projection schema for model/tool/content previews across session tools, command-line workflows, and UI.
+- command-line configuration format for model/profile/environment/session settings.
 
 ## Validation Matrix
 

@@ -8,7 +8,10 @@ use crate::{
         FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
         ProviderInfo, ToolCallPart,
     },
-    providers::{collect_system_and_non_system, gemini_parts_from_content, usage_from_named},
+    providers::{
+        collect_system_and_non_system, gemini_parts_from_content, insert_optional_description,
+        provider_tool_parameters, usage_from_named,
+    },
     ModelError, ModelSettings,
 };
 
@@ -212,11 +215,16 @@ fn append_gemini_tools(
     if !tools.is_empty() {
         tool_defs.push(json!({ "functionDeclarations": tools
             .iter()
-            .map(|tool| json!({
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            }))
+            .map(|tool| {
+                let mut declaration = serde_json::Map::new();
+                declaration.insert("name".to_string(), json!(tool.name));
+                insert_optional_description(&mut declaration, tool.description.as_ref());
+                declaration.insert(
+                    "parameters".to_string(),
+                    provider_tool_parameters(&tool.parameters),
+                );
+                Value::Object(declaration)
+            })
             .collect::<Vec<_>>() }));
         if let Some(choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {
             request.insert(

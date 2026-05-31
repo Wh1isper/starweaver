@@ -9,8 +9,9 @@ use crate::{
         ToolCallPart,
     },
     providers::{
-        apply_common_settings, finish_reason_openai, openai_chat_content,
-        parse_tool_call_arguments, usage_from_openai,
+        apply_common_settings, finish_reason_openai, insert_optional_description,
+        openai_chat_content, parse_tool_call_arguments, provider_tool_parameters,
+        usage_from_openai,
     },
     ModelError, ModelSettings,
 };
@@ -99,14 +100,19 @@ impl OpenAiChatAdapter {
                 "tools".to_string(),
                 json!(tools
                     .iter()
-                    .map(|tool| json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.parameters,
-                        }
-                    }))
+                    .map(|tool| {
+                        let mut function = serde_json::Map::new();
+                        function.insert("name".to_string(), json!(tool.name));
+                        insert_optional_description(&mut function, tool.description.as_ref());
+                        function.insert(
+                            "parameters".to_string(),
+                            provider_tool_parameters(&tool.parameters),
+                        );
+                        json!({
+                            "type": "function",
+                            "function": function,
+                        })
+                    })
                     .collect::<Vec<_>>()),
             );
         }

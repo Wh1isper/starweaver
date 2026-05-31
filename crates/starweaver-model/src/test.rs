@@ -13,6 +13,7 @@ use crate::{
     },
     profile::{ModelProfile, ProtocolFamily},
     settings::ModelSettings,
+    stream::ModelResponseStreamEvent,
     ModelAdapter, ModelError,
 };
 
@@ -34,6 +35,15 @@ pub type FunctionModelFn = dyn Send
         FunctionModelInfo,
     ) -> Result<ModelResponse, ModelError>;
 
+/// Function used by [`FunctionModel`] to produce stream events.
+pub type FunctionModelStreamFn = dyn Send
+    + Sync
+    + Fn(
+        Vec<ModelMessage>,
+        Option<ModelSettings>,
+        FunctionModelInfo,
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError>;
+
 /// Deterministic model that returns scripted responses.
 #[derive(Clone)]
 pub struct TestModel {
@@ -41,6 +51,7 @@ pub struct TestModel {
     profile: ModelProfile,
     default_settings: Option<ModelSettings>,
     responses: Arc<Mutex<Vec<ModelResponse>>>,
+    stream_events: Arc<Mutex<Vec<Vec<ModelResponseStreamEvent>>>>,
     captured_messages: Arc<Mutex<Vec<Vec<ModelMessage>>>>,
     captured_params: Arc<Mutex<Vec<ModelRequestParameters>>>,
 }
@@ -60,6 +71,21 @@ impl TestModel {
             profile: ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
             default_settings: None,
             responses: Arc::new(Mutex::new(responses.into_iter().rev().collect())),
+            stream_events: Arc::new(Mutex::new(Vec::new())),
+            captured_messages: Arc::new(Mutex::new(Vec::new())),
+            captured_params: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Create a test model with scripted stream event batches in call order.
+    #[must_use]
+    pub fn with_stream_events(events: Vec<Vec<ModelResponseStreamEvent>>) -> Self {
+        Self {
+            model_name: "test".to_string(),
+            profile: ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+            default_settings: None,
+            responses: Arc::new(Mutex::new(Vec::new())),
+            stream_events: Arc::new(Mutex::new(events.into_iter().rev().collect())),
             captured_messages: Arc::new(Mutex::new(Vec::new())),
             captured_params: Arc::new(Mutex::new(Vec::new())),
         }
@@ -158,6 +184,38 @@ impl ModelAdapter for TestModel {
             .pop()
             .ok_or_else(|| ModelError::Transport("test model script exhausted".to_string()))
     }
+
+    async fn request_stream(
+        &self,
+        messages: Vec<ModelMessage>,
+        _settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        _context: ModelRequestContext,
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        if let Ok(mut captured) = self.captured_messages.lock() {
+            captured.push(messages);
+        }
+        if let Ok(mut captured) = self.captured_params.lock() {
+            captured.push(params);
+        }
+        let stream_events = self
+            .stream_events
+            .lock()
+            .map_err(|err| ModelError::Transport(err.to_string()))?
+            .pop();
+        if let Some(events) = stream_events {
+            return Ok(events);
+        }
+        let response = self
+            .responses
+            .lock()
+            .map_err(|err| ModelError::Transport(err.to_string()))?
+            .pop()
+            .ok_or_else(|| ModelError::Transport("test model script exhausted".to_string()))?;
+        Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
+            response,
+        ))])
+    }
 }
 
 /// Deterministic model backed by a caller-provided function.
@@ -167,6 +225,7 @@ pub struct FunctionModel {
     profile: ModelProfile,
     default_settings: Option<ModelSettings>,
     function: Arc<FunctionModelFn>,
+    stream_function: Arc<FunctionModelStreamFn>,
     captured_messages: Arc<Mutex<Vec<Vec<ModelMessage>>>>,
     captured_params: Arc<Mutex<Vec<ModelRequestParameters>>>,
 }
@@ -185,11 +244,45 @@ impl FunctionModel {
                 FunctionModelInfo,
             ) -> Result<ModelResponse, ModelError>,
     {
+        let function: Arc<FunctionModelFn> = Arc::new(function);
+        let stream_function = function.clone();
         Self {
             model_name: "function".to_string(),
             profile: ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
             default_settings: None,
-            function: Arc::new(function),
+            function,
+            stream_function: Arc::new(move |messages, settings, info| {
+                stream_function(messages, settings, info)
+                    .map(|response| vec![ModelResponseStreamEvent::FinalResult(Box::new(response))])
+            }),
+            captured_messages: Arc::new(Mutex::new(Vec::new())),
+            captured_params: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Create a function-backed streaming model.
+    #[must_use]
+    pub fn streaming<F>(function: F) -> Self
+    where
+        F: Send
+            + Sync
+            + 'static
+            + Fn(
+                Vec<ModelMessage>,
+                Option<ModelSettings>,
+                FunctionModelInfo,
+            ) -> Result<Vec<ModelResponseStreamEvent>, ModelError>,
+    {
+        Self {
+            model_name: "function".to_string(),
+            profile: ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+            default_settings: None,
+            function: Arc::new(|_messages, _settings, _info| {
+                Err(ModelError::Transport(
+                    "function model response path is unavailable for streaming fixture".to_string(),
+                ))
+            }),
+            stream_function: Arc::new(function),
             captured_messages: Arc::new(Mutex::new(Vec::new())),
             captured_params: Arc::new(Mutex::new(Vec::new())),
         }
@@ -265,6 +358,22 @@ impl ModelAdapter for FunctionModel {
             captured.push(params.clone());
         }
         (self.function)(messages, settings, FunctionModelInfo { params, context })
+    }
+
+    async fn request_stream(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        if let Ok(mut captured) = self.captured_messages.lock() {
+            captured.push(messages.clone());
+        }
+        if let Ok(mut captured) = self.captured_params.lock() {
+            captured.push(params.clone());
+        }
+        (self.stream_function)(messages, settings, FunctionModelInfo { params, context })
     }
 }
 

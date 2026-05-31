@@ -7,7 +7,7 @@ use starweaver_tools::{
     DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
 };
 
-use super::helpers::static_tool;
+use super::helpers::{static_tool_with_metadata, tool_metadata};
 
 /// Create host-operation tools for web, document, media, and context-management capabilities.
 #[must_use]
@@ -20,112 +20,143 @@ pub fn host_operation_tools() -> DynToolset {
                 "These tools expose operation envelopes for host-provided capabilities such as web access, image search, document conversion, media analysis, notes, thinking, todos, and context handoff.",
             ))
             .with_tools([
-                static_tool("search", "Search the web for information using search APIs.", search),
-                static_tool("search_stock_image", "Search royalty-free stock images from Pixabay for design work.", search_stock_image),
-                static_tool("search_image", "Search real-time images via an image-search provider.", search_image),
-                static_tool("fetch", "Read web files or check resource availability via HTTP.", fetch),
-                static_tool("scrape", "Convert websites to Markdown format for content analysis.", scrape),
-                static_tool("download", "Download files from URLs and save to local filesystem.", download),
-                static_tool("pdf_convert", "Convert PDF to markdown with image extraction.", pdf_convert),
-                static_tool("office_to_markdown", "Convert Office documents and EPub to markdown.", office_to_markdown),
-                static_tool("read_image", "Read and analyze an image from a URL.", read_image),
-                static_tool("read_video", "Read and analyze a video from a URL.", read_video),
-                static_tool("read_audio", "Read and analyze audio from a URL.", read_audio),
-                static_tool("load_media_url", "Load multimedia content directly from an HTTP or HTTPS URL.", load_media_url),
-                static_tool("summarize", "Summarize current work and return a handoff envelope.", summarize),
-                static_tool("note", "Create, update, or delete a note entry.", note_set),
-                static_tool("note_get", "Read note entries by key, or list all note entries.", note_get),
-                static_tool("thinking", "Record a thinking or reasoning note for the host.", thinking),
-                static_tool("to_do_read", "Read the current session to-do list operation envelope.", to_do_read),
-                static_tool("to_do_write", "Replace the current session to-do list operation envelope.", to_do_write),
+                static_tool_with_metadata("search", "Search the web for information using search APIs.", tool_metadata("host_operations", false, false), search),
+                static_tool_with_metadata("search_stock_image", "Search royalty-free stock images from Pixabay for design work.", tool_metadata("host_operations", false, false), search_stock_image),
+                static_tool_with_metadata("search_image", "Search real-time images via an image-search provider.", tool_metadata("host_operations", false, false), search_image),
+                static_tool_with_metadata("fetch", "Read web files or check resource availability via HTTP.", tool_metadata("host_operations", false, false), fetch),
+                static_tool_with_metadata("scrape", "Convert websites to Markdown format for content analysis.", tool_metadata("host_operations", false, false), scrape),
+                static_tool_with_metadata("download", "Download files from URLs and save to local filesystem.", tool_metadata("host_operations", false, false), download),
+                static_tool_with_metadata("pdf_convert", "Convert PDF to markdown with image extraction.", tool_metadata("host_operations", false, false), pdf_convert),
+                static_tool_with_metadata("office_to_markdown", "Convert Office documents and EPub to markdown.", tool_metadata("host_operations", false, false), office_to_markdown),
+                static_tool_with_metadata("read_image", "Read and analyze an image from a URL.", tool_metadata("host_operations", false, false), read_image),
+                static_tool_with_metadata("read_video", "Read and analyze a video from a URL.", tool_metadata("host_operations", false, false), read_video),
+                static_tool_with_metadata("read_audio", "Read and analyze audio from a URL.", tool_metadata("host_operations", false, false), read_audio),
+                static_tool_with_metadata("load_media_url", "Load multimedia content directly from an HTTP or HTTPS URL.", tool_metadata("host_operations", false, false), load_media_url),
+                static_tool_with_metadata("summarize", "Summarize current work and return a handoff envelope.", tool_metadata("host_operations", true, false), summarize),
+                static_tool_with_metadata("note", "Create, update, or delete a note entry.", tool_metadata("host_operations", true, false), note_set),
+                static_tool_with_metadata("note_get", "Read note entries by key, or list all note entries.", tool_metadata("host_operations", true, false), note_get),
+                static_tool_with_metadata("thinking", "Record a thinking or reasoning note for the host.", tool_metadata("host_operations", true, false), thinking),
+                static_tool_with_metadata("to_do_read", "Read the current session to-do list operation envelope.", tool_metadata("host_operations", true, false), to_do_read),
+                static_tool_with_metadata("to_do_write", "Replace the current session to-do list operation envelope.", tool_metadata("host_operations", true, false), to_do_write),
             ]),
     )
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct SearchArgs {
+    /// The search query.
     query: String,
+    /// Number of results to return.
     #[serde(default = "default_search_num")]
     num: u8,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct SearchStockImageArgs {
+    /// Search term for stock images.
     query: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct SearchImageArgs {
+    /// Search query or keywords.
     query: String,
+    /// Maximum results to return.
     #[serde(default = "default_image_limit")]
     limit: u8,
+    /// Image size such as any, large, medium, or icon.
     #[serde(default = "default_image_size")]
     size: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct UrlArgs {
+    /// URL of the resource.
     url: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct FetchArgs {
+    /// URL of the web resource to fetch.
     url: String,
+    /// Only check existence without downloading content.
     #[serde(default)]
     head_only: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct DownloadArgs {
+    /// List of URLs to download.
     urls: Vec<String>,
+    /// Directory where files should be saved.
     save_dir: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct PdfConvertArgs {
+    /// Path to the PDF file to convert.
     file_path: String,
+    /// Starting page number, 1-based.
+    #[serde(default)]
     page_start: Option<usize>,
+    /// Ending page number, 1-based inclusive. Use -1 for all pages.
+    #[serde(default)]
     page_end: Option<isize>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct FilePathArgs {
+    /// Path to the file.
     file_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct SummarizeArgs {
+    /// Context summary to preserve across context handoff.
     content: String,
+    /// File paths to auto-load after summary.
+    #[serde(default)]
     auto_load_files: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct NoteSetArgs {
+    /// Unique key for the note entry.
     key: String,
+    /// Content to store. Omit or set to null to delete the entry.
+    #[serde(default)]
     value: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct NoteGetArgs {
+    /// The note key to retrieve. Omit to list all notes.
+    #[serde(default)]
     key: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ThinkingArgs {
-    content: String,
-    metadata: Option<Value>,
+    /// A thought in markdown format.
+    #[serde(alias = "content")]
+    thought: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct TodoItem {
+    /// Stable to-do item ID.
     id: String,
+    /// To-do item content.
     content: String,
+    /// To-do item status.
     status: String,
+    /// To-do item priority.
     priority: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct TodoWriteArgs {
+    /// The updated to-do list.
     to_dos: Vec<TodoItem>,
 }
 
@@ -278,7 +309,7 @@ async fn note_get(_context: ToolContext, arguments: NoteGetArgs) -> Result<ToolR
 async fn thinking(_context: ToolContext, arguments: ThinkingArgs) -> Result<ToolResult, ToolError> {
     Ok(operation(
         "thinking",
-        serde_json::json!({"content": arguments.content, "metadata": arguments.metadata.unwrap_or_else(|| serde_json::json!({}))}),
+        serde_json::json!({"thought": arguments.thought}),
     ))
 }
 

@@ -4,6 +4,8 @@ Tools are provider-neutral function definitions with typed JSON arguments and JS
 
 ## Typed function tools
 
+Use `typed_tool` when your tool arguments can be represented as a Rust struct. Starweaver derives the model-facing JSON Schema from that type with `schemars` and validates model-provided JSON with Serde before executing the tool function.
+
 ```rust
 use std::sync::Arc;
 
@@ -13,6 +15,7 @@ use starweaver_agent::{typed_tool, ToolContext, ToolRegistry, ToolResult};
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 struct LookupArgs {
+    /// Search query to look up.
     query: String,
 }
 
@@ -28,9 +31,29 @@ let tools = ToolRegistry::new().with_tool(Arc::new(lookup));
 assert!(!tools.is_empty());
 ```
 
-`typed_tool` derives JSON Schema from the Rust argument type with `schemars`, then validates model-provided JSON before executing the tool function.
+Field doc comments and `#[schemars(description = "...")]` become per-argument descriptions in the tool schema. Use doc comments for ordinary fields and `#[schemars(...)]` when the schema description should differ from Rust docs.
 
-## Tool context and AgentContext dependencies
+```rust
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct SearchArgs {
+    /// Query text submitted by the model.
+    query: String,
+    #[serde(default = "default_limit")]
+    #[schemars(description = "Maximum number of results to return.")]
+    limit: usize,
+}
+
+const fn default_limit() -> usize {
+    10
+}
+```
+
+Serde remains the execution-time validation contract. Use `#[serde(default)]`, aliases, enums, and nested structs for runtime input compatibility, and use schemars attributes for model-facing schema metadata.
+
+## Tools with context dependencies
 
 `ToolContext` carries execution metadata such as run ids, retry counters, trace context, and typed dependencies. Inside the agent runtime, the active `AgentContext` is injected as a typed dependency, matching the pydantic-ai `RunContext.deps` pattern.
 
@@ -43,6 +66,7 @@ use starweaver_agent::{typed_tool, AgentBuilder, AgentContext, TestModel, ToolCo
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 struct ReadNoteArgs {
+    /// Note key to read from AgentContext.
     key: String,
 }
 
@@ -69,7 +93,42 @@ assert_eq!(result.output, "done");
 # }
 ```
 
+## Function tools with manual schemas
+
+Use `string_tool` or `FunctionTool` when a tool schema is already available as JSON or comes from another protocol such as MCP.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{string_tool, ToolContext, ToolRegistry, ToolResult};
+
+let parameters = serde_json::json!({
+    "type": "object",
+    "properties": {
+        "value": {
+            "type": "string",
+            "description": "Value to echo."
+        }
+    },
+    "required": ["value"]
+});
+
+let echo = string_tool(
+    "echo",
+    Some("Echo a JSON value".to_string()),
+    parameters,
+    |_ctx: ToolContext, args: serde_json::Value| async move {
+        Ok(ToolResult::new(args))
+    },
+);
+
+let registry = ToolRegistry::new().with_tool(Arc::new(echo));
+assert!(!registry.is_empty());
+```
+
 ## Toolsets
+
+Group related tools into a `StaticToolset` when they should share instructions, metadata, registration, or namespacing.
 
 ```rust
 use std::sync::Arc;
@@ -82,6 +141,7 @@ use starweaver_agent::{
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 struct EchoArgs {
+    /// Text to echo.
     value: String,
 }
 
@@ -100,6 +160,63 @@ let toolset = StaticToolset::new("basic")
 assert_eq!(toolset.name(), "basic");
 assert_eq!(toolset.get_tools().len(), 1);
 assert_eq!(toolset.get_instructions().len(), 1);
+```
+
+Tool instructions are grouped by `ToolInstruction::group`; the registry keeps one instruction per group to keep prompts compact.
+
+## Registering tools on agents and sessions
+
+Register reusable tools on `AgentBuilder` with `.tool(...)`, `.toolset(...)`, or `.tool_registry(...)`.
+
+```rust
+use std::sync::Arc;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use starweaver_agent::{typed_tool, AgentBuilder, TestModel, ToolContext, ToolResult};
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct PingArgs {
+    /// Text returned by the ping tool.
+    text: String,
+}
+
+let ping = typed_tool::<PingArgs, _, _>(
+    "ping",
+    Some("Return ping text".to_string()),
+    |_ctx: ToolContext, args: PingArgs| async move {
+        Ok(ToolResult::new(serde_json::json!({"text": args.text})))
+    },
+);
+
+let _agent = AgentBuilder::new(Arc::new(TestModel::with_text("ready")))
+    .tool(Arc::new(ping))
+    .build();
+```
+
+For one run or one session call, use `AgentRunOptions` to add run-scoped tools, toolsets, settings, params, or instructions while keeping the reusable session agent unchanged.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{string_tool, AgentBuilder, AgentRunOptions, TestModel, ToolContext, ToolResult};
+
+# async fn example() -> Result<(), starweaver_agent::AgentError> {
+let tool = Arc::new(string_tool(
+    "run_echo",
+    Some("Echo one run payload".to_string()),
+    serde_json::json!({"type": "object", "properties": {}}),
+    |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+));
+let mut session = AgentBuilder::new(Arc::new(TestModel::with_text("done")))
+    .build_app()
+    .session();
+let result = session
+    .run_with_options("use the run tool", AgentRunOptions::new().tool(tool))
+    .await?;
+assert_eq!(result.output, "done");
+# Ok(())
+# }
 ```
 
 ## First-party environment bundles
@@ -124,6 +241,8 @@ assert_eq!(result.output, "done");
 # Ok(())
 # }
 ```
+
+`glob` and `grep` use ripgrep-style matching over the active `EnvironmentProvider`. Bare patterns such as `*.rs` match at any depth, scoped patterns such as `src/*.rs` match one path segment under `src`, and recursive patterns such as `**/*.rs` match root-level and nested Rust files.
 
 ## Tool proxy
 

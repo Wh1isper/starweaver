@@ -271,7 +271,9 @@ pub trait ModelAdapter: Send + Sync {
         context: ModelRequestContext,
     ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
         let response = self.request(messages, settings, params, context).await?;
-        Ok(vec![ModelResponseStreamEvent::FinalResult(response)])
+        Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
+            response,
+        ))])
     }
 
     /// Count tokens for a request where provider support exists.

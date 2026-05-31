@@ -2,8 +2,12 @@
 
 use serde_json::{json, Map, Value};
 use starweaver_model::{
-    providers::{gemini::GeminiGenerateContentAdapter, openai_responses::OpenAiResponsesAdapter},
-    NativeToolDefinition,
+    providers::{
+        anthropic::AnthropicMessagesAdapter, bedrock::BedrockConverseAdapter,
+        gemini::GeminiGenerateContentAdapter, openai_chat::OpenAiChatAdapter,
+        openai_responses::OpenAiResponsesAdapter,
+    },
+    NativeToolDefinition, ToolDefinition,
 };
 
 #[test]
@@ -38,6 +42,56 @@ fn openai_responses_maps_pydantic_ai_native_tool_kinds() {
 }
 
 #[test]
+fn provider_function_tool_schemas_are_lowered_for_wire_requests() {
+    let tool = nested_nullable_tool();
+    let chat =
+        OpenAiChatAdapter::build_request("gpt-4o-mini", &[], None, std::slice::from_ref(&tool))
+            .unwrap();
+    let responses = OpenAiResponsesAdapter::build_request(
+        "gpt-4.1-mini",
+        &[],
+        None,
+        std::slice::from_ref(&tool),
+        &[],
+    )
+    .unwrap();
+    let anthropic = AnthropicMessagesAdapter::build_request(
+        "claude-3-5-sonnet",
+        &[],
+        None,
+        std::slice::from_ref(&tool),
+    )
+    .unwrap();
+    let gemini =
+        GeminiGenerateContentAdapter::build_request(&[], None, std::slice::from_ref(&tool))
+            .unwrap();
+    let bedrock = BedrockConverseAdapter::build_request(
+        "anthropic.claude",
+        &[],
+        None,
+        std::slice::from_ref(&tool),
+    )
+    .unwrap();
+
+    assert_lowered_schema(&chat["tools"][0]["function"]["parameters"]);
+    assert_lowered_schema(&responses["tools"][0]["parameters"]);
+    assert_lowered_schema(&anthropic["tools"][0]["input_schema"]);
+    assert_lowered_schema(&gemini["tools"][0]["functionDeclarations"][0]["parameters"]);
+    assert_lowered_schema(&bedrock["toolConfig"]["tools"][0]["toolSpec"]["inputSchema"]["json"]);
+    assert_eq!(chat["tools"][0]["function"].get("description"), None);
+    assert_eq!(responses["tools"][0].get("description"), None);
+    assert_eq!(anthropic["tools"][0].get("description"), None);
+    assert_eq!(
+        gemini["tools"][0]["functionDeclarations"][0].get("description"),
+        None
+    );
+    assert_eq!(
+        bedrock["toolConfig"]["tools"][0]["toolSpec"].get("description"),
+        None
+    );
+}
+
+#[test]
 fn gemini_maps_native_google_search_code_execution_and_generic_tools() {
     let native_tools = [
         NativeToolDefinition::new("google_search"),
@@ -62,6 +116,44 @@ fn gemini_maps_native_google_search_code_execution_and_generic_tools() {
         .unwrap()
         .contains_key("codeExecution"));
     assert_eq!(request["tools"][2]["url_context"]["maxUses"], 1);
+}
+
+fn nested_nullable_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "batch".to_string(),
+        description: None,
+        parameters: json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": ["array", "null"],
+                    "items": {"$ref": "#/$defs/Item"}
+                }
+            },
+            "$defs": {
+                "Item": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": ["string", "null"]}
+                    }
+                }
+            }
+        }),
+        metadata: Map::new(),
+    }
+}
+
+fn assert_lowered_schema(schema: &Value) {
+    assert_eq!(schema.get("$schema"), None);
+    assert_eq!(
+        schema["properties"]["items"]["type"],
+        json!(["array", "null"])
+    );
+    assert_eq!(
+        schema["$defs"]["Item"]["properties"]["name"]["type"],
+        json!(["string", "null"])
+    );
 }
 
 fn native_tool<const N: usize>(

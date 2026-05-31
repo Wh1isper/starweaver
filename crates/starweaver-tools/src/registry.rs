@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use starweaver_core::Metadata;
 use starweaver_model::{ToolCallPart, ToolDefinition, ToolReturnPart};
 
 use crate::{error_return, DynTool, DynToolset, ToolContext, ToolError, ToolInstruction};
@@ -121,7 +120,7 @@ impl ToolRegistry {
                     name: call.name.clone(),
                     content: result.content,
                     is_error: false,
-                    metadata: Metadata::default(),
+                    metadata: result.metadata,
                 },
                 Err(error) => error_return(call, &error),
             },

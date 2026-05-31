@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use starweaver_context::{AgentContext, AgentEvent};
+use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 use starweaver_core::RunId;
 use starweaver_model::{ModelMessage, ModelRequestContext, ModelResponseStreamEvent};
 use starweaver_tools::ToolContext;
@@ -204,10 +204,34 @@ impl Agent {
             }};
         }
 
+        macro_rules! stream_context_events {
+            ($state:expr, $cursor:expr) => {{
+                let events = context.events.events();
+                while $cursor < events.len() {
+                    stream_event!(
+                        $state,
+                        AgentStreamEvent::Custom {
+                            event: events[$cursor].clone(),
+                        }
+                    );
+                    $cursor += 1;
+                }
+            }};
+        }
+
         macro_rules! checkpoint {
-            ($node:expr, $state:expr) => {{
+            ($node:expr, $state:expr, $event_cursor:expr) => {{
                 let node = $node;
+                stream_event!(
+                    $state,
+                    AgentStreamEvent::NodeStart {
+                        node,
+                        step: $state.run_step,
+                        status: $state.status,
+                    }
+                );
                 let decision = self.checkpoint(node, $state, context).await?;
+                stream_context_events!($state, $event_cursor);
                 stream_event!(
                     $state,
                     AgentStreamEvent::Checkpoint {
@@ -223,8 +247,24 @@ impl Agent {
                             reason: reason.clone(),
                         }
                     );
+                    stream_event!(
+                        $state,
+                        AgentStreamEvent::NodeComplete {
+                            node,
+                            step: $state.run_step,
+                            status: $state.status,
+                        }
+                    );
                     return Err(AgentError::ExecutionSuspended { node, reason });
                 }
+                stream_event!(
+                    $state,
+                    AgentStreamEvent::NodeComplete {
+                        node,
+                        step: $state.run_step,
+                        status: $state.status,
+                    }
+                );
             }};
         }
 
@@ -243,6 +283,7 @@ impl Agent {
         state.message_history = context.message_history.clone();
         state.usage = context.usage.clone();
         state.status = RunStatus::Running;
+        let mut context_event_cursor = context.events.len();
         context.publish_event(AgentEvent::new(
             "run_start",
             serde_json::json!({"run_id": run_id.as_str()}),
@@ -255,7 +296,8 @@ impl Agent {
             }
         );
         self.call_run_start(&mut state, context).await?;
-        checkpoint!(AgentExecutionNode::RunStart, &state);
+        stream_context_events!(&state, context_event_cursor);
+        checkpoint!(AgentExecutionNode::RunStart, &state, context_event_cursor);
 
         let mut next_prompt = prompt.into();
         let mut output_retries_used = 0;
@@ -287,7 +329,11 @@ impl Agent {
                 });
             }
 
-            checkpoint!(AgentExecutionNode::PrepareModelRequest, &state);
+            checkpoint!(
+                AgentExecutionNode::PrepareModelRequest,
+                &state,
+                context_event_cursor
+            );
             let mut request = self
                 .prepare_request(&state, &next_prompt, &run_id, &conversation_id)
                 .await?;
@@ -304,7 +350,12 @@ impl Agent {
                 }
             );
             state.pending_tool_returns.clear();
-            checkpoint!(AgentExecutionNode::BeforeModelRequest, &state);
+            stream_context_events!(&state, context_event_cursor);
+            checkpoint!(
+                AgentExecutionNode::BeforeModelRequest,
+                &state,
+                context_event_cursor
+            );
 
             let response = if let Some(response) = skipped_response {
                 response
@@ -346,7 +397,7 @@ impl Agent {
                         );
                         self.record_model_stream_event(&model_span, &model_event);
                         if let ModelResponseStreamEvent::FinalResult(final_response) = model_event {
-                            response = Some(final_response);
+                            response = Some(*final_response);
                         }
                     }
                     let response = response.ok_or_else(|| {
@@ -378,7 +429,12 @@ impl Agent {
             );
             state.apply_model_response(response);
             context.add_usage(&response_usage);
-            checkpoint!(AgentExecutionNode::ModelResponse, &state);
+            stream_context_events!(&state, context_event_cursor);
+            checkpoint!(
+                AgentExecutionNode::ModelResponse,
+                &state,
+                context_event_cursor
+            );
             self.check_usage(&state)?;
             context.message_history.clone_from(&state.message_history);
 
@@ -398,12 +454,17 @@ impl Agent {
                         state.structured_output = structured_output;
                         state.status = RunStatus::Completed;
                         self.call_run_complete(&mut state, context).await?;
-                        checkpoint!(AgentExecutionNode::RunComplete, &state);
+                        checkpoint!(
+                            AgentExecutionNode::RunComplete,
+                            &state,
+                            context_event_cursor
+                        );
                         context.message_history.clone_from(&state.message_history);
                         context.publish_event(AgentEvent::new(
                             "run_complete",
                             serde_json::json!({"run_id": run_id.as_str()}),
                         ));
+                        stream_context_events!(&state, context_event_cursor);
                         stream_event!(
                             &state,
                             AgentStreamEvent::RunComplete {
@@ -463,7 +524,7 @@ impl Agent {
                     .count() as u64;
                 self.check_tool_calls(&state, projected_successful_tool_calls)?;
                 for call in &tool_calls {
-                    checkpoint!(AgentExecutionNode::ToolCall, &state);
+                    checkpoint!(AgentExecutionNode::ToolCall, &state, context_event_cursor);
                     stream_event!(
                         &state,
                         AgentStreamEvent::ToolCall {
@@ -485,8 +546,10 @@ impl Agent {
                             ),
                         step_span.context(),
                     );
+                    let context_handle = AgentContextHandle::new(context.clone());
                     let mut tool_dependencies = context.dependencies.clone();
                     tool_dependencies.insert(context.clone());
+                    tool_dependencies.insert(context_handle.clone());
                     let mut tool_context = ToolContext::new(
                         state.run_id.clone(),
                         state.conversation_id.clone(),
@@ -497,6 +560,7 @@ impl Agent {
                     .with_retry_budget(tool_retry, tool_max_retries);
                     self.call_before_tool_execution(&mut state, context, &mut tool_context, call)
                         .await?;
+                    context_handle.replace(context.clone());
                     self.trace_recorder.record_event(
                         &tool_span,
                         SpanEvent::new("starweaver.tool.call")
@@ -527,6 +591,7 @@ impl Agent {
                     } else {
                         self.trace_recorder.close_span(&tool_span, SpanStatus::Ok);
                     }
+                    self.absorb_tool_context_handle(&mut state, context, &context_handle)?;
                     self.call_after_tool_result(&mut state, context, call, &mut tool_return)
                         .await?;
                     if tool_return.is_error && is_tool_retry_return(&tool_return) {
@@ -562,7 +627,8 @@ impl Agent {
                         context.usage.tool_calls = context.usage.tool_calls.saturating_add(1);
                     }
                     state.pending_tool_returns.push(tool_return);
-                    checkpoint!(AgentExecutionNode::ToolReturn, &state);
+                    stream_context_events!(&state, context_event_cursor);
+                    checkpoint!(AgentExecutionNode::ToolReturn, &state, context_event_cursor);
                 }
                 next_prompt.clear();
                 self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
@@ -570,7 +636,11 @@ impl Agent {
             }
 
             let output = response.text_output();
-            checkpoint!(AgentExecutionNode::ValidateOutput, &state);
+            checkpoint!(
+                AgentExecutionNode::ValidateOutput,
+                &state,
+                context_event_cursor
+            );
             match self
                 .validate_final_output(&mut state, context, &output)
                 .await
@@ -579,7 +649,11 @@ impl Agent {
                     state.output = Some(output.clone());
                     state.status = RunStatus::Completed;
                     self.call_run_complete(&mut state, context).await?;
-                    checkpoint!(AgentExecutionNode::RunComplete, &state);
+                    checkpoint!(
+                        AgentExecutionNode::RunComplete,
+                        &state,
+                        context_event_cursor
+                    );
                     context.message_history.clone_from(&state.message_history);
                     context.publish_event(AgentEvent::new(
                         "run_complete",

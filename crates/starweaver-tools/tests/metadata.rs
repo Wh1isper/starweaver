@@ -24,3 +24,37 @@ fn function_tool_metadata_is_exposed_on_tool_definition() {
 
     assert_eq!(definition.metadata, metadata);
 }
+
+#[tokio::test]
+async fn tool_result_metadata_is_exposed_on_tool_return() {
+    let tool = FunctionTool::new(
+        "mutating_tool",
+        Some("Return metadata".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, _args| async move {
+            let mut result = ToolResult::new(serde_json::json!({"ok": true}));
+            result
+                .metadata
+                .insert("context_mutated".to_string(), serde_json::json!(true));
+            Ok(result)
+        },
+    );
+    let registry = ToolRegistry::new().with_tool(Arc::new(tool));
+    let result = registry
+        .execute_call(
+            ToolContext::new(
+                starweaver_core::RunId::default(),
+                starweaver_core::ConversationId::default(),
+                0,
+            ),
+            &starweaver_model::ToolCallPart {
+                id: "call-1".to_string(),
+                name: "mutating_tool".to_string(),
+                arguments: serde_json::json!({}),
+            },
+        )
+        .await;
+
+    assert_eq!(result.content["ok"], true);
+    assert_eq!(result.metadata["context_mutated"], true);
+}

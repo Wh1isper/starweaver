@@ -8,7 +8,7 @@ pub mod subagent_config;
 
 use std::sync::Arc;
 
-use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
+use starweaver_model::ModelAdapter;
 use starweaver_runtime::Agent as RuntimeAgent;
 use starweaver_tools::DynTool;
 
@@ -19,13 +19,15 @@ pub use bundles::{
 pub use presets::{
     text_output_preset, AgentSpec, AgentSpecError, AgentSpecRegistry, ModelPreset, SdkPreset,
 };
-pub use session::AgentSession;
-pub use starweaver_context::{AgentContext, ResumableState};
+pub use session::{AgentRunOptions, AgentSession};
+pub use starweaver_context::{AgentContext, AgentContextHandle, ResumableState};
 pub use starweaver_core::{
     AgentId, CheckpointId, ConversationId, RunId, SubagentLifecycleEvent, SubagentLifecycleKind,
     SubagentSpec, TaskId, TraceContext, Usage,
 };
-pub use starweaver_model::{FunctionModel, FunctionModelInfo, TestModel};
+pub use starweaver_model::{
+    FunctionModel, FunctionModelInfo, ModelRequestParameters, ModelSettings, TestModel,
+};
 pub use starweaver_runtime::{
     model_request, model_request_stream, tool_call, AdapterTraceRecorder, AgentCapability,
     AgentCheckpoint, AgentError, AgentExecutionDecision, AgentExecutionNode, AgentExecutor,
@@ -43,10 +45,10 @@ pub use starweaver_runtime::{
     UsageLimitError, UsageLimits,
 };
 pub use starweaver_tools::{
-    mcp_tool_definition, typed_tool, DynToolset, EmptyToolArgs, FunctionTool, McpToolSpec,
-    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset,
-    StaticToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolRegistry, ToolResult,
-    Toolset, TypedFunctionTool,
+    mcp_tool_definition, string_tool, typed_tool, DynToolset, EmptyToolArgs, FunctionTool,
+    McpToolSpec, McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool,
+    PrefixedToolset, StaticToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolRegistry,
+    ToolResult, Toolset, TypedFunctionTool,
 };
 pub use subagent::{AgentApp, SubagentConfig, SubagentRegistry, SubagentResult, SubagentTask};
 pub use subagent_config::{
@@ -180,6 +182,22 @@ impl AgentBuilder {
     #[must_use]
     pub fn toolset(mut self, toolset: &DynToolset) -> Self {
         self.tools.insert_toolset(toolset);
+        self
+    }
+
+    /// Add many toolsets in registration order.
+    #[must_use]
+    pub fn toolsets(mut self, toolsets: impl IntoIterator<Item = DynToolset>) -> Self {
+        for toolset in toolsets {
+            self.tools.insert_toolset(&toolset);
+        }
+        self
+    }
+
+    /// Merge additional runtime tools into this builder.
+    #[must_use]
+    pub fn append_tool_registry(mut self, tools: &ToolRegistry) -> Self {
+        self.tools.insert_registry(tools);
         self
     }
 

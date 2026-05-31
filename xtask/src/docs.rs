@@ -44,7 +44,7 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1.89"
-schemars = {{ version = "0.8.22", features = ["derive"] }}
+schemars = {{ version = "1.2.1", features = ["derive"] }}
 serde = {{ version = "1.0.228", features = ["derive"] }}
 serde_json = "1.0.145"
 starweaver-agent = {{ path = "{}" }}

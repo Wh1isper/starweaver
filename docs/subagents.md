@@ -57,6 +57,43 @@ assert_eq!(delegated.output(), "child");
 
 The registry shares usage and dependencies with child contexts. The task envelope is the extension point for lifecycle, cancellation, polling, and nested delegation guardrails.
 
+Expose delegation to the model with the typed `delegate` tool when an agent should choose a registered child agent during a run.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{
+    AgentBuilder, AgentContext, AgentContextHandle, SubagentConfig, SubagentRegistry, TestModel,
+    ToolContext,
+};
+use starweaver_agent::{ConversationId, RunId};
+
+# async fn example() -> Result<(), starweaver_agent::ToolError> {
+let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+let registry = Arc::new(
+    SubagentRegistry::new().with_subagent(SubagentConfig::new("research", child)),
+);
+let delegate = registry.delegate_tool();
+let parent = AgentContext::default();
+let context_handle = AgentContextHandle::new(parent.clone());
+let mut dependencies = parent.dependencies.clone();
+dependencies.insert(parent);
+dependencies.insert(context_handle);
+
+let result = delegate
+    .call(
+        ToolContext::new(RunId::default(), ConversationId::default(), 0)
+            .with_dependencies(dependencies),
+        serde_json::json!({"name": "research", "prompt": "collect facts"}),
+    )
+    .await?;
+
+assert_eq!(result.content["name"], "research");
+assert_eq!(result.content["output"], "child");
+# Ok(())
+# }
+```
+
 ## Lifecycle Events
 
 Delegation publishes typed lifecycle payloads through the parent context event bus. Applications can observe `subagent_started`, `subagent_completed`, and `subagent_failed` records and deserialize the payload as `SubagentLifecycleEvent`.

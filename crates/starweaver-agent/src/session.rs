@@ -3,6 +3,8 @@
 use serde_json::Value;
 use starweaver_context::{AgentContext, BusMessage, ResumableState};
 use starweaver_environment::DynEnvironmentProvider;
+use starweaver_model::{ModelRequestParameters, ModelSettings};
+use starweaver_tools::{DynTool, DynToolset, ToolRegistry};
 
 use crate::attach_environment;
 use starweaver_core::TraceContext;
@@ -16,6 +18,103 @@ use starweaver_runtime::{
 pub struct AgentSession {
     agent: RuntimeAgent,
     context: AgentContext,
+}
+
+/// Per-run SDK overrides composed over a reusable session agent.
+#[derive(Clone, Default)]
+pub struct AgentRunOptions {
+    instructions: Vec<String>,
+    model_settings: Option<ModelSettings>,
+    request_params: Option<ModelRequestParameters>,
+    tools: ToolRegistry,
+    replace_tools: bool,
+}
+
+impl AgentRunOptions {
+    /// Create empty run options.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add an instruction for this run.
+    #[must_use]
+    pub fn instruction(mut self, instruction: impl Into<String>) -> Self {
+        self.instructions.push(instruction.into());
+        self
+    }
+
+    /// Override model settings for this run.
+    #[must_use]
+    pub fn model_settings(mut self, settings: ModelSettings) -> Self {
+        self.model_settings = Some(settings);
+        self
+    }
+
+    /// Override provider-neutral request parameters for this run.
+    #[must_use]
+    pub fn request_params(mut self, params: ModelRequestParameters) -> Self {
+        self.request_params = Some(params);
+        self
+    }
+
+    /// Add one runtime tool for this run.
+    #[must_use]
+    pub fn tool(mut self, tool: DynTool) -> Self {
+        self.tools.insert(tool);
+        self
+    }
+
+    /// Add one runtime toolset for this run.
+    #[must_use]
+    pub fn toolset(mut self, toolset: &DynToolset) -> Self {
+        self.tools.insert_toolset(toolset);
+        self
+    }
+
+    /// Add many runtime toolsets for this run.
+    #[must_use]
+    pub fn toolsets(mut self, toolsets: impl IntoIterator<Item = DynToolset>) -> Self {
+        for toolset in toolsets {
+            self.tools.insert_toolset(&toolset);
+        }
+        self
+    }
+
+    /// Merge tools from another registry into this run.
+    #[must_use]
+    pub fn append_tool_registry(mut self, tools: &ToolRegistry) -> Self {
+        self.tools.insert_registry(tools);
+        self
+    }
+
+    /// Use run tools as the complete tool registry for this run.
+    #[must_use]
+    pub const fn replace_tools(mut self) -> Self {
+        self.replace_tools = true;
+        self
+    }
+
+    /// Apply these options to a reusable runtime agent clone.
+    #[must_use]
+    pub fn apply(self, agent: &RuntimeAgent) -> RuntimeAgent {
+        let mut override_builder = agent.override_config();
+        if self.replace_tools {
+            override_builder = override_builder.with_tools(self.tools);
+        } else if !self.tools.is_empty() {
+            override_builder = override_builder.append_tools(&self.tools);
+        }
+        if !self.instructions.is_empty() {
+            override_builder = override_builder.append_instructions(self.instructions);
+        }
+        if let Some(settings) = self.model_settings {
+            override_builder = override_builder.model_settings(Some(settings));
+        }
+        if let Some(params) = self.request_params {
+            override_builder = override_builder.request_params(params);
+        }
+        override_builder.build()
+    }
 }
 
 impl AgentSession {
@@ -121,6 +220,22 @@ impl AgentSession {
         self.agent.run_with_context(prompt, &mut self.context).await
     }
 
+    /// Run with per-run SDK overrides composed over the reusable session agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime run fails.
+    pub async fn run_with_options(
+        &mut self,
+        prompt: impl Into<String>,
+        options: AgentRunOptions,
+    ) -> Result<AgentResult, AgentError> {
+        options
+            .apply(&self.agent)
+            .run_with_context(prompt, &mut self.context)
+            .await
+    }
+
     /// Run the session agent and collect typed stream events.
     ///
     /// # Errors
@@ -133,6 +248,24 @@ impl AgentSession {
         let mut events = Vec::<AgentStreamRecord>::new();
         let result = self
             .agent
+            .run_with_context_and_stream_events(prompt, &mut self.context, &mut events)
+            .await?;
+        Ok(AgentStreamResult { result, events })
+    }
+
+    /// Run with per-run SDK overrides and collect typed stream events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime run fails.
+    pub async fn run_stream_with_options(
+        &mut self,
+        prompt: impl Into<String>,
+        options: AgentRunOptions,
+    ) -> Result<AgentStreamResult, AgentError> {
+        let mut events = Vec::<AgentStreamRecord>::new();
+        let result = options
+            .apply(&self.agent)
             .run_with_context_and_stream_events(prompt, &mut self.context, &mut events)
             .await?;
         Ok(AgentStreamResult { result, events })
@@ -150,6 +283,22 @@ impl AgentSession {
         prompt: impl Into<String>,
     ) -> Result<AgentIterResult, AgentError> {
         self.agent
+            .run_with_context_iter(prompt, &mut self.context)
+            .await
+    }
+
+    /// Run with per-run SDK overrides and collect compact iteration inspection records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime run fails.
+    pub async fn run_iter_with_options(
+        &mut self,
+        prompt: impl Into<String>,
+        options: AgentRunOptions,
+    ) -> Result<AgentIterResult, AgentError> {
+        options
+            .apply(&self.agent)
             .run_with_context_iter(prompt, &mut self.context)
             .await
     }

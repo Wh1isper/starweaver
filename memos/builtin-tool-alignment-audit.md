@@ -128,6 +128,16 @@ Execution status:
 
 - Dedicated replay fixtures for OpenAI Responses `code_interpreter`, `image_generation` request mapping, `file_search` request/response, `web_fetch`, and `memory`.
 - Provider-backed execution for currently envelope-only filesystem, shell lifecycle, task, and host-operation tools.
+- Host-backed replacements for ya-agent-sdk web/search/crawler tools:
+  - `search(query, num)`
+  - `search_stock_image(query)`
+  - `search_image(query, limit, size)`
+  - `fetch(url, head_only)`
+  - `scrape(url)`
+  - `download(urls, save_dir)`
+  - `load_media_url(url)`
+- Search/crawler adapters should cover SSRF and redirect policy, streaming size limits, text truncation, binary guards, safe environment writes, URL accessibility validation, citation metadata, and deterministic fixtures.
+- `glob`, `grep`, `search_tools`, and `call_tool` have direct executable Starweaver replacements; the fixed `ToolProxyToolset` is the public SDK replacement for large searchable tool surfaces.
 - Unified delegation tool and skill-contributed toolsets in the SDK subagent/skill layer.
 
 ## Validation evidence

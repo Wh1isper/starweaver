@@ -345,12 +345,15 @@ impl SearchEntry {
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct SearchToolsArgs {
+    /// Natural language or keyword query to search for tools.
     query: String,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 struct CallToolArgs {
+    /// Name of the tool to invoke.
     name: String,
+    /// Arguments to pass to the tool, matching its parameter schema.
     #[serde(default)]
     arguments: Value,
 }
@@ -400,7 +403,7 @@ fn format_search_results<'a>(
     let tools = tools.into_iter().collect::<Vec<_>>();
     let mut lines = vec![format!(
         "<search-results query=\"{}\" count=\"{}\">",
-        xml_escape(query),
+        xml_escape_attr(query),
         tools.len()
     )];
 
@@ -412,12 +415,12 @@ fn format_search_results<'a>(
         let namespace = tool
             .namespace
             .as_deref()
-            .map(|namespace| format!(" namespace=\"{}\"", xml_escape(namespace)))
+            .map(|namespace| format!(" namespace=\"{}\"", xml_escape_attr(namespace)))
             .unwrap_or_default();
         lines.push(format!(
             "<tool name=\"{}\" toolset=\"{}\"{}>",
-            xml_escape(&tool.name),
-            xml_escape(&tool.toolset),
+            xml_escape_attr(&tool.name),
+            xml_escape_attr(&tool.toolset),
             namespace
         ));
         lines.push(format!(
@@ -438,7 +441,7 @@ fn format_search_results<'a>(
 fn format_tool_call_error(tool: &IndexedTool, message: &str) -> String {
     format!(
         "<tool-call-error tool=\"{}\">\n<message>{}</message>\n<parameters>{}</parameters>\n</tool-call-error>",
-        xml_escape(&tool.name),
+        xml_escape_attr(&tool.name),
         xml_escape(message),
         xml_escape(&tool.parameters.to_string())
     )
@@ -453,4 +456,10 @@ fn xml_escape(value: &str) -> String {
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+fn xml_escape_attr(value: &str) -> String {
+    xml_escape(value)
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }

@@ -39,6 +39,16 @@ where
     )
 }
 
+pub fn tool_metadata(bundle: &str, inherit: bool, approval_required: bool) -> Metadata {
+    let mut metadata = Metadata::default();
+    metadata.insert("bundle".to_string(), serde_json::json!(bundle));
+    metadata.insert("auto_inherit".to_string(), serde_json::json!(inherit));
+    if approval_required {
+        metadata.insert("approval_required".to_string(), serde_json::json!(true));
+    }
+    metadata
+}
+
 pub fn tool_execution_error(tool: &str, error: impl std::fmt::Display) -> ToolError {
     ToolError::Execution {
         tool: tool.to_string(),

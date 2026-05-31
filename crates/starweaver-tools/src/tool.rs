@@ -175,11 +175,36 @@ pub struct TypedFunctionTool<Args, F> {
     _args: PhantomData<fn(Args)>,
 }
 
+fn normalize_tool_parameters_schema(parameters: &mut Value) {
+    if !parameters.is_object() {
+        *parameters = serde_json::json!({
+            "type": "object",
+            "properties": {},
+        });
+        return;
+    }
+
+    let Some(object) = parameters.as_object_mut() else {
+        return;
+    };
+    object.remove("$schema");
+    object
+        .entry("type".to_string())
+        .or_insert_with(|| Value::String("object".to_string()));
+    object
+        .entry("properties".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+}
+
 impl<Args, F> TypedFunctionTool<Args, F>
 where
     Args: JsonSchema,
 {
     /// Build a typed function-backed tool.
+    ///
+    /// Argument descriptions come from the `Args` [`JsonSchema`] implementation. With
+    /// `#[derive(JsonSchema)]`, `schemars` maps Rust doc comments and `#[schemars(...)]` field
+    /// attributes into each argument's JSON Schema without changing Serde deserialization.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -187,12 +212,13 @@ where
         function: F,
     ) -> Self {
         let schema = schema_for!(Args);
-        let parameters = serde_json::to_value(schema).unwrap_or_else(|_| {
+        let mut parameters = serde_json::to_value(schema).unwrap_or_else(|_| {
             serde_json::json!({
                 "type": "object",
                 "properties": {},
             })
         });
+        normalize_tool_parameters_schema(&mut parameters);
         Self {
             name: name.into(),
             description: description.into(),

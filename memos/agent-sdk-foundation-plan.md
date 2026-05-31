@@ -1,6 +1,6 @@
 # Agent SDK Foundation Plan
 
-This memo defines the next execution phase: harden Starweaver Agent SDK foundations before expanding application surfaces such as durable service orchestration and CLI product workflows.
+This memo defines the next execution phase: harden Starweaver Agent SDK foundations before expanding application surfaces such as durable service orchestration and command-line product workflows.
 
 ## Phase Goal
 
@@ -139,6 +139,28 @@ make fmt-check && make check && make test
 
 Add tests before changing public APIs, then update docs examples after API shape stabilizes.
 
+## Reference Audit Evidence
+
+| Reference pattern                                                                                                                   | Evidence read                                                                                                                               | Starweaver target                                                                                                                     | Implemented foundation                                                                                                                                                                                                                                     |
+| ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-run agent composition accepts additional instructions, deps, model settings, usage limits, metadata, toolsets, and capabilities | `pydantic_ai/agent/wrapper.py` run/iter arguments and override context manager                                                              | `crates/starweaver-agent/src/session.rs`; `crates/starweaver-runtime/src/agent/overrides.rs`                                          | `AgentRunOptions` composes run-scoped instructions, settings, request params, tools, and toolsets over a reusable `AgentSession` agent without mutating the base agent                                                                                     |
+| Toolsets have stable ids, instructions, available tools, call dispatch, and wrapper composition                                     | `pydantic_ai/toolsets/abstract.py` methods: `id`, `get_instructions`, `get_tools`, `call_tool`, `prefixed`, `prepared`, `approval_required` | `crates/starweaver-tools/src/toolset.rs`; `crates/starweaver-tools/src/prefixed.rs`; `crates/starweaver-tools/src/tool_proxy.rs`      | Core `Toolset`/`PrefixedToolset`/`ToolProxyToolset` already landed; SDK now adds builder/session helpers and coverage for composition metadata                                                                                                             |
+| Subagent availability is a first-class SDK concern with required/optional tools and dynamic checks                                  | `ya-agent-sdk/tests/subagents/test_factory.py` availability tests                                                                           | `crates/starweaver-agent/src/subagent.rs`; `crates/starweaver-agent/src/subagent_config.rs`                                           | `SubagentRegistry::names`, `is_available`, and typed delegation tool establish the registry-side contract; required/optional tool policy remains in serializable `SubagentSpec` for the next subagent slice                                                |
+| Delegation should be usable as a tool with typed arguments and lifecycle events                                                     | `ya-agent-sdk/subagents/factory.py`; subagent factory tests                                                                                 | `crates/starweaver-agent/src/subagent.rs`; `crates/starweaver-agent/tests/delegation_tool.rs`; `crates/starweaver-context/src/lib.rs` | `SubagentRegistry::delegate_tool` / `delegate_tool_named` expose a typed `delegate` tool over registered SDK subagents, and `AgentContextHandle` lets model-invoked delegation merge child usage, notes, and lifecycle events into the live parent context |
+| First-party tool inheritance and approval are metadata-driven                                                                       | ya-agent-sdk toolset and shell review patterns; pydantic-ai approval wrapper pattern                                                        | `crates/starweaver-agent/src/bundles/*`; `crates/starweaver-tools/src/tool.rs`                                                        | task and context-management tools carry `auto_inherit`; shell tools carry `approval_required`; bundle metadata is asserted in SDK tests                                                                                                                    |
+| Agent specs should select registry objects by stable names while preserving programmatic handles outside serialized specs           | ya-agent-sdk markdown subagent config and pydantic-ai agent spec override pattern                                                           | `crates/starweaver-agent/src/presets.rs`; `crates/starweaver-agent/tests/spec_selection.rs`                                           | `AgentSpec` supports explicit selected `toolsets` and `subagents`, defaults to least privilege, and requires `all_toolsets` / `all_subagents` for whole-registry attachment                                                                                |
+
+## Landed in This Slice
+
+- Added `AgentRunOptions` for per-run SDK composition over `AgentSession`.
+- Added runtime override helpers for appending tools, toolsets, registries, and instructions.
+- Added `AgentBuilder::toolsets` and `AgentBuilder::append_tool_registry` convenience APIs.
+- Added `AgentSpec.toolsets` and `AgentSpec.subagents` selection with `UnknownToolset` and `UnknownSubagent` errors; whole-registry attachment is explicit through `all_toolsets` and `all_subagents`.
+- Added typed `delegate` / custom-named delegation tools through `SubagentRegistry`, plus live parent-context propagation through `AgentContextHandle` for success and failure lifecycle paths.
+- Added first-party bundle metadata for `bundle`, `auto_inherit`, and `approval_required`; filesystem/shell bundle edge cases now apply `ls.ignore`, validate write modes, protect create-via-edit from overwriting existing files, reject empty replacement strings, and return an explicit background-shell provider requirement.
+- Added SDK focused tests: `session_options.rs`, `spec_selection.rs`, `delegation_tool.rs`, and expanded `bundles.rs` metadata assertions.
+- Updated `docs/sdk-app.md` and `docs/subagents.md` examples for run options and delegation tools.
+
 ## Next Work Breakdown
 
 ### Step 1 Reference audit
@@ -202,7 +224,7 @@ Application surfaces sequenced later:
 
 - durable service runtime deepening
 - checkpoint reload through service storage
-- CLI profile/session product workflows
+- command-line profile/session product workflows
 - service-backed SSE and approval endpoints
 - platform adapters
 

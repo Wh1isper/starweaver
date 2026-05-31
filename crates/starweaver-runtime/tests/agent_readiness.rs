@@ -130,8 +130,8 @@ impl AgentCapability for SkipWithResponse {
         _request: &mut starweaver_model::ModelRequest,
         _settings: &mut Option<ModelSettings>,
     ) -> CapabilityResult<()> {
-        Err(CapabilityError::SkipModelRequest(ModelResponse::text(
-            "from capability",
+        Err(CapabilityError::SkipModelRequest(Box::new(
+            ModelResponse::text("from capability"),
         )))
     }
 }

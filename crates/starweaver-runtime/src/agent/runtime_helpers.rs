@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use starweaver_context::AgentContext;
+use starweaver_context::{AgentContext, AgentContextHandle};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelResponse,
@@ -158,6 +158,27 @@ impl Agent {
             limits.check_usage(&state.usage)?;
         }
         Ok(())
+    }
+
+    pub(super) fn absorb_tool_context_handle(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        handle: &AgentContextHandle,
+    ) -> Result<(), AgentError> {
+        let mut snapshot = handle.snapshot();
+        let usage = snapshot.usage.clone();
+        context.usage = usage.clone();
+        state.usage = usage;
+        context.notes.clone_from(&snapshot.notes);
+        context.events.clone_from(&snapshot.events);
+        snapshot
+            .message_history
+            .clone_from(&context.message_history);
+        snapshot.run_id.clone_from(&context.run_id);
+        snapshot.trace_context.clone_from(&context.trace_context);
+        handle.replace(snapshot);
+        self.check_usage(state)
     }
 
     pub(super) fn check_tool_calls(
@@ -355,7 +376,7 @@ impl Agent {
             {
                 Ok(()) => {}
                 Err(CapabilityError::SkipModelRequest(response)) => {
-                    return Ok(Some(response));
+                    return Ok(Some(*response));
                 }
                 Err(error) => return Err(Self::capability_error(error)),
             }

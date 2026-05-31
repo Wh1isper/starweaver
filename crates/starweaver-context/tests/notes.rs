@@ -97,6 +97,17 @@ fn context_instructions_include_note_keys_for_user_prompts() {
 }
 
 #[test]
+fn context_instructions_escape_note_keys() {
+    let mut context = AgentContext::default();
+    context.notes.set("evil\"'><tag>&", "hidden");
+
+    let instructions = context.context_instructions(true).unwrap();
+
+    assert!(instructions.contains("evil&quot;&apos;&gt;&lt;tag&gt;&amp;"));
+    assert!(!instructions.contains("evil\"'><tag>&"));
+}
+
+#[test]
 fn context_instructions_skip_empty_notes_and_tool_responses() {
     let mut context = AgentContext::default();
     assert_eq!(context.context_instructions(true), None);

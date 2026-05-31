@@ -40,6 +40,40 @@ assert_eq!(result.output, "echo: hello");
 # }
 ```
 
+## Streaming test model
+
+`TestModel` and `FunctionModel` support both `request` and `request_stream`, so runtime streaming tests can exercise provider delta events without a production model.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{AgentBuilder, AgentStreamEvent, TestModel};
+use starweaver_model::{ModelResponse, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
+
+# async fn example() -> Result<(), starweaver_agent::AgentError> {
+let model = TestModel::with_stream_events(vec![vec![
+    ModelResponseStreamEvent::PartStart(PartStart {
+        index: 0,
+        part_kind: "text".to_string(),
+    }),
+    ModelResponseStreamEvent::PartDelta(PartDelta {
+        index: 0,
+        delta: "hel".to_string(),
+    }),
+    ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+    ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("hello"))),
+]]);
+let agent = AgentBuilder::new(Arc::new(model)).build();
+
+let stream = agent.run_stream("hello").await?;
+assert!(stream.events().iter().any(|record| matches!(
+    record.event,
+    AgentStreamEvent::ModelStream { .. }
+)));
+# Ok(())
+# }
+```
+
 ## Production request guard
 
 Use the global guard in tests to prevent production HTTP requests:

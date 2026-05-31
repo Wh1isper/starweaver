@@ -2,12 +2,15 @@
 
 use std::sync::Arc;
 
-use starweaver_context::AgentContext;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use starweaver_context::{AgentContext, AgentContextHandle};
 use starweaver_core::{Metadata, SubagentLifecycleEvent, SubagentLifecycleKind, TaskId};
 use starweaver_model::ModelMessage;
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentError, AgentResult, AgentStreamRecord, AgentStreamResult,
 };
+use starweaver_tools::{typed_tool, DynTool, EmptyToolArgs, ToolContext, ToolError, ToolResult};
 
 use crate::session::AgentSession;
 
@@ -46,6 +49,22 @@ impl SubagentTask {
         self.metadata = metadata;
         self
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+struct DelegateArgs {
+    /// Name of the subagent to delegate to.
+    #[serde(alias = "name")]
+    subagent_name: String,
+    /// The prompt to send to the subagent.
+    prompt: String,
+    /// Optional agent ID carried into task metadata for host-managed continuation.
+    #[serde(default)]
+    agent_id: Option<String>,
+    /// Optional application metadata for the delegated task.
+    #[serde(default)]
+    #[schemars(skip)]
+    metadata: Option<serde_json::Value>,
 }
 
 /// Application-level result envelope returned by SDK subagent delegation.
@@ -252,6 +271,109 @@ impl SubagentRegistry {
         &self.subagents
     }
 
+    /// Return whether there are no registered subagents.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.subagents.is_empty()
+    }
+
+    /// Return a stable list of registered subagent names.
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        self.subagents
+            .iter()
+            .map(|subagent| subagent.name.clone())
+            .collect()
+    }
+
+    /// Return whether a subagent is available for delegation.
+    #[must_use]
+    pub fn is_available(&self, name: &str) -> bool {
+        self.subagent(name).is_some()
+    }
+
+    /// Create a typed delegation tool bound to this registry.
+    #[must_use]
+    pub fn delegate_tool(self: &Arc<Self>) -> DynTool {
+        self.delegate_tool_named("delegate")
+    }
+
+    /// Create a subagent information tool bound to this registry.
+    #[must_use]
+    pub fn subagent_info_tool(self: &Arc<Self>) -> DynTool {
+        let registry = self.clone();
+        Arc::new(typed_tool::<EmptyToolArgs, _, _>(
+            "subagent_info",
+            Some("List all known subagents and their metadata.".to_string()),
+            move |_context: ToolContext, _arguments: EmptyToolArgs| {
+                let registry = registry.clone();
+                async move {
+                    let subagents = registry
+                        .subagents
+                        .iter()
+                        .map(|subagent| {
+                            serde_json::json!({
+                                "name": &subagent.name,
+                                "description": &subagent.description,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    Ok(ToolResult::new(serde_json::json!({
+                        "subagents": subagents,
+                    })))
+                }
+            },
+        ))
+    }
+
+    /// Create a typed delegation tool bound to this registry with a caller-provided name.
+    #[must_use]
+    pub fn delegate_tool_named(self: &Arc<Self>, tool_name: impl Into<String>) -> DynTool {
+        let registry = self.clone();
+        let tool_name = tool_name.into();
+        Arc::new(typed_tool::<DelegateArgs, _, _>(
+            tool_name.clone(),
+            Some("Delegate a task to a registered SDK subagent.".to_string()),
+            move |context: ToolContext, arguments: DelegateArgs| {
+                let registry = registry.clone();
+                let tool_name = tool_name.clone();
+                async move {
+                    let context_handle =
+                        context.dependency::<AgentContextHandle>().ok_or_else(|| {
+                            ToolError::Execution {
+                                tool: tool_name.clone(),
+                                message: "missing AgentContextHandle dependency".to_string(),
+                            }
+                        })?;
+                    let mut parent_context = context_handle.snapshot();
+                    let mut metadata = arguments.metadata.unwrap_or_else(|| serde_json::json!({}));
+                    if let Some(agent_id) = arguments.agent_id {
+                        metadata["agent_id"] = serde_json::json!(agent_id);
+                    }
+                    let task = SubagentTask::new(arguments.prompt).with_metadata(metadata);
+                    let result = registry
+                        .delegate_task(&arguments.subagent_name, task, &mut parent_context)
+                        .await;
+                    context_handle.replace(parent_context);
+                    let result = result.map_err(|error| ToolError::Execution {
+                        tool: tool_name.clone(),
+                        message: error.to_string(),
+                    })?;
+                    let mut tool_result = ToolResult::new(serde_json::json!({
+                        "name": result.name,
+                        "task_id": result.task.id.as_str(),
+                        "output": result.output(),
+                        "usage": result.result.state.usage,
+                    }));
+                    tool_result
+                        .metadata
+                        .insert("context_mutated".to_string(), serde_json::json!(true));
+                    Ok(tool_result)
+                }
+            },
+        ))
+    }
+
     /// Return a subagent by name.
     #[must_use]
     pub fn subagent(&self, name: &str) -> Option<&SubagentConfig> {
@@ -324,6 +446,7 @@ impl SubagentRegistry {
                         serde_json::json!(run_id.as_str()),
                     );
                 }
+                parent_context.absorb_subagent_context(&child_context);
                 parent_context.publish_event(starweaver_context::AgentEvent::new(
                     "subagent_failed",
                     serde_json::to_value(

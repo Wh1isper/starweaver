@@ -7,7 +7,7 @@ pub mod gemini;
 pub mod openai_chat;
 pub mod openai_responses;
 
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use crate::{
     message::{ContentPart, FinishReason, ModelMessage, ModelRequestPart},
@@ -173,6 +173,41 @@ fn finish_reason_openai(reason: &str) -> FinishReason {
         "tool_calls" => FinishReason::ToolCalls,
         "content_filter" => FinishReason::ContentFilter,
         _ => FinishReason::Unknown,
+    }
+}
+
+pub(crate) fn provider_tool_parameters(parameters: &Value) -> Value {
+    let mut schema = parameters.clone();
+    remove_schema_meta(&mut schema);
+    schema
+}
+
+pub(crate) fn insert_optional_description(
+    object: &mut Map<String, Value>,
+    description: Option<&String>,
+) {
+    if let Some(description) = description
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        object.insert("description".to_string(), json!(description));
+    }
+}
+
+fn remove_schema_meta(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("$schema");
+            for nested in object.values_mut() {
+                remove_schema_meta(nested);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                remove_schema_meta(item);
+            }
+        }
+        _ => {}
     }
 }
 

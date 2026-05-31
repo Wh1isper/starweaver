@@ -88,9 +88,20 @@ Tools:
 - `fetch`: page or resource fetch
 - `scrape`: page-to-Markdown scrape
 - `download`: resource download
+- `load_media_url`: load remote media or documents as provider-ready content references
 - citation metadata capture
 
-The bundle should support gateway routing and deterministic tests through injectable clients.
+The bundle should support gateway routing and deterministic tests through injectable clients. The current SDK surface keeps these tools as host-operation envelopes until host-backed adapters land.
+
+Replacement requirements for ya-agent-sdk parity:
+
+- `search` should use an injectable web-search client with provider priority, timeout, quota, and citation metadata.
+- `search_stock_image` and `search_image` should use injectable image-search clients and validate result URL accessibility.
+- `fetch` should provide HTTP `HEAD` and `GET`, redirect checks, SSRF policy, streaming limits, text truncation, binary size guards, and content-type metadata.
+- `scrape` should provide page-to-Markdown conversion through a crawler/scraper adapter with deterministic fixture tests.
+- `download` should stream one or more URLs into the active `EnvironmentProvider` or resource store with safe filenames and per-file metadata.
+- `load_media_url` should classify image, video, audio, and document URLs and map them to model/provider media capability paths.
+- Provider-native tools such as OpenAI `web_search_preview`, OpenAI `web_fetch`, OpenAI `file_search`, Gemini `google_search`, and Gemini `url_context` should remain model-native pass-throughs with replay fixtures; SDK host tools should remain deterministic and provider-neutral.
 
 ### Task Bundle
 

@@ -14,6 +14,12 @@ use crate::{
 pub enum AgentIterationKind {
     /// A run started.
     RunStart,
+    /// Runtime execution entered a durable node boundary.
+    NodeStart,
+    /// Runtime execution completed a durable node boundary.
+    NodeComplete,
+    /// A context sideband event was published.
+    Custom,
     /// A model request was prepared.
     ModelRequest,
     /// A provider stream delta or part event was observed.
@@ -55,6 +61,13 @@ impl AgentIterationStep {
     const fn from_record(index: usize, record: &AgentStreamRecord) -> Self {
         let (kind, run_step, node) = match &record.event {
             AgentStreamEvent::RunStart { .. } => (AgentIterationKind::RunStart, None, None),
+            AgentStreamEvent::NodeStart { node, step, .. } => {
+                (AgentIterationKind::NodeStart, Some(*step), Some(*node))
+            }
+            AgentStreamEvent::NodeComplete { node, step, .. } => {
+                (AgentIterationKind::NodeComplete, Some(*step), Some(*node))
+            }
+            AgentStreamEvent::Custom { .. } => (AgentIterationKind::Custom, None, None),
             AgentStreamEvent::ModelRequest { step } => {
                 (AgentIterationKind::ModelRequest, Some(*step), None)
             }

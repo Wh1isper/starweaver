@@ -20,7 +20,7 @@ These notes capture reference mapping and phase-specific implementation observat
 - SDK facade exists through `AgentBuilder`, `AgentApp`, `AgentSession`, direct re-exports, preset/spec loading, first-party tool bundles, environment attachment, subagent registry foundations, and markdown subagent config parsing.
 - Environment layer exists through `EnvironmentProvider`, file/shell policies, resource refs, state snapshots, deterministic virtual provider, and policy-aware local provider file/search operations.
 - Durable session layer exists through `SessionStore`, `InMemorySessionStore`, session/run records, checkpoint persistence, stream replay, resume snapshots, `SessionStoreExecutor`, and compact run traces.
-- CLI includes deterministic `version`, `run`, `diagnostics`, `session inspect`, and replay-check guidance surfaces.
+- Command-line binary includes deterministic `version`, `run`, `diagnostics`, `session inspect`, and replay-check guidance surfaces.
 - Docs examples compile through `make docs-check` and the Rust `xtask` crate.
 - GitHub CI includes docs example validation.
 - Last verified local validation set: `make fmt-check && make check && make test && make docs-check && make replay-check`.
@@ -79,20 +79,12 @@ These notes capture reference mapping and phase-specific implementation observat
 
 ## Remaining Pre-1.0 Gaps
 
-### Checkpoint Reload and Resume Execution
+### Agent SDK Foundation Hardening
 
-- Add runtime resume APIs that hydrate from `AgentCheckpoint.state`.
-- Define safe continuation semantics per `AgentExecutionNode`.
-- Bridge checkpoint stream cursors with `SessionStore::replay_stream_after`.
-- Add idempotency metadata for tool calls and external resources.
-- Add end-to-end tests for suspend, load latest checkpoint, replay stream tail, and continue execution.
-
-### Durable Service Runtime
-
-- Add SQLite storage adapter, then PostgreSQL after schema stabilizes.
-- Add service execution loop, interruption/cancellation, approval/deferred resume endpoints, SSE replay, and compact run trace APIs.
-- Add environment state persistence and restore factory hooks.
-- Share trace/session inspection surfaces between CLI and service runtime.
+- Re-audit reference Agent SDK and pydantic-ai agent/toolset patterns against current Starweaver SDK code.
+- Refine reusable agent configuration, per-run/session overrides, environment composition, toolsets, and subagent boundaries.
+- Add focused tests for public SDK contracts, composition order, override precedence, tool inheritance, approval metadata, and session/context behavior.
+- Update docs after stable API decisions land.
 
 ### Tool and Environment Deepening
 
@@ -122,7 +114,15 @@ These notes capture reference mapping and phase-specific implementation observat
 - Add OpenTelemetry/OTLP/Langfuse-friendly exporters behind features.
 - Add trace redaction and sampling policies.
 - Add provider raw streaming debug capture before canonical normalization.
-- Add compact trace projection tools for CLI/UI inspection.
+- Add compact trace projection tools for later inspection surfaces.
+
+### Checkpoint Reload and Application Surfaces
+
+- Add runtime resume APIs that hydrate from `AgentCheckpoint.state` after SDK foundations are solid.
+- Define safe continuation semantics per `AgentExecutionNode`.
+- Bridge checkpoint stream cursors with `SessionStore::replay_stream_after`.
+- Add idempotency metadata for tool calls and external resources.
+- Add storage-backed service runtime, command-line workflows, SSE replay, and platform adapters in the application phase.
 
 ### Provider Coverage
 
@@ -131,13 +131,13 @@ These notes capture reference mapping and phase-specific implementation observat
 
 ## Next Execution Plan
 
-The next product-building path should focus on checkpoint reload and resume execution.
+The next product-building path focuses on Agent SDK foundation hardening. Durable sessions, command-line product workflows, service orchestration, and platform adapters remain later application surfaces.
 
-1. Add a small resume contract in runtime, using `AgentCheckpoint` as the source of truth and preserving `AgentContext` as caller-provided live state.
-2. Implement continuation from safe post-side-effect boundaries first: `BeforeModelRequest`, `ToolReturn`, and `ValidateOutput`.
-3. Treat `ToolCall` resume through explicit idempotency metadata and replay policy.
-4. Wire `SessionStore` resume snapshots into a claw-level test that loads latest checkpoint, replays stream records after cursor, resumes execution, and verifies final state.
-5. Update `spec/ops/02-durable-service-runtime.md`, `spec/core/04-context-state-executor.md`, and `docs/durability.md` after the first resume path works.
+1. Re-audit the local reference clones for agent construction, context deps, toolsets, environments, subagents, streaming, and SDK tests.
+2. Map reference patterns into `memos/agent-sdk-foundation-plan.md` with concrete Starweaver target files.
+3. Review `crates/starweaver-agent/src` for API seams that can be simplified or made more composable.
+4. Implement high-confidence SDK improvements with tests first: per-run composition, environment/resource toolsets, unified delegation, inherited tool policy, approval metadata, and session/context behavior.
+5. Update docs and specs after API shape stabilizes, keeping examples covered by `make docs-check`.
 
 ## Pre-1.0 Cleanup Reminder
 

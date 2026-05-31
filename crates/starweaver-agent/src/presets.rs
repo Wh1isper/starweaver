@@ -48,6 +48,18 @@ pub struct AgentSpec {
     /// SDK preset.
     #[serde(default)]
     pub preset: SdkPreset,
+    /// Attach every toolset registered by the host registry.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub all_toolsets: bool,
+    /// Toolset ids or names to attach from the registry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toolsets: Vec<String>,
+    /// Attach every subagent registered by the host registry.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub all_subagents: bool,
+    /// Subagent names to attach from the registry.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagents: Vec<String>,
 }
 
 /// Agent spec loading failure.
@@ -56,6 +68,12 @@ pub enum AgentSpecError {
     /// Spec requested a model id that the caller did not provide.
     #[error("unknown model id: {0}")]
     UnknownModel(String),
+    /// Spec requested a toolset id or name that the caller did not provide.
+    #[error("unknown toolset: {0}")]
+    UnknownToolset(String),
+    /// Spec requested a subagent name that the caller did not provide.
+    #[error("unknown subagent: {0}")]
+    UnknownSubagent(String),
     /// Spec content could not be parsed.
     #[error("invalid agent spec: {0}")]
     Invalid(String),
@@ -66,7 +84,9 @@ pub enum AgentSpecError {
 pub struct AgentSpecRegistry {
     models: std::collections::BTreeMap<String, Arc<dyn ModelAdapter>>,
     toolsets: Vec<DynToolset>,
+    toolsets_by_key: std::collections::BTreeMap<String, DynToolset>,
     subagents: Vec<SubagentConfig>,
+    subagents_by_name: std::collections::BTreeMap<String, SubagentConfig>,
 }
 
 impl AgentSpecRegistry {
@@ -86,6 +106,16 @@ impl AgentSpecRegistry {
     /// Register a toolset.
     #[must_use]
     pub fn with_toolset(mut self, toolset: DynToolset) -> Self {
+        self.register_toolset_keys(&toolset);
+        self.toolsets.push(toolset);
+        self
+    }
+
+    /// Register a toolset under an additional caller-provided alias.
+    #[must_use]
+    pub fn with_toolset_alias(mut self, alias: impl Into<String>, toolset: DynToolset) -> Self {
+        self.toolsets_by_key.insert(alias.into(), toolset.clone());
+        self.register_toolset_keys(&toolset);
         self.toolsets.push(toolset);
         self
     }
@@ -93,12 +123,30 @@ impl AgentSpecRegistry {
     /// Register a subagent.
     #[must_use]
     pub fn with_subagent(mut self, subagent: SubagentConfig) -> Self {
+        self.subagents_by_name
+            .insert(subagent.name.clone(), subagent.clone());
         self.subagents.push(subagent);
         self
     }
 
     fn model(&self, id: &str) -> Option<Arc<dyn ModelAdapter>> {
         self.models.get(id).cloned()
+    }
+
+    fn toolset(&self, key: &str) -> Option<DynToolset> {
+        self.toolsets_by_key.get(key).cloned()
+    }
+
+    fn subagent(&self, name: &str) -> Option<SubagentConfig> {
+        self.subagents_by_name.get(name).cloned()
+    }
+
+    fn register_toolset_keys(&mut self, toolset: &DynToolset) {
+        self.toolsets_by_key
+            .insert(toolset.name().to_string(), toolset.clone());
+        if let Some(id) = toolset.id() {
+            self.toolsets_by_key.insert(id.to_string(), toolset.clone());
+        }
     }
 }
 
@@ -147,18 +195,51 @@ impl AgentSpec {
         if let Some(limits) = self.preset.usage_limits.clone() {
             builder = builder.usage_limits(limits);
         }
+        let mut selected_toolsets = Vec::new();
+        for key in &self.toolsets {
+            selected_toolsets.push(
+                registry
+                    .toolset(key)
+                    .ok_or_else(|| AgentSpecError::UnknownToolset(key.clone()))?,
+            );
+        }
         let mut tools = ToolRegistry::new();
-        for toolset in &registry.toolsets {
-            tools.insert_toolset(toolset);
+        if self.all_toolsets {
+            for toolset in &registry.toolsets {
+                tools.insert_toolset(toolset);
+            }
+        } else {
+            for toolset in selected_toolsets {
+                tools.insert_toolset(&toolset);
+            }
         }
         if !tools.is_empty() {
             builder = builder.tool_registry(tools);
         }
-        for subagent in &registry.subagents {
-            builder = builder.subagent(subagent.clone());
+        let mut selected_subagents = Vec::new();
+        for name in &self.subagents {
+            selected_subagents.push(
+                registry
+                    .subagent(name)
+                    .ok_or_else(|| AgentSpecError::UnknownSubagent(name.clone()))?,
+            );
+        }
+        if self.all_subagents {
+            for subagent in &registry.subagents {
+                builder = builder.subagent(subagent.clone());
+            }
+        } else {
+            for subagent in selected_subagents {
+                builder = builder.subagent(subagent);
+            }
         }
         Ok(builder)
     }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Convenience preset for plain text output.

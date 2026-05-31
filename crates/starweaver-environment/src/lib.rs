@@ -161,6 +161,8 @@ pub struct FileGrepOptions {
     pub max_results: usize,
     /// Maximum matches per file. Zero means no explicit per-file limit.
     pub max_matches_per_file: usize,
+    /// Maximum files to search. Zero means no explicit file limit.
+    pub max_files: usize,
     /// Include hidden dot paths.
     pub include_hidden: bool,
     /// Include provider-ignored files where the provider supports ignore files.
@@ -174,6 +176,7 @@ impl Default for FileGrepOptions {
             context_lines: 0,
             max_results: 100,
             max_matches_per_file: 20,
+            max_files: 50,
             include_hidden: false,
             include_ignored: false,
         }
@@ -312,10 +315,15 @@ pub trait EnvironmentProvider: Send + Sync {
             )
             .await?;
         let mut matches = Vec::new();
+        let mut searched_files = 0;
         for file in files {
+            if options.max_files > 0 && searched_files >= options.max_files {
+                break;
+            }
             let Ok(content) = self.read_text(&file.path).await else {
                 continue;
             };
+            searched_files += 1;
             search_text(
                 &file.path,
                 &content,
@@ -711,7 +719,7 @@ impl PathGlob {
 
 fn compile_glob(pattern: &str) -> EnvironmentResult<GlobMatcher> {
     GlobBuilder::new(pattern)
-        .literal_separator(false)
+        .literal_separator(true)
         .build()
         .map_err(|error| EnvironmentError::InvalidRequest(error.to_string()))
         .map(|glob| glob.compile_matcher())
@@ -865,6 +873,7 @@ mod tests {
                     context_lines: 0,
                     max_results: 10,
                     max_matches_per_file: 10,
+                    max_files: 50,
                     include_hidden: false,
                     include_ignored: false,
                 },
@@ -891,8 +900,13 @@ mod tests {
         assert!(anchored_file.is_match("lib.rs"));
         assert!(!anchored_file.is_match("src/lib.rs"));
 
+        let scoped_dir = PathGlob::new("src/*.rs").unwrap();
+        assert!(scoped_dir.is_match("src/lib.rs"));
+        assert!(!scoped_dir.is_match("src/nested/mod.rs"));
+
         let anchored_dir = PathGlob::new("/src/*.rs").unwrap();
         assert!(anchored_dir.is_match("src/lib.rs"));
+        assert!(!anchored_dir.is_match("src/nested/mod.rs"));
         assert!(!anchored_dir.is_match("nested/src/lib.rs"));
     }
 
@@ -958,6 +972,7 @@ mod tests {
                     context_lines: 1,
                     max_results: 2,
                     max_matches_per_file: 1,
+                    max_files: 50,
                     include_hidden: false,
                     include_ignored: false,
                 },
@@ -1036,6 +1051,7 @@ mod tests {
                     include_ignored: true,
                     max_results: 0,
                     max_matches_per_file: 0,
+                    max_files: 0,
                     context_lines: 0,
                 },
             )

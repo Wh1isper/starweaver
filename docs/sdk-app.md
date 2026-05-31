@@ -54,6 +54,39 @@ assert_eq!(session.context().usage.requests, 2);
 # }
 ```
 
+Use per-run options to add instructions, settings, request parameters, or tools for one run while preserving the reusable session agent.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{
+    AgentBuilder, AgentRunOptions, FunctionTool, TestModel, ToolContext, ToolResult,
+};
+
+# async fn example() -> Result<(), starweaver_agent::AgentError> {
+let run_tool = Arc::new(FunctionTool::new(
+    "lookup",
+    Some("Lookup run-scoped data".to_string()),
+    serde_json::json!({"type": "object"}),
+    |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+));
+let app = AgentBuilder::new(Arc::new(TestModel::with_text("done"))).build_app();
+let mut session = app.session();
+
+let result = session
+    .run_with_options(
+        "use the run tool",
+        AgentRunOptions::new()
+            .instruction("This instruction applies to this run.")
+            .tool(run_tool),
+    )
+    .await?;
+
+assert_eq!(result.output, "done");
+# Ok(())
+# }
+```
+
 Restore a session from exported state when an application persists context between process lifetimes.
 
 ```rust
@@ -109,7 +142,9 @@ Recommended shape for Claw, CLI, and external services:
 1. Build an agent through `AgentBuilder` and policies from application configuration.
 2. Create an `AgentSession` per conversation and persist `session.export_state()` after each run.
 3. Use `run_stream` for UI/SSE output and persist each `AgentStreamRecord` by sequence.
-4. Install an `AgentExecutor` that writes every `AgentCheckpoint` and `AgentResumeEvidence` to the store.
-5. Persist environment references, trace ids, and approval/deferred metadata in the service layer alongside checkpoint ids.
+4. Hook node transitions with `AgentStreamEvent::NodeStart` and `AgentStreamEvent::NodeComplete` when the UI or service needs stable lifecycle boundaries.
+5. Emit sideband progress through `AgentContext::publish_event`; streaming runs surface those events as `AgentStreamEvent::Custom`.
+6. Install an `AgentExecutor` that writes every `AgentCheckpoint` and `AgentResumeEvidence` to the store.
+7. Persist environment references, trace ids, and approval/deferred metadata in the service layer alongside checkpoint ids.
 
 This keeps the SDK surface small for application programmers: `AgentBuilder`, `AgentSession`, stream events, checkpoints, and direct APIs cover most durable app needs.

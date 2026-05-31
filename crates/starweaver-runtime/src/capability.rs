@@ -30,7 +30,7 @@ pub enum CapabilityError {
     ModelRetry(String),
     /// Return this response without calling the model.
     #[error("model request skipped")]
-    SkipModelRequest(ModelResponse),
+    SkipModelRequest(Box<ModelResponse>),
     /// Capability hook failed.
     #[error("capability failed: {0}")]
     Failed(String),

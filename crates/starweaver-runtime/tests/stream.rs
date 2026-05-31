@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use starweaver_context::AgentContext;
+use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily,
@@ -91,9 +91,25 @@ async fn run_stream_collects_text_run_events() {
     ));
     assert!(stream.events.iter().any(|record| matches!(
         record.event,
+        AgentStreamEvent::NodeStart {
+            node: AgentExecutionNode::RunStart,
+            step: 0,
+            ..
+        }
+    )));
+    assert!(stream.events.iter().any(|record| matches!(
+        record.event,
         AgentStreamEvent::Checkpoint {
             node: AgentExecutionNode::RunStart,
             step: 0
+        }
+    )));
+    assert!(stream.events.iter().any(|record| matches!(
+        record.event,
+        AgentStreamEvent::NodeComplete {
+            node: AgentExecutionNode::RunStart,
+            step: 0,
+            ..
         }
     )));
     assert!(stream
@@ -186,6 +202,13 @@ async fn run_with_context_can_collect_stream_events() {
     assert_eq!(context.events.events().len(), 2);
     assert!(events.iter().any(|record| matches!(
         record.event,
+        AgentStreamEvent::NodeStart {
+            node: AgentExecutionNode::RunComplete,
+            ..
+        }
+    )));
+    assert!(events.iter().any(|record| matches!(
+        record.event,
         AgentStreamEvent::Checkpoint {
             node: AgentExecutionNode::RunComplete,
             ..
@@ -253,6 +276,54 @@ async fn stream_events_include_checkpoints_and_suspension() {
             ref reason,
         } if reason == "waiting for approval"
     )));
+    assert!(events.iter().any(|record| matches!(
+        record.event,
+        AgentStreamEvent::NodeComplete {
+            node: AgentExecutionNode::BeforeModelRequest,
+            ..
+        }
+    )));
+}
+
+#[tokio::test]
+async fn stream_events_expose_context_sideband_events() {
+    let tool = FunctionTool::new(
+        "announce",
+        Some("Publish a sideband event".to_string()),
+        serde_json::json!({"type": "object"}),
+        |ctx: ToolContext, args: serde_json::Value| async move {
+            if let Some(handle) = ctx.dependency::<AgentContextHandle>() {
+                let mut context = handle.snapshot();
+                context.publish_event(AgentEvent::new("tool_progress", args.clone()));
+                handle.replace(context);
+            }
+            Ok(ToolResult::new(args))
+        },
+    );
+    let registry = ToolRegistry::new().with_tool(Arc::new(tool));
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse {
+            parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_1".to_string(),
+                name: "announce".to_string(),
+                arguments: serde_json::json!({"status": "working"}),
+            })],
+            ..ModelResponse::text("")
+        },
+        ModelResponse::text("done"),
+    ]));
+
+    let stream = Agent::new(model)
+        .with_tools(registry)
+        .run_stream("announce progress")
+        .await
+        .unwrap();
+
+    assert!(stream.events.iter().any(|record| matches!(
+        &record.event,
+        AgentStreamEvent::Custom { event }
+            if event.kind == "tool_progress" && event.payload["status"] == "working"
+    )));
 }
 
 #[tokio::test]
@@ -274,7 +345,9 @@ async fn capability_bundle_stream_observer_sees_recorded_events() {
     assert_eq!(result.result.output, "observed");
     let recorded_kinds = events.lock().unwrap().clone();
     assert!(recorded_kinds.iter().any(|kind| kind == "run_start"));
+    assert!(recorded_kinds.iter().any(|kind| kind == "node_start"));
     assert!(recorded_kinds.iter().any(|kind| kind == "checkpoint"));
+    assert!(recorded_kinds.iter().any(|kind| kind == "node_complete"));
     assert!(recorded_kinds.iter().any(|kind| kind == "model_request"));
     assert!(recorded_kinds.iter().any(|kind| kind == "model_response"));
     assert!(recorded_kinds.iter().any(|kind| kind == "run_complete"));
@@ -294,6 +367,9 @@ impl AgentCapability for StreamObserverRecorder {
         self.events.lock().unwrap().push(
             match &event.event {
                 AgentStreamEvent::RunStart { .. } => "run_start",
+                AgentStreamEvent::NodeStart { .. } => "node_start",
+                AgentStreamEvent::NodeComplete { .. } => "node_complete",
+                AgentStreamEvent::Custom { .. } => "custom",
                 AgentStreamEvent::ModelRequest { .. } => "model_request",
                 AgentStreamEvent::ModelStream { .. } => "model_stream",
                 AgentStreamEvent::ModelResponse { .. } => "model_response",

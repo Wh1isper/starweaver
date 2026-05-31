@@ -3,7 +3,7 @@
 use std::{
     any::{Any, TypeId},
     collections::{BTreeMap, VecDeque},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
@@ -72,6 +72,13 @@ impl AgentEvent {
             metadata: Metadata::default(),
         }
     }
+
+    /// Attach event metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
 }
 
 /// Append-only in-memory event bus.
@@ -90,6 +97,18 @@ impl EventBus {
     /// Publish one event.
     pub fn publish(&mut self, event: AgentEvent) {
         self.events.push(event);
+    }
+
+    /// Return the number of retained events.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Return whether the event bus is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
     }
 
     /// Return all events.
@@ -550,7 +569,7 @@ impl AgentContext {
         let mut keys = String::new();
         for (key, _value) in &entries {
             keys.push_str("<note key=\"");
-            keys.push_str(key);
+            keys.push_str(&escape_xml_attribute(key));
             keys.push_str("\" />");
         }
         Some(format!("<notes count=\"{}\">{keys}</notes>", entries.len()))
@@ -560,5 +579,65 @@ impl AgentContext {
 impl Default for AgentContext {
     fn default() -> Self {
         Self::new(AgentId::default())
+    }
+}
+
+fn escape_xml_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Shared context snapshot handle for tools that need to report context mutations.
+#[derive(Clone)]
+pub struct AgentContextHandle {
+    inner: Arc<Mutex<AgentContext>>,
+}
+
+impl AgentContextHandle {
+    /// Create a handle from a context snapshot.
+    #[must_use]
+    pub fn new(context: AgentContext) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(context)),
+        }
+    }
+
+    /// Return the latest context snapshot held by this handle.
+    #[must_use]
+    pub fn snapshot(&self) -> AgentContext {
+        match self.inner.lock() {
+            Ok(context) => context.clone(),
+            Err(error) => error.into_inner().clone(),
+        }
+    }
+
+    /// Replace the context snapshot held by this handle.
+    pub fn replace(&self, context: AgentContext) {
+        match self.inner.lock() {
+            Ok(mut guard) => *guard = context,
+            Err(error) => {
+                let mut guard = error.into_inner();
+                *guard = context;
+            }
+        }
+    }
+}
+
+impl Default for AgentContextHandle {
+    fn default() -> Self {
+        Self::new(AgentContext::default())
+    }
+}
+
+impl std::fmt::Debug for AgentContextHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentContextHandle")
+            .field("snapshot", &self.snapshot())
+            .finish()
     }
 }

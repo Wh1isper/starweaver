@@ -21,7 +21,7 @@ fn replays_openai_chat_streaming_text_delta_fixture() {
             delta: "lo".to_string(),
         }),
         ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
-        ModelResponseStreamEvent::FinalResult(ModelResponse::text("Hello")),
+        ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("Hello"))),
     ];
 
     assert_eq!(events.len(), 5);
@@ -78,11 +78,13 @@ fn replays_cross_provider_streaming_delta_and_usage_at_end_fixtures() {
                 delta: "ok".to_string(),
             }),
             ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
-            ModelResponseStreamEvent::FinalResult(final_result.clone()),
+            ModelResponseStreamEvent::FinalResult(Box::new(final_result.clone())),
         ];
         assert_eq!(
             events.last(),
-            Some(&ModelResponseStreamEvent::FinalResult(final_result))
+            Some(&ModelResponseStreamEvent::FinalResult(Box::new(
+                final_result
+            )))
         );
     }
 }
@@ -102,13 +104,13 @@ fn tool_call_delta_events(call_id: &str, name: &str) -> Vec<ModelResponseStreamE
             delta: "\"Paris\"}".to_string(),
         }),
         ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
-        ModelResponseStreamEvent::FinalResult(ModelResponse {
+        ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse {
             parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                 id: call_id.to_string(),
                 name: name.to_string(),
                 arguments: serde_json::json!({"query": "Paris"}),
             })],
             ..ModelResponse::text("")
-        }),
+        })),
     ]
 }

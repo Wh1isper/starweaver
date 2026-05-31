@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
-use starweaver_tools::ToolRegistry;
+use starweaver_tools::{DynTool, DynToolset, ToolRegistry};
 
 use crate::{
     agent::{Agent, AgentRuntimePolicy},
@@ -53,6 +53,27 @@ impl AgentOverride {
         self
     }
 
+    /// Add one runtime tool to the overridden agent clone.
+    #[must_use]
+    pub fn tool(mut self, tool: DynTool) -> Self {
+        self.agent.tools.insert(tool);
+        self
+    }
+
+    /// Add one runtime toolset to the overridden agent clone.
+    #[must_use]
+    pub fn toolset(mut self, toolset: &DynToolset) -> Self {
+        self.agent.tools.insert_toolset(toolset);
+        self
+    }
+
+    /// Merge runtime tools from another registry into the overridden agent clone.
+    #[must_use]
+    pub fn append_tools(mut self, tools: &ToolRegistry) -> Self {
+        self.agent.tools.insert_registry(tools);
+        self
+    }
+
     /// Override usage limits.
     #[must_use]
     pub const fn usage_limits(mut self, limits: Option<UsageLimits>) -> Self {
@@ -71,6 +92,13 @@ impl AgentOverride {
     #[must_use]
     pub fn with_instructions(mut self, instructions: Vec<String>) -> Self {
         self.agent.instructions = instructions;
+        self
+    }
+
+    /// Append static instructions to the overridden agent clone.
+    #[must_use]
+    pub fn append_instructions(mut self, instructions: impl IntoIterator<Item = String>) -> Self {
+        self.agent.instructions.extend(instructions);
         self
     }
 

@@ -1,16 +1,17 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_context::AgentContext;
-use starweaver_core::Metadata;
-use starweaver_environment::{DynEnvironmentProvider, FileGlobOptions, FileGrepOptions};
+use starweaver_environment::{
+    DynEnvironmentProvider, EnvironmentError, EnvironmentProvider, FileGlobOptions, FileGrepOptions,
+};
 use starweaver_tools::{
     DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
 };
 
-use super::helpers::{static_tool, static_tool_with_metadata, tool_execution_error};
+use super::helpers::{static_tool, static_tool_with_metadata, tool_execution_error, tool_metadata};
 
 /// `AgentContext` dependency that exposes the active SDK environment.
 #[derive(Clone)]
@@ -69,8 +70,7 @@ pub fn filesystem_tools() -> DynToolset {
 /// Create shell tools backed by the `EnvironmentHandle` stored in `AgentContext`.
 #[must_use]
 pub fn shell_tools() -> DynToolset {
-    let mut approval_metadata = Metadata::default();
-    approval_metadata.insert("approval_required".to_string(), serde_json::json!(true));
+    let approval_metadata = tool_metadata("shell", false, true);
 
     Arc::new(
         StaticToolset::new("shell")
@@ -95,159 +95,304 @@ pub fn shell_tools() -> DynToolset {
     )
 }
 
+const fn default_view_line_limit() -> usize {
+    300
+}
+
+const fn default_view_max_line_length() -> usize {
+    2000
+}
+
+fn default_root() -> String {
+    ".".to_string()
+}
+
+fn default_grep_include() -> String {
+    "**/*".to_string()
+}
+
+const fn default_glob_max_results() -> isize {
+    500
+}
+
+const fn default_grep_context_lines() -> isize {
+    2
+}
+
+const fn default_grep_max_results() -> isize {
+    100
+}
+
+const fn default_grep_max_matches_per_file() -> isize {
+    20
+}
+
+const fn default_grep_max_files() -> isize {
+    50
+}
+
+const fn default_shell_timeout_seconds() -> u64 {
+    180
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct FilePathArgs {
+    /// Relative path to the file or resource.
     #[serde(alias = "path")]
     file_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-struct ListArgs {
+struct ViewArgs {
+    /// Relative path to the file to read.
     #[serde(alias = "path")]
+    file_path: String,
+    /// Line number to start reading from (0-indexed).
     #[serde(default)]
-    root: String,
+    line_offset: Option<usize>,
+    /// Maximum number of lines to read.
+    #[serde(default = "default_view_line_limit")]
+    line_limit: usize,
+    /// Maximum length of each line before truncation.
+    #[serde(default = "default_view_max_line_length")]
+    max_line_length: usize,
+    /// Optional analysis instructions for image, video, or audio files.
+    #[serde(default)]
+    instructions: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+struct ListArgs {
+    /// Directory relative path.
+    #[serde(alias = "root", default = "default_root")]
+    path: String,
+    /// Glob patterns to ignore.
+    #[serde(default)]
     ignore: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct WriteArgs {
+    /// Relative path to the file to write.
     #[serde(alias = "path")]
     file_path: String,
+    /// Content to write to the file.
     content: String,
+    /// 'w' for write/overwrite, 'a' for append.
+    #[serde(default)]
     mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct EditArgs {
+    /// Relative path to the file to edit.
     file_path: String,
+    /// Text to replace. Empty string creates a new file.
     old_string: String,
+    /// New text to replace the old text with.
     new_string: String,
+    /// Replace all occurrences.
     #[serde(default)]
     replace_all: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct EditItemArgs {
+    /// Text to replace. Empty string is only allowed for the first create operation.
     old_string: String,
+    /// New text to replace the old text with.
     new_string: String,
+    /// Replace all occurrences.
     #[serde(default)]
     replace_all: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct MultiEditArgs {
+    /// Relative path to the file to edit.
     file_path: String,
+    /// Array of edit operations to perform in sequence.
     edits: Vec<EditItemArgs>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct GlobArgs {
+    /// Ripgrep-style glob pattern to match files and directories.
     pattern: String,
-    #[serde(alias = "path")]
-    #[serde(default)]
+    /// Logical root to search from.
+    #[serde(alias = "path", default = "default_root")]
     root: String,
+    /// Include hidden dot paths such as .git, .venv, and .env.
     #[serde(default)]
     include_hidden: bool,
+    /// Include files ignored by .gitignore and nested ignore files.
     #[serde(default)]
     include_ignored: bool,
-    max_results: Option<usize>,
+    /// Maximum number of results to return. Use -1 for unlimited.
+    #[serde(default = "default_glob_max_results")]
+    max_results: isize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct GrepArgs {
+    /// Ripgrep-style regular expression pattern to search for.
     pattern: String,
-    include: Option<String>,
-    #[serde(alias = "path")]
-    #[serde(default)]
+    /// Ripgrep-style glob pattern used to select files.
+    #[serde(default = "default_grep_include")]
+    include: String,
+    /// Logical root to search from.
+    #[serde(alias = "path", default = "default_root")]
     root: String,
-    context_lines: Option<usize>,
-    max_results: Option<usize>,
-    max_matches_per_file: Option<usize>,
+    /// Context lines before and after matches.
+    #[serde(default = "default_grep_context_lines")]
+    context_lines: isize,
+    /// Maximum total matches. Use -1 for unlimited.
+    #[serde(default = "default_grep_max_results")]
+    max_results: isize,
+    /// Maximum matches per file. Use -1 for unlimited.
+    #[serde(default = "default_grep_max_matches_per_file")]
+    max_matches_per_file: isize,
+    /// Maximum files to search. Use -1 for unlimited.
+    #[serde(default = "default_grep_max_files")]
+    max_files: isize,
+    /// Include hidden dot paths such as .git, .venv, and .env.
     #[serde(default)]
     include_hidden: bool,
+    /// Include files ignored by .gitignore and nested ignore files.
     #[serde(default)]
     include_ignored: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-struct BatchPathsArgs {
+struct MkdirArgs {
+    /// List of directory paths to create.
     paths: Vec<String>,
+    /// Create intermediate directories as needed.
     #[serde(default)]
     parents: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+struct DeleteArgs {
+    /// List of file or directory paths to delete.
+    paths: Vec<String>,
+    /// Delete directories and their contents recursively.
     #[serde(default)]
     recursive: bool,
+    /// Ignore missing paths.
     #[serde(default)]
     force: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct PathPairArgs {
+    /// Source path.
     src: String,
+    /// Destination path.
     dst: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct PathPairsArgs {
-    operations: Vec<PathPairArgs>,
+    /// List of {src, dst} pairs.
+    #[serde(alias = "operations")]
+    pairs: Vec<PathPairArgs>,
+    /// Allow overwriting existing destinations.
     #[serde(default)]
     overwrite: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ShellExecArgs {
+    /// The shell command to execute.
     command: String,
+    /// Maximum execution time in seconds.
+    #[serde(default = "default_shell_timeout_seconds")]
+    timeout_seconds: u64,
+    /// Environment variables to set for the command.
+    #[serde(default)]
+    environment: Option<BTreeMap<String, String>>,
+    /// Working directory relative or absolute path.
+    #[serde(default)]
+    cwd: Option<String>,
+    /// Run command in background and return a process handle when supported.
     #[serde(default)]
     background: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ProcessIdArgs {
+    /// Process ID of the background process.
     process_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ShellWaitArgs {
+    /// Process ID returned by shell with background=true.
     process_id: String,
-    timeout_seconds: Option<u64>,
+    /// Maximum seconds to wait. 0 means poll.
+    #[serde(default = "default_shell_timeout_seconds")]
+    timeout_seconds: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ShellInputArgs {
+    /// Process ID of the background process.
     process_id: String,
+    /// Text to write to stdin. A trailing newline is added automatically.
     text: String,
+    /// Close stdin after writing.
     #[serde(default)]
     close_stdin: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct ShellSignalArgs {
+    /// Process ID of the background process.
     process_id: String,
+    /// Signal number to send.
     signal: i32,
 }
 
 async fn read_text(
     tool_context: ToolContext,
-    arguments: FilePathArgs,
+    arguments: ViewArgs,
 ) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&tool_context, "view")?;
     let content = provider
         .read_text(&arguments.file_path)
         .await
         .map_err(|error| tool_execution_error("view", error))?;
-    Ok(ToolResult::new(
-        serde_json::json!({"file_path": arguments.file_path, "content": content}),
-    ))
+    let selected = select_text_lines(
+        &content,
+        arguments.line_offset.unwrap_or(0),
+        arguments.line_limit,
+        arguments.max_line_length,
+    );
+    Ok(ToolResult::new(serde_json::json!({
+        "file_path": arguments.file_path,
+        "content": selected.content,
+        "line_offset": arguments.line_offset,
+        "line_limit": arguments.line_limit,
+        "max_line_length": arguments.max_line_length,
+        "instructions": arguments.instructions,
+        "truncated": selected.truncated,
+    })))
 }
 
 async fn list_files(context: ToolContext, arguments: ListArgs) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&context, "ls")?;
+    let ignore = arguments.ignore.unwrap_or_default();
     let entries = provider
-        .list(&arguments.root)
+        .list(&arguments.path)
         .await
-        .map_err(|error| tool_execution_error("ls", error))?;
+        .map_err(|error| tool_execution_error("ls", error))?
+        .into_iter()
+        .filter(|entry| !ignore.iter().any(|pattern| ignore_match(pattern, entry)))
+        .collect::<Vec<_>>();
     Ok(ToolResult::new(serde_json::json!({
-        "root": arguments.root,
-        "ignore": arguments.ignore.unwrap_or_default(),
+        "path": arguments.path,
+        "ignore": ignore,
         "entries": entries,
     })))
 }
@@ -257,13 +402,19 @@ async fn write_text(
     arguments: WriteArgs,
 ) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&tool_context, "write")?;
-    let next_content = if arguments.mode.as_deref() == Some("a") {
-        match provider.read_text(&arguments.file_path).await {
+    let next_content = match arguments.mode.as_deref() {
+        Some("a") => match provider.read_text(&arguments.file_path).await {
             Ok(existing) => format!("{existing}{}", arguments.content),
-            Err(_) => arguments.content,
+            Err(EnvironmentError::NotFound(_)) => arguments.content,
+            Err(error) => return Err(tool_execution_error("write", error)),
+        },
+        Some("w") | None => arguments.content,
+        Some(mode) => {
+            return Err(tool_execution_error(
+                "write",
+                format!("unsupported write mode {mode:?}"),
+            ));
         }
-    } else {
-        arguments.content
     };
     provider
         .write_text(&arguments.file_path, &next_content)
@@ -280,6 +431,7 @@ async fn edit_text(
 ) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&tool_context, "edit")?;
     if arguments.old_string.is_empty() {
+        ensure_file_missing(provider.as_ref(), "edit", &arguments.file_path).await?;
         provider
             .write_text(&arguments.file_path, &arguments.new_string)
             .await
@@ -323,6 +475,13 @@ async fn multi_edit_text(
         ));
     };
     let mut updated_content = if first.old_string.is_empty() {
+        if edits.len() > 0 {
+            return Err(tool_execution_error(
+                "multi_edit",
+                "create operation must be the only edit when old_string is empty",
+            ));
+        }
+        ensure_file_missing(provider.as_ref(), "multi_edit", &arguments.file_path).await?;
         first.new_string
     } else {
         let existing = provider
@@ -365,7 +524,7 @@ async fn glob_files(context: ToolContext, arguments: GlobArgs) -> Result<ToolRes
             FileGlobOptions {
                 include_hidden: arguments.include_hidden,
                 include_ignored: arguments.include_ignored,
-                max_results: arguments.max_results.unwrap_or(500),
+                max_results: limit_or_unlimited("glob", "max_results", arguments.max_results)?,
             },
         )
         .await
@@ -384,10 +543,19 @@ async fn grep_files(context: ToolContext, arguments: GrepArgs) -> Result<ToolRes
             &arguments.root,
             &arguments.pattern,
             FileGrepOptions {
-                include: arguments.include,
-                context_lines: arguments.context_lines.unwrap_or(0),
-                max_results: arguments.max_results.unwrap_or(100),
-                max_matches_per_file: arguments.max_matches_per_file.unwrap_or(20),
+                include: Some(arguments.include),
+                context_lines: non_negative_limit(
+                    "grep",
+                    "context_lines",
+                    arguments.context_lines,
+                )?,
+                max_results: limit_or_unlimited("grep", "max_results", arguments.max_results)?,
+                max_matches_per_file: limit_or_unlimited(
+                    "grep",
+                    "max_matches_per_file",
+                    arguments.max_matches_per_file,
+                )?,
+                max_files: limit_or_unlimited("grep", "max_files", arguments.max_files)?,
                 include_hidden: arguments.include_hidden,
                 include_ignored: arguments.include_ignored,
             },
@@ -401,10 +569,7 @@ async fn grep_files(context: ToolContext, arguments: GrepArgs) -> Result<ToolRes
     })))
 }
 
-async fn mkdir_paths(
-    _context: ToolContext,
-    arguments: BatchPathsArgs,
-) -> Result<ToolResult, ToolError> {
+async fn mkdir_paths(_context: ToolContext, arguments: MkdirArgs) -> Result<ToolResult, ToolError> {
     Ok(operation(
         "mkdir",
         serde_json::json!({
@@ -416,7 +581,7 @@ async fn mkdir_paths(
 
 async fn delete_paths(
     _context: ToolContext,
-    arguments: BatchPathsArgs,
+    arguments: DeleteArgs,
 ) -> Result<ToolResult, ToolError> {
     Ok(operation(
         "delete",
@@ -435,7 +600,7 @@ async fn move_paths(
     Ok(operation(
         "move",
         serde_json::json!({
-            "operations": arguments.operations,
+            "pairs": arguments.pairs,
             "overwrite": arguments.overwrite,
         }),
     ))
@@ -448,7 +613,7 @@ async fn copy_paths(
     Ok(operation(
         "copy",
         serde_json::json!({
-            "operations": arguments.operations,
+            "pairs": arguments.pairs,
             "overwrite": arguments.overwrite,
         }),
     ))
@@ -472,12 +637,10 @@ async fn shell_exec(
 ) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&context, "shell_exec")?;
     if arguments.background {
-        return Ok(ToolResult::new(serde_json::json!({
-            "process_id": format!("{}_bg_{}", provider.id(), context.run_step),
-            "command": arguments.command,
-            "status": "pending",
-            "provider_id": provider.id(),
-        })));
+        return Err(tool_execution_error(
+            "shell_exec",
+            "background shell execution requires a durable shell provider",
+        ));
     }
     let output = provider
         .run_shell(&arguments.command)
@@ -485,6 +648,9 @@ async fn shell_exec(
         .map_err(|error| tool_execution_error("shell_exec", error))?;
     Ok(ToolResult::new(serde_json::json!({
         "command": arguments.command,
+        "timeout_seconds": arguments.timeout_seconds,
+        "environment": arguments.environment.unwrap_or_default(),
+        "cwd": arguments.cwd,
         "return_code": output.status,
         "stdout": output.stdout,
         "stderr": output.stderr,
@@ -555,6 +721,12 @@ fn apply_replacement(
     new_string: &str,
     replace_all: bool,
 ) -> Result<String, ToolError> {
+    if old_string.is_empty() {
+        return Err(tool_execution_error(
+            tool,
+            "old_string must be non-empty for replacement",
+        ));
+    }
     if !content.contains(old_string) {
         return Err(tool_execution_error(tool, "text not found"));
     }
@@ -571,11 +743,86 @@ fn apply_replacement(
     Ok(content.replacen(old_string, new_string, 1))
 }
 
+struct TextSelection {
+    content: String,
+    truncated: bool,
+}
+
+fn select_text_lines(
+    content: &str,
+    line_offset: usize,
+    line_limit: usize,
+    max_line_length: usize,
+) -> TextSelection {
+    let lines = content.lines().skip(line_offset).take(line_limit);
+    let mut truncated = content.lines().count() > line_offset.saturating_add(line_limit);
+    let content = lines
+        .map(|line| {
+            if line.chars().count() > max_line_length {
+                truncated = true;
+                line.chars().take(max_line_length).collect::<String>()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    TextSelection { content, truncated }
+}
+
+fn non_negative_limit(tool: &str, field: &str, value: isize) -> Result<usize, ToolError> {
+    if value < 0 {
+        return Err(tool_execution_error(
+            tool,
+            format!("{field} must be greater than or equal to 0"),
+        ));
+    }
+    usize::try_from(value).map_err(|error| tool_execution_error(tool, error))
+}
+
+fn limit_or_unlimited(tool: &str, field: &str, value: isize) -> Result<usize, ToolError> {
+    if value < -1 {
+        return Err(tool_execution_error(
+            tool,
+            format!("{field} must be greater than or equal to -1"),
+        ));
+    }
+    Ok(if value == -1 {
+        0
+    } else {
+        usize::try_from(value).map_err(|error| tool_execution_error(tool, error))?
+    })
+}
+
+async fn ensure_file_missing(
+    provider: &dyn EnvironmentProvider,
+    tool: &str,
+    path: &str,
+) -> Result<(), ToolError> {
+    match provider.read_text(path).await {
+        Ok(_) => Err(tool_execution_error(
+            tool,
+            "file already exists; use write to overwrite existing content",
+        )),
+        Err(EnvironmentError::NotFound(_)) => Ok(()),
+        Err(error) => Err(tool_execution_error(tool, error)),
+    }
+}
+
 fn operation(name: &str, payload: Value) -> ToolResult {
     let mut content = serde_json::Map::new();
     content.insert("operation".to_string(), Value::String(name.to_string()));
     content.insert("payload".to_string(), payload);
     ToolResult::new(Value::Object(content))
+}
+
+fn ignore_match(pattern: &str, entry: &str) -> bool {
+    entry == pattern
+        || entry.ends_with(pattern)
+        || entry.contains(pattern)
+        || pattern
+            .strip_suffix('/')
+            .is_some_and(|prefix| entry.starts_with(prefix))
 }
 
 fn environment_provider(

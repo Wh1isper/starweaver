@@ -53,8 +53,8 @@ async fn direct_model_stream_falls_back_to_final_result() {
 
     assert_eq!(
         events,
-        vec![ModelResponseStreamEvent::FinalResult(ModelResponse::text(
-            "stream"
+        vec![ModelResponseStreamEvent::FinalResult(Box::new(
+            ModelResponse::text("stream")
         ))]
     );
 }
@@ -98,7 +98,7 @@ fn model_stream_events_remain_replay_serializable() {
             delta: "ok".to_string(),
         }),
         ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
-        ModelResponseStreamEvent::FinalResult(ModelResponse::text("ok")),
+        ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("ok"))),
     ];
 
     let encoded = serde_json::to_value(&events).unwrap();

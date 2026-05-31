@@ -8,7 +8,10 @@ use crate::{
         FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
         ProviderInfo, ToolCallPart, ToolReturnPart,
     },
-    providers::{collect_system_and_non_system, text_from_content, usage_from_named},
+    providers::{
+        collect_system_and_non_system, insert_optional_description, provider_tool_parameters,
+        text_from_content, usage_from_named,
+    },
     ModelError, ModelSettings,
 };
 
@@ -214,11 +217,16 @@ fn append_anthropic_tools(request: &mut serde_json::Map<String, Value>, tools: &
         "tools".to_string(),
         json!(tools
             .iter()
-            .map(|tool| json!({
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.parameters,
-            }))
+            .map(|tool| {
+                let mut definition = serde_json::Map::new();
+                definition.insert("name".to_string(), json!(tool.name));
+                insert_optional_description(&mut definition, tool.description.as_ref());
+                definition.insert(
+                    "input_schema".to_string(),
+                    provider_tool_parameters(&tool.parameters),
+                );
+                Value::Object(definition)
+            })
             .collect::<Vec<_>>()),
     );
 }

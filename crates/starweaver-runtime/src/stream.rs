@@ -1,10 +1,11 @@
 //! Typed agent stream event foundations.
 
 use serde::{Deserialize, Serialize};
+use starweaver_context::AgentEvent;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{ModelResponse, ModelResponseStreamEvent, ToolCallPart, ToolReturnPart};
 
-use crate::{executor::AgentExecutionNode, AgentResult};
+use crate::{executor::AgentExecutionNode, run::RunStatus, AgentResult};
 
 /// Typed event emitted by the agent runtime while a run progresses.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -16,6 +17,29 @@ pub enum AgentStreamEvent {
         run_id: RunId,
         /// Conversation identifier.
         conversation_id: ConversationId,
+    },
+    /// Runtime execution entered a durable node boundary.
+    NodeStart {
+        /// Execution boundary being entered.
+        node: AgentExecutionNode,
+        /// Completed run step at this boundary.
+        step: usize,
+        /// Current run status at this boundary.
+        status: RunStatus,
+    },
+    /// Runtime execution completed a durable node boundary.
+    NodeComplete {
+        /// Execution boundary that completed.
+        node: AgentExecutionNode,
+        /// Completed run step at this boundary.
+        step: usize,
+        /// Current run status after this boundary.
+        status: RunStatus,
+    },
+    /// A context sideband event was published during the run.
+    Custom {
+        /// Application or capability event.
+        event: AgentEvent,
     },
     /// A model request was prepared for a loop step.
     ModelRequest {
