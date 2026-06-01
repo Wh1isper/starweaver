@@ -185,6 +185,7 @@ fn profile_defaults_encode_provider_capability_contracts() {
     );
     assert!(openai_chat.supports_tools);
     assert!(openai_chat.supports_json_schema_output);
+    assert!(openai_chat.supports_image_input);
 
     let openai_responses = ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses);
     assert_eq!(
@@ -196,6 +197,7 @@ fn profile_defaults_encode_provider_capability_contracts() {
         MessageNormalization::PreserveItems
     );
     assert!(openai_responses.supports_thinking);
+    assert!(openai_responses.supports_image_input);
 
     let anthropic = ModelProfile::for_protocol(ProtocolFamily::AnthropicMessages);
     assert_eq!(
@@ -207,6 +209,8 @@ fn profile_defaults_encode_provider_capability_contracts() {
         MessageNormalization::SystemField
     );
     assert!(anthropic.supports_thinking);
+    assert!(anthropic.supports_image_input);
+    assert!(anthropic.supports_document_input);
 
     let gemini = ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent);
     assert_eq!(
@@ -214,6 +218,10 @@ fn profile_defaults_encode_provider_capability_contracts() {
         MessageNormalization::SystemInstruction
     );
     assert!(gemini.supports_json_object_output);
+    assert!(gemini.supports_image_input);
+    assert!(gemini.supports_video_input);
+    assert!(gemini.supports_audio_input);
+    assert!(gemini.supports_document_input);
 
     let bedrock = ModelProfile::for_protocol(ProtocolFamily::BedrockConverse);
     assert_eq!(
@@ -224,6 +232,8 @@ fn profile_defaults_encode_provider_capability_contracts() {
         bedrock.message_normalization,
         MessageNormalization::SystemField
     );
+    assert!(bedrock.supports_image_input);
+    assert!(bedrock.supports_document_input);
 }
 
 #[tokio::test]

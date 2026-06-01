@@ -2,6 +2,7 @@
 
 pub mod adapter;
 pub mod message;
+pub mod presets;
 pub mod profile;
 pub mod providers;
 pub mod registry;
@@ -18,6 +19,12 @@ pub use adapter::{
 pub use message::{
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
     ModelResponsePart, ProviderInfo, ToolCallPart, ToolReturnPart,
+};
+pub use presets::{
+    anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
+    list_model_config_presets, list_model_settings_presets, model_runtime_preset,
+    openai_chat_http_config, openai_responses_http_config, ModelConfigPreset,
+    ModelConfigPresetData, ModelPresetError, ModelRuntimePreset, ModelSettingsPreset,
 };
 pub use profile::{MessageNormalization, ModelProfile, ProtocolFamily, StructuredOutputMode};
 pub use providers::client::ProtocolModelClient;

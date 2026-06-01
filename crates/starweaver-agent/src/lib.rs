@@ -14,7 +14,11 @@ use starweaver_tools::DynTool;
 
 pub use bundles::{
     attach_environment, core_toolsets, filesystem_tools, host_operation_tools, namespaced_toolset,
-    shell_tools, task_tools, tool_proxy_toolset, EnvironmentHandle, ToolProxyToolset,
+    shell_tools, task_tools, tool_proxy_toolset, EnvironmentHandle, HostMediaCapabilities,
+    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
+    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
+    MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
+    SearchResultItem, ToolProxyToolset,
 };
 pub use presets::{
     text_output_preset, AgentSpec, AgentSpecError, AgentSpecRegistry, ModelPreset, SdkPreset,
@@ -26,7 +30,14 @@ pub use starweaver_core::{
     SubagentSpec, TaskId, TraceContext, Usage,
 };
 pub use starweaver_model::{
-    FunctionModel, FunctionModelInfo, ModelRequestParameters, ModelSettings, TestModel,
+    anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
+    list_model_config_presets, list_model_settings_presets, model_runtime_preset,
+    openai_chat_http_config, openai_responses_http_config, ModelConfigPreset,
+    ModelConfigPresetData, ModelPresetError, ModelRuntimePreset, ModelSettingsPreset,
+};
+pub use starweaver_model::{
+    FunctionModel, FunctionModelInfo, ModelRequestParameters, ModelSettings, ProtocolFamily,
+    TestModel,
 };
 pub use starweaver_runtime::{
     model_request, model_request_stream, tool_call, AdapterTraceRecorder, AgentCapability,
@@ -273,6 +284,11 @@ impl AgentBuilder {
     /// Build a reusable runtime agent.
     #[must_use]
     pub fn build(self) -> RuntimeAgent {
+        let media_capabilities = HostMediaCapabilities::from_model_profile(
+            Some(self.model.model_name().to_string()),
+            self.model.profile(),
+        );
+        let media_capability_hook = Arc::new(HostMediaCapabilityHook { media_capabilities });
         let mut agent = RuntimeAgent::new(self.model)
             .with_request_params(self.request_params)
             .with_tools(self.tools)
@@ -304,6 +320,7 @@ impl AgentBuilder {
         for validator in self.output_validators {
             agent = agent.with_output_validator(validator);
         }
+        agent = agent.with_capability(media_capability_hook);
         for capability in self.capabilities {
             agent = agent.with_capability(capability);
         }
@@ -321,4 +338,25 @@ impl AgentBuilder {
 #[must_use]
 pub fn agent(model: Arc<dyn ModelAdapter>) -> AgentBuilder {
     AgentBuilder::new(model)
+}
+
+#[derive(Clone)]
+struct HostMediaCapabilityHook {
+    media_capabilities: HostMediaCapabilities,
+}
+
+#[async_trait::async_trait]
+impl AgentCapability for HostMediaCapabilityHook {
+    async fn before_tool_execution_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        tool_context: &mut ToolContext,
+        _call: &starweaver_model::ToolCallPart,
+    ) -> CapabilityResult<()> {
+        tool_context
+            .dependencies
+            .insert(self.media_capabilities.clone());
+        Ok(())
+    }
 }

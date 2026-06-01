@@ -79,7 +79,7 @@ Current fixture-driven replay coverage is a maintenance area. New provider work 
 
 Status: first implementation landed.
 
-- SDK preset types: `ModelPreset`, `SdkPreset`, `text_output_preset`.
+- SDK preset types: `ModelPreset`, `SdkPreset`, `text_output_preset`; model-layer built-in settings/config/runtime presets are available through `starweaver-model` and re-exported by `starweaver-agent`.
 - Serializable `AgentSpec` YAML loader and `AgentSpecRegistry` that resolve model ids, toolsets, subagents, runtime policy, settings, and usage limits into `AgentBuilder`.
 - `AgentSession` convenience APIs for state, notes, message bus, metadata, trace context, and W3C traceparent setup.
 - Public SDK re-exports for new presets, bundles, trace recorder types, and runtime/tool/model helpers.
@@ -104,7 +104,7 @@ Status: first implementation landed.
 - Shell bundle with `shell_exec`, `shell_wait`, `shell_status`, `shell_input`, `shell_signal`, `shell_kill`, stdout/stderr/status evidence, and approval metadata.
 - Shell execution state: foreground `shell_exec` executes through `EnvironmentProvider::run_shell`; background `shell_exec` returns an explicit durable-shell-provider requirement, and lifecycle tools emit durable operation envelopes pending a process-capable provider.
 - Task bundle with `task_create`, `task_get`, `task_update`, and `task_list` operation envelopes.
-- Host-operation bundle with web, image search, fetch/scrape/download, document conversion, media, summarize, note, thinking, and to-do operation envelopes.
+- Host-operation bundle with web, fetch/scrape/download, media, summarize, note, and thinking tools; document conversion is planned as skill-driven shell workflows. Bundle internals are split by tool category under `crates/starweaver-agent/src/bundles/`.
 - Core tool proxy foundation through fixed `search_tools` and `call_tool` via `ToolProxyToolset`, plus `PrefixedToolset`/`namespaced_toolset` for namespace-prefixed proxy surfaces or wrapped tools.
 - Bundle APIs return `DynToolset` for direct `ToolRegistry` and `AgentBuilder` registration.
 - Tests cover stable tool names, instructions, fake-backed execution, resource refs, explicit background-shell provider requirements, context propagation, proxy search/call, namespacing, and agent builder registration.
@@ -180,14 +180,15 @@ Proposed N1 implementation slices:
 - Split rich environment operations into optional capability traits after call sites stabilize: file ops, search ops, shell ops, process ops, resource ops, sandbox ops.
 - Keep provider-scoped `glob` and `grep` backed by native Rust matchers (`globset`, `grep-regex`, `grep-matcher`) and provider traversal (`ignore` for local files) as the baseline search operator.
 - Align first-party bundle instructions around one compact instruction group per bundle, concrete tool selection guidance, stable deduplication keys, and prompt text that can migrate into SDK presets.
-- Deepen media/search/document host-operation bundles with host-backed execution adapters.
-- Replace ya-agent-sdk web/search/crawler placeholders with host-backed Starweaver adapters:
-  - `search(query, num)`: injectable web-search client with provider priority, timeout, quota, citations, and deterministic fixtures.
-  - `search_stock_image(query)` and `search_image(query, limit, size)`: injectable image-search clients with result URL accessibility validation.
-  - `fetch(url, head_only)`: HTTP `HEAD`/`GET`, redirect checks, SSRF policy, streaming limits, text truncation, binary size guards, and content-type metadata.
-  - `scrape(url)`: crawler or page-to-Markdown adapter with fixture-backed deterministic tests.
-  - `download(urls, save_dir)`: streamed downloads into the active `EnvironmentProvider` or resource store with safe filenames and metadata.
-  - `load_media_url(url)`: URL classification for image, video, audio, and document content mapped into provider media capabilities.
+- Deepen media/search/document host-operation bundles with host-backed execution adapters. Track the detailed tool gap report in `memos/sdk-host-tool-gap-report.md`.
+- Replace ya-agent-sdk web/search/crawler placeholders with host-backed Starweaver adapters while narrowing the public web surface to two tools:
+  - `search(query, num)`: general web search through injectable `SearchClient`, with Brave Search as the required first executable adapter and Google Custom Search/Tavily as optional follow-up adapters; normalize title, URL, snippet, provider, rank, and citation metadata.
+  - `scrape(url)`: page-to-Markdown through injectable `ScrapeClient`, preferring Firecrawl when configured, then Cloudflare Browser Run when configured, then local static-HTML Markdown fallback; document-like resources should hand off to `download` plus a document-conversion skill workflow.
+  - Keep one model-facing `search` tool; represent image search as typed `search` results when needed and raw fetch as an internal scrape/download helper.
+  - `download(urls, save_dir)`: streamed downloads into the active `EnvironmentProvider` or resource store with safe UUID filenames, metadata, host network policy delegation, and bounded memory.
+  - `load_media_url(url)`: URL classification for image, video, audio, and document content mapped into provider media capabilities with fallback messages to `read_image`, `read_video`, `read_audio`, or `download` plus a document-conversion skill workflow.
+  - `read_image(url)`, `read_video(url)`, and `read_audio(url)`: fallback media understanding tools that use configured model adapters and account usage into the parent `AgentContext`.
+  - Document conversion: provide skill workflows that run shell commands such as PyMuPDF4LLM and MarkItDown in the active environment.
   - Keep provider-native OpenAI/Gemini web, fetch, file-search, and URL-context tools in the model native-tool layer with replay fixtures.
 - Add a skill bundle and skill-contributed toolsets.
 - Add richer tool proxy execution evidence, including search result ranking tests and namespace-description tests.
@@ -197,7 +198,7 @@ Proposed N1 implementation slices:
 
 ### N3 SDK Documentation and Examples
 
-- Deepen docs for `AgentSpec`, SDK presets, first-party tool bundles, environment providers, runtime tracing hooks, session helpers, subagents, and streaming helpers.
+- Deepen docs for `AgentSpec`, SDK presets, model settings/config presets, first-party tool bundles, environment providers, runtime tracing hooks, session helpers, subagents, and streaming helpers.
 - Keep new examples runnable through `make docs-check`.
 
 ## Later Milestones

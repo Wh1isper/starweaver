@@ -22,7 +22,7 @@ Starweaver represents provider-executed tools through `NativeToolDefinition` in 
 
 ## First-party tool bundle names
 
-Implemented in `crates/starweaver-agent/src/bundles` and covered by `crates/starweaver-agent/tests/bundles.rs`.
+Implemented in `crates/starweaver-agent/src/bundles` and covered by `crates/starweaver-agent/tests/bundles.rs`. Bundle internals now use category modules: `environment/` for filesystem and shell, `external/` for host web/media/download/context tools, plus top-level re-export shims for `web` and `media` public types.
 
 ### Filesystem bundle
 
@@ -84,16 +84,12 @@ Execution status: task tools emit operation envelopes for an SDK host or service
 
 Toolset: `host_operations`
 
-Tools:
+Current tools:
 
 - `search`
-- `search_stock_image`
-- `search_image`
 - `fetch`
 - `scrape`
 - `download`
-- `pdf_convert`
-- `office_to_markdown`
 - `read_image`
 - `read_video`
 - `read_audio`
@@ -102,10 +98,18 @@ Tools:
 - `note`
 - `note_get`
 - `thinking`
-- `to_do_read`
-- `to_do_write`
 
-Execution status: host-operation tools emit operation envelopes for host-provided web, document, media, note, thinking, todo, and context handoff capabilities.
+Target public host-backed tools for web, media, download, and document work:
+
+- `search`
+- `scrape`
+- `download`
+- `load_media_url`
+- `read_image`
+- `read_video`
+- `read_audio`
+
+Execution status: host-operation tools execute web, scrape, download, and media helper paths through SDK adapters. Notes, thinking, and context handoff remain lightweight operation envelopes, and task tracking lives in the dedicated task bundle.
 
 ### Tool proxy
 
@@ -128,15 +132,10 @@ Execution status:
 
 - Dedicated replay fixtures for OpenAI Responses `code_interpreter`, `image_generation` request mapping, `file_search` request/response, `web_fetch`, and `memory`.
 - Provider-backed execution for currently envelope-only filesystem, shell lifecycle, task, and host-operation tools.
-- Host-backed replacements for ya-agent-sdk web/search/crawler tools:
-  - `search(query, num)`
-  - `search_stock_image(query)`
-  - `search_image(query, limit, size)`
-  - `fetch(url, head_only)`
-  - `scrape(url)`
-  - `download(urls, save_dir)`
-  - `load_media_url(url)`
-- Search/crawler adapters should cover SSRF and redirect policy, streaming size limits, text truncation, binary guards, safe environment writes, URL accessibility validation, citation metadata, and deterministic fixtures.
+- Host-backed replacements for ya-agent-sdk web/search/crawler/media/download tools are tracked in `memos/sdk-host-tool-gap-report.md`.
+- Target public web tools: `search(query, num)` and `scrape(url)`. Raw `fetch` behavior becomes an internal adapter.
+- Target media/download tools: `download(urls, save_dir)`, `load_media_url(url)`, `read_image(url)`, `read_video(url)`, and `read_audio(url)`. Document conversion is provided through skill workflows backed by shell commands.
+- Search/scrape/media/download adapters should cover protocol validation, host network policy delegation, streaming size limits, text truncation, binary guards, safe environment writes, URL accessibility metadata, citation metadata, model capability detection, usage accounting, and deterministic fixtures.
 - `glob`, `grep`, `search_tools`, and `call_tool` have direct executable Starweaver replacements; the fixed `ToolProxyToolset` is the public SDK replacement for large searchable tool surfaces.
 - Unified delegation tool and skill-contributed toolsets in the SDK subagent/skill layer.
 

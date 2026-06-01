@@ -74,6 +74,53 @@ assert!(stream.events().iter().any(|record| matches!(
 # }
 ```
 
+## Built-in model presets
+
+`starweaver-model` includes built-in presets for common provider settings and model capability profiles. The preset names mirror the SDK-facing ya-mono style: provider defaults such as `anthropic`, effort presets such as `openai_responses_high`, and capability presets such as `claude_1m` or `gpt5_270k`.
+
+```rust
+use starweaver_agent::{get_model_config, get_model_settings};
+
+# fn example() -> Result<(), starweaver_agent::ModelPresetError> {
+let settings = get_model_settings("openai_responses_high")?;
+assert_eq!(settings.max_tokens, Some(32 * 1024));
+
+let config = get_model_config("claude")?;
+assert_eq!(config.context_window, 1_000_000);
+# Ok(())
+# }
+```
+
+Agent specs can reference a settings preset and optionally overlay request settings:
+
+```yaml
+name: coding-agent
+model:
+  model_id: claude-sonnet
+  settings_preset: anthropic_high
+  settings:
+    max_tokens: 4096
+```
+
+For production aliases, combine a runtime preset with a provider HTTP config:
+
+```rust
+use starweaver_agent::{anthropic_http_config, model_runtime_preset};
+
+# fn example() -> Result<(), starweaver_agent::ModelPresetError> {
+let preset = model_runtime_preset(
+    "claude-sonnet",
+    "anthropic",
+    "claude-sonnet-4-5",
+    "anthropic_high",
+    "claude_200k",
+)?;
+let alias = preset.provider_alias(anthropic_http_config("api-key"));
+assert_eq!(alias.alias, "claude-sonnet");
+# Ok(())
+# }
+```
+
 ## Production request guard
 
 Use the global guard in tests to prevent production HTTP requests:

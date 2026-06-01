@@ -87,6 +87,15 @@ impl OpenAiResponsesAdapter {
             request.insert("instructions".to_string(), json!(instructions.join("\n\n")));
         }
         apply_common_settings(&mut request, settings);
+        if let Some(thinking) = settings.and_then(|settings| settings.thinking.as_ref()) {
+            let mut reasoning = serde_json::Map::new();
+            reasoning.insert("effort".to_string(), json!(thinking.effort));
+            if let Some(summary) = &thinking.summary {
+                reasoning.insert("summary".to_string(), json!(summary));
+            }
+            request.insert("reasoning".to_string(), Value::Object(reasoning));
+            request.remove("reasoning_effort");
+        }
         if let Some(tool_choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {
             request.insert(
                 "tool_choice".to_string(),

@@ -71,7 +71,14 @@ SDK policy presets configure common app behavior while runtime semantics remain 
 - streaming presets for event collection, event handling, and service stream adapters
 - observability presets for OTel GenAI spans, Langfuse metadata, and content redaction
 - environment presets for local, process, sandbox, and composite providers
-- model presets for provider aliases and gateway routes
+- model presets for provider aliases, model settings, capability profiles, and gateway routes
+
+Model presets live in `starweaver-model` and are re-exported by `starweaver-agent`. The model preset surface provides:
+
+- settings presets such as `anthropic_high`, `openai_responses_high`, `gemini_thinking_level_low`, and provider aliases such as `anthropic` or `gemini`
+- config presets such as `claude_1m`, `gpt5_270k`, `deepseek_v4_1m`, and `gemini_200k`
+- runtime presets that combine model id, provider name, model name, settings preset, config preset, and a caller-supplied `HttpModelConfig`
+- `AgentSpec.model.settings_preset` with inline `settings` as an overlay
 
 ## Documentation Contract
 

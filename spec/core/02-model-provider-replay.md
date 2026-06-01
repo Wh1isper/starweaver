@@ -5,13 +5,23 @@ The model layer is the compatibility boundary between Starweaver's canonical age
 ## Model Layer Responsibilities
 
 - Define canonical messages, request parts, response parts, usage, finish reasons, and provider metadata.
-- Define `ModelSettings`, `ModelRequestParameters`, `ModelProfile`, and protocol families.
+- Define `ModelSettings`, `ModelRequestParameters`, `ModelProfile`, protocol families, and built-in model presets.
 - Translate canonical history into provider wire requests.
 - Parse provider responses into canonical `ModelResponse` values.
 - Support injectable HTTP clients, endpoint overrides, headers, extra body fields, retry policy, and gateway routing.
 - Provide deterministic `TestModel` and `FunctionModel` for application and runtime tests.
 - Block production model calls in tests through a request guard.
 - Maintain replay fixtures as provider compatibility contracts.
+
+## Built-in Presets
+
+The model layer owns provider-neutral preset data so SDK apps and service profiles can share one mapping. Presets include:
+
+- model settings presets for reasoning/thinking effort, token limits, provider-specific extra body fields, beta headers, and service tier routing
+- model config presets for context window, media limits, and `ModelProfile` capability flags
+- runtime preset assembly that combines a model id, provider/model names, settings preset, config preset, and HTTP config into a `ProviderAlias`
+
+Provider mappers consume these presets through the same `ModelSettings`, `ModelProfile`, `HttpModelConfig`, and `ProviderAlias` contracts used by handwritten configuration.
 
 ## Provider Families
 

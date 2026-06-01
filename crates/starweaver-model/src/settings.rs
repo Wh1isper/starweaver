@@ -128,11 +128,20 @@ pub enum ToolChoice {
 /// Reasoning or thinking controls.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ThinkingSettings {
-    /// Effort level such as low, medium, or high.
+    /// Effort level such as low, medium, high, xhigh, or max.
     pub effort: String,
     /// Optional token budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u32>,
+    /// Provider-specific thinking mode, such as enabled, adaptive, or disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Whether provider should include thought summaries or thinking traces when supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_thoughts: Option<bool>,
+    /// Optional provider-specific reasoning summary mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// Provider service tier.

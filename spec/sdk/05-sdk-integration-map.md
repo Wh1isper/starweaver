@@ -16,21 +16,21 @@ The Rust SDK should express application-facing agent features through Starweaver
 
 ## Module Map
 
-| Feature family     | Starweaver target                                  | Spec owner                                                   | Validation path                      |
-| ------------------ | -------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------ |
-| agent construction | `AgentBuilder`, `AgentApp`, `AgentSession`         | `sdk/01-agent-sdk-app.md`                                    | SDK session and builder tests        |
-| lifecycle hooks    | ordered runtime hooks and capability lifecycle     | `core/03-tools-output-capabilities.md`                       | lifecycle hook tests                 |
-| context compaction | history processors and context state               | `core/04-context-state-executor.md`                          | history processor tests              |
-| policy guards      | policy capabilities and request guards             | `core/03-tools-output-capabilities.md`                       | guard and capability tests           |
-| streaming          | runtime stream records and service stream adapters | `core/01-agent-loop.md`, `ops/02-durable-service-runtime.md` | stream and replay tests              |
-| context stores     | `AgentContext`, notes, message bus, tasks, usage   | `core/04-context-state-executor.md`                          | context and tool bundle tests        |
-| environment        | `EnvironmentProvider` and provider families        | `sdk/02-environment-provider.md`                             | environment fake/local/sandbox tests |
-| filters            | capabilities with ordered hooks                    | `core/03-tools-output-capabilities.md`                       | capability tests per filter          |
-| toolsets           | first-party tool bundles and tool proxy            | `sdk/03-first-party-tool-bundles.md`                         | toolset tests                        |
-| subagents          | specs, factory, registry, unified delegation       | `sdk/04-subagents-skills.md`                                 | subagent tests                       |
-| media              | media/resource bundle and canonical media parts    | `sdk/03-first-party-tool-bundles.md`                         | media tests                          |
-| config             | SDK config and policy presets                      | `sdk/01-agent-sdk-app.md`                                    | config and preset tests              |
-| MCP                | MCP toolset and live client bridge                 | `sdk/03-first-party-tool-bundles.md`                         | MCP tests                            |
+| Feature family     | Starweaver target                                  | Spec owner                                                    | Validation path                      |
+| ------------------ | -------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------ |
+| agent construction | `AgentBuilder`, `AgentApp`, `AgentSession`         | `sdk/01-agent-sdk-app.md`                                     | SDK session and builder tests        |
+| lifecycle hooks    | ordered runtime hooks and capability lifecycle     | `core/03-tools-output-capabilities.md`                        | lifecycle hook tests                 |
+| context compaction | history processors and context state               | `core/04-context-state-executor.md`                           | history processor tests              |
+| policy guards      | policy capabilities and request guards             | `core/03-tools-output-capabilities.md`                        | guard and capability tests           |
+| streaming          | runtime stream records and service stream adapters | `core/01-agent-loop.md`, `ops/02-durable-service-runtime.md`  | stream and replay tests              |
+| context stores     | `AgentContext`, notes, message bus, tasks, usage   | `core/04-context-state-executor.md`                           | context and tool bundle tests        |
+| environment        | `EnvironmentProvider` and provider families        | `sdk/02-environment-provider.md`                              | environment fake/local/sandbox tests |
+| filters            | capabilities with ordered hooks                    | `core/03-tools-output-capabilities.md`                        | capability tests per filter          |
+| toolsets           | first-party tool bundles and tool proxy            | `sdk/03-first-party-tool-bundles.md`                          | toolset tests                        |
+| subagents          | specs, factory, registry, unified delegation       | `sdk/04-subagents-skills.md`                                  | subagent tests                       |
+| media              | media/resource bundle and canonical media parts    | `sdk/03-first-party-tool-bundles.md`                          | media tests                          |
+| config             | SDK config, model presets, and policy presets      | `sdk/01-agent-sdk-app.md`, `core/02-model-provider-replay.md` | config and preset tests              |
+| MCP                | MCP toolset and live client bridge                 | `sdk/03-first-party-tool-bundles.md`                          | MCP tests                            |
 
 ## Filters as Capabilities
 

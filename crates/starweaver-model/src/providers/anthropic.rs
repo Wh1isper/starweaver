@@ -187,13 +187,16 @@ fn apply_anthropic_settings(
         return;
     };
     if let Some(thinking) = &settings.thinking {
-        request.insert(
-            "thinking".to_string(),
-            json!({
-                "type": "enabled",
-                "budget_tokens": thinking.budget_tokens.unwrap_or(1024),
-            }),
-        );
+        let thinking_mode = thinking.mode.as_deref().unwrap_or("enabled");
+        let mut payload = serde_json::Map::new();
+        payload.insert("type".to_string(), json!(thinking_mode));
+        if thinking_mode == "enabled" {
+            payload.insert(
+                "budget_tokens".to_string(),
+                json!(thinking.budget_tokens.unwrap_or(1024)),
+            );
+        }
+        request.insert("thinking".to_string(), Value::Object(payload));
     }
     if let Some(temperature) = settings.temperature {
         request.insert("temperature".to_string(), json!(temperature));

@@ -516,9 +516,11 @@ impl LocalEnvironmentProvider {
     /// Create a local provider rooted at a directory.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let root = root.canonicalize().unwrap_or(root);
         Self {
             id: "local".to_string(),
-            root: root.into(),
+            root,
             policy: EnvironmentPolicy {
                 files: FilePolicy::read_only(),
                 shell: ShellPolicy::default(),
@@ -1119,8 +1121,12 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("starweaver-env-test-{suffix}"));
+        let path = std::env::temp_dir().join(format!(
+            "starweaver-env-test-{}-{:?}-{suffix}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
         std::fs::create_dir_all(&path).unwrap();
-        path
+        path.canonicalize().unwrap_or(path)
     }
 }

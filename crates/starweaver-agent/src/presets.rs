@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use starweaver_model::{ModelAdapter, ModelSettings};
+use starweaver_model::{get_model_settings, ModelAdapter, ModelPresetError, ModelSettings};
 use starweaver_runtime::{AgentRuntimePolicy, OutputPolicy, UsageLimits};
 use starweaver_tools::{DynToolset, ToolRegistry};
 use thiserror::Error;
@@ -15,6 +15,9 @@ use crate::{AgentBuilder, SubagentConfig};
 pub struct ModelPreset {
     /// Logical model id.
     pub model_id: String,
+    /// Built-in model settings preset name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings_preset: Option<String>,
     /// Default model settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<ModelSettings>,
@@ -77,6 +80,9 @@ pub enum AgentSpecError {
     /// Spec content could not be parsed.
     #[error("invalid agent spec: {0}")]
     Invalid(String),
+    /// Model settings preset could not be resolved.
+    #[error(transparent)]
+    ModelPreset(#[from] ModelPresetError),
 }
 
 /// Registry used to resolve spec references into runtime objects.
@@ -179,17 +185,7 @@ impl AgentSpec {
         for instruction in &self.instructions {
             builder = builder.instruction(instruction.clone());
         }
-        if let Some(settings) = self
-            .model
-            .as_ref()
-            .and_then(|model| model.settings.clone())
-            .or_else(|| {
-                self.preset
-                    .model
-                    .as_ref()
-                    .and_then(|model| model.settings.clone())
-            })
-        {
+        if let Some(settings) = self.resolved_model_settings()? {
             builder = builder.model_settings(settings);
         }
         if let Some(limits) = self.preset.usage_limits.clone() {
@@ -234,6 +230,23 @@ impl AgentSpec {
             }
         }
         Ok(builder)
+    }
+
+    fn resolved_model_settings(&self) -> Result<Option<ModelSettings>, AgentSpecError> {
+        let Some(model) = self.model.as_ref().or(self.preset.model.as_ref()) else {
+            return Ok(None);
+        };
+        let preset_settings = model
+            .settings_preset
+            .as_deref()
+            .map(get_model_settings)
+            .transpose()?;
+        Ok(match (preset_settings, model.settings.clone()) {
+            (Some(base), Some(overlay)) => Some(base.merge(&overlay)),
+            (Some(base), None) => Some(base),
+            (None, Some(settings)) => Some(settings),
+            (None, None) => None,
+        })
     }
 }
 

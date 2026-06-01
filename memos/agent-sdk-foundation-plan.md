@@ -49,7 +49,7 @@ Implemented SDK surface:
 - `AgentBuilder` for model, settings, request params, output policy, validators, output functions, tools/toolsets, dynamic instructions, capabilities, usage limits, subagents, and test-model overrides.
 - `AgentApp` as reusable application wrapper over a built runtime agent.
 - `AgentSession` for stateful context, notes, metadata, message bus, trace context, state export/restore, environment attachment, and streaming helpers.
-- `AgentSpec`, `AgentSpecRegistry`, `ModelPreset`, `SdkPreset`, and `text_output_preset`.
+- `AgentSpec`, `AgentSpecRegistry`, `ModelPreset`, `SdkPreset`, `text_output_preset`, and model settings/config/runtime preset re-exports from `starweaver-model`.
 - first-party tool bundles: filesystem, shell, task, host operations, and tool proxy re-export.
 - markdown subagent config parsing and SDK subagent registry foundations.
 - runtime/core re-exports for application-facing ergonomics.

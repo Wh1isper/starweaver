@@ -197,6 +197,19 @@ fn append_gemini_generation_config(
     if !settings.stop_sequences.is_empty() {
         generation_config.insert("stopSequences".to_string(), json!(settings.stop_sequences));
     }
+    if let Some(thinking) = &settings.thinking {
+        let mut thinking_config = serde_json::Map::new();
+        if let Some(budget_tokens) = thinking.budget_tokens {
+            thinking_config.insert("thinkingBudget".to_string(), json!(budget_tokens));
+        }
+        if !thinking.effort.is_empty() {
+            thinking_config.insert("thinkingLevel".to_string(), json!(thinking.effort));
+        }
+        if let Some(include_thoughts) = thinking.include_thoughts {
+            thinking_config.insert("includeThoughts".to_string(), json!(include_thoughts));
+        }
+        generation_config.insert("thinkingConfig".to_string(), Value::Object(thinking_config));
+    }
     if !generation_config.is_empty() {
         request.insert(
             "generationConfig".to_string(),

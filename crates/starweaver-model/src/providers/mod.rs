@@ -234,6 +234,12 @@ fn apply_common_settings(
                 json!(parallel_tool_calls),
             );
         }
+        if let Some(thinking) = &settings.thinking {
+            target.insert("reasoning_effort".to_string(), json!(thinking.effort));
+        }
+        if let Some(service_tier) = &settings.service_tier {
+            target.insert("service_tier".to_string(), json!(service_tier));
+        }
         if let Some(options) = settings
             .provider_options
             .as_ref()

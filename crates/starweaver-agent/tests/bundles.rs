@@ -2,14 +2,18 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use starweaver_agent::{
     attach_environment, filesystem_tools, host_operation_tools, namespaced_toolset, shell_tools,
-    string_tool, task_tools, tool_proxy_toolset, AgentContext, AgentSession, ToolContext,
-    ToolRegistry, ToolResult,
+    string_tool, task_tools, tool_proxy_toolset, AgentContext, AgentSession, HostMediaCapabilities,
+    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
+    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
+    MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
+    SearchResultItem, ToolContext, ToolRegistry, ToolResult,
 };
 use starweaver_core::{ConversationId, Metadata, RunId, Usage};
 use starweaver_environment::{ShellOutput, VirtualEnvironmentProvider};
-use starweaver_model::{tool_call_response, ModelResponse};
+use starweaver_model::{tool_call_response, ModelProfile, ModelResponse, ProtocolFamily};
 
 #[tokio::test]
 async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
@@ -206,6 +210,125 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
 }
 
 #[tokio::test]
+async fn agent_builder_attaches_model_media_capabilities_to_host_tools() {
+    let responses = vec![
+        tool_call_response(
+            "media",
+            "load_media_url",
+            serde_json::json!({"url": "https://example.com/video.mp4"}),
+        ),
+        ModelResponse::text("done"),
+    ];
+    let model = starweaver_agent::TestModel::with_responses(responses).with_profile(
+        ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent),
+    );
+    let mut session = AgentSession::new(
+        starweaver_agent::AgentBuilder::new(Arc::new(model))
+            .toolset(&host_operation_tools())
+            .build(),
+    );
+
+    let result = session.run("load media").await.unwrap();
+    let tool_return = result
+        .state
+        .message_history
+        .iter()
+        .flat_map(|message| match message {
+            starweaver_model::ModelMessage::Request(request) => request.parts.iter().collect(),
+            starweaver_model::ModelMessage::Response(_) => Vec::new(),
+        })
+        .find_map(|part| match part {
+            starweaver_model::ModelRequestPart::ToolReturn(tool_return) => Some(tool_return),
+            _ => None,
+        })
+        .unwrap();
+
+    assert_eq!(tool_return.content["category"], "video");
+    assert_eq!(tool_return.content["native_supported"], true);
+    assert_eq!(tool_return.content["model_id"], "test");
+    assert_eq!(tool_return.content["provider_ready"]["type"], "media_url");
+}
+
+#[tokio::test]
+async fn host_operations_use_injected_clients_and_capabilities() {
+    let toolset = host_operation_tools();
+    let search_tool = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "search")
+        .unwrap();
+    let scrape_tool = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "scrape")
+        .unwrap();
+    let load_media_tool = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "load_media_url")
+        .unwrap();
+    let read_image_tool = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read_image")
+        .unwrap();
+    let mut dependencies = starweaver_context::DependencyStore::new();
+    dependencies.insert(HostSearchClientHandle::new(Arc::new(FakeSearchClient)));
+    dependencies.insert(HostScrapeClientHandle::new(Arc::new(FakeScrapeClient)));
+    dependencies.insert(HostMediaCapabilities {
+        model_id: Some("test-vision".to_string()),
+        supports_image_url: true,
+        supports_video_url: false,
+        supports_audio_url: false,
+        supports_document_url: false,
+    });
+    dependencies.insert(HostMediaUnderstandingClientHandle::new(Arc::new(
+        FakeMediaUnderstandingClient,
+    )));
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let search = search_tool
+        .call(
+            context.clone(),
+            serde_json::json!({"query": "rust sdk", "num": 3}),
+        )
+        .await
+        .unwrap();
+    let scrape = scrape_tool
+        .call(
+            context.clone(),
+            serde_json::json!({"url": "https://example.com"}),
+        )
+        .await
+        .unwrap();
+    let media = load_media_tool
+        .call(
+            context.clone(),
+            serde_json::json!({"url": "https://example.com/image.png"}),
+        )
+        .await
+        .unwrap();
+    let image = read_image_tool
+        .call(
+            context,
+            serde_json::json!({"url": "https://example.com/image.png"}),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(search.content["provider"], "fake");
+    assert_eq!(search.content["results"][0]["title"], "Rust SDK");
+    assert_eq!(scrape.content["adapter"], "fake_scrape");
+    assert_eq!(scrape.content["markdown_content"], "# Example");
+    assert_eq!(media.content["category"], "image");
+    assert_eq!(media.content["native_supported"], true);
+    assert_eq!(media.content["provider_ready"]["type"], "media_url");
+    assert_eq!(image.content["content"], "image analysis");
+    assert_eq!(image.content["model_id"], "fake-media-model");
+}
+
+#[tokio::test]
 async fn task_bundle_creates_operation_envelopes() {
     let toolset = task_tools();
     let task = toolset
@@ -302,13 +425,9 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
         &host,
         &[
             "search",
-            "search_stock_image",
-            "search_image",
             "fetch",
             "scrape",
             "download",
-            "pdf_convert",
-            "office_to_markdown",
             "read_image",
             "read_video",
             "read_audio",
@@ -317,8 +436,6 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
             "note",
             "note_get",
             "thinking",
-            "to_do_read",
-            "to_do_write",
         ],
     );
 
@@ -462,13 +579,9 @@ fn first_party_tool_arg_schemas_match_ya_agent_sdk_and_describe_args() {
             vec![
                 ("load_media_url", vec!["url"]),
                 ("summarize", vec!["content", "auto_load_files"]),
-                ("office_to_markdown", vec!["file_path"]),
-                ("pdf_convert", vec!["file_path", "page_start", "page_end"]),
                 ("note", vec!["key", "value"]),
                 ("note_get", vec!["key"]),
                 ("thinking", vec!["thought"]),
-                ("to_do_read", vec![]),
-                ("to_do_write", vec!["to_dos"]),
                 ("read_audio", vec!["url"]),
                 ("read_image", vec!["url"]),
                 ("read_video", vec!["url"]),
@@ -476,8 +589,6 @@ fn first_party_tool_arg_schemas_match_ya_agent_sdk_and_describe_args() {
                 ("fetch", vec!["url", "head_only"]),
                 ("scrape", vec!["url"]),
                 ("search", vec!["query", "num"]),
-                ("search_stock_image", vec!["query"]),
-                ("search_image", vec!["query", "limit", "size"]),
             ],
         ),
     ];
@@ -671,5 +782,71 @@ fn assert_tool_names(toolset: &starweaver_tools::DynToolset, expected: &[&str]) 
             actual.iter().any(|actual| actual == name),
             "missing tool {name}"
         );
+    }
+}
+
+struct FakeSearchClient;
+
+#[async_trait]
+impl HostSearchClient for FakeSearchClient {
+    async fn search(&self, request: SearchRequest) -> Result<SearchResponse, String> {
+        Ok(SearchResponse {
+            success: true,
+            query: request.query,
+            results: vec![SearchResultItem {
+                title: "Rust SDK".to_string(),
+                url: "https://example.com/rust".to_string(),
+                description: "SDK result".to_string(),
+                provider: "fake".to_string(),
+                rank: 1,
+                content_type: Some("text/html".to_string()),
+                published_at: None,
+                citation: Some(serde_json::json!({"provider": "fake"})),
+            }],
+            errors: Vec::new(),
+            truncated: false,
+            provider: "fake".to_string(),
+        })
+    }
+}
+
+struct FakeScrapeClient;
+
+#[async_trait]
+impl HostScrapeClient for FakeScrapeClient {
+    async fn scrape(&self, request: ScrapeRequest) -> Result<ScrapeResponse, String> {
+        Ok(ScrapeResponse {
+            success: true,
+            url: request.url.clone(),
+            final_url: request.url,
+            title: Some("Example".to_string()),
+            markdown_content: "# Example".to_string(),
+            adapter: "fake_scrape".to_string(),
+            truncated: false,
+            total_length: 9,
+            content_type: Some("text/html".to_string()),
+            citation: None,
+            handoff: None,
+        })
+    }
+}
+
+struct FakeMediaUnderstandingClient;
+
+#[async_trait]
+impl HostMediaUnderstandingClient for FakeMediaUnderstandingClient {
+    async fn understand(
+        &self,
+        request: MediaUnderstandingRequest,
+    ) -> Result<MediaUnderstandingResponse, String> {
+        Ok(MediaUnderstandingResponse {
+            success: true,
+            media_kind: request.media_kind,
+            url: request.url,
+            model_id: "fake-media-model".to_string(),
+            content: "image analysis".to_string(),
+            truncated: false,
+            metadata: serde_json::Map::new(),
+        })
     }
 }
