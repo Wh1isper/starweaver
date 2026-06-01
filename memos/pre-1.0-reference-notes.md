@@ -79,16 +79,18 @@ These notes capture reference mapping and phase-specific implementation observat
 
 ## Remaining Pre-1.0 Gaps
 
-### Durable Service Runtime and CLI Product
+### Shared Session and Stream Components, Durable Runtime, and CLI Product
 
-- Add SQLite storage adapter first, then PostgreSQL after schema stabilizes.
+- Added `starweaver-session` crate for input parts, `SessionStore`, session/run records, checkpoint refs, approvals, deferred records, resume snapshots, and compact trace projections.
+- Added `starweaver-stream` crate for display messages, replay event logs, replay transports, stream archives, realtime compaction buffers, and protocol envelopes.
+- Add SQLite session store and stream archive adapters first, then PostgreSQL after schema stabilizes.
 - Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs.
 - Add runtime resume APIs that hydrate from `AgentCheckpoint.state` and continue from safe boundaries.
-- Bridge checkpoint stream cursors with `SessionStore::replay_stream_after`.
+- Bridge checkpoint stream cursors with `StreamArchive` raw stream replay and display-message replay.
 - Add idempotency metadata for external tool calls, host adapters, environment resources, background shell handles, and deferred tool calls.
-- Define CLI app-profile workflows over `AgentSpec`, environment providers, first-party bundles, and `SessionStore`.
-- Add command-line session create/list/resume/inspect with compact trace projection and stream replay.
-- Share trace/session inspection surfaces across command-line and service layers.
+- Define CLI app-profile workflows over `AgentSpec`, environment providers, first-party bundles, shared session/stream contracts, and `SessionStore`.
+- Add command-line session create/list/resume/inspect with display-message rendering, compact trace projection, and stream replay.
+- Share display projection and trace/session inspection surfaces across command-line and service layers.
 
 ### SDK Deepening After P0/P1
 
@@ -115,14 +117,19 @@ These notes capture reference mapping and phase-specific implementation observat
 
 ## Next Execution Plan
 
-The next product-building path should deepen durable service runtime and CLI workflows on top of the landed Agent SDK foundation.
+The next product-building path should start with shared session records, reusable `SessionStore`, shared stream records, and replay transport contracts, then deepen durable service runtime and CLI workflows on top of that base.
 
-1. Implement a SQLite-backed `SessionStore` with migrations and deterministic tests.
-2. Build a service execution wrapper that persists runs, checkpoints, streams, cancellation state, approval/deferred state, and trace correlation.
-3. Define runtime checkpoint reload semantics and resume from safe execution nodes.
-4. Add CLI app-profile/session workflows over `AgentSpec`, `AgentApp`, environment providers, first-party bundles, and `starweaver-claw`.
-5. Add SSE replay and compact trace inspection shared by CLI and service layers.
-6. Re-run focused `starweaver-claw`, `starweaver-cli`, `starweaver-agent`, docs, and workspace validation gates.
+01. Added `starweaver-session` with input parts, session/run records, checkpoint refs, control records, compact projections, stream cursor refs, and serialization tests.
+02. Reuse `starweaver-session` from `starweaver-claw` through re-exports and future concrete adapters.
+03. Added `starweaver-stream` with display messages, replay cursors/scopes, replay events, replay snapshots, stream archive records, protocol envelopes, and serialization tests.
+04. Add `ReplayEventLog`, `ReplayTransport`, `StreamArchive`, subscriptions, replay snapshots, and realtime compaction traits/types with memory-backed contract tests.
+05. Implement SQLite-backed `SessionStore` and `StreamArchive` adapters with migrations, raw stream records, display messages, replay snapshots, and deterministic tests.
+06. Build a service execution wrapper that persists runs, checkpoints, raw stream records, display messages, cancellation state, approval/deferred state, and trace correlation.
+07. Define runtime checkpoint reload semantics and resume from safe execution nodes.
+08. Assemble CLI app-profile/session workflows over `AgentSpec`, `AgentApp`, environment providers, first-party bundles, shared session/stream contracts, and renderers.
+09. Add SSE replay and compact trace inspection shared by CLI and service layers.
+10. Add Redis Stream replay after memory and SQLite contracts stabilize.
+11. Re-run focused `starweaver-session`, `starweaver-stream`, `starweaver-claw`, `starweaver-cli`, `starweaver-agent`, docs, and workspace validation gates.
 
 ## Pre-1.0 Cleanup Reminder
 

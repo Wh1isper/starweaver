@@ -12,7 +12,7 @@ This spec maps application-facing agent concepts into Starweaver's first-party S
 
 ## Design Direction
 
-The Rust SDK should express application-facing agent features through Starweaver-native traits: `ModelAdapter`, `AgentContext`, `AgentCapability`, `EnvironmentProvider`, `AgentExecutor`, and `SessionStore`. The environment abstraction should graduate one proven capability at a time, with rich operators living behind optional traits and first-party bundles.
+The Rust SDK should express application-facing agent features through Starweaver-native traits: `ModelAdapter`, `AgentContext`, `AgentCapability`, `EnvironmentProvider`, and `AgentExecutor`. Durable application flows compose those SDK traits with shared session storage contracts such as `SessionStore`, plus shared stream contracts such as replay transport, display-message projection, and stream archives. The environment abstraction should graduate one proven capability at a time, with rich operators living behind optional traits and first-party bundles.
 
 ## Module Map
 
@@ -22,7 +22,7 @@ The Rust SDK should express application-facing agent features through Starweaver
 | lifecycle hooks    | ordered runtime hooks and capability lifecycle     | `core/03-tools-output-capabilities.md`                        | lifecycle hook tests                 |
 | context compaction | history processors and context state               | `core/04-context-state-executor.md`                           | history processor tests              |
 | policy guards      | policy capabilities and request guards             | `core/03-tools-output-capabilities.md`                        | guard and capability tests           |
-| streaming          | runtime stream records and service stream adapters | `core/01-agent-loop.md`, `ops/02-durable-service-runtime.md`  | stream and replay tests              |
+| streaming          | runtime stream records and service stream adapters | `core/01-agent-loop.md`, `ops/03-durable-service-runtime.md`  | stream and replay tests              |
 | context stores     | `AgentContext`, notes, message bus, tasks, usage   | `core/04-context-state-executor.md`                           | context and tool bundle tests        |
 | environment        | `EnvironmentProvider` and provider families        | `sdk/02-environment-provider.md`                              | environment fake/local/sandbox tests |
 | filters            | capabilities with ordered hooks                    | `core/03-tools-output-capabilities.md`                        | capability tests per filter          |

@@ -20,6 +20,7 @@
 - [Capabilities](capabilities.md)
 - [Graph Inspection](graph.md)
 - [Durability](durability.md)
+- [Session and Stream Contracts](session-stream.md)
 
 # SDK Layer
 

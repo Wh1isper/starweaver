@@ -9,7 +9,9 @@ The project focuses on these workspace layers:
 - `starweaver-runtime`: the deterministic agent loop, tool loop, output validation, retries, stream records, capability hooks, trace recording, and executor checkpoints.
 - `starweaver-agent`: the public SDK facade with `AgentBuilder`, `AgentApp`, SDK sessions, spec presets, first-party tool bundles, subagents, and application-facing helpers.
 - `starweaver-environment`: filesystem, shell, resources, policy, state snapshots, virtual provider tests, and local provider foundations.
-- `starweaver-claw`: durable session foundations with `SessionStore`, run records, checkpoint storage, stream replay, and compact run projections.
+- `starweaver-session`: shared durable session contracts for input parts, `SessionStore`, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
+- `starweaver-stream`: shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
+- `starweaver-claw`: durable orchestration host that re-exports shared session/stream contracts and will provide concrete storage, stream, service, and coordinator adapters.
 - `starweaver-cli`: local CLI entry point for version, run, diagnostics, and replay-check helpers.
 
 Planned layers are specified before public API graduation:
@@ -37,8 +39,10 @@ Useful starting points:
 - [docs/tools.md](docs/tools.md)
 - [docs/output.md](docs/output.md)
 - [docs/testing.md](docs/testing.md)
+- [docs/session-stream.md](docs/session-stream.md)
 - [docs/release.md](docs/release.md)
 - [spec/README.md](spec/README.md)
+- [spec/ops/02-shared-execution-components.md](spec/ops/02-shared-execution-components.md)
 - [memos/implementation-todo.md](memos/implementation-todo.md)
 
 ## Quick Example

@@ -28,9 +28,10 @@ Working evidence, reference comparisons, migration notes, and release TODOs live
 
 - `ops/README.md` — operational layer scope and readiness model
 - `ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
-- `ops/02-durable-service-runtime.md` — durable sessions, SessionStore, execution records, resume, interruption, SSE, and storage contracts
-- `ops/03-cli-product.md` — CLI Product surface built over SDK, environment providers, and service runtime contracts
-- `ops/04-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
+- `ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts for CLI and Claw
+- `ops/03-durable-service-runtime.md` — durable sessions, SessionStore, stream archive, resume, interruption, SSE, display-message replay, and storage contracts
+- `ops/04-cli-product.md` — CLI Product surface built over SDK, environment providers, shared session/stream components, and service runtime contracts
+- `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 
 ## System Shape
 
@@ -44,6 +45,8 @@ flowchart TD
     context[starweaver-context]
     core[starweaver-core]
     env[starweaver-environment]
+    session[starweaver-session]
+    stream[starweaver-stream]
     claw[starweaver-claw]
     cli[starweaver-cli]
     platform[starweaver-platform]
@@ -64,13 +67,25 @@ flowchart TD
     env --> core
     env --> context
     env --> tools
+    session --> core
+    session --> runtime
+    session --> context
+    session --> env
+    stream --> core
+    stream --> runtime
+    claw --> session
+    claw --> stream
     claw --> sdk
     claw --> runtime
     claw --> context
     claw --> env
+    cli --> session
+    cli --> stream
     cli --> sdk
     cli --> env
     cli --> claw
+    platform --> stream
+    platform --> session
     platform --> claw
 ```
 
@@ -83,9 +98,11 @@ flowchart TD
 - `starweaver-runtime` owns deterministic agent loop semantics: model request, tool execution, output handling, retry, streaming, history, capability hooks, and checkpoint emission.
 - `starweaver-agent` is the first-party SDK facade for app builders, sessions, presets, subagents, capabilities, environment-backed tool bundles, and policy ergonomics.
 - `starweaver-environment` provides file, shell, process, resource, sandbox, and environment state abstractions through an `EnvironmentProvider` boundary.
-- `starweaver-claw` persists and resumes sessions over stable context, environment, event, checkpoint, trace, and SessionStore contracts.
-- `starweaver-cli` is a product surface over the SDK, environment providers, and durable service contracts.
-- `starweaver-platform` hosts external protocol adapters such as A2A and AGUI over SDK, service, session, event, and trace contracts. Pydantic AI's A2A and AGUI examples serve as adapter demos for this layer.
+- `starweaver-session` is the shared durable session crate for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
+- `starweaver-stream` is the shared display and replay stream crate for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes used by CLI, Claw, and platform adapters.
+- `starweaver-claw` persists and resumes sessions through concrete adapters over stable context, environment, event, checkpoint, trace, display-message, shared `SessionStore`, and stream contracts.
+- `starweaver-cli` is a product surface over the SDK, environment providers, shared session/stream contracts, CLI-owned config, and terminal renderers.
+- `starweaver-platform` hosts external protocol adapters such as A2A and AGUI over SDK, service, session, display-message, event, stream, and trace contracts. Pydantic AI's A2A and AGUI examples serve as adapter demos for this layer.
 
 ## Reference Coverage Targets
 
@@ -101,7 +118,7 @@ The SDK layer tracks application-facing agent concepts:
 - agent construction, streaming runs, context, resumable state, message bus, notes, tasks, usage snapshots
 - lifecycle hooks, stream cancellation/resume, compaction, guards, model wrappers, presets
 - environment providers, local/process/sandbox execution, virtual file operators, shell sandbox integration
-- SessionStore-backed durable services, run trace projection, session tools, execution records, and workspace binding evidence
+- shared `SessionStore`-backed durable services, stream replay transports, run trace projection, session tools, execution records, and workspace binding evidence
 - OpenTelemetry GenAI traces, external root trace propagation, Langfuse-friendly OTLP export, and nested subagent spans
 - first-party toolsets, skill loading, media handling, tool proxy, subagents, unified delegation
 

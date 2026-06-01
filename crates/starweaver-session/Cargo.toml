@@ -1,5 +1,5 @@
 [package]
-name = "starweaver-claw"
+name = "starweaver-session"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,19 +7,23 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Durable session runtime foundations for Starweaver"
+description = "Durable session contracts for Starweaver"
 readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-starweaver-session.workspace = true
-starweaver-stream.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+starweaver-context.workspace = true
+starweaver-core.workspace = true
+starweaver-environment.workspace = true
+starweaver-runtime.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-starweaver-core.workspace = true
-starweaver-model.workspace = true
-starweaver-runtime.workspace = true
 tokio.workspace = true
 
 [lints]

@@ -18,7 +18,9 @@ Current workspace members:
 - `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, and execution primitives
 - `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, first-party tool bundles, spec presets, session helpers, and application-facing helpers
 - `crates/starweaver-environment` — `EnvironmentProvider`, virtual and local provider foundations, file and shell policies, resource references, and environment state snapshots
-- `crates/starweaver-claw` — durable session foundations, `SessionStore`, run records, checkpoint storage, stream replay, and compact run trace projections
+- `crates/starweaver-session` — shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections
+- `crates/starweaver-stream` — shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes
+- `crates/starweaver-claw` — durable orchestration host that re-exports shared session/stream contracts and will provide concrete storage, stream, service, and coordinator adapters
 - `crates/starweaver-cli` — `starweaver-cli` command-line entry point
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
@@ -32,7 +34,9 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage limits, streaming events, trace spans, and executor checkpoints.
 - `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, and policy presets.
 - `starweaver-environment`: environment provider contracts, file/shell policy, resource references, and resumable environment state snapshots.
-- `starweaver-claw`: durable sessions, `SessionStore`, service execution, checkpoint storage, interruption, resume, SSE, trace correlation, and storage adapters.
+- `starweaver-session`: shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
+- `starweaver-stream`: shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
+- `starweaver-claw`: durable orchestration, concrete `SessionStore` and stream archive adapters, service execution, checkpoint storage, interruption, resume, SSE transport, trace correlation, and storage adapters.
 - `starweaver-platform`: hosted orchestration and external protocol adapters such as A2A and AGUI.
 
 ## Documentation Workflow
@@ -89,9 +93,10 @@ Current specs:
 - `spec/sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 - `spec/ops/README.md` — operational layer scope and readiness model
 - `spec/ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
-- `spec/ops/02-durable-service-runtime.md` — durable sessions, `SessionStore`, execution records, resume, interruption, SSE, trace ids, and storage contracts
-- `spec/ops/03-cli-product.md` — CLI Product surface built over SDK, environment providers, and service runtime contracts
-- `spec/ops/04-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
+- `spec/ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts for CLI and Claw
+- `spec/ops/03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, SSE, display-message replay, and storage contracts
+- `spec/ops/04-cli-product.md` — CLI Product surface built over SDK, environment providers, shared session/stream components, and service runtime contracts
+- `spec/ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 
 Use `memos/` for working notes, design comparisons, implementation evidence, and release-preparation reminders. The current detailed implementation roadmap is `memos/implementation-todo.md`.
 

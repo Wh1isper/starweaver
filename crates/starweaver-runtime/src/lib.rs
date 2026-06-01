@@ -43,6 +43,7 @@ pub use output::{
     OutputValidationError, OutputValidationResult, OutputValidator, OutputValue,
 };
 pub use run::{AgentRunResult, AgentRunState, RunStatus};
+pub use starweaver_model::{ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
 pub use stream::{AgentStreamEvent, AgentStreamRecord, AgentStreamResult};
 pub use trace::{
     AdapterTraceRecorder, DynTraceRecorder, InMemoryTraceRecorder, NoopTraceRecorder, RecordedSpan,

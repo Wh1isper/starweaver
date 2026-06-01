@@ -63,6 +63,7 @@ assert_eq!(result.output, "Paris");
 - [Capabilities](capabilities.md)
 - [Graph inspection](graph.md)
 - [Durability](durability.md)
+- [Session and stream contracts](session-stream.md)
 - [SDK apps](sdk-app.md)
 - [Subagents](subagents.md)
 - [MCP](mcp.md)

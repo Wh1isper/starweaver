@@ -34,8 +34,26 @@ impl Default for AgentId {
     }
 }
 
+/// Session identifier shared by SDK, CLI, and service layers.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SessionId(String);
+
+impl SessionId {
+    /// Create an identifier from a caller-provided string.
+    #[must_use]
+    pub fn from_string(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    /// Return the string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Run identifier.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct RunId(String);
 
 impl RunId {
@@ -424,6 +442,10 @@ mod tests {
     fn creates_prefixed_ids() {
         assert_eq!(AgentId::default().as_str(), "main");
         assert_eq!(AgentId::from_string("agent-1").as_str(), "agent-1");
+        assert_eq!(
+            SessionId::from_string("session-fixed").as_str(),
+            "session-fixed"
+        );
         assert!(RunId::new().as_str().starts_with("run_"));
         assert_eq!(RunId::from_string("run-fixed").as_str(), "run-fixed");
         assert!(ConversationId::new().as_str().starts_with("conv_"));

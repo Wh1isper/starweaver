@@ -1,0 +1,308 @@
+#![allow(clippy::unwrap_used)]
+
+use serde_json::json;
+use starweaver_core::RunId;
+use starweaver_model::{ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
+use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
+
+use super::*;
+use starweaver_core::SessionId;
+
+fn display_message(
+    sequence: usize,
+    kind: DisplayMessageKind,
+    payload: serde_json::Value,
+) -> DisplayMessage {
+    DisplayMessage::new(
+        sequence,
+        SessionId::from_string("session-1"),
+        RunId::from_string("run-1"),
+        kind,
+    )
+    .with_payload(payload)
+}
+
+#[test]
+fn display_message_serializes_with_snake_case_kind() {
+    let message = display_message(
+        1,
+        DisplayMessageKind::AssistantTextDelta,
+        json!({"delta": "hello"}),
+    );
+    let value = serde_json::to_value(&message).unwrap();
+    assert_eq!(value["kind"], "assistant_text_delta");
+    assert_eq!(
+        serde_json::from_value::<DisplayMessage>(value).unwrap(),
+        message
+    );
+}
+
+#[tokio::test]
+async fn replay_log_orders_replays_after_cursor_and_is_idempotent() {
+    let log = InMemoryReplayEventLog::new();
+    let scope = ReplayScope::run("run-1");
+    let event_two = ReplayEvent::new(scope.clone(), 2, ReplayEventKind::Raw(json!({"n": 2})));
+    let event_one = ReplayEvent::new(scope.clone(), 1, ReplayEventKind::Raw(json!({"n": 1})));
+    log.append(scope.clone(), event_two.clone()).await.unwrap();
+    log.append(scope.clone(), event_one.clone()).await.unwrap();
+    log.append(scope.clone(), event_two).await.unwrap();
+
+    let replay = log
+        .replay_after(&scope, Some(ReplayCursor::new(scope.clone(), 1)), None)
+        .await
+        .unwrap();
+    assert_eq!(replay.len(), 1);
+    assert_eq!(replay[0].sequence, 2);
+}
+
+#[tokio::test]
+async fn replay_subscription_receives_live_tail_after_cursor() {
+    let log = InMemoryReplayEventLog::new();
+    let scope = ReplayScope::run("run-live");
+    log.append(
+        scope.clone(),
+        ReplayEvent::new(scope.clone(), 1, ReplayEventKind::Heartbeat),
+    )
+    .await
+    .unwrap();
+    let mut subscription = log
+        .subscribe(scope.clone(), Some(ReplayCursor::new(scope.clone(), 1)))
+        .await
+        .unwrap();
+    log.append(
+        scope.clone(),
+        ReplayEvent::new(
+            scope.clone(),
+            2,
+            ReplayEventKind::Terminal(StreamTerminalMarker::RunCompleted),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let event = subscription.recv().await.unwrap();
+    assert_eq!(event.sequence, 2);
+    assert!(matches!(
+        event.event,
+        ReplayEventKind::Terminal(StreamTerminalMarker::RunCompleted)
+    ));
+}
+
+#[test]
+fn realtime_compaction_merges_text_and_tool_deltas_and_retains_terminal() {
+    let scope = ReplayScope::run("run-compact");
+    let mut buffer = RealtimeCompactionBuffer::new(scope.clone());
+    buffer.push(display_message(
+        1,
+        DisplayMessageKind::AssistantTextDelta,
+        json!({"part_index": 0, "delta": "hel"}),
+    ));
+    buffer.push(display_message(
+        2,
+        DisplayMessageKind::AssistantTextDelta,
+        json!({"part_index": 0, "delta": "lo"}),
+    ));
+    buffer.push(display_message(
+        3,
+        DisplayMessageKind::ToolCallDelta,
+        json!({"tool_call_id": "call-1", "delta": "{\"q\""}),
+    ));
+    buffer.push(display_message(
+        4,
+        DisplayMessageKind::ToolCallDelta,
+        json!({"tool_call_id": "call-1", "delta": ":\"x\"}"}),
+    ));
+    buffer.push(display_message(
+        5,
+        DisplayMessageKind::RunCompleted,
+        json!({"output": "done"}),
+    ));
+
+    let snapshot = buffer.snapshot();
+    assert_eq!(snapshot.scope, Some(scope));
+    assert_eq!(snapshot.display_messages.len(), 3);
+    assert_eq!(snapshot.display_messages[0].payload["text"], "hello");
+    assert_eq!(
+        snapshot.display_messages[1].payload["arguments_delta"],
+        "{\"q\":\"x\"}"
+    );
+    assert_eq!(
+        snapshot.display_messages[2].kind,
+        DisplayMessageKind::RunCompleted
+    );
+    assert_eq!(
+        buffer
+            .tail_after(Some(ReplayCursor::new(ReplayScope::run("run-compact"), 4)))
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn stream_archive_replays_raw_display_snapshots_and_cursor_range() {
+    let archive = InMemoryStreamArchive::new();
+    let session_id = SessionId::from_string("session-a");
+    let run_id = RunId::from_string("run-a");
+    let scope = ReplayScope::run(run_id.as_str());
+    archive
+        .append_raw_records(
+            &session_id,
+            &run_id,
+            vec![
+                AgentStreamRecord::new(0, AgentStreamEvent::ModelRequest { step: 0 }),
+                AgentStreamRecord::new(1, AgentStreamEvent::ModelRequest { step: 1 }),
+            ],
+        )
+        .await
+        .unwrap();
+    archive
+        .append_display_messages(
+            scope.clone(),
+            vec![
+                display_message(0, DisplayMessageKind::RunStarted, json!({})),
+                display_message(1, DisplayMessageKind::RunCompleted, json!({"output":"ok"})),
+            ],
+        )
+        .await
+        .unwrap();
+    let snapshot = ReplaySnapshot {
+        scope: Some(scope.clone()),
+        revision: 1,
+        cursor: Some(ReplayCursor::new(scope.clone(), 1)),
+        display_messages: vec![display_message(
+            1,
+            DisplayMessageKind::RunCompleted,
+            json!({}),
+        )],
+        metadata: starweaver_core::Metadata::default(),
+    };
+    archive
+        .append_snapshot(scope.clone(), snapshot.clone())
+        .await
+        .unwrap();
+
+    let raw = archive
+        .replay_raw_after(
+            &session_id,
+            &run_id,
+            Some(ReplayCursor::new(scope.clone(), 0)),
+        )
+        .await
+        .unwrap();
+    let display = archive
+        .replay_display_after(&scope, Some(ReplayCursor::new(scope.clone(), 0)))
+        .await
+        .unwrap();
+    let range = archive.cursor_range(&scope).await.unwrap().unwrap();
+    assert_eq!(raw.len(), 1);
+    assert_eq!(display.len(), 1);
+    assert_eq!(
+        archive.latest_snapshot(&scope).await.unwrap(),
+        Some(snapshot)
+    );
+    assert_eq!(range.0.sequence, 0);
+    assert_eq!(range.1.sequence, 1);
+}
+
+#[tokio::test]
+async fn transport_builds_sse_and_jsonl_envelopes() {
+    let log = InMemoryReplayEventLog::new();
+    let scope = ReplayScope::run("run-transport");
+    log.append(
+        scope.clone(),
+        ReplayEvent::new(
+            scope.clone(),
+            1,
+            ReplayEventKind::Raw(json!({"hello":"world"})),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let sse = InMemoryReplayTransport::sse(log.clone())
+        .replay(scope.clone(), None)
+        .await
+        .unwrap();
+    let jsonl = InMemoryReplayTransport::jsonl(log)
+        .replay(scope.clone(), None)
+        .await
+        .unwrap();
+
+    match &sse[0] {
+        ReplayEnvelope::Sse(envelope) => {
+            assert_eq!(envelope.id, "1");
+            assert!(envelope.to_frame().contains("event: raw"));
+        }
+        ReplayEnvelope::Jsonl(_) => panic!("expected sse"),
+    }
+    match &jsonl[0] {
+        ReplayEnvelope::Jsonl(envelope) => {
+            assert_eq!(envelope.sequence, 1);
+            assert!(envelope.to_line().unwrap().contains("hello"));
+        }
+        ReplayEnvelope::Sse(_) => panic!("expected jsonl"),
+    }
+}
+
+#[tokio::test]
+async fn default_projector_maps_runtime_stream_to_display_messages() {
+    let projector = DefaultDisplayMessageProjector;
+    let session_id = SessionId::from_string("session-project");
+    let run_id = RunId::from_string("run-project");
+    let start = AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::RunStart {
+            run_id: run_id.clone(),
+            conversation_id: starweaver_core::ConversationId::from_string("conv-project"),
+        },
+    );
+    let delta = AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta {
+                index: 0,
+                delta: "hi".to_string(),
+            }),
+        },
+    );
+    let part_start = AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "text".to_string(),
+            }),
+        },
+    );
+    let part_end = AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+        },
+    );
+
+    let context = DisplayProjectionContext::new(session_id, run_id.clone());
+    let start_messages = projector.project(&context, &start).await;
+    let delta_messages = projector.project(&context, &delta).await;
+    let part_start_messages = projector.project(&context, &part_start).await;
+    let part_end_messages = projector.project(&context, &part_end).await;
+    assert_eq!(start_messages[0].kind, DisplayMessageKind::RunStarted);
+    assert_eq!(start_messages[0].run_id, run_id);
+    assert_eq!(
+        delta_messages[0].kind,
+        DisplayMessageKind::AssistantTextDelta
+    );
+    assert_eq!(delta_messages[0].payload["delta"], "hi");
+    assert_eq!(delta_messages[0].run_id, run_id);
+    assert_eq!(
+        part_start_messages[0].kind,
+        DisplayMessageKind::AssistantTextStart
+    );
+    assert_eq!(
+        part_end_messages[0].kind,
+        DisplayMessageKind::AssistantTextEnd
+    );
+}

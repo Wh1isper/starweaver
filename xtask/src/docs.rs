@@ -49,17 +49,23 @@ serde = {{ version = "1.0.228", features = ["derive"] }}
 serde_json = "1.0.145"
 starweaver-agent = {{ path = "{}" }}
 starweaver-context = {{ path = "{}" }}
+starweaver-core = {{ path = "{}" }}
 starweaver-environment = {{ path = "{}" }}
 starweaver-model = {{ path = "{}" }}
 starweaver-runtime = {{ path = "{}" }}
+starweaver-session = {{ path = "{}" }}
+starweaver-stream = {{ path = "{}" }}
 starweaver-tools = {{ path = "{}" }}
 tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
 "#,
             root.join("crates/starweaver-agent").display(),
             root.join("crates/starweaver-context").display(),
+            root.join("crates/starweaver-core").display(),
             root.join("crates/starweaver-environment").display(),
             root.join("crates/starweaver-model").display(),
             root.join("crates/starweaver-runtime").display(),
+            root.join("crates/starweaver-session").display(),
+            root.join("crates/starweaver-stream").display(),
             root.join("crates/starweaver-tools").display(),
         ),
     )

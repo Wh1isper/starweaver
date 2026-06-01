@@ -121,7 +121,7 @@ assert_eq!(restored.context().usage.requests, 2);
 
 ## Smooth durable application shape
 
-A production application can depend on `starweaver-agent` for the programming surface and keep service concerns in its own `SessionStore` implementation.
+A production application can depend on `starweaver-agent` for the programming surface and compose durable service concerns through shared session storage contracts plus shared stream replay and display-message contracts.
 
 ```mermaid
 flowchart TD

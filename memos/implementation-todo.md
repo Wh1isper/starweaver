@@ -173,29 +173,36 @@ make fmt-check
 git diff --check
 ```
 
-### N2 Durable Service Runtime and CLI Product
+### N2 Shared Session and Stream Components, Durable Runtime, and CLI Product
 
-This is the recommended active implementation milestone after the Agent SDK foundation work. The next product layer should use the SDK profiles, environment handles, process shell contracts, and `starweaver-claw` session store foundations to build durable application flows.
+This is the recommended active implementation milestone after the Agent SDK foundation work. The next product layer should use shared session storage contracts, shared stream protocol contracts, SDK profiles, environment handles, process shell contracts, and `starweaver-claw` adapter foundations to build durable application flows.
 
 Target outcome:
 
-- Add SQLite storage adapter first, then PostgreSQL after schema stabilizes.
+- Added `starweaver-session` crate for input parts, `SessionStore`, session/run records, checkpoint refs, approvals, deferred records, resume snapshots, and compact trace projections.
+- Added `starweaver-stream` crate for display messages, replay event logs, replay transports, stream archives, realtime compaction buffers, and protocol envelopes.
+- Add SQLite session store and stream archive adapters first, then PostgreSQL after schema stabilizes.
 - Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs.
 - Add runtime checkpoint reload APIs that hydrate from `AgentCheckpoint.state` and continue from safe execution nodes.
-- Bridge checkpoint stream cursors with `SessionStore::replay_stream_after`.
+- Bridge checkpoint stream cursors with `StreamArchive` raw stream replay and display-message replay.
 - Add idempotency metadata for external tool calls, host adapters, environment resources, and process handles.
-- Add CLI app-profile workflows over `AgentSpec`: session create/list/resume/inspect, streamed runs, environment provider selection, and compact run trace projection.
-- Share trace/session inspection surfaces between command-line and service layers.
+- Add CLI app-profile workflows over `AgentSpec`: session create/list/resume/inspect, streamed runs, environment provider selection, display-message rendering, and compact run trace projection.
+- Share display projection, trace/session inspection, and replay surfaces between command-line and service layers.
 - Add deployment metadata propagation into trace/session records: profile, workspace provider, build version, release, user id, and tags.
 
 Focused implementation slices:
 
-1. **Storage adapter:** implement SQLite-backed `SessionStore` with migrations, checkpoint blobs, stream records, run metadata, and deterministic tests.
-2. **Service executor:** wrap runtime execution with persisted run records, cancellation tokens, approval/deferred state, stream persistence, and resume snapshots.
-3. **Checkpoint reload:** define continuation semantics for `RunStart`, `PrepareModelRequest`, `BeforeModelRequest`, `ModelResponse`, `ToolCall`, `ToolReturn`, `ValidateOutput`, `RunComplete`, and `RunFailed`.
-4. **CLI profile/session workflows:** load `AgentSpec`, attach configured tool bundles/environment providers, create and resume sessions, stream output, and inspect compact traces.
-5. **SSE replay:** serve persisted stream records with replay-after-cursor behavior and trace correlation.
-6. **Validation and docs:** add `starweaver-claw` and `starweaver-cli` tests, then document durable app workflows.
+01. **Shared session records:** implement `InputPart`, session/run records, checkpoint refs, control records, compact projections, stream cursor refs, and serialization tests.
+02. **Shared SessionStore:** reuse `starweaver-session` from `starweaver-claw` through re-exports and future concrete adapters.
+03. **Shared stream records:** implement `DisplayMessage`, `DisplayMessageKind`, replay cursors/scopes, replay events, replay snapshots, stream archive records, protocol envelopes, and serialization tests.
+04. **Replay and archive protocols:** implement `ReplayEventLog`, `ReplayTransport`, `StreamArchive`, `ReplaySubscription`, `ReplaySnapshot`, and realtime compaction traits/types with memory-backed contract tests.
+05. **Storage adapters:** implement SQLite-backed `SessionStore` and `StreamArchive` with migrations, checkpoint blobs, raw stream records, display messages, replay snapshots, run metadata, and deterministic tests.
+06. **Service executor:** wrap runtime execution with persisted run records, cancellation tokens, approval/deferred state, shared replay transport, display-message projection, and resume snapshots.
+07. **Checkpoint reload:** define continuation semantics for `RunStart`, `PrepareModelRequest`, `BeforeModelRequest`, `ModelResponse`, `ToolCall`, `ToolReturn`, `ValidateOutput`, `RunComplete`, and `RunFailed`.
+08. **CLI profile/session workflows:** assemble CLI config, commands, environment/profile resolution, store/stream/transport selection, and renderers over shared session and stream contracts.
+09. **SSE and JSONL replay:** serve replay transport events with replay-after-cursor behavior and trace correlation.
+10. **Redis replay adapter:** add Redis Stream replay event-log adapter after memory and SQLite contracts stabilize.
+11. **Validation and docs:** add `starweaver-session`, `starweaver-stream`, `starweaver-claw`, and `starweaver-cli` tests, then document durable app workflows.
 
 ### N2.5 Remaining SDK Deepening
 

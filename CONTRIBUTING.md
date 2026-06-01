@@ -10,6 +10,10 @@ This guide covers local development for Starweaver. Product and architecture dec
 - `crates/starweaver-tools` — function tool schema, toolsets, metadata, registries, retry metadata, approval/deferred metadata, and MCP foundations.
 - `crates/starweaver-runtime` — core agent loop, graph state machine, stream records, output validation, capability hooks, and executor checkpoints.
 - `crates/starweaver-agent` — SDK facade, builder, app wrapper, subagent registry, and application-facing helpers.
+- `crates/starweaver-environment` — environment providers, file/shell policies, resources, and environment state snapshots.
+- `crates/starweaver-session` — shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
+- `crates/starweaver-stream` — shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
+- `crates/starweaver-claw` — durable orchestration host for concrete session, stream, service, and coordinator adapters.
 - `crates/starweaver-cli` — command-line entry point.
 - `docs/` — mdBook user documentation with runnable Rust examples.
 - `spec/` — architecture and product specs.
@@ -105,7 +109,7 @@ Current spec layers:
 
 - `spec/core/` — Pydantic AI-style core agent foundation.
 - `spec/sdk/` — first-party Agent SDK surface and ya-agent-sdk integration.
-- `spec/ops/` — CI readiness, durable runtime, observability, CLI, and product operations.
+- `spec/ops/` — CI readiness, shared session/stream components, durable runtime, CLI, observability, and product operations.
 
 Update `README.md`, `AGENTS.md`, docs, CI, and workspace manifests when spec changes affect commands, public structure, or crate responsibilities.
 

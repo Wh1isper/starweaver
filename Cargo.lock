@@ -1141,14 +1141,11 @@ dependencies = [
 name = "starweaver-claw"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "serde",
- "serde_json",
- "starweaver-context",
  "starweaver-core",
  "starweaver-model",
  "starweaver-runtime",
- "thiserror",
+ "starweaver-session",
+ "starweaver-stream",
  "tokio",
 ]
 
@@ -1225,6 +1222,37 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "starweaver-session"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "starweaver-context",
+ "starweaver-core",
+ "starweaver-environment",
+ "starweaver-runtime",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "starweaver-stream"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "starweaver-core",
+ "starweaver-model",
+ "starweaver-runtime",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
