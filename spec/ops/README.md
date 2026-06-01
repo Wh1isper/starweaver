@@ -34,12 +34,12 @@ flowchart TD
     replay --> ci
     sdk --> session
     sdk --> stream
-    session --> service
-    stream --> service
     session --> cli
     stream --> cli
+    cli --> service
+    session --> service
+    stream --> service
     service --> observability
-    service --> cli
     service --> platform
 ```
 
@@ -48,7 +48,7 @@ flowchart TD
 - `01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `02-shared-execution-components.md` — shared session storage and stream protocol contracts for CLI and Claw
 - `03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, SSE, display-message replay, and storage contracts
-- `04-cli-product.md` — CLI Product surface built over SDK, environment providers, shared session/stream components, and service runtime contracts
+- `04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, AGUI-compatible rendering, launcher dispatch, and GitHub install/update flow
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 
 ## Readiness Model

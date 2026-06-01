@@ -364,6 +364,19 @@ impl SessionStore for InMemorySessionStore {
             .runs
             .insert(run_key(&run.session_id, &run.run_id), run.clone());
         if let Some(session) = inner.sessions.get_mut(&run.session_id) {
+            session.head_run_id = Some(run.run_id.clone());
+            if matches!(
+                run.status,
+                RunStatus::Queued | RunStatus::Running | RunStatus::Waiting
+            ) {
+                session.active_run_id = Some(run.run_id.clone());
+            }
+            if run.status == RunStatus::Completed {
+                session.head_success_run_id = Some(run.run_id.clone());
+                if session.active_run_id.as_ref() == Some(&run.run_id) {
+                    session.active_run_id = None;
+                }
+            }
             session.updated_at = run.updated_at;
         }
         Ok(())
@@ -413,6 +426,23 @@ impl SessionStore for InMemorySessionStore {
         run.output_preview = output_preview;
         run.updated_at = updated_at;
         if let Some(session) = inner.sessions.get_mut(session_id) {
+            session.head_run_id = Some(run_id.clone());
+            match status {
+                RunStatus::Queued | RunStatus::Running | RunStatus::Waiting => {
+                    session.active_run_id = Some(run_id.clone());
+                }
+                RunStatus::Completed => {
+                    session.head_success_run_id = Some(run_id.clone());
+                    if session.active_run_id.as_ref() == Some(run_id) {
+                        session.active_run_id = None;
+                    }
+                }
+                RunStatus::Failed | RunStatus::Cancelled => {
+                    if session.active_run_id.as_ref() == Some(run_id) {
+                        session.active_run_id = None;
+                    }
+                }
+            }
             session.updated_at = updated_at;
         }
         Ok(())

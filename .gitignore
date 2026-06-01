@@ -1,5 +1,6 @@
 /target/
 /book/
+.starweaver/
 /.idea/
 /.vscode/
 *.swp

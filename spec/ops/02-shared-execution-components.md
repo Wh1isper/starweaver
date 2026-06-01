@@ -51,8 +51,9 @@ flowchart TD
     eventlog[ReplayEventLog contract]
     compact[RealtimeCompactionBuffer]
     transport[ReplayTransport contract]
-    coordinator[RunCoordinator]
     cli[CLI assembly]
+    launcher[Launcher and installer]
+    coordinator[RunCoordinator]
     service[Claw service assembly]
     platform[Platform adapters]
 
@@ -64,11 +65,14 @@ flowchart TD
     projector --> eventlog
     eventlog --> compact
     eventlog --> transport
+    session_store --> cli
+    projector --> cli
+    eventlog --> cli
+    transport --> cli
+    cli --> launcher
     session_store --> coordinator
     projector --> coordinator
     eventlog --> coordinator
-    transport --> cli
-    coordinator --> cli
     coordinator --> service
     transport --> service
     transport --> platform
@@ -77,15 +81,16 @@ flowchart TD
 
 Implementation sequence should follow the diagram:
 
-1. shared ids and serializable session records
-2. `SessionStore` trait and in-memory contract tests
-3. display-message records and replay protocol records
-4. `ReplayEventLog`, `ReplayTransport`, and realtime compaction contract tests
-5. SQLite session store and stream archive adapter in Claw
-6. run coordinator wiring over session and stream contracts
-7. CLI command/config/rendering assembly
-8. service SSE/API assembly
-9. Redis Stream or distributed replay event-log adapter
+01. shared ids and serializable session records
+02. `SessionStore` trait and in-memory contract tests
+03. display-message records and replay protocol records
+04. `ReplayEventLog`, `ReplayTransport`, and realtime compaction contract tests
+05. CLI display-message restore contract, headless JSONL transport, renderer assembly, and DisplayMessage AGUI-compatible protocol
+06. launcher dispatch, `sw` alias install behavior, GitHub installer, and update path
+07. SQLite session store and stream archive adapter in Claw
+08. run coordinator wiring over session and stream contracts
+09. service SSE/API assembly
+10. Redis Stream or distributed replay event-log adapter
 
 ## Recommended Crate Split
 
@@ -189,54 +194,56 @@ Responsibilities:
 - transform runtime stream records, lifecycle events, checkpoint events, tool events, subagent events, approval events, and terminal results into stable display messages
 - preserve agent id, agent name, run id, session id, sequence, timestamp, and trace correlation
 - feed display messages into the replay event log and compaction buffer
-- keep enough structure for terminal, web UI, logs, SSE, and future AGUI/A2A adapters
+- keep enough structure for terminal, web UI, logs, SSE, and future A2A adapters
 
-Display messages are product-facing semantic events. They sit between raw runtime events and renderer-specific formatting.
+Display messages are product-facing semantic events and the AGUI-compatible Starweaver wire protocol. They sit between raw runtime events and renderer-specific formatting.
 
 Suggested message family:
 
-| Kind                   | Purpose                                      |
-| ---------------------- | -------------------------------------------- |
-| `run_queued`           | run accepted and waiting for execution       |
-| `run_started`          | execution started                            |
-| `assistant_text_start` | assistant text block started                 |
-| `assistant_text_delta` | assistant streaming text delta               |
-| `assistant_text_end`   | assistant text block completed               |
-| `tool_call_start`      | tool call started with tool name and call id |
-| `tool_call_delta`      | streaming tool call args or partial evidence |
-| `tool_call_end`        | tool call arguments completed                |
-| `tool_result`          | tool result or error preview                 |
-| `approval_requested`   | approval prompt with action metadata         |
-| `approval_resolved`    | approval decision recorded                   |
-| `checkpoint`           | checkpoint emitted at runtime boundary       |
-| `subagent_started`     | child agent or delegated task started        |
-| `subagent_completed`   | child agent or delegated task completed      |
-| `compaction_started`   | history/context compaction started           |
-| `compaction_completed` | compaction completed with token evidence     |
-| `run_completed`        | run completed successfully                   |
-| `run_failed`           | run failed with code and message             |
-| `run_cancelled`        | run cancelled or interrupted                 |
+| Serialized `type`      | Rust variant          | Purpose                                      |
+| ---------------------- | --------------------- | -------------------------------------------- |
+| `RUN_QUEUED`           | `RunQueued`           | run accepted and waiting for execution       |
+| `RUN_STARTED`          | `RunStarted`          | execution started                            |
+| `TEXT_MESSAGE_START`   | `AssistantTextStart`  | assistant text block started                 |
+| `TEXT_MESSAGE_CONTENT` | `AssistantTextDelta`  | assistant streaming text delta               |
+| `TEXT_MESSAGE_END`     | `AssistantTextEnd`    | assistant text block completed               |
+| `TOOL_CALL_START`      | `ToolCallStart`       | tool call started with tool name and call id |
+| `TOOL_CALL_ARGS`       | `ToolCallDelta`       | streaming tool call args or partial evidence |
+| `TOOL_CALL_END`        | `ToolCallEnd`         | tool call arguments completed                |
+| `TOOL_CALL_RESULT`     | `ToolResult`          | tool result or error preview                 |
+| `APPROVAL_REQUESTED`   | `ApprovalRequested`   | approval prompt with action metadata         |
+| `APPROVAL_RESOLVED`    | `ApprovalResolved`    | approval decision recorded                   |
+| `CHECKPOINT`           | `Checkpoint`          | checkpoint emitted at runtime boundary       |
+| `SUBAGENT_STARTED`     | `SubagentStarted`     | child agent or delegated task started        |
+| `SUBAGENT_COMPLETED`   | `SubagentCompleted`   | child agent or delegated task completed      |
+| `COMPACTION_STARTED`   | `CompactionStarted`   | history/context compaction started           |
+| `COMPACTION_COMPLETED` | `CompactionCompleted` | compaction completed with token evidence     |
+| `RUN_FINISHED`         | `RunCompleted`        | run completed successfully                   |
+| `RUN_ERROR`            | `RunFailed`           | run failed with code and message             |
+| `RUN_CANCELLED`        | `RunCancelled`        | run cancelled or interrupted                 |
 
 Suggested Rust shape:
 
 ```rust
 pub struct DisplayMessage {
+    pub schema: String, // "starweaver.display.v1"
     pub sequence: usize,
     pub session_id: SessionId,
     pub run_id: RunId,
-    pub agent_id: Option<String>,
+    pub agent_id: Option<AgentId>,
     pub agent_name: Option<String>,
-    pub timestamp_ms: i64,
-    pub trace_id: Option<String>,
-    pub span_id: Option<String>,
+    pub timestamp: DateTime<Utc>,
+    pub trace_context: TraceContext,
+    #[serde(rename = "type", alias = "kind")]
     pub kind: DisplayMessageKind,
     pub payload: serde_json::Value,
     pub preview: Option<String>,
     pub visibility: DisplayVisibility,
+    pub metadata: Metadata,
 }
 ```
 
-`payload` is the canonical structured projection. `preview` is a small renderer-friendly summary for compact lists, logs, and diagnostics.
+`payload` is the canonical structured projection. `preview` is a small renderer-friendly summary for compact lists, logs, and diagnostics. The serialized `type` field uses AGUI-compatible event names such as `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_RESULT`, and `RUN_FINISHED`; Starweaver-specific runtime context lives in durable ids, trace context, visibility, metadata, and payload fields.
 
 ## Replay Event Log Contract
 
@@ -304,13 +311,13 @@ Owner: `starweaver-stream` transport traits and protocol envelopes. Product crat
 
 Responsibilities:
 
-- turn replay events into SSE, JSONL, WebSocket, or external protocol envelopes
+- turn replay events and `DisplayMessage` records into SSE, JSONL, WebSocket, or external protocol envelopes
 - support replay-after-cursor followed by live tail
 - keep transport cursor semantics stable across memory and Redis-backed logs
 - carry heartbeat and terminal markers
-- map display messages into product protocol frames
+- wrap `DisplayMessage` records into product protocol frames
 
-SSE envelope:
+SSE frame data payload:
 
 ```json
 {
@@ -318,16 +325,17 @@ SSE envelope:
   "event": "display_message",
   "data": {
     "sequence": 42,
-    "kind": "assistant_text_delta",
+    "schema": "starweaver.display.v1",
+    "type": "TEXT_MESSAGE_CONTENT",
     "payload": {"delta": "hello"}
   }
 }
 ```
 
-CLI JSONL envelope:
+CLI DisplayMessage JSONL line:
 
 ```json
-{"sequence":42,"kind":"assistant_text_delta","payload":{"delta":"hello"}}
+{"schema":"starweaver.display.v1","sequence":42,"type":"TEXT_MESSAGE_CONTENT","payload":{"delta":"hello"}}
 ```
 
 The transport contract should treat cursor replay and live tail as one operation:
@@ -360,7 +368,7 @@ Reference behavior from ya-claw's AGUI replay buffer:
 - tool-call chunks merge into one tool call item
 - terminal `RUN_FINISHED` or `RUN_ERROR` remains explicit
 
-Starweaver should keep this as a protocol-neutral compaction buffer over `DisplayMessage`.
+Starweaver should keep this as an AGUI-compatible compaction buffer over `DisplayMessage`.
 
 ## Stream Archive Contract
 
@@ -485,11 +493,12 @@ Renderer variants:
 04. Add `starweaver-stream` display/replay record types: `DisplayMessage`, replay cursors/scopes, replay events, replay snapshots, replay envelopes, and stream archive records.
 05. Add `ReplayEventLog`, `ReplayTransport`, `StreamArchive`, `ReplaySubscription`, `ReplaySnapshot`, and `RealtimeCompactionBuffer` traits/types in `starweaver-stream`.
 06. Add deterministic in-memory `ReplayEventLog` and `StreamArchive` contract tests.
-07. Add SQLite `SessionStore` and `StreamArchive` in `starweaver-claw`.
-08. Add Claw run coordinator wiring over `SessionStore`, `StreamArchive`, `ReplayEventLog`, projector, and compaction buffer.
-09. Add CLI assembly over shared session store and stream transport contracts: config, command parsing, profile resolution, environment resolution, and renderer selection.
-10. Add SSE/JSONL transport adapters over the replay protocol.
-11. Add Redis Stream replay event-log adapter after memory and SQLite contracts stabilize.
+07. Add CLI display-message restore contract, headless `-p/--prompt`, JSONL/AGUI JSONL renderers, and session restore/replay command tests.
+08. Add `starweaver` launcher, `sw` alias install behavior, `starweaver-{command}` dispatch, GitHub installer, update path, and release packaging checks.
+09. Add SQLite `SessionStore` and `StreamArchive` in `starweaver-claw` after CLI display/restore behavior is stable.
+10. Add Claw run coordinator wiring over `SessionStore`, `StreamArchive`, `ReplayEventLog`, projector, and compaction buffer.
+11. Add SSE transport adapters over the replay protocol.
+12. Add Redis Stream replay event-log adapter after memory and SQLite contracts stabilize.
 
 ## Acceptance Gates
 
@@ -502,5 +511,8 @@ Renderer variants:
 - display-message projector tests for text, tools, approvals, checkpoints, subagents, and terminal run states
 - transport envelope tests for SSE and JSONL cursor semantics
 - CLI renderer tests over fixed display messages and replay snapshots
+- CLI session restore tests from persisted display messages
+- DisplayMessage AGUI-compatibility mapping and compaction tests
+- launcher dispatch and installer script tests
 - service/SSE tests showing display-message replay and live tail
 - Redis Stream adapter contract tests when the adapter lands

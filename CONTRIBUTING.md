@@ -125,4 +125,4 @@ Update `README.md`, `AGENTS.md`, docs, CI, and workspace manifests when spec cha
 
 MCP integration uses the official Model Context Protocol Rust SDK at <https://github.com/modelcontextprotocol/rust-sdk> through the `rmcp` crate.
 
-A2A and AGUI adapters belong to the platform or service-adapter layer. The core runtime and first-party SDK should expose stable events, traces, checkpoints, and session records that those adapters can consume.
+A2A adapters belong to the platform or service-adapter layer. AGUI compatibility is expressed through the shared `DisplayMessage` wire protocol, which service transports can wrap for external clients. The core runtime and first-party SDK should expose stable events, traces, checkpoints, and session records that those surfaces can consume.

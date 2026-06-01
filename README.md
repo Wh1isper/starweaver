@@ -12,7 +12,7 @@ The project focuses on these workspace layers:
 - `starweaver-session`: shared durable session contracts for input parts, `SessionStore`, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
 - `starweaver-stream`: shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
 - `starweaver-claw`: durable orchestration host that re-exports shared session/stream contracts and will provide concrete storage, stream, service, and coordinator adapters.
-- `starweaver-cli`: local CLI entry point for version, run, diagnostics, and replay-check helpers.
+- `starweaver-cli`: CLI-first product surface for headless stdio runs, display-message rendering, session restore, launcher dispatch, and install/update workflows.
 
 Planned layers are specified before public API graduation:
 

@@ -160,6 +160,18 @@ pub struct SessionRecord {
     /// Session trace context.
     #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
     pub trace_context: TraceContext,
+    /// Parent session id for forks or delegated flows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
+    /// Latest run in the session sequence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_run_id: Option<RunId>,
+    /// Latest completed run usable as continuation source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_success_run_id: Option<RunId>,
+    /// Currently queued, running, or waiting run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run_id: Option<RunId>,
     /// Creation time.
     pub created_at: DateTime<Utc>,
     /// Last update time.
@@ -184,6 +196,10 @@ impl SessionRecord {
             environment_state: None,
             stream_cursors: Vec::new(),
             trace_context: TraceContext::default(),
+            parent_session_id: None,
+            head_run_id: None,
+            head_success_run_id: None,
+            active_run_id: None,
             created_at: now,
             updated_at: now,
             metadata: Metadata::default(),
@@ -224,6 +240,18 @@ pub struct RunRecord {
     /// Trace context.
     #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
     pub trace_context: TraceContext,
+    /// Monotonic order inside the session.
+    #[serde(default)]
+    pub sequence_no: usize,
+    /// Run snapshot used as continuation source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_from_run_id: Option<RunId>,
+    /// Trigger source such as cli, service, bridge, schedule, or delegated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_type: Option<String>,
+    /// Profile resolved for this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     /// Creation time.
     pub created_at: DateTime<Utc>,
     /// Last update time.
@@ -250,6 +278,10 @@ impl RunRecord {
             environment_state: None,
             stream_cursors: Vec::new(),
             trace_context: TraceContext::default(),
+            sequence_no: 0,
+            restore_from_run_id: None,
+            trigger_type: None,
+            profile: None,
             created_at: now,
             updated_at: now,
             metadata: Metadata::default(),

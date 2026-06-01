@@ -1,9 +1,9 @@
-//! Starweaver command-line entry point.
+//! Starweaver product launcher.
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    match starweaver_cli::run_from_env() {
+    match starweaver_cli::launcher::run_from_env() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");

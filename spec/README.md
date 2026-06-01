@@ -30,7 +30,7 @@ Working evidence, reference comparisons, migration notes, and release TODOs live
 - `ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts for CLI and Claw
 - `ops/03-durable-service-runtime.md` — durable sessions, SessionStore, stream archive, resume, interruption, SSE, display-message replay, and storage contracts
-- `ops/04-cli-product.md` — CLI Product surface built over SDK, environment providers, shared session/stream components, and service runtime contracts
+- `ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, AGUI-compatible rendering, launcher dispatch, and GitHub install/update flow
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 
 ## System Shape

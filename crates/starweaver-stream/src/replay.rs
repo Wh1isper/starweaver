@@ -113,7 +113,7 @@ pub enum StreamTerminalMarker {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReplayEventKind {
     /// Display message event.
-    DisplayMessage(DisplayMessage),
+    DisplayMessage(Box<DisplayMessage>),
     /// Raw payload event.
     Raw(Value),
     /// Compact snapshot marker.
@@ -159,7 +159,7 @@ impl ReplayEvent {
         Self::new(
             scope,
             message.sequence,
-            ReplayEventKind::DisplayMessage(message),
+            ReplayEventKind::DisplayMessage(Box::new(message)),
         )
     }
 }
@@ -350,7 +350,7 @@ impl ReplayEventLog for InMemoryReplayEventLog {
         let display_messages = events
             .iter()
             .filter_map(|event| match &event.event {
-                ReplayEventKind::DisplayMessage(message) => Some(message.clone()),
+                ReplayEventKind::DisplayMessage(message) => Some((**message).clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();

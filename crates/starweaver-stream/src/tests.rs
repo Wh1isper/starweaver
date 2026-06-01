@@ -23,18 +23,71 @@ fn display_message(
 }
 
 #[test]
-fn display_message_serializes_with_snake_case_kind() {
+fn display_message_serializes_as_agui_compatible_event() {
     let message = display_message(
         1,
         DisplayMessageKind::AssistantTextDelta,
         json!({"delta": "hello"}),
     );
     let value = serde_json::to_value(&message).unwrap();
-    assert_eq!(value["kind"], "assistant_text_delta");
+    assert_eq!(value["schema"], "starweaver.display.v1");
+    assert_eq!(value["type"], "TEXT_MESSAGE_CONTENT");
     assert_eq!(
         serde_json::from_value::<DisplayMessage>(value).unwrap(),
         message
     );
+}
+
+#[test]
+fn all_display_message_kinds_serialize_to_agui_compatible_types() {
+    let cases = [
+        (DisplayMessageKind::RunQueued, "RUN_QUEUED"),
+        (DisplayMessageKind::RunStarted, "RUN_STARTED"),
+        (DisplayMessageKind::AssistantTextStart, "TEXT_MESSAGE_START"),
+        (
+            DisplayMessageKind::AssistantTextDelta,
+            "TEXT_MESSAGE_CONTENT",
+        ),
+        (DisplayMessageKind::AssistantTextEnd, "TEXT_MESSAGE_END"),
+        (DisplayMessageKind::ToolCallStart, "TOOL_CALL_START"),
+        (DisplayMessageKind::ToolCallDelta, "TOOL_CALL_ARGS"),
+        (DisplayMessageKind::ToolCallEnd, "TOOL_CALL_END"),
+        (DisplayMessageKind::ToolResult, "TOOL_CALL_RESULT"),
+        (DisplayMessageKind::ApprovalRequested, "APPROVAL_REQUESTED"),
+        (DisplayMessageKind::ApprovalResolved, "APPROVAL_RESOLVED"),
+        (DisplayMessageKind::Checkpoint, "CHECKPOINT"),
+        (DisplayMessageKind::SubagentStarted, "SUBAGENT_STARTED"),
+        (DisplayMessageKind::SubagentCompleted, "SUBAGENT_COMPLETED"),
+        (DisplayMessageKind::CompactionStarted, "COMPACTION_STARTED"),
+        (
+            DisplayMessageKind::CompactionCompleted,
+            "COMPACTION_COMPLETED",
+        ),
+        (DisplayMessageKind::RunCompleted, "RUN_FINISHED"),
+        (DisplayMessageKind::RunFailed, "RUN_ERROR"),
+        (DisplayMessageKind::RunCancelled, "RUN_CANCELLED"),
+    ];
+
+    for (kind, expected_type) in cases {
+        let value = serde_json::to_value(display_message(1, kind, json!({}))).unwrap();
+        assert_eq!(value["schema"], "starweaver.display.v1");
+        assert_eq!(value["type"], expected_type);
+        assert!(value.get("kind").is_none());
+    }
+}
+
+#[test]
+fn display_message_accepts_legacy_snake_case_kind_alias() {
+    let mut value = serde_json::to_value(display_message(
+        1,
+        DisplayMessageKind::AssistantTextDelta,
+        json!({"delta": "hello"}),
+    ))
+    .unwrap();
+    value["kind"] = json!("assistant_text_delta");
+    value.as_object_mut().unwrap().remove("type");
+    let message = serde_json::from_value::<DisplayMessage>(value).unwrap();
+    assert_eq!(message.kind, DisplayMessageKind::AssistantTextDelta);
 }
 
 #[tokio::test]

@@ -79,18 +79,20 @@ These notes capture reference mapping and phase-specific implementation observat
 
 ## Remaining Pre-1.0 Gaps
 
-### Shared Session and Stream Components, Durable Runtime, and CLI Product
+### CLI-First Product, Shared Session/Stream Runtime, and Durable Service
 
 - Added `starweaver-session` crate for input parts, `SessionStore`, session/run records, checkpoint refs, approvals, deferred records, resume snapshots, and compact trace projections.
 - Added `starweaver-stream` crate for display messages, replay event logs, replay transports, stream archives, realtime compaction buffers, and protocol envelopes.
-- Add SQLite session store and stream archive adapters first, then PostgreSQL after schema stabilizes.
-- Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs.
-- Add runtime resume APIs that hydrate from `AgentCheckpoint.state` and continue from safe boundaries.
-- Bridge checkpoint stream cursors with `StreamArchive` raw stream replay and display-message replay.
-- Add idempotency metadata for external tool calls, host adapters, environment resources, background shell handles, and deferred tool calls.
+- Add CLI headless mode through `sw cli -p <prompt>` with text, JSONL, AGUI JSONL, and silent output modes.
+- Persist `DisplayMessage` records through `StreamArchive` and use them as the session restore source for CLI, TUI, and future service UI flows.
+- Add AGUI-compatible display adapter and replay compaction path based on ya-claw behavior.
+- Add `starweaver` launcher dispatch, `sw` alias, `starweaver-{command}` command convention, and GitHub release install/update scripts.
 - Define CLI app-profile workflows over `AgentSpec`, environment providers, first-party bundles, shared session/stream contracts, and `SessionStore`.
-- Add command-line session create/list/resume/inspect with display-message rendering, compact trace projection, and stream replay.
-- Share display projection and trace/session inspection surfaces across command-line and service layers.
+- Add command-line session create/list/restore/replay/inspect with display-message rendering, compact trace projection, and stream replay.
+- Add SQLite session store and stream archive adapters after the CLI display/restore contract is stable, then PostgreSQL after schema stabilizes.
+- Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs using the same display/replay contracts.
+- Add runtime resume APIs that hydrate from `AgentCheckpoint.state` and continue from safe boundaries.
+- Add idempotency metadata for external tool calls, host adapters, environment resources, background shell handles, and deferred tool calls.
 
 ### SDK Deepening After P0/P1
 
