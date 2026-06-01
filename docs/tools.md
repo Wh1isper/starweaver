@@ -264,3 +264,76 @@ assert!(!registry.is_empty());
 ## Retry metadata
 
 Retry limits can be set at the tool, toolset, registry, or agent level. The runtime passes retry counters through `ToolContext` and records retry metadata on retryable tool returns.
+
+## Fileops-loaded skills
+
+Skills are markdown packages discovered through the active `EnvironmentProvider`, matching the SDK's fileops path space. `SkillRegistry::scan` reads compact frontmatter summaries from `skills/*/SKILL.md` and `.agents/skills/*/SKILL.md`; `SkillRegistry::activate` loads the full markdown body when a host or agent workflow chooses a skill.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{SkillRegistry, SkillSourceScope};
+use starweaver_environment::VirtualEnvironmentProvider;
+
+# async fn example() -> Result<(), starweaver_agent::SkillError> {
+let provider = Arc::new(
+    VirtualEnvironmentProvider::new("skills").with_file(
+        "skills/research/SKILL.md",
+        r"---
+name: research
+description: Gather and cite sources
+---
+Use search tools and cite sources.
+",
+    ),
+);
+let registry = SkillRegistry::scan(provider.clone(), &[SkillSourceScope::new("")]).await?;
+let active = SkillRegistry::activate(provider, "skills/research/SKILL.md").await?;
+
+assert_eq!(registry.get("research").unwrap().description, "Gather and cite sources");
+assert_eq!(active.body.unwrap(), "Use search tools and cite sources.");
+# Ok(())
+# }
+```
+
+`skill_tools(registry.packages())` converts the discovered summaries into a model-facing instruction block. The full body stays loaded on activation so hosts can implement request-boundary reloads and file synchronization hooks.
+
+## Process-capable shell providers
+
+The shell bundle runs foreground commands through `EnvironmentProvider::run_shell`. Background commands use a `ProcessShellProvider` dependency attached with `attach_process_shell`, which lets durable hosts expose handles for `shell_wait`, `shell_status`, `shell_input`, `shell_signal`, and `shell_kill`.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{
+    attach_environment, attach_process_shell, shell_tools, AgentContext, ConversationId, RunId,
+    ToolContext, ToolRegistry,
+};
+use starweaver_environment::VirtualEnvironmentProvider;
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let provider = Arc::new(VirtualEnvironmentProvider::new("process"));
+let mut agent_context = AgentContext::default();
+attach_environment(&mut agent_context, provider.clone());
+attach_process_shell(&mut agent_context, provider);
+let mut dependencies = agent_context.dependencies.clone();
+dependencies.insert(agent_context);
+let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+    .with_dependencies(dependencies);
+let mut registry = ToolRegistry::new();
+registry.insert_toolset(&shell_tools());
+
+let started = registry
+    .execute_call(
+        context,
+        &starweaver_model::ToolCallPart {
+            id: "start".to_string(),
+            name: "shell_exec".to_string(),
+            arguments: serde_json::json!({"command": "sleep 1", "background": true}),
+        },
+    )
+    .await;
+assert_eq!(started.content["status"], "running");
+# Ok(())
+# }
+```

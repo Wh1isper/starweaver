@@ -116,23 +116,26 @@ Subagent features map to:
 
 ## Skill Integration
 
-Skills should be loaded from project, global, and builtin sources. A skill may contribute:
+Skills should be loaded from project, global, shared, and builtin sources through provider file operations. The SDK skill bundle scans `skills/` and `.agents/skills/` directories under configured `EnvironmentProvider` roots, parses `SKILL.md` frontmatter, injects available-skill summaries into grouped instructions, and loads full skill bodies on activation.
+
+A skill may contribute:
 
 - instructions
 - examples
+- references and assets stored in provider-visible paths
 - tool requirements
 - optional tool requirements
 - metadata
 - toolsets
 
-Skill loading integrates with `AgentBuilder` through capability bundles and with `EnvironmentProvider` for file/resource access.
+Skill loading integrates with `AgentBuilder` through capability bundles and with `EnvironmentProvider` for file/resource access. Environment, filesystem, shell, and skill bundles should share one path-space contract so skill scripts and references can be used by tools without remapping.
 
 ## Review Gate
 
-Before implementing an SDK feature batch:
+Before implementing the P0/P1 SDK batch:
 
-1. Add or update the corresponding spec section.
-2. Add TODO rows in `memos/implementation-todo.md`.
-3. Port tests first where feasible.
-4. Implement the Rust-native trait or capability.
-5. Add docs examples after the API shape stabilizes.
+1. Update the corresponding spec sections and memos with ya-mono/pydantic-ai evidence.
+2. Review `crates/starweaver-agent/src` and produce keep/rename/add/hide decisions for public APIs.
+3. Convert the P0/P1 plan into focused tests for policy presets, `AgentSpec`, inherited tools, skill loading, host adapters, environment/resource composition, process shell, and MCP.
+4. Implement the Rust-native trait, capability, preset, or tool bundle slice.
+5. Add docs examples after the API shape stabilizes and keep them passing through `make docs-check`.

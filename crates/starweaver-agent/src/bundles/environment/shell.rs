@@ -1,17 +1,45 @@
 use std::sync::Arc;
 
+use starweaver_context::AgentContext;
+use starweaver_environment::{DynProcessShellProvider, ShellProcessSnapshot};
 use starweaver_tools::{
     DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
 };
 
 use super::{
     args::{ProcessIdArgs, ShellExecArgs, ShellInputArgs, ShellSignalArgs, ShellWaitArgs},
-    common::operation,
     handle::environment_provider,
 };
 use crate::bundles::helpers::{
     static_tool, static_tool_with_metadata, tool_execution_error, tool_metadata,
 };
+
+/// `AgentContext` dependency for process-capable shell providers.
+#[derive(Clone)]
+pub struct ProcessShellHandle {
+    provider: DynProcessShellProvider,
+}
+
+impl ProcessShellHandle {
+    /// Create a process shell handle.
+    #[must_use]
+    pub fn new(provider: DynProcessShellProvider) -> Self {
+        Self { provider }
+    }
+
+    /// Return the underlying provider.
+    #[must_use]
+    pub fn provider(&self) -> DynProcessShellProvider {
+        self.provider.clone()
+    }
+}
+
+/// Attach a process-capable shell provider to an `AgentContext`.
+pub fn attach_process_shell(context: &mut AgentContext, provider: DynProcessShellProvider) {
+    context
+        .dependencies
+        .insert(ProcessShellHandle::new(provider));
+}
 
 /// Create shell tools backed by the `EnvironmentHandle` stored in `AgentContext`.
 #[must_use]
@@ -45,13 +73,15 @@ async fn shell_exec(
     context: ToolContext,
     arguments: ShellExecArgs,
 ) -> Result<ToolResult, ToolError> {
-    let provider = environment_provider(&context, "shell_exec")?;
     if arguments.background {
-        return Err(tool_execution_error(
-            "shell_exec",
-            "background shell execution requires a durable shell provider",
-        ));
+        let provider = process_provider(&context, "shell_exec")?;
+        let snapshot = provider
+            .start_process(&arguments.command)
+            .await
+            .map_err(|error| tool_execution_error("shell_exec", error))?;
+        return Ok(process_result(&snapshot));
     }
+    let provider = environment_provider(&context, "shell_exec")?;
     let output = provider
         .run_shell(&arguments.command)
         .await
@@ -68,58 +98,95 @@ async fn shell_exec(
 }
 
 async fn shell_wait(
-    _context: ToolContext,
+    context: ToolContext,
     arguments: ShellWaitArgs,
 ) -> Result<ToolResult, ToolError> {
-    Ok(operation(
-        "shell_wait",
-        serde_json::json!({
-            "process_id": arguments.process_id,
-            "timeout_seconds": arguments.timeout_seconds,
-        }),
-    ))
+    let provider = process_provider(&context, "shell_wait")?;
+    let snapshot = provider
+        .wait_process(&arguments.process_id, arguments.timeout_seconds)
+        .await
+        .map_err(|error| tool_execution_error("shell_wait", error))?;
+    Ok(process_result(&snapshot))
 }
 
 async fn shell_status(
-    _context: ToolContext,
+    context: ToolContext,
     _arguments: EmptyToolArgs,
 ) -> Result<ToolResult, ToolError> {
-    Ok(operation("shell_status", serde_json::json!({})))
+    let provider = process_provider(&context, "shell_status")?;
+    let processes = provider
+        .list_processes()
+        .await
+        .map_err(|error| tool_execution_error("shell_status", error))?;
+    Ok(ToolResult::new(
+        serde_json::json!({ "processes": processes }),
+    ))
 }
 
 async fn shell_input(
-    _context: ToolContext,
+    context: ToolContext,
     arguments: ShellInputArgs,
 ) -> Result<ToolResult, ToolError> {
-    Ok(operation(
-        "shell_input",
-        serde_json::json!({
-            "process_id": arguments.process_id,
-            "text": arguments.text,
-            "close_stdin": arguments.close_stdin,
-        }),
-    ))
+    let provider = process_provider(&context, "shell_input")?;
+    let snapshot = provider
+        .input_process(
+            &arguments.process_id,
+            &arguments.text,
+            arguments.close_stdin,
+        )
+        .await
+        .map_err(|error| tool_execution_error("shell_input", error))?;
+    Ok(process_result(&snapshot))
 }
 
 async fn shell_signal(
-    _context: ToolContext,
+    context: ToolContext,
     arguments: ShellSignalArgs,
 ) -> Result<ToolResult, ToolError> {
-    Ok(operation(
-        "shell_signal",
-        serde_json::json!({
-            "process_id": arguments.process_id,
-            "signal": arguments.signal,
-        }),
-    ))
+    let provider = process_provider(&context, "shell_signal")?;
+    let snapshot = provider
+        .signal_process(&arguments.process_id, arguments.signal)
+        .await
+        .map_err(|error| tool_execution_error("shell_signal", error))?;
+    Ok(process_result(&snapshot))
 }
 
 async fn shell_kill(
-    _context: ToolContext,
+    context: ToolContext,
     arguments: ProcessIdArgs,
 ) -> Result<ToolResult, ToolError> {
-    Ok(operation(
-        "shell_kill",
-        serde_json::json!({"process_id": arguments.process_id}),
-    ))
+    let provider = process_provider(&context, "shell_kill")?;
+    let snapshot = provider
+        .kill_process(&arguments.process_id)
+        .await
+        .map_err(|error| tool_execution_error("shell_kill", error))?;
+    Ok(process_result(&snapshot))
+}
+
+fn process_provider(
+    context: &ToolContext,
+    tool: &str,
+) -> Result<DynProcessShellProvider, ToolError> {
+    let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
+        tool_execution_error(tool, "AgentContext dependency is missing from ToolContext")
+    })?;
+    let handle = agent_context
+        .dependencies
+        .get::<ProcessShellHandle>()
+        .ok_or_else(|| {
+            tool_execution_error(tool, "ProcessShellHandle is missing from AgentContext")
+        })?;
+    Ok(handle.provider())
+}
+
+fn process_result(snapshot: &ShellProcessSnapshot) -> ToolResult {
+    ToolResult::new(serde_json::json!({
+        "process_id": snapshot.process_id,
+        "command": snapshot.command,
+        "status": snapshot.status,
+        "stdout": snapshot.stdout,
+        "stderr": snapshot.stderr,
+        "return_code": snapshot.return_code,
+        "metadata": snapshot.metadata,
+    }))
 }

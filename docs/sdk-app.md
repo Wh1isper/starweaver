@@ -148,3 +148,68 @@ Recommended shape for Claw, CLI, and external services:
 7. Persist environment references, trace ids, and approval/deferred metadata in the service layer alongside checkpoint ids.
 
 This keeps the SDK surface small for application programmers: `AgentBuilder`, `AgentSession`, stream events, checkpoints, and direct APIs cover most durable app needs.
+
+## Serializable Agent Specs
+
+`AgentSpec` is the optional profile layer for CLI, service, and team configuration. Programmatic applications can keep using `AgentBuilder` directly; serialized specs resolve host-provided handles through `AgentSpecRegistry`.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{
+    AgentSpec, AgentSpecRegistry, HostAdapterSpec, McpServerSpec, RetryPolicyPreset, TestModel,
+};
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let spec = AgentSpec::from_yaml(r#"
+name: helper
+instructions:
+  - Be concise
+model:
+  model_id: test
+preset:
+  retry_preset: quick
+  retry:
+    tool_retries: 2
+output:
+  retries: 1
+host_adapters:
+  - web
+mcp_servers:
+  - local
+"#)?;
+let registry = AgentSpecRegistry::new()
+    .with_model("test", Arc::new(TestModel::with_text("ok")))
+    .with_retry_preset(
+        "quick",
+        RetryPolicyPreset {
+            max_steps: Some(4),
+            output_retries: Some(1),
+            tool_retries: Some(1),
+            timeout_ms: None,
+        },
+    )
+    .with_host_adapter(
+        "web",
+        HostAdapterSpec {
+            kind: "search".to_string(),
+            name: "fake".to_string(),
+            metadata: serde_json::Map::new(),
+        },
+    )
+    .with_mcp_server(
+        "local",
+        McpServerSpec {
+            name: "local".to_string(),
+            transport: "stdio".to_string(),
+            metadata: serde_json::Map::new(),
+        },
+    );
+
+let result = spec.builder(&registry)?.build().run("hello").await?;
+assert_eq!(result.output, "ok");
+# Ok(())
+# }
+```
+
+Specs support named and inline policy sections for retry, approval, streaming, observability, environment, and durability. Host adapters and MCP servers are stable names resolved by the host registry, which keeps live clients and credentials outside serialized files.

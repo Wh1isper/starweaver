@@ -47,15 +47,20 @@ Failure path:
 
 ## Inherited Tools
 
+Tool inheritance policy is a P0 SDK contract. The parent registry resolves inherited tools before a child agent is built, and availability is computed from the parent-visible tool catalog.
+
 Tool inheritance policy should support:
 
-- required inherited tool names
-- optional inherited tool names
+- required inherited tool names that must resolve for the subagent to be available
+- optional inherited tool names that are attached when present
+- auto-inherit tools marked by metadata, including task and context-management tools
 - parent capability-provided toolsets
 - environment-backed tools
+- skill-contributed toolsets
 - tool aliasing or prefixing
-- denied tool names
-- approval policy propagation
+- denied tool names that remove tools after auto-inherit and optional matching
+- approval policy propagation through tool metadata
+- clear errors for unknown required tools, denied required tools, and conflicting aliases
 
 ```mermaid
 flowchart TD
@@ -86,16 +91,49 @@ The SDK should support a unified parent-facing delegation tool that lets the mod
 
 ## Skills
 
-Skills are reusable packages of instructions, examples, and optional tools. Starweaver should support:
+Skills are reusable packages of instructions, examples, assets, references, and optional tools. Starweaver uses the ya-mono fileops-loaded design: the skill loader scans the active `EnvironmentProvider` file roots, reads `SKILL.md` through provider file operations, and keeps skill assets in the same provider-visible path space used by filesystem and shell tools.
+
+Skill package format:
+
+```markdown
+---
+name: code-review
+description: Review code quality, security, and maintainability. Use before merging changes.
+---
+
+# Code Review Guidelines
+
+Read the relevant files, inspect tests, classify findings by severity, and provide concrete fixes.
+```
+
+Discovery scope:
+
+- shared user skills from `.agents/skills/`
+- tool-specific user skills from `skills/`
+- shared project skills from `.agents/skills/`
+- tool-specific project skills from `skills/`
+- bundled first-party skills synced into provider-visible directories by a pre-scan hook
+
+Loading behavior:
+
+- scan `SKILL.md` files through `EnvironmentProvider` file operations
+- cache `name`, `description`, source path, source scope, and frontmatter extras for available-skill prompt summaries
+- load full markdown body only when a skill is activated or explicitly requested
+- reload caches at request boundaries in development profiles
+- preserve deterministic precedence: shared user, tool-specific user, shared project, tool-specific project
+- report parse errors with provider path, frontmatter field, and source scope
+- allow skills to declare tool requirements, optional tool requirements, prompt snippets, and packaged toolsets
+
+Starweaver should support:
 
 - project skills
 - global skills
 - bundled first-party skills
-- skill discovery
+- skill discovery over virtual, local, process, and sandbox providers
 - skill instruction loading
 - skill-provided toolsets
 - hot reload in development
-- deterministic tests for skill parsing and exposure
+- deterministic tests for skill parsing, precedence, reload, activation, and exposure
 
 ## State and Durability
 
@@ -124,6 +162,7 @@ Durable service runtime can use this record for polling, resume, cancellation, a
 - inherited dependency tests
 - inherited tool policy tests
 - unified delegation tool tests
-- skill parser and toolset tests
+- skill parser, precedence, reload, activation, and toolset tests
+- skill fileops tests over virtual provider and local provider fixtures
 - nested delegation guard tests
 - nested span propagation tests

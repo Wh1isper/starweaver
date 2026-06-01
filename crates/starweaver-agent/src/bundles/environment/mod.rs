@@ -5,5 +5,7 @@ mod handle;
 mod shell;
 
 pub use filesystem::filesystem_tools;
-pub use handle::{attach_environment, EnvironmentHandle};
-pub use shell::shell_tools;
+pub use handle::{
+    attach_environment, environment_toolsets, process_shell_toolsets, EnvironmentHandle,
+};
+pub use shell::{attach_process_shell, shell_tools, ProcessShellHandle};

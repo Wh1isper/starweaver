@@ -106,6 +106,19 @@ impl Agent {
         self
     }
 
+    /// Merge additional runtime tools into this agent.
+    #[must_use]
+    pub fn with_appended_tools(mut self, tools: &ToolRegistry) -> Self {
+        self.tools.insert_registry(tools);
+        self
+    }
+
+    /// Return a clone of the runtime tool registry.
+    #[must_use]
+    pub fn tools(&self) -> ToolRegistry {
+        self.tools.clone()
+    }
+
     /// Set the agent-level retry default for runtime tools.
     #[must_use]
     pub fn with_tool_retries(mut self, max_retries: usize) -> Self {

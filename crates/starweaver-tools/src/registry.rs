@@ -148,6 +148,68 @@ impl ToolRegistry {
         self.max_retries
     }
 
+    /// Return whether a tool is registered by name.
+    #[must_use]
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
+    /// Return registered tool names in stable order.
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
+
+    /// Return all registered tools in stable name order.
+    #[must_use]
+    pub fn tools(&self) -> Vec<DynTool> {
+        self.tools.values().cloned().collect()
+    }
+
+    /// Remove one tool by name.
+    pub fn remove(&mut self, name: &str) -> Option<DynTool> {
+        self.toolset_max_retries.remove(name);
+        self.tools.remove(name)
+    }
+
+    /// Return a registry containing a selected subset of tools.
+    #[must_use]
+    pub fn select(&self, names: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        let mut selected = Self::new();
+        if let Some(max_retries) = self.max_retries {
+            selected.max_retries = Some(max_retries);
+        }
+        for name in names {
+            let name = name.as_ref();
+            if let Some(tool) = self.tools.get(name) {
+                if let Some(max_retries) = self.toolset_max_retries.get(name) {
+                    selected
+                        .toolset_max_retries
+                        .insert(name.to_string(), *max_retries);
+                }
+                selected.insert(tool.clone());
+            }
+        }
+        selected
+    }
+
+    /// Return a registry containing tools whose metadata opts into subagent inheritance.
+    #[must_use]
+    pub fn auto_inherited(&self) -> Self {
+        let names = self
+            .tools
+            .iter()
+            .filter_map(|(name, tool)| {
+                tool.metadata()
+                    .get("auto_inherit")
+                    .and_then(serde_json::Value::as_bool)
+                    .filter(|enabled| *enabled)
+                    .map(|_| name.clone())
+            })
+            .collect::<Vec<_>>();
+        self.select(names)
+    }
+
     /// Return a registered tool by name.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<DynTool> {

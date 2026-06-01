@@ -147,54 +147,65 @@ Status: first implementation landed.
 
 ## Next Milestones
 
-### N1 Agent SDK Foundation Hardening
+### N1 Agent SDK P0/P1 Foundation
 
-This is the active implementation milestone. See `memos/agent-sdk-foundation-plan.md` for the detailed execution plan and reference audit evidence.
+Status: landed in the current workspace. See `memos/agent-sdk-foundation-plan.md` for merged evidence, API decisions, focused tests, docs touched, and validation commands.
 
-Current substrate:
+Current landed substrate:
 
-- `AgentBuilder`, `AgentApp`, and `AgentSession` provide the primary SDK surface.
-- `AgentContext` typed dependencies, state export/restore, notes, message bus, usage, and trace context are available through session helpers.
-- First-party bundles cover filesystem, shell, task, host operations, and tool proxy composition.
-- `Toolset`, typed tools, registry instruction aggregation, `PrefixedToolset`, and `ToolProxyToolset` are landed in the core tool layer.
-- Subagent config parsing, subagent registry foundations, and lifecycle events are landed.
+- `AgentBuilder`, `AgentApp`, `AgentSession`, and `AgentRunOptions` provide the primary reusable and run-scoped SDK surface.
+- `AgentSpec` and `AgentSpecRegistry` cover app-profile fields for model selection, SDK policy presets, output profile, selected toolsets/subagents, skill config, host adapters, MCP servers, environment policy, and durability policy.
+- SDK policy presets cover approval, retry, streaming, observability, environment, and durability.
+- First-party bundle helpers cover filesystem, shell, task, host operations, tool proxy, skills, environment toolsets, process shell toolsets, and live MCP toolsets.
+- Fileops-loaded skills are represented by `SkillPackage`, `SkillSourceScope`, `SkillRegistry`, `parse_skill_markdown`, and `skill_tools()` over `EnvironmentProvider` file operations.
+- Subagent inheritance supports required, optional, denied, and auto-inherited tools, with approval metadata preservation and nested delegation guardrails.
+- Host web/media/download tools have executable adapter seams: `HostSearchClient`, Brave Search fallback by env key, `HostScrapeClient`, Firecrawl/local scrape paths, text download through `EnvironmentProvider`, media URL classification, and fallback media understanding clients.
+- Process shell support includes `ProcessShellProvider`, durable process snapshots, context attachment, and shell lifecycle tools against process-capable providers.
+- Live MCP support includes `LiveMcpClient`, discovered server snapshots, and `live_mcp_toolset()` mapping to `McpToolset`.
+
+Validation recorded for this slice:
+
+```bash
+make check
+make test
+make docs-check
+make fmt-check
+git diff --check
+```
+
+### N2 Durable Service Runtime and CLI Product
+
+This is the recommended active implementation milestone after the Agent SDK foundation work. The next product layer should use the SDK profiles, environment handles, process shell contracts, and `starweaver-claw` session store foundations to build durable application flows.
 
 Target outcome:
 
-- Audit reference Agent SDK and pydantic-ai agent/toolset patterns carefully against the Starweaver SDK surface.
-- Refine SDK API boundaries for reusable agent configuration, per-run/session overrides, environment composition, toolsets, and subagents.
-- Add strong focused tests for public SDK contracts, composition order, override precedence, tool inheritance, approval metadata, and session/context behavior.
-- Keep durable sessions, command-line workflows, service orchestration, and platform adapters sequenced after foundational SDK/runtime/tool work is solid.
+- Add SQLite storage adapter first, then PostgreSQL after schema stabilizes.
+- Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs.
+- Add runtime checkpoint reload APIs that hydrate from `AgentCheckpoint.state` and continue from safe execution nodes.
+- Bridge checkpoint stream cursors with `SessionStore::replay_stream_after`.
+- Add idempotency metadata for external tool calls, host adapters, environment resources, and process handles.
+- Add CLI app-profile workflows over `AgentSpec`: session create/list/resume/inspect, streamed runs, environment provider selection, and compact run trace projection.
+- Share trace/session inspection surfaces between command-line and service layers.
+- Add deployment metadata propagation into trace/session records: profile, workspace provider, build version, release, user id, and tags.
 
-Proposed N1 implementation slices:
+Focused implementation slices:
 
-1. **Reference evidence table:** map reference patterns for agent construction, context deps, toolsets, environments, subagents, and streaming to Starweaver code targets.
-2. **SDK API review:** audit `crates/starweaver-agent/src` and tests for awkward seams, then simplify public boundaries when the improvement is clear.
-3. **Per-run composition:** evaluate and implement clean per-run additional/override toolsets and settings where the runtime surface already supports it.
-4. **Environment composition:** add explicit SDK composition points for environment-provided and resource-provided toolsets when the seam stays small.
-5. **Subagent foundation:** implement or deepen unified delegation, required/optional tool availability, inherited tool policy, and lifecycle/trace tests.
-6. **Docs and examples:** update SDK docs only after API shape is stable, keeping examples runnable through `make docs-check`.
+1. **Storage adapter:** implement SQLite-backed `SessionStore` with migrations, checkpoint blobs, stream records, run metadata, and deterministic tests.
+2. **Service executor:** wrap runtime execution with persisted run records, cancellation tokens, approval/deferred state, stream persistence, and resume snapshots.
+3. **Checkpoint reload:** define continuation semantics for `RunStart`, `PrepareModelRequest`, `BeforeModelRequest`, `ModelResponse`, `ToolCall`, `ToolReturn`, `ValidateOutput`, `RunComplete`, and `RunFailed`.
+4. **CLI profile/session workflows:** load `AgentSpec`, attach configured tool bundles/environment providers, create and resume sessions, stream output, and inspect compact traces.
+5. **SSE replay:** serve persisted stream records with replay-after-cursor behavior and trace correlation.
+6. **Validation and docs:** add `starweaver-claw` and `starweaver-cli` tests, then document durable app workflows.
 
-### N2 Tool, Environment, and Subagent Deepening
+### N2.5 Remaining SDK Deepening
 
-- Split rich environment operations into optional capability traits after call sites stabilize: file ops, search ops, shell ops, process ops, resource ops, sandbox ops.
-- Keep provider-scoped `glob` and `grep` backed by native Rust matchers (`globset`, `grep-regex`, `grep-matcher`) and provider traversal (`ignore` for local files) as the baseline search operator.
-- Align first-party bundle instructions around one compact instruction group per bundle, concrete tool selection guidance, stable deduplication keys, and prompt text that can migrate into SDK presets.
-- Deepen media/search/document host-operation bundles with host-backed execution adapters. Track the detailed tool gap report in `memos/sdk-host-tool-gap-report.md`.
-- Replace ya-agent-sdk web/search/crawler placeholders with host-backed Starweaver adapters while narrowing the public web surface to two tools:
-  - `search(query, num)`: general web search through injectable `SearchClient`, with Brave Search as the required first executable adapter and Google Custom Search/Tavily as optional follow-up adapters; normalize title, URL, snippet, provider, rank, and citation metadata.
-  - `scrape(url)`: page-to-Markdown through injectable `ScrapeClient`, preferring Firecrawl when configured, then Cloudflare Browser Run when configured, then local static-HTML Markdown fallback; document-like resources should hand off to `download` plus a document-conversion skill workflow.
-  - Keep one model-facing `search` tool; represent image search as typed `search` results when needed and raw fetch as an internal scrape/download helper.
-  - `download(urls, save_dir)`: streamed downloads into the active `EnvironmentProvider` or resource store with safe UUID filenames, metadata, host network policy delegation, and bounded memory.
-  - `load_media_url(url)`: URL classification for image, video, audio, and document content mapped into provider media capabilities with fallback messages to `read_image`, `read_video`, `read_audio`, or `download` plus a document-conversion skill workflow.
-  - `read_image(url)`, `read_video(url)`, and `read_audio(url)`: fallback media understanding tools that use configured model adapters and account usage into the parent `AgentContext`.
-  - Document conversion: provide skill workflows that run shell commands such as PyMuPDF4LLM and MarkItDown in the active environment.
-  - Keep provider-native OpenAI/Gemini web, fetch, file-search, and URL-context tools in the model native-tool layer with replay fixtures.
-- Add a skill bundle and skill-contributed toolsets.
-- Add richer tool proxy execution evidence, including search result ranking tests and namespace-description tests.
-- Add background shell lifecycle handles, stdin/signal/status/output cursor tools, and resumable process state through a process-capable provider.
-- Add `SandboxedShellProvider` design and implementation: local file operator plus sandboxed shell runtime, workspace mounts, policy profiles, diagnostics, and environment state export.
-- Add sandbox mount mapping and environment state-domain restore helpers.
+These items can run alongside durable runtime work when their call sites are needed:
+
+- Add binary/resource write extension traits to `starweaver-environment` and implement streaming binary downloads with checksums and resource metadata.
+- Add concrete first-party fallback media model clients and parent-context usage accounting.
+- Implement concrete `rmcp` stdio and streamable HTTP clients behind the `LiveMcpClient` seam.
+- Add sandboxed shell providers with aligned filesystem/shell path spaces, workspace mounts, diagnostics, and state export.
+- Add bundled first-party skill publishing and upgrade metadata after fileops-loaded skills stabilize through real application use.
 
 ### N3 SDK Documentation and Examples
 
@@ -233,13 +244,11 @@ Proposed N1 implementation slices:
 - Add local-first and service-backed command parity so command-line and service flows share persistence and checkpoint semantics.
 - Add deployment metadata propagation into trace/session records: profile, workspace provider, build version, release, user id, and tags.
 
-### Subagents and Skills
+### Subagents and Skills Beyond P1
 
-- Complete `SubagentSpec` frontmatter fields.
-- Add subagent factory and builtin registry.
-- Implement unified delegation tool and inherited tool policy.
-- Add lifecycle event propagation, nested delegation guardrails, trace parent propagation, and durable subagent polling extension.
-- Add skill parser, registry, precedence rules, and skill-contributed toolsets.
+- Add durable subagent polling extension after service runtime cancellation and resume endpoints land.
+- Add bundled first-party skill publishing and upgrade metadata after the fileops-loaded skill bundle stabilizes.
+- Add remote skill registry sync after local/project/global fileops discovery and pre-scan hooks are validated.
 
 ### Advanced Observability
 
@@ -273,7 +282,7 @@ Proposed N1 implementation slices:
 - Resume safety for already-started external resources, long-running shell processes, and deferred tool calls.
 - Unified delegation schema for subagent selection, task metadata, inherited tools, and durable polling.
 - Typed output ergonomics in Rust with manageable generic complexity.
-- Skill package format and precedence across project, global, and builtin scopes.
+- Skill pre-scan hook API and bundled-skill sync strategy across provider-visible roots.
 - Trace redaction policy API and default sensitive-key list.
 - Langfuse extension attribute names and release/session/user mapping.
 - Compact run trace projection schema for model/tool/content previews across session tools, command-line workflows, and UI.

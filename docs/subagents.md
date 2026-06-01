@@ -154,3 +154,36 @@ assert_eq!(spec.system_prompt, "You are a debugging expert.");
 ```
 
 Runtime `SubagentConfig` keeps the executable agent handle in programmatic code. This split lets files, services, and CLI commands exchange serializable specs while applications decide how each spec maps to a concrete runtime agent.
+
+## Tool Inheritance
+
+`SubagentToolInheritancePolicy` controls which parent tools are appended to a child agent at delegation time. Required tools gate availability, optional tools attach when present, denied tools are removed, and tools with metadata `auto_inherit=true` are inherited by default.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{
+    FunctionTool, SubagentToolInheritancePolicy, ToolContext, ToolRegistry, ToolResult,
+};
+
+let mut metadata = serde_json::Map::new();
+metadata.insert("auto_inherit".to_string(), serde_json::json!(true));
+let task_list = Arc::new(
+    FunctionTool::new(
+        "task_list",
+        Some("List tasks".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    )
+    .with_metadata(metadata),
+);
+let parent = ToolRegistry::new().with_tool(task_list);
+let policy = SubagentToolInheritancePolicy::new(vec!["task_list".to_string()], vec![]);
+let inherited = policy.resolve(&parent).unwrap();
+
+assert_eq!(inherited.names(), vec!["task_list"]);
+```
+
+`SubagentConfig::with_tool_inheritance(policy)` attaches the policy to one child. The SDK also keeps nested delegation guarded by default through a subagent stack in context metadata; opt into nested coordination with `with_nested_delegation(true)` when the application has explicit recursion policy.
+
+Markdown frontmatter can include `denied_tools`; the parsed `SubagentSpec` stores that list in metadata so services and CLI layers can map it into runtime inheritance policy.

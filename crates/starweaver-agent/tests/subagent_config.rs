@@ -19,6 +19,8 @@ tools:
   - grep
   - view
 optional_tools: edit, shell
+denied_tools:
+  - shell_kill
 model: anthropic:claude-sonnet-4
 model_settings:
   temperature: 0.2
@@ -40,6 +42,10 @@ You are a debugging expert.
     assert_eq!(spec.system_prompt, "You are a debugging expert.");
     assert_eq!(spec.tools, vec!["grep", "view"]);
     assert_eq!(spec.optional_tools, vec!["edit", "shell"]);
+    assert_eq!(
+        spec.metadata["denied_tools"],
+        serde_json::json!(["shell_kill"])
+    );
     assert_eq!(spec.model.as_deref(), Some("anthropic:claude-sonnet-4"));
     assert_eq!(spec.model_settings.unwrap()["temperature"], 0.2);
     assert_eq!(spec.model_config.unwrap(), "claude_200k");

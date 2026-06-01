@@ -8,7 +8,7 @@ These notes capture reference mapping and phase-specific implementation observat
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Pydantic AI     | Agent abstraction, provider-neutral model history, model settings, model profiles, tool schema, toolsets, structured output, validators, retries, usage limits, capabilities, history processors, native tools, and deterministic tests |
 | Pydantic Graph  | Explicit graph loop semantics, node state, dependency separation, replayable execution, and persistence boundaries                                                                                                                      |
-| ya-agent-sdk    | Lifecycle-wide context, agent assembly, streaming runs, tool bundles, approval policies, subagents, session export/restore, tool proxy, and environment abstraction                                                                     |
+| ya-agent-sdk    | Lifecycle-wide context, agent assembly, streaming runs, tool bundles, approval policies, subagents, fileops-loaded skills, session export/restore, tool proxy, and environment abstraction                                              |
 | ya-mono runtime | Event bus, message bus, resumable resources, service execution, interruption, and workspace/environment patterns                                                                                                                        |
 | MCP protocol    | Official `rmcp` SDK, tool discovery/call lifecycle, transports, resources, prompts, sampling, roots, notifications, long-running tasks, and provider-native MCP mapping                                                                 |
 
@@ -17,7 +17,7 @@ These notes capture reference mapping and phase-specific implementation observat
 - Runtime kernel is implemented with deterministic loop execution, graph/iteration inspection, structured output, retries, capabilities, usage limits, streaming records, trace spans, and checkpoint emission.
 - Model layer includes provider-neutral messages/settings/profiles, native tool request definitions, OpenAI/Anthropic/Gemini/Bedrock adapters, injectable HTTP transport, request guard, deterministic models, and replay tests.
 - Tool layer includes JSON-schema tool definitions, typed tool argument schema derivation, `Toolset::get_tools`, `Toolset::get_instructions`, registry instruction aggregation, retry metadata, MCP foundations, `PrefixedToolset`, and core `ToolProxyToolset`.
-- SDK facade exists through `AgentBuilder`, `AgentApp`, `AgentSession`, direct re-exports, preset/spec loading, first-party tool bundles, environment attachment, subagent registry foundations, and markdown subagent config parsing.
+- SDK facade exists through `AgentBuilder`, `AgentApp`, `AgentSession`, direct re-exports, preset/spec loading, model settings/config/runtime presets, first-party tool bundles, environment attachment, subagent registry foundations, typed delegation tools, and markdown subagent config parsing.
 - Environment layer exists through `EnvironmentProvider`, file/shell policies, resource refs, state snapshots, deterministic virtual provider, and policy-aware local provider file/search operations.
 - Durable session layer exists through `SessionStore`, `InMemorySessionStore`, session/run records, checkpoint persistence, stream replay, resume snapshots, `SessionStoreExecutor`, and compact run traces.
 - Command-line binary includes deterministic `version`, `run`, `diagnostics`, `session inspect`, and replay-check guidance surfaces.
@@ -79,50 +79,34 @@ These notes capture reference mapping and phase-specific implementation observat
 
 ## Remaining Pre-1.0 Gaps
 
-### Agent SDK Foundation Hardening
+### Durable Service Runtime and CLI Product
 
-- Re-audit reference Agent SDK and pydantic-ai agent/toolset patterns against current Starweaver SDK code.
-- Refine reusable agent configuration, per-run/session overrides, environment composition, toolsets, and subagent boundaries.
-- Add focused tests for public SDK contracts, composition order, override precedence, tool inheritance, approval metadata, and session/context behavior.
-- Update docs after stable API decisions land.
+- Add SQLite storage adapter first, then PostgreSQL after schema stabilizes.
+- Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs.
+- Add runtime resume APIs that hydrate from `AgentCheckpoint.state` and continue from safe boundaries.
+- Bridge checkpoint stream cursors with `SessionStore::replay_stream_after`.
+- Add idempotency metadata for external tool calls, host adapters, environment resources, background shell handles, and deferred tool calls.
+- Define CLI app-profile workflows over `AgentSpec`, environment providers, first-party bundles, and `SessionStore`.
+- Add command-line session create/list/resume/inspect with compact trace projection and stream replay.
+- Share trace/session inspection surfaces across command-line and service layers.
 
-### Tool and Environment Deepening
+### SDK Deepening After P0/P1
 
-- Split rich provider operations into extension traits after call sites stabilize.
-- Add provider-backed implementations for envelope-only filesystem operations, shell lifecycle tools, task persistence, and host operations.
-- Add process-capable provider with resumable background handles and output cursors.
-- Add sandbox provider design and implementation.
-- Add skill-contributed toolsets and unified delegation tools.
-
-### MCP Deepening
-
-- Add live client traits.
-- Add stdio and HTTP transports.
-- Add live discovery/call integration.
-- Add resources, prompts, and local test server coverage.
-
-### Subagents and Skills
-
-- Complete `SubagentSpec` frontmatter fields.
-- Add subagent factory and builtin registry.
-- Implement unified delegation tool and inherited tool policy.
-- Add nested delegation guardrails, trace parent propagation, and durable subagent polling extension.
-- Add skill parser, registry, precedence rules, and skill-contributed toolsets.
+- Add binary/resource write extensions for non-text downloads and resource stores.
+- Add streaming binary download records with checksum, size, content-type, and resource metadata.
+- Add concrete first-party fallback media understanding clients with usage accounting into the parent `AgentContext`.
+- Add concrete `rmcp` stdio and streamable HTTP clients behind the `LiveMcpClient` seam.
+- Add sandboxed shell provider design and implementation with aligned filesystem and shell path spaces.
+- Add bundled first-party skill publishing and upgrade metadata after fileops-loaded skills stabilize through real application use.
+- Add durable subagent polling after service runtime cancellation and resume endpoints land.
+- Add remote skill registry sync after local/project/global fileops discovery and pre-scan hooks are validated.
 
 ### Observability Export
 
 - Add OpenTelemetry/OTLP/Langfuse-friendly exporters behind features.
 - Add trace redaction and sampling policies.
 - Add provider raw streaming debug capture before canonical normalization.
-- Add compact trace projection tools for later inspection surfaces.
-
-### Checkpoint Reload and Application Surfaces
-
-- Add runtime resume APIs that hydrate from `AgentCheckpoint.state` after SDK foundations are solid.
-- Define safe continuation semantics per `AgentExecutionNode`.
-- Bridge checkpoint stream cursors with `SessionStore::replay_stream_after`.
-- Add idempotency metadata for tool calls and external resources.
-- Add storage-backed service runtime, command-line workflows, SSE replay, and platform adapters in the application phase.
+- Add compact trace projection tools for command-line and service inspection surfaces.
 
 ### Provider Coverage
 
@@ -131,13 +115,14 @@ These notes capture reference mapping and phase-specific implementation observat
 
 ## Next Execution Plan
 
-The next product-building path focuses on Agent SDK foundation hardening. Durable sessions, command-line product workflows, service orchestration, and platform adapters remain later application surfaces.
+The next product-building path should deepen durable service runtime and CLI workflows on top of the landed Agent SDK foundation.
 
-1. Re-audit the local reference clones for agent construction, context deps, toolsets, environments, subagents, streaming, and SDK tests.
-2. Map reference patterns into `memos/agent-sdk-foundation-plan.md` with concrete Starweaver target files.
-3. Review `crates/starweaver-agent/src` for API seams that can be simplified or made more composable.
-4. Implement high-confidence SDK improvements with tests first: per-run composition, environment/resource toolsets, unified delegation, inherited tool policy, approval metadata, and session/context behavior.
-5. Update docs and specs after API shape stabilizes, keeping examples covered by `make docs-check`.
+1. Implement a SQLite-backed `SessionStore` with migrations and deterministic tests.
+2. Build a service execution wrapper that persists runs, checkpoints, streams, cancellation state, approval/deferred state, and trace correlation.
+3. Define runtime checkpoint reload semantics and resume from safe execution nodes.
+4. Add CLI app-profile/session workflows over `AgentSpec`, `AgentApp`, environment providers, first-party bundles, and `starweaver-claw`.
+5. Add SSE replay and compact trace inspection shared by CLI and service layers.
+6. Re-run focused `starweaver-claw`, `starweaver-cli`, `starweaver-agent`, docs, and workspace validation gates.
 
 ## Pre-1.0 Cleanup Reminder
 

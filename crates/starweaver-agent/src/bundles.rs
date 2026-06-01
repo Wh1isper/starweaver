@@ -4,6 +4,7 @@ mod environment;
 mod external;
 mod helpers;
 mod media;
+mod skills;
 mod task;
 mod tool_proxy;
 mod web;
@@ -12,11 +13,17 @@ use std::sync::Arc;
 
 use starweaver_tools::{DynToolset, PrefixedToolset};
 
-pub use environment::{attach_environment, filesystem_tools, shell_tools, EnvironmentHandle};
+pub use environment::{
+    attach_environment, attach_process_shell, environment_toolsets, filesystem_tools,
+    process_shell_toolsets, shell_tools, EnvironmentHandle, ProcessShellHandle,
+};
 pub use external::host_operation_tools;
 pub use media::{
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
     MediaUnderstandingRequest, MediaUnderstandingResponse,
+};
+pub use skills::{
+    parse_skill_markdown, skill_tools, SkillError, SkillPackage, SkillRegistry, SkillSourceScope,
 };
 pub use task::task_tools;
 pub use tool_proxy::{tool_proxy_toolset, ToolProxyToolset};

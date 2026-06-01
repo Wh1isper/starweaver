@@ -126,12 +126,32 @@ Backed by `AgentContext` task state or an SDK host task service. Notes and arbit
 
 ### Skill Bundle
 
-Tools:
+The skill bundle follows the ya-mono `SkillToolset` design and loads skills through the active `EnvironmentProvider` file operations. Skills are markdown packages with a `SKILL.md` entrypoint and YAML frontmatter. The SDK scans provider-visible skill directories, loads frontmatter for prompt summaries, and loads full markdown content when a skill is activated.
 
-- list skills
-- load skill instructions
-- expose skill-provided toolsets
-- reload project and global skills
+Tools and bundle APIs:
+
+- `list_skills`: return discovered skill names, descriptions, source scope, and metadata
+- `load_skill`: load full skill markdown content by name for prompt injection or explicit user inspection
+- `reload_skills`: refresh project, global, shared, and bundled skill caches at request boundaries
+- expose skill-contributed toolsets through the SDK registry when a skill declares tool requirements or packaged tools
+- expose skill instructions through grouped toolset instructions so prompt injection stays deduplicated
+
+Discovery paths are derived from configured provider roots and preserve ya-mono precedence:
+
+1. shared user skills: `.agents/skills/`
+2. tool-specific user skills: `skills/`
+3. shared project skills: `.agents/skills/`
+4. tool-specific project skills: `skills/`
+
+Project scopes override user scopes, and tool-specific scopes override shared scopes within the same root. Each skill directory can include `SKILL.md`, `references/`, `scripts/`, and `assets/`. The active environment should expose the same files to filesystem and shell bundles so skill instructions can reference provider-visible resources.
+
+Skill config should support:
+
+- primary directory name, defaulting to `skills`
+- extra directory names, including `.agents/skills`
+- bundled first-party skill roots copied or mounted into provider-visible locations by a pre-scan hook
+- hot reload at request boundaries
+- deterministic virtual-provider tests for scanning, precedence, parse errors, reload, and full-content loading
 
 Skill state lives in a context state domain and SDK config.
 
@@ -205,4 +225,5 @@ Policies are represented as tool metadata and capability settings so runtime and
 - context state mutation tests
 - event emission tests
 - official `rmcp` client integration tests
+- skill discovery, precedence, reload, and full-content loading tests over virtual and local providers
 - docs examples for each public bundle

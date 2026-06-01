@@ -31,6 +31,7 @@ struct Frontmatter {
     instruction: Option<String>,
     tools: Option<StringList>,
     optional_tools: Option<StringList>,
+    denied_tools: Option<StringList>,
     model: Option<String>,
     model_settings: Option<Value>,
     model_cfg: Option<Value>,
@@ -94,10 +95,18 @@ pub fn parse_subagent_markdown(content: &str) -> Result<SubagentSpec, SubagentCo
     spec.optional_tools = frontmatter
         .optional_tools
         .map_or_else(Vec::new, StringList::into_vec);
+    if let Some(denied_tools) = frontmatter.denied_tools {
+        spec.metadata.insert(
+            "denied_tools".to_string(),
+            serde_json::json!(denied_tools.into_vec()),
+        );
+    }
     spec.model = frontmatter.model;
     spec.model_settings = frontmatter.model_settings;
     spec.model_config = frontmatter.model_cfg.or(frontmatter.model_config);
-    spec.metadata = frontmatter.metadata.unwrap_or_default();
+    if let Some(metadata) = frontmatter.metadata {
+        spec.metadata.extend(metadata);
+    }
     Ok(spec)
 }
 

@@ -145,16 +145,6 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             },
         )
         .await;
-    let background = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "background".to_string(),
-                name: "shell_exec".to_string(),
-                arguments: serde_json::json!({"command": "sleep 1", "background": true}),
-            },
-        )
-        .await;
     let invalid_grep_context = registry
         .execute_call(
             context,
@@ -197,11 +187,6 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
         .unwrap()
         .contains("old_string must be non-empty"));
     assert_eq!(shell.content["stdout"], "ok\n");
-    assert!(background.is_error);
-    assert!(background.content["error"]
-        .as_str()
-        .unwrap()
-        .contains("background shell execution requires a durable shell provider"));
     assert!(invalid_grep_context.is_error);
     assert!(invalid_grep_context.content["error"]
         .as_str()

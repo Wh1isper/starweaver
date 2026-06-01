@@ -1,6 +1,7 @@
 //! Ergonomic SDK facade over the Starweaver bare runtime.
 
 pub mod bundles;
+pub mod mcp_live;
 pub mod presets;
 pub mod session;
 pub mod subagent;
@@ -10,24 +11,34 @@ use std::sync::Arc;
 
 use starweaver_model::ModelAdapter;
 use starweaver_runtime::Agent as RuntimeAgent;
-use starweaver_tools::DynTool;
 
 pub use bundles::{
-    attach_environment, core_toolsets, filesystem_tools, host_operation_tools, namespaced_toolset,
-    shell_tools, task_tools, tool_proxy_toolset, EnvironmentHandle, HostMediaCapabilities,
-    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
-    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
-    MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
-    SearchResultItem, ToolProxyToolset,
+    attach_environment, attach_process_shell, core_toolsets, environment_toolsets,
+    filesystem_tools, host_operation_tools, namespaced_toolset, parse_skill_markdown,
+    process_shell_toolsets, shell_tools, skill_tools, task_tools, tool_proxy_toolset,
+    EnvironmentHandle, HostMediaCapabilities, HostMediaUnderstandingClient,
+    HostMediaUnderstandingClientHandle, HostScrapeClient, HostScrapeClientHandle, HostSearchClient,
+    HostSearchClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse,
+    ProcessShellHandle, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
+    SearchResultItem, SkillError, SkillPackage, SkillRegistry, SkillSourceScope, ToolProxyToolset,
+};
+pub use mcp_live::{
+    live_mcp_toolset, DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot,
 };
 pub use presets::{
-    text_output_preset, AgentSpec, AgentSpecError, AgentSpecRegistry, ModelPreset, SdkPreset,
+    text_output_preset, AgentSpec, AgentSpecError, AgentSpecRegistry, ApprovalPolicyPreset,
+    DurabilityPolicyPreset, EnvironmentPolicyPreset, HostAdapterSpec, McpServerSpec, ModelPreset,
+    ObservabilityPolicyPreset, OutputSpec, RetryPolicyPreset, SdkPreset, SkillBundleSpec,
+    StreamingPolicyPreset,
 };
 pub use session::{AgentRunOptions, AgentSession};
 pub use starweaver_context::{AgentContext, AgentContextHandle, ResumableState};
 pub use starweaver_core::{
     AgentId, CheckpointId, ConversationId, RunId, SubagentLifecycleEvent, SubagentLifecycleKind,
     SubagentSpec, TaskId, TraceContext, Usage,
+};
+pub use starweaver_environment::{
+    DynProcessShellProvider, ProcessShellProvider, ShellProcessSnapshot, ShellProcessStatus,
 };
 pub use starweaver_model::{
     anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
@@ -56,12 +67,15 @@ pub use starweaver_runtime::{
     UsageLimitError, UsageLimits,
 };
 pub use starweaver_tools::{
-    mcp_tool_definition, string_tool, typed_tool, DynToolset, EmptyToolArgs, FunctionTool,
+    mcp_tool_definition, string_tool, typed_tool, DynTool, DynToolset, EmptyToolArgs, FunctionTool,
     McpToolSpec, McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool,
     PrefixedToolset, StaticToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolRegistry,
     ToolResult, Toolset, TypedFunctionTool,
 };
-pub use subagent::{AgentApp, SubagentConfig, SubagentRegistry, SubagentResult, SubagentTask};
+pub use subagent::{
+    AgentApp, SubagentConfig, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
+    SubagentToolInheritanceError, SubagentToolInheritancePolicy,
+};
 pub use subagent_config::{
     load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown, SubagentConfigError,
 };
@@ -289,6 +303,8 @@ impl AgentBuilder {
             self.model.profile(),
         );
         let media_capability_hook = Arc::new(HostMediaCapabilityHook { media_capabilities });
+        let parent_tools = self.tools.clone();
+        let parent_tools_hook = Arc::new(ParentToolsCapabilityHook { parent_tools });
         let mut agent = RuntimeAgent::new(self.model)
             .with_request_params(self.request_params)
             .with_tools(self.tools)
@@ -321,6 +337,7 @@ impl AgentBuilder {
             agent = agent.with_output_validator(validator);
         }
         agent = agent.with_capability(media_capability_hook);
+        agent = agent.with_capability(parent_tools_hook);
         for capability in self.capabilities {
             agent = agent.with_capability(capability);
         }
@@ -343,6 +360,27 @@ pub fn agent(model: Arc<dyn ModelAdapter>) -> AgentBuilder {
 #[derive(Clone)]
 struct HostMediaCapabilityHook {
     media_capabilities: HostMediaCapabilities,
+}
+
+#[derive(Clone)]
+struct ParentToolsCapabilityHook {
+    parent_tools: ToolRegistry,
+}
+
+#[async_trait::async_trait]
+impl AgentCapability for ParentToolsCapabilityHook {
+    async fn before_tool_execution_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        tool_context: &mut ToolContext,
+        _call: &starweaver_model::ToolCallPart,
+    ) -> CapabilityResult<()> {
+        tool_context
+            .dependencies
+            .insert(SubagentParentTools(self.parent_tools.clone()));
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]

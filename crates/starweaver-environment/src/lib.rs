@@ -255,6 +255,80 @@ impl EnvironmentState {
     }
 }
 
+/// Background shell process status.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShellProcessStatus {
+    /// Process is still running.
+    #[default]
+    Running,
+    /// Process completed.
+    Completed,
+    /// Process failed.
+    Failed,
+    /// Process was killed.
+    Killed,
+}
+
+/// Durable shell process snapshot.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ShellProcessSnapshot {
+    /// Stable process id.
+    pub process_id: String,
+    /// Original command.
+    pub command: String,
+    /// Process status.
+    pub status: ShellProcessStatus,
+    /// Buffered stdout since the last cursor observed by the provider.
+    pub stdout: String,
+    /// Buffered stderr since the last cursor observed by the provider.
+    pub stderr: String,
+    /// Exit status when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_code: Option<i32>,
+    /// Provider metadata.
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
+}
+
+/// Process-capable shell provider extension.
+#[async_trait]
+pub trait ProcessShellProvider: EnvironmentProvider {
+    /// Start a background process and return its first snapshot.
+    async fn start_process(&self, command: &str) -> EnvironmentResult<ShellProcessSnapshot>;
+
+    /// Wait for or poll a process by id.
+    async fn wait_process(
+        &self,
+        process_id: &str,
+        timeout_seconds: u64,
+    ) -> EnvironmentResult<ShellProcessSnapshot>;
+
+    /// List known background process snapshots.
+    async fn list_processes(&self) -> EnvironmentResult<Vec<ShellProcessSnapshot>>;
+
+    /// Write input to a background process.
+    async fn input_process(
+        &self,
+        process_id: &str,
+        text: &str,
+        close_stdin: bool,
+    ) -> EnvironmentResult<ShellProcessSnapshot>;
+
+    /// Send a signal to a background process.
+    async fn signal_process(
+        &self,
+        process_id: &str,
+        signal: i32,
+    ) -> EnvironmentResult<ShellProcessSnapshot>;
+
+    /// Kill and clean up a background process.
+    async fn kill_process(&self, process_id: &str) -> EnvironmentResult<ShellProcessSnapshot>;
+}
+
+/// Shared process-capable provider reference.
+pub type DynProcessShellProvider = Arc<dyn ProcessShellProvider>;
+
 /// Provider boundary used by SDK tools and service runtimes.
 #[async_trait]
 pub trait EnvironmentProvider: Send + Sync {
@@ -354,6 +428,7 @@ pub struct VirtualEnvironmentProvider {
     policy: EnvironmentPolicy,
     files: Arc<Mutex<BTreeMap<String, String>>>,
     shell_outputs: Arc<Mutex<BTreeMap<String, ShellOutput>>>,
+    processes: Arc<Mutex<BTreeMap<String, ShellProcessSnapshot>>>,
 }
 
 impl VirtualEnvironmentProvider {
@@ -368,6 +443,7 @@ impl VirtualEnvironmentProvider {
             },
             files: Arc::new(Mutex::new(BTreeMap::new())),
             shell_outputs: Arc::new(Mutex::new(BTreeMap::new())),
+            processes: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -396,12 +472,131 @@ impl VirtualEnvironmentProvider {
         self
     }
 
+    /// Add a deterministic background process snapshot.
+    #[must_use]
+    pub fn with_process(self, snapshot: ShellProcessSnapshot) -> Self {
+        if let Ok(mut processes) = self.processes.lock() {
+            processes.insert(snapshot.process_id.clone(), snapshot);
+        }
+        self
+    }
+
     fn check_file(&self, path: &str, write: bool) -> EnvironmentResult<()> {
         if self.policy.files.permits(path, write) {
             Ok(())
         } else {
             Err(EnvironmentError::AccessDenied(path.to_string()))
         }
+    }
+}
+
+#[async_trait]
+impl ProcessShellProvider for VirtualEnvironmentProvider {
+    async fn start_process(&self, command: &str) -> EnvironmentResult<ShellProcessSnapshot> {
+        if !self.policy.shell.permits(command) {
+            return Err(EnvironmentError::AccessDenied(command.to_string()));
+        }
+        let process_id = format!(
+            "process_{}",
+            self.processes
+                .lock()
+                .map_or(0, |processes| processes.len() + 1)
+        );
+        let snapshot = ShellProcessSnapshot {
+            process_id: process_id.clone(),
+            command: command.to_string(),
+            status: ShellProcessStatus::Running,
+            stdout: String::new(),
+            stderr: String::new(),
+            return_code: None,
+            metadata: Metadata::default(),
+        };
+        self.processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+            .insert(process_id, snapshot.clone());
+        Ok(snapshot)
+    }
+
+    async fn wait_process(
+        &self,
+        process_id: &str,
+        _timeout_seconds: u64,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        self.processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+            .get(process_id)
+            .cloned()
+            .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))
+    }
+
+    async fn list_processes(&self) -> EnvironmentResult<Vec<ShellProcessSnapshot>> {
+        Ok(self
+            .processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    async fn input_process(
+        &self,
+        process_id: &str,
+        text: &str,
+        close_stdin: bool,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        let mut processes = self
+            .processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+        let snapshot = processes
+            .get_mut(process_id)
+            .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
+        snapshot
+            .metadata
+            .insert("last_input".to_string(), serde_json::json!(text));
+        snapshot
+            .metadata
+            .insert("close_stdin".to_string(), serde_json::json!(close_stdin));
+        let snapshot = snapshot.clone();
+        drop(processes);
+        Ok(snapshot)
+    }
+
+    async fn signal_process(
+        &self,
+        process_id: &str,
+        signal: i32,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        let mut processes = self
+            .processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+        let snapshot = processes
+            .get_mut(process_id)
+            .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
+        snapshot
+            .metadata
+            .insert("last_signal".to_string(), serde_json::json!(signal));
+        let snapshot = snapshot.clone();
+        drop(processes);
+        Ok(snapshot)
+    }
+
+    async fn kill_process(&self, process_id: &str) -> EnvironmentResult<ShellProcessSnapshot> {
+        let mut processes = self
+            .processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+        let snapshot = processes
+            .get_mut(process_id)
+            .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
+        snapshot.status = ShellProcessStatus::Killed;
+        let snapshot = snapshot.clone();
+        drop(processes);
+        Ok(snapshot)
     }
 }
 
