@@ -50,8 +50,9 @@ pub fn execute_agent_session(
     );
     session.set_environment(environment.clone());
     session.set_metadata("cli.profile", json!(profile.name));
-    if let Some(source) = profile.source.as_ref() {
-        session.set_metadata("cli.profile_source", json!(source));
+    session.set_metadata("cli.profile_source", json!(profile.source.kind()));
+    if let Some(path) = profile.source.path() {
+        session.set_metadata("cli.profile_path", json!(path));
     }
     session.set_metadata("cli.run_id", json!(run.run_id.as_str()));
     let runtime =

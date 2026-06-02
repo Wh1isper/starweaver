@@ -79,6 +79,8 @@ pub enum CliCommand {
     Diagnostics,
     /// Print replay-check guidance.
     ReplayCheck,
+    /// Update installed Starweaver components.
+    Update(UpdateCommand),
     /// Get or set configuration values.
     Config {
         /// Config subcommand.
@@ -229,6 +231,14 @@ pub enum ProfileCommand {
     List,
     /// Show one built-in or configured profile.
     Show { name: String },
+}
+
+/// Update command.
+#[derive(Clone, Debug, Args)]
+pub struct UpdateCommand {
+    /// Update target, defaults to cli.
+    #[arg(default_value = "cli")]
+    pub target: String,
 }
 
 /// Config commands.

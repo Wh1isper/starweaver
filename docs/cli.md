@@ -1,6 +1,6 @@
 # CLI
 
-`starweaver-cli` is the local headless product surface for Starweaver. It runs a prompt through the SDK runtime stream, projects runtime records into AGUI-compatible `DisplayMessage` events, persists replay evidence locally, and can print either human-readable text or display JSONL.
+`starweaver-cli` is the local headless product surface for Starweaver. It runs prompts through the SDK runtime stream, projects runtime records into AGUI-compatible `DisplayMessage` events, persists replay evidence locally, and prints either human-readable text or display JSONL.
 
 ## Launchers
 
@@ -19,11 +19,36 @@ starweaver version
 starweaver doctor
 starweaver update
 starweaver update cli
+starweaver update claw
 starweaver cli -p "hello"
 sw cli -p "hello"
 ```
 
-`starweaver cli ...` dispatches to the CLI product, and `starweaver <command> ...` dispatches to `starweaver-<command> ...` for future command families. The launcher resolves command binaries from the install directory first, then `PATH`.
+`starweaver cli ...` dispatches to the CLI product. `starweaver <command> ...` dispatches to `starweaver-<command> ...` for future command families. The launcher resolves command binaries from the install directory first, then `PATH`.
+
+## Updates
+
+`starweaver update` updates the installed CLI component through the installer workflow. `starweaver update claw` updates the Claw service binary. The direct CLI command supports the same target selection:
+
+```bash
+starweaver update
+starweaver update cli
+starweaver update claw
+starweaver-cli update
+starweaver-cli update claw
+```
+
+The CLI also performs a short background release lookup and caches the result in `~/.starweaver/update-check.json`. Human-readable commands append a compact hint when the cache reports a newer release:
+
+```text
+Update available: starweaver 0.1.0 -> 0.2.0. Run `starweaver update`.
+```
+
+Scripted environments can disable the hint and background lookup:
+
+```bash
+export STARWEAVER_UPDATE_CHECK=0
+```
 
 ## Profiles
 
@@ -43,14 +68,16 @@ starweaver-cli profile list
 starweaver-cli profile show coding
 ```
 
-Pass `--profile` a built-in name, a profile name from `.starweaver/profiles`, `.starweaver/agents`, or the global profile directory, or a YAML path directly:
+Pass `--profile` a built-in name, a config-backed model profile, a profile name from `.starweaver/profiles`, `.starweaver/agents`, or the global profile directory, or a YAML path directly:
 
 ```bash
 starweaver-cli run -p "hello" --profile general
+starweaver-cli run -p "hello" --profile default_model
+starweaver-cli run -p "hello" --profile codex
 starweaver-cli run -p "hello" --profile .starweaver/profiles/research.yaml
 ```
 
-A minimal profile looks like this:
+A minimal file-backed profile looks like this:
 
 ```yaml
 name: research
@@ -63,16 +90,38 @@ toolsets:
   - environment
 ```
 
+Config-backed model profiles are declared in `config.toml`:
+
+```toml
+[general]
+default_profile = "default_model"
+model = "openai-responses:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+max_requests = 1000
+
+[model_profiles.codex]
+label = "Codex OAuth"
+model = "oauth@codex:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+```
+
 Provider-backed model ids use these prefixes:
 
-| Prefix                     | Protocol                |
-| -------------------------- | ----------------------- |
-| `openai:<model>`           | OpenAI Responses        |
-| `openai-responses:<model>` | OpenAI Responses        |
-| `openai-chat:<model>`      | OpenAI Chat Completions |
-| `anthropic:<model>`        | Anthropic Messages      |
-| `claude:<model>`           | Anthropic Messages      |
-| `gemini:<model>`           | Gemini generateContent  |
+| Model id pattern                     | Protocol                          |
+| ------------------------------------ | --------------------------------- |
+| `openai:<model>`                     | OpenAI Responses                  |
+| `openai-responses:<model>`           | OpenAI Responses                  |
+| `openai-chat:<model>`                | OpenAI Chat Completions           |
+| `anthropic:<model>`                  | Anthropic Messages                |
+| `claude:<model>`                     | Anthropic Messages                |
+| `gemini:<model>`                     | Gemini generateContent            |
+| `google-vertex:<model>`              | Gemini generateContent            |
+| `<gateway>@openai-responses:<model>` | gateway-routed OpenAI Responses   |
+| `<gateway>@openai-chat:<model>`      | gateway-routed OpenAI Chat        |
+| `<gateway>@google-vertex:<model>`    | gateway-routed Gemini             |
+| `oauth@codex:<model>`                | Codex OAuth over OpenAI Responses |
 
 Deterministic local model ids remain available for tests and offline validation: `local_echo`, `approval_model`, and `deferred_model`.
 
@@ -87,7 +136,7 @@ export ANTHROPIC_API_KEY=...
 export GEMINI_API_KEY=...
 ```
 
-Provider config stores environment variable names and gateway URLs. It avoids writing raw API keys into `config.toml`. Configuration examples live under `examples/cli/` and can be validated with `make cli-examples-check`.
+Provider config stores environment variable names and gateway URLs. It keeps raw API keys in the shell or secret manager. Configuration examples live under `examples/cli/` and can be validated with `make cli-examples-check`.
 
 ```toml
 [providers.openai]
@@ -104,14 +153,35 @@ base_url = "https://api.anthropic.com/v1"
 enabled = true
 api_key_env = "GEMINI_API_KEY"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+[providers.codex]
+base_url = "https://chatgpt.com/backend-api/codex"
+max_tokens_parameter = "omit"
+```
+
+Gateway model ids use the gateway name as a provider config key. `homelab@openai-responses:gpt-5` reads `[providers.homelab]`, falls back to `HOMELAB_API_KEY` for credentials, and can explicitly select gateway-specific request mappings:
+
+```toml
+[providers.homelab]
+base_url = "https://gateway.example/v1"
+max_tokens_parameter = "omit"
+```
+
+```bash
+export HOMELAB_API_KEY=...
+starweaver-cli run -p "hello" --profile gateway
 ```
 
 Useful config commands:
 
 ```bash
+starweaver-cli config get general.model
+starweaver-cli config get model.profiles
 starweaver-cli config get providers.openai.ready
 starweaver-cli config get providers.openai.base_url
-starweaver-cli config set --global providers.openai.base_url https://gateway.example/v1
+starweaver-cli config get providers.homelab.max_tokens_parameter
+starweaver-cli config set --global providers.homelab.base_url https://gateway.example/v1
+starweaver-cli config set --global providers.homelab.max_tokens_parameter omit
 starweaver-cli diagnostics
 ```
 
@@ -124,6 +194,44 @@ STARWEAVER_GEMINI_BASE_URL=https://gateway.example/gemini
 STARWEAVER_OPENAI_API_KEY_ENV=MY_OPENAI_KEY
 STARWEAVER_ANTHROPIC_API_KEY_ENV=MY_ANTHROPIC_KEY
 STARWEAVER_GEMINI_API_KEY_ENV=MY_GEMINI_KEY
+```
+
+## OAuth-backed Codex models
+
+Codex OAuth profiles use `oauth@codex:<model>` and the OpenAI Responses protocol. Starweaver reads credentials from `~/.starweaver/auth.json` or the explicit path in `STARWEAVER_OAUTH_AUTH_FILE`:
+
+```toml
+[model_profiles.codex]
+label = "Codex OAuth"
+model = "oauth@codex:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+```
+
+The OAuth transport attaches Codex request headers, adds session and thread metadata, sets Responses `store=false`, and refreshes the access token once after a `401` response when a refresh token is present. `[providers.codex]` controls the Codex base URL, endpoint path, and max-token parameter mapping.
+
+## Skills and subagents
+
+Skills are loaded from `SKILL.md` packages in configured directories and exposed through the `skills` toolset. Subagent markdown files are loaded from configured directories and registered in the CLI AgentSpec registry.
+
+```toml
+[skills]
+dirs = ["~/.starweaver/skills"]
+additional_dirs = [".starweaver/skills"]
+
+[subagents]
+dirs = ["~/.starweaver/subagents"]
+additional_dirs = [".starweaver/subagents"]
+disabled = []
+disabled_builtins = []
+```
+
+Environment overrides use path-list syntax for directories and comma-list syntax for disabled subagents:
+
+```bash
+STARWEAVER_SKILL_DIRS=~/.starweaver/skills:.starweaver/skills
+STARWEAVER_SUBAGENT_DIRS=~/.starweaver/subagents:.starweaver/subagents
+STARWEAVER_DISABLED_SUBAGENTS=debugger,searcher
 ```
 
 ## Headless runs
@@ -238,16 +346,19 @@ starweaver-cli session trim --all --keep-runs 20 --older-than 30d
 
 ## Config
 
-Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_PROFILE`, `STARWEAVER_PROFILE_PATHS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_UPDATE_CHANNEL`, and `STARWEAVER_NO_AUTO_TRIM`.
+Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_PROFILE`, `STARWEAVER_PROFILE_PATHS`, `STARWEAVER_SKILL_DIRS`, `STARWEAVER_SUBAGENT_DIRS`, `STARWEAVER_DISABLED_SUBAGENTS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_UPDATE_CHANNEL`, `STARWEAVER_UPDATE_CHECK`, `STARWEAVER_OAUTH_AUTH_FILE`, and `STARWEAVER_NO_AUTO_TRIM`.
 
 Get resolved config values and persist project or global config overrides:
 
 ```bash
 starweaver-cli config get trim.current_session_keep_recent_runs
 starweaver-cli config get metadata.tools
+starweaver-cli config get metadata.compatibility
 starweaver-cli config set trim.current_session_keep_recent_runs 10
 starweaver-cli config set --global general.default_profile general
 ```
+
+Starweaver preserves recognized display, browser, subagent, command, security, and max-request fields in compatibility metadata so configuration audits can map those sections into first-class Starweaver settings over time.
 
 ## Shell completions
 

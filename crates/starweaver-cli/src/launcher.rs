@@ -5,6 +5,7 @@ use std::{
     io::Write as _,
     path::PathBuf,
     process::{Command, Stdio},
+    time::Duration,
 };
 
 use starweaver_core::sdk_name;
@@ -57,7 +58,8 @@ pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<Strin
     }
 }
 
-fn update_component(component: &str) -> CliResult<String> {
+/// Update an installed Starweaver component.
+pub fn update_component(component: &str) -> CliResult<String> {
     let install_dir = env::var("STARWEAVER_INSTALL_DIR").unwrap_or_else(|_| default_install_dir());
     update_component_with_options(
         component,
@@ -66,7 +68,7 @@ fn update_component(component: &str) -> CliResult<String> {
     )
 }
 
-fn update_component_with_options(
+pub(crate) fn update_component_with_options(
     component: &str,
     install_dir: &str,
     dry_run: bool,
@@ -77,7 +79,7 @@ fn update_component_with_options(
         other => return Err(CliError::Usage(format!("unknown update target {other}"))),
     };
     let command = format!(
-        "curl -fsSL {INSTALL_SCRIPT_URL} | STARWEAVER_COMPONENTS={normalized} STARWEAVER_INSTALL_DIR={} sh",
+        "download {INSTALL_SCRIPT_URL} | STARWEAVER_COMPONENTS={normalized} STARWEAVER_INSTALL_DIR={} sh",
         shell_quote(install_dir)
     );
     if dry_run {
@@ -118,19 +120,31 @@ fn update_component_with_options(
 }
 
 fn fetch_install_script() -> CliResult<String> {
-    let output = Command::new("curl")
-        .arg("-fsSL")
-        .arg(INSTALL_SCRIPT_URL)
-        .output()
-        .map_err(|error| CliError::Run(format!("failed to run curl: {error}")))?;
-    if output.status.success() {
-        String::from_utf8(output.stdout).map_err(|error| CliError::Run(error.to_string()))
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Err(CliError::Run(format!(
-            "failed to download installer from {INSTALL_SCRIPT_URL}: {stderr}"
-        )))
-    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| CliError::Run(error.to_string()))?;
+    runtime.block_on(async {
+        let response = reqwest::Client::new()
+            .get(INSTALL_SCRIPT_URL)
+            .header(reqwest::header::USER_AGENT, "starweaver-cli")
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        if status.is_success() {
+            Ok(body)
+        } else {
+            Err(CliError::Run(format!(
+                "failed to download installer from {INSTALL_SCRIPT_URL}: {body}"
+            )))
+        }
+    })
 }
 
 fn shell_quote(value: &str) -> String {
@@ -212,5 +226,18 @@ mod tests {
         let quoted = update_component_with_options("claw", "dir with ' quote", true).unwrap();
         assert!(quoted.contains("target=claw"));
         assert!(quoted.contains("'\\''"));
+    }
+
+    #[test]
+    fn cli_update_uses_cli_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = update_component_with_options(
+            "starweaver-cli",
+            &temp.path().display().to_string(),
+            true,
+        )
+        .unwrap();
+        assert!(output.contains("target=cli"));
+        assert!(output.contains("STARWEAVER_COMPONENTS=cli"));
     }
 }

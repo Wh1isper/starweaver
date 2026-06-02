@@ -34,6 +34,6 @@ pub use stream::{ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
 pub use test::{latest_user_text, tool_call_response, FunctionModel, FunctionModelInfo, TestModel};
 pub use transport::{
     AuthConfig, DynHttpClient, DynSleeper, HttpModelConfig, HttpRequest, HttpRequestOptions,
-    HttpResponse, ModelHttpClient, ModelSleeper, NoopSleeper, ReqwestHttpClient, RetryPolicy,
-    TokioSleeper,
+    HttpResponse, MaxTokensParameter, ModelHttpClient, ModelSleeper, NoopSleeper,
+    ReqwestHttpClient, RetryPolicy, TokioSleeper,
 };

@@ -260,21 +260,21 @@ Suggested `starweaver-cli` module boundaries:
 
 ## CLI-owned Configuration
 
-Starweaver needs a first-class CLI configuration layer. YAACLI's practical shape is the reference: global and project configuration directories, stable file names, project-level priority, environment overrides for a small scalar set, skills/subagents as directory trees, and local machine state in a separate state file.
+Starweaver needs a first-class CLI configuration layer: global and project configuration directories, stable file names, project-level priority, environment overrides for a small scalar set, skills/subagents as directory trees, and local machine state in a separate state file.
 
-YAACLI implementation evidence to carry forward:
+Configuration decisions:
 
-| Area         | YAACLI shape                                                        | Starweaver decision                                                                                       |
-| ------------ | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Global root  | `~/.yaacli/`                                                        | `~/.starweaver/`                                                                                          |
-| Project root | `.yaacli/`                                                          | `.starweaver/`                                                                                            |
-| Main config  | `config.toml` for model, display, browser, subagents, commands, env | `config.toml` for profile, display, storage, stream, HITL, trim, update, commands, env                    |
-| Tool policy  | `tools.toml` with approval lists                                    | `tools.toml` with tool approval and capability policy                                                     |
-| MCP servers  | `mcp.json`                                                          | `mcp.json` with the same local/project override pattern                                                   |
-| Local state  | `state.json` for selected runtime state                             | `state.json` for selected profile, current session pointer, update cache metadata, and local-only cursors |
-| Skills       | built-in, global, project directories                               | built-in, global, project directories through `AgentSpec` and skill toolsets                              |
-| Subagents    | markdown files under global/project `subagents/`                    | markdown files under global/project `subagents/` compiled into `AgentSpec` entries                        |
-| Setup        | wizard/templates copy defaults into config dirs                     | `sw cli setup` can create starter global and project files later                                          |
+| Area         | Starweaver decision                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------------------- |
+| Global root  | `~/.starweaver/`                                                                                          |
+| Project root | `.starweaver/`                                                                                            |
+| Main config  | `config.toml` for profile, model, display, storage, stream, HITL, trim, update, commands, env, skills     |
+| Tool policy  | `tools.toml` with tool approval and capability policy                                                     |
+| MCP servers  | `mcp.json` with the same local/project override pattern                                                   |
+| Local state  | `state.json` for selected profile, current session pointer, update cache metadata, and local-only cursors |
+| Skills       | built-in, global, project directories through `AgentSpec` and skill toolsets                              |
+| Subagents    | markdown files under global/project `subagents/` compiled into `AgentSpec` entries                        |
+| Setup        | `sw cli setup` can create starter global and project files later                                          |
 
 Config loading should stay predictable:
 
@@ -284,7 +284,7 @@ Config loading should stay predictable:
 4. apply selected environment variable overrides
 5. apply command-line flags
 
-For the first implementation, project `config.toml`, `tools.toml`, and `mcp.json` override the corresponding global file at file scope. This mirrors YAACLI and keeps conflict behavior understandable. Fine-grained merge can be added after stable examples prove the need. Skills and subagents load as layered directories: built-in first, global second, project third; later layers override entries with the same name.
+For the first implementation, project `config.toml`, `tools.toml`, and `mcp.json` override the corresponding global file at file scope. This keeps conflict behavior understandable. Fine-grained merge can be added after stable examples prove the need. Skills and subagents load as layered directories: built-in first, global second, project third; later layers override entries with the same name.
 
 Recommended file layout:
 

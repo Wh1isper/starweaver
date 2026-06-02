@@ -1,13 +1,15 @@
 //! CLI configuration resolution.
 
-use std::{env, fs, path::PathBuf, process, thread};
+use std::{collections::BTreeMap, env, fs, path::PathBuf, process, thread};
 
 use serde::{Deserialize, Serialize};
+use starweaver_model::MaxTokensParameter;
 use toml::Value;
 
 use crate::{
     args::{Cli, CliCommand, HitlPolicy, OutputMode},
     error::io_error,
+    oauth::CODEX_BASE_URL,
     CliError, CliResult,
 };
 
@@ -26,6 +28,12 @@ pub struct CliConfig {
     pub default_profile: String,
     /// Profile search paths.
     pub profile_search_paths: Vec<PathBuf>,
+    /// Skill directory search paths.
+    pub skill_dirs: Vec<PathBuf>,
+    /// Subagent directory search paths.
+    pub subagent_dirs: Vec<PathBuf>,
+    /// Disabled subagent names from layered subagent config.
+    pub disabled_subagents: Vec<String>,
     /// Workspace root for environment providers.
     pub workspace_root: PathBuf,
     /// Environment provider kind.
@@ -40,12 +48,20 @@ pub struct CliConfig {
     pub default_hitl: HitlPolicy,
     /// Update channel metadata.
     pub update_channel: String,
+    /// Default model from `[general] model` fields.
+    pub default_model: Option<CliModelProfile>,
+    /// Named model profiles from `[model_profiles.*]` fields.
+    pub model_profiles: BTreeMap<String, CliModelProfile>,
+    /// Environment variables loaded from config `[env]` sections.
+    pub env_vars: BTreeMap<String, String>,
     /// Provider API configuration.
     pub providers: ProviderConfigs,
     /// Tool config metadata loaded from tools.toml.
     pub tools_config: serde_json::Value,
     /// MCP config metadata loaded from mcp.json.
     pub mcp_config: serde_json::Value,
+    /// Compatibility metadata for config sections preserved for migration audits.
+    pub compatibility_metadata: serde_json::Value,
     /// Automatic trim after a run.
     pub auto_trim: bool,
     /// Recent runs to keep for automatic trim.
@@ -68,6 +84,10 @@ struct FileConfig {
     environment: Option<EnvironmentConfig>,
     update: Option<UpdateConfig>,
     providers: Option<FileProviderConfigs>,
+    model_profiles: Option<BTreeMap<String, FileModelProfile>>,
+    env: Option<BTreeMap<String, String>>,
+    skills: Option<SkillsConfig>,
+    subagents: Option<SubagentsConfig>,
     trim: Option<TrimConfig>,
 }
 
@@ -77,6 +97,32 @@ struct GeneralConfig {
     profile_search_paths: Option<Vec<String>>,
     default_output: Option<OutputMode>,
     default_hitl: Option<HitlPolicy>,
+    model: Option<String>,
+    model_settings: Option<String>,
+    model_cfg: Option<String>,
+    max_requests: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FileModelProfile {
+    label: Option<String>,
+    model: Option<String>,
+    model_settings: Option<String>,
+    model_cfg: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct SkillsConfig {
+    dirs: Option<Vec<String>>,
+    additional_dirs: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct SubagentsConfig {
+    dirs: Option<Vec<String>>,
+    additional_dirs: Option<Vec<String>>,
+    disabled: Option<Vec<String>>,
+    disabled_builtins: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -98,6 +144,22 @@ struct UpdateConfig {
     channel: Option<String>,
 }
 
+/// CLI model profile resolved from config.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CliModelProfile {
+    /// Human label for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Provider model id, such as `openai-responses:gpt-5` or `homelab@openai-responses:gpt-5`.
+    pub model_id: String,
+    /// Model config preset name from `model_cfg`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_cfg: Option<String>,
+    /// Model settings preset name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_settings: Option<String>,
+}
+
 /// Provider API configuration.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct ProviderConfigs {
@@ -107,6 +169,11 @@ pub struct ProviderConfigs {
     pub anthropic: ProviderConfig,
     /// Gemini provider config.
     pub gemini: ProviderConfig,
+    /// Codex OAuth provider config.
+    pub codex: ProviderConfig,
+    /// Named gateway provider configs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub gateways: BTreeMap<String, ProviderConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -114,6 +181,9 @@ struct FileProviderConfigs {
     openai: Option<FileProviderConfig>,
     anthropic: Option<FileProviderConfig>,
     gemini: Option<FileProviderConfig>,
+    codex: Option<FileProviderConfig>,
+    #[serde(flatten)]
+    gateways: BTreeMap<String, FileProviderConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -122,6 +192,7 @@ struct FileProviderConfig {
     api_key_env: Option<String>,
     base_url: Option<String>,
     endpoint_path: Option<String>,
+    max_tokens_parameter: Option<MaxTokensParameter>,
 }
 
 /// Single provider API configuration.
@@ -135,6 +206,8 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     /// Override endpoint path.
     pub endpoint_path: Option<String>,
+    /// Provider or gateway max-token parameter mapping.
+    pub max_tokens_parameter: MaxTokensParameter,
 }
 
 impl Default for ProviderConfig {
@@ -144,6 +217,7 @@ impl Default for ProviderConfig {
             api_key_env: None,
             base_url: None,
             endpoint_path: None,
+            max_tokens_parameter: MaxTokensParameter::Default,
         }
     }
 }
@@ -189,6 +263,9 @@ impl ConfigResolver {
                 project_dir.join("agents"),
                 global_dir.join("profiles"),
             ],
+            skill_dirs: vec![global_dir.join("skills"), project_dir.join("skills")],
+            subagent_dirs: vec![global_dir.join("subagents"), project_dir.join("subagents")],
+            disabled_subagents: Vec::new(),
             workspace_root: project_dir
                 .parent()
                 .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf),
@@ -198,9 +275,13 @@ impl ConfigResolver {
             default_output: OutputMode::DisplayJsonl,
             default_hitl: HitlPolicy::Deny,
             update_channel: "stable".to_string(),
+            default_model: None,
+            model_profiles: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
             providers: default_provider_configs(),
             tools_config: serde_json::Value::Null,
             mcp_config: serde_json::Value::Null,
+            compatibility_metadata: serde_json::json!({}),
             auto_trim: true,
             current_session_keep_recent_runs: 20,
             all_sessions_keep_days: 60,
@@ -242,17 +323,39 @@ fn default_provider_configs() -> ProviderConfigs {
             base_url: Some("https://generativelanguage.googleapis.com/v1beta".to_string()),
             ..ProviderConfig::default()
         },
+        codex: ProviderConfig {
+            base_url: Some(CODEX_BASE_URL.to_string()),
+            max_tokens_parameter: MaxTokensParameter::Omit,
+            ..ProviderConfig::default()
+        },
+        gateways: BTreeMap::new(),
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
     if !path.exists() {
         return Ok(());
     }
     let content = fs::read_to_string(path).map_err(|error| io_error(path, error))?;
+    let raw = content
+        .parse::<Value>()
+        .map_err(|error| CliError::Config(error.to_string()))?;
+    merge_compatibility_metadata(config, &raw);
     let parsed = toml::from_str::<FileConfig>(&content)?;
     let base = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     if let Some(general) = parsed.general {
+        let has_default_profile = general.default_profile.is_some();
+        let model = general.model.clone();
+        let model_settings = general.model_settings.clone();
+        let model_cfg = general.model_cfg.clone();
+        let max_requests = general.max_requests;
+        if let Some(max_requests) = max_requests {
+            merge_json_value(
+                &mut config.compatibility_metadata,
+                serde_json::json!({"general": {"max_requests": max_requests}}),
+            );
+        }
         if let Some(profile) = general.default_profile {
             config.default_profile = profile;
         }
@@ -265,6 +368,17 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
         }
         if let Some(hitl) = general.default_hitl {
             config.default_hitl = hitl;
+        }
+        if let Some(model_id) = model {
+            config.default_model = Some(CliModelProfile {
+                label: Some("Default".to_string()),
+                model_id,
+                model_cfg,
+                model_settings,
+            });
+            if !has_default_profile {
+                config.default_profile = "default_model".to_string();
+            }
         }
     }
     if let Some(storage) = parsed.storage {
@@ -297,6 +411,30 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
     if let Some(providers) = parsed.providers {
         merge_provider_configs(&mut config.providers, providers);
     }
+    if let Some(env_vars) = parsed.env {
+        config.env_vars.extend(env_vars);
+    }
+    if let Some(model_profiles) = parsed.model_profiles {
+        for (name, profile) in model_profiles {
+            if let Some(model_id) = profile.model {
+                config.model_profiles.insert(
+                    name,
+                    CliModelProfile {
+                        label: profile.label,
+                        model_id,
+                        model_cfg: profile.model_cfg,
+                        model_settings: profile.model_settings,
+                    },
+                );
+            }
+        }
+    }
+    if let Some(skills) = parsed.skills {
+        merge_skill_dirs(config, skills, base);
+    }
+    if let Some(subagents) = parsed.subagents {
+        merge_subagent_config(config, subagents, base);
+    }
     if let Some(trim) = parsed.trim {
         if let Some(auto_after_run) = trim.auto_after_run {
             config.auto_trim = auto_after_run;
@@ -311,6 +449,60 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
     Ok(())
 }
 
+fn merge_skill_dirs(config: &mut CliConfig, skills: SkillsConfig, base: &std::path::Path) {
+    if let Some(dirs) = skills.dirs {
+        config.skill_dirs = dirs.iter().map(|path| expand_path(path, base)).collect();
+    }
+    if let Some(additional_dirs) = skills.additional_dirs {
+        config
+            .skill_dirs
+            .extend(additional_dirs.iter().map(|path| expand_path(path, base)));
+    }
+}
+
+fn merge_subagent_config(
+    config: &mut CliConfig,
+    subagents: SubagentsConfig,
+    base: &std::path::Path,
+) {
+    if let Some(dirs) = subagents.dirs {
+        config.subagent_dirs = dirs.iter().map(|path| expand_path(path, base)).collect();
+    }
+    if let Some(additional_dirs) = subagents.additional_dirs {
+        config
+            .subagent_dirs
+            .extend(additional_dirs.iter().map(|path| expand_path(path, base)));
+    }
+    if let Some(disabled) = subagents.disabled {
+        config.disabled_subagents.extend(disabled);
+    }
+    if let Some(disabled_builtins) = subagents.disabled_builtins {
+        config.disabled_subagents.extend(disabled_builtins);
+    }
+    config.disabled_subagents.sort();
+    config.disabled_subagents.dedup();
+}
+
+fn merge_compatibility_metadata(config: &mut CliConfig, raw: &Value) {
+    let Some(root) = raw.as_table() else {
+        return;
+    };
+    let mut metadata = serde_json::Map::new();
+    for key in ["display", "browser", "subagents", "commands", "security"] {
+        if let Some(value) = root.get(key).cloned() {
+            if let Ok(json) = serde_json::to_value(value) {
+                metadata.insert(key.to_string(), json);
+            }
+        }
+    }
+    if !metadata.is_empty() {
+        merge_json_value(
+            &mut config.compatibility_metadata,
+            serde_json::Value::Object(metadata),
+        );
+    }
+}
+
 fn merge_provider_configs(target: &mut ProviderConfigs, overlay: FileProviderConfigs) {
     if let Some(openai) = overlay.openai {
         merge_provider_config(&mut target.openai, openai);
@@ -320,6 +512,12 @@ fn merge_provider_configs(target: &mut ProviderConfigs, overlay: FileProviderCon
     }
     if let Some(gemini) = overlay.gemini {
         merge_provider_config(&mut target.gemini, gemini);
+    }
+    if let Some(codex) = overlay.codex {
+        merge_provider_config(&mut target.codex, codex);
+    }
+    for (name, gateway) in overlay.gateways {
+        merge_provider_config(target.gateways.entry(name).or_default(), gateway);
     }
 }
 
@@ -336,14 +534,37 @@ fn merge_provider_config(target: &mut ProviderConfig, overlay: FileProviderConfi
     if overlay.endpoint_path.is_some() {
         target.endpoint_path = overlay.endpoint_path;
     }
+    if let Some(max_tokens_parameter) = overlay.max_tokens_parameter {
+        target.max_tokens_parameter = max_tokens_parameter;
+    }
 }
 
 fn apply_env(config: &mut CliConfig) {
+    for (key, value) in &config.env_vars {
+        if env::var_os(key).is_none() {
+            env::set_var(key, value);
+        }
+    }
     if let Some(value) = env::var_os("STARWEAVER_PROFILE") {
         config.default_profile = value.to_string_lossy().to_string();
     }
     if let Some(value) = env::var_os("STARWEAVER_PROFILE_PATHS") {
         config.profile_search_paths = env::split_paths(&value).collect();
+    }
+    if let Some(value) = env::var_os("STARWEAVER_SKILL_DIRS") {
+        config.skill_dirs = env::split_paths(&value).collect();
+    }
+    if let Some(value) = env::var_os("STARWEAVER_SUBAGENT_DIRS") {
+        config.subagent_dirs = env::split_paths(&value).collect();
+    }
+    if let Some(value) = env::var_os("STARWEAVER_DISABLED_SUBAGENTS") {
+        config.disabled_subagents = value
+            .to_string_lossy()
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect();
     }
     if let Some(value) = env::var_os("STARWEAVER_SESSION_DB") {
         config.database_path = PathBuf::from(value);
@@ -631,6 +852,10 @@ enabled = true
 api_key_env = "OPENAI_API_KEY"
 base_url = "https://api.openai.com/v1"
 
+[providers.codex]
+base_url = "https://chatgpt.com/backend-api/codex"
+max_tokens_parameter = "omit"
+
 [providers.anthropic]
 enabled = true
 api_key_env = "ANTHROPIC_API_KEY"
@@ -667,6 +892,7 @@ all_sessions_keep_days = 60
 }
 
 /// Return a config value by key.
+#[allow(clippy::too_many_lines)]
 pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
     let value = match key {
         "general.default_profile" => config.default_profile.clone(),
@@ -678,6 +904,19 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
             .join(":"),
         "general.default_output" => output_mode_name(config.default_output).to_string(),
         "general.default_hitl" => hitl_policy_name(config.default_hitl).to_string(),
+        "skills.dirs" => config
+            .skill_dirs
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":"),
+        "subagents.dirs" => config
+            .subagent_dirs
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":"),
+        "subagents.disabled" => config.disabled_subagents.join(","),
         "storage.database_path" => config.database_path.display().to_string(),
         "storage.file_store_path" => config.file_store_path.display().to_string(),
         "environment.workspace_root" => config.workspace_root.display().to_string(),
@@ -685,6 +924,23 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "environment.files_policy" => config.files_policy.clone(),
         "environment.shell_enabled" => config.shell_enabled.to_string(),
         "update.channel" => config.update_channel.clone(),
+        "general.model" | "model.default.model" => config
+            .default_model
+            .as_ref()
+            .map(|profile| profile.model_id.clone())
+            .unwrap_or_default(),
+        "general.model_settings" | "model.default.model_settings" => config
+            .default_model
+            .as_ref()
+            .and_then(|profile| profile.model_settings.clone())
+            .unwrap_or_default(),
+        "general.model_cfg" | "model.default.model_cfg" => config
+            .default_model
+            .as_ref()
+            .and_then(|profile| profile.model_cfg.clone())
+            .unwrap_or_default(),
+        "model.profiles" => serde_json::to_string(&config.model_profiles)?,
+        "env" => serde_json::to_string(&config.env_vars)?,
         "providers.openai.enabled" => config.providers.openai.enabled.to_string(),
         "providers.openai.api_key_env" => config
             .providers
@@ -699,7 +955,21 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
             .endpoint_path
             .clone()
             .unwrap_or_default(),
+        "providers.openai.max_tokens_parameter" => {
+            max_tokens_parameter_name(config.providers.openai.max_tokens_parameter).to_string()
+        }
         "providers.openai.ready" => provider_ready(&config.providers.openai).to_string(),
+        "providers.codex.enabled" => config.providers.codex.enabled.to_string(),
+        "providers.codex.base_url" => config.providers.codex.base_url.clone().unwrap_or_default(),
+        "providers.codex.endpoint_path" => config
+            .providers
+            .codex
+            .endpoint_path
+            .clone()
+            .unwrap_or_default(),
+        "providers.codex.max_tokens_parameter" => {
+            max_tokens_parameter_name(config.providers.codex.max_tokens_parameter).to_string()
+        }
         "providers.anthropic.enabled" => config.providers.anthropic.enabled.to_string(),
         "providers.anthropic.api_key_env" => config
             .providers
@@ -719,6 +989,9 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
             .endpoint_path
             .clone()
             .unwrap_or_default(),
+        "providers.anthropic.max_tokens_parameter" => {
+            max_tokens_parameter_name(config.providers.anthropic.max_tokens_parameter).to_string()
+        }
         "providers.anthropic.ready" => provider_ready(&config.providers.anthropic).to_string(),
         "providers.gemini.enabled" => config.providers.gemini.enabled.to_string(),
         "providers.gemini.api_key_env" => config
@@ -734,6 +1007,9 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
             .endpoint_path
             .clone()
             .unwrap_or_default(),
+        "providers.gemini.max_tokens_parameter" => {
+            max_tokens_parameter_name(config.providers.gemini.max_tokens_parameter).to_string()
+        }
         "providers.gemini.ready" => provider_ready(&config.providers.gemini).to_string(),
         "trim.auto_after_run" => config.auto_trim.to_string(),
         "trim.current_session_keep_recent_runs" => {
@@ -742,9 +1018,48 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "trim.all_sessions_keep_days" => config.all_sessions_keep_days.to_string(),
         "metadata.tools" => serde_json::to_string(&config.tools_config)?,
         "metadata.mcp" => serde_json::to_string(&config.mcp_config)?,
-        other => return Err(CliError::NotFound(other.to_string())),
+        "metadata.compatibility" => serde_json::to_string(&config.compatibility_metadata)?,
+        other => {
+            if let Some((provider, field)) = split_provider_config_key(other) {
+                if let Some(provider_config) = provider_config_by_name(config, provider) {
+                    provider_config_value(provider_config, field)?
+                } else {
+                    return Err(CliError::NotFound(other.to_string()));
+                }
+            } else {
+                return Err(CliError::NotFound(other.to_string()));
+            }
+        }
     };
     Ok(format!("{value}\n"))
+}
+
+fn provider_config_by_name<'a>(
+    config: &'a CliConfig,
+    provider: &str,
+) -> Option<&'a ProviderConfig> {
+    match provider {
+        "openai" => Some(&config.providers.openai),
+        "codex" => Some(&config.providers.codex),
+        "anthropic" => Some(&config.providers.anthropic),
+        "gemini" => Some(&config.providers.gemini),
+        gateway => config.providers.gateways.get(gateway),
+    }
+}
+
+fn provider_config_value(provider: &ProviderConfig, field: &str) -> CliResult<String> {
+    let value = match field {
+        "enabled" => provider.enabled.to_string(),
+        "api_key_env" => provider.api_key_env.clone().unwrap_or_default(),
+        "base_url" => provider.base_url.clone().unwrap_or_default(),
+        "endpoint_path" => provider.endpoint_path.clone().unwrap_or_default(),
+        "max_tokens_parameter" => {
+            max_tokens_parameter_name(provider.max_tokens_parameter).to_string()
+        }
+        "ready" => provider_ready(provider).to_string(),
+        other => return Err(CliError::NotFound(other.to_string())),
+    };
+    Ok(value)
 }
 
 fn provider_ready(provider: &ProviderConfig) -> bool {
@@ -817,6 +1132,27 @@ const fn output_mode_name(output: OutputMode) -> &'static str {
     }
 }
 
+const fn max_tokens_parameter_name(parameter: MaxTokensParameter) -> &'static str {
+    match parameter {
+        MaxTokensParameter::Default => "default",
+        MaxTokensParameter::MaxTokens => "max_tokens",
+        MaxTokensParameter::MaxOutputTokens => "max_output_tokens",
+        MaxTokensParameter::Omit => "omit",
+    }
+}
+
+fn validated_max_tokens_parameter(value: &str) -> CliResult<MaxTokensParameter> {
+    match value.trim() {
+        "default" => Ok(MaxTokensParameter::Default),
+        "max_tokens" => Ok(MaxTokensParameter::MaxTokens),
+        "max_output_tokens" => Ok(MaxTokensParameter::MaxOutputTokens),
+        "omit" => Ok(MaxTokensParameter::Omit),
+        other => Err(CliError::Usage(format!(
+            "invalid max_tokens_parameter: {other}; expected default, max_tokens, max_output_tokens, or omit"
+        ))),
+    }
+}
+
 const fn hitl_policy_name(hitl: HitlPolicy) -> &'static str {
     match hitl {
         HitlPolicy::Deny => "deny",
@@ -831,16 +1167,25 @@ fn split_provider_config_key(key: &str) -> Option<(&str, &str)> {
     let section = parts.next()?;
     let provider = parts.next()?;
     let field = parts.next()?;
-    if parts.next().is_some() || section != "providers" {
+    if parts.next().is_some() || section != "providers" || !valid_provider_config_name(provider) {
         return None;
     }
-    match (provider, field) {
-        (
-            "openai" | "anthropic" | "gemini",
-            "enabled" | "api_key_env" | "base_url" | "endpoint_path",
-        ) => Some((provider, field)),
+    match field {
+        "enabled"
+        | "api_key_env"
+        | "base_url"
+        | "endpoint_path"
+        | "max_tokens_parameter"
+        | "ready" => Some((provider, field)),
         _ => None,
     }
+}
+
+fn valid_provider_config_name(provider: &str) -> bool {
+    !provider.is_empty()
+        && provider
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
 }
 
 fn split_config_key(key: &str) -> CliResult<(&str, &str)> {
@@ -848,8 +1193,16 @@ fn split_config_key(key: &str) -> CliResult<(&str, &str)> {
         match (section, field) {
             (
                 "general",
-                "default_profile" | "profile_search_paths" | "default_output" | "default_hitl",
+                "default_profile"
+                | "profile_search_paths"
+                | "default_output"
+                | "default_hitl"
+                | "model"
+                | "model_settings"
+                | "model_cfg",
             )
+            | ("skills", "dirs" | "additional_dirs")
+            | ("subagents", "dirs" | "additional_dirs" | "disabled" | "disabled_builtins")
             | ("storage", "database_path" | "file_store_path")
             | ("environment", "workspace_root" | "provider" | "files_policy" | "shell_enabled")
             | ("update", "channel")
@@ -918,13 +1271,21 @@ fn validated_non_empty<'a>(key: &str, value: &'a str) -> CliResult<&'a str> {
 }
 
 fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
+    if let Some((_provider, field)) = split_provider_config_key(key) {
+        return parse_provider_config_value(key, field, value);
+    }
     let parsed = match key {
         "general.default_profile"
+        | "general.model"
+        | "general.model_settings"
+        | "general.model_cfg"
         | "storage.database_path"
         | "storage.file_store_path"
         | "environment.workspace_root"
         | "providers.openai.base_url"
         | "providers.openai.endpoint_path"
+        | "providers.codex.base_url"
+        | "providers.codex.endpoint_path"
         | "providers.anthropic.base_url"
         | "providers.anthropic.endpoint_path"
         | "providers.gemini.base_url"
@@ -934,23 +1295,25 @@ fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
         "general.default_hitl" => Value::String(validated_hitl_policy(value)?.to_string()),
         "environment.provider" => Value::String(validated_environment_provider(value)?.to_string()),
         "environment.files_policy" => Value::String(validated_files_policy(value)?.to_string()),
-        "providers.openai.api_key_env"
-        | "providers.anthropic.api_key_env"
-        | "providers.gemini.api_key_env" => {
-            Value::String(validated_non_empty(key, value)?.to_string())
-        }
-        "general.profile_search_paths" => Value::Array(
+        "general.profile_search_paths"
+        | "skills.dirs"
+        | "skills.additional_dirs"
+        | "subagents.dirs"
+        | "subagents.additional_dirs" => Value::Array(
             value
                 .split(':')
                 .filter(|path| !path.trim().is_empty())
                 .map(|path| Value::String(path.to_string()))
                 .collect(),
         ),
-        "trim.auto_after_run"
-        | "environment.shell_enabled"
-        | "providers.openai.enabled"
-        | "providers.anthropic.enabled"
-        | "providers.gemini.enabled" => value
+        "subagents.disabled" | "subagents.disabled_builtins" => Value::Array(
+            value
+                .split(',')
+                .filter(|name| !name.trim().is_empty())
+                .map(|name| Value::String(name.trim().to_string()))
+                .collect(),
+        ),
+        "trim.auto_after_run" | "environment.shell_enabled" => value
             .parse::<bool>()
             .map(Value::Boolean)
             .map_err(|error| CliError::Usage(error.to_string()))?,
@@ -969,6 +1332,27 @@ fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
                 .map_err(|error: std::num::TryFromIntError| CliError::Usage(error.to_string()))?,
         ),
         _ => return Err(CliError::NotFound(key.to_string())),
+    };
+    Ok(parsed)
+}
+
+fn parse_provider_config_value(key: &str, field: &str, value: &str) -> CliResult<Value> {
+    let parsed = match field {
+        "enabled" => value
+            .parse::<bool>()
+            .map(Value::Boolean)
+            .map_err(|error| CliError::Usage(error.to_string()))?,
+        "api_key_env" => Value::String(validated_non_empty(key, value)?.to_string()),
+        "base_url" | "endpoint_path" => Value::String(value.to_string()),
+        "max_tokens_parameter" => Value::String(
+            max_tokens_parameter_name(validated_max_tokens_parameter(value)?).to_string(),
+        ),
+        "ready" => {
+            return Err(CliError::Usage(format!(
+                "{key} is read-only; set api_key_env and export the API key"
+            )))
+        }
+        other => return Err(CliError::NotFound(other.to_string())),
     };
     Ok(parsed)
 }

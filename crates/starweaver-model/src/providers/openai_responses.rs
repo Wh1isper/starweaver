@@ -1,6 +1,7 @@
 //! `OpenAI` Responses wire mapper.
 
 use serde_json::{json, Value};
+use starweaver_core::Usage;
 
 use crate::{
     adapter::{NativeToolDefinition, ToolDefinition},
@@ -9,11 +10,12 @@ use crate::{
         ToolCallPart,
     },
     providers::{
-        apply_common_settings, finish_reason_openai, insert_optional_description,
+        apply_common_settings_with_max_tokens, finish_reason_openai, insert_optional_description,
         openai_responses_content, parse_tool_call_arguments, provider_tool_parameters,
         usage_from_openai,
     },
-    ModelError, ModelSettings,
+    transport::MaxTokensParameter,
+    ModelError, ModelResponseStreamEvent, ModelSettings,
 };
 
 /// `OpenAI` Responses wire mapper.
@@ -31,6 +33,29 @@ impl OpenAiResponsesAdapter {
         settings: Option<&ModelSettings>,
         tools: &[ToolDefinition],
         native_tools: &[NativeToolDefinition],
+    ) -> Result<Value, ModelError> {
+        Self::build_request_with_options(
+            model,
+            messages,
+            settings,
+            tools,
+            native_tools,
+            MaxTokensParameter::Default,
+        )
+    }
+
+    /// Build a provider wire request with explicit gateway/provider options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when canonical history cannot be mapped into response items.
+    pub fn build_request_with_options(
+        model: &str,
+        messages: &[ModelMessage],
+        settings: Option<&ModelSettings>,
+        tools: &[ToolDefinition],
+        native_tools: &[NativeToolDefinition],
+        max_tokens_parameter: MaxTokensParameter,
     ) -> Result<Value, ModelError> {
         let mut input = Vec::new();
         let mut instructions = Vec::new();
@@ -86,7 +111,7 @@ impl OpenAiResponsesAdapter {
         if !instructions.is_empty() {
             request.insert("instructions".to_string(), json!(instructions.join("\n\n")));
         }
-        apply_common_settings(&mut request, settings);
+        apply_common_settings_with_max_tokens(&mut request, settings, max_tokens_parameter);
         if let Some(thinking) = settings.and_then(|settings| settings.thinking.as_ref()) {
             let mut reasoning = serde_json::Map::new();
             reasoning.insert("effort".to_string(), json!(thinking.effort));
@@ -145,6 +170,92 @@ impl OpenAiResponsesAdapter {
             conversation_id: None,
             metadata: serde_json::Map::new(),
         })
+    }
+
+    /// Parse `OpenAI` Responses server-sent JSON events into canonical stream events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no completed response is present in the event list.
+    pub fn parse_stream_events(
+        events: &[Value],
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        let mut stream = Vec::new();
+        let mut text_started = false;
+        let mut text = String::new();
+        for event in events {
+            match event.get("type").and_then(Value::as_str) {
+                Some("response.output_text.delta") => {
+                    if !text_started {
+                        text_started = true;
+                        stream.push(ModelResponseStreamEvent::PartStart(crate::PartStart {
+                            index: 0,
+                            part_kind: "text".to_string(),
+                        }));
+                    }
+                    if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                        text.push_str(delta);
+                        stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
+                            index: 0,
+                            delta: delta.to_string(),
+                        }));
+                    }
+                }
+                Some("response.output_text.done") if text_started => {
+                    stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+                        index: 0,
+                    }));
+                    text_started = false;
+                }
+                Some("response.completed") => {
+                    if text_started {
+                        stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+                            index: 0,
+                        }));
+                        text_started = false;
+                    }
+                    let response = event
+                        .get("response")
+                        .map(Self::parse_response)
+                        .transpose()?
+                        .unwrap_or_else(|| text_response(text.clone()));
+                    stream.push(ModelResponseStreamEvent::FinalResult(Box::new(response)));
+                }
+                _ => {}
+            }
+        }
+        if stream
+            .iter()
+            .any(|event| matches!(event, ModelResponseStreamEvent::FinalResult(_)))
+        {
+            Ok(stream)
+        } else if !text.is_empty() {
+            stream.push(ModelResponseStreamEvent::FinalResult(Box::new(
+                text_response(text),
+            )));
+            Ok(stream)
+        } else {
+            Err(ModelError::ResponseParsing(
+                "missing response.completed event".to_string(),
+            ))
+        }
+    }
+}
+
+fn text_response(text: String) -> ModelResponse {
+    ModelResponse {
+        parts: vec![ModelResponsePart::Text { text }],
+        usage: Usage::default(),
+        model_name: None,
+        provider: Some(ProviderInfo {
+            name: "openai".to_string(),
+            response_id: None,
+        }),
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
     }
 }
 

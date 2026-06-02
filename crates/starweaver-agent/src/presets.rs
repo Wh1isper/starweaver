@@ -4,7 +4,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_model::{get_model_settings, ModelAdapter, ModelPresetError, ModelSettings};
+use starweaver_model::{
+    get_model_config, get_model_settings, ModelAdapter, ModelPresetError, ModelSettings,
+};
 use starweaver_runtime::{AgentRuntimePolicy, OutputPolicy, OutputSchema, UsageLimits};
 use starweaver_tools::{DynToolset, ToolRegistry};
 use thiserror::Error;
@@ -19,6 +21,9 @@ pub struct ModelPreset {
     /// Built-in model settings preset name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings_preset: Option<String>,
+    /// Built-in model capability/config preset name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_preset: Option<String>,
     /// Default model settings overlay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub settings: Option<ModelSettings>,
@@ -538,6 +543,7 @@ impl AgentSpec {
             .model(model_id)
             .ok_or_else(|| AgentSpecError::UnknownModel(model_id.to_string()))?;
         let retry = self.resolved_retry(registry)?;
+        let model_config = self.resolved_model_config()?;
         let mut runtime = self.preset.runtime.clone();
         retry.apply_runtime(&mut runtime);
         self.validate_policy_refs(registry)?;
@@ -551,6 +557,10 @@ impl AgentSpec {
         }
         if let Some(limits) = self.preset.usage_limits.clone() {
             builder = builder.usage_limits(limits);
+        } else if let Some(model_config) = model_config {
+            builder = builder.usage_limits(
+                UsageLimits::new().with_total_tokens_limit(u64::from(model_config.context_window)),
+            );
         }
         if let Some(tool_retries) = retry.tool_retries {
             builder = builder.tool_retries(tool_retries);
@@ -614,6 +624,20 @@ impl AgentSpec {
             (None, Some(settings)) => Some(settings),
             (None, None) => None,
         })
+    }
+
+    fn resolved_model_config(
+        &self,
+    ) -> Result<Option<starweaver_model::ModelConfigPresetData>, AgentSpecError> {
+        let Some(model) = self.model.as_ref().or(self.preset.model.as_ref()) else {
+            return Ok(None);
+        };
+        model
+            .config_preset
+            .as_deref()
+            .map(get_model_config)
+            .transpose()
+            .map_err(AgentSpecError::from)
     }
 
     fn resolved_retry(

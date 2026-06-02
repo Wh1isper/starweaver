@@ -61,6 +61,21 @@ impl HttpResponse {
     }
 }
 
+/// Max-token request parameter mapping for provider or gateway HTTP configs.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaxTokensParameter {
+    /// Use the protocol adapter's default mapping.
+    #[default]
+    Default,
+    /// Emit `max_tokens`.
+    MaxTokens,
+    /// Emit `max_output_tokens`.
+    MaxOutputTokens,
+    /// Omit provider max-token fields.
+    Omit,
+}
+
 /// Async sleep abstraction used by retry policies.
 #[async_trait]
 pub trait ModelSleeper: Send + Sync {
@@ -100,6 +115,18 @@ pub trait ModelHttpClient: Send + Sync {
     ///
     /// Returns an error when transport, status, or response decoding fails.
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ModelError>;
+
+    /// Send a server-sent events model request and return JSON `data:` payloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport, status, or event decoding fails.
+    async fn send_event_stream(&self, request: HttpRequest) -> Result<Vec<Value>, ModelError> {
+        Err(ModelError::Transport(format!(
+            "server-sent event streaming is not implemented for {}",
+            request.url
+        )))
+    }
 }
 
 /// Shared reference to an HTTP client.
@@ -124,6 +151,29 @@ impl ReqwestHttpClient {
         Ok(Self { client })
     }
 
+    async fn send_request(&self, request: &HttpRequest) -> Result<reqwest::Response, ModelError> {
+        if !allow_real_model_requests() {
+            return Err(ModelError::RealModelRequestBlocked {
+                url: request.url.clone(),
+            });
+        }
+
+        let mut builder = match request.method {
+            HttpMethod::Post => self.client.post(&request.url),
+        }
+        .headers(Self::header_map(&request.headers)?)
+        .json(&request.body);
+
+        if let Some(timeout) = request.timeout {
+            builder = builder.timeout(timeout);
+        }
+
+        builder
+            .send()
+            .await
+            .map_err(|err| ModelError::Transport(err.to_string()))
+    }
+
     fn header_map(headers: &BTreeMap<String, String>) -> Result<HeaderMap, ModelError> {
         let mut map = HeaderMap::new();
         for (name, value) in headers {
@@ -142,35 +192,9 @@ impl ReqwestHttpClient {
 #[async_trait]
 impl ModelHttpClient for ReqwestHttpClient {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ModelError> {
-        if !allow_real_model_requests() {
-            return Err(ModelError::RealModelRequestBlocked { url: request.url });
-        }
-
-        let mut builder = match request.method {
-            HttpMethod::Post => self.client.post(&request.url),
-        }
-        .headers(Self::header_map(&request.headers)?)
-        .json(&request.body);
-
-        if let Some(timeout) = request.timeout {
-            builder = builder.timeout(timeout);
-        }
-
-        let response = builder
-            .send()
-            .await
-            .map_err(|err| ModelError::Transport(err.to_string()))?;
+        let response = self.send_request(&request).await?;
         let status = response.status().as_u16();
-        let headers = response
-            .headers()
-            .iter()
-            .filter_map(|(name, value)| {
-                value
-                    .to_str()
-                    .ok()
-                    .map(|value| (name.as_str().to_string(), value.to_string()))
-            })
-            .collect::<BTreeMap<_, _>>();
+        let headers = response_headers(&response);
         let body = response
             .json::<Value>()
             .await
@@ -190,6 +214,68 @@ impl ModelHttpClient for ReqwestHttpClient {
             })
         }
     }
+
+    async fn send_event_stream(&self, request: HttpRequest) -> Result<Vec<Value>, ModelError> {
+        let response = self.send_request(&request).await?;
+        let status = response.status().as_u16();
+        let text = response
+            .text()
+            .await
+            .map_err(|err| ModelError::Transport(err.to_string()))?;
+        if !(200..300).contains(&status) {
+            let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
+            return Err(ModelError::ProviderStatus {
+                status,
+                body,
+                retryable: is_retryable_status(status),
+            });
+        }
+        parse_sse_json_events(&text)
+    }
+}
+
+fn response_headers(response: &reqwest::Response) -> BTreeMap<String, String> {
+    response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn parse_sse_json_events(text: &str) -> Result<Vec<Value>, ModelError> {
+    let mut events = Vec::new();
+    let mut data_lines = Vec::new();
+    for line in text.lines() {
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start().to_string());
+            continue;
+        }
+        if line.trim().is_empty() && !data_lines.is_empty() {
+            push_sse_json_event(&mut events, &data_lines)?;
+            data_lines.clear();
+        }
+    }
+    if !data_lines.is_empty() {
+        push_sse_json_event(&mut events, &data_lines)?;
+    }
+    Ok(events)
+}
+
+fn push_sse_json_event(events: &mut Vec<Value>, data_lines: &[String]) -> Result<(), ModelError> {
+    let data = data_lines.join("\n");
+    if data.trim() == "[DONE]" {
+        return Ok(());
+    }
+    let value = serde_json::from_str::<Value>(&data).map_err(|error| {
+        ModelError::ResponseParsing(format!("invalid server-sent event JSON: {error}"))
+    })?;
+    events.push(value);
+    Ok(())
 }
 
 /// Authentication strategy for HTTP model adapters.
@@ -283,6 +369,9 @@ pub struct HttpModelConfig {
     /// Retry policy for transient failures.
     #[serde(default)]
     pub retry_policy: RetryPolicy,
+    /// Provider or gateway max-token parameter mapping.
+    #[serde(default)]
+    pub max_tokens_parameter: MaxTokensParameter,
     /// Adapter-level metadata copied into every request.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub metadata: Map<String, Value>,
@@ -300,6 +389,7 @@ impl HttpModelConfig {
             extra_body: Map::new(),
             timeout_ms: None,
             retry_policy: RetryPolicy::default(),
+            max_tokens_parameter: MaxTokensParameter::Default,
             metadata: Map::new(),
         }
     }

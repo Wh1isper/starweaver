@@ -7,9 +7,11 @@ mod environment;
 mod error;
 pub mod launcher;
 mod local_store;
+mod oauth;
 mod profiles;
 mod runner;
 mod service;
+mod update_check;
 
 use std::env;
 
@@ -35,8 +37,27 @@ pub fn run(args: impl IntoIterator<Item = String>) -> CliResult<()> {
 pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<String> {
     let cli = args::parse(args)?;
     let config = ConfigResolver::default().resolve(&cli)?;
+    update_check::spawn_update_check_if_due(&config);
+    let hint = should_show_update_hint(&cli, &config).then(|| update_check::update_hint(&config));
     let service = CliService::open(config)?;
-    service.execute(cli)
+    let mut output = service.execute(cli)?;
+    if let Some(Some(hint)) = hint {
+        output.push_str(&hint);
+    }
+    Ok(output)
+}
+
+const fn should_show_update_hint(cli: &Cli, config: &CliConfig) -> bool {
+    matches!(config.default_output, OutputMode::Text | OutputMode::Silent)
+        && matches!(
+            &cli.command,
+            None | Some(
+                CliCommand::Version
+                    | CliCommand::Diagnostics
+                    | CliCommand::ReplayCheck
+                    | CliCommand::Run(_),
+            )
+        )
 }
 
 #[cfg(test)]
@@ -65,7 +86,100 @@ mod tests {
         let diagnostics = output(temp.path(), &["diagnostics"]).unwrap();
         assert!(diagnostics.contains("sdk=starweaver-agent-sdk"));
         assert!(diagnostics.contains("database_path="));
+        assert!(diagnostics.contains("model_profiles="));
         assert!(diagnostics.contains("wal=true"));
+    }
+
+    #[test]
+    fn config_model_profiles_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            r#"
+[general]
+model = "homelab@openai-responses:gpt-5.5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+
+[model_profiles.codex-subs]
+label = "Codex Subs"
+model = "oauth@codex:gpt-5.5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+
+[providers.homelab]
+base_url = "https://gateway.example/v1"
+max_tokens_parameter = "omit"
+
+[env]
+HOMELAB_API_KEY = "test-key"
+"#,
+        )
+        .unwrap();
+        let diagnostics = output(temp.path(), &["diagnostics"]).unwrap();
+        assert!(diagnostics.contains("profile=default_model"));
+        assert!(diagnostics.contains("model_profiles=1"));
+        assert_eq!(
+            output(
+                temp.path(),
+                &["config", "get", "providers.homelab.max_tokens_parameter"]
+            )
+            .unwrap(),
+            "omit\n"
+        );
+        let profiles = output(temp.path(), &["profile", "list"]).unwrap();
+        assert!(profiles.contains("default_model"));
+        assert!(profiles.contains("codex-subs"));
+        let default_profile = output(temp.path(), &["profile", "show", "default_model"]).unwrap();
+        assert!(default_profile.contains("model_id: homelab@openai-responses:gpt-5.5"));
+        assert!(default_profile.contains("settings_preset: openai_responses_high"));
+        assert!(default_profile.contains("config_preset: gpt5_270k"));
+        assert!(default_profile.contains("# source: config"));
+    }
+
+    #[test]
+    fn configured_subagent_inherits_profile_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        std::fs::create_dir_all(global.join("subagents")).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            r#"
+[general]
+model = "local_echo"
+
+[subagents]
+dirs = ["subagents"]
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            global.join("subagents/helper.md"),
+            r"---
+name: helper
+description: Helper subagent
+model: inherit
+---
+You are a helper.
+",
+        )
+        .unwrap();
+
+        let run = output(
+            temp.path(),
+            &[
+                "-p",
+                "hello",
+                "--profile",
+                "default_model",
+                "--output",
+                "silent",
+            ],
+        )
+        .unwrap();
+        assert!(run.contains("status=completed"));
     }
 
     #[test]

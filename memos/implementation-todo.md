@@ -186,7 +186,7 @@ Target outcome:
 - Persist `DisplayMessage` records through `StreamArchive` and use them as the session restore source for CLI, TUI, and future service UI flows.
 - Add AGUI-compatible display adapter and replay compaction path based on ya-claw behavior.
 - Add `starweaver` launcher dispatch, `sw` alias, `starweaver-{command}` command convention, and GitHub release install/update scripts.
-- Add CLI configuration resolution modeled after YAACLI: global/project config roots, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, narrow environment overrides, and command-line flag precedence.
+- Add CLI configuration resolution: global/project config roots, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, narrow environment overrides, and command-line flag precedence.
 - Add CLI app-profile workflows over `AgentSpec`: streamed runs, environment provider selection, display-message rendering, compact run trace projection, and compact session commands for list/show/replay/trim.
 - Add Claw-style session/run selectors for `-p/--prompt`: `--session`, `--continue`, `--new-session`, `--run`, and `--branch-from`, where every prompt-backed invocation appends a run under a session.
 - Make headless HITL unattended through default-deny approval handling, with `--hitl deny|defer|fail` and interactive `--hitl prompt` later.

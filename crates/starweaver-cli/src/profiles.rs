@@ -1,22 +1,25 @@
 //! CLI `AgentSpec` profile resolution.
 
-use std::{env, fmt::Write as _, fs, path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, env, fs, path::PathBuf, sync::Arc};
 
 use serde::Serialize;
 use serde_json::json;
 use starweaver_agent::{
-    environment_toolsets, string_tool, AgentSpec, AgentSpecRegistry, FunctionModel, StaticToolset,
-    ToolError, ToolResult,
+    environment_toolsets, load_subagents_from_dir, parse_skill_markdown, skill_tools, string_tool,
+    AgentBuilder, AgentSpec, AgentSpecRegistry, FunctionModel, SkillPackage, StaticToolset,
+    SubagentConfig, SubagentToolInheritancePolicy, ToolError, ToolResult,
 };
 use starweaver_model::{
     anthropic_http_config, gemini_http_config, openai_chat_http_config,
-    openai_responses_http_config, ModelMessage, ModelProfile, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient, ToolCallPart,
+    openai_responses_http_config, HttpModelConfig, ModelMessage, ModelProfile, ModelRequestPart,
+    ModelResponse, ModelResponsePart, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient,
+    ToolCallPart,
 };
 
 use crate::{
-    config::{CliConfig, ProviderConfig},
+    config::{CliConfig, CliModelProfile, ProviderConfig},
     error::io_error,
+    oauth::{CodexOAuthHttpClient, CODEX_BASE_URL},
     CliError, CliResult,
 };
 
@@ -24,12 +27,54 @@ use crate::{
 pub struct ResolvedProfile {
     /// Profile name.
     pub name: String,
-    /// Source path when loaded from YAML.
-    pub source: Option<PathBuf>,
+    /// Profile source.
+    pub source: ProfileSource,
     /// Parsed spec.
     pub spec: AgentSpec,
     /// Registry with CLI-provided models and toolsets.
     pub registry: AgentSpecRegistry,
+}
+
+/// Source of a resolved profile.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProfileSource {
+    /// Built-in profile bundled with the CLI.
+    BuiltIn,
+    /// Profile synthesized from CLI config.
+    Config,
+    /// Profile loaded from YAML.
+    File(PathBuf),
+}
+
+impl ProfileSource {
+    /// Render a source comment for `profile show`.
+    #[must_use]
+    pub fn render_comment(&self) -> String {
+        match self {
+            Self::BuiltIn => "# source: built-in\n".to_string(),
+            Self::Config => "# source: config\n".to_string(),
+            Self::File(path) => format!("# source: {}\n", path.display()),
+        }
+    }
+
+    /// Return source kind for durable CLI session records.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::BuiltIn => "built-in",
+            Self::Config => "config",
+            Self::File(_) => "file",
+        }
+    }
+
+    /// Return source path for durable CLI session records.
+    #[must_use]
+    pub fn path(&self) -> Option<String> {
+        match self {
+            Self::File(path) => Some(path.display().to_string()),
+            Self::BuiltIn | Self::Config => None,
+        }
+    }
 }
 
 impl ResolvedProfile {
@@ -47,7 +92,7 @@ impl ResolvedProfile {
 pub struct ProfileSummary {
     /// Profile name.
     pub name: String,
-    /// Profile source.
+    /// Profile source kind.
     pub source: String,
     /// Default model id.
     pub model_id: String,
@@ -76,11 +121,30 @@ pub fn list_profiles(config: &CliConfig) -> CliResult<Vec<ProfileSummary>> {
         .into_iter()
         .map(|(name, spec)| ProfileSummary {
             name: name.to_string(),
-            source: "built-in".to_string(),
+            source: ProfileSource::BuiltIn.kind().to_string(),
             model_id: profile_model_id(&spec),
             path: None,
         })
         .collect::<Vec<_>>();
+    if let Some(profile) = config.default_model.as_ref() {
+        profiles.push(ProfileSummary {
+            name: "default_model".to_string(),
+            source: ProfileSource::Config.kind().to_string(),
+            model_id: profile.model_id.clone(),
+            path: None,
+        });
+    }
+    profiles.extend(
+        config
+            .model_profiles
+            .iter()
+            .map(|(name, profile)| ProfileSummary {
+                name: name.clone(),
+                source: ProfileSource::Config.kind().to_string(),
+                model_id: profile.model_id.clone(),
+                path: None,
+            }),
+    );
     for root in &config.profile_search_paths {
         if !root.exists() {
             continue;
@@ -99,7 +163,7 @@ pub fn list_profiles(config: &CliConfig) -> CliResult<Vec<ProfileSummary>> {
                 .map_err(|error| CliError::Config(error.to_string()))?;
             profiles.push(ProfileSummary {
                 name: spec.name.clone(),
-                source: "file".to_string(),
+                source: ProfileSource::File(path.clone()).kind().to_string(),
                 model_id: profile_model_id(&spec),
                 path: Some(path.display().to_string()),
             });
@@ -114,26 +178,30 @@ pub fn show_profile(config: &CliConfig, requested: &str) -> CliResult<String> {
     let (spec, source) = load_profile_spec(config, requested)?;
     let mut yaml =
         serde_yaml::to_string(&spec).map_err(|error| CliError::Config(error.to_string()))?;
-    if let Some(source) = source {
-        let _ = writeln!(yaml, "# source: {}", source.display());
-    } else {
-        yaml.push_str("# source: built-in\n");
-    }
+    yaml.push_str(&source.render_comment());
     Ok(yaml)
 }
 
-fn load_profile_spec(
-    config: &CliConfig,
-    requested: &str,
-) -> CliResult<(AgentSpec, Option<PathBuf>)> {
+fn load_profile_spec(config: &CliConfig, requested: &str) -> CliResult<(AgentSpec, ProfileSource)> {
     if let Some(spec) = builtin_spec(requested) {
-        return Ok((spec, None));
+        return Ok((spec, ProfileSource::BuiltIn));
+    }
+    if requested == "default_model" {
+        if let Some(profile) = config.default_model.as_ref() {
+            return Ok((
+                config_model_spec("default_model", profile),
+                ProfileSource::Config,
+            ));
+        }
+    }
+    if let Some(profile) = config.model_profiles.get(requested) {
+        return Ok((config_model_spec(requested, profile), ProfileSource::Config));
     }
     if let Some(path) = find_profile_path(config, requested) {
         let content = fs::read_to_string(&path).map_err(|error| io_error(&path, error))?;
         let spec =
             AgentSpec::from_yaml(&content).map_err(|error| CliError::Config(error.to_string()))?;
-        return Ok((spec, Some(path)));
+        return Ok((spec, ProfileSource::File(path)));
     }
     Err(CliError::NotFound(format!("profile {requested}")))
 }
@@ -191,6 +259,7 @@ fn default_spec(name: &str) -> AgentSpec {
         model: Some(starweaver_agent::ModelPreset {
             model_id: "local_echo".to_string(),
             settings_preset: None,
+            config_preset: None,
             settings: None,
         }),
         toolsets: vec!["cli_control_flow".to_string(), "environment".to_string()],
@@ -208,6 +277,7 @@ fn coding_spec() -> AgentSpec {
         model: Some(starweaver_agent::ModelPreset {
             model_id: "openai:gpt-5".to_string(),
             settings_preset: Some("openai_responses_medium".to_string()),
+            config_preset: Some("gpt5_270k".to_string()),
             settings: None,
         }),
         toolsets: vec![
@@ -229,6 +299,7 @@ fn research_spec() -> AgentSpec {
         model: Some(starweaver_agent::ModelPreset {
             model_id: "anthropic:claude-sonnet-4-5".to_string(),
             settings_preset: Some("anthropic_default".to_string()),
+            config_preset: Some("claude_200k".to_string()),
             settings: None,
         }),
         toolsets: vec!["environment".to_string()],
@@ -246,11 +317,31 @@ fn workspace_spec() -> AgentSpec {
         model: Some(starweaver_agent::ModelPreset {
             model_id: "local_echo".to_string(),
             settings_preset: None,
+            config_preset: None,
             settings: None,
         }),
         toolsets: vec!["environment".to_string(), "filesystem".to_string(), "shell".to_string()],
         ..AgentSpec::default()
     }
+}
+
+fn config_model_spec(name: &str, profile: &CliModelProfile) -> AgentSpec {
+    AgentSpec {
+        name: name.to_string(),
+        instructions: vec!["You are Starweaver CLI, a helpful local assistant.".to_string()],
+        model: Some(starweaver_agent::ModelPreset {
+            model_id: normalize_model_id(&profile.model_id),
+            settings_preset: profile.model_settings.clone(),
+            config_preset: profile.model_cfg.clone(),
+            settings: None,
+        }),
+        toolsets: vec!["cli_control_flow".to_string(), "environment".to_string()],
+        ..AgentSpec::default()
+    }
+}
+
+fn normalize_model_id(model_id: &str) -> String {
+    model_id.trim().to_string()
 }
 
 fn scripted_spec(name: &str, model_id: &str) -> AgentSpec {
@@ -260,6 +351,7 @@ fn scripted_spec(name: &str, model_id: &str) -> AgentSpec {
         model: Some(starweaver_agent::ModelPreset {
             model_id: model_id.to_string(),
             settings_preset: None,
+            config_preset: None,
             settings: None,
         }),
         toolsets: vec!["cli_control_flow".to_string()],
@@ -293,12 +385,116 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
             _ => {}
         }
     }
-    if let Some(model_id) = spec_model_id(spec) {
-        if let Some(model) = provider_model(config, model_id)? {
-            registry = registry.with_model(model_id, model);
+    registry = registry.with_toolset_alias("skills", configured_skill_toolset(config));
+    let inherited_model_id = spec_model_id(spec).unwrap_or("local_echo");
+    if let Some(model) = provider_model(config, inherited_model_id)? {
+        registry = registry.with_model(inherited_model_id, model);
+    }
+    registry = register_configured_subagents(config, registry, inherited_model_id)?;
+    Ok(registry)
+}
+
+fn configured_skill_toolset(config: &CliConfig) -> starweaver_tools::DynToolset {
+    let mut packages = BTreeMap::new();
+    for dir in &config.skill_dirs {
+        for package in load_skill_packages_from_dir(dir) {
+            packages.insert(package.name.clone(), package);
+        }
+    }
+    skill_tools(packages.into_values())
+}
+
+fn load_skill_packages_from_dir(dir: &std::path::Path) -> Vec<SkillPackage> {
+    let mut packages = Vec::new();
+    if !dir.exists() {
+        return packages;
+    }
+    let direct = dir.join("SKILL.md");
+    if let Some(package) = load_skill_package(&direct) {
+        packages.push(package);
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return packages;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path().join("SKILL.md");
+        if let Some(package) = load_skill_package(&path) {
+            packages.push(package);
+        }
+    }
+    packages.sort_by(|left, right| left.name.cmp(&right.name));
+    packages.dedup_by(|left, right| left.name == right.name);
+    packages
+}
+
+fn load_skill_package(path: &std::path::Path) -> Option<SkillPackage> {
+    let content = fs::read_to_string(path).ok()?;
+    parse_skill_markdown(&path.display().to_string(), &content).ok()
+}
+
+fn register_configured_subagents(
+    config: &CliConfig,
+    mut registry: AgentSpecRegistry,
+    inherited_model_id: &str,
+) -> CliResult<AgentSpecRegistry> {
+    for dir in &config.subagent_dirs {
+        if !dir.exists() {
+            continue;
+        }
+        let specs = load_subagents_from_dir(dir)
+            .map_err(|error| CliError::Config(format!("failed to load subagents: {error}")))?;
+        for spec in specs {
+            if config.disabled_subagents.contains(&spec.name) {
+                continue;
+            }
+            registry =
+                registry.with_subagent(build_subagent_config(config, &spec, inherited_model_id)?);
         }
     }
     Ok(registry)
+}
+
+fn build_subagent_config(
+    config: &CliConfig,
+    spec: &starweaver_core::SubagentSpec,
+    inherited_model_id: &str,
+) -> CliResult<SubagentConfig> {
+    let model_id = match spec.model.as_deref() {
+        Some("inherit") | None => inherited_model_id,
+        Some(model_id) => model_id,
+    };
+    let model = subagent_model(config, model_id)?;
+    let agent = AgentBuilder::new(model)
+        .instruction(spec.system_prompt.clone())
+        .build();
+    let denied_tools = spec
+        .metadata
+        .get("denied_tools")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let inheritance =
+        SubagentToolInheritancePolicy::new(spec.tools.clone(), spec.optional_tools.clone())
+            .with_denied_tools(denied_tools);
+    Ok(SubagentConfig::new(spec.name.clone(), Arc::new(agent))
+        .with_description(spec.description.clone())
+        .with_tool_inheritance(inheritance))
+}
+
+fn subagent_model(
+    config: &CliConfig,
+    model_id: &str,
+) -> CliResult<Arc<dyn starweaver_model::ModelAdapter>> {
+    match model_id {
+        "local_echo" => Ok(Arc::new(local_echo_model())),
+        "approval_model" => Ok(Arc::new(scripted_tool_model("approval_probe"))),
+        "deferred_model" => Ok(Arc::new(scripted_tool_model("deferred_probe"))),
+        other => provider_model(config, other)?
+            .ok_or_else(|| CliError::Config(format!("unknown subagent model id {other}"))),
+    }
 }
 
 fn provider_model(
@@ -308,6 +504,27 @@ fn provider_model(
     let Some(parsed) = ProviderModelId::parse(model_id) else {
         return Ok(None);
     };
+    if parsed.oauth_provider.as_deref() == Some("codex") {
+        let codex_config = &config.providers.codex;
+        let mut http_config = HttpModelConfig::new(
+            codex_config.base_url.as_deref().unwrap_or(CODEX_BASE_URL),
+            codex_config.endpoint_path.as_deref().unwrap_or("responses"),
+        );
+        http_config.max_tokens_parameter = codex_config.max_tokens_parameter;
+        http_config
+            .metadata
+            .insert("oauth_provider".to_string(), json!("codex"));
+        let client = ProtocolModelClient::new(
+            "codex",
+            parsed.model_name,
+            ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+            http_config,
+            Arc::new(CodexOAuthHttpClient::new().map_err(|error| {
+                CliError::Config(format!("failed to build Codex OAuth client: {error}"))
+            })?),
+        );
+        return Ok(Some(Arc::new(client)));
+    }
     let provider_config = parsed.provider_config(config);
     if !provider_config.enabled {
         return Err(CliError::Config(format!(
@@ -319,16 +536,18 @@ fn provider_model(
         .api_key_env
         .as_deref()
         .unwrap_or_else(|| parsed.default_api_key_env())
-        .trim();
+        .trim()
+        .to_string();
     if api_key_env.is_empty() {
         return Err(CliError::Config(format!(
             "empty api_key_env for provider {} and model id {model_id}",
             parsed.provider
         )));
     }
-    let api_key = env::var(api_key_env).map_err(|_| missing_provider_key(api_key_env, model_id))?;
+    let api_key =
+        env::var(&api_key_env).map_err(|_| missing_provider_key(&api_key_env, model_id))?;
     if api_key.trim().is_empty() {
-        return Err(missing_provider_key(api_key_env, model_id));
+        return Err(missing_provider_key(&api_key_env, model_id));
     }
     let mut http_config = match parsed.protocol {
         ProtocolFamily::OpenAiResponses => openai_responses_http_config(api_key),
@@ -345,6 +564,7 @@ fn provider_model(
     if let Some(endpoint_path) = provider_config.endpoint_path.as_ref() {
         http_config.endpoint_path.clone_from(endpoint_path);
     }
+    http_config.max_tokens_parameter = provider_config.max_tokens_parameter;
     let client = ProtocolModelClient::new(
         parsed.provider,
         parsed.model_name,
@@ -356,9 +576,11 @@ fn provider_model(
 }
 
 struct ProviderModelId {
-    provider: &'static str,
+    provider: String,
     model_name: String,
     protocol: ProtocolFamily,
+    gateway_name: Option<String>,
+    oauth_provider: Option<String>,
 }
 
 impl ProviderModelId {
@@ -367,11 +589,25 @@ impl ProviderModelId {
         if model_name.trim().is_empty() {
             return None;
         }
-        let protocol = match prefix {
+        let (gateway_name, provider_prefix) = prefix
+            .split_once('@')
+            .map_or((None, prefix), |(left, right)| (Some(left), right));
+        if gateway_name == Some("oauth") {
+            return (provider_prefix == "codex").then(|| Self {
+                provider: "codex".to_string(),
+                model_name: model_name.to_string(),
+                protocol: ProtocolFamily::OpenAiResponses,
+                gateway_name: None,
+                oauth_provider: Some("codex".to_string()),
+            });
+        }
+        let protocol = match provider_prefix {
             "openai" | "openai-responses" => ProtocolFamily::OpenAiResponses,
             "openai-chat" => ProtocolFamily::OpenAiChatCompletions,
             "anthropic" | "claude" => ProtocolFamily::AnthropicMessages,
-            "gemini" | "google" => ProtocolFamily::GeminiGenerateContent,
+            "gemini" | "google" | "google-vertex" | "google-cloud" | "google-gla" => {
+                ProtocolFamily::GeminiGenerateContent
+            }
             _ => return None,
         };
         let provider = match protocol {
@@ -381,23 +617,42 @@ impl ProviderModelId {
             ProtocolFamily::BedrockConverse => "bedrock",
         };
         Some(Self {
-            provider,
+            provider: provider.to_string(),
             model_name: model_name.to_string(),
             protocol,
+            gateway_name: gateway_name.map(str::to_string),
+            oauth_provider: None,
         })
     }
 
-    fn provider_config<'a>(&self, config: &'a CliConfig) -> &'a ProviderConfig {
-        match self.provider {
-            "openai" => &config.providers.openai,
-            "anthropic" => &config.providers.anthropic,
-            "gemini" => &config.providers.gemini,
-            other => unreachable!("unknown provider {other}"),
+    fn provider_config(&self, config: &CliConfig) -> ProviderConfig {
+        if let Some(gateway_name) = self.gateway_name.as_ref() {
+            let env_prefix = gateway_name.to_ascii_uppercase().replace('-', "_");
+            let base_url_env = format!("{env_prefix}_BASE_URL");
+            let mut provider = config
+                .providers
+                .gateways
+                .get(gateway_name)
+                .cloned()
+                .unwrap_or_default();
+            if provider.api_key_env.is_none() {
+                provider.api_key_env = Some(format!("{env_prefix}_API_KEY"));
+            }
+            if provider.base_url.is_none() {
+                provider.base_url = env::var(&base_url_env).ok();
+            }
+            return provider;
+        }
+        match self.provider.as_str() {
+            "openai" => config.providers.openai.clone(),
+            "anthropic" => config.providers.anthropic.clone(),
+            "gemini" => config.providers.gemini.clone(),
+            _ => ProviderConfig::default(),
         }
     }
 
     fn default_api_key_env(&self) -> &'static str {
-        match self.provider {
+        match self.provider.as_str() {
             "openai" => "OPENAI_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
             "gemini" => "GEMINI_API_KEY",

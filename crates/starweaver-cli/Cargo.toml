@@ -25,6 +25,7 @@ name = "sw"
 path = "src/bin/sw.rs"
 
 [dependencies]
+async-trait.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 chrono.workspace = true
@@ -44,6 +45,8 @@ thiserror.workspace = true
 tokio.workspace = true
 toml.workspace = true
 uuid.workspace = true
+reqwest.workspace = true
+semver.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

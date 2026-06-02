@@ -2,15 +2,59 @@
 # Copy to ~/.starweaver/config.toml.
 
 [general]
-default_profile = "general"
+default_profile = "default_model"
 default_output = "text"
 default_hitl = "deny"
 profile_search_paths = ["profiles", "agents", "~/.starweaver/profiles"]
+model = "openai-responses:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+max_requests = 1000
+
+[model_profiles.coding]
+label = "Coding"
+model = "openai-responses:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+
+[model_profiles.codex]
+label = "Codex OAuth"
+model = "oauth@codex:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+
+[model_profiles.gateway]
+label = "Gateway OpenAI Responses"
+model = "homelab@openai-responses:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+
+[env]
+# Values here are exported into the process when the variable is absent.
+# Keep raw secrets in your shell or secret manager when possible.
+
+[skills]
+dirs = ["~/.starweaver/skills"]
+additional_dirs = []
+
+[subagents]
+dirs = ["~/.starweaver/subagents"]
+additional_dirs = []
+disabled = []
+disabled_builtins = []
 
 [providers.openai]
 enabled = true
 api_key_env = "OPENAI_API_KEY"
 base_url = "https://api.openai.com/v1"
+
+[providers.codex]
+base_url = "https://chatgpt.com/backend-api/codex"
+max_tokens_parameter = "omit"
+
+[providers.homelab]
+base_url = "https://gateway.example/v1"
+max_tokens_parameter = "omit"
 
 [providers.anthropic]
 enabled = true

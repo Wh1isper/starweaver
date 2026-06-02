@@ -13,8 +13,8 @@ use starweaver_model::{
     message::{ContentPart, ModelMessage, ModelRequest, ModelRequestPart},
     profile::{ModelProfile, ProtocolFamily},
     transport::{
-        AuthConfig, HttpModelConfig, HttpRequest, HttpResponse, ModelHttpClient, NoopSleeper,
-        RetryPolicy,
+        AuthConfig, HttpModelConfig, HttpRequest, HttpResponse, MaxTokensParameter,
+        ModelHttpClient, NoopSleeper, RetryPolicy,
     },
     ModelAdapter, ModelError, ModelSettings, ProtocolModelClient, ProviderAlias,
     ProviderAliasRegistry,
@@ -24,6 +24,7 @@ use starweaver_model::{
 struct CaptureHttpClient {
     requests: Arc<Mutex<Vec<HttpRequest>>>,
     response: Arc<Mutex<Option<HttpResponse>>>,
+    stream_events: Arc<Mutex<Option<Vec<serde_json::Value>>>>,
 }
 
 impl CaptureHttpClient {
@@ -31,6 +32,15 @@ impl CaptureHttpClient {
         Self {
             requests: Arc::new(Mutex::new(Vec::new())),
             response: Arc::new(Mutex::new(Some(response))),
+            stream_events: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn with_stream_events(events: Vec<serde_json::Value>) -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            response: Arc::new(Mutex::new(None)),
+            stream_events: Arc::new(Mutex::new(Some(events))),
         }
     }
 
@@ -44,6 +54,14 @@ impl ModelHttpClient for CaptureHttpClient {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ModelError> {
         self.requests.lock().unwrap().push(request);
         Ok(self.response.lock().unwrap().clone().unwrap())
+    }
+
+    async fn send_event_stream(
+        &self,
+        request: HttpRequest,
+    ) -> Result<Vec<serde_json::Value>, ModelError> {
+        self.requests.lock().unwrap().push(request);
+        Ok(self.stream_events.lock().unwrap().clone().unwrap())
     }
 }
 
@@ -192,6 +210,80 @@ async fn protocol_client_allows_endpoint_override_for_gateways() {
     );
     assert_eq!(request.timeout.unwrap().as_millis(), 42_000);
     assert_eq!(request.headers.get("x-route").unwrap(), "audit");
+}
+
+#[tokio::test]
+async fn protocol_client_streams_openai_responses_events() {
+    let http = CaptureHttpClient::with_stream_events(vec![
+        json!({"type": "response.output_text.delta", "delta": "hel"}),
+        json!({"type": "response.output_text.delta", "delta": "lo"}),
+        json!({"type": "response.output_text.done"}),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_stream",
+                "model": "gpt-5.5",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": "hello"}]}],
+                "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+            }
+        }),
+    ]);
+
+    let mut config = HttpModelConfig::new("https://gateway.example.test/v1", "responses");
+    config.auth = Some(AuthConfig::Bearer {
+        token: "provider-token".to_string(),
+    });
+    config.max_tokens_parameter = MaxTokensParameter::Omit;
+
+    let client = ProtocolModelClient::new(
+        "gateway-openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        config,
+        Arc::new(http.clone()),
+    );
+
+    let settings = ModelSettings {
+        max_tokens: Some(1024),
+        temperature: Some(0.2),
+        ..ModelSettings::default()
+    };
+    let events = client
+        .request_stream(
+            history(),
+            Some(settings),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        events[0],
+        starweaver_model::ModelResponseStreamEvent::PartStart(_)
+    ));
+    assert!(matches!(
+        events[2],
+        starweaver_model::ModelResponseStreamEvent::PartDelta(_)
+    ));
+    let final_text = events
+        .iter()
+        .find_map(|event| match event {
+            starweaver_model::ModelResponseStreamEvent::FinalResult(response) => {
+                Some(response.text_output())
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(final_text, "hello");
+
+    let request = http.last_request();
+    assert_eq!(request.body["model"], json!("gpt-5.5"));
+    assert_eq!(request.body["stream"], json!(true));
+    assert_eq!(request.body["temperature"], json!(0.2));
+    assert!(request.body.get("max_tokens").is_none());
+    assert!(request.body.get("max_output_tokens").is_none());
 }
 
 #[tokio::test]

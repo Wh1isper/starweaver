@@ -1389,10 +1389,13 @@ dependencies = [
 name = "starweaver-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "clap",
  "clap_complete",
+ "reqwest",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

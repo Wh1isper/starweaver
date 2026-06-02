@@ -1,7 +1,7 @@
 //! Production protocol clients built on replay-validated wire mappers.
 
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::{
     adapter::{allow_real_model_requests, ModelRequestContext, ModelRequestParameters},
@@ -15,9 +15,9 @@ use crate::{
     settings::ModelSettings,
     transport::{
         build_http_request, send_with_retries, DynHttpClient, DynSleeper, HttpModelConfig,
-        HttpRequestOptions, ReqwestHttpClient, TokioSleeper,
+        HttpRequestOptions, MaxTokensParameter, ReqwestHttpClient, TokioSleeper,
     },
-    ModelAdapter, ModelError,
+    ModelAdapter, ModelError, ModelResponseStreamEvent,
 };
 
 /// Shared production model client for a supported wire protocol family.
@@ -200,12 +200,13 @@ impl ProtocolModelClient {
                 settings,
                 &params.tools,
             ),
-            ProtocolFamily::OpenAiResponses => OpenAiResponsesAdapter::build_request(
+            ProtocolFamily::OpenAiResponses => OpenAiResponsesAdapter::build_request_with_options(
                 &self.model_name,
                 messages,
                 settings,
                 &params.tools,
                 &params.native_tools,
+                self.openai_responses_max_tokens_parameter(),
             ),
             ProtocolFamily::AnthropicMessages => AnthropicMessagesAdapter::build_request(
                 &self.model_name,
@@ -232,6 +233,13 @@ impl ProtocolModelClient {
         Ok(body)
     }
 
+    const fn openai_responses_max_tokens_parameter(&self) -> MaxTokensParameter {
+        match self.http_config.max_tokens_parameter {
+            MaxTokensParameter::Default => MaxTokensParameter::MaxTokens,
+            value => value,
+        }
+    }
+
     fn parse_wire_response(&self, body: &Value) -> Result<ModelResponse, ModelError> {
         match self.profile.protocol {
             ProtocolFamily::OpenAiChatCompletions => OpenAiChatAdapter::parse_response(body),
@@ -245,6 +253,7 @@ impl ProtocolModelClient {
     }
 
     fn request_options(
+        context: &ModelRequestContext,
         settings: Option<&ModelSettings>,
         params: &ModelRequestParameters,
     ) -> HttpRequestOptions {
@@ -254,6 +263,15 @@ impl ProtocolModelClient {
             options.extra_body.extend(settings.extra_body.clone());
         }
         options.extra_body.extend(params.extra_body.clone());
+        options.metadata.extend(context.llm_trace_metadata.clone());
+        options.metadata.insert(
+            "starweaver.run_id".to_string(),
+            json!(context.run_id.as_str()),
+        );
+        options.metadata.insert(
+            "starweaver.conversation_id".to_string(),
+            json!(context.conversation_id.as_str()),
+        );
         options
     }
 }
@@ -333,11 +351,11 @@ impl ModelAdapter for ProtocolModelClient {
         messages: Vec<ModelMessage>,
         settings: Option<ModelSettings>,
         params: ModelRequestParameters,
-        _context: ModelRequestContext,
+        context: ModelRequestContext,
     ) -> Result<ModelResponse, ModelError> {
         let settings = self.merged_settings(settings);
         let wire_body = self.build_wire_body(&messages, settings.as_ref(), &params)?;
-        let options = Self::request_options(settings.as_ref(), &params);
+        let options = Self::request_options(&context, settings.as_ref(), &params);
         let request = build_http_request(&self.http_config, &options, wire_body);
         if !allow_real_model_requests() {
             return Err(ModelError::RealModelRequestBlocked { url: request.url });
@@ -350,5 +368,32 @@ impl ModelAdapter for ProtocolModelClient {
         )
         .await?;
         self.parse_wire_response(&response.body)
+    }
+
+    async fn request_stream(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        if self.profile.protocol != ProtocolFamily::OpenAiResponses {
+            let response = self.request(messages, settings, params, context).await?;
+            return Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
+                response,
+            ))]);
+        }
+        let settings = self.merged_settings(settings);
+        let mut wire_body = self.build_wire_body(&messages, settings.as_ref(), &params)?;
+        if let Some(object) = wire_body.as_object_mut() {
+            object.insert("stream".to_string(), Value::Bool(true));
+        }
+        let options = Self::request_options(&context, settings.as_ref(), &params);
+        let request = build_http_request(&self.http_config, &options, wire_body);
+        if !allow_real_model_requests() {
+            return Err(ModelError::RealModelRequestBlocked { url: request.url });
+        }
+        let events = self.http_client.send_event_stream(request).await?;
+        OpenAiResponsesAdapter::parse_stream_events(&events)
     }
 }

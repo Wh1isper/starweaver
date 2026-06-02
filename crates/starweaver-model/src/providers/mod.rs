@@ -12,6 +12,7 @@ use serde_json::{json, Map, Value};
 use crate::{
     message::{ContentPart, FinishReason, ModelMessage, ModelRequestPart},
     settings::ToolChoice,
+    transport::MaxTokensParameter,
     ModelSettings,
 };
 
@@ -215,9 +216,30 @@ fn apply_common_settings(
     target: &mut serde_json::Map<String, Value>,
     settings: Option<&ModelSettings>,
 ) {
+    apply_common_settings_with_max_tokens(target, settings, MaxTokensParameter::MaxTokens);
+}
+
+pub(crate) fn apply_common_settings_with_max_tokens(
+    target: &mut serde_json::Map<String, Value>,
+    settings: Option<&ModelSettings>,
+    max_tokens_parameter: MaxTokensParameter,
+) {
+    let max_tokens_key = match max_tokens_parameter {
+        MaxTokensParameter::Default | MaxTokensParameter::MaxTokens => Some("max_tokens"),
+        MaxTokensParameter::MaxOutputTokens => Some("max_output_tokens"),
+        MaxTokensParameter::Omit => None,
+    };
+    apply_common_settings_inner(target, settings, max_tokens_key);
+}
+
+fn apply_common_settings_inner(
+    target: &mut serde_json::Map<String, Value>,
+    settings: Option<&ModelSettings>,
+    max_tokens_key: Option<&str>,
+) {
     if let Some(settings) = settings {
-        if let Some(max_tokens) = settings.max_tokens {
-            target.insert("max_tokens".to_string(), json!(max_tokens));
+        if let (Some(key), Some(max_tokens)) = (max_tokens_key, settings.max_tokens) {
+            target.insert(key.to_string(), json!(max_tokens));
         }
         if let Some(temperature) = settings.temperature {
             target.insert("temperature".to_string(), json!(temperature));

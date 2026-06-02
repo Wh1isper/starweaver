@@ -1,10 +1,35 @@
 # Example provider gateway config.
-# Copy selected provider sections into ~/.starweaver/config.toml.
+# Copy selected provider sections or model profiles into ~/.starweaver/config.toml.
+
+[model_profiles.openai-gateway]
+label = "OpenAI Responses via gateway"
+model = "homelab@openai-responses:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+
+[model_profiles.openai-chat-gateway]
+label = "OpenAI Chat via gateway"
+model = "homelab@openai-chat:gpt-4o"
+model_settings = "openai_default"
+model_cfg = "gpt5_270k"
+
+[model_profiles.gemini-gateway]
+label = "Gemini via gateway"
+model = "homelab@google-vertex:gemini-2.5-pro"
+model_settings = "google_default"
+model_cfg = "gemini_1m"
+
+[env]
+# Export HOMELAB_API_KEY in the shell or secret manager.
+
+[providers.homelab]
+base_url = "https://gateway.example/v1"
+max_tokens_parameter = "omit"
 
 [providers.openai]
 enabled = true
 api_key_env = "OPENAI_API_KEY"
-base_url = "https://gateway.example/v1"
+base_url = "https://api.openai.com/v1"
 endpoint_path = "/responses"
 
 [providers.anthropic]

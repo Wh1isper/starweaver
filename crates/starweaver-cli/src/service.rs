@@ -10,6 +10,7 @@ use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 use crate::{
     args::{
         Cli, CliCommand, ConfigCommand, OutputMode, ProfileCommand, RunCommand, SessionCommand,
+        UpdateCommand,
     },
     config::{
         get_config_value, init_config_file, read_current_session, write_current_session, CliConfig,
@@ -58,6 +59,7 @@ impl CliService {
             CliCommand::ReplayCheck => {
                 Ok("run `make replay-check` from the repository root\n".to_string())
             }
+            CliCommand::Update(command) => Self::update(&command),
             CliCommand::Run(command) => self.run_prompt(&command),
             CliCommand::Session { command } => self.session(command),
             CliCommand::Profile { command } => self.profile(command),
@@ -243,6 +245,10 @@ impl CliService {
         }
     }
 
+    fn update(command: &UpdateCommand) -> CliResult<String> {
+        crate::launcher::update_component(&command.target)
+    }
+
     fn config(&self, command: ConfigCommand) -> CliResult<String> {
         match command {
             ConfigCommand::Init {
@@ -281,12 +287,18 @@ impl CliService {
 
     fn diagnostics(&self) -> String {
         format!(
-            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nwal=true\n",
+            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nwal=true\n",
             sdk_name(),
             env!("CARGO_PKG_VERSION"),
             self.config.database_path.display(),
             self.config.file_store_path.display(),
             self.config.default_profile,
+            self.config
+                .default_model
+                .as_ref()
+                .map(|profile| profile.model_id.as_str())
+                .unwrap_or_default(),
+            self.config.model_profiles.len(),
             self.config.workspace_root.display(),
             self.config.environment_provider,
             self.config.files_policy,

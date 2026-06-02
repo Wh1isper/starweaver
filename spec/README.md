@@ -32,6 +32,7 @@ Working evidence, reference comparisons, migration notes, and release TODOs live
 - `ops/03-durable-service-runtime.md` — durable sessions, SessionStore, stream archive, resume, interruption, SSE, display-message replay, and storage contracts
 - `ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, AGUI-compatible rendering, launcher dispatch, and GitHub install/update flow
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
+- `ops/06-workflow-orchestration.md` — Claw-owned workflow definitions, runs, node runs, events, toolset, schedules, and workflow console semantics
 
 ## System Shape
 
@@ -48,6 +49,7 @@ flowchart TD
     session[starweaver-session]
     stream[starweaver-stream]
     claw[starweaver-claw]
+    workflow[Workflow orchestration]
     cli[starweaver-cli]
     platform[starweaver-platform]
 
@@ -79,6 +81,11 @@ flowchart TD
     claw --> runtime
     claw --> context
     claw --> env
+    claw --> workflow
+    workflow --> session
+    workflow --> stream
+    workflow --> runtime
+    workflow --> env
     cli --> session
     cli --> stream
     cli --> sdk
@@ -100,7 +107,7 @@ flowchart TD
 - `starweaver-environment` provides file, shell, process, resource, sandbox, and environment state abstractions through an `EnvironmentProvider` boundary.
 - `starweaver-session` is the shared durable session crate for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
 - `starweaver-stream` is the shared display and replay stream crate for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes used by CLI, Claw, and platform adapters.
-- `starweaver-claw` persists and resumes sessions through concrete adapters over stable context, environment, event, checkpoint, trace, display-message, shared `SessionStore`, and stream contracts.
+- `starweaver-claw` persists and resumes sessions through concrete adapters over stable context, environment, event, checkpoint, trace, display-message, shared `SessionStore`, and stream contracts; it owns workflow orchestration resources, executor coordination, schedules, and workflow APIs.
 - `starweaver-cli` is a product surface over the SDK, environment providers, shared session/stream contracts, CLI-owned config, and terminal renderers.
 - `starweaver-platform` hosts external protocol adapters such as A2A and AGUI over SDK, service, session, display-message, event, stream, and trace contracts. Pydantic AI's A2A and AGUI examples serve as adapter demos for this layer.
 
