@@ -1,6 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::{process::Command, thread};
+use std::{fs, process::Command, thread};
 
 fn cli(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_starweaver-cli"));
@@ -42,11 +42,66 @@ fn cli_run_prints_display_messages() {
         .collect::<Vec<_>>();
     assert_eq!(messages[0]["schema"], "starweaver.display.v1");
     assert_eq!(messages[0]["type"], "RUN_STARTED");
-    assert_eq!(messages[1]["type"], "TEXT_MESSAGE_START");
-    assert_eq!(messages[2]["type"], "TEXT_MESSAGE_CONTENT");
-    assert_eq!(messages[2]["payload"]["delta"], "local echo: hello");
-    assert_eq!(messages[3]["type"], "TEXT_MESSAGE_END");
-    assert_eq!(messages[4]["type"], "RUN_FINISHED");
+    for (sequence, message) in messages.iter().enumerate() {
+        assert_eq!(message["sequence"].as_u64().unwrap(), sequence as u64);
+    }
+    let types = messages
+        .iter()
+        .map(|message| message["type"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(types.contains(&"CHECKPOINT"));
+    assert!(types.contains(&"TEXT_MESSAGE_START"));
+    assert!(types.contains(&"TEXT_MESSAGE_CONTENT"));
+    assert!(types.contains(&"TEXT_MESSAGE_END"));
+    assert_eq!(types.last(), Some(&"RUN_FINISHED"));
+    let text_messages = messages
+        .iter()
+        .filter(|message| message["type"] == "TEXT_MESSAGE_CONTENT")
+        .collect::<Vec<_>>();
+    assert_eq!(text_messages.len(), 1);
+    assert_eq!(text_messages[0]["payload"]["delta"], "local echo: hello");
+
+    let session_id = messages[0]["session_id"].as_str().unwrap();
+    let run_id = messages[0]["run_id"].as_str().unwrap();
+    assert!(messages
+        .iter()
+        .all(|message| message["run_id"].as_str() == Some(run_id)));
+    let raw_stream = temp
+        .path()
+        .join(".starweaver/store/sessions")
+        .join(session_id)
+        .join("runs")
+        .join(run_id)
+        .join("raw.stream.json");
+    let raw_records = fs::read_to_string(raw_stream).unwrap();
+    let raw_records: serde_json::Value = serde_json::from_str(&raw_records).unwrap();
+    let raw_records_array = raw_records.as_array().unwrap();
+    assert!(raw_records_array
+        .iter()
+        .any(|record| record["event"]["kind"] == "model_response"));
+    assert!(raw_records_array.iter().any(|record| {
+        record["event"]["kind"] == "model_request" && record["event"].get("step").is_some()
+    }));
+
+    let compact = temp
+        .path()
+        .join(".starweaver/store/sessions")
+        .join(session_id)
+        .join("runs")
+        .join(run_id)
+        .join("display.compact.json");
+    assert!(compact.exists());
+
+    let replay = cli(&temp)
+        .args(["session", "replay", session_id, "--run", run_id])
+        .output()
+        .unwrap();
+    assert!(
+        replay.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert_eq!(String::from_utf8(replay.stdout).unwrap(), stdout);
 }
 
 #[test]
@@ -84,6 +139,40 @@ fn cli_session_list_and_show_print_local_projection() {
     let stdout = String::from_utf8(show.stdout).unwrap();
     assert!(stdout.contains(session_id));
     assert!(stdout.contains("completed"));
+}
+
+#[test]
+fn cli_config_set_persists_project_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let set = cli(&temp)
+        .args([
+            "config",
+            "set",
+            "trim.current_session_keep_recent_runs",
+            "3",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        set.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(set.stdout).unwrap(),
+        "trim.current_session_keep_recent_runs=3\n"
+    );
+
+    let get = cli(&temp)
+        .args(["config", "get", "trim.current_session_keep_recent_runs"])
+        .output()
+        .unwrap();
+    assert!(
+        get.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&get.stderr)
+    );
+    assert_eq!(String::from_utf8(get.stdout).unwrap(), "3\n");
 }
 
 #[test]
@@ -163,4 +252,75 @@ fn concurrent_cli_runs_append_without_sequence_races() {
         })
         .collect::<Vec<_>>();
     assert_eq!(sequences, vec![1, 2, 3, 4, 5, 6, 7]);
+}
+
+#[test]
+fn cli_config_set_rejects_negative_unsigned_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let invalid = cli(&temp)
+        .args([
+            "config",
+            "set",
+            "trim.current_session_keep_recent_runs",
+            "-1",
+        ])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+}
+
+#[test]
+fn cli_session_replay_orders_runs_by_session_sequence() {
+    let temp = tempfile::tempdir().unwrap();
+    for prompt in ["first", "second", "third", "fourth", "fifth", "sixth"] {
+        let output = cli(&temp).args(["run", prompt]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let list = cli(&temp).args(["session", "list"]).output().unwrap();
+    assert!(
+        list.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let stdout = String::from_utf8(list.stdout).unwrap();
+    let session: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    let session_id = session["session_id"].as_str().unwrap();
+
+    let replay = cli(&temp)
+        .args(["session", "replay", session_id])
+        .output()
+        .unwrap();
+    assert!(
+        replay.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    let replayed_text = String::from_utf8(replay.stdout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| {
+            let message: serde_json::Value = serde_json::from_str(line).unwrap();
+            if message["type"] == "TEXT_MESSAGE_CONTENT" {
+                Some(message["payload"]["delta"].as_str().unwrap().to_string())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replayed_text,
+        vec![
+            "local echo: first",
+            "local echo: second",
+            "local echo: third",
+            "local echo: fourth",
+            "local echo: fifth",
+            "local echo: sixth",
+        ]
+    );
 }

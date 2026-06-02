@@ -26,6 +26,7 @@ path = "src/bin/sw.rs"
 
 [dependencies]
 clap.workspace = true
+clap_complete.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

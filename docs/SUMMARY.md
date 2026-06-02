@@ -6,6 +6,7 @@
 
 - [Install](install.md)
 - [Testing](testing.md)
+- [CLI](cli.md)
 - [Release](release.md)
 
 # Core Concepts

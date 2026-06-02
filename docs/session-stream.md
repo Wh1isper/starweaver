@@ -94,7 +94,7 @@ let message = DisplayMessage::new(
 
 log.append(
     scope.clone(),
-    ReplayEvent::new(scope.clone(), 1, ReplayEventKind::DisplayMessage(message)),
+    ReplayEvent::new(scope.clone(), 1, ReplayEventKind::DisplayMessage(Box::new(message))),
 ).await?;
 
 let replay = log.replay_after(&scope, None, None).await?;

@@ -2,11 +2,17 @@
 
 use std::sync::Arc;
 
+use clap_complete::Shell;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use starweaver_agent::{AgentBuilder, FunctionModel};
+use starweaver_agent::{AgentBuilder, AgentStreamRecord, FunctionModel};
 use starweaver_core::sdk_name;
 use starweaver_model::ModelResponse;
-use starweaver_stream::DisplayMessage;
+use starweaver_runtime::{AgentStreamEvent, ModelResponseStreamEvent};
+use starweaver_stream::{
+    DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
+    DisplayProjectionContext,
+};
 
 use crate::{
     args::{Cli, CliCommand, ConfigCommand, OutputMode, RunCommand, SessionCommand},
@@ -40,7 +46,7 @@ impl CliService {
                 run: cli.run.clone(),
                 branch_from: cli.branch_from.clone(),
                 output: cli.output,
-                hitl: crate::args::HitlPolicy::Deny,
+                hitl: cli.hitl,
             };
             return self.run_prompt(&command);
         }
@@ -53,6 +59,7 @@ impl CliService {
             CliCommand::Run(command) => self.run_prompt(&command),
             CliCommand::Session { command } => self.session(command),
             CliCommand::Config { command } => self.config(command),
+            CliCommand::Completion { shell } => render_completion(shell),
         }
     }
 
@@ -84,15 +91,20 @@ impl CliService {
             &self.config.default_profile,
         )?;
         write_current_session(&self.config, &session_id)?;
-        let result = execute_local_agent(prompt);
-        let output = match result {
-            Ok(output) => output,
+        let result = execute_local_agent(prompt, &run, CliRunPolicy { hitl: command.hitl });
+        let execution = match result {
+            Ok(execution) => execution,
             Err(error) => {
                 self.store.fail_run(&mut run, error.to_string())?;
                 return Err(error);
             }
         };
-        let messages = self.store.complete_run(&mut run, output)?;
+        let messages = self.store.complete_run(
+            &mut run,
+            execution.output,
+            &execution.raw_records,
+            &execution.display_messages,
+        )?;
         if self.config.auto_trim {
             let _report = self.store.trim(
                 vec![session_id.clone()],
@@ -190,9 +202,10 @@ impl CliService {
     fn config(&self, command: ConfigCommand) -> CliResult<String> {
         match command {
             ConfigCommand::Get { key } => get_config_value(&self.config, &key),
-            ConfigCommand::Set { key, value } => Err(CliError::Usage(format!(
-                "config set is planned; requested {key}={value}"
-            ))),
+            ConfigCommand::Set { key, value } => {
+                crate::config::set_project_config_value(&self.config, &key, &value)?;
+                Ok(format!("{key}={value}\n"))
+            }
         }
     }
 
@@ -207,17 +220,84 @@ impl CliService {
     }
 }
 
-fn execute_local_agent(prompt: String) -> CliResult<String> {
+struct CliRunExecution {
+    output: String,
+    raw_records: Vec<AgentStreamRecord>,
+    display_messages: Vec<DisplayMessage>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct CliRunPolicy {
+    hitl: crate::args::HitlPolicy,
+}
+
+fn execute_local_agent(
+    prompt: String,
+    run: &starweaver_session::RunRecord,
+    policy: CliRunPolicy,
+) -> CliResult<CliRunExecution> {
+    let policy_metadata = serde_json::to_value(policy)?;
+    let prompt_for_model = prompt.clone();
     let model = FunctionModel::new(move |_messages, _settings, _info| {
-        Ok(ModelResponse::text(format!("local echo: {prompt}")))
+        Ok(ModelResponse::text(format!(
+            "local echo: {prompt_for_model}"
+        )))
     });
     let agent = AgentBuilder::new(Arc::new(model)).build();
     let runtime =
         tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?;
-    let result = runtime
-        .block_on(agent.run("local cli run"))
+    let stream = runtime
+        .block_on(agent.run_stream(prompt))
         .map_err(|error| CliError::Run(error.to_string()))?;
-    Ok(result.output)
+    let output = stream.result.output.clone();
+    let context = DisplayProjectionContext::new(run.session_id.clone(), run.run_id.clone());
+    let projector = DefaultDisplayMessageProjector;
+    let mut display_messages = Vec::new();
+    let mut final_result_projected_text = false;
+    for record in &stream.events {
+        let projected = runtime.block_on(projector.project(&context, record));
+        let projected_has_text_delta = projected
+            .iter()
+            .any(|message| message.kind == DisplayMessageKind::AssistantTextDelta);
+        match &record.event {
+            AgentStreamEvent::ModelStream {
+                event: ModelResponseStreamEvent::FinalResult(_),
+                ..
+            } => {
+                if projected_has_text_delta {
+                    final_result_projected_text = true;
+                }
+                display_messages.extend(projected);
+            }
+            AgentStreamEvent::ModelResponse { .. }
+                if final_result_projected_text && projected_has_text_delta =>
+            {
+                final_result_projected_text = false;
+            }
+            AgentStreamEvent::ModelResponse { .. } => {
+                final_result_projected_text = false;
+                display_messages.extend(projected);
+            }
+            _ => display_messages.extend(projected),
+        }
+    }
+    resequence_display_messages(&mut display_messages);
+    for message in &mut display_messages {
+        message
+            .metadata
+            .insert("cli_run_policy".to_string(), policy_metadata.clone());
+    }
+    Ok(CliRunExecution {
+        output,
+        raw_records: stream.events,
+        display_messages,
+    })
+}
+
+fn resequence_display_messages(messages: &mut [DisplayMessage]) {
+    for (sequence, message) in messages.iter_mut().enumerate() {
+        message.sequence = sequence;
+    }
 }
 
 fn render_sessions(sessions: &[SessionSummary], output: OutputMode) -> CliResult<String> {
@@ -261,6 +341,13 @@ fn render_display_jsonl(messages: &[DisplayMessage]) -> CliResult<String> {
         .map(DisplayMessage::to_jsonl_line)
         .collect::<Result<String, _>>()
         .map_err(CliError::from)
+}
+
+fn render_completion(shell: Shell) -> CliResult<String> {
+    let mut command = crate::args::command();
+    let mut buffer = Vec::new();
+    clap_complete::generate(shell, &mut command, "starweaver-cli", &mut buffer);
+    String::from_utf8(buffer).map_err(|error| CliError::Run(error.to_string()))
 }
 
 fn render_trim_report(report: &TrimReport, output: OutputMode) -> CliResult<String> {

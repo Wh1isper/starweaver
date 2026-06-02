@@ -53,6 +53,7 @@ assert_eq!(result.output, "Paris");
 
 - [Install](install.md)
 - [Testing](testing.md)
+- [CLI](cli.md)
 - [Agents](agent.md)
 - [Models](models.md)
 - [Direct APIs](direct.md)
@@ -67,4 +68,3 @@ assert_eq!(result.output, "Paris");
 - [SDK apps](sdk-app.md)
 - [Subagents](subagents.md)
 - [MCP](mcp.md)
-- [Testing](testing.md)

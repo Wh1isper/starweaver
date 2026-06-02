@@ -9,10 +9,10 @@ use std::{
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
-use serde_json::json;
 use starweaver_core::{ConversationId, RunId, SessionId};
+use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{InputPart, RunRecord, RunStatus, SessionRecord, SessionStatus};
-use starweaver_stream::{DisplayMessage, DisplayMessageKind};
+use starweaver_stream::DisplayMessage;
 use uuid::Uuid;
 
 use crate::{config::CliConfig, error::io_error, CliError, CliResult};
@@ -21,6 +21,13 @@ use crate::{config::CliConfig, error::io_error, CliError, CliResult};
 pub struct LocalStore {
     conn: Connection,
     file_store_path: PathBuf,
+}
+
+struct FileRefRecord {
+    ref_id: String,
+    relative_path: String,
+    byte_size: i64,
+    created_at: String,
 }
 
 /// Session summary row.
@@ -142,6 +149,16 @@ impl LocalStore {
                 PRIMARY KEY (session_id, run_id, sequence_no),
                 FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS raw_stream_records (
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                sequence_no INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                PRIMARY KEY (session_id, run_id, sequence_no),
+                FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS file_refs (
                 ref_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -230,18 +247,22 @@ impl LocalStore {
         Ok(run)
     }
 
-    /// Complete a run atomically, persist display messages, and update head pointers.
+    /// Complete a run, persist display messages, archive stream blobs, and update head pointers.
     pub fn complete_run(
         &mut self,
         run: &mut RunRecord,
         output: String,
+        raw_records: &[AgentStreamRecord],
+        messages: &[DisplayMessage],
     ) -> CliResult<Vec<DisplayMessage>> {
+        let raw_ref = self.write_run_blob(run, "raw.stream.json", &raw_records)?;
+        let display_ref = self.write_run_blob(run, "display.compact.json", &messages)?;
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut session = load_session_tx(&tx, run.session_id.as_str())?;
         run.status = RunStatus::Completed;
-        run.output_preview = Some(output.clone());
+        run.output_preview = Some(output);
         run.updated_at = Utc::now();
         session.head_run_id = Some(run.run_id.clone());
         session.head_success_run_id = Some(run.run_id.clone());
@@ -249,58 +270,14 @@ impl LocalStore {
             session.active_run_id = None;
         }
         session.updated_at = run.updated_at;
-        let messages = vec![
-            DisplayMessage::new(
-                0,
-                run.session_id.clone(),
-                run.run_id.clone(),
-                DisplayMessageKind::RunStarted,
-            )
-            .with_payload(json!({"source": "cli"}))
-            .with_preview("run started"),
-            DisplayMessage::new(
-                1,
-                run.session_id.clone(),
-                run.run_id.clone(),
-                DisplayMessageKind::AssistantTextStart,
-            )
-            .with_payload(json!({
-                "message_id": "final",
-                "role": "assistant",
-            })),
-            DisplayMessage::new(
-                2,
-                run.session_id.clone(),
-                run.run_id.clone(),
-                DisplayMessageKind::AssistantTextDelta,
-            )
-            .with_payload(json!({
-                "message_id": "final",
-                "delta": output,
-            }))
-            .with_preview(output.clone()),
-            DisplayMessage::new(
-                3,
-                run.session_id.clone(),
-                run.run_id.clone(),
-                DisplayMessageKind::AssistantTextEnd,
-            )
-            .with_payload(json!({"message_id": "final"})),
-            DisplayMessage::new(
-                4,
-                run.session_id.clone(),
-                run.run_id.clone(),
-                DisplayMessageKind::RunCompleted,
-            )
-            .with_payload(json!({"output": output}))
-            .with_preview(output),
-        ];
         upsert_run_tx(&tx, run)?;
         upsert_session_tx(&tx, &session)?;
-        insert_display_messages_tx(&tx, &messages)?;
+        insert_raw_stream_records_tx(&tx, run, raw_records)?;
+        insert_display_messages_tx(&tx, messages)?;
+        insert_file_ref_tx(&tx, run, &raw_ref)?;
+        insert_file_ref_tx(&tx, run, &display_ref)?;
         tx.commit()?;
-        self.write_run_blob(run, "display.compact.json", &messages)?;
-        Ok(messages)
+        Ok(messages.to_vec())
     }
 
     /// Fail a run atomically.
@@ -391,9 +368,21 @@ impl LocalStore {
     ) -> CliResult<Vec<DisplayMessage>> {
         let after = after.map_or(-1_i64, |value| i64::try_from(value).unwrap_or(i64::MAX));
         let sql = if run_id.is_some() {
-            "SELECT message_json FROM display_messages WHERE session_id = ?1 AND run_id = ?2 AND sequence_no > ?3 ORDER BY run_id, sequence_no"
+            r"
+            SELECT dm.message_json
+            FROM display_messages dm
+            JOIN runs r ON r.session_id = dm.session_id AND r.run_id = dm.run_id
+            WHERE dm.session_id = ?1 AND dm.run_id = ?2 AND dm.sequence_no > ?3
+            ORDER BY r.sequence_no, dm.sequence_no
+            "
         } else {
-            "SELECT message_json FROM display_messages WHERE session_id = ?1 AND sequence_no > ?3 ORDER BY run_id, sequence_no"
+            r"
+            SELECT dm.message_json
+            FROM display_messages dm
+            JOIN runs r ON r.session_id = dm.session_id AND r.run_id = dm.run_id
+            WHERE dm.session_id = ?1 AND dm.sequence_no > ?3
+            ORDER BY r.sequence_no, dm.sequence_no
+            "
         };
         let mut stmt = self.conn.prepare(sql)?;
         let mapped = if let Some(run_id) = run_id {
@@ -480,6 +469,10 @@ impl LocalStore {
             params![session_id, run_id],
         )?;
         tx.execute(
+            "DELETE FROM raw_stream_records WHERE session_id = ?1 AND run_id = ?2",
+            params![session_id, run_id],
+        )?;
+        tx.execute(
             "DELETE FROM file_refs WHERE session_id = ?1 AND run_id = ?2",
             params![session_id, run_id],
         )?;
@@ -496,7 +489,7 @@ impl LocalStore {
         run: &RunRecord,
         name: &str,
         value: &T,
-    ) -> CliResult<()> {
+    ) -> CliResult<FileRefRecord> {
         let relative = PathBuf::from("sessions")
             .join(run.session_id.as_str())
             .join("runs")
@@ -507,18 +500,18 @@ impl LocalStore {
         let bytes = fs::metadata(&path)
             .map_err(|error| io_error(&path, error))?
             .len();
-        self.conn.execute(
-            "INSERT OR REPLACE INTO file_refs (ref_id, session_id, run_id, relative_path, byte_size, created_at, trimmed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
-            params![
-                format!("{}:{}:{}", run.session_id.as_str(), run.run_id.as_str(), name),
+        Ok(FileRefRecord {
+            ref_id: format!(
+                "{}:{}:{}",
                 run.session_id.as_str(),
                 run.run_id.as_str(),
-                relative.to_string_lossy().to_string(),
-                i64::try_from(bytes).map_err(|error| CliError::Storage(error.to_string()))?,
-                Utc::now().to_rfc3339(),
-            ],
-        )?;
-        Ok(())
+                name
+            ),
+            relative_path: relative.to_string_lossy().to_string(),
+            byte_size: i64::try_from(bytes)
+                .map_err(|error| CliError::Storage(error.to_string()))?,
+            created_at: Utc::now().to_rfc3339(),
+        })
     }
 
     fn run_file_bytes(&self, session_id: &str, run_id: &str) -> CliResult<u64> {
@@ -621,6 +614,30 @@ fn upsert_run_tx(tx: &rusqlite::Transaction<'_>, run: &RunRecord) -> CliResult<(
     Ok(())
 }
 
+fn insert_raw_stream_records_tx(
+    tx: &rusqlite::Transaction<'_>,
+    run: &RunRecord,
+    records: &[AgentStreamRecord],
+) -> CliResult<()> {
+    for record in records {
+        tx.execute(
+            r"
+            INSERT OR REPLACE INTO raw_stream_records (session_id, run_id, sequence_no, kind, created_at, record_json)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            ",
+            params![
+                run.session_id.as_str(),
+                run.run_id.as_str(),
+                usize_to_i64(record.sequence)?,
+                raw_stream_kind(&record.event),
+                Utc::now().to_rfc3339(),
+                serde_json::to_string(record)?,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn insert_display_messages_tx(
     tx: &rusqlite::Transaction<'_>,
     messages: &[DisplayMessage],
@@ -642,6 +659,43 @@ fn insert_display_messages_tx(
         )?;
     }
     Ok(())
+}
+
+fn insert_file_ref_tx(
+    tx: &rusqlite::Transaction<'_>,
+    run: &RunRecord,
+    file_ref: &FileRefRecord,
+) -> CliResult<()> {
+    tx.execute(
+        "INSERT OR REPLACE INTO file_refs (ref_id, session_id, run_id, relative_path, byte_size, created_at, trimmed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+        params![
+            file_ref.ref_id,
+            run.session_id.as_str(),
+            run.run_id.as_str(),
+            file_ref.relative_path,
+            file_ref.byte_size,
+            file_ref.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+const fn raw_stream_kind(event: &AgentStreamEvent) -> &'static str {
+    match event {
+        AgentStreamEvent::RunStart { .. } => "run_start",
+        AgentStreamEvent::NodeStart { .. } => "node_start",
+        AgentStreamEvent::NodeComplete { .. } => "node_complete",
+        AgentStreamEvent::Custom { .. } => "custom",
+        AgentStreamEvent::ModelRequest { .. } => "model_request",
+        AgentStreamEvent::ModelStream { .. } => "model_stream",
+        AgentStreamEvent::ModelResponse { .. } => "model_response",
+        AgentStreamEvent::Checkpoint { .. } => "checkpoint",
+        AgentStreamEvent::Suspended { .. } => "suspended",
+        AgentStreamEvent::ToolCall { .. } => "tool_call",
+        AgentStreamEvent::ToolReturn { .. } => "tool_return",
+        AgentStreamEvent::OutputRetry { .. } => "output_retry",
+        AgentStreamEvent::RunComplete { .. } => "run_complete",
+    }
 }
 
 const fn session_status(status: SessionStatus) -> &'static str {

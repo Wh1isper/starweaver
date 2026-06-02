@@ -2,7 +2,7 @@
 
 use serde_json::json;
 use starweaver_core::RunId;
-use starweaver_model::{ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
+use starweaver_model::{ModelResponse, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 
 use super::*;
@@ -298,10 +298,11 @@ async fn transport_builds_sse_and_jsonl_envelopes() {
 }
 
 #[tokio::test]
-async fn default_projector_maps_runtime_stream_to_display_messages() {
+async fn default_projector_maps_runtime_stream_parts_to_display_messages() {
     let projector = DefaultDisplayMessageProjector;
     let session_id = SessionId::from_string("session-project");
     let run_id = RunId::from_string("run-project");
+    let context = DisplayProjectionContext::new(session_id, run_id.clone());
     let start = AgentStreamRecord::new(
         0,
         AgentStreamEvent::RunStart {
@@ -337,11 +338,11 @@ async fn default_projector_maps_runtime_stream_to_display_messages() {
         },
     );
 
-    let context = DisplayProjectionContext::new(session_id, run_id.clone());
     let start_messages = projector.project(&context, &start).await;
     let delta_messages = projector.project(&context, &delta).await;
     let part_start_messages = projector.project(&context, &part_start).await;
     let part_end_messages = projector.project(&context, &part_end).await;
+
     assert_eq!(start_messages[0].kind, DisplayMessageKind::RunStarted);
     assert_eq!(start_messages[0].run_id, run_id);
     assert_eq!(
@@ -358,4 +359,59 @@ async fn default_projector_maps_runtime_stream_to_display_messages() {
         part_end_messages[0].kind,
         DisplayMessageKind::AssistantTextEnd
     );
+}
+
+#[tokio::test]
+async fn default_projector_maps_final_results_and_prefers_context_run_id() {
+    let projector = DefaultDisplayMessageProjector;
+    let session_id = SessionId::from_string("session-project-final");
+    let run_id = RunId::from_string("run-project-final");
+    let context = DisplayProjectionContext::new(session_id, run_id.clone());
+    let model_response = AgentStreamRecord::new(
+        4,
+        AgentStreamEvent::ModelResponse {
+            step: 1,
+            response: ModelResponse::text("done"),
+        },
+    );
+    let final_result = AgentStreamRecord::new(
+        5,
+        AgentStreamEvent::ModelStream {
+            step: 1,
+            event: ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("done"))),
+        },
+    );
+    let runtime_start = AgentStreamRecord::new(
+        6,
+        AgentStreamEvent::RunStart {
+            run_id: RunId::from_string("runtime-run"),
+            conversation_id: starweaver_core::ConversationId::from_string("conv-runtime"),
+        },
+    );
+
+    let model_response_messages = projector.project(&context, &model_response).await;
+    let final_result_messages = projector.project(&context, &final_result).await;
+    let runtime_start_messages = projector.project(&context, &runtime_start).await;
+
+    assert_eq!(model_response_messages.len(), 3);
+    assert_eq!(
+        model_response_messages[0].kind,
+        DisplayMessageKind::AssistantTextStart
+    );
+    assert_eq!(
+        model_response_messages[1].kind,
+        DisplayMessageKind::AssistantTextDelta
+    );
+    assert_eq!(model_response_messages[1].payload["delta"], "done");
+    assert_eq!(
+        model_response_messages[2].kind,
+        DisplayMessageKind::AssistantTextEnd
+    );
+    assert_eq!(final_result_messages.len(), 3);
+    assert_eq!(
+        final_result_messages[1].kind,
+        DisplayMessageKind::AssistantTextDelta
+    );
+    assert_eq!(final_result_messages[1].payload["delta"], "done");
+    assert_eq!(runtime_start_messages[0].run_id, run_id);
 }

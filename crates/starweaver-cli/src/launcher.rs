@@ -28,6 +28,10 @@ pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<Strin
             "sdk={}\nlauncher=starweaver\ncli=starweaver-cli\n",
             sdk_name()
         )),
+        Some("update") => Ok(
+            "update=github-release\nstatus=manual\nmessage=download the latest release asset from https://github.com/Wh1isper/starweaver/releases\n"
+                .to_string(),
+        ),
         Some("cli") => {
             let cli_args = std::iter::once("starweaver-cli".to_string()).chain(args);
             crate::command_output(cli_args)
@@ -86,5 +90,7 @@ mod tests {
         let doctor = command_output(["starweaver".to_string(), "doctor".to_string()]).unwrap();
         assert!(doctor.contains("launcher=starweaver"));
         assert!(doctor.contains("cli=starweaver-cli"));
+        let update = command_output(["starweaver".to_string(), "update".to_string()]).unwrap();
+        assert!(update.contains("update=github-release"));
     }
 }

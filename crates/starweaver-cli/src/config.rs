@@ -3,6 +3,7 @@
 use std::{env, fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
+use toml::Value;
 
 use crate::{args::Cli, error::io_error, CliError, CliResult};
 
@@ -23,7 +24,7 @@ pub struct CliConfig {
     pub auto_trim: bool,
     /// Recent runs to keep for automatic trim.
     pub current_session_keep_recent_runs: usize,
-    /// All sessions keep-days placeholder.
+    /// Retention horizon for future all-session maintenance.
     pub all_sessions_keep_days: u64,
 }
 
@@ -216,6 +217,38 @@ pub fn write_current_session(config: &CliConfig, session_id: &str) -> CliResult<
     Ok(())
 }
 
+/// Set a project config value.
+pub fn set_project_config_value(config: &CliConfig, key: &str, value: &str) -> CliResult<()> {
+    let parsed_value = parse_config_value(key, value)?;
+    let path = config.project_dir.join("config.toml");
+    fs::create_dir_all(&config.project_dir)
+        .map_err(|error| io_error(&config.project_dir, error))?;
+    let mut root = if path.exists() {
+        let content = fs::read_to_string(&path).map_err(|error| io_error(&path, error))?;
+        content
+            .parse::<Value>()
+            .map_err(|error| CliError::Config(error.to_string()))?
+            .as_table()
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        toml::map::Map::new()
+    };
+    let (section, field) = split_config_key(key)?;
+    let section_value = root
+        .entry(section.to_string())
+        .or_insert_with(|| Value::Table(toml::map::Map::new()));
+    let section_table = section_value
+        .as_table_mut()
+        .ok_or_else(|| CliError::Usage(format!("config section {section} is not a table")))?;
+    section_table.insert(field.to_string(), parsed_value);
+    let temp = path.with_extension("toml.tmp");
+    fs::write(&temp, toml::to_string_pretty(&Value::Table(root))?)
+        .map_err(|error| io_error(&temp, error))?;
+    fs::rename(&temp, &path).map_err(|error| io_error(&path, error))?;
+    Ok(())
+}
+
 /// Return a config value by key.
 pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
     let value = match key {
@@ -226,7 +259,51 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "trim.current_session_keep_recent_runs" => {
             config.current_session_keep_recent_runs.to_string()
         }
+        "trim.all_sessions_keep_days" => config.all_sessions_keep_days.to_string(),
         other => return Err(CliError::NotFound(other.to_string())),
     };
     Ok(format!("{value}\n"))
+}
+
+fn split_config_key(key: &str) -> CliResult<(&str, &str)> {
+    if let Some((section, field)) = key.split_once('.') {
+        match (section, field) {
+            ("general", "default_profile")
+            | ("storage", "database_path" | "file_store_path")
+            | (
+                "trim",
+                "auto_after_run" | "current_session_keep_recent_runs" | "all_sessions_keep_days",
+            ) => return Ok((section, field)),
+            _ => {}
+        }
+    }
+    Err(CliError::NotFound(key.to_string()))
+}
+
+fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
+    let parsed = match key {
+        "general.default_profile" | "storage.database_path" | "storage.file_store_path" => {
+            Value::String(value.to_string())
+        }
+        "trim.auto_after_run" => value
+            .parse::<bool>()
+            .map(Value::Boolean)
+            .map_err(|error| CliError::Usage(error.to_string()))?,
+        "trim.current_session_keep_recent_runs" => Value::Integer(
+            value
+                .parse::<usize>()
+                .map_err(|error| CliError::Usage(error.to_string()))?
+                .try_into()
+                .map_err(|error: std::num::TryFromIntError| CliError::Usage(error.to_string()))?,
+        ),
+        "trim.all_sessions_keep_days" => Value::Integer(
+            value
+                .parse::<u64>()
+                .map_err(|error| CliError::Usage(error.to_string()))?
+                .try_into()
+                .map_err(|error: std::num::TryFromIntError| CliError::Usage(error.to_string()))?,
+        ),
+        _ => return Err(CliError::NotFound(key.to_string())),
+    };
+    Ok(parsed)
 }

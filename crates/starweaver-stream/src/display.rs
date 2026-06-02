@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use starweaver_core::{AgentId, Metadata, RunId, SessionId, TraceContext};
-use starweaver_model::{ToolCallPart, ToolReturnPart};
+use starweaver_model::{ModelResponse, ToolCallPart, ToolReturnPart};
 use starweaver_runtime::{
     AgentExecutionNode, AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent,
 };
@@ -266,32 +266,61 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
         context: &DisplayProjectionContext,
         record: &AgentStreamRecord,
     ) -> Vec<DisplayMessage> {
-        let run_id = run_id_for_event(&record.event).unwrap_or_else(|| context.run_id.clone());
-        let message = match &record.event {
+        let run_id = context.run_id.clone();
+        match &record.event {
             AgentStreamEvent::RunStart {
                 conversation_id, ..
-            } => project_run_started(context, record, run_id, conversation_id.as_str()),
+            } => vec![project_run_started(
+                context,
+                record,
+                run_id,
+                conversation_id.as_str(),
+            )],
             AgentStreamEvent::ModelStream { event, .. } => {
                 project_model_stream(context, record.sequence, run_id, event)
             }
+            AgentStreamEvent::ModelResponse { response, .. } => {
+                project_model_response(context, record.sequence, run_id, response)
+            }
             AgentStreamEvent::ToolCall { call, .. } => {
-                project_tool_call(context, record.sequence, run_id, call)
+                vec![project_tool_call(context, record.sequence, run_id, call)]
             }
             AgentStreamEvent::ToolReturn { tool_return, .. } => {
-                project_tool_return(context, record.sequence, run_id, tool_return)
+                vec![project_tool_return(
+                    context,
+                    record.sequence,
+                    run_id,
+                    tool_return,
+                )]
             }
             AgentStreamEvent::Checkpoint { node, step } => {
-                project_checkpoint(context, record.sequence, run_id, *node, *step)
+                vec![project_checkpoint(
+                    context,
+                    record.sequence,
+                    run_id,
+                    *node,
+                    *step,
+                )]
             }
             AgentStreamEvent::RunComplete { output, .. } => {
-                project_run_completed(context, record.sequence, run_id, output)
+                vec![project_run_completed(
+                    context,
+                    record.sequence,
+                    run_id,
+                    output,
+                )]
             }
             AgentStreamEvent::Suspended { reason, node } => {
-                project_run_cancelled(context, record.sequence, run_id, *node, reason)
+                vec![project_run_cancelled(
+                    context,
+                    record.sequence,
+                    run_id,
+                    *node,
+                    reason,
+                )]
             }
-            _ => return Vec::new(),
-        };
-        vec![message]
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -316,9 +345,9 @@ fn project_model_stream(
     sequence: usize,
     run_id: RunId,
     event: &ModelResponseStreamEvent,
-) -> DisplayMessage {
+) -> Vec<DisplayMessage> {
     match event {
-        ModelResponseStreamEvent::PartStart(part) => DisplayMessage::new(
+        ModelResponseStreamEvent::PartStart(part) => vec![DisplayMessage::new(
             sequence,
             context.session_id.clone(),
             run_id,
@@ -329,8 +358,8 @@ fn project_model_stream(
             "role": "assistant",
             "part_index": part.index,
             "part_kind": part.part_kind,
-        })),
-        ModelResponseStreamEvent::PartDelta(delta) => DisplayMessage::new(
+        }))],
+        ModelResponseStreamEvent::PartDelta(delta) => vec![DisplayMessage::new(
             sequence,
             context.session_id.clone(),
             run_id,
@@ -341,8 +370,8 @@ fn project_model_stream(
             "part_index": delta.index,
             "delta": delta.delta,
         }))
-        .with_preview(delta.delta.clone()),
-        ModelResponseStreamEvent::PartEnd(part) => DisplayMessage::new(
+        .with_preview(delta.delta.clone())],
+        ModelResponseStreamEvent::PartEnd(part) => vec![DisplayMessage::new(
             sequence,
             context.session_id.clone(),
             run_id,
@@ -351,19 +380,55 @@ fn project_model_stream(
         .with_payload(json!({
             "message_id": format!("message-{}", part.index),
             "part_index": part.index,
+        }))],
+        ModelResponseStreamEvent::FinalResult(response) => {
+            project_model_response(context, sequence, run_id, response)
+        }
+    }
+}
+
+fn project_model_response(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    response: &ModelResponse,
+) -> Vec<DisplayMessage> {
+    let text = response.text_output();
+    if text.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        DisplayMessage::new(
+            sequence,
+            context.session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::AssistantTextStart,
+        )
+        .with_payload(json!({
+            "message_id": format!("model-response-{sequence}"),
+            "role": "assistant",
         })),
-        ModelResponseStreamEvent::FinalResult(response) => DisplayMessage::new(
+        DisplayMessage::new(
+            sequence,
+            context.session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::AssistantTextDelta,
+        )
+        .with_payload(json!({
+            "message_id": format!("model-response-{sequence}"),
+            "delta": text,
+        }))
+        .with_preview(text),
+        DisplayMessage::new(
             sequence,
             context.session_id.clone(),
             run_id,
             DisplayMessageKind::AssistantTextEnd,
         )
         .with_payload(json!({
-            "message_id": "final",
-            "text": response.text_output(),
-        }))
-        .with_preview(response.text_output()),
-    }
+            "message_id": format!("model-response-{sequence}"),
+        })),
+    ]
 }
 
 fn project_tool_call(
@@ -453,14 +518,6 @@ fn project_run_cancelled(
     )
     .with_payload(json!({"node": node, "reason": reason}))
     .with_preview(reason.to_string())
-}
-
-fn run_id_for_event(event: &AgentStreamEvent) -> Option<RunId> {
-    match event {
-        AgentStreamEvent::RunStart { run_id, .. }
-        | AgentStreamEvent::RunComplete { run_id, .. } => Some(run_id.clone()),
-        _ => None,
-    }
 }
 
 fn default_display_schema() -> String {

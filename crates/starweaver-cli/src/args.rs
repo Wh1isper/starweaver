@@ -2,7 +2,9 @@
 
 use std::ffi::OsString;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
+use serde::{Deserialize, Serialize};
 
 use crate::{CliError, CliResult};
 
@@ -14,7 +16,11 @@ pub struct Cli {
     #[arg(short = 'p', long = "prompt", global = false)]
     pub prompt: Option<String>,
     /// Append a run to the selected session.
-    #[arg(long, global = false, conflicts_with = "new_session")]
+    #[arg(
+        long,
+        global = false,
+        conflicts_with_all = ["new_session", "continue_session"]
+    )]
     pub session: Option<String>,
     /// Continue the latest local session.
     #[arg(
@@ -36,6 +42,9 @@ pub struct Cli {
     /// Output mode.
     #[arg(long, default_value = "display-jsonl", global = false)]
     pub output: OutputMode,
+    /// Headless human-in-the-loop policy for prompt shorthand.
+    #[arg(long, default_value = "deny", global = false)]
+    pub hitl: HitlPolicy,
     /// Override local store database path.
     #[arg(long, global = true)]
     pub store: Option<String>,
@@ -67,6 +76,11 @@ pub enum CliCommand {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Generate shell completion scripts.
+    Completion {
+        /// Target shell.
+        shell: Shell,
+    },
 }
 
 /// Prompt run command.
@@ -76,10 +90,9 @@ pub struct RunCommand {
     #[arg(short = 'p', long = "prompt")]
     pub prompt: Option<String>,
     /// Positional prompt text.
-    #[arg(trailing_var_arg = true)]
     pub prompt_parts: Vec<String>,
     /// Append a run to the selected session.
-    #[arg(long, conflicts_with = "new_session")]
+    #[arg(conflicts_with_all = ["new_session", "continue_session"], long)]
     pub session: Option<String>,
     /// Continue the latest local session.
     #[arg(long, conflicts_with = "new_session")]
@@ -96,7 +109,7 @@ pub struct RunCommand {
     /// Output mode.
     #[arg(long, default_value = "display-jsonl")]
     pub output: OutputMode,
-    /// Headless HITL policy placeholder.
+    /// Headless human-in-the-loop policy.
     #[arg(long, default_value = "deny")]
     pub hitl: HitlPolicy,
 }
@@ -199,7 +212,7 @@ pub struct SessionTrimCommand {
 pub enum ConfigCommand {
     /// Get a resolved config value.
     Get { key: String },
-    /// Set a project config value placeholder.
+    /// Set a project config value.
     Set { key: String, value: String },
 }
 
@@ -214,7 +227,8 @@ pub enum OutputMode {
 }
 
 /// HITL policy.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "snake_case")]
 pub enum HitlPolicy {
     /// Deny approvals.
     #[default]
@@ -225,6 +239,12 @@ pub enum HitlPolicy {
     Fail,
     /// Prompt interactively.
     Prompt,
+}
+
+/// Build the clap command schema.
+#[must_use]
+pub fn command() -> clap::Command {
+    Cli::command()
 }
 
 /// Parse CLI arguments.

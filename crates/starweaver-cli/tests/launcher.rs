@@ -68,3 +68,16 @@ fn launcher_version_and_doctor_are_builtin() {
     assert!(stdout.contains("launcher=starweaver"));
     assert!(stdout.contains("cli=starweaver-cli"));
 }
+
+#[test]
+fn launcher_update_is_builtin() {
+    let temp = tempfile::tempdir().unwrap();
+    let update = env_command(env!("CARGO_BIN_EXE_starweaver"), &temp)
+        .arg("update")
+        .output()
+        .unwrap();
+    assert!(update.status.success());
+    let stdout = String::from_utf8(update.stdout).unwrap();
+    assert!(stdout.contains("update=github-release"));
+    assert!(stdout.contains("status=manual"));
+}
