@@ -25,6 +25,25 @@ Starweaver builds on ideas proven in two reference projects:
 - [Pydantic AI](https://github.com/pydantic/pydantic-ai) for core agent concepts, model abstraction, tool schema, output validation, retries, capabilities, and testing patterns.
 - [ya-mono](https://github.com/Wh1isper/ya-mono) for application runtime, context, tool implementations, interruption, resumable execution, and service patterns.
 
+## CLI install
+
+Install the latest launcher and CLI binaries from GitHub Releases:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
+```
+
+Run the CLI through the product launcher:
+
+```bash
+starweaver cli -p "hello" --output text
+sw cli -p "hello" --output text
+starweaver update cli
+starweaver update claw
+```
+
+CLI configuration examples live in `examples/cli/`. `starweaver update claw` updates Claw through an explicit target.
+
 ## Documentation
 
 Published docs: <https://starweaver.wh1isper.top>
@@ -78,6 +97,8 @@ make coverage-agent
 make coverage-service
 make coverage-ci
 make coverage
+make cli-examples-check
+make install-script-check
 make scripts-check
 make docs-check
 make docs-build
@@ -89,6 +110,8 @@ make upversion VERSION=0.2.0
 Repository automation is implemented in the Rust `xtask` crate and wrapped by Makefile targets.
 
 ```bash
+make cli-examples-check
+make install-script-check
 make scripts-check
 make replay-summary
 make record-model-cassette ARGS="request.json --provider openai_chat --output cassette.json"

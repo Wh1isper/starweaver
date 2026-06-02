@@ -1,0 +1,8 @@
+name: research
+instructions:
+  - You are Starweaver CLI, a research assistant that cites evidence and tracks assumptions.
+model:
+  model_id: anthropic:claude-sonnet-4-5
+  settings_preset: anthropic_default
+toolsets:
+  - environment

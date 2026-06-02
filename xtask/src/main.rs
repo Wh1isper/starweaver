@@ -29,7 +29,9 @@ fn run() -> Result<(), String> {
     let command = args.first().cloned().ok_or_else(usage)?;
     args.remove(0);
     match command.as_str() {
+        "check-cli-examples" => smoke::check_cli_examples(),
         "check-docs-examples" => docs::check_docs_examples(&args),
+        "check-install-script" => smoke::check_install_script(),
         "check-repository-scripts" => smoke::check_repository_scripts(),
         "coverage-gate" => coverage::coverage_gate(&args),
         "finalize-docs-site" => docs::finalize_docs_site(),

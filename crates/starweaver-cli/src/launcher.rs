@@ -1,10 +1,18 @@
 //! Product launcher for `starweaver` and `sw`.
 
-use std::{env, process::Command};
+use std::{
+    env,
+    io::Write as _,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
 
 use starweaver_core::sdk_name;
 
 use crate::{CliError, CliResult};
+
+const INSTALL_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh";
 
 /// Run launcher from process arguments.
 pub fn run_from_env() -> CliResult<()> {
@@ -25,24 +33,122 @@ pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<Strin
     match args.next().as_deref() {
         None | Some("version" | "--version" | "-V") => Ok(format!("{}\n", sdk_name())),
         Some("doctor") => Ok(format!(
-            "sdk={}\nlauncher=starweaver\ncli=starweaver-cli\n",
-            sdk_name()
+            "sdk={}\nlauncher=starweaver\ncli=starweaver-cli\ninstall_script={}\n",
+            sdk_name(),
+            INSTALL_SCRIPT_URL
         )),
-        Some("update") => Ok(
-            "update=github-release\nstatus=manual\nmessage=download the latest release asset from https://github.com/Wh1isper/starweaver/releases\n"
-                .to_string(),
-        ),
+        Some("update") => update_component(args.next().as_deref().unwrap_or("cli")),
         Some("cli") => {
-            let cli_args = std::iter::once("starweaver-cli".to_string()).chain(args);
+            let remaining = args.collect::<Vec<_>>();
+            if remaining.first().is_some_and(|arg| arg == "update") {
+                return update_component("cli");
+            }
+            let cli_args = std::iter::once("starweaver-cli".to_string()).chain(remaining);
             crate::command_output(cli_args)
+        }
+        Some("claw") => {
+            let remaining = args.collect::<Vec<_>>();
+            if remaining.first().is_some_and(|arg| arg == "update") {
+                return update_component("claw");
+            }
+            dispatch_external("claw", remaining)
         }
         Some(command) => dispatch_external(command, args.collect()),
     }
 }
 
+fn update_component(component: &str) -> CliResult<String> {
+    let install_dir = env::var("STARWEAVER_INSTALL_DIR").unwrap_or_else(|_| default_install_dir());
+    update_component_with_options(
+        component,
+        &install_dir,
+        env::var_os("STARWEAVER_UPDATE_DRY_RUN").is_some(),
+    )
+}
+
+fn update_component_with_options(
+    component: &str,
+    install_dir: &str,
+    dry_run: bool,
+) -> CliResult<String> {
+    let normalized = match component {
+        "cli" | "starweaver-cli" | "starweaver" | "launcher" => "cli",
+        "claw" | "starweaver-claw" => "claw",
+        other => return Err(CliError::Usage(format!("unknown update target {other}"))),
+    };
+    let command = format!(
+        "curl -fsSL {INSTALL_SCRIPT_URL} | STARWEAVER_COMPONENTS={normalized} STARWEAVER_INSTALL_DIR={} sh",
+        shell_quote(install_dir)
+    );
+    if dry_run {
+        return Ok(format!(
+            "update=github-release\ntarget={normalized}\nstatus=dry-run\ncommand={command}\n"
+        ));
+    }
+    let script = fetch_install_script()?;
+    let mut child = Command::new("sh")
+        .env("STARWEAVER_COMPONENTS", normalized)
+        .env("STARWEAVER_INSTALL_DIR", install_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| CliError::Run(error.to_string()))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| CliError::Run("installer stdin unavailable".to_string()))?
+        .write_all(script.as_bytes())
+        .map_err(|error| CliError::Run(error.to_string()))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| CliError::Run(error.to_string()))?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(format!(
+            "update=github-release\ntarget={normalized}\nstatus=updated\n{stdout}"
+        ))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(CliError::Run(format!(
+            "update target {normalized} exited with status {}: {stderr}",
+            output.status
+        )))
+    }
+}
+
+fn fetch_install_script() -> CliResult<String> {
+    let output = Command::new("curl")
+        .arg("-fsSL")
+        .arg(INSTALL_SCRIPT_URL)
+        .output()
+        .map_err(|error| CliError::Run(format!("failed to run curl: {error}")))?;
+    if output.status.success() {
+        String::from_utf8(output.stdout).map_err(|error| CliError::Run(error.to_string()))
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(CliError::Run(format!(
+            "failed to download installer from {INSTALL_SCRIPT_URL}: {stderr}"
+        )))
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn default_install_dir() -> String {
+    env::var_os("HOME")
+        .map_or_else(|| PathBuf::from("."), PathBuf::from)
+        .join(".local/bin")
+        .display()
+        .to_string()
+}
+
 fn dispatch_external(command: &str, args: Vec<String>) -> CliResult<String> {
     let binary = format!("starweaver-{command}");
-    let output = Command::new(&binary)
+    let program = find_installed_binary(&binary).unwrap_or_else(|| PathBuf::from(&binary));
+    let output = Command::new(&program)
         .args(args)
         .output()
         .map_err(|error| CliError::Usage(format!("unknown command {command}: {error}")))?;
@@ -55,6 +161,13 @@ fn dispatch_external(command: &str, args: Vec<String>) -> CliResult<String> {
             output.status
         )))
     }
+}
+
+fn find_installed_binary(binary: &str) -> Option<PathBuf> {
+    let current = env::current_exe().ok()?;
+    let install_dir = current.parent()?;
+    let candidate = install_dir.join(binary);
+    candidate.exists().then_some(candidate)
 }
 
 #[cfg(test)]
@@ -82,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn launcher_reports_version_and_doctor() {
+    fn launcher_reports_version_doctor_and_update_plan() {
         assert_eq!(
             command_output(["sw".to_string(), "version".to_string()]).unwrap(),
             "starweaver-agent-sdk\n"
@@ -90,7 +203,14 @@ mod tests {
         let doctor = command_output(["starweaver".to_string(), "doctor".to_string()]).unwrap();
         assert!(doctor.contains("launcher=starweaver"));
         assert!(doctor.contains("cli=starweaver-cli"));
-        let update = command_output(["starweaver".to_string(), "update".to_string()]).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let install_dir = temp.path().display().to_string();
+        let update = update_component_with_options("cli", &install_dir, true).unwrap();
         assert!(update.contains("update=github-release"));
+        assert!(update.contains("target=cli"));
+        assert!(update.contains("status=dry-run"));
+        let quoted = update_component_with_options("claw", "dir with ' quote", true).unwrap();
+        assert!(quoted.contains("target=claw"));
+        assert!(quoted.contains("'\\''"));
     }
 }

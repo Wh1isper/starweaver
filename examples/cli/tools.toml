@@ -1,0 +1,10 @@
+# Example tool metadata file.
+# Copy to ~/.starweaver/tools.toml or .starweaver/tools.toml.
+
+[tools]
+need_approval = ["shell", "write", "edit"]
+
+[tools.defaults]
+network = "allow"
+filesystem = "workspace-read"
+shell = "disabled"

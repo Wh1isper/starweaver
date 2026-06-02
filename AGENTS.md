@@ -165,7 +165,7 @@ To ask the assistant to prepare a unified-version release, use GitHub CLI from t
 gh workflow run prepare-release.yml -f version=0.2.0 -f run_full_ci=true
 ```
 
-This creates a `release/v0.2.0` pull request. After the pull request merges, `draft-release.yml` creates a draft GitHub Release with `starweaver-cli` binary assets. Publishing that draft release triggers `release.yml`, which publishes crates through the `Release` environment.
+This creates a `release/v0.2.0` pull request. After the pull request merges, `draft-release.yml` creates a draft GitHub Release with `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, `starweaver-claw` archives containing `starweaver-claw`, and `checksums.txt`. Publishing that draft release triggers `release.yml`, which publishes crates through the `Release` environment.
 
 For repository-wide hooks, run:
 

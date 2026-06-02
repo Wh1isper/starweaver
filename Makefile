@@ -91,8 +91,18 @@ scrub-model-cassette: ## Scrub a model cassette; pass ARGS="cassette.json --outp
 import-model-cassette: ## Import a scrubbed cassette; pass ARGS="cassette.scrubbed.json"
 	@$(XTASK) import-model-cassettes $(ARGS)
 
+.PHONY: cli-examples-check
+cli-examples-check: ## Validate CLI configuration examples
+	@echo "Checking CLI examples"
+	@$(XTASK) check-cli-examples
+
+.PHONY: install-script-check
+install-script-check: ## Validate GitHub install and update script semantics
+	@echo "Checking install script"
+	@$(XTASK) check-install-script
+
 .PHONY: scripts-check
-scripts-check: ## Validate repository automation scripts through xtask
+scripts-check: cli-examples-check install-script-check ## Validate repository automation scripts through xtask
 	@echo "Checking repository scripts"
 	@$(XTASK) check-repository-scripts
 

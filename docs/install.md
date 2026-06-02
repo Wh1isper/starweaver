@@ -1,6 +1,64 @@
 # Install
 
-Starweaver is a workspace crate set. Add the SDK facade from the workspace or consume the lower-level crates directly.
+Starweaver can be used as a Rust workspace and as an installed CLI product.
+
+## CLI install
+
+Install the latest GitHub Release into `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
+```
+
+The installer downloads the platform archive, verifies `checksums.txt` when the release provides it, installs `starweaver`, `starweaver-cli`, and `sw` for CLI installs, installs `starweaver-claw` for Claw installs, and adds the install directory to the shell profile when needed.
+
+Pinned install:
+
+```bash
+STARWEAVER_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
+```
+
+Custom install directory:
+
+```bash
+STARWEAVER_INSTALL_DIR="$HOME/bin" curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
+```
+
+Installer environment variables:
+
+| Variable                    | Purpose                                                 |
+| --------------------------- | ------------------------------------------------------- |
+| `STARWEAVER_VERSION`        | install a specific release tag, such as `v0.1.0`        |
+| `STARWEAVER_INSTALL_DIR`    | choose an install directory                             |
+| `STARWEAVER_COMPONENTS`     | comma-separated components, such as `cli` or `cli,claw` |
+| `STARWEAVER_NO_MODIFY_PATH` | set to `1` to skip shell profile updates                |
+| `STARWEAVER_GITHUB_REPO`    | override the release repository for forks               |
+
+Launcher usage:
+
+```bash
+starweaver version
+starweaver doctor
+starweaver cli -p "hello" --output text
+sw cli -p "hello" --output text
+```
+
+Update the CLI binaries through the launcher:
+
+```bash
+starweaver update
+starweaver update cli
+starweaver cli update
+```
+
+Claw binaries use a separate update target:
+
+```bash
+starweaver update claw
+starweaver claw update
+```
+
+The update command invokes the same installer with `STARWEAVER_COMPONENTS=cli` or `STARWEAVER_COMPONENTS=claw`, so CLI updates replace CLI launcher binaries and Claw updates replace the Claw command binary. Claw uses an explicit update command; it is not updated automatically during CLI updates.
 
 ## Workspace development
 

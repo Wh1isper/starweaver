@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "docs": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@example/docs-mcp"],
+      "env": {}
+    }
+  }
+}

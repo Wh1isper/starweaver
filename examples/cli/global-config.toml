@@ -1,0 +1,31 @@
+# Example global Starweaver CLI config.
+# Copy to ~/.starweaver/config.toml.
+
+[general]
+default_profile = "general"
+default_output = "text"
+default_hitl = "deny"
+profile_search_paths = ["profiles", "agents", "~/.starweaver/profiles"]
+
+[providers.openai]
+enabled = true
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://api.openai.com/v1"
+
+[providers.anthropic]
+enabled = true
+api_key_env = "ANTHROPIC_API_KEY"
+base_url = "https://api.anthropic.com/v1"
+
+[providers.gemini]
+enabled = true
+api_key_env = "GEMINI_API_KEY"
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+[update]
+channel = "stable"
+
+[trim]
+auto_after_run = true
+current_session_keep_recent_runs = 20
+all_sessions_keep_days = 60

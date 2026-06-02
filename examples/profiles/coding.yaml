@@ -1,0 +1,10 @@
+name: coding
+instructions:
+  - You are Starweaver CLI, a coding assistant focused on concise implementation help.
+model:
+  model_id: openai:gpt-5
+  settings_preset: openai_responses_medium
+toolsets:
+  - environment
+  - filesystem
+  - shell

@@ -648,3 +648,152 @@ fn cli_trim_older_than_dry_run_preserves_recent_and_active_runs() {
     let report: serde_json::Value = serde_json::from_slice(&trim.stdout).unwrap();
     assert_eq!(report["runs_to_trim"], 0);
 }
+
+#[test]
+fn cli_text_output_profiles_config_init_and_provider_config_work() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let text = cli(&temp)
+        .args(["run", "hello text", "--output", "text"])
+        .output()
+        .unwrap();
+    assert!(
+        text.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&text.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(text.stdout).unwrap(),
+        "local echo: hello text\n"
+    );
+
+    let init = cli(&temp)
+        .args(["config", "init", "--global"])
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    assert!(temp.path().join("global/config.toml").exists());
+
+    let set = cli(&temp)
+        .args([
+            "config",
+            "set",
+            "--global",
+            "providers.openai.base_url",
+            "https://gateway.example/v1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        set.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let get = cli(&temp)
+        .args(["config", "get", "providers.openai.base_url"])
+        .output()
+        .unwrap();
+    assert!(get.status.success());
+    assert_eq!(
+        String::from_utf8(get.stdout).unwrap(),
+        "https://gateway.example/v1\n"
+    );
+
+    let profiles = cli(&temp).args(["profile", "list"]).output().unwrap();
+    assert!(profiles.status.success());
+    let stdout = String::from_utf8(profiles.stdout).unwrap();
+    assert!(stdout.contains("\"name\":\"coding\""));
+    assert!(stdout.contains("openai:gpt-5"));
+
+    let show = cli(&temp)
+        .args(["profile", "show", "coding"])
+        .output()
+        .unwrap();
+    assert!(show.status.success());
+    let stdout = String::from_utf8(show.stdout).unwrap();
+    assert!(stdout.contains("name: coding"));
+    assert!(stdout.contains("model_id: openai:gpt-5"));
+
+    let missing_key = cli(&temp)
+        .args(["run", "hello", "--profile", "coding", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(!missing_key.status.success());
+    assert!(String::from_utf8_lossy(&missing_key.stderr).contains("missing OPENAI_API_KEY"));
+}
+
+#[test]
+fn cli_provider_missing_or_empty_key_does_not_create_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let invalid_env = cli(&temp)
+        .args(["config", "set", "environment.provider", "remote-for-test"])
+        .output()
+        .unwrap();
+    assert!(!invalid_env.status.success());
+
+    fs::create_dir_all(temp.path().join(".starweaver")).unwrap();
+    fs::write(
+        temp.path().join(".starweaver/config.toml"),
+        r#"
+[environment]
+provider = "remote-for-test"
+"#,
+    )
+    .unwrap();
+    let invalid_env_run = cli(&temp)
+        .args(["run", "hello", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(!invalid_env_run.status.success());
+    assert!(
+        String::from_utf8_lossy(&invalid_env_run.stderr).contains("unknown environment provider")
+    );
+    fs::remove_file(temp.path().join(".starweaver/config.toml")).unwrap();
+
+    let missing_key = cli(&temp)
+        .args(["run", "hello", "--profile", "coding", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(!missing_key.status.success());
+    assert!(String::from_utf8_lossy(&missing_key.stderr).contains("missing OPENAI_API_KEY"));
+
+    let list = cli(&temp).args(["session", "list"]).output().unwrap();
+    assert!(
+        list.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    assert!(String::from_utf8(list.stdout).unwrap().is_empty());
+
+    let empty_key = cli(&temp)
+        .env("OPENAI_API_KEY", "   ")
+        .args(["run", "hello", "--profile", "coding", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(!empty_key.status.success());
+    assert!(String::from_utf8_lossy(&empty_key.stderr).contains("missing OPENAI_API_KEY"));
+
+    let ready = cli(&temp)
+        .env("OPENAI_API_KEY", "   ")
+        .args(["config", "get", "providers.openai.ready"])
+        .output()
+        .unwrap();
+    assert!(ready.status.success());
+    assert_eq!(String::from_utf8(ready.stdout).unwrap(), "false\n");
+
+    let invalid_hitl = cli(&temp)
+        .args(["config", "set", "general.default_hitl", "maybe"])
+        .output()
+        .unwrap();
+    assert!(!invalid_hitl.status.success());
+
+    let empty_env = cli(&temp)
+        .args(["config", "set", "providers.openai.api_key_env", "   "])
+        .output()
+        .unwrap();
+    assert!(!empty_env.status.success());
+}

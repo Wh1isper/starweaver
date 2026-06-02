@@ -69,6 +69,12 @@ pub enum CliCommand {
         #[command(subcommand)]
         command: SessionCommand,
     },
+    /// Manage agent profiles.
+    Profile {
+        /// Profile subcommand.
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
     /// Print diagnostics.
     Diagnostics,
     /// Print replay-check guidance.
@@ -216,9 +222,30 @@ pub struct SessionTrimCommand {
     pub output: OutputMode,
 }
 
+/// Profile commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum ProfileCommand {
+    /// List built-in and configured profiles.
+    List,
+    /// Show one built-in or configured profile.
+    Show { name: String },
+}
+
 /// Config commands.
 #[derive(Clone, Debug, Subcommand)]
 pub enum ConfigCommand {
+    /// Initialize a Starweaver config file.
+    Init {
+        /// Write the global config file.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write the project config file.
+        #[arg(long)]
+        project: bool,
+        /// Replace an existing config file.
+        #[arg(long)]
+        force: bool,
+    },
     /// Get a resolved config value.
     Get { key: String },
     /// Set a config value.
@@ -240,6 +267,8 @@ pub enum ConfigCommand {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputMode {
+    /// Human-readable text.
+    Text,
     /// Starweaver AGUI-compatible `DisplayMessage` JSON lines.
     #[default]
     DisplayJsonl,

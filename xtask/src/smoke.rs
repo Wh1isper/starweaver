@@ -7,6 +7,69 @@ use crate::{
     docs::check_docs_examples,
 };
 
+pub fn check_cli_examples() -> Result<(), String> {
+    let root = crate::common::root()?;
+    let examples = root.join("examples/cli");
+    let required = [
+        "README.md",
+        "global-config.toml",
+        "project-config.toml",
+        "provider-gateway-config.toml",
+        "tools.toml",
+        "mcp.json",
+    ];
+    for name in required {
+        let path = examples.join(name);
+        if !path.exists() {
+            return Err(format!("missing CLI example: {}", path.display()));
+        }
+    }
+    for name in [
+        "global-config.toml",
+        "project-config.toml",
+        "provider-gateway-config.toml",
+        "tools.toml",
+    ] {
+        let path = examples.join(name);
+        let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+        text.parse::<toml::Value>()
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+    }
+    let mcp = examples.join("mcp.json");
+    let mcp_value = read_json(&mcp)?;
+    if mcp_value.pointer("/servers/docs/transport") != Some(&Value::String("stdio".to_string())) {
+        return Err("examples/cli/mcp.json must include a stdio docs server".to_string());
+    }
+    println!("CLI examples validated");
+    Ok(())
+}
+
+pub fn check_install_script() -> Result<(), String> {
+    let root = crate::common::root()?;
+    let install_path = root.join("scripts/install.sh");
+    run_command(Command::new("sh").arg("-n").arg(&install_path))?;
+    let install_script = fs::read_to_string(&install_path).map_err(|error| error.to_string())?;
+    for required in [
+        "STARWEAVER_COMPONENTS:-cli",
+        "starweaver-cli-$tag-$target",
+        "starweaver-claw-$tag-$target",
+        "archive missing expected binary",
+        "checksums.txt",
+        "ln -s \"starweaver\" \"$INSTALL_DIR/sw\"",
+    ] {
+        if !install_script.contains(required) {
+            return Err(format!(
+                "installer missing required update/install behavior: {required}"
+            ));
+        }
+    }
+    if install_script.contains("need tar\n  tag=") {
+        return Err("installer should require tar only for tar archives".to_string());
+    }
+    println!("install script validated");
+    Ok(())
+}
+
 pub fn check_repository_scripts() -> Result<(), String> {
     let tmp = env::temp_dir().join(format!("starweaver-script-check-{}", std::process::id()));
     if tmp.exists() {
@@ -14,6 +77,8 @@ pub fn check_repository_scripts() -> Result<(), String> {
     }
     fs::create_dir_all(&tmp).map_err(|error| error.to_string())?;
     let result = (|| {
+        check_install_script()?;
+        check_cli_examples()?;
         let request = tmp.join("request.json");
         let response = tmp.join("response.json");
         let cassette = tmp.join("cassette.json");

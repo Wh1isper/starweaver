@@ -1395,6 +1395,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "serde_yaml",
  "starweaver-agent",
  "starweaver-core",
  "starweaver-environment",
@@ -2340,6 +2341,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "toml",
 ]
 
 [[package]]

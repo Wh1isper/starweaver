@@ -1,0 +1,23 @@
+# Example project Starweaver CLI config.
+# Copy to .starweaver/config.toml.
+
+[general]
+default_profile = "workspace"
+default_output = "text"
+default_hitl = "deny"
+profile_search_paths = ["profiles", "agents", "../examples/profiles"]
+
+[storage]
+database_path = "starweaver.sqlite"
+file_store_path = "store"
+
+[environment]
+provider = "local"
+files_policy = "read_only"
+shell_enabled = false
+workspace_root = ".."
+
+[trim]
+auto_after_run = true
+current_session_keep_recent_runs = 20
+all_sessions_keep_days = 60

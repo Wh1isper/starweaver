@@ -73,11 +73,35 @@ fn launcher_version_and_doctor_are_builtin() {
 fn launcher_update_is_builtin() {
     let temp = tempfile::tempdir().unwrap();
     let update = env_command(env!("CARGO_BIN_EXE_starweaver"), &temp)
+        .env("STARWEAVER_UPDATE_DRY_RUN", "1")
+        .env("STARWEAVER_INSTALL_DIR", temp.path().join("bin"))
         .arg("update")
         .output()
         .unwrap();
     assert!(update.status.success());
     let stdout = String::from_utf8(update.stdout).unwrap();
     assert!(stdout.contains("update=github-release"));
-    assert!(stdout.contains("status=manual"));
+    assert!(stdout.contains("target=cli"));
+    assert!(stdout.contains("status=dry-run"));
+}
+
+#[test]
+fn launcher_update_quotes_install_dir_in_dry_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let install_dir = temp.path().join("bin with ' quote");
+    let update = env_command(env!("CARGO_BIN_EXE_starweaver"), &temp)
+        .env("STARWEAVER_UPDATE_DRY_RUN", "1")
+        .env("STARWEAVER_INSTALL_DIR", &install_dir)
+        .args(["update", "claw"])
+        .output()
+        .unwrap();
+    assert!(
+        update.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let stdout = String::from_utf8(update.stdout).unwrap();
+    assert!(stdout.contains("target=claw"));
+    assert!(stdout.contains("'\\''"));
+    assert!(stdout.contains("STARWEAVER_COMPONENTS=claw"));
 }

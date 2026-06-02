@@ -86,25 +86,53 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            name: x86_64-unknown-linux-gnu
+            name: cli-x86_64-unknown-linux-gnu
+            package: starweaver-cli
             target: x86_64-unknown-linux-gnu
             archive: starweaver-cli-${{ needs.resolve.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz
-            bin: starweaver-cli
+            bins: "starweaver starweaver-cli sw"
           - os: macos-latest
-            name: x86_64-apple-darwin
+            name: cli-x86_64-apple-darwin
+            package: starweaver-cli
             target: x86_64-apple-darwin
             archive: starweaver-cli-${{ needs.resolve.outputs.tag }}-x86_64-apple-darwin.tar.gz
-            bin: starweaver-cli
+            bins: "starweaver starweaver-cli sw"
           - os: macos-latest
-            name: aarch64-apple-darwin
+            name: cli-aarch64-apple-darwin
+            package: starweaver-cli
             target: aarch64-apple-darwin
             archive: starweaver-cli-${{ needs.resolve.outputs.tag }}-aarch64-apple-darwin.tar.gz
-            bin: starweaver-cli
+            bins: "starweaver starweaver-cli sw"
           - os: windows-latest
-            name: x86_64-pc-windows-msvc
+            name: cli-x86_64-pc-windows-msvc
+            package: starweaver-cli
             target: x86_64-pc-windows-msvc
             archive: starweaver-cli-${{ needs.resolve.outputs.tag }}-x86_64-pc-windows-msvc.zip
-            bin: starweaver-cli.exe
+            bins: "starweaver.exe starweaver-cli.exe sw.exe"
+          - os: ubuntu-latest
+            name: claw-x86_64-unknown-linux-gnu
+            package: starweaver-claw
+            target: x86_64-unknown-linux-gnu
+            archive: starweaver-claw-${{ needs.resolve.outputs.tag }}-x86_64-unknown-linux-gnu.tar.gz
+            bins: "starweaver-claw"
+          - os: macos-latest
+            name: claw-x86_64-apple-darwin
+            package: starweaver-claw
+            target: x86_64-apple-darwin
+            archive: starweaver-claw-${{ needs.resolve.outputs.tag }}-x86_64-apple-darwin.tar.gz
+            bins: "starweaver-claw"
+          - os: macos-latest
+            name: claw-aarch64-apple-darwin
+            package: starweaver-claw
+            target: aarch64-apple-darwin
+            archive: starweaver-claw-${{ needs.resolve.outputs.tag }}-aarch64-apple-darwin.tar.gz
+            bins: "starweaver-claw"
+          - os: windows-latest
+            name: claw-x86_64-pc-windows-msvc
+            package: starweaver-claw
+            target: x86_64-pc-windows-msvc
+            archive: starweaver-claw-${{ needs.resolve.outputs.tag }}-x86_64-pc-windows-msvc.zip
+            bins: "starweaver-claw.exe"
     steps:
       - name: Checkout release commit
         uses: actions/checkout@v4
@@ -119,20 +147,22 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Build binary
+      - name: Build binaries
         run: |
-          cargo build --release --locked -p starweaver-cli --bin starweaver-cli --target "${{ matrix.target }}"
+          cargo build --release --locked -p "${{ matrix.package }}" --bins --target "${{ matrix.target }}"
           out_dir="target/${{ matrix.target }}/release"
           mkdir -p dist
-          cp "$out_dir/${{ matrix.bin }}" dist/
+          for bin in ${{ matrix.bins }}; do
+            cp "$out_dir/$bin" dist/
+          done
 
-      - name: Archive Unix binary
+      - name: Archive Unix binaries
         if: runner.os != 'Windows'
-        run: tar -czf "${{ matrix.archive }}" -C dist "${{ matrix.bin }}"
+        run: tar -czf "${{ matrix.archive }}" -C dist .
 
-      - name: Archive Windows binary
+      - name: Archive Windows binaries
         if: runner.os == 'Windows'
-        run: powershell -NoProfile -Command "Compress-Archive -Path dist/${{ matrix.bin }} -DestinationPath ${{ matrix.archive }}"
+        run: powershell -NoProfile -Command "Compress-Archive -Path dist/* -DestinationPath ${{ matrix.archive }}"
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
@@ -151,6 +181,15 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum * > checksums.txt
+          else
+            shasum -a 256 * > checksums.txt
+          fi
 
       - name: Create draft release
         env:

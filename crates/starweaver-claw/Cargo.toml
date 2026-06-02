@@ -12,6 +12,10 @@ readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
+[[bin]]
+name = "starweaver-claw"
+path = "src/main.rs"
+
 [dependencies]
 starweaver-session.workspace = true
 starweaver-stream.workspace = true

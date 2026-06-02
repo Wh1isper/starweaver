@@ -1,0 +1,10 @@
+name: workspace
+instructions:
+  - You are Starweaver CLI, a workspace assistant with file and shell tools governed by local policy.
+model:
+  model_id: openai:gpt-5
+  settings_preset: openai_responses_medium
+toolsets:
+  - environment
+  - filesystem
+  - shell

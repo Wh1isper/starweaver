@@ -31,6 +31,7 @@ chrono.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 starweaver-agent.workspace = true
 starweaver-core.workspace = true
 starweaver-environment.workspace = true

@@ -13,7 +13,8 @@ flowchart TD
     Merge[Merge release pull request]
     DraftWorkflow[draft-release.yml]
     Draft[Create draft GitHub release with tag vX.Y.Z]
-    Artifacts[Build Linux macOS Windows starweaver-cli binaries]
+    Artifacts[Build Linux macOS Windows CLI launcher archives]
+    Checksums[Generate checksums.txt]
     Upload[Upload artifacts to draft release]
     Publish[Publish GitHub release]
     ReleaseWorkflow[release.yml on release.published]
@@ -22,7 +23,7 @@ flowchart TD
 
     Dispatch --> Upversion --> PrepChecks --> PR --> Merge --> DraftWorkflow
     DraftWorkflow --> Draft
-    DraftWorkflow --> Artifacts --> Upload
+    DraftWorkflow --> Artifacts --> Checksums --> Upload
     Draft --> Publish --> ReleaseWorkflow --> Checks --> Crates
 ```
 
@@ -55,9 +56,9 @@ The workflow opens a pull request from `release/v0.2.0` with the version changes
 
 ## Draft release
 
-When a `release/vX.Y.Z` pull request is merged into `main`, `draft-release.yml` validates the merged release commit, runs `make ci-all`, builds `starweaver-cli` binaries, creates a draft GitHub Release for tag `vX.Y.Z`, and uploads the binary archives to that draft release.
+When a `release/vX.Y.Z` pull request is merged into `main`, `draft-release.yml` validates the merged release commit, runs `make ci-all`, builds CLI launcher binaries and Claw binaries, creates a draft GitHub Release for tag `vX.Y.Z`, and uploads binary archives plus `checksums.txt` to that draft release.
 
-Review the draft release, release notes, target commit, and assets before publishing it.
+Review the draft release, release notes, target commit, install command, update command, alias behavior, and assets before publishing it.
 
 ## Local upversion
 
@@ -97,11 +98,77 @@ The local dry run packages and verifies `starweaver-core`. Dependent crates can 
 
 ## Binary artifacts
 
-The draft release workflow builds `starweaver-cli` artifacts for:
+The draft release workflow builds CLI archives for:
 
-- `starweaver-cli` for `x86_64-unknown-linux-gnu`
-- `starweaver-cli` for `x86_64-apple-darwin`
-- `starweaver-cli` for `aarch64-apple-darwin`
-- `starweaver-cli.exe` for `x86_64-pc-windows-msvc`
+- `starweaver-cli-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
+- `starweaver-cli-vX.Y.Z-x86_64-apple-darwin.tar.gz`
+- `starweaver-cli-vX.Y.Z-aarch64-apple-darwin.tar.gz`
+- `starweaver-cli-vX.Y.Z-x86_64-pc-windows-msvc.zip`
 
-Artifacts are uploaded to the draft GitHub Release generated from the `vX.Y.Z` tag.
+It also builds Claw archives for:
+
+- `starweaver-claw-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
+- `starweaver-claw-vX.Y.Z-x86_64-apple-darwin.tar.gz`
+- `starweaver-claw-vX.Y.Z-aarch64-apple-darwin.tar.gz`
+- `starweaver-claw-vX.Y.Z-x86_64-pc-windows-msvc.zip`
+
+Unix archives contain:
+
+```text
+starweaver
+starweaver-cli
+sw
+```
+
+Windows CLI archives contain:
+
+```text
+starweaver.exe
+starweaver-cli.exe
+sw.exe
+```
+
+Unix Claw archives contain:
+
+```text
+starweaver-claw
+```
+
+Windows Claw archives contain:
+
+```text
+starweaver-claw.exe
+```
+
+The draft release also includes `checksums.txt` with SHA-256 checksums for all archives. `scripts/install.sh` downloads these artifacts, verifies checksums when present, installs `starweaver`, `starweaver-cli`, and `sw` for CLI installs, and installs `starweaver-claw` for Claw installs.
+
+## Install and update commands
+
+Latest install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
+```
+
+Pinned install:
+
+```bash
+STARWEAVER_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
+```
+
+Update CLI launcher binaries:
+
+```bash
+starweaver update
+starweaver update cli
+starweaver cli update
+```
+
+Update Claw binaries explicitly:
+
+```bash
+starweaver update claw
+starweaver claw update
+```
+
+CLI update commands set `STARWEAVER_COMPONENTS=cli`; Claw update commands set `STARWEAVER_COMPONENTS=claw`. Claw is not updated automatically during CLI updates.

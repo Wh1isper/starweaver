@@ -1,18 +1,23 @@
 //! CLI service layer over local storage and SDK execution.
 
+use std::fmt::Write as _;
+
 use clap_complete::Shell;
 use serde_json::{json, Value};
 use starweaver_core::sdk_name;
-use starweaver_stream::DisplayMessage;
+use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
 use crate::{
-    args::{Cli, CliCommand, ConfigCommand, OutputMode, RunCommand, SessionCommand},
+    args::{
+        Cli, CliCommand, ConfigCommand, OutputMode, ProfileCommand, RunCommand, SessionCommand,
+    },
     config::{
-        get_config_value, read_current_session, write_current_session, CliConfig, ConfigScope,
+        get_config_value, init_config_file, read_current_session, write_current_session, CliConfig,
+        ConfigScope,
     },
     environment::resolve_environment,
     local_store::{LocalStore, RunSummary, SessionSummary, TrimReport},
-    profiles::resolve_profile,
+    profiles::{list_profiles, resolve_profile, show_profile},
     runner::{execute_agent_session, failed_display_message, CliRunPolicy},
     CliError, CliResult,
 };
@@ -55,6 +60,7 @@ impl CliService {
             }
             CliCommand::Run(command) => self.run_prompt(&command),
             CliCommand::Session { command } => self.session(command),
+            CliCommand::Profile { command } => self.profile(command),
             CliCommand::Config { command } => self.config(command),
             CliCommand::Completion { shell } => render_completion(shell),
         }
@@ -62,7 +68,13 @@ impl CliService {
 
     fn run_prompt(&mut self, command: &RunCommand) -> CliResult<String> {
         let prompt = command.prompt_text()?;
-        let (session_id, created) = self.resolve_session(command)?;
+        let selected_profile = command
+            .profile
+            .as_deref()
+            .unwrap_or(&self.config.default_profile);
+        let resolved_profile = resolve_profile(&self.config, Some(selected_profile))?;
+        let environment = resolve_environment(&self.config)?;
+        let (session_id, created) = self.resolve_session(command, &resolved_profile.name)?;
         let restore_from = command
             .run
             .clone()
@@ -81,11 +93,6 @@ impl CliService {
                         })
                 }
             });
-        let selected_profile = command
-            .profile
-            .as_deref()
-            .unwrap_or(&self.config.default_profile);
-        let resolved_profile = resolve_profile(&self.config, Some(selected_profile))?;
         let mut run = self.store.append_run(
             &session_id,
             prompt.clone(),
@@ -93,7 +100,6 @@ impl CliService {
             &resolved_profile.name,
         )?;
         write_current_session(&self.config, &session_id)?;
-        let environment = resolve_environment(&self.config)?;
         let restore_state = self
             .store
             .load_restore_state(&session_id, restore_from.as_deref())?;
@@ -127,6 +133,7 @@ impl CliService {
         }
         let output_mode = command.output.unwrap_or(self.config.default_output);
         match output_mode {
+            OutputMode::Text => Ok(render_display_text(&messages)),
             OutputMode::DisplayJsonl => render_display_jsonl(&messages),
             OutputMode::Silent => Ok(format!(
                 "session_id={}\nrun_id={}\nstatus={}\n",
@@ -137,12 +144,15 @@ impl CliService {
         }
     }
 
-    fn resolve_session(&mut self, command: &RunCommand) -> CliResult<(String, bool)> {
+    fn resolve_session(
+        &mut self,
+        command: &RunCommand,
+        profile: &str,
+    ) -> CliResult<(String, bool)> {
         if command.new_session {
-            let session = self.store.create_session(
-                &self.config.default_profile,
-                Some("CLI session".to_string()),
-            )?;
+            let session = self
+                .store
+                .create_session(profile, Some("CLI session".to_string()))?;
             return Ok((session.session_id.as_str().to_string(), true));
         }
         if let Some(session_id) = command.session.as_ref() {
@@ -164,10 +174,9 @@ impl CliService {
                 return Ok((session_id, false));
             }
         }
-        let session = self.store.create_session(
-            &self.config.default_profile,
-            Some("CLI session".to_string()),
-        )?;
+        let session = self
+            .store
+            .create_session(profile, Some("CLI session".to_string()))?;
         Ok((session.session_id.as_str().to_string(), true))
     }
 
@@ -190,6 +199,7 @@ impl CliService {
                     command.after,
                 )?;
                 match command.output {
+                    OutputMode::Text => Ok(render_display_text(&messages)),
                     OutputMode::DisplayJsonl => render_display_jsonl(&messages),
                     OutputMode::Silent => Ok(format!(
                         "session_id={}\nmessages={}\nstatus=replayed\n",
@@ -222,8 +232,35 @@ impl CliService {
         }
     }
 
+    fn profile(&self, command: ProfileCommand) -> CliResult<String> {
+        match command {
+            ProfileCommand::List => list_profiles(&self.config)?
+                .iter()
+                .map(|profile| serde_json::to_string(profile).map(|line| format!("{line}\n")))
+                .collect::<Result<String, _>>()
+                .map_err(CliError::from),
+            ProfileCommand::Show { name } => show_profile(&self.config, &name),
+        }
+    }
+
     fn config(&self, command: ConfigCommand) -> CliResult<String> {
         match command {
+            ConfigCommand::Init {
+                global,
+                project: _,
+                force,
+            } => {
+                let scope = if global {
+                    ConfigScope::Global
+                } else {
+                    ConfigScope::Project
+                };
+                let path = init_config_file(&self.config, scope, force)?;
+                Ok(format!(
+                    "config_path={}\nstatus=initialized\n",
+                    path.display()
+                ))
+            }
             ConfigCommand::Get { key } => get_config_value(&self.config, &key),
             ConfigCommand::Set {
                 global,
@@ -244,16 +281,35 @@ impl CliService {
 
     fn diagnostics(&self) -> String {
         format!(
-            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\nworkspace_root={}\nenvironment_provider={}\nwal=true\n",
+            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nwal=true\n",
             sdk_name(),
             env!("CARGO_PKG_VERSION"),
             self.config.database_path.display(),
             self.config.file_store_path.display(),
             self.config.default_profile,
             self.config.workspace_root.display(),
-            self.config.environment_provider
+            self.config.environment_provider,
+            self.config.files_policy,
+            self.config.shell_enabled,
+            provider_ready(&self.config.providers.openai),
+            self.config.providers.openai.api_key_env.as_deref().unwrap_or_default(),
+            self.config.providers.openai.base_url.as_deref().unwrap_or_default(),
+            provider_ready(&self.config.providers.anthropic),
+            self.config.providers.anthropic.api_key_env.as_deref().unwrap_or_default(),
+            self.config.providers.anthropic.base_url.as_deref().unwrap_or_default(),
+            provider_ready(&self.config.providers.gemini),
+            self.config.providers.gemini.api_key_env.as_deref().unwrap_or_default(),
+            self.config.providers.gemini.base_url.as_deref().unwrap_or_default()
         )
     }
+}
+
+fn provider_ready(provider: &crate::config::ProviderConfig) -> bool {
+    provider.enabled
+        && provider.api_key_env.as_deref().is_some_and(|name| {
+            let name = name.trim();
+            !name.is_empty() && std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
+        })
 }
 
 const fn run_status_name(status: starweaver_session::RunStatus) -> &'static str {
@@ -292,6 +348,20 @@ fn parse_duration(value: &str) -> CliResult<chrono::Duration> {
 
 fn render_sessions(sessions: &[SessionSummary], output: OutputMode) -> CliResult<String> {
     match output {
+        OutputMode::Text => {
+            let mut lines = String::new();
+            for session in sessions {
+                let _ = writeln!(
+                    lines,
+                    "{} profile={} runs={} status={}",
+                    session.session_id,
+                    session.profile.as_deref().unwrap_or_default(),
+                    session.run_count,
+                    session.status
+                );
+            }
+            Ok(lines)
+        }
         OutputMode::DisplayJsonl => sessions
             .iter()
             .map(|session| serde_json::to_string(session).map(|line| format!("{line}\n")))
@@ -307,6 +377,25 @@ fn render_session_show(
     output: OutputMode,
 ) -> CliResult<String> {
     match output {
+        OutputMode::Text => {
+            let mut lines = format!(
+                "session_id={} profile={} status={}\n",
+                session["session_id"].as_str().unwrap_or_default(),
+                session["profile"].as_str().unwrap_or_default(),
+                session["status"].as_str().unwrap_or_default()
+            );
+            for run in runs {
+                let _ = writeln!(
+                    lines,
+                    "run_id={} sequence={} status={} preview={}",
+                    run.run_id,
+                    run.sequence_no,
+                    run.status,
+                    run.output_preview.as_deref().unwrap_or_default()
+                );
+            }
+            Ok(lines)
+        }
         OutputMode::DisplayJsonl => {
             let mut lines = String::new();
             lines.push_str(&serde_json::to_string(session)?);
@@ -333,6 +422,81 @@ fn render_display_jsonl(messages: &[DisplayMessage]) -> CliResult<String> {
         .map_err(CliError::from)
 }
 
+fn render_display_text(messages: &[DisplayMessage]) -> String {
+    let mut output = String::new();
+    let mut last_was_text = false;
+    for message in messages {
+        match message.kind {
+            DisplayMessageKind::AssistantTextDelta => {
+                if let Some(delta) = message.payload.get("delta").and_then(Value::as_str) {
+                    output.push_str(delta);
+                    last_was_text = true;
+                }
+            }
+            DisplayMessageKind::ToolCallStart => {
+                if last_was_text && !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                let _ = writeln!(
+                    output,
+                    "tool_call={}",
+                    message
+                        .payload
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .or(message.preview.as_deref())
+                        .unwrap_or("tool")
+                );
+                last_was_text = false;
+            }
+            DisplayMessageKind::ToolResult => {
+                if let Some(preview) = message.preview.as_deref() {
+                    let _ = writeln!(output, "tool_result={preview}");
+                }
+                last_was_text = false;
+            }
+            DisplayMessageKind::ApprovalRequested => {
+                if last_was_text && !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                output.push_str("approval=requested\n");
+                last_was_text = false;
+            }
+            DisplayMessageKind::RunFailed => {
+                if last_was_text && !output.ends_with('\n') {
+                    output.push('\n');
+                }
+                let preview = message.preview.as_deref().unwrap_or("run failed");
+                let _ = writeln!(output, "status=failed message={preview}");
+                last_was_text = false;
+            }
+            _ => {}
+        }
+    }
+    if last_was_text && !output.ends_with('\n') {
+        output.push('\n');
+    }
+    if output.is_empty() {
+        if let Some(message) = messages
+            .iter()
+            .rev()
+            .find(|message| message.kind.is_terminal())
+        {
+            let _ = writeln!(
+                output,
+                "status={}",
+                match message.kind {
+                    DisplayMessageKind::RunCompleted => "completed",
+                    DisplayMessageKind::RunFailed => "failed",
+                    DisplayMessageKind::RunCancelled => "cancelled",
+                    _ => "unknown",
+                }
+            );
+        }
+    }
+    output
+}
+
 fn render_completion(shell: Shell) -> CliResult<String> {
     let mut command = crate::args::command();
     let mut buffer = Vec::new();
@@ -342,6 +506,14 @@ fn render_completion(shell: Shell) -> CliResult<String> {
 
 fn render_trim_report(report: &TrimReport, output: OutputMode) -> CliResult<String> {
     match output {
+        OutputMode::Text => Ok(format!(
+            "sessions_scanned={} runs_to_trim={} runs_trimmed={} bytes_reclaimed={} dry_run={}\n",
+            report.sessions_scanned,
+            report.runs_to_trim,
+            report.runs_trimmed,
+            report.bytes_reclaimed,
+            report.dry_run
+        )),
         OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(report)?)),
         OutputMode::Silent => Ok(format!(
             "sessions_scanned={}\nruns_to_trim={}\nruns_trimmed={}\nbytes_reclaimed={}\ndry_run={}\nstatus=trimmed\n",

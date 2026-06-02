@@ -1,0 +1,20 @@
+# Example provider gateway config.
+# Copy selected provider sections into ~/.starweaver/config.toml.
+
+[providers.openai]
+enabled = true
+api_key_env = "OPENAI_API_KEY"
+base_url = "https://gateway.example/v1"
+endpoint_path = "/responses"
+
+[providers.anthropic]
+enabled = true
+api_key_env = "ANTHROPIC_API_KEY"
+base_url = "https://gateway.example/anthropic/v1"
+endpoint_path = "/messages"
+
+[providers.gemini]
+enabled = true
+api_key_env = "GEMINI_API_KEY"
+base_url = "https://gateway.example/gemini/v1beta"
+endpoint_path = "/models/{model}:generateContent"

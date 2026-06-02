@@ -52,7 +52,7 @@ Starweaver should ship a launcher and command binaries:
 | `starweaver`      | launcher that dispatches `starweaver {command}` to `starweaver-{command}` |
 | `sw`              | short alias pointing to `starweaver`                                      |
 | `starweaver-cli`  | local agent CLI product surface                                           |
-| `starweaver-claw` | future local/service durable runtime command                              |
+| `starweaver-claw` | local Claw command and future service durable runtime surface             |
 | `starweaver-*`    | future command families loaded by the launcher convention                 |
 
 Launcher examples:
@@ -71,6 +71,19 @@ starweaver <command> [args...] -> exec starweaver-<command> [args...]
 ```
 
 The launcher should resolve command binaries from the install directory first, then `PATH`. The launcher should reserve built-in commands that operate on the installed product, including `version`, `doctor`, and `update`.
+
+## Install and Update Semantics
+
+GitHub Release assets are component-scoped:
+
+| Component | Archive prefix                   | Installed binaries                   | Update command                                                        |
+| --------- | -------------------------------- | ------------------------------------ | --------------------------------------------------------------------- |
+| CLI       | `starweaver-cli-<tag>-<target>`  | `starweaver`, `starweaver-cli`, `sw` | `starweaver update`, `starweaver update cli`, `starweaver cli update` |
+| Claw      | `starweaver-claw-<tag>-<target>` | `starweaver-claw`                    | `starweaver update claw`, `starweaver claw update`                    |
+
+The installer reads `STARWEAVER_COMPONENTS` as a comma-separated component list. Default installs use `cli`. CLI update commands invoke the installer with `STARWEAVER_COMPONENTS=cli`; Claw update commands invoke it with `STARWEAVER_COMPONENTS=claw`. Claw upgrades are explicit through the Claw update target, so a CLI update keeps the Claw binary at its current version.
+
+The launcher update path should download `scripts/install.sh`, run it through `sh` with environment variables passed through `Command::env`, and avoid shell interpolation for real updates. Dry-run output may render a shell command for copy/paste diagnostics and must shell-quote paths.
 
 ## Headless CLI Mode
 
@@ -702,32 +715,39 @@ Installer goals:
 
 Environment variables:
 
-| Variable                    | Purpose                                            |
-| --------------------------- | -------------------------------------------------- |
-| `STARWEAVER_VERSION`        | install a specific tag such as `v0.1.0`            |
-| `STARWEAVER_INSTALL_DIR`    | custom install directory                           |
-| `STARWEAVER_NO_MODIFY_PATH` | skip shell profile PATH modification               |
-| `STARWEAVER_GITHUB_REPO`    | override release repository for forks/testing      |
-| `STARWEAVER_UPDATE_CHANNEL` | choose stable, prerelease, or pinned channel later |
+| Variable                    | Purpose                                                |
+| --------------------------- | ------------------------------------------------------ |
+| `STARWEAVER_VERSION`        | install a specific tag such as `v0.1.0`                |
+| `STARWEAVER_INSTALL_DIR`    | custom install directory                               |
+| `STARWEAVER_NO_MODIFY_PATH` | skip shell profile PATH modification                   |
+| `STARWEAVER_COMPONENTS`     | comma-separated components such as `cli` or `cli,claw` |
+| `STARWEAVER_GITHUB_REPO`    | override release repository for forks/testing          |
+| `STARWEAVER_UPDATE_CHANNEL` | choose stable, prerelease, or pinned channel later     |
 
 Archive naming:
 
 ```text
-starweaver_<version>_linux_amd64.tar.gz
-starweaver_<version>_linux_arm64.tar.gz
-starweaver_<version>_darwin_amd64.tar.gz
-starweaver_<version>_darwin_arm64.tar.gz
-starweaver_<version>_windows_amd64.zip
+starweaver-cli-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz
+starweaver-cli-vX.Y.Z-x86_64-apple-darwin.tar.gz
+starweaver-cli-vX.Y.Z-aarch64-apple-darwin.tar.gz
+starweaver-cli-vX.Y.Z-x86_64-pc-windows-msvc.zip
 checksums.txt
 ```
 
-Archive contents:
+Unix archive contents:
 
 ```text
 starweaver
 starweaver-cli
-LICENSE
-README.md
+sw
+```
+
+Windows archive contents:
+
+```text
+starweaver.exe
+starweaver-cli.exe
+sw.exe
 ```
 
 Alias behavior:
@@ -742,11 +762,14 @@ Update command:
 
 ```bash
 sw update
-sw update --version v0.1.0
-starweaver update --version v0.1.0
+starweaver update
+starweaver update cli
+starweaver cli update
+starweaver update claw
+starweaver claw update
 ```
 
-`starweaver update` should reuse installer logic: resolve release, download archive, verify checksum, atomically replace installed binaries, and preserve config/session data.
+`starweaver update` reuses installer logic: resolve release, download archive, verify checksum, replace installed binaries, and preserve config/session data. CLI update targets install the launcher, `sw`, and `starweaver-cli`. Claw update targets install `starweaver-claw` after Claw release assets are available.
 
 Automatic update policy:
 
