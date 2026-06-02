@@ -39,12 +39,15 @@ pub struct Cli {
     /// Branch from a specific run before appending a run.
     #[arg(long, global = false, conflicts_with = "run")]
     pub branch_from: Option<String>,
+    /// Agent profile name or YAML path.
+    #[arg(long, global = false)]
+    pub profile: Option<String>,
     /// Output mode.
-    #[arg(long, default_value = "display-jsonl", global = false)]
-    pub output: OutputMode,
+    #[arg(long, global = false)]
+    pub output: Option<OutputMode>,
     /// Headless human-in-the-loop policy for prompt shorthand.
-    #[arg(long, default_value = "deny", global = false)]
-    pub hitl: HitlPolicy,
+    #[arg(long, global = false)]
+    pub hitl: Option<HitlPolicy>,
     /// Override local store database path.
     #[arg(long, global = true)]
     pub store: Option<String>,
@@ -106,12 +109,15 @@ pub struct RunCommand {
     /// Branch from a specific run before appending a run.
     #[arg(long, conflicts_with = "run")]
     pub branch_from: Option<String>,
+    /// Agent profile name or YAML path.
+    #[arg(long)]
+    pub profile: Option<String>,
     /// Output mode.
-    #[arg(long, default_value = "display-jsonl")]
-    pub output: OutputMode,
+    #[arg(long)]
+    pub output: Option<OutputMode>,
     /// Headless human-in-the-loop policy.
-    #[arg(long, default_value = "deny")]
-    pub hitl: HitlPolicy,
+    #[arg(long)]
+    pub hitl: Option<HitlPolicy>,
 }
 
 impl RunCommand {
@@ -199,6 +205,9 @@ pub struct SessionTrimCommand {
     /// Retain this many recent runs per session.
     #[arg(long, default_value_t = 20)]
     pub keep_runs: usize,
+    /// Trim runs older than a duration such as 7d, 24h, or 3600s.
+    #[arg(long)]
+    pub older_than: Option<String>,
     /// Preview trim results.
     #[arg(long)]
     pub dry_run: bool,
@@ -212,12 +221,24 @@ pub struct SessionTrimCommand {
 pub enum ConfigCommand {
     /// Get a resolved config value.
     Get { key: String },
-    /// Set a project config value.
-    Set { key: String, value: String },
+    /// Set a config value.
+    Set {
+        /// Write the global config file.
+        #[arg(long, conflicts_with = "project")]
+        global: bool,
+        /// Write the project config file.
+        #[arg(long)]
+        project: bool,
+        /// Config key.
+        key: String,
+        /// Config value.
+        value: String,
+    },
 }
 
 /// Output mode.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
 pub enum OutputMode {
     /// Starweaver AGUI-compatible `DisplayMessage` JSON lines.
     #[default]

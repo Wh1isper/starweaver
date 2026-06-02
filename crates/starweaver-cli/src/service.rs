@@ -1,23 +1,19 @@
 //! CLI service layer over local storage and SDK execution.
 
-use std::sync::Arc;
-
 use clap_complete::Shell;
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use starweaver_agent::{AgentBuilder, AgentStreamRecord, FunctionModel};
 use starweaver_core::sdk_name;
-use starweaver_model::ModelResponse;
-use starweaver_runtime::{AgentStreamEvent, ModelResponseStreamEvent};
-use starweaver_stream::{
-    DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
-    DisplayProjectionContext,
-};
+use starweaver_stream::DisplayMessage;
 
 use crate::{
     args::{Cli, CliCommand, ConfigCommand, OutputMode, RunCommand, SessionCommand},
-    config::{get_config_value, read_current_session, write_current_session, CliConfig},
+    config::{
+        get_config_value, read_current_session, write_current_session, CliConfig, ConfigScope,
+    },
+    environment::resolve_environment,
     local_store::{LocalStore, RunSummary, SessionSummary, TrimReport},
+    profiles::resolve_profile,
+    runner::{execute_agent_session, failed_display_message, CliRunPolicy},
     CliError, CliResult,
 };
 
@@ -45,6 +41,7 @@ impl CliService {
                 new_session: cli.new_session,
                 run: cli.run.clone(),
                 branch_from: cli.branch_from.clone(),
+                profile: cli.profile.clone(),
                 output: cli.output,
                 hitl: cli.hitl,
             };
@@ -84,27 +81,43 @@ impl CliService {
                         })
                 }
             });
+        let selected_profile = command
+            .profile
+            .as_deref()
+            .unwrap_or(&self.config.default_profile);
+        let resolved_profile = resolve_profile(&self.config, Some(selected_profile))?;
         let mut run = self.store.append_run(
             &session_id,
             prompt.clone(),
-            restore_from,
-            &self.config.default_profile,
+            restore_from.clone(),
+            &resolved_profile.name,
         )?;
         write_current_session(&self.config, &session_id)?;
-        let result = execute_local_agent(prompt, &run, CliRunPolicy { hitl: command.hitl });
+        let environment = resolve_environment(&self.config)?;
+        let restore_state = self
+            .store
+            .load_restore_state(&session_id, restore_from.as_deref())?;
+        let hitl = command.hitl.unwrap_or(self.config.default_hitl);
+        let result = execute_agent_session(
+            prompt,
+            &run,
+            &resolved_profile,
+            &environment.provider,
+            restore_state,
+            CliRunPolicy { hitl },
+        );
         let execution = match result {
             Ok(execution) => execution,
             Err(error) => {
-                self.store.fail_run(&mut run, error.to_string())?;
+                let messages = failed_display_message(&run, &error.to_string());
+                self.store
+                    .fail_run_with_messages(&mut run, error.to_string(), &messages)?;
                 return Err(error);
             }
         };
-        let messages = self.store.complete_run(
-            &mut run,
-            execution.output,
-            &execution.raw_records,
-            &execution.display_messages,
-        )?;
+        let messages = self
+            .store
+            .complete_run(&mut run, execution.output, execution.artifacts)?;
         if self.config.auto_trim {
             let _report = self.store.trim(
                 vec![session_id.clone()],
@@ -112,12 +125,14 @@ impl CliService {
                 false,
             )?;
         }
-        match command.output {
+        let output_mode = command.output.unwrap_or(self.config.default_output);
+        match output_mode {
             OutputMode::DisplayJsonl => render_display_jsonl(&messages),
             OutputMode::Silent => Ok(format!(
-                "session_id={}\nrun_id={}\nstatus=completed\n",
+                "session_id={}\nrun_id={}\nstatus={}\n",
                 session_id,
-                run.run_id.as_str()
+                run.run_id.as_str(),
+                run_status_name(run.status)
             )),
         }
     }
@@ -191,9 +206,17 @@ impl CliService {
                 } else {
                     read_current_session(&self.config)?.into_iter().collect()
                 };
-                let report = self
-                    .store
-                    .trim(sessions, command.keep_runs, command.dry_run)?;
+                let older_than = command
+                    .older_than
+                    .as_deref()
+                    .map(parse_duration)
+                    .transpose()?;
+                let report = self.store.trim_with_age(
+                    sessions,
+                    command.keep_runs,
+                    older_than,
+                    command.dry_run,
+                )?;
                 render_trim_report(&report, command.output)
             }
         }
@@ -202,8 +225,18 @@ impl CliService {
     fn config(&self, command: ConfigCommand) -> CliResult<String> {
         match command {
             ConfigCommand::Get { key } => get_config_value(&self.config, &key),
-            ConfigCommand::Set { key, value } => {
-                crate::config::set_project_config_value(&self.config, &key, &value)?;
+            ConfigCommand::Set {
+                global,
+                project: _,
+                key,
+                value,
+            } => {
+                let scope = if global {
+                    ConfigScope::Global
+                } else {
+                    ConfigScope::Project
+                };
+                crate::config::set_config_value(&self.config, scope, &key, &value)?;
                 Ok(format!("{key}={value}\n"))
             }
         }
@@ -211,93 +244,50 @@ impl CliService {
 
     fn diagnostics(&self) -> String {
         format!(
-            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nwal=true\n",
+            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\nworkspace_root={}\nenvironment_provider={}\nwal=true\n",
             sdk_name(),
             env!("CARGO_PKG_VERSION"),
             self.config.database_path.display(),
-            self.config.file_store_path.display()
+            self.config.file_store_path.display(),
+            self.config.default_profile,
+            self.config.workspace_root.display(),
+            self.config.environment_provider
         )
     }
 }
 
-struct CliRunExecution {
-    output: String,
-    raw_records: Vec<AgentStreamRecord>,
-    display_messages: Vec<DisplayMessage>,
+const fn run_status_name(status: starweaver_session::RunStatus) -> &'static str {
+    match status {
+        starweaver_session::RunStatus::Queued => "queued",
+        starweaver_session::RunStatus::Running => "running",
+        starweaver_session::RunStatus::Waiting => "waiting",
+        starweaver_session::RunStatus::Completed => "completed",
+        starweaver_session::RunStatus::Failed => "failed",
+        starweaver_session::RunStatus::Cancelled => "cancelled",
+    }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct CliRunPolicy {
-    hitl: crate::args::HitlPolicy,
-}
-
-fn execute_local_agent(
-    prompt: String,
-    run: &starweaver_session::RunRecord,
-    policy: CliRunPolicy,
-) -> CliResult<CliRunExecution> {
-    let policy_metadata = serde_json::to_value(policy)?;
-    let prompt_for_model = prompt.clone();
-    let model = FunctionModel::new(move |_messages, _settings, _info| {
-        Ok(ModelResponse::text(format!(
-            "local echo: {prompt_for_model}"
-        )))
-    });
-    let agent = AgentBuilder::new(Arc::new(model)).build();
-    let runtime =
-        tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?;
-    let stream = runtime
-        .block_on(agent.run_stream(prompt))
-        .map_err(|error| CliError::Run(error.to_string()))?;
-    let output = stream.result.output.clone();
-    let context = DisplayProjectionContext::new(run.session_id.clone(), run.run_id.clone());
-    let projector = DefaultDisplayMessageProjector;
-    let mut display_messages = Vec::new();
-    let mut final_result_projected_text = false;
-    for record in &stream.events {
-        let projected = runtime.block_on(projector.project(&context, record));
-        let projected_has_text_delta = projected
-            .iter()
-            .any(|message| message.kind == DisplayMessageKind::AssistantTextDelta);
-        match &record.event {
-            AgentStreamEvent::ModelStream {
-                event: ModelResponseStreamEvent::FinalResult(_),
-                ..
-            } => {
-                if projected_has_text_delta {
-                    final_result_projected_text = true;
-                }
-                display_messages.extend(projected);
-            }
-            AgentStreamEvent::ModelResponse { .. }
-                if final_result_projected_text && projected_has_text_delta =>
-            {
-                final_result_projected_text = false;
-            }
-            AgentStreamEvent::ModelResponse { .. } => {
-                final_result_projected_text = false;
-                display_messages.extend(projected);
-            }
-            _ => display_messages.extend(projected),
-        }
+fn parse_duration(value: &str) -> CliResult<chrono::Duration> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::Usage("duration cannot be empty".to_string()));
     }
-    resequence_display_messages(&mut display_messages);
-    for message in &mut display_messages {
-        message
-            .metadata
-            .insert("cli_run_policy".to_string(), policy_metadata.clone());
-    }
-    Ok(CliRunExecution {
-        output,
-        raw_records: stream.events,
-        display_messages,
-    })
-}
-
-fn resequence_display_messages(messages: &mut [DisplayMessage]) {
-    for (sequence, message) in messages.iter_mut().enumerate() {
-        message.sequence = sequence;
-    }
+    let (number, unit) = trimmed.split_at(
+        trimmed
+            .find(|ch: char| !ch.is_ascii_digit())
+            .unwrap_or(trimmed.len()),
+    );
+    let amount = number
+        .parse::<i64>()
+        .map_err(|error| CliError::Usage(error.to_string()))?;
+    let duration = match unit {
+        "" | "s" | "sec" | "secs" => chrono::Duration::seconds(amount),
+        "m" | "min" | "mins" => chrono::Duration::minutes(amount),
+        "h" | "hr" | "hrs" => chrono::Duration::hours(amount),
+        "d" | "day" | "days" => chrono::Duration::days(amount),
+        other => return Err(CliError::Usage(format!("unknown duration unit: {other}"))),
+    };
+    Ok(duration)
 }
 
 fn render_sessions(sessions: &[SessionSummary], output: OutputMode) -> CliResult<String> {

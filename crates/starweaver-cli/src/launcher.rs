@@ -78,7 +78,7 @@ mod tests {
         let first: serde_json::Value =
             serde_json::from_str(output.lines().next().unwrap()).unwrap();
         assert_eq!(first["schema"], "starweaver.display.v1");
-        assert_eq!(first["type"], "RUN_STARTED");
+        assert_eq!(first["type"], "RUN_QUEUED");
     }
 
     #[test]

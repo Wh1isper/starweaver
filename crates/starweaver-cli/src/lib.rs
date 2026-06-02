@@ -3,9 +3,12 @@
 
 mod args;
 mod config;
+mod environment;
 mod error;
 pub mod launcher;
 mod local_store;
+mod profiles;
+mod runner;
 mod service;
 
 use std::env;
@@ -72,7 +75,7 @@ mod tests {
         let first_message: serde_json::Value =
             serde_json::from_str(first.lines().next().unwrap()).unwrap();
         assert_eq!(first_message["schema"], "starweaver.display.v1");
-        assert_eq!(first_message["type"], "RUN_STARTED");
+        assert_eq!(first_message["type"], "RUN_QUEUED");
         let sessions = output(temp.path(), &["session", "list"]).unwrap();
         assert!(sessions.contains("session_"));
         let value: serde_json::Value =

@@ -41,7 +41,7 @@ fn cli_run_prints_display_messages() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(messages[0]["schema"], "starweaver.display.v1");
-    assert_eq!(messages[0]["type"], "RUN_STARTED");
+    assert_eq!(messages[0]["type"], "RUN_QUEUED");
     for (sequence, message) in messages.iter().enumerate() {
         assert_eq!(message["sequence"].as_u64().unwrap(), sequence as u64);
     }
@@ -53,7 +53,9 @@ fn cli_run_prints_display_messages() {
     assert!(types.contains(&"TEXT_MESSAGE_START"));
     assert!(types.contains(&"TEXT_MESSAGE_CONTENT"));
     assert!(types.contains(&"TEXT_MESSAGE_END"));
-    assert_eq!(types.last(), Some(&"RUN_FINISHED"));
+    assert!(types.contains(&"COMPACTION_STARTED"));
+    assert!(types.contains(&"COMPACTION_COMPLETED"));
+    assert!(types.contains(&"RUN_FINISHED"));
     let text_messages = messages
         .iter()
         .filter(|message| message["type"] == "TEXT_MESSAGE_CONTENT")
@@ -323,4 +325,326 @@ fn cli_session_replay_orders_runs_by_session_sequence() {
             "local echo: sixth",
         ]
     );
+}
+
+#[test]
+fn cli_profile_yaml_config_precedence_and_env_defaults_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_dir = temp.path().join(".starweaver");
+    let global_dir = temp.path().join("global");
+    fs::create_dir_all(project_dir.join("profiles")).unwrap();
+    fs::create_dir_all(&global_dir).unwrap();
+    fs::write(
+        global_dir.join("config.toml"),
+        r#"
+[general]
+default_profile = "general"
+default_hitl = "deny"
+default_output = "display-jsonl"
+[environment]
+provider = "virtual"
+files_policy = "read_write"
+[update]
+channel = "beta"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("config.toml"),
+        r#"
+[general]
+default_hitl = "defer"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project_dir.join("profiles/custom.yaml"),
+        r"
+name: custom
+instructions:
+  - Custom deterministic profile.
+model:
+  model_id: local_echo
+toolsets:
+  - environment
+",
+    )
+    .unwrap();
+
+    let run = cli(&temp)
+        .env("STARWEAVER_OUTPUT", "silent")
+        .args(["run", "hello", "--profile", "custom"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8(run.stdout).unwrap();
+    assert!(stdout.contains("status=completed"));
+
+    let list = cli(&temp).args(["session", "list"]).output().unwrap();
+    assert!(list.status.success());
+    let session: serde_json::Value = serde_json::from_str(
+        String::from_utf8(list.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(session["profile"], "custom");
+
+    let hitl = cli(&temp)
+        .args(["config", "get", "general.default_hitl"])
+        .output()
+        .unwrap();
+    assert!(hitl.status.success());
+    assert_eq!(String::from_utf8(hitl.stdout).unwrap(), "defer\n");
+
+    let update = cli(&temp)
+        .args(["config", "get", "update.channel"])
+        .output()
+        .unwrap();
+    assert!(update.status.success());
+    assert_eq!(String::from_utf8(update.stdout).unwrap(), "beta\n");
+}
+
+#[test]
+fn cli_global_config_set_and_env_hitl_override_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let set = cli(&temp)
+        .args([
+            "config",
+            "set",
+            "--global",
+            "general.default_profile",
+            "approval_model",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        set.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+
+    let get = cli(&temp)
+        .args(["config", "get", "general.default_profile"])
+        .output()
+        .unwrap();
+    assert!(get.status.success());
+    assert_eq!(String::from_utf8(get.stdout).unwrap(), "approval_model\n");
+
+    let run = cli(&temp)
+        .env("STARWEAVER_HITL", "fail")
+        .args(["run", "needs approval"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let messages = String::from_utf8(run.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let types = messages
+        .iter()
+        .map(|message| message["type"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(types.contains(&"APPROVAL_REQUESTED"));
+    assert!(types.contains(&"APPROVAL_RESOLVED"));
+    assert!(messages
+        .iter()
+        .all(|message| { message["metadata"]["cli_run_policy"]["hitl"].as_str() == Some("fail") }));
+
+    let list = cli(&temp).args(["session", "list"]).output().unwrap();
+    let session: serde_json::Value = serde_json::from_str(
+        String::from_utf8(list.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(session["head_success_run_id"], serde_json::Value::Null);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn cli_persists_restore_environment_control_flow_and_storage_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = cli(&temp)
+        .args(["run", "first", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let first_stdout = String::from_utf8(first.stdout).unwrap();
+    let session_id = first_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .unwrap()
+        .to_string();
+    let first_run_id = first_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("run_id="))
+        .unwrap()
+        .to_string();
+
+    let second = cli(&temp)
+        .args(["run", "second", "--continue-session", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let show = cli(&temp)
+        .args(["session", "show", &session_id])
+        .output()
+        .unwrap();
+    assert!(show.status.success());
+    let rows = String::from_utf8(show.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(rows[2]["restore_from_run_id"], first_run_id);
+
+    let store_root = temp
+        .path()
+        .join(".starweaver/store/sessions")
+        .join(&session_id);
+    let first_run_root = store_root.join("runs").join(&first_run_id);
+    assert!(first_run_root.join("context.state.json").exists());
+    assert!(first_run_root.join("environment.state.json").exists());
+    let compact: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(first_run_root.join("display.compact.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(compact["revision"].as_u64().unwrap() > 0);
+
+    let deferred = cli(&temp)
+        .args([
+            "run",
+            "defer me",
+            "--new-session",
+            "--profile",
+            "deferred_model",
+            "--hitl",
+            "defer",
+            "--output",
+            "silent",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        deferred.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&deferred.stderr)
+    );
+    assert!(String::from_utf8(deferred.stdout)
+        .unwrap()
+        .contains("status=waiting"));
+
+    let db = temp.path().join(".starweaver/starweaver.sqlite");
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let approvals: i64 = conn
+        .query_row("SELECT COUNT(*) FROM approvals", [], |row| row.get(0))
+        .unwrap();
+    let deferred_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM deferred_tools", [], |row| row.get(0))
+        .unwrap();
+    let contexts: i64 = conn
+        .query_row("SELECT COUNT(*) FROM context_states", [], |row| row.get(0))
+        .unwrap();
+    let envs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM environment_states", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let cursors: i64 = conn
+        .query_row("SELECT COUNT(*) FROM stream_cursors", [], |row| row.get(0))
+        .unwrap();
+    let checkpoints: i64 = conn
+        .query_row("SELECT COUNT(*) FROM checkpoints", [], |row| row.get(0))
+        .unwrap();
+    let file_refs_with_metadata: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM file_refs WHERE checksum IS NOT NULL AND content_type = 'application/json'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(approvals >= 0);
+    assert!(deferred_count >= 1);
+    assert!(contexts >= 2);
+    assert!(envs >= 2);
+    assert!(cursors >= 4);
+    assert!(checkpoints >= 1);
+    assert!(file_refs_with_metadata >= 4);
+}
+
+#[test]
+fn cli_trim_older_than_dry_run_preserves_recent_and_active_runs() {
+    let temp = tempfile::tempdir().unwrap();
+    for prompt in ["one", "two", "three"] {
+        let output = cli(&temp)
+            .args(["run", prompt, "--output", "silent"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+    let list = cli(&temp).args(["session", "list"]).output().unwrap();
+    let session: serde_json::Value = serde_json::from_str(
+        String::from_utf8(list.stdout)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let session_id = session["session_id"].as_str().unwrap();
+
+    let dry = cli(&temp)
+        .args([
+            "session",
+            "trim",
+            "--session",
+            session_id,
+            "--keep-runs",
+            "1",
+            "--older-than",
+            "0s",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(dry.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&dry.stdout).unwrap();
+    assert_eq!(report["runs_to_trim"], 2);
+    assert_eq!(report["runs_trimmed"], 0);
+
+    let trim = cli(&temp)
+        .args([
+            "session",
+            "trim",
+            "--session",
+            session_id,
+            "--keep-runs",
+            "1",
+            "--older-than",
+            "365d",
+        ])
+        .output()
+        .unwrap();
+    assert!(trim.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&trim.stdout).unwrap();
+    assert_eq!(report["runs_to_trim"], 0);
 }

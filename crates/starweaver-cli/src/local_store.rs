@@ -9,10 +9,15 @@ use std::{
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
-use starweaver_core::{ConversationId, RunId, SessionId};
+use starweaver_agent::ResumableState;
+use starweaver_core::{CheckpointId, ConversationId, RunId, SessionId};
+use starweaver_environment::EnvironmentState;
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
-use starweaver_session::{InputPart, RunRecord, RunStatus, SessionRecord, SessionStatus};
-use starweaver_stream::DisplayMessage;
+use starweaver_session::{
+    ApprovalRecord, CheckpointRef, DeferredToolRecord, EnvironmentStateRef, InputPart, RunRecord,
+    RunStatus, SessionRecord, SessionStatus, StreamCursorRef,
+};
+use starweaver_stream::{DisplayMessage, ReplaySnapshot};
 use uuid::Uuid;
 
 use crate::{config::CliConfig, error::io_error, CliError, CliResult};
@@ -27,7 +32,29 @@ struct FileRefRecord {
     ref_id: String,
     relative_path: String,
     byte_size: i64,
+    checksum: String,
+    content_type: String,
     created_at: String,
+}
+
+/// Durable artifacts captured when a CLI run finishes or waits.
+pub struct RunArtifacts {
+    /// Final context state.
+    pub state: ResumableState,
+    /// Environment state snapshot.
+    pub environment_state: Option<EnvironmentState>,
+    /// Raw runtime records.
+    pub raw_records: Vec<AgentStreamRecord>,
+    /// Display messages.
+    pub display_messages: Vec<DisplayMessage>,
+    /// Compact display snapshot.
+    pub display_snapshot: ReplaySnapshot,
+    /// Approval records.
+    pub approvals: Vec<ApprovalRecord>,
+    /// Deferred tool records.
+    pub deferred_tools: Vec<DeferredToolRecord>,
+    /// Terminal status selected by HITL and runtime policy.
+    pub status: RunStatus,
 }
 
 /// Session summary row.
@@ -108,6 +135,7 @@ impl LocalStore {
         Ok(store)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn init_schema(&self) -> CliResult<()> {
         self.conn.execute_batch(
             r"
@@ -165,11 +193,77 @@ impl LocalStore {
                 run_id TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
                 byte_size INTEGER NOT NULL,
+                checksum TEXT,
+                content_type TEXT,
                 created_at TEXT NOT NULL,
                 trimmed_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS context_states (
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, run_id),
+                FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS environment_states (
+                ref_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS stream_cursors (
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                family TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                sequence_no INTEGER NOT NULL,
+                cursor_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (session_id, run_id, family, scope),
+                FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                checkpoint_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                sequence_no INTEGER NOT NULL,
+                node TEXT NOT NULL,
+                checkpoint_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS approvals (
+                approval_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                action_id TEXT NOT NULL,
+                action_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS deferred_tools (
+                deferred_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                record_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
+            );
             ",
         )?;
+        add_column_if_missing(&self.conn, "file_refs", "checksum", "TEXT")?;
+        add_column_if_missing(&self.conn, "file_refs", "content_type", "TEXT")?;
         Ok(())
     }
 
@@ -247,37 +341,99 @@ impl LocalStore {
         Ok(run)
     }
 
-    /// Complete a run, persist display messages, archive stream blobs, and update head pointers.
+    /// Complete or pause a run, persist display messages, archive stream blobs, and update pointers.
     pub fn complete_run(
         &mut self,
         run: &mut RunRecord,
         output: String,
-        raw_records: &[AgentStreamRecord],
-        messages: &[DisplayMessage],
+        artifacts: RunArtifacts,
     ) -> CliResult<Vec<DisplayMessage>> {
-        let raw_ref = self.write_run_blob(run, "raw.stream.json", &raw_records)?;
-        let display_ref = self.write_run_blob(run, "display.compact.json", &messages)?;
+        let raw_ref = self.write_run_blob(run, "raw.stream.json", &artifacts.raw_records)?;
+        let display_ref =
+            self.write_run_blob(run, "display.compact.json", &artifacts.display_snapshot)?;
+        let state_ref = self.write_run_blob(run, "context.state.json", &artifacts.state)?;
+        let env_ref = artifacts
+            .environment_state
+            .as_ref()
+            .map(|state| self.write_run_blob(run, "environment.state.json", state))
+            .transpose()?;
+        let checkpoint_refs = checkpoint_refs(run, &artifacts.raw_records);
+        let latest_checkpoint = checkpoint_refs.last().cloned();
+        let raw_cursor = StreamCursorRef::new(
+            "raw_runtime",
+            format!("run:{}", run.run_id.as_str()),
+            artifacts
+                .raw_records
+                .last()
+                .map_or(0, |record| record.sequence),
+        );
+        let display_cursor = StreamCursorRef::new(
+            "display",
+            format!("run:{}", run.run_id.as_str()),
+            artifacts
+                .display_messages
+                .last()
+                .map_or(0, |message| message.sequence),
+        );
+        let environment_ref =
+            artifacts
+                .environment_state
+                .as_ref()
+                .map(|state| EnvironmentStateRef {
+                    provider: state.provider_id.clone(),
+                    reference: format!(
+                        "sessions/{}/runs/{}/environment.state.json",
+                        run.session_id.as_str(),
+                        run.run_id.as_str()
+                    ),
+                    revision: Some(format!("{}", state.files.len() + state.resources.len())),
+                    metadata: state.metadata.clone(),
+                });
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut session = load_session_tx(&tx, run.session_id.as_str())?;
-        run.status = RunStatus::Completed;
+        run.status = artifacts.status;
         run.output_preview = Some(output);
         run.updated_at = Utc::now();
+        run.latest_checkpoint = latest_checkpoint;
+        run.environment_state.clone_from(&environment_ref);
+        run.stream_cursors = vec![raw_cursor.clone(), display_cursor.clone()];
+        session.state = artifacts.state.clone();
+        session.environment_state = environment_ref;
+        session.stream_cursors.clone_from(&run.stream_cursors);
+        session.profile.clone_from(&run.profile);
         session.head_run_id = Some(run.run_id.clone());
-        session.head_success_run_id = Some(run.run_id.clone());
-        if session.active_run_id.as_ref() == Some(&run.run_id) {
+        if artifacts.status == RunStatus::Completed {
+            session.head_success_run_id = Some(run.run_id.clone());
+        }
+        if session.active_run_id.as_ref() == Some(&run.run_id)
+            && artifacts.status != RunStatus::Waiting
+        {
             session.active_run_id = None;
         }
         session.updated_at = run.updated_at;
         upsert_run_tx(&tx, run)?;
         upsert_session_tx(&tx, &session)?;
-        insert_raw_stream_records_tx(&tx, run, raw_records)?;
-        insert_display_messages_tx(&tx, messages)?;
+        insert_raw_stream_records_tx(&tx, run, &artifacts.raw_records)?;
+        insert_display_messages_tx(&tx, &artifacts.display_messages)?;
         insert_file_ref_tx(&tx, run, &raw_ref)?;
         insert_file_ref_tx(&tx, run, &display_ref)?;
+        insert_file_ref_tx(&tx, run, &state_ref)?;
+        if let Some(env_ref) = env_ref {
+            insert_file_ref_tx(&tx, run, &env_ref)?;
+        }
+        insert_context_state_tx(&tx, run, &artifacts.state)?;
+        if let Some(environment_state) = artifacts.environment_state.as_ref() {
+            insert_environment_state_tx(&tx, run, environment_state)?;
+        }
+        insert_stream_cursor_tx(&tx, run, &raw_cursor)?;
+        insert_stream_cursor_tx(&tx, run, &display_cursor)?;
+        insert_checkpoint_refs_tx(&tx, run, &checkpoint_refs)?;
+        insert_approval_records_tx(&tx, &artifacts.approvals)?;
+        insert_deferred_tool_records_tx(&tx, &artifacts.deferred_tools)?;
         tx.commit()?;
-        Ok(messages.to_vec())
+        Ok(artifacts.display_messages)
     }
 
     /// Fail a run atomically.
@@ -298,6 +454,54 @@ impl LocalStore {
         upsert_session_tx(&tx, &session)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Fail a run and persist terminal display evidence.
+    pub fn fail_run_with_messages(
+        &mut self,
+        run: &mut RunRecord,
+        message: String,
+        messages: &[DisplayMessage],
+    ) -> CliResult<()> {
+        let display_ref = self.write_run_blob(run, "display.compact.json", &messages)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut session = load_session_tx(&tx, run.session_id.as_str())?;
+        run.status = RunStatus::Failed;
+        run.output_preview = Some(message);
+        run.updated_at = Utc::now();
+        session.head_run_id = Some(run.run_id.clone());
+        if session.active_run_id.as_ref() == Some(&run.run_id) {
+            session.active_run_id = None;
+        }
+        session.updated_at = run.updated_at;
+        upsert_run_tx(&tx, run)?;
+        upsert_session_tx(&tx, &session)?;
+        insert_display_messages_tx(&tx, messages)?;
+        insert_file_ref_tx(&tx, run, &display_ref)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Load the latest saved state for a run selected as continuation source.
+    pub fn load_restore_state(
+        &self,
+        session_id: &str,
+        run_id: Option<&str>,
+    ) -> CliResult<Option<ResumableState>> {
+        let Some(run_id) = run_id else {
+            return Ok(Some(self.load_session(session_id)?.state));
+        };
+        self.conn
+            .query_row(
+                "SELECT state_json FROM context_states WHERE session_id = ?1 AND run_id = ?2",
+                params![session_id, run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|json| serde_json::from_str(&json).map_err(CliError::from))
+            .transpose()
     }
 
     /// List session summaries.
@@ -409,13 +613,24 @@ impl LocalStore {
         keep_runs: usize,
         dry_run: bool,
     ) -> CliResult<TrimReport> {
+        self.trim_with_age(sessions, keep_runs, None, dry_run)
+    }
+
+    /// Trim old runs for selected sessions and optional age horizon.
+    pub fn trim_with_age(
+        &mut self,
+        sessions: Vec<String>,
+        keep_runs: usize,
+        older_than: Option<chrono::Duration>,
+        dry_run: bool,
+    ) -> CliResult<TrimReport> {
         let mut report = TrimReport {
             dry_run,
             ..TrimReport::default()
         };
         report.sessions_scanned = sessions.len();
         for session_id in sessions {
-            let trim_runs = self.trim_candidates(&session_id, keep_runs)?;
+            let trim_runs = self.trim_candidates(&session_id, keep_runs, older_than)?;
             report.runs_to_trim += trim_runs.len();
             for run_id in trim_runs {
                 let bytes = self.run_file_bytes(&session_id, &run_id)?;
@@ -439,7 +654,13 @@ impl LocalStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
     }
 
-    fn trim_candidates(&self, session_id: &str, keep_runs: usize) -> CliResult<Vec<String>> {
+    fn trim_candidates(
+        &self,
+        session_id: &str,
+        keep_runs: usize,
+        older_than: Option<chrono::Duration>,
+    ) -> CliResult<Vec<String>> {
+        let cutoff = older_than.map(|duration| (Utc::now() - duration).to_rfc3339());
         let mut stmt = self.conn.prepare(
             r"
             SELECT r.run_id
@@ -449,14 +670,16 @@ impl LocalStore {
               AND r.sequence_no <= (
                   SELECT COALESCE(MAX(sequence_no), 0) FROM runs WHERE session_id = ?1
               ) - ?2
+              AND (?3 IS NULL OR r.updated_at < ?3)
               AND (s.head_success_run_id IS NULL OR r.run_id != s.head_success_run_id)
               AND (s.active_run_id IS NULL OR r.run_id != s.active_run_id)
             ORDER BY r.sequence_no
             ",
         )?;
-        let rows = stmt.query_map(params![session_id, usize_to_i64(keep_runs)?], |row| {
-            row.get::<_, String>(0)
-        })?;
+        let rows = stmt.query_map(
+            params![session_id, usize_to_i64(keep_runs)?, cutoff],
+            |row| row.get::<_, String>(0),
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(CliError::from)
     }
 
@@ -464,18 +687,22 @@ impl LocalStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        tx.execute(
-            "DELETE FROM display_messages WHERE session_id = ?1 AND run_id = ?2",
-            params![session_id, run_id],
-        )?;
-        tx.execute(
-            "DELETE FROM raw_stream_records WHERE session_id = ?1 AND run_id = ?2",
-            params![session_id, run_id],
-        )?;
-        tx.execute(
-            "DELETE FROM file_refs WHERE session_id = ?1 AND run_id = ?2",
-            params![session_id, run_id],
-        )?;
+        for table in [
+            "display_messages",
+            "raw_stream_records",
+            "context_states",
+            "environment_states",
+            "stream_cursors",
+            "checkpoints",
+            "approvals",
+            "deferred_tools",
+            "file_refs",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1 AND run_id = ?2"),
+                params![session_id, run_id],
+            )?;
+        }
         tx.execute(
             "DELETE FROM runs WHERE session_id = ?1 AND run_id = ?2",
             params![session_id, run_id],
@@ -497,9 +724,8 @@ impl LocalStore {
             .join(name);
         let path = self.file_store_path.join(&relative);
         atomic_write_json(&path, value)?;
-        let bytes = fs::metadata(&path)
-            .map_err(|error| io_error(&path, error))?
-            .len();
+        let data = fs::read(&path).map_err(|error| io_error(&path, error))?;
+        let bytes = data.len();
         Ok(FileRefRecord {
             ref_id: format!(
                 "{}:{}:{}",
@@ -510,6 +736,8 @@ impl LocalStore {
             relative_path: relative.to_string_lossy().to_string(),
             byte_size: i64::try_from(bytes)
                 .map_err(|error| CliError::Storage(error.to_string()))?,
+            checksum: cheap_checksum(&data),
+            content_type: "application/json".to_string(),
             created_at: Utc::now().to_rfc3339(),
         })
     }
@@ -532,6 +760,25 @@ impl LocalStore {
         }
         Ok(())
     }
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> CliResult<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|existing| existing == column) {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 fn load_session_tx(tx: &rusqlite::Transaction<'_>, session_id: &str) -> CliResult<SessionRecord> {
@@ -661,23 +908,185 @@ fn insert_display_messages_tx(
     Ok(())
 }
 
+fn insert_context_state_tx(
+    tx: &rusqlite::Transaction<'_>,
+    run: &RunRecord,
+    state: &ResumableState,
+) -> CliResult<()> {
+    tx.execute(
+        "INSERT OR REPLACE INTO context_states (session_id, run_id, state_json, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            run.session_id.as_str(),
+            run.run_id.as_str(),
+            serde_json::to_string(state)?,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_environment_state_tx(
+    tx: &rusqlite::Transaction<'_>,
+    run: &RunRecord,
+    state: &EnvironmentState,
+) -> CliResult<()> {
+    let ref_id = format!(
+        "{}:{}:environment",
+        run.session_id.as_str(),
+        run.run_id.as_str()
+    );
+    tx.execute(
+        "INSERT OR REPLACE INTO environment_states (ref_id, session_id, run_id, provider, state_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            ref_id,
+            run.session_id.as_str(),
+            run.run_id.as_str(),
+            state.provider_id,
+            serde_json::to_string(state)?,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_stream_cursor_tx(
+    tx: &rusqlite::Transaction<'_>,
+    run: &RunRecord,
+    cursor: &StreamCursorRef,
+) -> CliResult<()> {
+    tx.execute(
+        "INSERT OR REPLACE INTO stream_cursors (session_id, run_id, family, scope, sequence_no, cursor_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            run.session_id.as_str(),
+            run.run_id.as_str(),
+            cursor.family,
+            cursor.scope,
+            usize_to_i64(cursor.sequence)?,
+            serde_json::to_string(cursor)?,
+            cursor.created_at.to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_checkpoint_refs_tx(
+    tx: &rusqlite::Transaction<'_>,
+    run: &RunRecord,
+    checkpoints: &[CheckpointRef],
+) -> CliResult<()> {
+    for checkpoint in checkpoints {
+        tx.execute(
+            "INSERT OR REPLACE INTO checkpoints (checkpoint_id, session_id, run_id, sequence_no, node, checkpoint_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                checkpoint.checkpoint_id.as_str(),
+                run.session_id.as_str(),
+                run.run_id.as_str(),
+                usize_to_i64(checkpoint.sequence)?,
+                checkpoint.node,
+                serde_json::to_string(checkpoint)?,
+                checkpoint.created_at.to_rfc3339(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_approval_records_tx(
+    tx: &rusqlite::Transaction<'_>,
+    approvals: &[ApprovalRecord],
+) -> CliResult<()> {
+    for approval in approvals {
+        tx.execute(
+            "INSERT OR REPLACE INTO approvals (approval_id, session_id, run_id, action_id, action_name, status, record_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                approval.approval_id,
+                approval.session_id.as_str(),
+                approval.run_id.as_str(),
+                approval.action_id,
+                approval.action_name,
+                format!("{:?}", approval.status).to_lowercase(),
+                serde_json::to_string(approval)?,
+                approval.created_at.to_rfc3339(),
+                approval.updated_at.to_rfc3339(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn insert_deferred_tool_records_tx(
+    tx: &rusqlite::Transaction<'_>,
+    deferred_tools: &[DeferredToolRecord],
+) -> CliResult<()> {
+    for deferred in deferred_tools {
+        tx.execute(
+            "INSERT OR REPLACE INTO deferred_tools (deferred_id, session_id, run_id, tool_call_id, tool_name, status, record_json, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                deferred.deferred_id,
+                deferred.session_id.as_str(),
+                deferred.run_id.as_str(),
+                deferred.tool_call_id,
+                deferred.tool_name,
+                format!("{:?}", deferred.status).to_lowercase(),
+                serde_json::to_string(deferred)?,
+                deferred.created_at.to_rfc3339(),
+                deferred.updated_at.to_rfc3339(),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn insert_file_ref_tx(
     tx: &rusqlite::Transaction<'_>,
     run: &RunRecord,
     file_ref: &FileRefRecord,
 ) -> CliResult<()> {
     tx.execute(
-        "INSERT OR REPLACE INTO file_refs (ref_id, session_id, run_id, relative_path, byte_size, created_at, trimmed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+        "INSERT OR REPLACE INTO file_refs (ref_id, session_id, run_id, relative_path, byte_size, checksum, content_type, created_at, trimmed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
         params![
             file_ref.ref_id,
             run.session_id.as_str(),
             run.run_id.as_str(),
             file_ref.relative_path,
             file_ref.byte_size,
+            file_ref.checksum,
+            file_ref.content_type,
             file_ref.created_at,
         ],
     )?;
     Ok(())
+}
+
+fn checkpoint_refs(run: &RunRecord, records: &[AgentStreamRecord]) -> Vec<CheckpointRef> {
+    records
+        .iter()
+        .filter_map(|record| match &record.event {
+            AgentStreamEvent::Checkpoint { node, step } => Some(CheckpointRef {
+                checkpoint_id: CheckpointId::from_string(format!(
+                    "ckpt_{}_{}",
+                    run.run_id.as_str(),
+                    record.sequence
+                )),
+                run_id: run.run_id.clone(),
+                sequence: record.sequence,
+                node: format!("{node:?}"),
+                storage_ref: Some(format!(
+                    "sessions/{}/runs/{}/checkpoints/{}.json",
+                    run.session_id.as_str(),
+                    run.run_id.as_str(),
+                    record.sequence
+                )),
+                stream_cursor: Some(record.sequence),
+                created_at: Utc::now(),
+                metadata: serde_json::json!({"step": step})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 const fn raw_stream_kind(event: &AgentStreamEvent) -> &'static str {
@@ -736,8 +1145,17 @@ fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> CliResult<()> {
         .parent()
         .ok_or_else(|| CliError::Storage("missing parent path".to_string()))?;
     fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
-    let temp = path.with_extension("tmp");
+    let temp = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
     fs::write(&temp, serde_json::to_vec_pretty(value)?).map_err(|error| io_error(&temp, error))?;
     fs::rename(&temp, path).map_err(|error| io_error(path, error))?;
     Ok(())
+}
+
+fn cheap_checksum(data: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in data {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("fnv64:{hash:016x}")
 }

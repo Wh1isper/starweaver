@@ -25,7 +25,7 @@ fn starweaver_cli_dispatches_to_starweaver_cli_product() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let first: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
     assert_eq!(first["schema"], "starweaver.display.v1");
-    assert_eq!(first["type"], "RUN_STARTED");
+    assert_eq!(first["type"], "RUN_QUEUED");
 }
 
 #[test]
