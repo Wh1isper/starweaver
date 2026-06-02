@@ -4,7 +4,22 @@
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@example/docs-mcp"],
-      "env": {}
+      "env": {},
+      "include_instructions": true,
+      "instructions": "Use docs MCP tools for documentation lookup.",
+      "tools": [
+        {
+          "name": "lookup",
+          "description": "Look up documentation by query.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {"type": "string"}
+            },
+            "required": ["query"]
+          }
+        }
+      ]
     }
   }
 }

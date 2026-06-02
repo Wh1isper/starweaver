@@ -163,3 +163,83 @@ pub fn check_repository_scripts() -> Result<(), String> {
     println!("repository scripts validated");
     Ok(())
 }
+
+/// Build release CLI binaries and exercise launcher, setup, run, session, completion, and update dry-run.
+pub fn smoke_cli_release() -> Result<(), String> {
+    let root = crate::common::root()?;
+    run_command(Command::new("cargo").current_dir(&root).args([
+        "build",
+        "--release",
+        "-p",
+        "starweaver-cli",
+        "--locked",
+    ]))?;
+    let release = root.join("target/release");
+    let starweaver = release.join("starweaver");
+    let sw = release.join("sw");
+    let cli = release.join("starweaver-cli");
+    for binary in [&starweaver, &sw, &cli] {
+        if !binary.exists() {
+            return Err(format!("missing release binary: {}", binary.display()));
+        }
+    }
+    let version = run_capture(Command::new(&starweaver).arg("version"))?;
+    if !version.contains("starweaver-agent-sdk") {
+        return Err("launcher version smoke failed".to_string());
+    }
+    let sw_version = run_capture(Command::new(&sw).args(["cli", "version"]))?;
+    if !sw_version.contains("starweaver-agent-sdk") {
+        return Err("sw cli version smoke failed".to_string());
+    }
+    let bash_completion = run_capture(Command::new(&cli).args(["completion", "bash"]))?;
+    if !bash_completion.contains("starweaver-cli") {
+        return Err("completion smoke failed".to_string());
+    }
+    let tmp = env::temp_dir().join(format!("starweaver-cli-smoke-{}", std::process::id()));
+    if tmp.exists() {
+        fs::remove_dir_all(&tmp).map_err(|error| error.to_string())?;
+    }
+    fs::create_dir_all(&tmp).map_err(|error| error.to_string())?;
+    let result = (|| {
+        let global = tmp.join("global");
+        let project = tmp.join("project/.starweaver");
+        run_command(
+            Command::new(&cli)
+                .env("STARWEAVER_CONFIG_DIR", &global)
+                .env("STARWEAVER_PROJECT_DIR", &project)
+                .arg("setup"),
+        )?;
+        let run = run_capture(
+            Command::new(&cli)
+                .env("STARWEAVER_CONFIG_DIR", &global)
+                .env("STARWEAVER_PROJECT_DIR", &project)
+                .args(["run", "hello", "--output", "silent"]),
+        )?;
+        if !run.contains("status=completed") {
+            return Err("release run smoke failed".to_string());
+        }
+        let sessions = run_capture(
+            Command::new(&cli)
+                .env("STARWEAVER_CONFIG_DIR", &global)
+                .env("STARWEAVER_PROJECT_DIR", &project)
+                .args(["session", "list"]),
+        )?;
+        if !sessions.contains("session_") {
+            return Err("release session list smoke failed".to_string());
+        }
+        let update = run_capture(
+            Command::new(&starweaver)
+                .env("STARWEAVER_UPDATE_DRY_RUN", "1")
+                .env("STARWEAVER_INSTALL_DIR", tmp.join("install"))
+                .arg("update"),
+        )?;
+        if !update.contains("status=dry-run") || !update.contains("target=cli") {
+            return Err("release update dry-run smoke failed".to_string());
+        }
+        Ok(())
+    })();
+    let _ = fs::remove_dir_all(&tmp);
+    result?;
+    println!("CLI release smoke validated");
+    Ok(())
+}

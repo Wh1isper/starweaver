@@ -33,6 +33,7 @@ fn run() -> Result<(), String> {
         "check-docs-examples" => docs::check_docs_examples(&args),
         "check-install-script" => smoke::check_install_script(),
         "check-repository-scripts" => smoke::check_repository_scripts(),
+        "smoke-cli-release" => smoke::smoke_cli_release(),
         "coverage-gate" => coverage::coverage_gate(&args),
         "finalize-docs-site" => docs::finalize_docs_site(),
         "import-model-cassettes" => fixtures::import_model_cassettes(&args),

@@ -54,6 +54,20 @@ impl OAuthStore {
         self.save(&auth)
     }
 
+    /// Remove a provider record.
+    pub fn remove_provider(&self, provider_name: &str) -> CliResult<bool> {
+        let mut auth = self.load()?;
+        let removed = auth.providers.remove(provider_name).is_some();
+        self.save(&auth)?;
+        Ok(removed)
+    }
+
+    /// Return the backing auth file path.
+    #[must_use]
+    pub const fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
     fn load(&self) -> CliResult<AuthFile> {
         if !self.path.exists() {
             return Ok(AuthFile::default());
@@ -127,6 +141,24 @@ pub struct OAuthProviderRecord {
     account: OAuthAccount,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_refresh_at: Option<DateTime<Utc>>,
+}
+
+impl OAuthProviderRecord {
+    /// Return a redacted status object for CLI auth commands.
+    #[must_use]
+    pub fn status_value(&self) -> Value {
+        json!({
+            "issuer": self.issuer,
+            "client_id": self.client_id,
+            "token_endpoint": self.token_endpoint,
+            "base_url": self.base_url,
+            "scopes": self.scopes,
+            "account": self.account,
+            "has_access_token": !self.tokens.access_token.trim().is_empty(),
+            "has_refresh_token": self.tokens.refresh_token.as_ref().is_some_and(|token| !token.trim().is_empty()),
+            "last_refresh_at": self.last_refresh_at,
+        })
+    }
 }
 
 fn default_oauth_type() -> String {

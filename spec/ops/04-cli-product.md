@@ -2,7 +2,7 @@
 
 The CLI Product is the first product surface for Starweaver durable execution. It should make the SDK self-hosting path concrete before service adapters deepen: a local user can run an agent, stream display-protocol events through stdio, persist display messages for session restore, and later attach richer renderers such as TUI or service-backed AGUI clients to the same event feed.
 
-The CLI builds on `starweaver-agent`, `starweaver-session`, `starweaver-stream`, `starweaver-environment`, and the Claw adapter layer. `starweaver-cli` owns command parsing, profile/config resolution, local renderer selection, stdio transport, and installer-facing product behavior. Shared session and stream crates own durable records and display/replay contracts.
+The CLI builds on `starweaver-agent`, `starweaver-session`, `starweaver-stream`, and `starweaver-environment`. `starweaver-cli` owns command parsing, profile/config resolution, local renderer selection, stdio transport, setup/auth/catalog commands, default first-party tool catalog assembly, and installer-facing product behavior. Shared session and stream crates own durable records and display/replay contracts. Claw owns durable service orchestration, workflow definitions, schedules, coordinator adapters, and service transports.
 
 ## Product Direction
 
@@ -264,17 +264,17 @@ Starweaver needs a first-class CLI configuration layer: global and project confi
 
 Configuration decisions:
 
-| Area         | Starweaver decision                                                                                       |
-| ------------ | --------------------------------------------------------------------------------------------------------- |
-| Global root  | `~/.starweaver/`                                                                                          |
-| Project root | `.starweaver/`                                                                                            |
-| Main config  | `config.toml` for profile, model, display, storage, stream, HITL, trim, update, commands, env, skills     |
-| Tool policy  | `tools.toml` with tool approval and capability policy                                                     |
-| MCP servers  | `mcp.json` with the same local/project override pattern                                                   |
-| Local state  | `state.json` for selected profile, current session pointer, update cache metadata, and local-only cursors |
-| Skills       | built-in, global, project directories through `AgentSpec` and skill toolsets                              |
-| Subagents    | markdown files under global/project `subagents/` compiled into `AgentSpec` entries                        |
-| Setup        | `sw cli setup` can create starter global and project files later                                          |
+| Area         | Starweaver decision                                                                                                                   |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Global root  | `~/.starweaver/`                                                                                                                      |
+| Project root | `.starweaver/`                                                                                                                        |
+| Main config  | `config.toml` for profile, model, display, storage, stream, HITL, trim, update, commands, env, skills                                 |
+| Tool policy  | `tools.toml` with tool approval and capability policy                                                                                 |
+| MCP servers  | `mcp.json` with the same local/project override pattern                                                                               |
+| Local state  | `state.json` for selected profile, current session pointer, update cache metadata, and local-only cursors                             |
+| Skills       | built-in, global, project directories through `AgentSpec` and skill toolsets                                                          |
+| Subagents    | markdown files under global/project `subagents/` compiled into `AgentSpec` entries                                                    |
+| Setup        | `sw cli setup` creates starter global and project files for config, tool policy, MCP, skills, subagents, and local state ignore rules |
 
 Config loading should stay predictable:
 
@@ -356,13 +356,10 @@ Example `tools.toml`:
 
 ```toml
 [tools]
-need_approval = ["shell", "write", "edit"]
-
-[tools.defaults]
-network = "allow"
-filesystem = "workspace-write"
-shell = "approval-required"
+need_approval = ["shell", "write", "edit", "multi_edit", "delete", "move"]
 ```
+
+Filesystem and shell execution policy is resolved from `[environment]` in `config.toml`; `tools.toml` controls tool-level approval gates.
 
 Example `mcp.json`:
 
@@ -373,7 +370,14 @@ Example `mcp.json`:
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@example/docs-mcp"],
-      "env": {}
+      "env": {},
+      "tools": [
+        {
+          "name": "lookup",
+          "description": "Look up documentation by query.",
+          "parameters": {"type": "object"}
+        }
+      ]
     }
   }
 }
@@ -465,9 +469,21 @@ starweaver cli session list [--status <status>] [--profile <name>] [--sort updat
 starweaver cli session show <session-id> [--runs <n>] [--output display-jsonl|silent]
 starweaver cli session replay <session-id> [--run <run-id>] [--after <cursor>] [--output display-jsonl|silent]
 starweaver cli session trim [--current | --all | --session <session-id>] [--older-than <duration>] [--keep-runs <n>] [--dry-run] [--output display-jsonl|silent]
+starweaver cli config init [--global | --project] [--force]
 starweaver cli config get <key>
 starweaver cli config set <key> <value> [--global | --project]
-starweaver cli tools list [--profile <name-or-path>] [--output display-jsonl|silent]
+starweaver cli setup [--global | --project] [--force]
+starweaver cli auth status [codex]
+starweaver cli auth logout [codex]
+starweaver cli skill list|show <name>|doctor
+starweaver cli subagent list|show <name>|doctor
+starweaver cli mcp list|show <name>|doctor
+starweaver cli tools list
+starweaver cli tools doctor
+starweaver cli tui [--session <session-id>] [--run <run-id>] [--after <cursor>] [--output text|display-jsonl|silent]
+starweaver cli approval list|show <approval-id>|approve <approval-id>|reject <approval-id>
+starweaver cli deferred list|show <deferred-id>|complete <deferred-id>|fail <deferred-id>
+starweaver cli resume [--session <session-id>] [--run <run-id>] [-p <prompt>] [--output text|display-jsonl|silent]
 starweaver cli diagnostics [--output display-jsonl|silent]
 starweaver cli replay-check
 ```
@@ -816,12 +832,15 @@ STARWEAVER_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Wh1isper/
 10. Persist display messages through the chosen `StreamArchive` in local run tests.
 11. Add compact session list/show/replay/trim commands.
 12. Add current-session and all-sessions trim with dry-run reports, age and recent-run policies, compact-before-delete behavior, and orphaned file-store cleanup.
-13. Add headless HITL auto-deny recording and display-message tests.
-14. Add `starweaver` launcher binary and `sw` install alias behavior.
-15. Add `scripts/install.sh` with GitHub release resolution, checksum verification, install-dir selection, PATH setup, and alias creation.
-16. Update release packaging to include `starweaver`, `starweaver-cli`, `checksums.txt`, alias behavior, update command, and installer guidance.
-17. Add TUI renderer with `ratatui + crossterm` after headless JSONL and display restore paths are stable.
-18. Add service-backed SSE mode over `DisplayMessage` after local CLI restore is stable.
+13. Add headless HITL auto-deny/defer/fail recording and display-message tests.
+14. Add persisted approval and deferred-tool commands for list/show/decision workflows.
+15. Add CLI `resume` as a continuation-run workflow over saved session state and control-flow decisions.
+16. Add a deterministic TUI snapshot command over retained display messages, with full `ratatui + crossterm` interactivity reserved for the next renderer pass.
+17. Add `starweaver` launcher binary and `sw` install alias behavior.
+18. Add `scripts/install.sh` with GitHub release resolution, checksum verification, install-dir selection, PATH setup, and alias creation.
+19. Update release packaging to include `starweaver`, `starweaver-cli`, `checksums.txt`, alias behavior, update command, and installer guidance.
+20. Add release CLI smoke validation for launcher, alias, setup, run, session, completion, and update dry-run behavior.
+21. Add service-backed SSE mode over `DisplayMessage` after local CLI restore is stable.
 
 ## Acceptance Gates
 
@@ -834,14 +853,19 @@ STARWEAVER_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Wh1isper/
 - session/run continuation tests covering `head_run_id`, `head_success_run_id`, `active_run_id`, and `restore_from_run_id`
 - output mode tests for display-jsonl and silent
 - renderer tests over fixed display messages and replay snapshots
+- deterministic TUI snapshot tests over persisted display replay
 - DisplayMessage AGUI-compatibility tests for lifecycle, text, reasoning, tool calls, tool results, custom events, terminal events, and compaction
 - display-message persistence tests over `StreamArchive`
 - session show tests using compact session/run projections and persisted display messages
 - session replay tests with replay-after-cursor behavior
 - session trim tests for current-session and all-sessions policies, dry-run JSONL, compact-before-delete, preserved latest successful run, preserved active runs, age filters, recent-run filters, orphan cleanup, and bytes-reclaimed reporting
-- headless HITL default-deny tests covering approval and deferred tool requests
+- headless HITL default-deny/defer/fail tests covering approval and deferred tool requests
+- approval command tests for list, show, approve, and reject records
+- deferred command tests for list, show, complete, fail, and continuation resume records
 - CLI integration tests through `CARGO_BIN_EXE_starweaver-cli`
 - launcher integration tests through `CARGO_BIN_EXE_starweaver`
 - installer shellcheck or scripts-check coverage
+- release CLI smoke checks through `make cli-smoke`
+- service coverage gate through `make coverage-service` and grouped coverage through `make coverage-ci` for release readiness
 - update command tests for release resolution, checksum verification, and atomic binary replacement planning
 - release packaging checks for archive names, binary contents, and checksums

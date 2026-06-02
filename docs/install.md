@@ -91,7 +91,10 @@ make check
 make test
 make scripts-check
 make docs-check
+make cli-smoke
 ```
+
+`make cli-smoke` builds release CLI binaries and validates launcher, alias, setup, run, session list, completion, and update dry-run behavior.
 
 Coverage uses `cargo-llvm-cov`:
 
@@ -100,4 +103,4 @@ make coverage-ci
 make coverage
 ```
 
-`make ci` runs formatting, Rust checks, replay checks, tests, script checks, and docs checks/build. `make ci-all` runs `make ci` plus coverage.
+`make ci` runs formatting, Rust checks, replay checks, tests, script checks, and docs checks/build. `make cli-smoke` covers release-binary CLI product behavior. `make ci-all` runs `make ci` plus coverage.

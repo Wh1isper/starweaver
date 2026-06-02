@@ -3,8 +3,3 @@
 
 [tools]
 need_approval = ["shell", "write", "edit"]
-
-[tools.defaults]
-network = "allow"
-filesystem = "workspace-read"
-shell = "disabled"

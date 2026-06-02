@@ -40,7 +40,16 @@ starweaver-cli run -p "hello" --profile gateway
 OAuth-backed Codex models use `oauth@codex:<model>` and read credentials from `~/.starweaver/auth.json` or `STARWEAVER_OAUTH_AUTH_FILE`:
 
 ```bash
+starweaver-cli auth status codex
 starweaver-cli run -p "hello" --profile codex
+```
+
+Use setup to create the local project catalog files:
+
+```bash
+starweaver-cli setup --project
+starweaver-cli tools list
+starweaver-cli mcp list
 ```
 
 Skills and subagents are loaded from configured directories:

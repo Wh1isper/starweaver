@@ -12,7 +12,7 @@ This memo tracks the execution roadmap for the architecture in `spec/`. It is or
 - SDK facade foundations are landed: `AgentBuilder`, `AgentApp`, `AgentSession`, context export/restore, direct API re-exports, first-party tool bundles, agent spec presets, subagent registry foundations, and markdown subagent config parsing.
 - Environment foundations are landed in `starweaver-environment`: provider trait, file and shell policies, resource references, state snapshots, virtual provider, and local provider with policy-aware read/write/list/glob support.
 - Durable session foundations are landed in `starweaver-claw`: `SessionStore`, in-memory store, session/run records, checkpoint append/load/latest, stream replay, resume snapshots, and compact run trace projection.
-- Command-line foundations are landed: `version`, `run`, `diagnostics`, `session inspect`, and replay-check guidance with deterministic tests.
+- Command-line foundations are landed: `version`, `run`, `diagnostics`, session list/show/replay/trim, replay-check guidance, setup/auth/catalog commands, default first-party tool catalog assembly, tool approval policy loading, MCP metadata wiring, retained TUI snapshots, approval/deferred commands, continuation-run resume, and release CLI smoke validation with deterministic tests.
 - First-party tool abstraction foundations are landed: typed tool argument schemas via `schemars`, `Toolset::get_tools`, `Toolset::get_instructions`, registry-level instruction aggregation, `PrefixedToolset`, and core `ToolProxyToolset`.
 - Specs are organized across `spec/core`, `spec/sdk`, and `spec/ops` with matching roadmap ownership.
 
@@ -181,18 +181,20 @@ Target outcome:
 
 - Added `starweaver-session` crate for input parts, `SessionStore`, session/run records, checkpoint refs, approvals, deferred records, resume snapshots, and compact trace projections.
 - Added `starweaver-stream` crate for display messages, replay event logs, replay transports, stream archives, realtime compaction buffers, and protocol envelopes.
-- Add CLI headless mode through `sw cli -p <prompt>` with text, JSONL, AGUI JSONL, and silent output modes.
-- Use `clap` for command parsing, `clap_complete` for shell completions, and `ratatui + crossterm` for the later TUI renderer.
-- Persist `DisplayMessage` records through `StreamArchive` and use them as the session restore source for CLI, TUI, and future service UI flows.
-- Add AGUI-compatible display adapter and replay compaction path based on ya-claw behavior.
-- Add `starweaver` launcher dispatch, `sw` alias, `starweaver-{command}` command convention, and GitHub release install/update scripts.
-- Add CLI configuration resolution: global/project config roots, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, narrow environment overrides, and command-line flag precedence.
-- Add CLI app-profile workflows over `AgentSpec`: streamed runs, environment provider selection, display-message rendering, compact run trace projection, and compact session commands for list/show/replay/trim.
-- Add Claw-style session/run selectors for `-p/--prompt`: `--session`, `--continue`, `--new-session`, `--run`, and `--branch-from`, where every prompt-backed invocation appends a run under a session.
-- Make headless HITL unattended through default-deny approval handling, with `--hitl deny|defer|fail` and interactive `--hitl prompt` later.
-- Add local SQLite plus file-store persistence in the CLI path for session/run/display indexes, checkpoint refs, large raw evidence blobs, compact archives, and attachments.
-- Add current-session and all-sessions trim policies based on recent run count, age, starred sessions, active runs, latest successful run, and orphaned file-store cleanup.
-- Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs using the same display/replay contracts.
+- CLI headless mode is landed through `sw cli -p <prompt>` with text, display JSONL, and silent output modes.
+- `clap` command parsing, `clap_complete` completions, and retained TUI snapshot rendering are landed; full `ratatui + crossterm` interactivity remains a later renderer pass.
+- Persisted `DisplayMessage` records are the session replay and TUI snapshot source for local CLI restore and future service UI flows.
+- AGUI-compatible display adapter and replay compaction paths are landed based on ya-claw behavior.
+- `starweaver` launcher dispatch, `sw` alias, `starweaver-{command}` convention, GitHub release installer, update command, and CLI release smoke validation are landed.
+- CLI configuration resolution is landed for global/project config roots, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, narrow environment overrides, setup UX, auth status/logout, and command-line flag precedence.
+- CLI app-profile workflows over `AgentSpec` are landed for streamed runs, environment provider selection, display-message rendering, compact run trace projection, compact session commands for list/show/replay/trim, default first-party tool catalog assembly, configured MCP server validation, and skill/subagent catalog inspection.
+- Claw-style session/run selectors for `-p/--prompt` are landed: `--session`, `--continue`, `--new-session`, `--run`, and `--branch-from`, where every prompt-backed invocation appends a run under a session.
+- Headless HITL policy handling is landed for deny, defer, fail, and prompt policy selection, with persisted approval/deferred records for deferred workflows.
+- CLI approval and deferred commands are landed for list/show/approve/reject/complete/fail control-flow management.
+- CLI `resume` is landed as a continuation-run path over saved session state and persisted control-flow decisions.
+- Local SQLite plus file-store persistence is landed in the CLI path for session/run/display indexes, checkpoint refs, raw evidence blobs, compact snapshots, approval/deferred records, and local trim.
+- Current-session and all-sessions trim policies are landed for recent run count, age filters, active runs, latest successful run preservation, and bytes-reclaimed reporting.
+- Service execution loop, cancellation/interruption, same-run approval/deferred resume endpoints, SSE replay, and compact run trace APIs use the same display/replay contracts in the Claw layer.
 - Add runtime checkpoint reload APIs that hydrate from `AgentCheckpoint.state` and continue from safe execution nodes.
 - Add idempotency metadata for external tool calls, host adapters, environment resources, and process handles.
 - Add deployment metadata propagation into trace/session records: profile, workspace provider, build version, release, user id, and tags.
@@ -201,7 +203,7 @@ Focused implementation slices:
 
 01. **CLI framework and parser:** add `clap` derive command schemas, `ValueEnum` types, command parsing tests, and `clap_complete` shell completion generation.
 02. **CLI display contract:** define display-message restore semantics, headless replay envelopes, terminal markers, and renderer input contracts.
-03. **CLI configuration resolver:** add global/project config discovery, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, selected env overrides, and command-line precedence tests.
+03. **CLI configuration resolver:** landed global/project config discovery, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, selected env overrides, setup command, and command-line precedence tests.
 04. **CLI module split:** split `starweaver-cli` into args/config/commands/render/stream/session/storage modules while preserving current deterministic commands.
 05. **Headless stdio runs:** add `-p/--prompt`, session selectors, run selectors, `--hitl deny|defer|fail`, `--output display-jsonl|silent`, and golden output tests.
 06. **AGUI-compatible DisplayMessage protocol:** make `DisplayMessage` the AGUI-compatible Starweaver wire event for lifecycle, text, reasoning, tool call, tool result, custom, and terminal events with compaction tests.
@@ -214,12 +216,14 @@ Focused implementation slices:
 13. **Shared session records:** keep `InputPart`, session/run records, checkpoint refs, control records, compact projections, stream cursor refs, and serialization tests aligned with CLI restore needs.
 14. **Shared stream protocols:** keep AGUI-compatible `DisplayMessage`, replay cursors/scopes, replay events, replay snapshots, stream archive records, protocol envelopes, and realtime compaction tests aligned with CLI, TUI, and Claw use.
 15. **Service storage adapters:** lift SQLite-backed `SessionStore` and `StreamArchive` adapters into reusable Claw/service storage once the CLI-local schema stabilizes; add PostgreSQL after schema stability.
-16. **TUI renderer:** add `ratatui + crossterm` renderer after headless replay and session restore contracts are stable.
-17. **Service executor:** wrap runtime execution with persisted run records, cancellation tokens, approval/deferred state, shared replay transport, display-message projection, and resume snapshots.
-18. **Checkpoint reload:** define continuation semantics for `RunStart`, `PrepareModelRequest`, `BeforeModelRequest`, `ModelResponse`, `ToolCall`, `ToolReturn`, `ValidateOutput`, `RunComplete`, and `RunFailed`.
-19. **SSE and JSONL replay:** serve replay transport events with replay-after-cursor behavior and trace correlation.
-20. **Redis replay adapter:** add Redis Stream replay event-log adapter after memory and SQLite contracts stabilize.
-21. **Validation and docs:** add `starweaver-cli`, `starweaver-stream`, `starweaver-session`, and `starweaver-claw` tests, then document CLI durable app workflows.
+16. **TUI renderer:** retained text/JSON snapshot is landed for replay inspection; add `ratatui + crossterm` interactive views after headless replay and session restore contracts are stable.
+17. **Approval/deferred UX and resume:** CLI approval/deferred commands and continuation-run `resume` are landed; Claw remains responsible for service-managed same-run checkpoint reload and service-side HITL endpoints.
+18. **Release smoke and coverage:** `make cli-smoke` is landed for release-binary CLI validation; `make coverage-service` and `make coverage-ci` remain release-readiness gates for coverage.
+19. **Service executor:** wrap runtime execution with persisted run records, cancellation tokens, approval/deferred state, shared replay transport, display-message projection, and resume snapshots.
+20. **Checkpoint reload:** define continuation semantics for `RunStart`, `PrepareModelRequest`, `BeforeModelRequest`, `ModelResponse`, `ToolCall`, `ToolReturn`, `ValidateOutput`, `RunComplete`, and `RunFailed`.
+21. **SSE and JSONL replay:** serve replay transport events with replay-after-cursor behavior and trace correlation.
+22. **Redis replay adapter:** add Redis Stream replay event-log adapter after memory and SQLite contracts stabilize.
+23. **Validation and docs:** add `starweaver-cli`, `starweaver-stream`, `starweaver-session`, and `starweaver-claw` tests, then document CLI durable app workflows.
 
 ### N2.5 Remaining SDK Deepening
 
@@ -255,11 +259,11 @@ These items can run alongside durable runtime work when their call sites are nee
 
 ### CLI Product Deepening
 
-- Add headless `sw cli -p <prompt>` runs with `DisplayMessage` JSONL and silent output modes.
-- Persist display messages and restore CLI/TUI views from the stream archive.
-- Add `starweaver` launcher, `sw` alias, `starweaver-{command}` dispatch, GitHub installer, and update command.
-- Add compact command-line session list/show/replay/trim with compact trace projection and stream replay.
-- Add app profile loading over `AgentApp`, environment providers, first-party bundles, `SessionStore`, SQLite local storage, file-store blobs, and trim policy.
+- Deepen retained TUI snapshots into interactive `ratatui + crossterm` views over the same persisted display messages.
+- Expand CLI resume from continuation-run workflows toward service-managed same-run checkpoint reload through Claw APIs.
+- Deepen live MCP execution from configured MCP metadata and SDK `LiveMcpClient` seams into concrete `rmcp` stdio and streamable HTTP clients when service call sites require them.
+- Expand release smoke coverage as installer and packaging behavior grows.
+- Keep app profile loading over `AgentApp`, environment providers, first-party bundles, `SessionStore`, SQLite local storage, file-store blobs, and trim policy aligned with docs and coverage gates.
 
 ### Durable Service Runtime Deepening
 

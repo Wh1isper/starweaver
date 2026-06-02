@@ -11,6 +11,7 @@ mod oauth;
 mod profiles;
 mod runner;
 mod service;
+mod tui;
 mod update_check;
 
 use std::env;

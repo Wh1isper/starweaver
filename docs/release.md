@@ -142,6 +142,14 @@ starweaver-claw.exe
 
 The draft release also includes `checksums.txt` with SHA-256 checksums for all archives. `scripts/install.sh` downloads these artifacts, verifies checksums when present, installs `starweaver`, `starweaver-cli`, and `sw` for CLI installs, and installs `starweaver-claw` for Claw installs.
 
+Local release smoke for CLI artifacts:
+
+```bash
+make cli-smoke
+```
+
+This builds the release CLI package and exercises launcher version, `sw cli version`, shell completion generation, setup, a deterministic run, session listing, and update dry-run behavior.
+
 ## Install and update commands
 
 Latest install:

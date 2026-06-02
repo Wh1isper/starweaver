@@ -4,6 +4,10 @@ AGENT_COVERAGE_MIN_LINES ?= 90
 SERVICE_COVERAGE_MIN_LINES ?= 80
 PUBLISH_RETRIES ?= 10
 PUBLISH_RETRY_DELAY_SECONDS ?= 30
+CLI_ARGS ?= $(ARGS)
+SW_ARGS ?= $(ARGS)
+CLI_DEMO_PROMPT ?= hello
+SW_DEMO_PROMPT ?= hello
 
 .PHONY: help
 help: ## Show available commands
@@ -106,6 +110,11 @@ scripts-check: cli-examples-check install-script-check ## Validate repository au
 	@echo "Checking repository scripts"
 	@$(XTASK) check-repository-scripts
 
+.PHONY: cli-smoke
+cli-smoke: ## Build release CLI binaries and run product smoke checks
+	@echo "Running CLI release smoke"
+	@$(XTASK) smoke-cli-release
+
 .PHONY: docs-check
 docs-check: ## Compile Rust examples from docs
 	@echo "Checking docs examples"
@@ -142,6 +151,13 @@ ci: fmt-check check replay-check test scripts-check docs-check docs-build ## Run
 .PHONY: ci-all
 ci-all: ci coverage-ci ## Run core CI plus coverage gates
 
+.PHONY: cli
+cli: ## Try starweaver-cli; override with ARGS="--help" or ARGS="version"
+	@cargo run --package starweaver-cli --bin starweaver-cli --locked -- $(CLI_ARGS)
+
+.PHONY: sw
+sw: ## Try sw launcher; override with ARGS="--help" or ARGS="version"
+	@cargo run --package starweaver-cli --bin sw --locked -- $(SW_ARGS)
+
 .PHONY: run-cli
-run-cli: ## Run the Starweaver CLI
-	@cargo run --package starweaver-cli --bin starweaver-cli --locked
+run-cli: cli ## Alias for cli

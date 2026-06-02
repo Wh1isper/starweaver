@@ -75,6 +75,54 @@ pub enum CliCommand {
         #[command(subcommand)]
         command: ProfileCommand,
     },
+    /// Initialize local CLI configuration and catalogs.
+    Setup(SetupCommand),
+    /// Inspect OAuth-backed provider authentication.
+    Auth {
+        /// Auth subcommand.
+        #[command(subcommand)]
+        command: AuthCommand,
+    },
+    /// Inspect configured skills.
+    Skill {
+        /// Skill subcommand.
+        #[command(subcommand)]
+        command: CatalogCommand,
+    },
+    /// Inspect configured subagents.
+    Subagent {
+        /// Subagent subcommand.
+        #[command(subcommand)]
+        command: CatalogCommand,
+    },
+    /// Inspect configured MCP servers.
+    Mcp {
+        /// MCP subcommand.
+        #[command(subcommand)]
+        command: CatalogCommand,
+    },
+    /// Inspect default CLI tool catalog and policy.
+    Tools {
+        /// Tools subcommand.
+        #[command(subcommand)]
+        command: ToolsCommand,
+    },
+    /// Render a retained terminal UI from local session display messages.
+    Tui(TuiCommand),
+    /// Manage persisted approval requests.
+    Approval {
+        /// Approval subcommand.
+        #[command(subcommand)]
+        command: ApprovalCommand,
+    },
+    /// Manage deferred tool calls.
+    Deferred {
+        /// Deferred subcommand.
+        #[command(subcommand)]
+        command: DeferredCommand,
+    },
+    /// Resume a waiting session by appending a continuation run.
+    Resume(ResumeCommand),
     /// Print diagnostics.
     Diagnostics,
     /// Print replay-check guidance.
@@ -231,6 +279,187 @@ pub enum ProfileCommand {
     List,
     /// Show one built-in or configured profile.
     Show { name: String },
+}
+
+/// Setup command.
+#[derive(Clone, Debug, Args)]
+pub struct SetupCommand {
+    /// Initialize global configuration only.
+    #[arg(long, conflicts_with = "project")]
+    pub global: bool,
+    /// Initialize project configuration only.
+    #[arg(long)]
+    pub project: bool,
+    /// Replace existing generated files.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Auth commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum AuthCommand {
+    /// Print provider auth status.
+    Status {
+        /// Provider name.
+        #[arg(default_value = "codex")]
+        provider: String,
+    },
+    /// Remove provider credentials from the local auth store.
+    Logout {
+        /// Provider name.
+        #[arg(default_value = "codex")]
+        provider: String,
+    },
+}
+
+/// Catalog inspection commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum CatalogCommand {
+    /// List configured entries.
+    List,
+    /// Show one configured entry.
+    Show { name: String },
+    /// Validate configured entries and print findings.
+    Doctor,
+}
+
+/// Tool catalog commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum ToolsCommand {
+    /// List default first-party tools.
+    List,
+    /// Validate tool policy and default catalog.
+    Doctor,
+}
+
+/// TUI command.
+#[derive(Clone, Debug, Args)]
+pub struct TuiCommand {
+    /// Session id to render. Defaults to the current or latest session.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Optional run id to render.
+    #[arg(long)]
+    pub run: Option<String>,
+    /// Render only messages after this display cursor.
+    #[arg(long)]
+    pub after: Option<usize>,
+    /// Output mode for non-interactive TUI snapshots.
+    #[arg(long, default_value = "text")]
+    pub output: OutputMode,
+}
+
+/// Approval commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum ApprovalCommand {
+    /// List persisted approval records.
+    List(ApprovalListCommand),
+    /// Show one approval record.
+    Show { approval_id: String },
+    /// Approve one pending approval record.
+    Approve(ApprovalDecisionCommand),
+    /// Reject one pending approval record.
+    Reject(ApprovalDecisionCommand),
+}
+
+/// Approval list command.
+#[derive(Clone, Debug, Args)]
+pub struct ApprovalListCommand {
+    /// Filter by session id.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Filter by run id.
+    #[arg(long)]
+    pub run: Option<String>,
+    /// Output mode.
+    #[arg(long, default_value = "display-jsonl")]
+    pub output: OutputMode,
+}
+
+/// Approval decision command.
+#[derive(Clone, Debug, Args)]
+pub struct ApprovalDecisionCommand {
+    /// Approval id.
+    pub approval_id: String,
+    /// Decision reason.
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Output mode.
+    #[arg(long, default_value = "text")]
+    pub output: OutputMode,
+}
+
+/// Deferred tool commands.
+#[derive(Clone, Debug, Subcommand)]
+pub enum DeferredCommand {
+    /// List persisted deferred tool records.
+    List(DeferredListCommand),
+    /// Show one deferred tool record.
+    Show { deferred_id: String },
+    /// Complete one deferred tool record with a JSON result payload.
+    Complete(DeferredCompleteCommand),
+    /// Fail one deferred tool record with an error message.
+    Fail(DeferredFailCommand),
+}
+
+/// Deferred list command.
+#[derive(Clone, Debug, Args)]
+pub struct DeferredListCommand {
+    /// Filter by session id.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Filter by run id.
+    #[arg(long)]
+    pub run: Option<String>,
+    /// Output mode.
+    #[arg(long, default_value = "display-jsonl")]
+    pub output: OutputMode,
+}
+
+/// Deferred complete command.
+#[derive(Clone, Debug, Args)]
+pub struct DeferredCompleteCommand {
+    /// Deferred id.
+    pub deferred_id: String,
+    /// JSON result payload.
+    #[arg(long)]
+    pub result: String,
+    /// Output mode.
+    #[arg(long, default_value = "text")]
+    pub output: OutputMode,
+}
+
+/// Deferred failure command.
+#[derive(Clone, Debug, Args)]
+pub struct DeferredFailCommand {
+    /// Deferred id.
+    pub deferred_id: String,
+    /// Error message.
+    #[arg(long)]
+    pub error: String,
+    /// Output mode.
+    #[arg(long, default_value = "text")]
+    pub output: OutputMode,
+}
+
+/// Resume command.
+#[derive(Clone, Debug, Args)]
+pub struct ResumeCommand {
+    /// Session id to resume. Defaults to current or latest session.
+    #[arg(long)]
+    pub session: Option<String>,
+    /// Run id to resume from. Defaults to the session active or head run.
+    #[arg(long)]
+    pub run: Option<String>,
+    /// Prompt to append for the continuation run.
+    #[arg(short = 'p', long = "prompt", default_value = "resume waiting run")]
+    pub prompt: String,
+    /// Output mode.
+    #[arg(long)]
+    pub output: Option<OutputMode>,
+    /// Headless human-in-the-loop policy.
+    #[arg(long)]
+    pub hitl: Option<HitlPolicy>,
 }
 
 /// Update command.

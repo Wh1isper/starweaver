@@ -1,6 +1,11 @@
 //! CLI configuration resolution.
 
-use std::{collections::BTreeMap, env, fs, path::PathBuf, process, thread};
+use std::{
+    collections::BTreeMap,
+    env, fs,
+    path::{Path, PathBuf},
+    process, thread,
+};
 
 use serde::{Deserialize, Serialize};
 use starweaver_model::MaxTokensParameter;
@@ -839,6 +844,23 @@ pub fn init_config_file(config: &CliConfig, scope: ConfigScope, force: bool) -> 
     Ok(path)
 }
 
+pub const DEFAULT_TOOLS_TEMPLATE: &str = r#"[tools]
+need_approval = ["shell", "write", "edit", "multi_edit", "delete", "move"]
+
+"#;
+
+pub const DEFAULT_MCP_TEMPLATE: &str = r#"{
+  "servers": {}
+}
+"#;
+
+pub const DEFAULT_PROJECT_GITIGNORE_TEMPLATE: &str = r"state.json
+state.*.json.tmp
+starweaver.sqlite
+starweaver.sqlite-*
+store/
+";
+
 const fn default_config_template(scope: ConfigScope) -> &'static str {
     match scope {
         ConfigScope::Global => {
@@ -1070,10 +1092,50 @@ fn provider_ready(provider: &ProviderConfig) -> bool {
         })
 }
 
-fn read_tools_config(
-    global_dir: &std::path::Path,
-    project_dir: &std::path::Path,
-) -> CliResult<serde_json::Value> {
+/// Return tool policy entries requiring approval.
+#[must_use]
+pub fn tool_need_approval(config: &CliConfig) -> Vec<String> {
+    let values = config
+        .tools_config
+        .get("tools")
+        .and_then(|tools| tools.get("need_approval"))
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
+    values.unwrap_or_else(default_need_approval)
+}
+
+fn default_need_approval() -> Vec<String> {
+    ["shell", "write", "edit", "multi_edit", "delete", "move"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Return merged configured MCP server map.
+#[must_use]
+pub fn mcp_servers(config: &CliConfig) -> BTreeMap<String, serde_json::Value> {
+    config
+        .mcp_config
+        .get("servers")
+        .and_then(serde_json::Value::as_object)
+        .map(|servers| {
+            servers
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_tools_config(global_dir: &Path, project_dir: &Path) -> CliResult<serde_json::Value> {
     let mut value = serde_json::json!({});
     merge_toml_metadata(&mut value, &global_dir.join("tools.toml"))?;
     merge_toml_metadata(&mut value, &project_dir.join("tools.toml"))?;

@@ -9,13 +9,15 @@ use std::{
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
+use serde_json::Value;
 use starweaver_agent::ResumableState;
 use starweaver_core::{CheckpointId, ConversationId, RunId, SessionId};
 use starweaver_environment::EnvironmentState;
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{
-    ApprovalRecord, CheckpointRef, DeferredToolRecord, EnvironmentStateRef, InputPart, RunRecord,
-    RunStatus, SessionRecord, SessionStatus, StreamCursorRef,
+    ApprovalDecision, ApprovalRecord, ApprovalStatus, CheckpointRef, DeferredToolRecord,
+    EnvironmentStateRef, ExecutionStatus, InputPart, RunRecord, RunStatus, SessionRecord,
+    SessionStatus, StreamCursorRef,
 };
 use starweaver_stream::{DisplayMessage, ReplaySnapshot};
 use uuid::Uuid;
@@ -297,6 +299,20 @@ impl LocalStore {
             .map(|json| serde_json::from_str(&json).map_err(CliError::from))
             .transpose()?
             .ok_or_else(|| CliError::NotFound(session_id.to_string()))
+    }
+
+    /// Load a run.
+    pub fn load_run(&self, session_id: &str, run_id: &str) -> CliResult<RunRecord> {
+        self.conn
+            .query_row(
+                "SELECT record_json FROM runs WHERE session_id = ?1 AND run_id = ?2",
+                params![session_id, run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|json| serde_json::from_str(&json).map_err(CliError::from))
+            .transpose()?
+            .ok_or_else(|| CliError::NotFound(run_id.to_string()))
     }
 
     /// Latest active session.
@@ -759,6 +775,141 @@ impl LocalStore {
             fs::remove_dir_all(&path).map_err(|error| io_error(&path, error))?;
         }
         Ok(())
+    }
+
+    /// List persisted approval records.
+    pub fn list_approvals(
+        &self,
+        session_id: Option<&str>,
+        run_id: Option<&str>,
+    ) -> CliResult<Vec<ApprovalRecord>> {
+        let mut stmt = self.conn.prepare(
+            r"
+            SELECT record_json FROM approvals
+            WHERE (?1 IS NULL OR session_id = ?1)
+              AND (?2 IS NULL OR run_id = ?2)
+            ORDER BY updated_at DESC, created_at DESC
+            ",
+        )?;
+        let rows = stmt.query_map(params![session_id, run_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|json| serde_json::from_str(&json).map_err(CliError::from))
+            .collect()
+    }
+
+    /// Load one approval record.
+    pub fn load_approval(&self, approval_id: &str) -> CliResult<ApprovalRecord> {
+        self.conn
+            .query_row(
+                "SELECT record_json FROM approvals WHERE approval_id = ?1",
+                [approval_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|json| serde_json::from_str(&json).map_err(CliError::from))
+            .transpose()?
+            .ok_or_else(|| CliError::NotFound(approval_id.to_string()))
+    }
+
+    /// Record an approval decision.
+    pub fn decide_approval(
+        &mut self,
+        approval_id: &str,
+        status: ApprovalStatus,
+        reason: Option<String>,
+    ) -> CliResult<ApprovalRecord> {
+        let mut approval = self.load_approval(approval_id)?;
+        approval.status = status;
+        approval.decision = Some(ApprovalDecision {
+            status,
+            decided_by: Some("starweaver-cli".to_string()),
+            decided_at: Utc::now(),
+            reason,
+            metadata: serde_json::Map::default(),
+        });
+        approval.updated_at = Utc::now();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_approval_records_tx(&tx, &[approval.clone()])?;
+        tx.commit()?;
+        Ok(approval)
+    }
+
+    /// List persisted deferred tool records.
+    pub fn list_deferred_tools(
+        &self,
+        session_id: Option<&str>,
+        run_id: Option<&str>,
+    ) -> CliResult<Vec<DeferredToolRecord>> {
+        let mut stmt = self.conn.prepare(
+            r"
+            SELECT record_json FROM deferred_tools
+            WHERE (?1 IS NULL OR session_id = ?1)
+              AND (?2 IS NULL OR run_id = ?2)
+            ORDER BY updated_at DESC, created_at DESC
+            ",
+        )?;
+        let rows = stmt.query_map(params![session_id, run_id], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|json| serde_json::from_str(&json).map_err(CliError::from))
+            .collect()
+    }
+
+    /// Load one deferred tool record.
+    pub fn load_deferred_tool(&self, deferred_id: &str) -> CliResult<DeferredToolRecord> {
+        self.conn
+            .query_row(
+                "SELECT record_json FROM deferred_tools WHERE deferred_id = ?1",
+                [deferred_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|json| serde_json::from_str(&json).map_err(CliError::from))
+            .transpose()?
+            .ok_or_else(|| CliError::NotFound(deferred_id.to_string()))
+    }
+
+    /// Complete one deferred tool record.
+    pub fn complete_deferred_tool(
+        &mut self,
+        deferred_id: &str,
+        response: Value,
+    ) -> CliResult<DeferredToolRecord> {
+        self.update_deferred_tool(deferred_id, ExecutionStatus::Completed, response)
+    }
+
+    /// Fail one deferred tool record.
+    pub fn fail_deferred_tool(
+        &mut self,
+        deferred_id: &str,
+        error: &str,
+    ) -> CliResult<DeferredToolRecord> {
+        self.update_deferred_tool(
+            deferred_id,
+            ExecutionStatus::Failed,
+            serde_json::json!({"error": error}),
+        )
+    }
+
+    fn update_deferred_tool(
+        &mut self,
+        deferred_id: &str,
+        status: ExecutionStatus,
+        response: Value,
+    ) -> CliResult<DeferredToolRecord> {
+        let mut deferred = self.load_deferred_tool(deferred_id)?;
+        deferred.status = status;
+        deferred.response = response;
+        deferred.updated_at = Utc::now();
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        insert_deferred_tool_records_tx(&tx, &[deferred.clone()])?;
+        tx.commit()?;
+        Ok(deferred)
     }
 }
 

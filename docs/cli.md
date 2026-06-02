@@ -196,6 +196,19 @@ STARWEAVER_ANTHROPIC_API_KEY_ENV=MY_ANTHROPIC_KEY
 STARWEAVER_GEMINI_API_KEY_ENV=MY_GEMINI_KEY
 ```
 
+## Setup
+
+Use `setup` to create the local config skeleton, tool policy file, MCP config file, project skill/subagent directories, and project local-state ignore rules:
+
+```bash
+starweaver-cli setup
+starweaver-cli setup --global
+starweaver-cli setup --project
+starweaver-cli setup --force
+```
+
+`setup` prints one JSON object per created or existing item. It writes `config.toml`, `tools.toml`, `mcp.json`, `skills/`, and `subagents/` for the selected global or project scope. Project setup also writes `.starweaver/.gitignore` entries for `state.json`, SQLite files, and the local file store.
+
 ## OAuth-backed Codex models
 
 Codex OAuth profiles use `oauth@codex:<model>` and the OpenAI Responses protocol. Starweaver reads credentials from `~/.starweaver/auth.json` or the explicit path in `STARWEAVER_OAUTH_AUTH_FILE`:
@@ -210,7 +223,60 @@ model_cfg = "gpt5_270k"
 
 The OAuth transport attaches Codex request headers, adds session and thread metadata, sets Responses `store=false`, and refreshes the access token once after a `401` response when a refresh token is present. `[providers.codex]` controls the Codex base URL, endpoint path, and max-token parameter mapping.
 
-## Skills and subagents
+Auth inspection commands read and update the local auth store without printing secrets:
+
+```bash
+starweaver-cli auth status
+starweaver-cli auth status codex
+starweaver-cli auth logout codex
+```
+
+## Tools, MCP, skills, and subagents
+
+Built-in and config-backed profiles attach the default first-party CLI tool catalog: filesystem, shell, host operations, task operations, skills, and CLI control-flow probes. The tool policy file marks approval-gated tools and toolsets:
+
+```toml
+[tools]
+need_approval = ["shell", "write", "edit", "multi_edit", "delete", "move"]
+```
+
+Filesystem and shell execution policy is resolved from `[environment]` in `config.toml`; `tools.toml` controls tool-level approval gates.
+
+Inspect the effective catalog and policy:
+
+```bash
+starweaver-cli tools list
+starweaver-cli tools doctor
+```
+
+MCP servers are read from global and project `mcp.json`. Declared tools are exposed through `McpToolset`; calls defer to the host MCP runtime with server, transport, exposed tool name, and arguments recorded in the deferred-call metadata. Profiles can also validate MCP server names through `mcp_servers` in `AgentSpec`.
+
+```json
+{
+  "servers": {
+    "docs": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@example/docs-mcp"],
+      "tools": [
+        {
+          "name": "lookup",
+          "description": "Look up documentation by query.",
+          "parameters": {"type": "object"}
+        }
+      ]
+    }
+  }
+}
+```
+
+Inspect MCP configuration:
+
+```bash
+starweaver-cli mcp list
+starweaver-cli mcp show docs
+starweaver-cli mcp doctor
+```
 
 Skills are loaded from `SKILL.md` packages in configured directories and exposed through the `skills` toolset. Subagent markdown files are loaded from configured directories and registered in the CLI AgentSpec registry.
 
@@ -232,6 +298,17 @@ Environment overrides use path-list syntax for directories and comma-list syntax
 STARWEAVER_SKILL_DIRS=~/.starweaver/skills:.starweaver/skills
 STARWEAVER_SUBAGENT_DIRS=~/.starweaver/subagents:.starweaver/subagents
 STARWEAVER_DISABLED_SUBAGENTS=debugger,searcher
+```
+
+Catalog commands print JSONL for lists, raw file content for `show`, and compact key-value doctor output:
+
+```bash
+starweaver-cli skill list
+starweaver-cli skill show cli-config
+starweaver-cli skill doctor
+starweaver-cli subagent list
+starweaver-cli subagent show debugger
+starweaver-cli subagent doctor
 ```
 
 ## Headless runs
@@ -292,7 +369,16 @@ starweaver-cli session replay <session-id> --output text
 
 Run-scoped replay emits the same display JSONL that the initial headless run emitted when `--output display-jsonl` is selected.
 
-## Human-in-the-loop policy
+## TUI snapshot and human-in-the-loop policy
+
+The CLI TUI MVP renders a retained terminal snapshot from persisted `DisplayMessage` records. It uses the same replay source as headless JSONL and session replay:
+
+```bash
+starweaver-cli tui
+starweaver-cli tui --session <session-id>
+starweaver-cli tui --session <session-id> --run <run-id>
+starweaver-cli tui --session <session-id> --output display-jsonl
+```
 
 Headless HITL defaults to `deny`. The current policy is stored in display message metadata for auditability. Tool-return control flow with `approval_required` or `call_deferred` is projected into `APPROVAL_REQUESTED` and `APPROVAL_RESOLVED` display messages, persisted as approval/deferred records, and can place the run in `waiting` or `failed` status depending on policy:
 
@@ -302,6 +388,27 @@ starweaver-cli -p "hello" --hitl defer
 starweaver-cli -p "hello" --hitl fail
 starweaver-cli -p "hello" --hitl prompt
 ```
+
+Persisted approval records can be inspected and decided from the CLI:
+
+```bash
+starweaver-cli approval list
+starweaver-cli approval show <approval-id>
+starweaver-cli approval approve <approval-id> --reason "reviewed"
+starweaver-cli approval reject <approval-id> --reason "blocked"
+```
+
+Persisted deferred tool calls can be inspected, completed, failed, and resumed through a continuation run:
+
+```bash
+starweaver-cli deferred list
+starweaver-cli deferred show <deferred-id>
+starweaver-cli deferred complete <deferred-id> --result '{"ok": true}'
+starweaver-cli deferred fail <deferred-id> --error "worker failed"
+starweaver-cli resume --session <session-id> --prompt "continue after review"
+```
+
+`resume` appends a continuation run from the waiting or head run state. Claw remains the owner for service-managed same-run checkpoint reload, interruption APIs, SSE transports, workflows, and schedules.
 
 ## Environment
 

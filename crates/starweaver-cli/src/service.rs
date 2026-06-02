@@ -1,24 +1,31 @@
 //! CLI service layer over local storage and SDK execution.
 
-use std::fmt::Write as _;
+use std::{fmt::Write as _, fs, path::Path};
 
 use clap_complete::Shell;
 use serde_json::{json, Value};
 use starweaver_core::sdk_name;
+use starweaver_session::{ApprovalRecord, ApprovalStatus, DeferredToolRecord};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
 use crate::{
     args::{
-        Cli, CliCommand, ConfigCommand, OutputMode, ProfileCommand, RunCommand, SessionCommand,
-        UpdateCommand,
+        ApprovalCommand, ApprovalDecisionCommand, ApprovalListCommand, AuthCommand, CatalogCommand,
+        Cli, CliCommand, ConfigCommand, DeferredCommand, DeferredCompleteCommand,
+        DeferredFailCommand, DeferredListCommand, OutputMode, ProfileCommand, ResumeCommand,
+        RunCommand, SessionCommand, SetupCommand, ToolsCommand, TuiCommand, UpdateCommand,
     },
     config::{
-        get_config_value, init_config_file, read_current_session, write_current_session, CliConfig,
-        ConfigScope,
+        get_config_value, init_config_file, mcp_servers, read_current_session, tool_need_approval,
+        write_current_session, CliConfig, ConfigScope, DEFAULT_MCP_TEMPLATE,
+        DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
     },
     environment::resolve_environment,
     local_store::{LocalStore, RunSummary, SessionSummary, TrimReport},
-    profiles::{list_profiles, resolve_profile, show_profile},
+    profiles::{
+        doctor_mcp_servers, list_default_tools, list_mcp_servers, list_profiles, list_skills,
+        list_subagents, resolve_profile, show_mcp_server, show_profile, show_skill, show_subagent,
+    },
     runner::{execute_agent_session, failed_display_message, CliRunPolicy},
     CliError, CliResult,
 };
@@ -55,7 +62,7 @@ impl CliService {
         }
         match cli.command.unwrap_or(CliCommand::Version) {
             CliCommand::Version => Ok(format!("{}\n", sdk_name())),
-            CliCommand::Diagnostics => Ok(self.diagnostics()),
+            CliCommand::Diagnostics => Ok(self.diagnostics()?),
             CliCommand::ReplayCheck => {
                 Ok("run `make replay-check` from the repository root\n".to_string())
             }
@@ -63,6 +70,16 @@ impl CliService {
             CliCommand::Run(command) => self.run_prompt(&command),
             CliCommand::Session { command } => self.session(command),
             CliCommand::Profile { command } => self.profile(command),
+            CliCommand::Setup(command) => self.setup(&command),
+            CliCommand::Auth { command } => Self::auth(command),
+            CliCommand::Skill { command } => self.skills(command),
+            CliCommand::Subagent { command } => self.subagents(command),
+            CliCommand::Mcp { command } => self.mcp(command),
+            CliCommand::Tools { command } => self.tools(&command),
+            CliCommand::Tui(command) => self.tui(&command),
+            CliCommand::Approval { command } => self.approval(command),
+            CliCommand::Deferred { command } => self.deferred(command),
+            CliCommand::Resume(command) => self.resume(&command),
             CliCommand::Config { command } => self.config(command),
             CliCommand::Completion { shell } => render_completion(shell),
         }
@@ -249,6 +266,278 @@ impl CliService {
         crate::launcher::update_component(&command.target)
     }
 
+    fn setup(&self, command: &SetupCommand) -> CliResult<String> {
+        let mut rows = Vec::new();
+        if command.global || !command.project {
+            rows.push(setup_config_file(
+                &self.config,
+                ConfigScope::Global,
+                command.force,
+            )?);
+            setup_catalog_files(&self.config.global_dir, command.force, &mut rows)?;
+        }
+        if command.project || !command.global {
+            rows.push(setup_config_file(
+                &self.config,
+                ConfigScope::Project,
+                command.force,
+            )?);
+            setup_catalog_files(&self.config.project_dir, command.force, &mut rows)?;
+            rows.push(write_template_if_missing(
+                &self.config.project_dir.join(".gitignore"),
+                DEFAULT_PROJECT_GITIGNORE_TEMPLATE,
+                command.force,
+                "state-ignore",
+            )?);
+        }
+        render_json_lines(&rows)
+    }
+
+    fn auth(command: AuthCommand) -> CliResult<String> {
+        let store = crate::oauth::OAuthStore::new(crate::oauth::OAuthStore::default_path());
+        match command {
+            AuthCommand::Status { provider } => {
+                let record = store.load_provider(&provider)?;
+                let value = json!({
+                    "provider": provider,
+                    "logged_in": record.is_some(),
+                    "auth_path": store.path(),
+                    "record": record.map(|record| record.status_value()),
+                });
+                Ok(format!("{}\n", serde_json::to_string(&value)?))
+            }
+            AuthCommand::Logout { provider } => {
+                let removed = store.remove_provider(&provider)?;
+                Ok(format!("provider={provider}\nremoved={removed}\n"))
+            }
+        }
+    }
+
+    fn skills(&self, command: CatalogCommand) -> CliResult<String> {
+        match command {
+            CatalogCommand::List => render_json_lines(&list_skills(&self.config)),
+            CatalogCommand::Show { name } => show_skill(&self.config, &name),
+            CatalogCommand::Doctor => Ok(format!(
+                "skill_dirs={}\nskills={}\nstatus=ok\n",
+                self.config
+                    .skill_dirs
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(":"),
+                list_skills(&self.config).len()
+            )),
+        }
+    }
+
+    fn subagents(&self, command: CatalogCommand) -> CliResult<String> {
+        match command {
+            CatalogCommand::List => render_json_lines(&list_subagents(&self.config)),
+            CatalogCommand::Show { name } => show_subagent(&self.config, &name),
+            CatalogCommand::Doctor => Ok(format!(
+                "subagent_dirs={}\nsubagents={}\ndisabled={}\nstatus=ok\n",
+                self.config
+                    .subagent_dirs
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(":"),
+                list_subagents(&self.config).len(),
+                self.config.disabled_subagents.join(",")
+            )),
+        }
+    }
+
+    fn mcp(&self, command: CatalogCommand) -> CliResult<String> {
+        match command {
+            CatalogCommand::List => render_json_lines(&list_mcp_servers(&self.config)),
+            CatalogCommand::Show { name } => show_mcp_server(&self.config, &name),
+            CatalogCommand::Doctor => {
+                let findings = doctor_mcp_servers(&self.config);
+                let output = render_json_lines(&findings)?;
+                if findings.iter().any(|finding| finding.status == "error") {
+                    Err(CliError::Config(output))
+                } else {
+                    Ok(output)
+                }
+            }
+        }
+    }
+
+    fn tools(&self, command: &ToolsCommand) -> CliResult<String> {
+        match command {
+            ToolsCommand::List => render_json_lines(&list_default_tools(&self.config)),
+            ToolsCommand::Doctor => Ok(format!(
+                "tools={}\nneed_approval={}\nstatus=ok\n",
+                list_default_tools(&self.config).len(),
+                tool_need_approval(&self.config).join(",")
+            )),
+        }
+    }
+
+    fn tui(&self, command: &TuiCommand) -> CliResult<String> {
+        let session_id = self.resolve_session_id(command.session.as_deref())?;
+        let messages =
+            self.store
+                .replay_display(&session_id, command.run.as_deref(), command.after)?;
+        let approvals = self
+            .store
+            .list_approvals(Some(&session_id), command.run.as_deref())?;
+        let deferred = self
+            .store
+            .list_deferred_tools(Some(&session_id), command.run.as_deref())?;
+        let snapshot =
+            crate::tui::TuiSnapshot::from_parts(session_id, messages, &approvals, &deferred);
+        match command.output {
+            OutputMode::Text => Ok(snapshot.render_text()),
+            OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(&snapshot)?)),
+            OutputMode::Silent => Ok(format!(
+                "session_id={}\nmessages={}\napprovals={}\ndeferred={}\nstatus=tui\n",
+                snapshot.session_id,
+                snapshot.messages,
+                snapshot.pending_approvals,
+                snapshot.pending_deferred
+            )),
+        }
+    }
+
+    fn approval(&mut self, command: ApprovalCommand) -> CliResult<String> {
+        match command {
+            ApprovalCommand::List(command) => self.approval_list(&command),
+            ApprovalCommand::Show { approval_id } => {
+                let approval = self.store.load_approval(&approval_id)?;
+                Ok(format!("{}\n", serde_json::to_string(&approval)?))
+            }
+            ApprovalCommand::Approve(command) => {
+                self.approval_decision(&command, ApprovalStatus::Approved)
+            }
+            ApprovalCommand::Reject(command) => {
+                self.approval_decision(&command, ApprovalStatus::Denied)
+            }
+        }
+    }
+
+    fn approval_list(&self, command: &ApprovalListCommand) -> CliResult<String> {
+        let approvals = self
+            .store
+            .list_approvals(command.session.as_deref(), command.run.as_deref())?;
+        render_approvals(&approvals, command.output)
+    }
+
+    fn approval_decision(
+        &mut self,
+        command: &ApprovalDecisionCommand,
+        status: ApprovalStatus,
+    ) -> CliResult<String> {
+        let approval =
+            self.store
+                .decide_approval(&command.approval_id, status, command.reason.clone())?;
+        match command.output {
+            OutputMode::Text => Ok(format!(
+                "approval_id={}\nstatus={}\nrun_id={}\n",
+                approval.approval_id,
+                approval_status_name(approval.status),
+                approval.run_id.as_str()
+            )),
+            OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(&approval)?)),
+            OutputMode::Silent => Ok(format!(
+                "approval_id={}\nstatus={}\n",
+                approval.approval_id,
+                approval_status_name(approval.status)
+            )),
+        }
+    }
+
+    fn deferred(&mut self, command: DeferredCommand) -> CliResult<String> {
+        match command {
+            DeferredCommand::List(command) => self.deferred_list(&command),
+            DeferredCommand::Show { deferred_id } => {
+                let deferred = self.store.load_deferred_tool(&deferred_id)?;
+                Ok(format!("{}\n", serde_json::to_string(&deferred)?))
+            }
+            DeferredCommand::Complete(command) => self.deferred_complete(&command),
+            DeferredCommand::Fail(command) => self.deferred_fail(&command),
+        }
+    }
+
+    fn deferred_list(&self, command: &DeferredListCommand) -> CliResult<String> {
+        let records = self
+            .store
+            .list_deferred_tools(command.session.as_deref(), command.run.as_deref())?;
+        render_deferred(&records, command.output)
+    }
+
+    fn deferred_complete(&mut self, command: &DeferredCompleteCommand) -> CliResult<String> {
+        let value = serde_json::from_str::<Value>(&command.result)
+            .map_err(|error| CliError::Usage(format!("invalid deferred result JSON: {error}")))?;
+        let record = self
+            .store
+            .complete_deferred_tool(&command.deferred_id, value)?;
+        render_deferred_decision(&record, command.output)
+    }
+
+    fn deferred_fail(&mut self, command: &DeferredFailCommand) -> CliResult<String> {
+        let record = self
+            .store
+            .fail_deferred_tool(&command.deferred_id, &command.error)?;
+        render_deferred_decision(&record, command.output)
+    }
+
+    fn resume(&mut self, command: &ResumeCommand) -> CliResult<String> {
+        let session_id = self.resolve_session_id(command.session.as_deref())?;
+        let source_run = self.resolve_resume_run(&session_id, command.run.as_deref())?;
+        let run_command = RunCommand {
+            prompt: Some(format!(
+                "{}\n\nResuming from run {} with any persisted approval and deferred-tool decisions.",
+                command.prompt,
+                source_run.run_id.as_str()
+            )),
+            prompt_parts: Vec::new(),
+            session: Some(session_id),
+            continue_session: false,
+            new_session: false,
+            run: Some(source_run.run_id.as_str().to_string()),
+            branch_from: None,
+            profile: source_run.profile.clone(),
+            output: command.output,
+            hitl: command.hitl,
+        };
+        self.run_prompt(&run_command)
+    }
+
+    fn resolve_session_id(&self, requested: Option<&str>) -> CliResult<String> {
+        if let Some(session_id) = requested {
+            self.store.load_session(session_id)?;
+            return Ok(session_id.to_string());
+        }
+        if let Some(session_id) = read_current_session(&self.config)? {
+            if self.store.load_session(&session_id).is_ok() {
+                return Ok(session_id);
+            }
+        }
+        self.store
+            .latest_session()?
+            .map(|session| session.session_id.as_str().to_string())
+            .ok_or_else(|| CliError::NotFound("session".to_string()))
+    }
+
+    fn resolve_resume_run(
+        &self,
+        session_id: &str,
+        requested: Option<&str>,
+    ) -> CliResult<starweaver_session::RunRecord> {
+        if let Some(run_id) = requested {
+            return self.store.load_run(session_id, run_id);
+        }
+        let session = self.store.load_session(session_id)?;
+        let run_id = session
+            .active_run_id
+            .as_ref()
+            .or(session.head_run_id.as_ref())
+            .ok_or_else(|| CliError::NotFound("run".to_string()))?;
+        self.store.load_run(session_id, run_id.as_str())
+    }
+
     fn config(&self, command: ConfigCommand) -> CliResult<String> {
         match command {
             ConfigCommand::Init {
@@ -285,9 +574,9 @@ impl CliService {
         }
     }
 
-    fn diagnostics(&self) -> String {
-        format!(
-            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nwal=true\n",
+    fn diagnostics(&self) -> CliResult<String> {
+        Ok(format!(
+            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nskills={}\nsubagents={}\nmcp_servers={}\ntools={}\ntools.need_approval={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.codex.logged_in={}\nprovider.codex.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nwal=true\n",
             sdk_name(),
             env!("CARGO_PKG_VERSION"),
             self.config.database_path.display(),
@@ -303,17 +592,93 @@ impl CliService {
             self.config.environment_provider,
             self.config.files_policy,
             self.config.shell_enabled,
+            list_skills(&self.config).len(),
+            list_subagents(&self.config).len(),
+            mcp_servers(&self.config).len(),
+            list_default_tools(&self.config).len(),
+            tool_need_approval(&self.config).join(","),
             provider_ready(&self.config.providers.openai),
             self.config.providers.openai.api_key_env.as_deref().unwrap_or_default(),
             self.config.providers.openai.base_url.as_deref().unwrap_or_default(),
+            crate::oauth::OAuthStore::new(crate::oauth::OAuthStore::default_path())
+                .load_provider("codex")?
+                .is_some(),
+            self.config.providers.codex.base_url.as_deref().unwrap_or_default(),
             provider_ready(&self.config.providers.anthropic),
             self.config.providers.anthropic.api_key_env.as_deref().unwrap_or_default(),
             self.config.providers.anthropic.base_url.as_deref().unwrap_or_default(),
             provider_ready(&self.config.providers.gemini),
             self.config.providers.gemini.api_key_env.as_deref().unwrap_or_default(),
             self.config.providers.gemini.base_url.as_deref().unwrap_or_default()
-        )
+        ))
     }
+}
+
+fn setup_catalog_files(root: &Path, force: bool, rows: &mut Vec<Value>) -> CliResult<()> {
+    rows.push(write_template_if_missing(
+        &root.join("tools.toml"),
+        DEFAULT_TOOLS_TEMPLATE,
+        force,
+        "tools",
+    )?);
+    rows.push(write_template_if_missing(
+        &root.join("mcp.json"),
+        DEFAULT_MCP_TEMPLATE,
+        force,
+        "mcp",
+    )?);
+    for name in ["skills", "subagents"] {
+        let path = root.join(name);
+        fs::create_dir_all(&path).map_err(|error| crate::error::io_error(&path, error))?;
+        rows.push(json!({"kind": "directory", "path": path, "status": "ready"}));
+    }
+    Ok(())
+}
+
+fn setup_config_file(config: &CliConfig, scope: ConfigScope, force: bool) -> CliResult<Value> {
+    let root = match scope {
+        ConfigScope::Global => &config.global_dir,
+        ConfigScope::Project => &config.project_dir,
+    };
+    let path = root.join("config.toml");
+    if path.exists() && !force {
+        return Ok(
+            json!({"kind": "config", "scope": scope_name(scope), "path": path, "status": "exists"}),
+        );
+    }
+    let path = init_config_file(config, scope, force)?;
+    Ok(json!({"kind": "config", "scope": scope_name(scope), "path": path, "status": "ready"}))
+}
+
+const fn scope_name(scope: ConfigScope) -> &'static str {
+    match scope {
+        ConfigScope::Global => "global",
+        ConfigScope::Project => "project",
+    }
+}
+
+fn write_template_if_missing(
+    path: &Path,
+    content: &str,
+    force: bool,
+    kind: &str,
+) -> CliResult<Value> {
+    if path.exists() && !force {
+        return Ok(json!({"kind": kind, "path": path, "status": "exists"}));
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| crate::error::io_error(parent, error))?;
+    }
+    fs::write(path, content).map_err(|error| crate::error::io_error(path, error))?;
+    Ok(json!({"kind": kind, "path": path, "status": "ready"}))
+}
+
+fn render_json_lines<T: serde::Serialize>(items: &[T]) -> CliResult<String> {
+    items
+        .iter()
+        .map(|item| serde_json::to_string(item).map(|line| format!("{line}\n")))
+        .collect::<Result<String, _>>()
+        .map_err(CliError::from)
 }
 
 fn provider_ready(provider: &crate::config::ProviderConfig) -> bool {
@@ -516,6 +881,86 @@ fn render_completion(shell: Shell) -> CliResult<String> {
     String::from_utf8(buffer).map_err(|error| CliError::Run(error.to_string()))
 }
 
+fn render_approvals(approvals: &[ApprovalRecord], output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Text => {
+            let mut lines = String::new();
+            for approval in approvals {
+                let _ = writeln!(
+                    lines,
+                    "approval_id={} run_id={} action={} status={}",
+                    approval.approval_id,
+                    approval.run_id.as_str(),
+                    approval.action_name,
+                    approval_status_name(approval.status)
+                );
+            }
+            Ok(lines)
+        }
+        OutputMode::DisplayJsonl => render_json_lines(approvals),
+        OutputMode::Silent => Ok(format!("approvals={}\nstatus=list\n", approvals.len())),
+    }
+}
+
+fn render_deferred(records: &[DeferredToolRecord], output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Text => {
+            let mut lines = String::new();
+            for record in records {
+                let _ = writeln!(
+                    lines,
+                    "deferred_id={} run_id={} tool={} status={}",
+                    record.deferred_id,
+                    record.run_id.as_str(),
+                    record.tool_name,
+                    execution_status_name(record.status)
+                );
+            }
+            Ok(lines)
+        }
+        OutputMode::DisplayJsonl => render_json_lines(records),
+        OutputMode::Silent => Ok(format!("deferred={}\nstatus=list\n", records.len())),
+    }
+}
+
+fn render_deferred_decision(record: &DeferredToolRecord, output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Text => Ok(format!(
+            "deferred_id={}\nstatus={}\nrun_id={}\n",
+            record.deferred_id,
+            execution_status_name(record.status),
+            record.run_id.as_str()
+        )),
+        OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(record)?)),
+        OutputMode::Silent => Ok(format!(
+            "deferred_id={}\nstatus={}\n",
+            record.deferred_id,
+            execution_status_name(record.status)
+        )),
+    }
+}
+
+const fn approval_status_name(status: ApprovalStatus) -> &'static str {
+    match status {
+        ApprovalStatus::Pending => "pending",
+        ApprovalStatus::Approved => "approved",
+        ApprovalStatus::Denied => "denied",
+        ApprovalStatus::Expired => "expired",
+        ApprovalStatus::Cancelled => "cancelled",
+    }
+}
+
+const fn execution_status_name(status: starweaver_session::ExecutionStatus) -> &'static str {
+    match status {
+        starweaver_session::ExecutionStatus::Pending => "pending",
+        starweaver_session::ExecutionStatus::Running => "running",
+        starweaver_session::ExecutionStatus::Waiting => "waiting",
+        starweaver_session::ExecutionStatus::Completed => "completed",
+        starweaver_session::ExecutionStatus::Failed => "failed",
+        starweaver_session::ExecutionStatus::Cancelled => "cancelled",
+    }
+}
+
 fn render_trim_report(report: &TrimReport, output: OutputMode) -> CliResult<String> {
     match output {
         OutputMode::Text => Ok(format!(
@@ -550,4 +995,211 @@ fn session_value(session: &starweaver_session::SessionRecord) -> Value {
         "created_at": session.created_at.to_rfc3339(),
         "updated_at": session.updated_at.to_rfc3339(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use chrono::Utc;
+    use serde_json::json;
+    use starweaver_core::{RunId, SessionId};
+    use starweaver_session::{ExecutionStatus, RunStatus};
+
+    use super::*;
+
+    fn ids() -> (SessionId, RunId) {
+        (
+            SessionId::from_string("session_test"),
+            RunId::from_string("run_test"),
+        )
+    }
+
+    #[test]
+    fn render_helpers_cover_text_silent_and_json_modes() {
+        let sessions = vec![SessionSummary {
+            session_id: "session_test".to_string(),
+            title: Some("Title".to_string()),
+            profile: Some("general".to_string()),
+            status: "active".to_string(),
+            head_run_id: Some("run_test".to_string()),
+            head_success_run_id: Some("run_test".to_string()),
+            active_run_id: None,
+            run_count: 1,
+            last_output_preview: Some("preview".to_string()),
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        }];
+        assert!(render_sessions(&sessions, OutputMode::Text)
+            .unwrap()
+            .contains("profile=general"));
+        assert_eq!(
+            render_sessions(&sessions, OutputMode::Silent).unwrap(),
+            "sessions=1\nstatus=list\n"
+        );
+
+        let session = json!({"session_id":"session_test","profile":"general","status":"active"});
+        let runs = vec![RunSummary {
+            run_id: "run_test".to_string(),
+            sequence_no: 1,
+            status: "completed".to_string(),
+            restore_from_run_id: None,
+            output_preview: Some("hello".to_string()),
+            created_at: Utc::now().to_rfc3339(),
+            updated_at: Utc::now().to_rfc3339(),
+        }];
+        assert!(render_session_show(&session, &runs, OutputMode::Text)
+            .unwrap()
+            .contains("preview=hello"));
+        assert!(
+            render_session_show(&session, &runs, OutputMode::DisplayJsonl)
+                .unwrap()
+                .contains("run_test")
+        );
+        assert!(render_session_show(&session, &runs, OutputMode::Silent)
+            .unwrap()
+            .contains("status=shown"));
+
+        let report = TrimReport {
+            sessions_scanned: 1,
+            runs_to_trim: 2,
+            runs_trimmed: 1,
+            bytes_reclaimed: 3,
+            dry_run: false,
+        };
+        assert!(render_trim_report(&report, OutputMode::Text)
+            .unwrap()
+            .contains("bytes_reclaimed=3"));
+        assert!(render_trim_report(&report, OutputMode::Silent)
+            .unwrap()
+            .contains("status=trimmed"));
+    }
+
+    #[test]
+    fn display_and_control_renderers_cover_edge_branches() {
+        let (session_id, run_id) = ids();
+        let messages = vec![
+            DisplayMessage::new(
+                0,
+                session_id.clone(),
+                run_id.clone(),
+                DisplayMessageKind::AssistantTextDelta,
+            )
+            .with_payload(json!({"delta":"hello"})),
+            DisplayMessage::new(
+                1,
+                session_id.clone(),
+                run_id.clone(),
+                DisplayMessageKind::ToolCallStart,
+            )
+            .with_payload(json!({"name":"lookup"})),
+            DisplayMessage::new(
+                2,
+                session_id.clone(),
+                run_id.clone(),
+                DisplayMessageKind::ToolResult,
+            )
+            .with_preview("ok"),
+            DisplayMessage::new(
+                3,
+                session_id.clone(),
+                run_id.clone(),
+                DisplayMessageKind::ApprovalRequested,
+            ),
+            DisplayMessage::new(
+                4,
+                session_id.clone(),
+                run_id.clone(),
+                DisplayMessageKind::RunFailed,
+            )
+            .with_preview("boom"),
+        ];
+        let text = render_display_text(&messages);
+        assert!(text.contains("hello"));
+        assert!(text.contains("tool_call=lookup"));
+        assert!(text.contains("tool_result=ok"));
+        assert!(text.contains("approval=requested"));
+        assert!(text.contains("status=failed message=boom"));
+        let terminal_only = vec![DisplayMessage::new(
+            0,
+            session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::RunCompleted,
+        )];
+        assert_eq!(render_display_text(&terminal_only), "status=completed\n");
+        assert!(render_display_jsonl(&terminal_only)
+            .unwrap()
+            .contains("RUN_FINISHED"));
+
+        let mut approval = ApprovalRecord::new(
+            "approval_test",
+            session_id.clone(),
+            run_id.clone(),
+            "action_test",
+            "write",
+        );
+        approval.status = ApprovalStatus::Expired;
+        assert!(render_approvals(&[approval.clone()], OutputMode::Text)
+            .unwrap()
+            .contains("status=expired"));
+        approval.status = ApprovalStatus::Cancelled;
+        assert!(render_approvals(&[approval], OutputMode::Silent)
+            .unwrap()
+            .contains("approvals=1"));
+
+        let mut deferred = DeferredToolRecord::new(
+            "deferred_test",
+            session_id,
+            run_id,
+            "tool_call_test",
+            "worker",
+        );
+        for status in [
+            ExecutionStatus::Pending,
+            ExecutionStatus::Running,
+            ExecutionStatus::Waiting,
+            ExecutionStatus::Completed,
+            ExecutionStatus::Failed,
+            ExecutionStatus::Cancelled,
+        ] {
+            deferred.status = status;
+            assert!(render_deferred(&[deferred.clone()], OutputMode::Text)
+                .unwrap()
+                .contains("deferred_id=deferred_test"));
+            assert!(
+                render_deferred_decision(&deferred, OutputMode::DisplayJsonl)
+                    .unwrap()
+                    .contains("deferred_test")
+            );
+        }
+    }
+
+    #[test]
+    fn duration_and_status_helpers_cover_errors() {
+        assert_eq!(parse_duration("10s").unwrap().num_seconds(), 10);
+        assert_eq!(parse_duration("2m").unwrap().num_seconds(), 120);
+        assert_eq!(parse_duration("1h").unwrap().num_seconds(), 3600);
+        assert_eq!(parse_duration("1d").unwrap().num_seconds(), 86_400);
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("1w").is_err());
+        for status in [
+            RunStatus::Queued,
+            RunStatus::Running,
+            RunStatus::Waiting,
+            RunStatus::Completed,
+            RunStatus::Failed,
+            RunStatus::Cancelled,
+        ] {
+            assert!(!run_status_name(status).is_empty());
+        }
+        for status in [
+            ApprovalStatus::Pending,
+            ApprovalStatus::Approved,
+            ApprovalStatus::Denied,
+            ApprovalStatus::Expired,
+            ApprovalStatus::Cancelled,
+        ] {
+            assert!(!approval_status_name(status).is_empty());
+        }
+    }
 }
