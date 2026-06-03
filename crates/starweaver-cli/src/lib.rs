@@ -38,8 +38,11 @@ pub fn run(args: impl IntoIterator<Item = String>) -> CliResult<()> {
 pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<String> {
     let cli = args::parse(args)?;
     let config = ConfigResolver::default().resolve(&cli)?;
-    update_check::spawn_update_check_if_due(&config);
-    let hint = should_show_update_hint(&cli, &config).then(|| update_check::update_hint(&config));
+    let show_update_hint = should_show_update_hint(&cli, &config);
+    if show_update_hint {
+        update_check::spawn_update_check_if_due(&config);
+    }
+    let hint = show_update_hint.then(|| update_check::update_hint(&config));
     let service = CliService::open(config)?;
     let mut output = service.execute(cli)?;
     if let Some(Some(hint)) = hint {
@@ -186,7 +189,7 @@ You are a helper.
     #[test]
     fn headless_run_creates_session_and_run() {
         let temp = tempfile::tempdir().unwrap();
-        let first = output(temp.path(), &["-p", "hello"]).unwrap();
+        let first = output(temp.path(), &["-p", "hello", "--output", "display-jsonl"]).unwrap();
         let first_message: serde_json::Value =
             serde_json::from_str(first.lines().next().unwrap()).unwrap();
         assert_eq!(first_message["schema"], "starweaver.display.v1");

@@ -12,7 +12,7 @@ use starweaver_model::MaxTokensParameter;
 use toml::Value;
 
 use crate::{
-    args::{Cli, CliCommand, HitlPolicy, OutputMode},
+    args::{Cli, CliCommand, ConfigCommand, HitlPolicy, OutputMode, SetupCommand},
     error::io_error,
     oauth::CODEX_BASE_URL,
     CliError, CliResult,
@@ -256,7 +256,10 @@ impl ConfigResolver {
     /// Resolve final config.
     pub fn resolve(&self, cli: &Cli) -> CliResult<CliConfig> {
         let global_dir = self.global_dir.clone().unwrap_or_else(default_global_dir);
-        let project_dir = self.project_dir.clone().unwrap_or_else(default_project_dir);
+        let project_dir = self
+            .project_dir
+            .clone()
+            .unwrap_or_else(|| default_project_dir(cli, &global_dir));
         let mut config = CliConfig {
             global_dir: global_dir.clone(),
             project_dir: project_dir.clone(),
@@ -291,6 +294,7 @@ impl ConfigResolver {
             current_session_keep_recent_runs: 20,
             all_sessions_keep_days: 60,
         };
+        bootstrap_global_config_dir(&global_dir)?;
         apply_file_config(&mut config, &global_dir.join("config.toml"))?;
         apply_file_config(&mut config, &project_dir.join("config.toml"))?;
         config.tools_config = read_tools_config(&global_dir, &project_dir)?;
@@ -307,8 +311,69 @@ fn default_global_dir() -> PathBuf {
         .join(".starweaver")
 }
 
-fn default_project_dir() -> PathBuf {
-    PathBuf::from(".starweaver")
+fn default_project_dir(cli: &Cli, global_dir: &Path) -> PathBuf {
+    if wants_project_config(cli) {
+        return PathBuf::from(".starweaver");
+    }
+    find_project_dir().unwrap_or_else(|| global_dir.to_path_buf())
+}
+
+const fn wants_project_config(cli: &Cli) -> bool {
+    matches!(
+        &cli.command,
+        Some(
+            CliCommand::Setup(SetupCommand {
+                global: false,
+                project: true,
+                ..
+            }) | CliCommand::Config {
+                command: ConfigCommand::Init {
+                    global: false,
+                    project: true,
+                    ..
+                } | ConfigCommand::Set {
+                    global: false,
+                    project: true,
+                    ..
+                }
+            }
+        )
+    )
+}
+
+fn find_project_dir() -> Option<PathBuf> {
+    let mut current = env::current_dir().ok()?;
+    loop {
+        let candidate = current.join(".starweaver");
+        if candidate.join("config.toml").exists() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn bootstrap_global_config_dir(global_dir: &Path) -> CliResult<()> {
+    fs::create_dir_all(global_dir).map_err(|error| io_error(global_dir, error))?;
+    let config_path = global_dir.join("config.toml");
+    if !config_path.exists() {
+        fs::write(&config_path, default_config_template(ConfigScope::Global))
+            .map_err(|error| io_error(&config_path, error))?;
+    }
+    for (path, content) in [
+        (global_dir.join("tools.toml"), DEFAULT_TOOLS_TEMPLATE),
+        (global_dir.join("mcp.json"), DEFAULT_MCP_TEMPLATE),
+    ] {
+        if !path.exists() {
+            fs::write(&path, content).map_err(|error| io_error(&path, error))?;
+        }
+    }
+    for name in ["skills", "subagents"] {
+        let path = global_dir.join(name);
+        fs::create_dir_all(&path).map_err(|error| io_error(path, error))?;
+    }
+    Ok(())
 }
 
 fn default_provider_configs() -> ProviderConfigs {
@@ -709,9 +774,8 @@ fn expand_path(value: &str, base: &std::path::Path) -> PathBuf {
 
 /// Ensure local config directories exist.
 pub fn ensure_config_dirs(config: &CliConfig) -> CliResult<()> {
-    for path in [&config.project_dir, &config.file_store_path] {
-        fs::create_dir_all(path).map_err(|error| io_error(path, error))?;
-    }
+    fs::create_dir_all(&config.file_store_path)
+        .map_err(|error| io_error(&config.file_store_path, error))?;
     if let Some(parent) = config.database_path.parent() {
         fs::create_dir_all(parent).map_err(|error| io_error(parent, error))?;
     }

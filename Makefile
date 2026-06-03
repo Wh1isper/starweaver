@@ -4,10 +4,15 @@ AGENT_COVERAGE_MIN_LINES ?= 90
 SERVICE_COVERAGE_MIN_LINES ?= 80
 PUBLISH_RETRIES ?= 10
 PUBLISH_RETRY_DELAY_SECONDS ?= 30
-CLI_ARGS ?= $(ARGS)
-SW_ARGS ?= $(ARGS)
-CLI_DEMO_PROMPT ?= hello
-SW_DEMO_PROMPT ?= hello
+CLI_MAKE_ARGS = $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+SW_MAKE_ARGS = $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+CLI_ARGS ?= $(if $(ARGS),$(ARGS),$(CLI_MAKE_ARGS))
+SW_ARGS ?= $(if $(ARGS),$(ARGS),$(SW_MAKE_ARGS))
+
+ifneq ($(filter cli sw,$(firstword $(MAKECMDGOALS))),)
+%:
+	@:
+endif
 
 .PHONY: help
 help: ## Show available commands
@@ -152,11 +157,18 @@ ci: fmt-check check replay-check test scripts-check docs-check docs-build ## Run
 ci-all: ci coverage-ci ## Run core CI plus coverage gates
 
 .PHONY: cli
-cli: ## Try starweaver-cli; override with ARGS="--help" or ARGS="version"
-	@cargo run --package starweaver-cli --bin starweaver-cli --locked -- $(CLI_ARGS)
+cli: ## Run sw cli; no args renders TUI, pass args with `make cli -- -p "prompt"`
+	@set -e; \
+	args='$(CLI_ARGS)'; \
+	case "$$args" in \
+		"") cargo run --package starweaver-cli --bin sw --locked -- cli tui ;; \
+		-p\ *) prompt=$${args#-p }; cargo run --package starweaver-cli --bin sw --locked -- cli -p "$$prompt" ;; \
+		--prompt\ *) prompt=$${args#--prompt }; cargo run --package starweaver-cli --bin sw --locked -- cli --prompt "$$prompt" ;; \
+		*) cargo run --package starweaver-cli --bin sw --locked -- cli $$args ;; \
+	esac
 
 .PHONY: sw
-sw: ## Try sw launcher; override with ARGS="--help" or ARGS="version"
+sw: ## Run sw launcher; pass args with `make sw -- version` or ARGS="version"
 	@cargo run --package starweaver-cli --bin sw --locked -- $(SW_ARGS)
 
 .PHONY: run-cli

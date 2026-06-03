@@ -20,6 +20,23 @@ fn setup_creates_config_catalogs_and_directories() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(temp.path().join("global/config.toml").exists());
+    assert!(temp.path().join("global/tools.toml").exists());
+    assert!(temp.path().join("global/mcp.json").exists());
+    assert!(temp.path().join("global/skills").is_dir());
+    assert!(temp.path().join("global/subagents").is_dir());
+    assert!(!temp.path().join(".starweaver/config.toml").exists());
+
+    let rows = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert!(rows.iter().any(|row| row["kind"] == "tools"));
+    assert!(rows.iter().any(|row| row["kind"] == "mcp"));
+    assert!(!rows.iter().any(|row| row["kind"] == "state-ignore"));
+
+    let project = cli(&temp).args(["setup", "--project"]).output().unwrap();
+    assert!(project.status.success());
     assert!(temp.path().join(".starweaver/config.toml").exists());
     assert!(temp.path().join(".starweaver/tools.toml").exists());
     assert!(temp.path().join(".starweaver/mcp.json").exists());
@@ -29,15 +46,6 @@ fn setup_creates_config_catalogs_and_directories() {
     assert!(gitignore.contains("state.json"));
     assert!(gitignore.contains("starweaver.sqlite"));
     assert!(gitignore.contains("store/"));
-
-    let rows = String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .collect::<Vec<_>>();
-    assert!(rows.iter().any(|row| row["kind"] == "tools"));
-    assert!(rows.iter().any(|row| row["kind"] == "mcp"));
-    assert!(rows.iter().any(|row| row["kind"] == "state-ignore"));
 
     let second = cli(&temp).arg("setup").output().unwrap();
     assert!(second.status.success());

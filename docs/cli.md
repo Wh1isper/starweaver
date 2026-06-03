@@ -20,11 +20,13 @@ starweaver doctor
 starweaver update
 starweaver update cli
 starweaver update claw
+starweaver cli
 starweaver cli -p "hello"
+sw cli
 sw cli -p "hello"
 ```
 
-`starweaver cli ...` dispatches to the CLI product. `starweaver <command> ...` dispatches to `starweaver-<command> ...` for future command families. The launcher resolves command binaries from the install directory first, then `PATH`.
+`starweaver cli ...` dispatches to the CLI product. `starweaver <command> ...` dispatches to `starweaver-<command> ...` for future command families. The launcher resolves command binaries from the install directory first, then `PATH`. From a checkout, `make cli` runs the same product path as `sw cli`: no arguments render the TUI welcome/snapshot, and prompt arguments can be passed with `make cli -- -p "hello"`.
 
 ## Updates
 
@@ -198,7 +200,7 @@ STARWEAVER_GEMINI_API_KEY_ENV=MY_GEMINI_KEY
 
 ## Setup
 
-Use `setup` to create the local config skeleton, tool policy file, MCP config file, project skill/subagent directories, and project local-state ignore rules:
+Use `setup` to create the config skeleton, tool policy file, MCP config file, and skill/subagent directories:
 
 ```bash
 starweaver-cli setup
@@ -207,7 +209,7 @@ starweaver-cli setup --project
 starweaver-cli setup --force
 ```
 
-`setup` prints one JSON object per created or existing item. It writes `config.toml`, `tools.toml`, `mcp.json`, `skills/`, and `subagents/` for the selected global or project scope. Project setup also writes `.starweaver/.gitignore` entries for `state.json`, SQLite files, and the local file store.
+`setup` prints one JSON object per created or existing item. With no scope or `--global`, it initializes the global `~/.starweaver` config skeleton. Use `--project` to initialize `pwd/.starweaver`; project setup also writes `.starweaver/.gitignore` entries for `state.json`, SQLite files, and the local file store.
 
 ## OAuth-backed Codex models
 
@@ -371,7 +373,7 @@ Run-scoped replay emits the same display JSONL that the initial headless run emi
 
 ## TUI snapshot and human-in-the-loop policy
 
-The CLI TUI MVP renders a retained terminal snapshot from persisted `DisplayMessage` records. It uses the same replay source as headless JSONL and session replay:
+The CLI TUI MVP renders a retained terminal snapshot from persisted `DisplayMessage` records. It uses the same replay source as headless JSONL and session replay. On a fresh machine, it renders a welcome/setup state and waits until the first prompt run before creating runtime session state:
 
 ```bash
 starweaver-cli tui
@@ -450,6 +452,15 @@ starweaver-cli session trim --session <session-id> --keep-runs 20 --dry-run
 starweaver-cli session trim --session <session-id> --keep-runs 20 --older-than 7d
 starweaver-cli session trim --all --keep-runs 20 --older-than 30d
 ```
+
+Reset runtime state while preserving configuration:
+
+```bash
+starweaver-cli reset --yes
+sw cli reset --yes
+```
+
+`reset` removes the resolved SQLite database, `state.json`, and file store. It leaves `config.toml`, `tools.toml`, `mcp.json`, `skills/`, and `subagents/` in place.
 
 ## Config
 

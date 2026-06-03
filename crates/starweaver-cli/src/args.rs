@@ -123,6 +123,8 @@ pub enum CliCommand {
     },
     /// Resume a waiting session by appending a continuation run.
     Resume(ResumeCommand),
+    /// Remove runtime session state while preserving configuration.
+    Reset(ResetCommand),
     /// Print diagnostics.
     Diagnostics,
     /// Print replay-check guidance.
@@ -460,6 +462,17 @@ pub struct ResumeCommand {
     /// Headless human-in-the-loop policy.
     #[arg(long)]
     pub hitl: Option<HitlPolicy>,
+}
+
+/// Reset command.
+#[derive(Clone, Debug, Args)]
+pub struct ResetCommand {
+    /// Confirm runtime state removal.
+    #[arg(long)]
+    pub yes: bool,
+    /// Output mode.
+    #[arg(long, default_value = "text")]
+    pub output: OutputMode,
 }
 
 /// Update command.

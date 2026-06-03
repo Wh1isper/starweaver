@@ -12,8 +12,9 @@ use crate::{
     args::{
         ApprovalCommand, ApprovalDecisionCommand, ApprovalListCommand, AuthCommand, CatalogCommand,
         Cli, CliCommand, ConfigCommand, DeferredCommand, DeferredCompleteCommand,
-        DeferredFailCommand, DeferredListCommand, OutputMode, ProfileCommand, ResumeCommand,
-        RunCommand, SessionCommand, SetupCommand, ToolsCommand, TuiCommand, UpdateCommand,
+        DeferredFailCommand, DeferredListCommand, OutputMode, ProfileCommand, ResetCommand,
+        ResumeCommand, RunCommand, SessionCommand, SetupCommand, ToolsCommand, TuiCommand,
+        UpdateCommand,
     },
     config::{
         get_config_value, init_config_file, mcp_servers, read_current_session, tool_need_approval,
@@ -33,14 +34,25 @@ use crate::{
 /// CLI service.
 pub struct CliService {
     config: CliConfig,
-    store: LocalStore,
+    store: Option<LocalStore>,
 }
 
 impl CliService {
     /// Open service from resolved config.
-    pub fn open(config: CliConfig) -> CliResult<Self> {
-        let store = LocalStore::open(&config)?;
-        Ok(Self { config, store })
+    pub const fn open(config: CliConfig) -> CliResult<Self> {
+        Ok(Self {
+            config,
+            store: None,
+        })
+    }
+
+    fn store(&mut self) -> CliResult<&mut LocalStore> {
+        if self.store.is_none() {
+            self.store = Some(LocalStore::open(&self.config)?);
+        }
+        self.store
+            .as_mut()
+            .ok_or_else(|| CliError::Storage("store initialization failed".to_string()))
     }
 
     /// Execute a parsed CLI command.
@@ -80,6 +92,7 @@ impl CliService {
             CliCommand::Approval { command } => self.approval(command),
             CliCommand::Deferred { command } => self.deferred(command),
             CliCommand::Resume(command) => self.resume(&command),
+            CliCommand::Reset(command) => self.reset(&command),
             CliCommand::Config { command } => self.config(command),
             CliCommand::Completion { shell } => render_completion(shell),
         }
@@ -94,25 +107,19 @@ impl CliService {
         let resolved_profile = resolve_profile(&self.config, Some(selected_profile))?;
         let environment = resolve_environment(&self.config)?;
         let (session_id, created) = self.resolve_session(command, &resolved_profile.name)?;
-        let restore_from = command
-            .run
-            .clone()
-            .or_else(|| command.branch_from.clone())
-            .or_else(|| {
-                if created {
-                    None
-                } else {
-                    self.store
-                        .load_session(&session_id)
-                        .ok()
-                        .and_then(|session| {
-                            session
-                                .head_success_run_id
-                                .map(|run| run.as_str().to_string())
-                        })
-                }
-            });
-        let mut run = self.store.append_run(
+        let mut restore_from = command.run.clone().or_else(|| command.branch_from.clone());
+        if restore_from.is_none() && !created {
+            restore_from = self
+                .store()?
+                .load_session(&session_id)
+                .ok()
+                .and_then(|session| {
+                    session
+                        .head_success_run_id
+                        .map(|run| run.as_str().to_string())
+                });
+        }
+        let mut run = self.store()?.append_run(
             &session_id,
             prompt.clone(),
             restore_from.clone(),
@@ -120,7 +127,7 @@ impl CliService {
         )?;
         write_current_session(&self.config, &session_id)?;
         let restore_state = self
-            .store
+            .store()?
             .load_restore_state(&session_id, restore_from.as_deref())?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
         let result = execute_agent_session(
@@ -135,20 +142,19 @@ impl CliService {
             Ok(execution) => execution,
             Err(error) => {
                 let messages = failed_display_message(&run, &error.to_string());
-                self.store
+                self.store()?
                     .fail_run_with_messages(&mut run, error.to_string(), &messages)?;
                 return Err(error);
             }
         };
-        let messages = self
-            .store
-            .complete_run(&mut run, execution.output, execution.artifacts)?;
+        let messages =
+            self.store()?
+                .complete_run(&mut run, execution.output, execution.artifacts)?;
         if self.config.auto_trim {
-            let _report = self.store.trim(
-                vec![session_id.clone()],
-                self.config.current_session_keep_recent_runs,
-                false,
-            )?;
+            let keep_runs = self.config.current_session_keep_recent_runs;
+            let _report = self
+                .store()?
+                .trim(vec![session_id.clone()], keep_runs, false)?;
         }
         let output_mode = command.output.unwrap_or(self.config.default_output);
         match output_mode {
@@ -170,31 +176,31 @@ impl CliService {
     ) -> CliResult<(String, bool)> {
         if command.new_session {
             let session = self
-                .store
+                .store()?
                 .create_session(profile, Some("CLI session".to_string()))?;
             return Ok((session.session_id.as_str().to_string(), true));
         }
         if let Some(session_id) = command.session.as_ref() {
-            self.store.load_session(session_id)?;
+            self.store()?.load_session(session_id)?;
             return Ok((session_id.clone(), false));
         }
         if command.continue_session {
             if let Some(session_id) = read_current_session(&self.config)? {
-                if self.store.load_session(&session_id).is_ok() {
+                if self.store()?.load_session(&session_id).is_ok() {
                     return Ok((session_id, false));
                 }
             }
-            if let Some(session) = self.store.latest_session()? {
+            if let Some(session) = self.store()?.latest_session()? {
                 return Ok((session.session_id.as_str().to_string(), false));
             }
         }
         if let Some(session_id) = read_current_session(&self.config)? {
-            if self.store.load_session(&session_id).is_ok() {
+            if self.store()?.load_session(&session_id).is_ok() {
                 return Ok((session_id, false));
             }
         }
         let session = self
-            .store
+            .store()?
             .create_session(profile, Some("CLI session".to_string()))?;
         Ok((session.session_id.as_str().to_string(), true))
     }
@@ -202,17 +208,17 @@ impl CliService {
     fn session(&mut self, command: SessionCommand) -> CliResult<String> {
         match command {
             SessionCommand::List(command) => {
-                let sessions = self.store.list_sessions(command.limit)?;
+                let sessions = self.store()?.list_sessions(command.limit)?;
                 render_sessions(&sessions, command.output)
             }
             SessionCommand::Show(command) => {
-                let session = self.store.load_session(&command.session_id)?;
-                let runs = self.store.list_runs(&command.session_id, command.runs)?;
+                let session = self.store()?.load_session(&command.session_id)?;
+                let runs = self.store()?.list_runs(&command.session_id, command.runs)?;
                 let value = session_value(&session);
                 render_session_show(&value, &runs, command.output)
             }
             SessionCommand::Replay(command) => {
-                let messages = self.store.replay_display(
+                let messages = self.store()?.replay_display(
                     &command.session_id,
                     command.run.as_deref(),
                     command.after,
@@ -229,7 +235,7 @@ impl CliService {
             }
             SessionCommand::Trim(command) => {
                 let sessions = if command.all {
-                    self.store.all_session_ids()?
+                    self.store()?.all_session_ids()?
                 } else if let Some(session_id) = command.session {
                     vec![session_id]
                 } else {
@@ -240,7 +246,7 @@ impl CliService {
                     .as_deref()
                     .map(parse_duration)
                     .transpose()?;
-                let report = self.store.trim_with_age(
+                let report = self.store()?.trim_with_age(
                     sessions,
                     command.keep_runs,
                     older_than,
@@ -276,7 +282,7 @@ impl CliService {
             )?);
             setup_catalog_files(&self.config.global_dir, command.force, &mut rows)?;
         }
-        if command.project || !command.global {
+        if command.project {
             rows.push(setup_config_file(
                 &self.config,
                 ConfigScope::Project,
@@ -375,16 +381,25 @@ impl CliService {
         }
     }
 
-    fn tui(&self, command: &TuiCommand) -> CliResult<String> {
-        let session_id = self.resolve_session_id(command.session.as_deref())?;
+    fn tui(&mut self, command: &TuiCommand) -> CliResult<String> {
+        if command.session.is_none() && !has_runtime_state(&self.config) {
+            return Ok(tui_empty_state(&self.config));
+        }
+        let session_id = match self.resolve_session_id(command.session.as_deref()) {
+            Ok(session_id) => session_id,
+            Err(CliError::NotFound(_)) if command.session.is_none() => {
+                return Ok(tui_empty_state(&self.config));
+            }
+            Err(error) => return Err(error),
+        };
         let messages =
-            self.store
+            self.store()?
                 .replay_display(&session_id, command.run.as_deref(), command.after)?;
         let approvals = self
-            .store
+            .store()?
             .list_approvals(Some(&session_id), command.run.as_deref())?;
         let deferred = self
-            .store
+            .store()?
             .list_deferred_tools(Some(&session_id), command.run.as_deref())?;
         let snapshot =
             crate::tui::TuiSnapshot::from_parts(session_id, messages, &approvals, &deferred);
@@ -405,7 +420,7 @@ impl CliService {
         match command {
             ApprovalCommand::List(command) => self.approval_list(&command),
             ApprovalCommand::Show { approval_id } => {
-                let approval = self.store.load_approval(&approval_id)?;
+                let approval = self.store()?.load_approval(&approval_id)?;
                 Ok(format!("{}\n", serde_json::to_string(&approval)?))
             }
             ApprovalCommand::Approve(command) => {
@@ -417,9 +432,9 @@ impl CliService {
         }
     }
 
-    fn approval_list(&self, command: &ApprovalListCommand) -> CliResult<String> {
+    fn approval_list(&mut self, command: &ApprovalListCommand) -> CliResult<String> {
         let approvals = self
-            .store
+            .store()?
             .list_approvals(command.session.as_deref(), command.run.as_deref())?;
         render_approvals(&approvals, command.output)
     }
@@ -430,7 +445,7 @@ impl CliService {
         status: ApprovalStatus,
     ) -> CliResult<String> {
         let approval =
-            self.store
+            self.store()?
                 .decide_approval(&command.approval_id, status, command.reason.clone())?;
         match command.output {
             OutputMode::Text => Ok(format!(
@@ -452,7 +467,7 @@ impl CliService {
         match command {
             DeferredCommand::List(command) => self.deferred_list(&command),
             DeferredCommand::Show { deferred_id } => {
-                let deferred = self.store.load_deferred_tool(&deferred_id)?;
+                let deferred = self.store()?.load_deferred_tool(&deferred_id)?;
                 Ok(format!("{}\n", serde_json::to_string(&deferred)?))
             }
             DeferredCommand::Complete(command) => self.deferred_complete(&command),
@@ -460,9 +475,9 @@ impl CliService {
         }
     }
 
-    fn deferred_list(&self, command: &DeferredListCommand) -> CliResult<String> {
+    fn deferred_list(&mut self, command: &DeferredListCommand) -> CliResult<String> {
         let records = self
-            .store
+            .store()?
             .list_deferred_tools(command.session.as_deref(), command.run.as_deref())?;
         render_deferred(&records, command.output)
     }
@@ -471,14 +486,14 @@ impl CliService {
         let value = serde_json::from_str::<Value>(&command.result)
             .map_err(|error| CliError::Usage(format!("invalid deferred result JSON: {error}")))?;
         let record = self
-            .store
+            .store()?
             .complete_deferred_tool(&command.deferred_id, value)?;
         render_deferred_decision(&record, command.output)
     }
 
     fn deferred_fail(&mut self, command: &DeferredFailCommand) -> CliResult<String> {
         let record = self
-            .store
+            .store()?
             .fail_deferred_tool(&command.deferred_id, &command.error)?;
         render_deferred_decision(&record, command.output)
     }
@@ -505,37 +520,64 @@ impl CliService {
         self.run_prompt(&run_command)
     }
 
-    fn resolve_session_id(&self, requested: Option<&str>) -> CliResult<String> {
+    fn resolve_session_id(&mut self, requested: Option<&str>) -> CliResult<String> {
         if let Some(session_id) = requested {
-            self.store.load_session(session_id)?;
+            self.store()?.load_session(session_id)?;
             return Ok(session_id.to_string());
         }
         if let Some(session_id) = read_current_session(&self.config)? {
-            if self.store.load_session(&session_id).is_ok() {
+            if self.store()?.load_session(&session_id).is_ok() {
                 return Ok(session_id);
             }
         }
-        self.store
+        self.store()?
             .latest_session()?
             .map(|session| session.session_id.as_str().to_string())
             .ok_or_else(|| CliError::NotFound("session".to_string()))
     }
 
     fn resolve_resume_run(
-        &self,
+        &mut self,
         session_id: &str,
         requested: Option<&str>,
     ) -> CliResult<starweaver_session::RunRecord> {
         if let Some(run_id) = requested {
-            return self.store.load_run(session_id, run_id);
+            return self.store()?.load_run(session_id, run_id);
         }
-        let session = self.store.load_session(session_id)?;
+        let session = self.store()?.load_session(session_id)?;
         let run_id = session
             .active_run_id
             .as_ref()
             .or(session.head_run_id.as_ref())
             .ok_or_else(|| CliError::NotFound("run".to_string()))?;
-        self.store.load_run(session_id, run_id.as_str())
+        self.store()?.load_run(session_id, run_id.as_str())
+    }
+
+    fn reset(&mut self, command: &ResetCommand) -> CliResult<String> {
+        if !command.yes {
+            return Err(CliError::Usage(
+                "pass --yes to remove runtime session state".to_string(),
+            ));
+        }
+        self.store = None;
+        let removed_database = remove_file_if_exists(&self.config.database_path)?;
+        let removed_state = remove_file_if_exists(&self.config.project_dir.join("state.json"))?;
+        let removed_store = remove_dir_if_exists(&self.config.file_store_path)?;
+        match command.output {
+            OutputMode::Text => Ok(format!(
+                "removed_database={removed_database}\nremoved_state={removed_state}\nremoved_store={removed_store}\nstatus=reset\n"
+            )),
+            OutputMode::DisplayJsonl => Ok(format!(
+                "{}\n",
+                serde_json::to_string(&json!({
+                    "removed_database": removed_database,
+                    "removed_state": removed_state,
+                    "removed_store": removed_store,
+                    "status": "reset"
+                }))?
+            )),
+            OutputMode::Silent => Ok("status=reset\n".to_string()),
+        }
     }
 
     fn config(&self, command: ConfigCommand) -> CliResult<String> {
@@ -612,6 +654,33 @@ impl CliService {
             self.config.providers.gemini.base_url.as_deref().unwrap_or_default()
         ))
     }
+}
+
+fn has_runtime_state(config: &CliConfig) -> bool {
+    config.database_path.exists() || config.project_dir.join("state.json").exists()
+}
+
+fn tui_empty_state(config: &CliConfig) -> String {
+    format!(
+        "Starweaver\n\nWelcome to Starweaver.\nstatus=ready\nsession=none\nconfig_dir={}\n\nSetup status: ready for configuration\n\nStart:\n  make cli -- -p \"hello\"\n  sw cli setup --global\n  sw cli diagnostics\n\nRuntime state is created after the first run.\n",
+        config.global_dir.display()
+    )
+}
+
+fn remove_file_if_exists(path: &Path) -> CliResult<bool> {
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| crate::error::io_error(path, error))?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn remove_dir_if_exists(path: &Path) -> CliResult<bool> {
+    if path.exists() {
+        fs::remove_dir_all(path).map_err(|error| crate::error::io_error(path, error))?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn setup_catalog_files(root: &Path, force: bool, rows: &mut Vec<Value>) -> CliResult<()> {

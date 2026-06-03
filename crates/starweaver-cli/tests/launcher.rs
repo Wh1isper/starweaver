@@ -13,7 +13,7 @@ fn env_command(bin: &str, temp: &tempfile::TempDir) -> Command {
 fn starweaver_cli_dispatches_to_starweaver_cli_product() {
     let temp = tempfile::tempdir().unwrap();
     let output = env_command(env!("CARGO_BIN_EXE_starweaver"), &temp)
-        .args(["cli", "-p", "hello"])
+        .args(["cli", "-p", "hello", "--output", "display-jsonl"])
         .output()
         .unwrap();
 

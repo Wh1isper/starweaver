@@ -28,7 +28,10 @@ fn cli_diagnostics_prints_sdk_and_version() {
 #[test]
 fn cli_run_prints_display_messages() {
     let temp = tempfile::tempdir().unwrap();
-    let output = cli(&temp).args(["run", "hello"]).output().unwrap();
+    let output = cli(&temp)
+        .args(["run", "hello", "--output", "display-jsonl"])
+        .output()
+        .unwrap();
 
     assert!(
         output.status.success(),
@@ -439,7 +442,7 @@ fn cli_global_config_set_and_env_hitl_override_work() {
 
     let run = cli(&temp)
         .env("STARWEAVER_HITL", "fail")
-        .args(["run", "needs approval"])
+        .args(["run", "needs approval", "--output", "display-jsonl"])
         .output()
         .unwrap();
     assert!(
@@ -668,7 +671,7 @@ fn cli_text_output_profiles_config_init_and_provider_config_work() {
     );
 
     let init = cli(&temp)
-        .args(["config", "init", "--global"])
+        .args(["config", "init", "--global", "--force"])
         .output()
         .unwrap();
     assert!(

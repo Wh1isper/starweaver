@@ -18,6 +18,54 @@ fn silent_value(stdout: &[u8], key: &str) -> String {
 }
 
 #[test]
+fn tui_without_session_renders_ready_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let tui = cli(&temp).arg("tui").output().unwrap();
+    assert!(
+        tui.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&tui.stderr)
+    );
+    let stdout = String::from_utf8(tui.stdout).unwrap();
+    assert!(stdout.contains("Welcome to Starweaver"));
+    assert!(stdout.contains("status=ready"));
+    assert!(stdout.contains("session=none"));
+    assert!(!temp.path().join(".starweaver/starweaver.sqlite").exists());
+    assert!(!temp.path().join(".starweaver/state.json").exists());
+    assert!(!temp.path().join(".starweaver/store").exists());
+}
+
+#[test]
+fn reset_removes_runtime_state_and_preserves_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let run = cli(&temp)
+        .args(["run", "reset me", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(run.status.success());
+    assert!(temp.path().join(".starweaver/starweaver.sqlite").exists());
+    assert!(temp.path().join(".starweaver/state.json").exists());
+    assert!(temp.path().join(".starweaver/store").exists());
+
+    let reset = cli(&temp)
+        .args(["reset", "--yes", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(
+        reset.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&reset.stderr)
+    );
+    assert!(String::from_utf8(reset.stdout)
+        .unwrap()
+        .contains("status=reset"));
+    assert!(!temp.path().join(".starweaver/starweaver.sqlite").exists());
+    assert!(!temp.path().join(".starweaver/state.json").exists());
+    assert!(!temp.path().join(".starweaver/store").exists());
+    assert!(temp.path().join("global/config.toml").exists());
+}
+
+#[test]
 fn tui_snapshot_renders_display_replay() {
     let temp = tempfile::tempdir().unwrap();
     let run = cli(&temp)

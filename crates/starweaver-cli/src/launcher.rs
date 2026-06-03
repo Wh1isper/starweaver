@@ -200,6 +200,8 @@ mod tests {
             temp.path().join("sessions.sqlite").display().to_string(),
             "-p".to_string(),
             "hello".to_string(),
+            "--output".to_string(),
+            "display-jsonl".to_string(),
         ];
         let output = command_output(args).unwrap();
         let first: serde_json::Value =

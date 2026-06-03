@@ -41,7 +41,14 @@ fn cli_rejects_ambiguous_session_selectors() {
 fn top_level_prompt_preserves_hitl_policy_metadata() {
     let temp = tempfile::tempdir().unwrap();
     let output = cli(&temp)
-        .args(["-p", "hello", "--hitl", "defer"])
+        .args([
+            "-p",
+            "hello",
+            "--hitl",
+            "defer",
+            "--output",
+            "display-jsonl",
+        ])
         .output()
         .unwrap();
 
