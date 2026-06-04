@@ -1,11 +1,16 @@
 //! CLI run execution and display augmentation.
 
+use std::sync::{mpsc, Arc};
+
+use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use starweaver_agent::{AgentSession, AgentStreamRecord, ResumableState};
 use starweaver_environment::DynEnvironmentProvider;
-use starweaver_runtime::{AgentStreamEvent, ModelResponseStreamEvent};
+use starweaver_runtime::{
+    AgentCapability, AgentRunState, AgentStreamEvent, CapabilityResult, ModelResponseStreamEvent,
+};
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, ExecutionStatus,
     RunRecord, RunStatus,
@@ -43,7 +48,31 @@ pub fn execute_agent_session(
     restore_state: Option<ResumableState>,
     policy: CliRunPolicy,
 ) -> CliResult<CliRunExecution> {
-    let agent = profile.build_agent()?;
+    execute_agent_session_with_stream_sender(
+        prompt,
+        run,
+        profile,
+        environment,
+        restore_state,
+        policy,
+        None,
+    )
+}
+
+/// Execute a resolved profile and forward live stream records to a caller-owned channel.
+pub fn execute_agent_session_with_stream_sender(
+    prompt: String,
+    run: &RunRecord,
+    profile: &ResolvedProfile,
+    environment: &DynEnvironmentProvider,
+    restore_state: Option<ResumableState>,
+    policy: CliRunPolicy,
+    stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+) -> CliResult<CliRunExecution> {
+    let mut agent = profile.build_agent()?;
+    if let Some(sender) = stream_sender {
+        agent = agent.with_stream_observer(Arc::new(CliStreamObserver { sender }));
+    }
     let mut session = restore_state.map_or_else(
         || AgentSession::new(agent.clone()),
         |state| AgentSession::from_state(agent.clone(), state),
@@ -85,6 +114,22 @@ pub fn execute_agent_session(
         output: stream.result.output,
         artifacts,
     })
+}
+
+struct CliStreamObserver {
+    sender: mpsc::Sender<AgentStreamRecord>,
+}
+
+#[async_trait]
+impl AgentCapability for CliStreamObserver {
+    async fn on_stream_event(
+        &self,
+        _state: &AgentRunState,
+        event: &AgentStreamRecord,
+    ) -> CapabilityResult<()> {
+        let _ = self.sender.send(event.clone());
+        Ok(())
+    }
 }
 
 struct DisplayProjection {

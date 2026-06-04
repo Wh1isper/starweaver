@@ -26,7 +26,7 @@ sw cli
 sw cli -p "hello"
 ```
 
-`starweaver cli ...` dispatches to the CLI product. `starweaver <command> ...` dispatches to `starweaver-<command> ...` for future command families. The launcher resolves command binaries from the install directory first, then `PATH`. From a checkout, `make cli` runs the same product path as `sw cli`: no arguments render the TUI welcome/snapshot, and prompt arguments can be passed with `make cli -- -p "hello"`.
+`starweaver cli ...` dispatches to the CLI product. `starweaver <command> ...` dispatches to `starweaver-<command> ...` for future command families. The launcher resolves command binaries from the install directory first, then `PATH`. From a checkout, `make cli` runs the same product path as `sw cli`: in a terminal it opens the interactive TUI, and prompt arguments can be passed with `make cli -- -p "hello"`.
 
 ## Updates
 
@@ -373,12 +373,37 @@ Run-scoped replay emits the same display JSONL that the initial headless run emi
 
 ## TUI snapshot and human-in-the-loop policy
 
-The CLI TUI MVP renders a retained terminal snapshot from persisted `DisplayMessage` records. It uses the same replay source as headless JSONL and session replay. On a fresh machine, it renders a welcome/setup state and waits until the first prompt run before creating runtime session state:
+The CLI TUI opens a Codex-style inline terminal viewport when stdin and stdout are TTYs. On a fresh machine, it renders a bordered session header card, implemented startup shortcuts, a no-border bottom composer with `› Ask Starweaver to do anything`, and a compact footer with `? for shortcuts` plus right-aligned context. Type a prompt and press Enter or Tab to start a background run; pressing Tab while a run is active queues the draft for the next run. Runtime stream records update the scrollback while the input area stays responsive. Assistant output follows Codex-style terminal Markdown rendering: raw assistant Markdown is parsed with `pulldown-cmark`, reflowed at the current viewport width, and styled for headings, lists, blockquotes, fenced code, inline code, emphasis, strong text, links, and horizontal rules.
 
 ```bash
-starweaver-cli tui
-starweaver-cli tui --session <session-id>
-starweaver-cli tui --session <session-id> --run <run-id>
+sw cli tui
+make cli
+```
+
+Interactive keys:
+
+| Key                     | Action                                             |
+| ----------------------- | -------------------------------------------------- |
+| `Enter`                 | Submit message                                     |
+| `Tab`                   | Submit message, or queue while running             |
+| `Ctrl-O`                | Insert a newline                                   |
+| `?`                     | Show or hide shortcut overlay from an empty prompt |
+| `Shift-Tab`             | Toggle ACT/PLAN mode                               |
+| `Ctrl-R`                | Recall the previous prompt                         |
+| `Up` / `Down`           | Browse prompt history                              |
+| `PageUp` / `PageDown`   | Scroll output                                      |
+| `Ctrl-Up` / `Ctrl-Down` | Scroll output one line                             |
+| `Ctrl-L`                | Jump to the live bottom                            |
+| `Ctrl-C`                | Request interruption during a run; exit while idle |
+| `Ctrl-D`                | Exit                                               |
+| `q`                     | Exit from an empty idle prompt                     |
+
+The retained snapshot renderer remains available for scripts, tests, and display-message replay. It uses the same replay source as headless JSONL and session replay:
+
+```bash
+starweaver-cli tui --snapshot
+starweaver-cli tui --session <session-id> --snapshot
+starweaver-cli tui --session <session-id> --run <run-id> --snapshot
 starweaver-cli tui --session <session-id> --output display-jsonl
 ```
 

@@ -346,6 +346,12 @@ pub struct TuiCommand {
     /// Render only messages after this display cursor.
     #[arg(long)]
     pub after: Option<usize>,
+    /// Force interactive terminal UI when stdout is a TTY.
+    #[arg(long)]
+    pub interactive: bool,
+    /// Force deterministic snapshot output for scripts and tests.
+    #[arg(long, conflicts_with = "interactive")]
+    pub snapshot: bool,
     /// Output mode for non-interactive TUI snapshots.
     #[arg(long, default_value = "text")]
     pub output: OutputMode,

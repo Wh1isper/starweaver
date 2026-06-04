@@ -1,10 +1,13 @@
 //! CLI service layer over local storage and SDK execution.
 
-use std::{fmt::Write as _, fs, path::Path};
+use std::{
+    fmt::Write as _, fs, io::IsTerminal as _, path::Path, sync::mpsc, thread, time::Duration,
+};
 
 use clap_complete::Shell;
 use serde_json::{json, Value};
 use starweaver_core::sdk_name;
+use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{ApprovalRecord, ApprovalStatus, DeferredToolRecord};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
@@ -27,9 +30,36 @@ use crate::{
         doctor_mcp_servers, list_default_tools, list_mcp_servers, list_profiles, list_skills,
         list_subagents, resolve_profile, show_mcp_server, show_profile, show_skill, show_subagent,
     },
-    runner::{execute_agent_session, failed_display_message, CliRunPolicy},
+    runner::{
+        execute_agent_session, execute_agent_session_with_stream_sender, failed_display_message,
+        CliRunPolicy,
+    },
     CliError, CliResult,
 };
+
+struct PromptRunExecution {
+    session_id: String,
+    run_id: String,
+    status: String,
+    output_mode: OutputMode,
+    messages: Vec<DisplayMessage>,
+}
+
+struct CompletedPromptRun {
+    session_id: String,
+    run_id: String,
+    status: String,
+}
+
+struct ActiveTuiRun {
+    receiver: mpsc::Receiver<TuiRunMessage>,
+}
+
+enum TuiRunMessage {
+    Stream(AgentStreamRecord),
+    Completed(CompletedPromptRun),
+    Failed(String),
+}
 
 /// CLI service.
 pub struct CliService {
@@ -99,6 +129,35 @@ impl CliService {
     }
 
     fn run_prompt(&mut self, command: &RunCommand) -> CliResult<String> {
+        let execution = self.execute_prompt_run(command, None)?;
+        match execution.output_mode {
+            OutputMode::Text => Ok(render_display_text(&execution.messages)),
+            OutputMode::DisplayJsonl => render_display_jsonl(&execution.messages),
+            OutputMode::Silent => Ok(format!(
+                "session_id={}\nrun_id={}\nstatus={}\n",
+                execution.session_id, execution.run_id, execution.status
+            )),
+        }
+    }
+
+    fn run_prompt_streaming(
+        &mut self,
+        command: &RunCommand,
+        stream_sender: mpsc::Sender<AgentStreamRecord>,
+    ) -> CliResult<CompletedPromptRun> {
+        let execution = self.execute_prompt_run(command, Some(stream_sender))?;
+        Ok(CompletedPromptRun {
+            session_id: execution.session_id,
+            run_id: execution.run_id,
+            status: execution.status,
+        })
+    }
+
+    fn execute_prompt_run(
+        &mut self,
+        command: &RunCommand,
+        stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    ) -> CliResult<PromptRunExecution> {
         let prompt = command.prompt_text()?;
         let selected_profile = command
             .profile
@@ -130,14 +189,26 @@ impl CliService {
             .store()?
             .load_restore_state(&session_id, restore_from.as_deref())?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
-        let result = execute_agent_session(
-            prompt,
-            &run,
-            &resolved_profile,
-            &environment.provider,
-            restore_state,
-            CliRunPolicy { hitl },
-        );
+        let result = if let Some(sender) = stream_sender {
+            execute_agent_session_with_stream_sender(
+                prompt,
+                &run,
+                &resolved_profile,
+                &environment.provider,
+                restore_state,
+                CliRunPolicy { hitl },
+                Some(sender),
+            )
+        } else {
+            execute_agent_session(
+                prompt,
+                &run,
+                &resolved_profile,
+                &environment.provider,
+                restore_state,
+                CliRunPolicy { hitl },
+            )
+        };
         let execution = match result {
             Ok(execution) => execution,
             Err(error) => {
@@ -156,17 +227,13 @@ impl CliService {
                 .store()?
                 .trim(vec![session_id.clone()], keep_runs, false)?;
         }
-        let output_mode = command.output.unwrap_or(self.config.default_output);
-        match output_mode {
-            OutputMode::Text => Ok(render_display_text(&messages)),
-            OutputMode::DisplayJsonl => render_display_jsonl(&messages),
-            OutputMode::Silent => Ok(format!(
-                "session_id={}\nrun_id={}\nstatus={}\n",
-                session_id,
-                run.run_id.as_str(),
-                run_status_name(run.status)
-            )),
-        }
+        Ok(PromptRunExecution {
+            session_id,
+            run_id: run.run_id.as_str().to_string(),
+            status: run_status_name(run.status).to_string(),
+            output_mode: command.output.unwrap_or(self.config.default_output),
+            messages,
+        })
     }
 
     fn resolve_session(
@@ -382,14 +449,40 @@ impl CliService {
     }
 
     fn tui(&mut self, command: &TuiCommand) -> CliResult<String> {
+        if should_run_interactive_tui(command) {
+            self.interactive_tui(command)?;
+            return Ok(String::new());
+        }
+        self.tui_snapshot(command)
+    }
+
+    fn tui_snapshot(&mut self, command: &TuiCommand) -> CliResult<String> {
         if command.session.is_none() && !has_runtime_state(&self.config) {
             return Ok(tui_empty_state(&self.config));
         }
+        let Some(snapshot) = self.tui_snapshot_state(command)? else {
+            return Ok(tui_empty_state(&self.config));
+        };
+        match command.output {
+            OutputMode::Text => Ok(snapshot.render_text()),
+            OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(&snapshot)?)),
+            OutputMode::Silent => Ok(format!(
+                "session_id={}\nmessages={}\napprovals={}\ndeferred={}\nstatus=tui\n",
+                snapshot.session_id,
+                snapshot.messages,
+                snapshot.pending_approvals,
+                snapshot.pending_deferred
+            )),
+        }
+    }
+
+    fn tui_snapshot_state(
+        &mut self,
+        command: &TuiCommand,
+    ) -> CliResult<Option<crate::tui::TuiSnapshot>> {
         let session_id = match self.resolve_session_id(command.session.as_deref()) {
             Ok(session_id) => session_id,
-            Err(CliError::NotFound(_)) if command.session.is_none() => {
-                return Ok(tui_empty_state(&self.config));
-            }
+            Err(CliError::NotFound(_)) if command.session.is_none() => return Ok(None),
             Err(error) => return Err(error),
         };
         let messages =
@@ -401,18 +494,77 @@ impl CliService {
         let deferred = self
             .store()?
             .list_deferred_tools(Some(&session_id), command.run.as_deref())?;
-        let snapshot =
-            crate::tui::TuiSnapshot::from_parts(session_id, messages, &approvals, &deferred);
-        match command.output {
-            OutputMode::Text => Ok(snapshot.render_text()),
-            OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(&snapshot)?)),
-            OutputMode::Silent => Ok(format!(
-                "session_id={}\nmessages={}\napprovals={}\ndeferred={}\nstatus=tui\n",
-                snapshot.session_id,
-                snapshot.messages,
-                snapshot.pending_approvals,
-                snapshot.pending_deferred
-            )),
+        Ok(Some(crate::tui::TuiSnapshot::from_parts(
+            session_id, messages, &approvals, &deferred,
+        )))
+    }
+
+    fn interactive_tui(&mut self, command: &TuiCommand) -> CliResult<()> {
+        let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.global_dir);
+        state.set_profile(
+            self.config.default_profile.clone(),
+            default_model_label(&self.config),
+        );
+        if command.session.is_some() || has_runtime_state(&self.config) {
+            if let Some(snapshot) = self.tui_snapshot_state(command)? {
+                state.set_snapshot(&snapshot);
+            }
+        }
+        let mut tui = crate::tui::InteractiveTui::enter()?;
+        let mut active_run: Option<ActiveTuiRun> = None;
+        let mut queued_prompt: Option<String> = None;
+        loop {
+            while let Some(run) = active_run.as_mut() {
+                match run.receiver.try_recv() {
+                    Ok(TuiRunMessage::Stream(record)) => state.apply_stream_record(&record),
+                    Ok(TuiRunMessage::Completed(completed)) => {
+                        state.finish_run(Some(completed.session_id));
+                        state.body.push(format!(
+                            "Run completed: {} status={}",
+                            completed.run_id, completed.status
+                        ));
+                        active_run = None;
+                        if let Some(prompt) = queued_prompt.take() {
+                            state.begin_run(&prompt);
+                            active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                        }
+                        break;
+                    }
+                    Ok(TuiRunMessage::Failed(error)) => {
+                        state.fail_run(&error);
+                        active_run = None;
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        state.fail_run("background run channel closed");
+                        active_run = None;
+                        break;
+                    }
+                }
+            }
+
+            tui.render(&state)?;
+            match crate::tui::InteractiveTui::poll_event(&mut state, Duration::from_millis(33))? {
+                Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
+                    return Ok(())
+                }
+                Some(
+                    crate::tui::InteractiveTuiEvent::Quit | crate::tui::InteractiveTuiEvent::Cancel,
+                )
+                | None => {}
+                Some(crate::tui::InteractiveTuiEvent::Queue(prompt)) => {
+                    queued_prompt = Some(prompt);
+                }
+                Some(crate::tui::InteractiveTuiEvent::Submit(prompt)) => {
+                    if active_run.is_some() {
+                        queued_prompt = Some(prompt);
+                        continue;
+                    }
+                    state.begin_run(&prompt);
+                    active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                }
+            }
         }
     }
 
@@ -656,13 +808,77 @@ impl CliService {
     }
 }
 
+fn spawn_tui_run(config: &CliConfig, command: &TuiCommand, prompt: String) -> ActiveTuiRun {
+    let config = config.clone();
+    let command = command.clone();
+    let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
+    let (stream_sender, stream_receiver) = mpsc::channel::<AgentStreamRecord>();
+    let stream_ui_sender = ui_sender.clone();
+    let forward_handle = thread::spawn(move || {
+        while let Ok(record) = stream_receiver.recv() {
+            if stream_ui_sender
+                .send(TuiRunMessage::Stream(record))
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+    thread::spawn(move || {
+        let result = CliService::open(config).and_then(|mut service| {
+            let continue_session = command.session.is_none();
+            let run_command = RunCommand {
+                prompt: Some(prompt),
+                prompt_parts: Vec::new(),
+                session: command.session,
+                continue_session,
+                new_session: false,
+                run: None,
+                branch_from: None,
+                profile: None,
+                output: Some(OutputMode::Text),
+                hitl: None,
+            };
+            service.run_prompt_streaming(&run_command, stream_sender)
+        });
+        let _ = forward_handle.join();
+        let message = match result {
+            Ok(completed) => TuiRunMessage::Completed(completed),
+            Err(error) => TuiRunMessage::Failed(error.to_string()),
+        };
+        let _ = ui_sender.send(message);
+    });
+    ActiveTuiRun { receiver }
+}
+
+fn default_model_label(config: &CliConfig) -> String {
+    config
+        .model_profiles
+        .get(&config.default_profile)
+        .map(|model| model.model_id.clone())
+        .or_else(|| {
+            config
+                .default_model
+                .as_ref()
+                .map(|model| model.model_id.clone())
+        })
+        .unwrap_or_else(|| "local_echo".to_string())
+}
+
 fn has_runtime_state(config: &CliConfig) -> bool {
     config.database_path.exists() || config.project_dir.join("state.json").exists()
 }
 
+fn should_run_interactive_tui(command: &TuiCommand) -> bool {
+    if command.snapshot || !matches!(command.output, OutputMode::Text) {
+        return false;
+    }
+    command.interactive || (std::io::stdout().is_terminal() && std::io::stdin().is_terminal())
+}
+
 fn tui_empty_state(config: &CliConfig) -> String {
     format!(
-        "Starweaver\n\nWelcome to Starweaver.\nstatus=ready\nsession=none\nconfig_dir={}\n\nSetup status: ready for configuration\n\nStart:\n  make cli -- -p \"hello\"\n  sw cli setup --global\n  sw cli diagnostics\n\nRuntime state is created after the first run.\n",
+        "Starweaver\n\nWelcome to Starweaver.\nstatus=ready\nsession=none\nconfig_dir={}\n\nSetup status: ready for configuration\n\nStart:\n  sw cli -p \"hello\"\n  sw cli setup --global\n  sw cli diagnostics\n\nRuntime state is created after the first run.\n",
         config.global_dir.display()
     )
 }

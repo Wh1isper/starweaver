@@ -29,6 +29,8 @@ async-trait.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 chrono.workspace = true
+crossterm.workspace = true
+pulldown-cmark.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -47,6 +49,7 @@ toml.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 semver.workspace = true
+unicode-width.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

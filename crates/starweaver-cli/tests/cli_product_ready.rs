@@ -30,6 +30,8 @@ fn tui_without_session_renders_ready_state() {
     assert!(stdout.contains("Welcome to Starweaver"));
     assert!(stdout.contains("status=ready"));
     assert!(stdout.contains("session=none"));
+    assert!(stdout.contains("sw cli -p \"hello\""));
+    assert!(!stdout.contains("make cli -- -p \"hello\""));
     assert!(!temp.path().join(".starweaver/starweaver.sqlite").exists());
     assert!(!temp.path().join(".starweaver/state.json").exists());
     assert!(!temp.path().join(".starweaver/store").exists());

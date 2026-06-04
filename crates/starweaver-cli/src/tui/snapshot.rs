@@ -1,0 +1,131 @@
+//! Terminal UI rendering built from display messages.
+
+use std::fmt::Write as _;
+
+use serde::Serialize;
+use starweaver_session::{ApprovalRecord, DeferredToolRecord};
+use starweaver_stream::{DisplayMessage, DisplayMessageKind};
+
+/// Non-interactive TUI snapshot used by the renderer and tests.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct TuiSnapshot {
+    /// Session id rendered by the snapshot.
+    pub session_id: String,
+    /// Display message count.
+    pub messages: usize,
+    /// Rendered assistant text preview.
+    pub assistant_text: String,
+    /// Tool call previews.
+    pub tool_calls: Vec<String>,
+    /// Pending approval count.
+    pub pending_approvals: usize,
+    /// Pending deferred tool count.
+    pub pending_deferred: usize,
+    /// Terminal status if seen.
+    pub terminal_status: Option<String>,
+}
+
+impl TuiSnapshot {
+    /// Build a snapshot from persisted display messages and control-flow records.
+    #[must_use]
+    pub fn from_parts(
+        session_id: String,
+        messages: Vec<DisplayMessage>,
+        approvals: &[ApprovalRecord],
+        deferred: &[DeferredToolRecord],
+    ) -> Self {
+        let mut snapshot = Self {
+            session_id,
+            messages: messages.len(),
+            pending_approvals: approvals
+                .iter()
+                .filter(|approval| approval.status == starweaver_session::ApprovalStatus::Pending)
+                .count(),
+            pending_deferred: deferred
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.status,
+                        starweaver_session::ExecutionStatus::Pending
+                            | starweaver_session::ExecutionStatus::Waiting
+                    )
+                })
+                .count(),
+            ..Self::default()
+        };
+        for message in messages {
+            snapshot.apply_message(&message);
+        }
+        snapshot
+    }
+
+    /// Apply one display message to the retained view snapshot.
+    pub fn apply_message(&mut self, message: &DisplayMessage) {
+        match message.kind {
+            DisplayMessageKind::AssistantTextDelta => {
+                if let Some(delta) = message
+                    .payload
+                    .get("delta")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    self.assistant_text.push_str(delta);
+                } else if let Some(preview) = message.preview.as_deref() {
+                    self.assistant_text.push_str(preview);
+                }
+            }
+            DisplayMessageKind::ToolCallStart => {
+                let name = message
+                    .payload
+                    .get("tool_name")
+                    .or_else(|| message.payload.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .or(message.preview.as_deref())
+                    .unwrap_or("tool");
+                self.tool_calls.push(name.to_string());
+            }
+            DisplayMessageKind::ToolResult => {
+                if let Some(preview) = message.preview.as_deref() {
+                    self.tool_calls.push(format!("result:{preview}"));
+                }
+            }
+            DisplayMessageKind::RunCompleted => {
+                self.terminal_status = Some("completed".to_string());
+            }
+            DisplayMessageKind::RunFailed => {
+                self.terminal_status = Some("failed".to_string());
+            }
+            DisplayMessageKind::RunCancelled => {
+                self.terminal_status = Some("cancelled".to_string());
+            }
+            _ => {}
+        }
+    }
+
+    /// Render a deterministic text snapshot.
+    #[must_use]
+    pub fn render_text(&self) -> String {
+        let mut output = String::new();
+        output.push_str("Starweaver CLI TUI snapshot\n");
+        let _ = writeln!(output, "session_id={}", self.session_id);
+        let _ = writeln!(output, "messages={}", self.messages);
+        let _ = writeln!(output, "pending_approvals={}", self.pending_approvals);
+        let _ = writeln!(output, "pending_deferred={}", self.pending_deferred);
+        if let Some(status) = self.terminal_status.as_deref() {
+            let _ = writeln!(output, "terminal_status={status}");
+        }
+        if !self.assistant_text.trim().is_empty() {
+            output.push_str("\nAssistant\n");
+            output.push_str(self.assistant_text.trim());
+            output.push('\n');
+        }
+        if !self.tool_calls.is_empty() {
+            output.push_str("\nTools\n");
+            for tool in &self.tool_calls {
+                output.push_str("- ");
+                output.push_str(tool);
+                output.push('\n');
+            }
+        }
+        output
+    }
+}
