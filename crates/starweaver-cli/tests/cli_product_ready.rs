@@ -68,6 +68,28 @@ fn reset_removes_runtime_state_and_preserves_config() {
 }
 
 #[test]
+fn tui_without_session_stays_clean_after_runs_exist() {
+    let temp = tempfile::tempdir().unwrap();
+    let run = cli(&temp)
+        .args(["run", "do not auto replay", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(run.status.success());
+
+    let tui = cli(&temp).arg("tui").output().unwrap();
+    assert!(
+        tui.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&tui.stderr)
+    );
+    let stdout = String::from_utf8(tui.stdout).unwrap();
+    assert!(stdout.contains("Welcome to Starweaver"));
+    assert!(stdout.contains("session=none"));
+    assert!(!stdout.contains("local echo: do not auto replay"));
+    assert!(!stdout.contains("Starweaver CLI TUI snapshot"));
+}
+
+#[test]
 fn tui_snapshot_renders_display_replay() {
     let temp = tempfile::tempdir().unwrap();
     let run = cli(&temp)

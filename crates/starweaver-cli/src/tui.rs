@@ -10,5 +10,5 @@ mod terminal;
 mod tests;
 
 pub use snapshot::TuiSnapshot;
-pub use state::InteractiveTuiState;
+pub use state::{GoalIterationOutcome, InteractiveTuiState};
 pub use terminal::{InteractiveTui, InteractiveTuiEvent};

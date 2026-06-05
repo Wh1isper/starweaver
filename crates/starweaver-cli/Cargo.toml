@@ -52,6 +52,7 @@ semver.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
+starweaver-context.workspace = true
 tempfile.workspace = true
 
 [lints]

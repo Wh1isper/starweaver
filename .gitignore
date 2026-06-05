@@ -13,3 +13,9 @@ scripts/.venv/
 .env
 .env.*
 !.env.example
+
+/crates/starweaver-claw/web/node_modules/
+/crates/starweaver-claw/web/dist/
+/crates/starweaver-claw/web/.pnpm-store/
+/crates/starweaver-claw/web/.vite/
+/crates/starweaver-claw/web/coverage/

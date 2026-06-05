@@ -3,16 +3,21 @@ use std::{env, io};
 use crossterm::{
     cursor::MoveTo,
     queue,
-    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
+    style::{
+        Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+    },
 };
 use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{CliError, CliResult};
 
-use super::{markdown::render_transcript_lines, snapshot::TuiSnapshot, state::InteractiveTuiState};
+use super::{
+    markdown::{render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
+    snapshot::TuiSnapshot,
+    state::InteractiveTuiState,
+};
 
-const LIVE_PREFIX_COLS: usize = 2;
 const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56;
 const STARWEAVER_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -20,14 +25,26 @@ pub(super) fn snapshot_interactive_lines(snapshot: &TuiSnapshot) -> Vec<String> 
     let mut lines = Vec::new();
     if !snapshot.assistant_text.trim().is_empty() {
         lines.push("Assistant:".to_string());
-        lines.extend(snapshot.assistant_text.trim().lines().map(str::to_string));
+        lines.extend(
+            snapshot
+                .assistant_text
+                .trim()
+                .lines()
+                .map(|line| format!("{ASSISTANT_CONTENT_PREFIX}{line}")),
+        );
     }
     if !snapshot.tool_calls.is_empty() {
         if !lines.is_empty() {
             lines.push(String::new());
         }
         for tool in &snapshot.tool_calls {
-            lines.push(format!("Tool call: {tool}"));
+            if let Some(result) = tool.strip_prefix("result:error:") {
+                lines.push(format!("Tool error: {result}"));
+            } else if let Some(result) = tool.strip_prefix("result:") {
+                lines.push(format!("Tool result: {result}"));
+            } else {
+                lines.push(format!("Tool call: {tool}"));
+            }
         }
     }
     if let Some(status) = snapshot.terminal_status.as_deref() {
@@ -180,17 +197,32 @@ fn with_codex_border(rows: Vec<Vec<StyledSegment>>, inner_width: usize) -> Vec<S
 
 pub(super) fn render_composer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
     let input_lines = input_tail_lines(&state.input, 3);
-    let mut lines = Vec::with_capacity(input_lines.len().saturating_add(2));
+    let image_labels = state.pasted_image_labels();
+    let mut lines = Vec::with_capacity(
+        input_lines
+            .len()
+            .saturating_add(image_labels.len())
+            .saturating_add(2),
+    );
     lines.push(StyledLine::plain(""));
-    for (offset, input) in input_lines.iter().enumerate() {
+    for image in image_labels {
         let mut line =
-            StyledLine::styled(if offset == 0 { "›" } else { " " }, SegmentStyle::bold());
-        line.push(
-            " ".repeat(LIVE_PREFIX_COLS.saturating_sub(1)),
-            SegmentStyle::default(),
+            StyledLine::styled("  image ", SegmentStyle::dim().merge(SegmentStyle::code()));
+        line.push(image, SegmentStyle::dim());
+        lines.push(pad_styled_line(line, width));
+    }
+    for (offset, input) in input_lines.iter().enumerate() {
+        let mut line = StyledLine::styled(
+            if offset == 0 {
+                composer_prompt(state)
+            } else {
+                " "
+            },
+            SegmentStyle::bold(),
         );
+        line.push(" ", SegmentStyle::default());
         if input.is_empty() && offset == 0 {
-            line.push("Ask Starweaver to do anything", SegmentStyle::dim());
+            line.push(composer_placeholder(state), SegmentStyle::dim());
         } else {
             line.push(input, SegmentStyle::default());
         }
@@ -200,83 +232,260 @@ pub(super) fn render_composer_lines(state: &InteractiveTuiState, width: usize) -
     lines
 }
 
-pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
-    if state.footer_mode.is_shortcuts() {
-        render_shortcut_overlay(width)
+const fn composer_prompt(state: &InteractiveTuiState) -> &'static str {
+    if state.running {
+        "[scroll] *"
     } else {
-        vec![render_footer_line(state, width)]
+        "[scroll] >"
     }
 }
 
-pub(super) fn render_footer_line(state: &InteractiveTuiState, width: usize) -> StyledLine {
-    let right = context_window_line(state);
-    let left = footer_left_hint(state);
-    let mut line = StyledLine::plain("  ");
-    if let Some(left) = left {
-        line.push(left, SegmentStyle::dim());
+const fn composer_placeholder(state: &InteractiveTuiState) -> &'static str {
+    if state.running {
+        "Steer the running task"
+    } else {
+        "Ask Starweaver to do anything"
     }
-    let left_width = line.visible_width();
-    let right_width = visible_width(&right);
-    if width > left_width.saturating_add(right_width).saturating_add(1) {
+}
+
+pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    let mut lines = if state.help_panel_visible() {
+        render_help_panel(width)
+    } else {
+        Vec::new()
+    };
+    lines.push(render_steering_line(state, width));
+    lines.extend(render_status_bar_lines(state, width));
+    lines
+}
+
+fn render_steering_line(state: &InteractiveTuiState, width: usize) -> StyledLine {
+    let style = SegmentStyle::steering_bar();
+    let text = if state.running && !state.input.trim().is_empty() {
+        format!(">>> {}", state.input.trim())
+    } else {
+        " [Steering messages will appear here during agent execution]".to_string()
+    };
+    pad_styled_line_with_style(StyledLine::styled(text, style), width, style)
+}
+
+fn render_status_bar_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    vec![
+        pad_styled_line_with_style(
+            render_status_bar_primary(state),
+            width,
+            SegmentStyle::status_bar(),
+        ),
+        pad_styled_line_with_style(
+            render_status_bar_secondary(state),
+            width,
+            SegmentStyle::status_bar(),
+        ),
+    ]
+}
+
+fn render_status_bar_primary(state: &InteractiveTuiState) -> StyledLine {
+    let mut line = StyledLine::styled(
+        format!(" {} ", state.input_mode_label()),
+        SegmentStyle::mode_badge().merge(SegmentStyle::bold()),
+    );
+    line.push(" | ", SegmentStyle::status_bar());
+    if state.running {
         line.push(
-            " ".repeat(width - left_width - right_width),
-            SegmentStyle::dim(),
+            phase_display(state),
+            status_style(state).merge(SegmentStyle::status_bar()),
         );
-        line.push(right, SegmentStyle::dim());
+    } else {
+        line.push(
+            format!("State: {}", state.status),
+            status_style(state).merge(SegmentStyle::status_bar()),
+        );
     }
+    line.push(" | ", SegmentStyle::status_bar());
+    line.push(
+        format!("Model: {}", state.model),
+        SegmentStyle::status_bar(),
+    );
+    line.push(" | ", SegmentStyle::status_bar());
+    line.push(
+        format!("Context: {}", state.context_percent_label()),
+        SegmentStyle::status_bar(),
+    );
+    if state.goal_active {
+        line.push(" | ", SegmentStyle::status_bar());
+        line.push(
+            format!(
+                "Goal: {}/{}",
+                state.goal_iteration, state.goal_max_iterations
+            ),
+            SegmentStyle::status_warning().merge(SegmentStyle::bold()),
+        );
+    }
+    if state.pasted_image_count() > 0 {
+        line.push(" | ", SegmentStyle::status_bar());
+        line.push(
+            format!("images:{}", state.pasted_image_count()),
+            SegmentStyle::status_warning(),
+        );
+    }
+    line
+}
+
+fn render_status_bar_secondary(state: &InteractiveTuiState) -> StyledLine {
+    let mut line = StyledLine::styled(secondary_status_text(state), SegmentStyle::status_bar());
+    if state.scroll_offset > 0 {
+        line.push(" | ", SegmentStyle::status_bar());
+        line.push(
+            format!("Scrolled: {}", state.scroll_offset),
+            SegmentStyle::status_warning(),
+        );
+    }
+    if !state.profile.is_empty() {
+        line.push(" | ", SegmentStyle::status_bar());
+        line.push(
+            format!("Profile: {}", state.profile),
+            SegmentStyle::status_bar(),
+        );
+    }
+    if let Some(session) = state.session_id.as_deref() {
+        line.push(" | ", SegmentStyle::status_bar());
+        line.push(format!("Session: {session}"), SegmentStyle::status_bar());
+    }
+    line
+}
+
+fn phase_display(state: &InteractiveTuiState) -> String {
+    match state.phase.as_str() {
+        "thinking" => "Thinking...".to_string(),
+        "tools" => "Running tools...".to_string(),
+        "streaming" => "Running...".to_string(),
+        phase => phase.to_string(),
+    }
+}
+
+fn status_style(state: &InteractiveTuiState) -> SegmentStyle {
+    match state.status.as_str() {
+        "ERROR" => SegmentStyle::error().merge(SegmentStyle::bold()),
+        "WAITING" | "INTERRUPT" => SegmentStyle::warning().merge(SegmentStyle::bold()),
+        _ => SegmentStyle::status_bar(),
+    }
+}
+
+fn secondary_status_text(state: &InteractiveTuiState) -> &'static str {
+    if state.running {
+        "Ctrl+C: Interrupt"
+    } else if state.input.trim().is_empty() && state.pasted_image_count() == 0 {
+        "Enter:Send | Tab:Multiline | Ctrl+Up/Down: Scroll | Ctrl+C: Exit"
+    } else {
+        "Enter:Send | Tab:Multiline | Ctrl+U: Clear | Ctrl+C: Exit"
+    }
+}
+
+#[cfg(test)]
+pub(super) fn render_shortcut_overlay(width: usize) -> Vec<StyledLine> {
+    render_help_panel(width)
+}
+
+pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
+    let command_rows = [
+        ("/help", "Show this help"),
+        ("/clear", "Clear output and history"),
+        ("/cost", "Show cost summary"),
+        ("/model", "Select model profile"),
+        ("/tasks", "Show background tasks and processes"),
+        ("/perf", "Show performance stats (STARWEAVER_PERF=1)"),
+        ("/session [id]", "List sessions or restore by ID"),
+        ("/paste-image", "Attach image from system clipboard"),
+        ("/dump [folder]", "Export session to folder"),
+        ("/load <folder>", "Load session from folder"),
+        ("/act", "Switch to ACT mode"),
+        ("/plan", "Switch to PLAN mode"),
+        (
+            "/goal <task>",
+            "Run task toward a verified goal until complete",
+        ),
+        ("/exit", "Exit TUI"),
+    ];
+    let key_rows = [
+        ("Ctrl+C", "Cancel / double-press exit"),
+        ("Ctrl+D", "Exit"),
+        ("Ctrl+V", "Attach image from clipboard"),
+        ("Tab", "Toggle input mode"),
+        ("Escape", "Toggle mouse mode"),
+        ("Up/Down, Ctrl+P/N", "Browse history"),
+        ("PageUp/PageDown", "Scroll output"),
+    ];
+    let mut lines = Vec::new();
+    lines.push(StyledLine::plain(""));
+    lines.push(StyledLine::styled(
+        "Available Commands",
+        SegmentStyle::code().merge(SegmentStyle::bold()),
+    ));
+    for (command, description) in command_rows {
+        lines.push(render_help_table_row(
+            command,
+            description,
+            SegmentStyle::blockquote(),
+            width,
+        ));
+    }
+    lines.push(StyledLine::plain(""));
+    lines.push(StyledLine::styled(
+        "Shell",
+        SegmentStyle::code().merge(SegmentStyle::bold()),
+    ));
+    lines.push(render_help_table_row(
+        "!<cmd>",
+        "Execute shell command directly",
+        SegmentStyle::warning(),
+        width,
+    ));
+    lines.push(StyledLine::plain(""));
+    lines.push(StyledLine::styled(
+        "Key Bindings",
+        SegmentStyle::code().merge(SegmentStyle::bold()),
+    ));
+    for (key, description) in key_rows {
+        lines.push(render_help_table_row(
+            key,
+            description,
+            SegmentStyle::warning(),
+            width,
+        ));
+    }
+    lines
+}
+
+fn render_help_table_row(
+    label: &str,
+    description: &str,
+    label_style: SegmentStyle,
+    width: usize,
+) -> StyledLine {
+    let mut line = StyledLine::plain("  ");
+    line.push(label, label_style);
+    let label_width = 20usize;
+    let used = visible_width(label).saturating_add(2);
+    line.push(
+        " ".repeat(label_width.saturating_sub(used).max(2)),
+        SegmentStyle::dim(),
+    );
+    line.push(description, SegmentStyle::default());
     pad_styled_line(line, width)
 }
 
-fn footer_left_hint(state: &InteractiveTuiState) -> Option<&'static str> {
-    if state.running {
-        return Some("tab to queue message");
-    }
-    if !state.input.is_empty() {
-        return None;
-    }
-    Some("? for shortcuts")
+fn pad_styled_line(line: StyledLine, width: usize) -> StyledLine {
+    pad_styled_line_with_style(line, width, SegmentStyle::default())
 }
 
-fn context_window_line(state: &InteractiveTuiState) -> String {
-    if state.running {
-        format!("{} · {}", state.run_mode.label(), state.phase)
-    } else {
-        "100% context left".to_string()
-    }
-}
-
-pub(super) fn render_shortcut_overlay(width: usize) -> Vec<StyledLine> {
-    let rows = [
-        ("enter to submit message", "tab to submit or queue"),
-        ("ctrl + o for newline", "shift + tab to change mode"),
-        ("up/down for history", "page up/down to scroll"),
-        ("ctrl + r previous prompt", "ctrl + c to interrupt or exit"),
-        ("ctrl + l jump to bottom", "ctrl + d to quit"),
-        ("", ""),
-        ("shortcuts match the active Starweaver TUI", ""),
-    ];
-    rows.into_iter()
-        .map(|(left, right)| {
-            let mut line = StyledLine::plain("  ");
-            line.push(left, SegmentStyle::dim());
-            let left_width = visible_width(left);
-            let column_width = 38usize;
-            if !right.is_empty() {
-                line.push(
-                    " ".repeat(column_width.saturating_sub(left_width).saturating_add(4)),
-                    SegmentStyle::dim(),
-                );
-                line.push(right, SegmentStyle::dim());
-            }
-            pad_styled_line(line, width)
-        })
-        .collect()
-}
-
-fn pad_styled_line(mut line: StyledLine, width: usize) -> StyledLine {
+fn pad_styled_line_with_style(
+    mut line: StyledLine,
+    width: usize,
+    style: SegmentStyle,
+) -> StyledLine {
     let line_width = line.visible_width();
     if line_width < width {
-        line.push(" ".repeat(width - line_width), SegmentStyle::default());
+        line.push(" ".repeat(width - line_width), style);
     }
     line
 }
@@ -333,7 +542,7 @@ fn take_suffix_width(text: &str, width: usize) -> String {
 
 pub(super) fn composer_cursor_column(input_tail: &[String]) -> usize {
     let current = input_tail.last().map_or("", String::as_str);
-    LIVE_PREFIX_COLS.saturating_add(visible_width(current))
+    "[scroll] > ".len().saturating_add(visible_width(current))
 }
 
 pub(super) fn input_tail_lines(input: &str, max_lines: usize) -> Vec<String> {
@@ -346,16 +555,23 @@ pub(super) fn input_tail_lines(input: &str, max_lines: usize) -> Vec<String> {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct SegmentStyle(u8);
+pub(super) struct SegmentStyle(u16);
 
 impl SegmentStyle {
-    pub(super) const BOLD: u8 = 0b00_0001;
-    pub(super) const ITALIC: u8 = 0b00_0010;
-    pub(super) const UNDERLINED: u8 = 0b00_0100;
-    pub(super) const DIM: u8 = 0b00_1000;
-    pub(super) const CYAN: u8 = 0b01_0000;
-    pub(super) const GREEN: u8 = 0b10_0000;
-    pub(super) const BLUE: u8 = 0b100_0000;
+    pub(super) const BOLD: u16 = 0b00_0000_0000_0001;
+    pub(super) const ITALIC: u16 = 0b00_0000_0000_0010;
+    pub(super) const UNDERLINED: u16 = 0b00_0000_0000_0100;
+    pub(super) const DIM: u16 = 0b00_0000_0000_1000;
+    pub(super) const CYAN: u16 = 0b00_0000_0001_0000;
+    pub(super) const GREEN: u16 = 0b00_0000_0010_0000;
+    pub(super) const BLUE: u16 = 0b00_0000_0100_0000;
+    pub(super) const REVERSED: u16 = 0b00_0000_1000_0000;
+    pub(super) const YELLOW: u16 = 0b00_0001_0000_0000;
+    pub(super) const RED: u16 = 0b00_0010_0000_0000;
+    pub(super) const MAGENTA: u16 = 0b00_0100_0000_0000;
+    pub(super) const STATUS_BG: u16 = 0b00_1000_0000_0000;
+    pub(super) const MODE_BG: u16 = 0b01_0000_0000_0000;
+    pub(super) const STEERING_BG: u16 = 0b10_0000_0000_0000;
 
     pub(super) const fn bold() -> Self {
         Self(Self::BOLD)
@@ -393,11 +609,35 @@ impl SegmentStyle {
         Self(Self::BLUE)
     }
 
+    pub(super) const fn warning() -> Self {
+        Self(Self::YELLOW)
+    }
+
+    pub(super) const fn error() -> Self {
+        Self(Self::RED)
+    }
+
+    pub(super) const fn status_bar() -> Self {
+        Self(Self::STATUS_BG)
+    }
+
+    pub(super) const fn mode_badge() -> Self {
+        Self(Self::MODE_BG)
+    }
+
+    pub(super) const fn steering_bar() -> Self {
+        Self(Self::STEERING_BG)
+    }
+
+    pub(super) const fn status_warning() -> Self {
+        Self(Self::STATUS_BG | Self::YELLOW)
+    }
+
     pub(super) const fn merge(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
-    pub(super) const fn contains(self, flag: u8) -> bool {
+    pub(super) const fn contains(self, flag: u16) -> bool {
         self.0 & flag != 0
     }
 }
@@ -448,6 +688,7 @@ impl StyledLine {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn queue_styled_line(
     stdout: &mut io::Stdout,
     line: &StyledLine,
@@ -507,7 +748,38 @@ fn queue_segment_style(stdout: &mut io::Stdout, style: SegmentStyle) -> CliResul
     if style.contains(SegmentStyle::DIM) {
         queue!(stdout, SetAttribute(Attribute::Dim)).map_err(terminal_error)?;
     }
-    if style.contains(SegmentStyle::CYAN) {
+    if style.contains(SegmentStyle::REVERSED) {
+        queue!(stdout, SetAttribute(Attribute::Reverse)).map_err(terminal_error)?;
+    }
+    if style.contains(SegmentStyle::MODE_BG) {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::AnsiValue(16)),
+            SetBackgroundColor(Color::AnsiValue(42))
+        )
+        .map_err(terminal_error)?;
+    } else if style.contains(SegmentStyle::STEERING_BG) {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::White),
+            SetBackgroundColor(Color::AnsiValue(100))
+        )
+        .map_err(terminal_error)?;
+    } else if style.contains(SegmentStyle::STATUS_BG) {
+        queue!(
+            stdout,
+            SetForegroundColor(Color::AnsiValue(231)),
+            SetBackgroundColor(Color::AnsiValue(44))
+        )
+        .map_err(terminal_error)?;
+    }
+    if style.contains(SegmentStyle::RED) {
+        queue!(stdout, SetForegroundColor(Color::Red)).map_err(terminal_error)?;
+    } else if style.contains(SegmentStyle::YELLOW) {
+        queue!(stdout, SetForegroundColor(Color::Yellow)).map_err(terminal_error)?;
+    } else if style.contains(SegmentStyle::MAGENTA) {
+        queue!(stdout, SetForegroundColor(Color::Magenta)).map_err(terminal_error)?;
+    } else if style.contains(SegmentStyle::CYAN) {
         queue!(stdout, SetForegroundColor(Color::Cyan)).map_err(terminal_error)?;
     } else if style.contains(SegmentStyle::GREEN) {
         queue!(stdout, SetForegroundColor(Color::Green)).map_err(terminal_error)?;

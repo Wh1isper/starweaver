@@ -68,7 +68,7 @@ const fn should_show_update_hint(cli: &Cli, config: &CliConfig) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::path::Path;
+    use std::{ffi::OsString, io, path::Path};
 
     use super::*;
 
@@ -78,6 +78,88 @@ mod tests {
         let cli = args::parse(command_args)?;
         let config = ConfigResolver::for_tests(root).resolve(&cli)?;
         CliService::open(config)?.execute(cli)
+    }
+
+    #[test]
+    fn args_and_error_helpers_cover_edge_branches() {
+        let run = args::RunCommand {
+            prompt: Some(" explicit ".to_string()),
+            prompt_parts: vec!["ignored".to_string()],
+            continue_session: false,
+            session: None,
+            new_session: false,
+            run: None,
+            branch_from: None,
+            profile: None,
+            output: None,
+            hitl: None,
+        };
+        assert_eq!(run.prompt_text().unwrap(), " explicit ");
+
+        let joined = args::RunCommand {
+            prompt: None,
+            prompt_parts: vec!["hello".to_string(), "world".to_string()],
+            continue_session: false,
+            session: None,
+            new_session: false,
+            run: None,
+            branch_from: None,
+            profile: None,
+            output: None,
+            hitl: None,
+        };
+        assert_eq!(joined.prompt_text().unwrap(), "hello world");
+
+        let empty = args::RunCommand {
+            prompt: Some("   ".to_string()),
+            prompt_parts: Vec::new(),
+            continue_session: false,
+            session: None,
+            new_session: false,
+            run: None,
+            branch_from: None,
+            profile: None,
+            output: None,
+            hitl: None,
+        };
+        assert!(
+            matches!(empty.prompt_text(), Err(CliError::Usage(message)) if message.contains("run -p"))
+        );
+
+        let parsed = args::parse_os([
+            OsString::from("starweaver-cli"),
+            OsString::from("run"),
+            OsString::from("hello"),
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, Some(args::CliCommand::Run(_))));
+
+        let parse_error =
+            args::parse_os([OsString::from("starweaver-cli"), OsString::from("--bad")]);
+        assert!(
+            matches!(parse_error, Err(CliError::Usage(message)) if message.contains("unexpected argument"))
+        );
+
+        assert!(format!(
+            "{}",
+            CliError::from(serde_json::from_str::<serde_json::Value>("{").unwrap_err())
+        )
+        .contains("serialization error"));
+        assert!(format!(
+            "{}",
+            CliError::from(toml::from_str::<toml::Value>("=").unwrap_err())
+        )
+        .contains("configuration error"));
+        assert!(format!(
+            "{}",
+            CliError::from(toml::to_string(&f64::NAN).unwrap_err())
+        )
+        .contains("configuration error"));
+        let io_error = error::io_error(
+            "/tmp/missing",
+            io::Error::new(io::ErrorKind::NotFound, "gone"),
+        );
+        assert!(format!("{io_error}").contains("filesystem error at /tmp/missing"));
     }
 
     #[test]

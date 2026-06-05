@@ -5,23 +5,28 @@ use std::{
 
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers,
+    },
     execute, queue,
-    terminal::{self, Clear, ClearType},
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
 use crate::CliResult;
 
 use super::{
     render::{
-        composer_cursor_column, input_tail_lines, queue_styled_line, queue_styled_line_at,
-        render_composer_lines, render_footer_lines, render_live_history_lines, terminal_error,
+        composer_cursor_column, input_tail_lines, queue_styled_line_at, render_composer_lines,
+        render_footer_lines, render_live_history_lines, terminal_error,
     },
     state::{FooterMode, InteractiveTuiState, RunMode},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InteractiveTuiEvent {
+    /// Redraw after a handled key changed or may have changed local UI state.
+    Redraw,
     /// Submit a prompt.
     Submit(String),
     /// Queue a prompt while a run is active.
@@ -43,7 +48,10 @@ impl InteractiveTui {
     pub fn enter() -> CliResult<Self> {
         let mut stdout = io::stdout();
         terminal::enable_raw_mode().map_err(terminal_error)?;
-        execute!(stdout, Hide).map_err(terminal_error)?;
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide) {
+            let _ = terminal::disable_raw_mode();
+            return Err(terminal_error(error));
+        }
         Ok(Self {
             stdout,
             active: true,
@@ -57,30 +65,54 @@ impl InteractiveTui {
         let height = if height == 0 { 24 } else { height };
         let width = usize::from(width);
         let height = usize::from(height).max(8);
-        queue!(self.stdout, Clear(ClearType::All), MoveTo(0, 0)).map_err(terminal_error)?;
-
         let composer_lines = render_composer_lines(state, width);
-        let footer_lines = render_footer_lines(state, width);
-        let bottom_height = composer_lines.len().saturating_add(footer_lines.len());
-        let body_height = height.saturating_sub(bottom_height).max(1);
+        let status_lines = render_footer_lines(state, width);
+        let fixed_height = composer_lines.len().saturating_add(status_lines.len());
+        let body_height = height.saturating_sub(fixed_height).max(1);
         let rendered_body = render_live_history_lines(state, width);
+        let max_scroll = rendered_body.len().saturating_sub(body_height);
+        let scroll_offset = state.scroll_offset.min(max_scroll);
         let visible_start = rendered_body
             .len()
-            .saturating_sub(body_height.saturating_add(state.scroll_offset));
+            .saturating_sub(body_height.saturating_add(scroll_offset));
         let visible_end = rendered_body
             .len()
-            .saturating_sub(state.scroll_offset)
+            .saturating_sub(scroll_offset)
             .max(visible_start);
 
-        for line in rendered_body
+        let visible_body = rendered_body
             .iter()
             .skip(visible_start)
             .take(visible_end.saturating_sub(visible_start))
-        {
-            queue_styled_line(&mut self.stdout, line, width)?;
+            .collect::<Vec<_>>();
+        for row in 0..body_height {
+            queue!(
+                self.stdout,
+                MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX)),
+                Clear(ClearType::CurrentLine)
+            )
+            .map_err(terminal_error)?;
+            if let Some(line) = visible_body.get(row) {
+                queue_styled_line_at(
+                    &mut self.stdout,
+                    u16::try_from(row).unwrap_or(u16::MAX),
+                    line,
+                    width,
+                )?;
+            }
         }
 
-        let composer_start = height.saturating_sub(bottom_height);
+        let status_start = height.saturating_sub(fixed_height);
+        for (offset, line) in status_lines.iter().enumerate() {
+            queue_styled_line_at(
+                &mut self.stdout,
+                u16::try_from(status_start.saturating_add(offset)).unwrap_or(u16::MAX),
+                line,
+                width,
+            )?;
+        }
+
+        let composer_start = status_start.saturating_add(status_lines.len());
         for (offset, line) in composer_lines.iter().enumerate() {
             queue_styled_line_at(
                 &mut self.stdout,
@@ -89,18 +121,10 @@ impl InteractiveTui {
                 width,
             )?;
         }
-        let footer_start = composer_start.saturating_add(composer_lines.len());
-        for (offset, line) in footer_lines.iter().enumerate() {
-            queue_styled_line_at(
-                &mut self.stdout,
-                u16::try_from(footer_start.saturating_add(offset)).unwrap_or(u16::MAX),
-                line,
-                width,
-            )?;
-        }
         let input_tail = input_tail_lines(&state.input, 3);
         let cursor_row = composer_start
             .saturating_add(1)
+            .saturating_add(state.pasted_image_count())
             .saturating_add(input_tail.len().saturating_sub(1));
         let cursor_col = composer_cursor_column(&input_tail);
         queue!(
@@ -123,10 +147,19 @@ impl InteractiveTui {
         if !event::poll(timeout).map_err(terminal_error)? {
             return Ok(None);
         }
-        let Event::Key(key) = event::read().map_err(terminal_error)? else {
-            return Ok(None);
-        };
-        Ok(handle_key_event(state, key))
+        match event::read().map_err(terminal_error)? {
+            Event::Key(key)
+                if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
+            {
+                Ok(handle_key_event(state, key).or(Some(InteractiveTuiEvent::Redraw)))
+            }
+            Event::Paste(text) => {
+                state.apply_paste(&text);
+                Ok(Some(InteractiveTuiEvent::Redraw))
+            }
+            Event::Resize(_, _) => Ok(Some(InteractiveTuiEvent::Redraw)),
+            _ => Ok(None),
+        }
     }
 }
 
@@ -162,8 +195,7 @@ pub(super) fn handle_key_event(
             state.scroll_offset = 0;
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.input.clear();
-            state.history_index = None;
+            state.clear_composer();
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.input.push('\n');
@@ -181,15 +213,16 @@ pub(super) fn handle_key_event(
                 return Some(InteractiveTuiEvent::Quit);
             }
         }
-        KeyCode::Char('q') if state.input.is_empty() => {
+        KeyCode::Char('q') if state.composer_is_empty() => {
             if state.running {
                 state.show_run_active_hint();
             } else {
                 return Some(InteractiveTuiEvent::Quit);
             }
         }
-        KeyCode::Char('?') if state.input.is_empty() && !state.running => {
-            state.footer_mode.toggle_shortcuts();
+        KeyCode::Char('?') if state.composer_is_empty() && !state.running => {
+            state.footer_mode.toggle_help();
+            state.input_status = Some("help".to_string());
         }
         KeyCode::BackTab => {
             state.run_mode = match state.run_mode {
@@ -198,23 +231,19 @@ pub(super) fn handle_key_event(
             };
         }
         KeyCode::Tab if state.running => {
-            let prompt = state.input.trim().to_string();
-            state.input.clear();
-            if !prompt.is_empty() {
+            if let Some(prompt) = state.take_submission_prompt() {
                 state.push_history(prompt.clone());
                 return Some(InteractiveTuiEvent::Queue(prompt));
             }
         }
         KeyCode::Tab | KeyCode::Enter => {
-            let prompt = state.input.trim().to_string();
-            state.input.clear();
-            if !prompt.is_empty() {
+            if let Some(prompt) = state.take_submission_prompt() {
                 state.push_history(prompt.clone());
                 return Some(InteractiveTuiEvent::Submit(prompt));
             }
         }
         KeyCode::Backspace => {
-            state.input.pop();
+            state.backspace_composer();
         }
         KeyCode::PageUp => {
             state.scroll_offset = state.scroll_offset.saturating_add(10).min(state.body.len());
@@ -232,8 +261,15 @@ pub(super) fn handle_key_event(
         KeyCode::Down => state.next_history(),
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.input.push(ch);
+            state.input_status = if state.input.trim_start().starts_with("/help") {
+                Some("help".to_string())
+            } else {
+                None
+            };
             state.history_index = None;
-            state.footer_mode = FooterMode::Context;
+            if !state.input.trim_start().starts_with("/help") {
+                state.footer_mode = FooterMode::Context;
+            }
         }
         _ => {}
     }
@@ -243,7 +279,12 @@ pub(super) fn handle_key_event(
 impl Drop for InteractiveTui {
     fn drop(&mut self) {
         if self.active {
-            let _ = execute!(self.stdout, Show);
+            let _ = execute!(
+                self.stdout,
+                Show,
+                DisableBracketedPaste,
+                LeaveAlternateScreen
+            );
             let _ = terminal::disable_raw_mode();
             self.active = false;
         }

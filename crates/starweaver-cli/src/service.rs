@@ -49,6 +49,7 @@ struct CompletedPromptRun {
     session_id: String,
     run_id: String,
     status: String,
+    output_text: String,
 }
 
 struct ActiveTuiRun {
@@ -146,10 +147,12 @@ impl CliService {
         stream_sender: mpsc::Sender<AgentStreamRecord>,
     ) -> CliResult<CompletedPromptRun> {
         let execution = self.execute_prompt_run(command, Some(stream_sender))?;
+        let output_text = render_display_text(&execution.messages);
         Ok(CompletedPromptRun {
             session_id: execution.session_id,
             run_id: execution.run_id,
             status: execution.status,
+            output_text,
         })
     }
 
@@ -457,9 +460,6 @@ impl CliService {
     }
 
     fn tui_snapshot(&mut self, command: &TuiCommand) -> CliResult<String> {
-        if command.session.is_none() && !has_runtime_state(&self.config) {
-            return Ok(tui_empty_state(&self.config));
-        }
         let Some(snapshot) = self.tui_snapshot_state(command)? else {
             return Ok(tui_empty_state(&self.config));
         };
@@ -480,11 +480,10 @@ impl CliService {
         &mut self,
         command: &TuiCommand,
     ) -> CliResult<Option<crate::tui::TuiSnapshot>> {
-        let session_id = match self.resolve_session_id(command.session.as_deref()) {
-            Ok(session_id) => session_id,
-            Err(CliError::NotFound(_)) if command.session.is_none() => return Ok(None),
-            Err(error) => return Err(error),
+        let Some(requested_session) = command.session.as_deref() else {
+            return Ok(None);
         };
+        let session_id = self.resolve_session_id(Some(requested_session))?;
         let messages =
             self.store()?
                 .replay_display(&session_id, command.run.as_deref(), command.after)?;
@@ -505,7 +504,7 @@ impl CliService {
             self.config.default_profile.clone(),
             default_model_label(&self.config),
         );
-        if command.session.is_some() || has_runtime_state(&self.config) {
+        if command.session.is_some() {
             if let Some(snapshot) = self.tui_snapshot_state(command)? {
                 state.set_snapshot(&snapshot);
             }
@@ -513,10 +512,14 @@ impl CliService {
         let mut tui = crate::tui::InteractiveTui::enter()?;
         let mut active_run: Option<ActiveTuiRun> = None;
         let mut queued_prompt: Option<String> = None;
+        let mut dirty = true;
         loop {
             while let Some(run) = active_run.as_mut() {
                 match run.receiver.try_recv() {
-                    Ok(TuiRunMessage::Stream(record)) => state.apply_stream_record(&record),
+                    Ok(TuiRunMessage::Stream(record)) => {
+                        state.apply_stream_record(&record);
+                        dirty = true;
+                    }
                     Ok(TuiRunMessage::Completed(completed)) => {
                         state.finish_run(Some(completed.session_id));
                         state.body.push(format!(
@@ -524,45 +527,68 @@ impl CliService {
                             completed.run_id, completed.status
                         ));
                         active_run = None;
-                        if let Some(prompt) = queued_prompt.take() {
-                            state.begin_run(&prompt);
-                            active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                        dirty = true;
+                        match state.complete_goal_iteration(&completed.output_text) {
+                            crate::tui::GoalIterationOutcome::Continue(prompt) => {
+                                state.begin_run(&prompt);
+                                active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                            }
+                            crate::tui::GoalIterationOutcome::Inactive
+                            | crate::tui::GoalIterationOutcome::Complete
+                            | crate::tui::GoalIterationOutcome::MaxIterations => {
+                                if let Some(prompt) = queued_prompt.take() {
+                                    state.begin_run(&prompt);
+                                    active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                                }
+                            }
                         }
                         break;
                     }
                     Ok(TuiRunMessage::Failed(error)) => {
                         state.fail_run(&error);
                         active_run = None;
+                        dirty = true;
                         break;
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         state.fail_run("background run channel closed");
                         active_run = None;
+                        dirty = true;
                         break;
                     }
                 }
             }
 
-            tui.render(&state)?;
+            if dirty {
+                tui.render(&state)?;
+                dirty = false;
+            }
             match crate::tui::InteractiveTui::poll_event(&mut state, Duration::from_millis(33))? {
                 Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
                     return Ok(())
                 }
                 Some(
-                    crate::tui::InteractiveTuiEvent::Quit | crate::tui::InteractiveTuiEvent::Cancel,
-                )
-                | None => {}
+                    crate::tui::InteractiveTuiEvent::Redraw
+                    | crate::tui::InteractiveTuiEvent::Quit
+                    | crate::tui::InteractiveTuiEvent::Cancel,
+                ) => {
+                    dirty = true;
+                }
+                None => {}
                 Some(crate::tui::InteractiveTuiEvent::Queue(prompt)) => {
                     queued_prompt = Some(prompt);
+                    dirty = true;
                 }
                 Some(crate::tui::InteractiveTuiEvent::Submit(prompt)) => {
                     if active_run.is_some() {
                         queued_prompt = Some(prompt);
+                        dirty = true;
                         continue;
                     }
                     state.begin_run(&prompt);
                     active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                    dirty = true;
                 }
             }
         }
@@ -863,10 +889,6 @@ fn default_model_label(config: &CliConfig) -> String {
                 .map(|model| model.model_id.clone())
         })
         .unwrap_or_else(|| "local_echo".to_string())
-}
-
-fn has_runtime_state(config: &CliConfig) -> bool {
-    config.database_path.exists() || config.project_dir.join("state.json").exists()
 }
 
 fn should_run_interactive_tui(command: &TuiCommand) -> bool {

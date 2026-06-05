@@ -140,7 +140,28 @@ Windows Claw archives contain:
 starweaver-claw.exe
 ```
 
+The Claw binary build runs `pnpm test` and `pnpm build` in `crates/starweaver-claw/web` before `cargo build`, so the release binary embeds the current production console bundle.
+
 The draft release also includes `checksums.txt` with SHA-256 checksums for all archives. `scripts/install.sh` downloads these artifacts, verifies checksums when present, installs `starweaver`, `starweaver-cli`, and `sw` for CLI installs, and installs `starweaver-claw` for Claw installs.
+
+## Claw Docker image
+
+`Dockerfile.starweaver-claw` builds a production service image with the same embedded web console path as release binaries:
+
+```bash
+make docker-build-claw
+make docker-run-claw
+```
+
+The Docker build has three stages:
+
+1. Node builds and tests `crates/starweaver-claw/web` with pnpm 10.30.3.
+2. Rust builds `starweaver-claw` in release mode after the build script copies the generated web `dist` into `OUT_DIR` for `include_dir!`.
+3. Debian slim runs `starweaver-claw start` as an unprivileged user on port 9042.
+
+The image accepts build metadata through `YA_CLAW_SERVICE_VERSION`, `YA_CLAW_SERVICE_COMMIT`, `YA_CLAW_SERVICE_BUILD`, and `YA_CLAW_SERVICE_IMAGE` build args. The runtime exposes the values through `/api/v1/claw/info`.
+
+`.github/workflows/claw-image.yml` validates image builds on pull requests that touch Claw, crate, Docker, or workflow inputs. It publishes `ghcr.io/<owner>/starweaver-claw:dev` on main and publishes release-tag plus `latest` images when a GitHub Release is published.
 
 Local release smoke for CLI artifacts:
 

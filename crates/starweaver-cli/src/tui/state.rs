@@ -3,6 +3,7 @@ use std::{env, path::Path, time::Instant};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
 
 use super::{
+    markdown::ASSISTANT_CONTENT_PREFIX,
     render::{snapshot_interactive_lines, value_preview},
     snapshot::TuiSnapshot,
 };
@@ -25,23 +26,24 @@ impl RunMode {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum FooterMode {
     Context,
-    Shortcuts,
+    Help,
 }
 
 impl FooterMode {
-    pub(super) const fn is_shortcuts(&self) -> bool {
-        matches!(self, Self::Shortcuts)
+    pub(super) const fn is_help(&self) -> bool {
+        matches!(self, Self::Help)
     }
 
-    pub(super) fn toggle_shortcuts(&mut self) {
+    pub(super) fn toggle_help(&mut self) {
         *self = match self {
-            Self::Context => Self::Shortcuts,
-            Self::Shortcuts => Self::Context,
+            Self::Context => Self::Help,
+            Self::Help => Self::Context,
         };
     }
 }
 
 /// Interactive terminal UI state.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
 pub struct InteractiveTuiState {
     /// Resolved config directory.
@@ -67,6 +69,10 @@ pub struct InteractiveTuiState {
     pub running: bool,
     /// Scrollback offset from bottom.
     pub scroll_offset: usize,
+    /// Short-lived composer status for paste, media attach, and steering actions.
+    pub(super) input_status: Option<String>,
+    /// Image paths pasted into the fixed composer.
+    pub(super) pasted_images: Vec<String>,
     pub(super) run_mode: RunMode,
     pub(super) history: Vec<String>,
     pub(super) history_index: Option<usize>,
@@ -76,6 +82,12 @@ pub struct InteractiveTuiState {
     pub(super) last_ctrl_c: Option<Instant>,
     pub(super) cancel_requested: bool,
     pub(super) footer_mode: FooterMode,
+    pub(super) goal_task: Option<String>,
+    pub(super) goal_active: bool,
+    pub(super) goal_iteration: usize,
+    pub(super) goal_max_iterations: usize,
+    pub(super) context_tokens: Option<u64>,
+    pub(super) context_window: Option<u64>,
 }
 
 impl InteractiveTuiState {
@@ -95,6 +107,8 @@ impl InteractiveTuiState {
             phase: "ready".to_string(),
             running: false,
             scroll_offset: 0,
+            input_status: None,
+            pasted_images: Vec::new(),
             run_mode: RunMode::Act,
             history: Vec::new(),
             history_index: None,
@@ -104,6 +118,12 @@ impl InteractiveTuiState {
             last_ctrl_c: None,
             cancel_requested: false,
             footer_mode: FooterMode::Context,
+            goal_task: None,
+            goal_active: false,
+            goal_iteration: 0,
+            goal_max_iterations: 10,
+            context_tokens: None,
+            context_window: None,
         }
     }
 
@@ -118,6 +138,8 @@ impl InteractiveTuiState {
         self.session_id = Some(snapshot.session_id.clone());
         self.body = snapshot_interactive_lines(snapshot);
         self.footer_mode = FooterMode::Context;
+        self.input_status = None;
+        self.pasted_images.clear();
         self.status = snapshot
             .terminal_status
             .clone()
@@ -135,11 +157,14 @@ impl InteractiveTuiState {
         self.streaming_part = None;
         self.streaming_text_seen = false;
         self.footer_mode = FooterMode::Context;
+        self.input_status = None;
+        self.pasted_images.clear();
         self.scroll_offset = 0;
         self.body.push(String::new());
         self.body.push(format!("User: {prompt}"));
         self.body.push(String::new());
         self.body.push("Assistant:".to_string());
+        self.body.push(assistant_content_line(""));
     }
 
     /// Mark a run finished with durable ids.
@@ -192,7 +217,7 @@ impl InteractiveTuiState {
                             self.body.push(format!("Thinking: {text}"));
                         }
                         starweaver_model::ModelResponsePart::ToolCall(call) => {
-                            self.body.push(format!("Tool call: {}", call.name));
+                            self.body.push(format_tool_call_line(call));
                             self.phase = "tools".to_string();
                         }
                         _ => {}
@@ -201,12 +226,17 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::ToolCall { call, .. } => {
                 self.phase = "tools".to_string();
-                self.body.push(format!("Tool call: {}", call.name));
+                self.body.push(format_tool_call_line(call));
             }
             AgentStreamEvent::ToolReturn { tool_return, .. } => {
                 self.phase = "tools".to_string();
+                let prefix = if tool_return.is_error {
+                    "Tool error"
+                } else {
+                    "Tool result"
+                };
                 self.body.push(format!(
-                    "Tool result: {} {}",
+                    "{prefix}: {} {}",
                     tool_return.name,
                     value_preview(&tool_return.content)
                 ));
@@ -276,7 +306,7 @@ impl InteractiveTuiState {
 
     fn append_stream_delta(&mut self, delta: &str) {
         if self.body.is_empty() {
-            self.body.push(String::new());
+            self.body.push(assistant_content_line(""));
         }
         for segment in delta.split_inclusive('\n') {
             if segment.ends_with('\n') {
@@ -286,7 +316,7 @@ impl InteractiveTuiState {
                         last.push_str(trimmed);
                     }
                 }
-                self.body.push(String::new());
+                self.body.push(assistant_content_line(""));
             } else if let Some(last) = self.body.last_mut() {
                 last.push_str(segment);
             }
@@ -295,8 +325,180 @@ impl InteractiveTuiState {
 
     fn push_text_lines(&mut self, text: &str) {
         for line in text.lines() {
-            self.body.push(line.to_string());
+            self.body.push(assistant_content_line(line));
         }
+    }
+
+    pub(super) fn apply_paste(&mut self, text: &str) {
+        self.footer_mode = FooterMode::Context;
+        let images = pasted_image_paths(text);
+        if images.is_empty() {
+            self.input.push_str(text);
+            self.input_status = Some(format!("pasted {} chars", text.chars().count()));
+            return;
+        }
+
+        self.pasted_images.extend(images);
+        let count = self.pasted_images.len();
+        self.input_status = Some(if count == 1 {
+            format!(
+                "image attached: {}",
+                compact_path(&self.pasted_images[0], 42)
+            )
+        } else {
+            format!("images attached: {count}")
+        });
+    }
+
+    pub(super) fn take_submission_prompt(&mut self) -> Option<String> {
+        let command = self.take_local_command();
+        if matches!(command, LocalCommandOutcome::Consumed) {
+            return None;
+        }
+        let prompt = match command {
+            LocalCommandOutcome::Submit(prompt) => prompt,
+            LocalCommandOutcome::Consumed => unreachable!("handled above"),
+            LocalCommandOutcome::None => self.input.trim().to_string(),
+        };
+        if prompt.is_empty() && self.pasted_images.is_empty() {
+            self.input.clear();
+            return None;
+        }
+        let mut output = prompt;
+        for image in &self.pasted_images {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str("[image: ");
+            output.push_str(image);
+            output.push(']');
+        }
+        self.input.clear();
+        self.pasted_images.clear();
+        self.input_status = Some(if self.running {
+            "steer sent".to_string()
+        } else {
+            "message sent".to_string()
+        });
+        Some(output)
+    }
+
+    pub(super) fn clear_composer(&mut self) {
+        self.input.clear();
+        self.pasted_images.clear();
+        self.input_status = None;
+        self.history_index = None;
+        self.footer_mode = FooterMode::Context;
+    }
+
+    pub(super) fn backspace_composer(&mut self) {
+        if self.input.pop().is_none() {
+            self.remove_last_pasted_image();
+        }
+    }
+
+    fn remove_last_pasted_image(&mut self) {
+        if self.pasted_images.pop().is_some() {
+            self.input_status = Some(if self.pasted_images.is_empty() {
+                "image detached".to_string()
+            } else {
+                format!("images attached: {}", self.pasted_images.len())
+            });
+        }
+    }
+
+    pub(super) fn composer_is_empty(&self) -> bool {
+        self.input.is_empty() && self.pasted_images.is_empty()
+    }
+
+    pub(super) fn composer_has_draft(&self) -> bool {
+        !self.input.trim().is_empty() || !self.pasted_images.is_empty()
+    }
+
+    pub(super) fn input_mode_label(&self) -> &'static str {
+        if self.running && self.composer_has_draft() {
+            "STEER"
+        } else if self.running {
+            "RUNNING"
+        } else {
+            self.run_mode.label()
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn input_status_text(&self) -> &str {
+        self.input_status.as_deref().unwrap_or(&self.phase)
+    }
+
+    pub(super) fn help_panel_visible(&self) -> bool {
+        self.footer_mode.is_help() || self.input.trim_start().starts_with("/help")
+    }
+
+    pub(super) fn open_help(&mut self) {
+        self.footer_mode = FooterMode::Help;
+        self.input_status = Some("help".to_string());
+    }
+
+    fn take_local_command(&mut self) -> LocalCommandOutcome {
+        let input = self.input.trim().to_string();
+        if input == "/help" {
+            self.input.clear();
+            self.pasted_images.clear();
+            self.open_help();
+            return LocalCommandOutcome::Consumed;
+        }
+        if input == "/act" {
+            self.input.clear();
+            self.run_mode = RunMode::Act;
+            self.body.push("[SYS] Mode changed to ACT".to_string());
+            self.input_status = Some("mode changed".to_string());
+            return LocalCommandOutcome::Consumed;
+        }
+        if input == "/plan" {
+            self.input.clear();
+            self.run_mode = RunMode::Plan;
+            self.body.push("[SYS] Mode changed to PLAN".to_string());
+            self.input_status = Some("mode changed".to_string());
+            return LocalCommandOutcome::Consumed;
+        }
+        if input == "/clear" {
+            self.input.clear();
+            self.body.clear();
+            self.input_status = Some("cleared".to_string());
+            return LocalCommandOutcome::Consumed;
+        }
+        if let Some(task) = input.strip_prefix("/goal") {
+            self.input.clear();
+            let task = task.trim();
+            if task.is_empty() {
+                self.body
+                    .push("[SYS] Usage: /goal <task description>".to_string());
+                self.input_status = Some("goal usage".to_string());
+                return LocalCommandOutcome::Consumed;
+            }
+            self.goal_task = Some(task.to_string());
+            self.goal_active = true;
+            self.goal_iteration = 0;
+            self.goal_max_iterations = self.goal_max_iterations.max(1);
+            self.body.push(format!(
+                "[SYS] [Goal] Starting goal mode ({} max iterations). Ctrl+C to stop.",
+                self.goal_max_iterations
+            ));
+            self.input_status = Some("goal".to_string());
+            return LocalCommandOutcome::Submit(task.to_string());
+        }
+        LocalCommandOutcome::None
+    }
+
+    pub(super) fn pasted_image_count(&self) -> usize {
+        self.pasted_images.len()
+    }
+
+    pub(super) fn pasted_image_labels(&self) -> Vec<String> {
+        self.pasted_images
+            .iter()
+            .map(|path| compact_path(path, 54))
+            .collect()
     }
 
     pub(super) fn push_history(&mut self, prompt: String) {
@@ -349,4 +551,117 @@ impl InteractiveTuiState {
         self.status = "RUNNING".to_string();
         self.phase = "run active; press Ctrl-C to interrupt".to_string();
     }
+
+    pub(super) fn context_percent_label(&self) -> String {
+        match (self.context_tokens, self.context_window) {
+            (Some(tokens), Some(window)) if window > 0 => {
+                format!(
+                    "{}%",
+                    tokens.saturating_mul(100).saturating_add(window / 2) / window
+                )
+            }
+            _ => "--%".to_string(),
+        }
+    }
+
+    pub(crate) fn complete_goal_iteration(&mut self, output: &str) -> GoalIterationOutcome {
+        if !self.goal_active {
+            return GoalIterationOutcome::Inactive;
+        }
+        self.goal_iteration = self.goal_iteration.saturating_add(1);
+        if output.contains("[GOAL_COMPLETE]") {
+            self.goal_active = false;
+            self.body.push(format!(
+                "[SYS] [Goal] Task completed in {} iteration(s)",
+                self.goal_iteration
+            ));
+            return GoalIterationOutcome::Complete;
+        }
+        if self.goal_iteration >= self.goal_max_iterations {
+            self.goal_active = false;
+            self.body.push(format!(
+                "[SYS] [Goal] Reached max iterations ({}). Task may be incomplete. You can run /goal again to continue.",
+                self.goal_iteration
+            ));
+            return GoalIterationOutcome::MaxIterations;
+        }
+        self.body.push(format!(
+            "[SYS] [Goal] Iteration {}/{}",
+            self.goal_iteration, self.goal_max_iterations
+        ));
+        let Some(task) = self.goal_task.clone() else {
+            self.goal_active = false;
+            return GoalIterationOutcome::MaxIterations;
+        };
+        GoalIterationOutcome::Continue(goal_continuation_prompt(
+            &task,
+            self.goal_iteration,
+            self.goal_max_iterations,
+        ))
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum GoalIterationOutcome {
+    Inactive,
+    Complete,
+    MaxIterations,
+    Continue(String),
+}
+
+fn goal_continuation_prompt(task: &str, iteration: usize, max_iterations: usize) -> String {
+    format!(
+        "Continue working toward the active goal.\n\n<objective>\n{task}\n</objective>\n\n<goal-check>\nCurrent iteration: {iteration}/{max_iterations}.\nIf the goal is fully complete, include [GOAL_COMPLETE] on its own line.\nOtherwise, make concrete progress and continue.\n</goal-check>"
+    )
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum LocalCommandOutcome {
+    None,
+    Consumed,
+    Submit(String),
+}
+
+fn assistant_content_line(line: impl AsRef<str>) -> String {
+    format!("{ASSISTANT_CONTENT_PREFIX}{}", line.as_ref())
+}
+
+fn format_tool_call_line(call: &starweaver_model::ToolCallPart) -> String {
+    let arguments = value_preview(&call.arguments);
+    if arguments == "{}" || arguments == "null" || arguments.is_empty() {
+        format!("Tool call: {}", call.name)
+    } else {
+        format!("Tool call: {} {arguments}", call.name)
+    }
+}
+
+fn pasted_image_paths(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|part| part.trim_matches(['\'', '"']))
+        .filter(|part| {
+            Path::new(part).extension().is_some_and(|extension| {
+                ["png", "jpg", "jpeg", "webp", "gif"]
+                    .iter()
+                    .any(|image_extension| extension.eq_ignore_ascii_case(image_extension))
+            })
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn compact_path(path: &str, max_chars: usize) -> String {
+    let char_count = path.chars().count();
+    if char_count <= max_chars {
+        return path.to_string();
+    }
+    let keep = max_chars.saturating_sub(1);
+    let suffix = path
+        .chars()
+        .rev()
+        .take(keep)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("…{suffix}")
 }

@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 
 use serde::Serialize;
+use serde_json::Value;
 use starweaver_session::{ApprovalRecord, DeferredToolRecord};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
@@ -63,11 +64,7 @@ impl TuiSnapshot {
     pub fn apply_message(&mut self, message: &DisplayMessage) {
         match message.kind {
             DisplayMessageKind::AssistantTextDelta => {
-                if let Some(delta) = message
-                    .payload
-                    .get("delta")
-                    .and_then(serde_json::Value::as_str)
-                {
+                if let Some(delta) = message.payload.get("delta").and_then(Value::as_str) {
                     self.assistant_text.push_str(delta);
                 } else if let Some(preview) = message.preview.as_deref() {
                     self.assistant_text.push_str(preview);
@@ -78,14 +75,35 @@ impl TuiSnapshot {
                     .payload
                     .get("tool_name")
                     .or_else(|| message.payload.get("name"))
-                    .and_then(serde_json::Value::as_str)
+                    .and_then(Value::as_str)
                     .or(message.preview.as_deref())
                     .unwrap_or("tool");
-                self.tool_calls.push(name.to_string());
+                let arguments = message.payload.get("arguments").map(value_preview);
+                if let Some(arguments) =
+                    arguments.filter(|value| !value.is_empty() && value != "{}" && value != "null")
+                {
+                    self.tool_calls.push(format!("{name} {arguments}"));
+                } else {
+                    self.tool_calls.push(name.to_string());
+                }
             }
             DisplayMessageKind::ToolResult => {
-                if let Some(preview) = message.preview.as_deref() {
-                    self.tool_calls.push(format!("result:{preview}"));
+                let preview = message
+                    .payload
+                    .get("content")
+                    .map(value_preview)
+                    .or_else(|| message.preview.clone());
+                if let Some(preview) = preview {
+                    if message
+                        .payload
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        self.tool_calls.push(format!("result:error:{preview}"));
+                    } else {
+                        self.tool_calls.push(format!("result:{preview}"));
+                    }
                 }
             }
             DisplayMessageKind::RunCompleted => {
@@ -128,4 +146,12 @@ impl TuiSnapshot {
         }
         output
     }
+}
+
+fn value_preview(value: &Value) -> String {
+    let text = match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    };
+    text.replace('\n', " ").chars().take(80).collect()
 }

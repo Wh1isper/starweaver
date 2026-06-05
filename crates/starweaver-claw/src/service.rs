@@ -1,0 +1,1602 @@
+//! HTTP service surface for Starweaver Claw.
+
+use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+
+use axum::{
+    body::Bytes,
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
+    response::{sse::Event, IntoResponse, Sse},
+    routing::{get, post},
+    Json, Router,
+};
+use futures_util::stream;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use starweaver_session::InMemorySessionStore;
+use starweaver_stream::{InMemoryReplayEventLog, ReplayEventKind};
+
+use crate::{
+    controller::{
+        ClawRunCreateRequest, ClawSessionCreateRequest, ClawSessionForkRequest,
+        ClawSessionRunCreateRequest, ClawSessionSummary, EventListResponse, SteerRequest,
+        WorkspaceResolveResponse,
+    },
+    orchestration::{
+        HeartbeatStatus, OrchestrationCatalog, ScheduleCreateRequest, ScheduleRecord,
+        WorkflowDefinitionCreateRequest, WorkflowDefinitionRecord, WorkflowRunRecord,
+        WorkflowTriggerRequest,
+    },
+    profile::{AgentProfile, ProfileResolver},
+    storage::{SqliteReplayEventLog, SqliteSessionStore},
+    web_assets,
+    workspace::{WorkspaceProvider, WorkspaceRuntimeStatus},
+    ClawController, ClawError, ClawResult, ClawRuntimeState, ClawSettings, WorkspaceBindingSpec,
+};
+
+/// Shared HTTP application state.
+#[derive(Clone)]
+pub struct AppState {
+    settings: ClawSettings,
+    controller: ClawController,
+    workspace_provider: WorkspaceProvider,
+    orchestration: OrchestrationCatalog,
+    storage_kind: &'static str,
+}
+
+impl AppState {
+    /// Build service state from settings with SQLite-backed durable storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage initialization or profile seed errors.
+    pub async fn durable(settings: ClawSettings) -> ClawResult<Self> {
+        let store = Arc::new(SqliteSessionStore::open(&settings.sqlite_path)?);
+        let events = Arc::new(SqliteReplayEventLog::open(&settings.sqlite_path)?);
+        let runtime_state = ClawRuntimeState::new();
+        let profiles = Arc::new(ProfileResolver::new(&settings));
+        if settings.auto_seed_profiles {
+            if let Some(path) = settings.profile_seed_file.as_ref() {
+                profiles.seed_yaml_file(path).await?;
+            }
+        }
+        let workspace_provider = WorkspaceProvider::new(settings.clone());
+        let controller = ClawController::new(
+            store,
+            events,
+            runtime_state,
+            profiles,
+            workspace_provider.clone(),
+        )
+        .with_auto_execute(true);
+        Ok(Self {
+            settings,
+            controller,
+            workspace_provider,
+            orchestration: OrchestrationCatalog::default(),
+            storage_kind: "sqlite",
+        })
+    }
+
+    /// Build service state from settings with in-memory runtime adapters.
+    #[must_use]
+    pub fn in_memory(settings: ClawSettings) -> Self {
+        let store = Arc::new(InMemorySessionStore::new());
+        let events = Arc::new(InMemoryReplayEventLog::new());
+        let runtime_state = ClawRuntimeState::new();
+        let profiles = Arc::new(ProfileResolver::new(&settings));
+        let workspace_provider = WorkspaceProvider::new(settings.clone());
+        let controller = ClawController::new(
+            store,
+            events,
+            runtime_state,
+            profiles,
+            workspace_provider.clone(),
+        );
+        Self {
+            settings,
+            controller,
+            workspace_provider,
+            orchestration: OrchestrationCatalog::default(),
+            storage_kind: "memory",
+        }
+    }
+
+    /// Return controller reference.
+    #[must_use]
+    pub const fn controller(&self) -> &ClawController {
+        &self.controller
+    }
+
+    /// Return settings reference.
+    #[must_use]
+    pub const fn settings(&self) -> &ClawSettings {
+        &self.settings
+    }
+}
+
+/// Build the Claw HTTP router.
+#[must_use]
+pub fn build_router(settings: ClawSettings) -> Router {
+    build_router_with_state(AppState::in_memory(settings))
+}
+
+/// Build the Claw HTTP router from explicit state.
+#[must_use]
+pub fn build_router_with_state(state: AppState) -> Router {
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/api/v1/claw/info", get(claw_info))
+        .route("/api/v1/claw/notifications", get(empty_sse))
+        .route("/api/v1/profiles", get(list_profiles).post(upsert_profile))
+        .route("/api/v1/profiles/seed", post(seed_profiles))
+        .route("/api/v1/profiles:seed", post(seed_profiles))
+        .route(
+            "/api/v1/profiles/:profile_name",
+            get(get_profile).put(put_profile).delete(delete_profile),
+        )
+        .route("/api/v1/workspace/runtime", get(workspace_runtime))
+        .route("/api/v1/workspace:resolve", post(resolve_workspace))
+        .route("/api/v1/sessions", get(list_sessions).post(create_session))
+        .route("/api/v1/sessions:stream", post(create_session_stream))
+        .route("/api/v1/sessions/:session_id", get(get_session))
+        .route("/api/v1/sessions/:session_id/turns", get(session_turns))
+        .route(
+            "/api/v1/sessions/:session_id/workspace",
+            get(session_workspace),
+        )
+        .route("/api/v1/sessions/:session_id/sandbox", get(session_sandbox))
+        .route(
+            "/api/v1/sessions/:session_id/sandbox/prepare",
+            post(prepare_session_sandbox),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/sandbox/stop",
+            post(stop_session_sandbox),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/runs",
+            post(create_session_run),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/submit",
+            post(submit_session_input),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/runs:stream",
+            post(create_session_run_stream),
+        )
+        .route("/api/v1/sessions/:session_id/steer", post(steer_session))
+        .route(
+            "/api/v1/sessions/:session_id/interrupt",
+            post(interrupt_session),
+        )
+        .route("/api/v1/sessions/:session_id/cancel", post(cancel_session))
+        .route("/api/v1/sessions/:session_id/fork", post(fork_session))
+        .route("/api/v1/sessions/:session_id/events", get(session_events))
+        .route("/api/v1/runs", post(create_run))
+        .route("/api/v1/runs:stream", post(create_run_stream))
+        .route("/api/v1/runs/:run_id", get(get_run))
+        .route("/api/v1/runs/:run_id/trace", get(run_trace))
+        .route("/api/v1/runs/:run_id/steer", post(steer_run))
+        .route("/api/v1/runs/:run_id/interrupt", post(interrupt_run))
+        .route("/api/v1/runs/:run_id/cancel", post(cancel_run))
+        .route("/api/v1/runs/:run_id/events", get(run_events))
+        .route(
+            "/api/v1/workflows",
+            get(list_workflows).post(create_workflow),
+        )
+        .route(
+            "/api/v1/workflows/:workflow_id",
+            get(get_workflow)
+                .patch(update_workflow)
+                .post(workflow_action),
+        )
+        .route(
+            "/api/v1/workflows/:workflow_id/trigger",
+            post(trigger_workflow),
+        )
+        .route("/api/v1/workflow-runs", get(list_workflow_runs))
+        .route(
+            "/api/v1/workflow-runs/:workflow_run_id",
+            get(get_workflow_run),
+        )
+        .route(
+            "/api/v1/workflow-runs/:workflow_run_id/events",
+            get(list_workflow_events),
+        )
+        .route(
+            "/api/v1/workflow-runs/:workflow_run_id/cancel",
+            post(cancel_workflow_run),
+        )
+        .route(
+            "/api/v1/workflow-runs/:workflow_run_id/nodes/:node_id/steer",
+            post(steer_workflow_node),
+        )
+        .route(
+            "/api/v1/schedules",
+            get(list_schedules).post(create_schedule),
+        )
+        .route(
+            "/api/v1/schedules/:schedule_id",
+            get(get_schedule)
+                .patch(update_schedule)
+                .delete(delete_schedule)
+                .post(schedule_action),
+        )
+        .route(
+            "/api/v1/schedules/:schedule_id/fires",
+            get(list_schedule_fires),
+        )
+        .route(
+            "/api/v1/schedules/:schedule_id/trigger",
+            post(trigger_schedule),
+        )
+        .route("/api/v1/heartbeat", get(heartbeat_status))
+        .route("/api/v1/heartbeat/config", get(heartbeat_config))
+        .route("/api/v1/heartbeat/status", get(heartbeat_status))
+        .route("/api/v1/heartbeat/fires", get(heartbeat_fires))
+        .route("/api/v1/heartbeat:trigger", post(trigger_heartbeat))
+        .route(
+            "/api/v1/bridges/conversations",
+            get(list_bridge_conversations),
+        )
+        .route("/api/v1/bridges/events", get(list_bridge_events))
+        .route("/api/v1/bridges/:adapter/events", post(bridge_ingress))
+        .route("/api/v1/agency/config", get(agency_config))
+        .route("/api/v1/agency/status", get(agency_status))
+        .route("/api/v1/agency/fires", get(agency_fires))
+        .route("/api/v1/agency:clear", post(clear_agency))
+        .fallback(compat_or_frontend)
+        .with_state(state)
+}
+
+/// Serve the Claw HTTP router until process shutdown.
+///
+/// # Errors
+///
+/// Returns bind or server errors from the underlying TCP listener.
+pub async fn serve(settings: ClawSettings) -> ClawResult<()> {
+    settings.ensure_dirs()?;
+    let addr = settings.socket_addr()?;
+    serve_addr(settings, addr).await
+}
+
+/// Serve the Claw HTTP router on a specific address.
+///
+/// # Errors
+///
+/// Returns bind or server errors from the underlying TCP listener.
+pub async fn serve_addr(settings: ClawSettings, addr: SocketAddr) -> ClawResult<()> {
+    let state = AppState::durable(settings).await?;
+    state.controller.recover_queued_runs().await?;
+    let router = build_router_with_state(state);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|error| ClawError::Failed(error.to_string()))
+}
+
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+#[derive(Debug, Serialize)]
+struct HealthResponse {
+    status: &'static str,
+    storage: &'static str,
+    runtime: &'static str,
+    database: &'static str,
+    runtime_state: &'static str,
+}
+
+async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok",
+        storage: state.storage_kind,
+        runtime: "single_node",
+        database: "ok",
+        runtime_state: "ok",
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct ClawInfoResponse {
+    name: String,
+    app_name: String,
+    version: &'static str,
+    service_version: String,
+    service_commit: Option<String>,
+    service_revision: String,
+    service_build: Option<String>,
+    service_image: Option<String>,
+    environment: String,
+    public_base_url: String,
+    instance_id: String,
+    auth: &'static str,
+    surfaces: Vec<&'static str>,
+    workspace_provider_backend: String,
+    storage_model: &'static str,
+    features: Value,
+    capabilities: Value,
+}
+
+async fn claw_info(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<Json<ClawInfoResponse>> {
+    authorize(&state, &headers)?;
+    Ok(Json(ClawInfoResponse {
+        name: state.settings.app_name.clone(),
+        app_name: state.settings.app_name.clone(),
+        version: env!("CARGO_PKG_VERSION"),
+        service_version: option_env!("STARWEAVER_CLAW_SERVICE_VERSION")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .to_string(),
+        service_commit: option_env!("STARWEAVER_CLAW_SERVICE_COMMIT")
+            .or(option_env!("GITHUB_SHA"))
+            .map(ToOwned::to_owned),
+        service_revision: option_env!("STARWEAVER_CLAW_SERVICE_VERSION")
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .to_string(),
+        service_build: option_env!("STARWEAVER_CLAW_SERVICE_BUILD")
+            .or(option_env!("STARWEAVER_BUILD"))
+            .map(ToOwned::to_owned),
+        service_image: option_env!("STARWEAVER_CLAW_SERVICE_IMAGE")
+            .or(option_env!("STARWEAVER_IMAGE"))
+            .map(ToOwned::to_owned),
+        environment: state.settings.environment.clone(),
+        public_base_url: state.settings.public_base_url.clone(),
+        instance_id: "single_node".to_string(),
+        auth: "bearer",
+        surfaces: vec![
+            "profiles",
+            "sessions",
+            "runs",
+            "schedules",
+            "workflows",
+            "bridges",
+            "heartbeat",
+            "agency",
+            "notifications",
+        ],
+        workspace_provider_backend: format!("{:?}", state.settings.workspace_backend)
+            .to_ascii_lowercase(),
+        storage_model: state.storage_kind,
+        features: json!({
+            "session_events": true,
+            "run_events": true,
+            "notifications": true,
+            "notification_replay": true,
+            "profiles": true,
+            "schedules": state.settings.schedule_dispatch_enabled,
+            "heartbeat": state.settings.heartbeat_enabled,
+            "workflows": state.settings.workflow_dispatch_enabled,
+            "web_console": web_assets::is_available(),
+        }),
+        capabilities: json!({
+            "sessions": true,
+            "runs": true,
+            "profiles": true,
+            "workspace": true,
+            "events": true,
+            "sse": true,
+            "workflows": "contract",
+            "schedules": "contract",
+            "heartbeat": state.settings.heartbeat_enabled,
+            "storage": state.storage_kind,
+            "workspace_backend": state.settings.workspace_backend,
+            "web_console": web_assets::is_available(),
+        }),
+    }))
+}
+
+async fn list_profiles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<Json<Vec<AgentProfile>>> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.list_profiles().await.profiles))
+}
+
+async fn upsert_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(profile): Json<AgentProfile>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.upsert_profile(profile).await))
+}
+
+async fn get_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(profile_name): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(profile_detail_json(
+        state.controller.get_profile(&profile_name).await?,
+    )))
+}
+
+async fn put_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(profile_name): Path<String>,
+    Json(payload): Json<Value>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let profile = profile_from_payload(&profile_name, payload)?;
+    Ok(Json(profile_detail_json(
+        state.controller.upsert_profile(profile).await,
+    )))
+}
+
+async fn delete_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(profile_name): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state.controller.delete_profile(&profile_name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn seed_profiles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let profiles = state.controller.list_profiles().await.profiles;
+    let seeded_names = profiles
+        .iter()
+        .map(|profile| profile.name.clone())
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "profiles": profiles,
+        "seeded_names": seeded_names,
+        "seeded": true,
+        "seed_file": state.settings.profile_seed_file.as_ref().map(|path| path.display().to_string()).unwrap_or_default(),
+        "prune_missing": false,
+    })))
+}
+
+async fn workspace_runtime(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<Json<WorkspaceRuntimeStatus>> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.workspace_provider.runtime_status()))
+}
+
+async fn resolve_workspace(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<Option<WorkspaceBindingSpec>>,
+) -> ClawResult<Json<WorkspaceResolveResponse>> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.resolve_workspace(request)?))
+}
+
+#[derive(Debug, Deserialize)]
+struct ListSessionsQuery {
+    limit: Option<usize>,
+}
+
+async fn list_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ListSessionsQuery>,
+) -> ClawResult<Json<Vec<ClawSessionSummary>>> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.list_sessions(query.limit).await?))
+}
+
+async fn create_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ClawSessionCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(state.controller.create_session(request).await?),
+    ))
+}
+
+async fn get_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.get_session(&session_id).await?))
+}
+
+async fn session_turns(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "turns": state.controller.session_turns(&session_id).await?
+    })))
+}
+
+async fn session_workspace(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.session_workspace(&session_id).await?))
+}
+
+async fn session_sandbox(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.session_sandbox(&session_id).await?))
+}
+
+async fn fork_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<ClawSessionForkRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "session": state.controller.fork_session(&session_id, request).await?
+        })),
+    ))
+}
+
+async fn prepare_session_sandbox(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "sandbox_state": {
+            "backend": state.settings.workspace_backend,
+            "ready_state": "ready",
+            "status": "ready"
+        }
+    })))
+}
+
+async fn stop_session_sandbox(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "sandbox_state": {
+            "backend": state.settings.workspace_backend,
+            "ready_state": "not_started",
+            "status": "stopped"
+        }
+    })))
+}
+
+async fn create_session_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<ClawSessionRunCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            state
+                .controller
+                .create_session_run(&session_id, request)
+                .await?,
+        ),
+    ))
+}
+
+async fn submit_session_input(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<ClawSessionRunCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let run = state
+        .controller
+        .create_session_run(&session_id, request)
+        .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "session_id": session_id,
+            "run_id": run.id,
+            "delivery": "queued",
+            "status": run.status,
+            "run": run,
+        })),
+    ))
+}
+
+async fn create_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ClawRunCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(state.controller.create_run(request).await?),
+    ))
+}
+
+async fn get_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.get_run(&run_id).await?))
+}
+
+async fn run_trace(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.run_trace(&run_id).await?))
+}
+
+async fn steer_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+    Json(request): Json<SteerRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.steer_run(&run_id, request).await?))
+}
+
+async fn interrupt_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.interrupt_run(&run_id).await?))
+}
+
+async fn cancel_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(state.controller.cancel_run(&run_id).await?))
+}
+
+async fn steer_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(request): Json<SteerRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let session = state.controller.get_session(&session_id).await?;
+    let run_id = session
+        .session
+        .active_run_id
+        .ok_or_else(|| ClawError::Conflict(format!("session '{session_id}' has no active run")))?;
+    Ok(Json(state.controller.steer_run(&run_id, request).await?))
+}
+
+async fn interrupt_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let session = state.controller.get_session(&session_id).await?;
+    let run_id = session
+        .session
+        .active_run_id
+        .ok_or_else(|| ClawError::Conflict(format!("session '{session_id}' has no active run")))?;
+    Ok(Json(state.controller.interrupt_run(&run_id).await?))
+}
+
+async fn cancel_session(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let session = state.controller.get_session(&session_id).await?;
+    let run_id = session
+        .session
+        .active_run_id
+        .ok_or_else(|| ClawError::Conflict(format!("session '{session_id}' has no active run")))?;
+    Ok(Json(state.controller.cancel_run(&run_id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct EventsQuery {
+    cursor: Option<usize>,
+    stream: Option<bool>,
+}
+
+async fn run_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+    Query(query): Query<EventsQuery>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let events = state.controller.run_events(&run_id, query.cursor).await?;
+    Ok(events_response(events, query.stream.unwrap_or(false)))
+}
+
+async fn session_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<EventsQuery>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let events = state
+        .controller
+        .session_events(&session_id, query.cursor)
+        .await?;
+    Ok(events_response(events, query.stream.unwrap_or(false)))
+}
+
+fn events_response(events: EventListResponse, as_sse: bool) -> axum::response::Response {
+    if as_sse {
+        let stream = stream::iter(events.events.into_iter().map(|event| {
+            let event_type = match event.event {
+                ReplayEventKind::DisplayMessage(_) => "display_message",
+                ReplayEventKind::Raw(_) => "raw",
+                ReplayEventKind::Snapshot(_) => "snapshot",
+                ReplayEventKind::Heartbeat => "heartbeat",
+                ReplayEventKind::Terminal(_) => "terminal",
+            };
+            let payload = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
+            Ok::<_, Infallible>(
+                Event::default()
+                    .id(event.sequence.to_string())
+                    .event(event_type)
+                    .data(payload),
+            )
+        }));
+        Sse::new(stream).into_response()
+    } else {
+        Json(events).into_response()
+    }
+}
+
+async fn create_session_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(mut request): Json<ClawSessionCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    request.dispatch_mode = crate::controller::DispatchMode::Stream;
+    let response = state.controller.create_session(request).await?;
+    let run_id = response.run.as_ref().map(|run| run.id.clone());
+    Ok(Json(
+        json!({ "session": response.session, "run": response.run, "stream_run_id": run_id }),
+    ))
+}
+
+async fn create_session_run_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(mut request): Json<ClawSessionRunCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    request.dispatch_mode = crate::controller::DispatchMode::Stream;
+    Ok(Json(
+        state
+            .controller
+            .create_session_run(&session_id, request)
+            .await?,
+    ))
+}
+
+async fn create_run_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(mut request): Json<ClawRunCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    request.dispatch_mode = crate::controller::DispatchMode::Stream;
+    Ok(Json(state.controller.create_run(request).await?))
+}
+
+async fn empty_sse(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let stream = stream::iter([Ok::<_, Infallible>(
+        Event::default().event("ready").data("{}"),
+    )]);
+    Ok(Sse::new(stream))
+}
+
+async fn list_workflows(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let workflows = state
+        .orchestration
+        .list_workflows()
+        .await
+        .into_iter()
+        .map(workflow_json)
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "workflows": workflows })))
+}
+
+async fn create_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<WorkflowDefinitionCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(workflow_json(
+            state.orchestration.create_workflow(request).await?,
+        )),
+    ))
+}
+
+async fn get_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workflow_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(workflow_json(
+        state.orchestration.get_workflow(&workflow_id).await?,
+    )))
+}
+
+async fn update_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workflow_id): Path<String>,
+    Json(patch): Json<serde_json::Map<String, Value>>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(workflow_json(
+        state
+            .orchestration
+            .update_workflow(&workflow_id, patch)
+            .await?,
+    )))
+}
+
+async fn trigger_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workflow_id): Path<String>,
+    Json(request): Json<WorkflowTriggerRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(workflow_run_json(
+            state
+                .orchestration
+                .trigger_workflow(&workflow_id, request)
+                .await?,
+        )),
+    ))
+}
+
+async fn list_workflow_runs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let runs = state
+        .orchestration
+        .list_workflow_runs()
+        .await
+        .into_iter()
+        .map(workflow_run_json)
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "workflow_runs": runs })))
+}
+
+async fn get_workflow_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workflow_run_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(workflow_run_json(
+        state
+            .orchestration
+            .get_workflow_run(&workflow_run_id)
+            .await?,
+    )))
+}
+
+async fn list_workflow_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workflow_run_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state
+        .orchestration
+        .get_workflow_run(&workflow_run_id)
+        .await?;
+    Ok(Json(json!({
+        "workflow_run_id": workflow_run_id,
+        "events": []
+    })))
+}
+
+async fn cancel_workflow_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workflow_run_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(workflow_run_json(
+        state
+            .orchestration
+            .get_workflow_run(&workflow_run_id)
+            .await?,
+    )))
+}
+
+async fn steer_workflow_node(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((workflow_run_id, node_id)): Path<(String, String)>,
+    Json(payload): Json<Value>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let run = workflow_run_json(
+        state
+            .orchestration
+            .get_workflow_run(&workflow_run_id)
+            .await?,
+    );
+    Ok(Json(json!({
+        "workflow_run": run,
+        "node_id": node_id,
+        "steering": payload,
+    })))
+}
+
+async fn list_schedules(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let schedules = state
+        .orchestration
+        .list_schedules()
+        .await
+        .into_iter()
+        .map(schedule_json)
+        .collect::<Vec<_>>();
+    Ok(Json(json!({ "schedules": schedules })))
+}
+
+async fn get_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schedule_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(schedule_json(
+        state.orchestration.get_schedule(&schedule_id).await?,
+    )))
+}
+
+async fn update_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schedule_id): Path<String>,
+    Json(patch): Json<serde_json::Map<String, Value>>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(schedule_json(
+        state
+            .orchestration
+            .update_schedule(&schedule_id, patch)
+            .await?,
+    )))
+}
+
+async fn delete_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schedule_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(schedule_json(
+        state.orchestration.delete_schedule(&schedule_id).await?,
+    )))
+}
+
+async fn list_schedule_fires(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schedule_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state.orchestration.get_schedule(&schedule_id).await?;
+    Ok(Json(json!({ "fires": [] })))
+}
+
+async fn create_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ScheduleCreateRequest>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::CREATED,
+        Json(schedule_json(
+            state.orchestration.create_schedule(request).await?,
+        )),
+    ))
+}
+
+async fn trigger_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schedule_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let schedule = state.orchestration.get_schedule(&schedule_id).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "id": format!("schedule_fire_{schedule_id}"),
+            "schedule_id": schedule_id,
+            "scheduled_at": chrono::Utc::now(),
+            "fired_at": chrono::Utc::now(),
+            "status": "submitted",
+            "run_status": null,
+            "input_preview": schedule.metadata.get("prompt").and_then(Value::as_str),
+            "metadata": {},
+            "created_at": chrono::Utc::now(),
+            "updated_at": chrono::Utc::now(),
+        })),
+    ))
+}
+
+async fn heartbeat_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(HeartbeatStatus {
+        enabled: state.settings.heartbeat_enabled,
+        status: if state.settings.heartbeat_enabled {
+            "active".to_string()
+        } else {
+            "disabled".to_string()
+        },
+        last_fire_at: None,
+        last_run_id: None,
+    }))
+}
+
+async fn bridge_ingress(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(adapter): Path<String>,
+    Json(event): Json<Value>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "adapter": adapter,
+            "status": "received",
+            "event": event,
+        })),
+    ))
+}
+
+async fn heartbeat_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({
+        "enabled": state.settings.heartbeat_enabled,
+        "interval_seconds": 3600,
+        "profile_name": state.settings.default_profile,
+        "profile_source": "default",
+        "prompt": "Heartbeat check",
+        "prompt_source": "heartbeat_setting",
+        "on_active": "skip",
+        "guidance_file": {
+            "path": state.settings.workspace_dir.join("HEARTBEAT.md"),
+            "exists": false
+        },
+        "next_fire_at": null
+    })))
+}
+
+async fn heartbeat_fires(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({ "fires": [] })))
+}
+
+async fn trigger_heartbeat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "id": format!("heartbeat_fire_{}", chrono::Utc::now().timestamp_micros()),
+            "scheduled_at": chrono::Utc::now(),
+            "fired_at": chrono::Utc::now(),
+            "status": "submitted",
+            "session_id": null,
+            "run_id": null,
+            "run_status": null,
+            "error_message": null,
+            "metadata": {},
+            "created_at": chrono::Utc::now(),
+            "updated_at": chrono::Utc::now(),
+        })),
+    ))
+}
+
+async fn list_bridge_conversations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({ "conversations": [] })))
+}
+
+async fn list_bridge_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({ "events": [] })))
+}
+
+async fn agency_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({
+        "enabled": false,
+        "profile_name": state.settings.default_profile,
+        "timer_interval_seconds": 3600,
+        "agency_session_id": "agency_disabled",
+        "singleton_scope_key": "single_node",
+        "singleton_source_session_id": "agency_disabled",
+        "risk_policy": { "max_auto_action_risk": "low" },
+        "memory_files": {},
+        "next_fire_at": null
+    })))
+}
+
+async fn agency_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({
+        "enabled": false,
+        "agency_session_id": "agency_disabled",
+        "state": "idle",
+        "active_run": null,
+        "latest_run": null,
+        "active_run_id": null,
+        "latest_run_id": null,
+        "next_fire_at": null,
+        "pending_fire_count": 0,
+        "last_fire": null,
+        "agency_session": null
+    })))
+}
+
+async fn agency_fires(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({ "fires": [] })))
+}
+
+async fn clear_agency(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok(Json(json!({
+        "accepted": true,
+        "cleared_session_id": null,
+        "new_agency_session_id": "agency_disabled",
+        "archived_run_ids": [],
+        "deleted_fire_count": 0,
+        "cleared_at": chrono::Utc::now(),
+        "agency_session": null
+    })))
+}
+
+async fn workflow_action(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workflow_id): Path<String>,
+    body: Bytes,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    if let Some(id) = workflow_id.strip_suffix(":archive") {
+        let mut patch = serde_json::Map::new();
+        patch.insert("status".to_string(), json!("archived"));
+        return Ok(Json(workflow_json(
+            state.orchestration.update_workflow(id, patch).await?,
+        )));
+    }
+    if let Some(id) = workflow_id.strip_suffix(":trigger") {
+        let request = parse_json_body::<WorkflowTriggerRequest>(&body)?;
+        return Ok(Json(workflow_run_json(
+            state.orchestration.trigger_workflow(id, request).await?,
+        )));
+    }
+    Err(ClawError::NotFound(format!(
+        "workflow action '{workflow_id}' was not found"
+    )))
+}
+
+async fn schedule_action(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schedule_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    if let Some(id) = schedule_id.strip_suffix(":trigger") {
+        let schedule = state.orchestration.get_schedule(id).await?;
+        return Ok(Json(json!({
+            "id": format!("schedule_fire_{id}"),
+            "schedule_id": id,
+            "scheduled_at": chrono::Utc::now(),
+            "fired_at": chrono::Utc::now(),
+            "status": "submitted",
+            "run_status": null,
+            "input_preview": schedule.metadata.get("prompt").and_then(Value::as_str),
+            "metadata": {},
+            "created_at": chrono::Utc::now(),
+            "updated_at": chrono::Utc::now(),
+        })));
+    }
+    Err(ClawError::NotFound(format!(
+        "schedule action '{schedule_id}' was not found"
+    )))
+}
+
+async fn compat_or_frontend(method: Method, uri: Uri) -> axum::response::Response {
+    if uri.path().starts_with("/api/") {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "route_not_found" })),
+        )
+            .into_response();
+    }
+    if method == Method::GET || method == Method::HEAD {
+        web_assets::serve(&uri)
+    } else {
+        StatusCode::METHOD_NOT_ALLOWED.into_response()
+    }
+}
+
+fn profile_from_payload(name: &str, mut payload: Value) -> ClawResult<AgentProfile> {
+    let object = payload.as_object_mut().ok_or_else(|| {
+        ClawError::InvalidRequest("profile payload must be an object".to_string())
+    })?;
+    object.insert("name".to_string(), Value::String(name.to_string()));
+    if !object.contains_key("builtin_toolsets") {
+        if let Some(toolsets) = object.get("toolsets").cloned() {
+            object.insert("builtin_toolsets".to_string(), toolsets);
+        }
+    }
+    serde_json::from_value(payload).map_err(ClawError::from)
+}
+
+fn profile_detail_json(profile: AgentProfile) -> Value {
+    let mut value = serde_json::to_value(&profile).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "toolsets".to_string(),
+            object
+                .get("builtin_toolsets")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        );
+        object
+            .entry("created_at".to_string())
+            .or_insert(json!(profile.created_at));
+    }
+    value
+}
+
+fn workflow_json(workflow: WorkflowDefinitionRecord) -> Value {
+    let mut value = serde_json::to_value(&workflow).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert("owner_kind".to_string(), json!("api"));
+        object.insert("owner_session_id".to_string(), Value::Null);
+        object.insert("owner_run_id".to_string(), Value::Null);
+        object.insert("latest_run".to_string(), Value::Null);
+    }
+    value
+}
+
+fn workflow_run_json(run: WorkflowRunRecord) -> Value {
+    let mut value = serde_json::to_value(&run).unwrap_or_else(|_| json!({}));
+    if let Some(object) = value.as_object_mut() {
+        object.insert("workflow_name".to_string(), Value::Null);
+        object.insert("definition".to_string(), json!(run.definition_snapshot));
+        object.insert("nodes".to_string(), json!([]));
+        object.insert("events".to_string(), json!([]));
+    }
+    value
+}
+
+fn schedule_json(schedule: ScheduleRecord) -> Value {
+    let enabled = matches!(schedule.status, crate::ScheduleStatus::Active);
+    let prompt = schedule
+        .metadata
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let trigger_kind = match schedule.trigger_kind {
+        crate::ScheduleTriggerKind::Cron => "cron",
+        crate::ScheduleTriggerKind::Once => "once",
+    };
+    json!({
+        "id": schedule.id,
+        "name": schedule.name,
+        "description": schedule.description,
+        "enabled": enabled,
+        "status": schedule.status,
+        "prompt": prompt,
+        "trigger": {
+            "kind": trigger_kind,
+            "cron": schedule.cron_expr,
+            "run_at": schedule.run_at,
+            "timezone": schedule.timezone,
+            "next_fire_at": schedule.next_fire_at,
+        },
+        "cron": {
+            "expr": schedule.cron_expr,
+            "timezone": schedule.timezone,
+            "next_fire_at": schedule.next_fire_at,
+        },
+        "mode": {
+            "continue_current_session": matches!(schedule.execution_mode, crate::ScheduleExecutionMode::ContinueSession),
+            "start_from_current_session": matches!(schedule.execution_mode, crate::ScheduleExecutionMode::ForkSession),
+            "steer_when_running": false,
+        },
+        "execution_mode": schedule.execution_mode,
+        "workflow_id": schedule.workflow_id,
+        "workflow_inputs_template": null,
+        "last_workflow_run_id": null,
+        "owner_kind": "api",
+        "owner_session_id": null,
+        "owner_run_id": null,
+        "profile_name": schedule.profile_name,
+        "target_session_id": schedule.target_session_id,
+        "source_session_id": schedule.source_session_id,
+        "last_fire": null,
+        "fire_count": schedule.fire_count,
+        "failure_count": schedule.failure_count,
+        "metadata": schedule.metadata,
+        "created_at": schedule.created_at,
+        "updated_at": schedule.updated_at,
+    })
+}
+
+fn parse_json_body<T>(body: &[u8]) -> ClawResult<T>
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    if body.is_empty() {
+        Ok(T::default())
+    } else {
+        Ok(serde_json::from_slice(body)?)
+    }
+}
+
+fn authorize(state: &AppState, headers: &HeaderMap) -> ClawResult<()> {
+    let Some(expected) = state.settings.api_token.as_deref() else {
+        return Ok(());
+    };
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if bearer == Some(expected) {
+        Ok(())
+    } else {
+        Err(ClawError::Unauthorized(
+            "missing or invalid bearer token".to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn health_endpoint_returns_ok() {
+        let app = build_router(ClawSettings::default());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn embedded_frontend_serves_index_and_spa_fallback() {
+        let app = build_router(ClawSettings::default());
+        let root_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(root_response.status(), StatusCode::OK);
+
+        let spa_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/sessions/session_test")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(spa_response.status(), StatusCode::OK);
+        assert_eq!(
+            spa_response.headers().get(header::CONTENT_TYPE),
+            Some(&header::HeaderValue::from_static("text/html")),
+        );
+    }
+
+    #[tokio::test]
+    async fn console_compatibility_endpoints_are_available() {
+        let app = build_router(ClawSettings::default());
+        let profile = serde_json::json!({
+            "model": "test",
+            "builtin_toolsets": ["filesystem"],
+            "enabled": true
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/profiles/custom")
+                    .header("content-type", "application/json")
+                    .body(Body::from(profile.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        for path in [
+            "/api/v1/profiles/custom",
+            "/api/v1/heartbeat/config",
+            "/api/v1/heartbeat/status",
+            "/api/v1/heartbeat/fires",
+            "/api/v1/bridges/conversations",
+            "/api/v1/bridges/events",
+            "/api/v1/agency/config",
+            "/api/v1/agency/status",
+            "/api/v1/agency/fires",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_and_schedule_endpoints_accept_resources() {
+        let app = build_router(ClawSettings::default());
+        let workflow = serde_json::json!({
+            "name": "nightly-check",
+            "definition": { "nodes": [] }
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/workflows")
+                    .header("content-type", "application/json")
+                    .body(Body::from(workflow.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let schedule = serde_json::json!({
+            "name": "hourly-check",
+            "trigger_kind": "cron",
+            "cron_expr": "0 * * * *",
+            "execution_mode": "isolate_session"
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/schedules")
+                    .header("content-type", "application/json")
+                    .body(Body::from(schedule.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+}

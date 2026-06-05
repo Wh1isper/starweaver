@@ -87,10 +87,11 @@ pub fn read_cache(config: &CliConfig) -> CliResult<UpdateCheckCache> {
 }
 
 fn update_check_disabled() -> bool {
-    matches!(
-        env::var("STARWEAVER_UPDATE_CHECK").ok().as_deref(),
-        Some("0" | "false" | "off" | "never")
-    )
+    update_check_disabled_value(env::var("STARWEAVER_UPDATE_CHECK").ok().as_deref())
+}
+
+fn update_check_disabled_value(value: Option<&str>) -> bool {
+    matches!(value, Some("0" | "false" | "off" | "never"))
 }
 
 fn cache_path(config: &CliConfig) -> std::path::PathBuf {
@@ -144,4 +145,73 @@ fn fetch_latest_release() -> Result<UpdateCheckCache, String> {
             error: None,
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use chrono::TimeDelta;
+
+    use crate::{args, ConfigResolver};
+
+    use super::*;
+
+    fn test_config(root: &Path) -> CliConfig {
+        let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
+        ConfigResolver::for_tests(root).resolve(&cli).unwrap()
+    }
+
+    #[test]
+    fn update_version_comparison_handles_semver_and_fallbacks() {
+        assert!(update_is_newer("0.1.0", "0.2.0"));
+        assert!(update_is_newer("v0.1.0", "v0.1.1"));
+        assert!(!update_is_newer("0.2.0", "0.1.0"));
+        assert!(!update_is_newer("0.1.0", "latest"));
+        assert!(update_is_newer("dev", "0.1.0"));
+        assert!(!update_is_newer("dev", "dev"));
+    }
+
+    #[test]
+    fn update_cache_and_hint_cover_fresh_stale_and_disabled_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let path = cache_path(&config);
+        assert!(!cache_is_fresh(&path));
+
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not json").unwrap();
+        assert!(!cache_is_fresh(&path));
+
+        let stale = UpdateCheckCache {
+            checked_at: Some(Utc::now() - TimeDelta::seconds(CHECK_INTERVAL_SECONDS + 1)),
+            latest_version: Some("999.0.0".to_string()),
+            release_url: Some("https://example.com/release".to_string()),
+            error: None,
+        };
+        std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        assert!(!cache_is_fresh(&path));
+        assert!(update_hint(&config).unwrap().contains("999.0.0"));
+
+        let fresh = UpdateCheckCache {
+            checked_at: Some(Utc::now()),
+            latest_version: Some("0.0.0".to_string()),
+            release_url: None,
+            error: None,
+        };
+        std::fs::write(&path, serde_json::to_vec(&fresh).unwrap()).unwrap();
+        assert!(cache_is_fresh(&path));
+        assert!(update_hint(&config).is_none());
+        assert_eq!(
+            read_cache(&config).unwrap().latest_version.as_deref(),
+            Some("0.0.0")
+        );
+
+        assert!(update_check_disabled_value(Some("0")));
+        assert!(update_check_disabled_value(Some("false")));
+        assert!(update_check_disabled_value(Some("off")));
+        assert!(update_check_disabled_value(Some("never")));
+        assert!(!update_check_disabled_value(Some("1")));
+        assert!(!update_check_disabled_value(None));
+    }
 }

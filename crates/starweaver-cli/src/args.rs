@@ -337,7 +337,7 @@ pub enum ToolsCommand {
 /// TUI command.
 #[derive(Clone, Debug, Args)]
 pub struct TuiCommand {
-    /// Session id to render. Defaults to the current or latest session.
+    /// Session id to render. Omit for a clean welcome screen.
     #[arg(long)]
     pub session: Option<String>,
     /// Optional run id to render.

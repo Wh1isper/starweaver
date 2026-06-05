@@ -7,8 +7,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Durable session runtime foundations for Starweaver"
+description = "Durable single-node Starweaver runtime service"
 readme = "../../README.md"
+build = "build.rs"
 keywords.workspace = true
 categories.workspace = true
 
@@ -17,14 +18,33 @@ name = "starweaver-claw"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+include_dir.workspace = true
+mime_guess.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+starweaver-core.workspace = true
+starweaver-context.workspace = true
 starweaver-session.workspace = true
 starweaver-stream.workspace = true
+starweaver-runtime.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+toml.workspace = true
+tower.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-starweaver-core.workspace = true
 starweaver-model.workspace = true
 starweaver-runtime.workspace = true
-tokio.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -2,14 +2,26 @@ use pulldown_cmark::{CodeBlockKind, Event as MarkdownEvent, Options, Parser, Tag
 
 use super::render::{visible_width, SegmentStyle, StyledLine};
 
+pub(super) const ASSISTANT_CONTENT_PREFIX: &str = "\u{200b}";
+
 pub(super) fn render_transcript_lines(lines: &[String], width: usize) -> Vec<StyledLine> {
     let mut rendered = Vec::new();
     let mut assistant_markdown = Vec::new();
     let mut in_assistant = false;
     for line in lines {
+        if let Some(content) = line.strip_prefix(ASSISTANT_CONTENT_PREFIX) {
+            if in_assistant {
+                assistant_markdown.push(content.to_string());
+            } else {
+                rendered.extend(render_markdown_lines(
+                    &[content.to_string()],
+                    width.saturating_sub(2).max(1),
+                ));
+            }
+            continue;
+        }
         if line == "Assistant:" {
             flush_assistant_markdown(&mut rendered, &mut assistant_markdown, width);
-            rendered.push(StyledLine::styled("Assistant", SegmentStyle::bold()));
             in_assistant = true;
             continue;
         }
@@ -49,6 +61,7 @@ fn is_transcript_boundary(line: &str) -> bool {
         || line.starts_with("User:")
         || line.starts_with("Tool call:")
         || line.starts_with("Tool result:")
+        || line.starts_with("Tool error:")
         || line.starts_with("Thinking:")
         || line.starts_with("Error:")
         || line.starts_with("Suspended:")
@@ -57,22 +70,126 @@ fn is_transcript_boundary(line: &str) -> bool {
 }
 
 fn render_transcript_status_line(line: &str) -> StyledLine {
-    if line.starts_with("User:") {
-        return StyledLine::styled(
-            line,
-            SegmentStyle::bold().merge(SegmentStyle::list_marker()),
+    if let Some(prompt) = line.strip_prefix("User:") {
+        let mut rendered = StyledLine::styled("› ", SegmentStyle::bold());
+        rendered.push(prompt.trim_start(), SegmentStyle::bold());
+        return rendered;
+    }
+    if let Some(tool) = line.strip_prefix("Tool call:") {
+        return render_tool_line(tool.trim_start(), ToolLineKind::Call);
+    }
+    if let Some(tool) = line.strip_prefix("Tool result:") {
+        return render_tool_line(tool.trim_start(), ToolLineKind::Result);
+    }
+    if let Some(tool) = line.strip_prefix("Tool error:") {
+        return render_tool_line(tool.trim_start(), ToolLineKind::Error);
+    }
+    if let Some(thinking) = line.strip_prefix("Thinking:") {
+        let mut rendered = StyledLine::styled("  ◌ thinking", SegmentStyle::warning());
+        let detail = thinking.trim_start();
+        if !detail.is_empty() {
+            rendered.push(" ", SegmentStyle::dim());
+            rendered.push(detail, SegmentStyle::dim());
+        }
+        return rendered;
+    }
+    if let Some(error) = line.strip_prefix("Error:") {
+        let mut rendered = StyledLine::styled(
+            "  ✕ error",
+            SegmentStyle::error().merge(SegmentStyle::bold()),
         );
+        let detail = error.trim_start();
+        if !detail.is_empty() {
+            rendered.push(" ", SegmentStyle::dim());
+            rendered.push(detail, SegmentStyle::dim());
+        }
+        return rendered;
     }
-    if line.starts_with("Tool call:") || line.starts_with("Tool result:") {
-        return StyledLine::styled(line, SegmentStyle::dim().merge(SegmentStyle::code()));
+    if let Some(status) = line.strip_prefix("Suspended:") {
+        let mut rendered = StyledLine::styled(
+            "  ◷ waiting",
+            SegmentStyle::warning().merge(SegmentStyle::bold()),
+        );
+        let detail = status.trim_start();
+        if !detail.is_empty() {
+            rendered.push(" ", SegmentStyle::dim());
+            rendered.push(detail, SegmentStyle::dim());
+        }
+        return rendered;
     }
-    if line.starts_with("Error:") {
-        return StyledLine::styled(line, SegmentStyle::bold().merge(SegmentStyle::dim()));
+    if let Some(retry) = line.strip_prefix("Output retry:") {
+        let mut rendered = StyledLine::styled("  ↻ retry", SegmentStyle::warning());
+        let detail = retry.trim_start();
+        if !detail.is_empty() {
+            rendered.push(" ", SegmentStyle::dim());
+            rendered.push(detail, SegmentStyle::dim());
+        }
+        return rendered;
     }
-    if line.starts_with("Run completed:") {
-        return StyledLine::styled(line, SegmentStyle::dim());
+    if let Some(status) = line.strip_prefix("Run completed:") {
+        let mut rendered = StyledLine::styled("  ✓ completed", SegmentStyle::blockquote());
+        rendered.push(" ", SegmentStyle::dim());
+        rendered.push(status.trim_start(), SegmentStyle::dim());
+        return rendered;
     }
     StyledLine::plain(line)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolLineKind {
+    Call,
+    Result,
+    Error,
+}
+
+fn render_tool_line(detail: &str, kind: ToolLineKind) -> StyledLine {
+    let (prefix, name_style, label_style) = match kind {
+        ToolLineKind::Call => (
+            "Calling: ",
+            SegmentStyle::code().merge(SegmentStyle::bold()),
+            SegmentStyle::dim(),
+        ),
+        ToolLineKind::Result => (
+            "Complete: ",
+            SegmentStyle::blockquote().merge(SegmentStyle::bold()),
+            SegmentStyle::dim(),
+        ),
+        ToolLineKind::Error => (
+            "x Error: ",
+            SegmentStyle::error().merge(SegmentStyle::bold()),
+            SegmentStyle::dim(),
+        ),
+    };
+    let (name, rest) = split_tool_detail(detail);
+    let mut rendered = StyledLine::plain("  ");
+    rendered.push(prefix, label_style);
+    rendered.push(name, name_style);
+    if !rest.is_empty() {
+        let result_label = if matches!(kind, ToolLineKind::Error) {
+            " | Error: "
+        } else if matches!(kind, ToolLineKind::Result) {
+            " | Output: "
+        } else {
+            " | Args: "
+        };
+        rendered.push(
+            result_label,
+            label_style.merge(if matches!(kind, ToolLineKind::Error) {
+                SegmentStyle::error()
+            } else {
+                SegmentStyle::warning()
+            }),
+        );
+        rendered.push(rest, SegmentStyle::dim());
+    }
+    rendered
+}
+
+fn split_tool_detail(detail: &str) -> (&str, &str) {
+    let detail = detail.trim();
+    detail
+        .split_once(' ')
+        .map_or((detail, ""), |(name, rest)| (name, rest.trim()))
 }
 
 pub(super) fn render_markdown_lines(lines: &[String], width: usize) -> Vec<StyledLine> {

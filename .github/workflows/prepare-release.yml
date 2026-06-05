@@ -37,6 +37,18 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: crates/starweaver-claw/web/pnpm-lock.yaml
+
       - name: Install cargo-llvm-cov
         if: github.event.inputs.run_full_ci == 'true'
         uses: taiki-e/install-action@v2
@@ -63,6 +75,7 @@ jobs:
             make ci-all
           else
             make fmt-check
+            make claw-web-check
             make check
             make docs-build
           fi

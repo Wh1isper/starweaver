@@ -241,5 +241,41 @@ mod tests {
         .unwrap();
         assert!(output.contains("target=cli"));
         assert!(output.contains("STARWEAVER_COMPONENTS=cli"));
+
+        let starweaver = update_component_with_options("starweaver", "/tmp/install", true).unwrap();
+        assert!(starweaver.contains("target=cli"));
+        let launcher = update_component_with_options("launcher", "/tmp/install", true).unwrap();
+        assert!(launcher.contains("target=cli"));
+        let claw = update_component_with_options("starweaver-claw", "/tmp/install", true).unwrap();
+        assert!(claw.contains("target=claw"));
+        assert!(matches!(
+            update_component_with_options("unknown", "/tmp/install", true),
+            Err(CliError::Usage(message)) if message.contains("unknown update target unknown")
+        ));
+    }
+
+    #[test]
+    fn launcher_command_output_covers_version_aliases_and_external_errors() {
+        assert!(matches!(
+            command_output(["starweaver".to_string(), "unknown".to_string()]),
+            Err(CliError::Usage(message)) if message.contains("unknown command unknown")
+        ));
+        assert!(matches!(
+            command_output([
+                "starweaver".to_string(),
+                "claw".to_string(),
+                "doctor".to_string(),
+            ]),
+            Err(CliError::Usage(message)) if message.contains("unknown command claw")
+        ));
+        assert!(command_output(["sw".to_string()])
+            .unwrap()
+            .contains("starweaver-agent-sdk"));
+        assert!(command_output(["sw".to_string(), "--version".to_string()])
+            .unwrap()
+            .contains("starweaver-agent-sdk"));
+        assert!(command_output(["sw".to_string(), "-V".to_string()])
+            .unwrap()
+            .contains("starweaver-agent-sdk"));
     }
 }
