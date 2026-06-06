@@ -1,26 +1,28 @@
 //! HTTP service surface for Starweaver Claw.
 
-use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
     http::{header, HeaderMap, Method, StatusCode, Uri},
-    response::{sse::Event, IntoResponse, Sse},
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
-use futures_util::stream;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use starweaver_session::InMemorySessionStore;
-use starweaver_stream::{InMemoryReplayEventLog, ReplayEventKind};
+use starweaver_stream::InMemoryReplayEventLog;
 
 use crate::{
+    api::{
+        dto::{ClawInfoResponse, HealthResponse},
+        sse::{events_response, ready_sse_response},
+    },
     controller::{
         ClawRunCreateRequest, ClawSessionCreateRequest, ClawSessionForkRequest,
-        ClawSessionRunCreateRequest, ClawSessionSummary, EventListResponse, SteerRequest,
-        WorkspaceResolveResponse,
+        ClawSessionRunCreateRequest, ClawSessionSummary, SteerRequest, WorkspaceResolveResponse,
     },
     orchestration::{
         HeartbeatStatus, OrchestrationCatalog, ScheduleCreateRequest, ScheduleRecord,
@@ -129,8 +131,8 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/healthz", get(healthz))
         .route("/api/v1/claw/info", get(claw_info))
         .route("/api/v1/info", get(claw_info))
-        .route("/api/v1/claw/notifications", get(empty_sse))
-        .route("/api/v1/notifications", get(empty_sse))
+        .route("/api/v1/claw/notifications", get(notifications))
+        .route("/api/v1/notifications", get(notifications))
         .route("/api/v1/profiles", get(list_profiles).post(upsert_profile))
         .route("/api/v1/profiles/seed", post(seed_profiles))
         .route("/api/v1/profiles:seed", post(seed_profiles))
@@ -326,15 +328,6 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-#[derive(Debug, Serialize)]
-struct HealthResponse {
-    status: &'static str,
-    storage: &'static str,
-    runtime: &'static str,
-    database: &'static str,
-    runtime_state: &'static str,
-}
-
 async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
@@ -343,27 +336,6 @@ async fn healthz(State(state): State<AppState>) -> Json<HealthResponse> {
         database: "ok",
         runtime_state: "ok",
     })
-}
-
-#[derive(Debug, Serialize)]
-struct ClawInfoResponse {
-    name: String,
-    app_name: String,
-    version: &'static str,
-    service_version: String,
-    service_commit: Option<String>,
-    service_revision: String,
-    service_build: Option<String>,
-    service_image: Option<String>,
-    environment: String,
-    public_base_url: String,
-    instance_id: String,
-    auth: &'static str,
-    surfaces: Vec<&'static str>,
-    workspace_provider_backend: String,
-    storage_model: &'static str,
-    features: Value,
-    capabilities: Value,
 }
 
 async fn claw_info(
@@ -808,38 +780,13 @@ async fn session_events(
     Ok(events_response(events, query.stream.unwrap_or(false)))
 }
 
-fn events_response(events: EventListResponse, as_sse: bool) -> axum::response::Response {
-    if as_sse {
-        let stream = stream::iter(events.events.into_iter().map(|event| {
-            let event_type = match event.event {
-                ReplayEventKind::DisplayMessage(_) => "display_message",
-                ReplayEventKind::Raw(_) => "raw",
-                ReplayEventKind::Snapshot(_) => "snapshot",
-                ReplayEventKind::Heartbeat => "heartbeat",
-                ReplayEventKind::Terminal(_) => "terminal",
-            };
-            let payload = serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string());
-            Ok::<_, Infallible>(
-                Event::default()
-                    .id(event.sequence.to_string())
-                    .event(event_type)
-                    .data(payload),
-            )
-        }));
-        Sse::new(stream).into_response()
-    } else {
-        Json(events).into_response()
-    }
-}
-
 async fn list_session_async_tasks(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    state.controller.get_session(&session_id).await?;
-    Ok(Json(json!({ "session_id": session_id, "tasks": [] })))
+    Ok(Json(state.controller.list_async_tasks(&session_id).await?))
 }
 
 async fn get_session_async_task(
@@ -848,30 +795,29 @@ async fn get_session_async_task(
     Path((session_id, task_id_or_name)): Path<(String, String)>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    state.controller.get_session(&session_id).await?;
-    Ok(Json(json!({
-        "session_id": session_id,
-        "task_id_or_name": task_id_or_name,
-        "status": "unknown",
-        "task": null,
-    })))
+    Ok(Json(
+        state
+            .controller
+            .get_async_task(&session_id, &task_id_or_name)
+            .await?,
+    ))
 }
 
 async fn spawn_session_async_task(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(session_id): Path<String>,
+    Path((session_id, _spawn_action)): Path<(String, String)>,
     Json(payload): Json<Value>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    state.controller.get_session(&session_id).await?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(json!({
-            "session_id": session_id,
-            "status": "queued",
-            "task": payload,
-        })),
+        Json(
+            state
+                .controller
+                .spawn_async_task(&session_id, payload)
+                .await?,
+        ),
     ))
 }
 
@@ -881,12 +827,12 @@ async fn cancel_session_async_task(
     Path((session_id, task_id_or_name)): Path<(String, String)>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    state.controller.get_session(&session_id).await?;
-    Ok(Json(json!({
-        "session_id": session_id,
-        "task_id_or_name": task_id_or_name,
-        "status": "cancelled",
-    })))
+    Ok(Json(
+        state
+            .controller
+            .cancel_async_task(&session_id, &task_id_or_name)
+            .await?,
+    ))
 }
 
 async fn session_async_task_action(
@@ -896,13 +842,12 @@ async fn session_async_task_action(
     Json(payload): Json<Value>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    state.controller.get_session(&session_id).await?;
-    Ok(Json(json!({
-        "session_id": session_id,
-        "task_id_or_name": task_id_or_name,
-        "accepted": true,
-        "action": payload,
-    })))
+    Ok(Json(
+        state
+            .controller
+            .async_task_action(&session_id, &task_id_or_name, payload)
+            .await?,
+    ))
 }
 
 async fn steer_session_async_task(
@@ -912,13 +857,12 @@ async fn steer_session_async_task(
     Json(payload): Json<Value>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    state.controller.get_session(&session_id).await?;
-    Ok(Json(json!({
-        "session_id": session_id,
-        "task_id_or_name": task_id_or_name,
-        "accepted": true,
-        "steering": payload,
-    })))
+    Ok(Json(
+        state
+            .controller
+            .steer_async_task(&session_id, &task_id_or_name, payload)
+            .await?,
+    ))
 }
 
 async fn create_session_stream(
@@ -961,15 +905,17 @@ async fn create_run_stream(
     Ok(Json(state.controller.create_run(request).await?))
 }
 
-async fn empty_sse(
+async fn notifications(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<EventsQuery>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    let stream = stream::iter([Ok::<_, Infallible>(
-        Event::default().event("ready").data("{}"),
-    )]);
-    Ok(Sse::new(stream))
+    let events = state.controller.notification_events(query.cursor).await?;
+    if events.events.is_empty() && query.stream.unwrap_or(false) {
+        return Ok(ready_sse_response().into_response());
+    }
+    Ok(events_response(events, query.stream.unwrap_or(false)))
 }
 
 async fn list_workflows(
@@ -1413,17 +1359,12 @@ async fn agency_config(
     headers: HeaderMap,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    Ok(Json(json!({
-        "enabled": false,
-        "profile_name": state.settings.default_profile,
-        "timer_interval_seconds": 3600,
-        "agency_session_id": "agency_disabled",
-        "singleton_scope_key": "single_node",
-        "singleton_source_session_id": "agency_disabled",
-        "risk_policy": { "max_auto_action_risk": "low" },
-        "memory_files": {},
-        "next_fire_at": null
-    })))
+    Ok(Json(
+        state
+            .controller
+            .agency_config(Some(&state.settings.default_profile))
+            .await,
+    ))
 }
 
 async fn agency_status(
@@ -1431,19 +1372,7 @@ async fn agency_status(
     headers: HeaderMap,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    Ok(Json(json!({
-        "enabled": false,
-        "agency_session_id": "agency_disabled",
-        "state": "idle",
-        "active_run": null,
-        "latest_run": null,
-        "active_run_id": null,
-        "latest_run_id": null,
-        "next_fire_at": null,
-        "pending_fire_count": 0,
-        "last_fire": null,
-        "agency_session": null
-    })))
+    Ok(Json(state.controller.agency_status().await))
 }
 
 async fn agency_fires(
@@ -1451,7 +1380,7 @@ async fn agency_fires(
     headers: HeaderMap,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    Ok(Json(json!({ "fires": [] })))
+    Ok(Json(state.controller.agency_fires().await))
 }
 
 async fn submit_agency_source_session(
@@ -1462,11 +1391,12 @@ async fn submit_agency_source_session(
     authorize(&state, &headers)?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(json!({
-            "accepted": true,
-            "status": "queued",
-            "payload": payload,
-        })),
+        Json(
+            state
+                .controller
+                .submit_agency_source_session(payload)
+                .await?,
+        ),
     ))
 }
 
@@ -1543,27 +1473,16 @@ async fn compat_api_fallback(
     }
     if method == Method::POST {
         if path == "/api/v1/agency:bootstrap" {
-            return (
-                StatusCode::ACCEPTED,
-                Json(json!({
-                    "accepted": true,
-                    "agency_session_id": "agency_disabled",
-                    "status": "disabled",
-                })),
-            )
-                .into_response();
+            match state.controller.bootstrap_agency().await {
+                Ok(response) => return (StatusCode::ACCEPTED, Json(response)).into_response(),
+                Err(error) => return error.into_response(),
+            }
         }
         if path == "/api/v1/agency:clear" {
-            return Json(json!({
-                "accepted": true,
-                "cleared_session_id": null,
-                "new_agency_session_id": "agency_disabled",
-                "archived_run_ids": [],
-                "deleted_fire_count": 0,
-                "cleared_at": chrono::Utc::now(),
-                "agency_session": null
-            }))
-            .into_response();
+            match state.controller.clear_agency().await {
+                Ok(response) => return Json(response).into_response(),
+                Err(error) => return error.into_response(),
+            }
         }
         if let Some(workflow_id) = path
             .strip_prefix("/api/v1/agent/workflows/")
@@ -1602,13 +1521,41 @@ async fn compat_api_fallback(
                     .map(|interaction_id| (run_id, interaction_id))
             })
         {
-            return Json(json!({
-                "run_id": run_id,
-                "interaction_id": interaction_id,
-                "accepted": true,
-                "response": serde_json::from_slice::<Value>(body).unwrap_or_else(|_| json!({})),
-            }))
-            .into_response();
+            let payload = serde_json::from_slice::<Value>(body).unwrap_or_else(|_| json!({}));
+            match state
+                .controller
+                .respond_interaction(run_id, interaction_id, payload)
+                .await
+            {
+                Ok(response) => return Json(response).into_response(),
+                Err(error) => return error.into_response(),
+            }
+        }
+        if let Some((session_id, task_and_action)) = path
+            .strip_prefix("/api/v1/sessions/")
+            .and_then(|tail| tail.split_once("/async-tasks/"))
+        {
+            if let Some(task_id_or_name) = task_and_action.strip_suffix(":cancel") {
+                match state
+                    .controller
+                    .cancel_async_task(session_id, task_id_or_name)
+                    .await
+                {
+                    Ok(response) => return Json(response).into_response(),
+                    Err(error) => return error.into_response(),
+                }
+            }
+            if let Some(task_id_or_name) = task_and_action.strip_suffix(":steer") {
+                let payload = serde_json::from_slice::<Value>(body).unwrap_or_else(|_| json!({}));
+                match state
+                    .controller
+                    .steer_async_task(session_id, task_id_or_name, payload)
+                    .await
+                {
+                    Ok(response) => return Json(response).into_response(),
+                    Err(error) => return error.into_response(),
+                }
+            }
         }
         if let Some((session_id, action)) = path
             .strip_prefix("/api/v1/sessions/")
@@ -1654,15 +1601,14 @@ async fn session_memory_action(
     session_id: &str,
     kind: &str,
 ) -> ClawResult<(StatusCode, Json<Value>)> {
-    state.controller.get_session(session_id).await?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(json!({
-            "session_id": session_id,
-            "accepted": true,
-            "kind": kind,
-            "run_id": null,
-        })),
+        Json(
+            state
+                .controller
+                .session_memory_action(session_id, kind, json!({}))
+                .await?,
+        ),
     ))
 }
 
@@ -2157,6 +2103,56 @@ mod tests {
         value["id"].as_str().expect("schedule id").to_string()
     }
 
+    async fn post_json(app: &Router, path: &str, body: Value, status: StatusCode) -> Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let actual_status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(
+            actual_status,
+            status,
+            "{path}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    async fn get_json(app: &Router, path: &str, status: StatusCode) -> Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        let actual_status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(
+            actual_status,
+            status,
+            "{path}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
     fn latest_claw_api_route_cases(
         session_id: &str,
         run_id: &str,
@@ -2256,6 +2252,81 @@ mod tests {
             RouteCase { method: "GET", path: "/api/v1/workspace/runtime".into(), body: None },
             RouteCase { method: "POST", path: "/api/v1/workspace:resolve".into(), body: Some("null".into()) },
         ]
+    }
+
+    #[tokio::test]
+    async fn claw_parity_stateful_actions_record_side_effects() {
+        let app = build_router(ClawSettings::default());
+        let session_id = create_test_session(&app).await;
+        let run_id = create_test_run(&app, &session_id).await;
+
+        let memory = post_json(
+            &app,
+            &format!("/api/v1/sessions/{session_id}/memory:extract"),
+            json!({}),
+            StatusCode::ACCEPTED,
+        )
+        .await;
+        assert_eq!(memory["memory_state"]["status"], "queued");
+
+        let spawned = post_json(
+            &app,
+            &format!("/api/v1/sessions/{session_id}/async-tasks:spawn"),
+            json!({"name": "task_test", "input_parts": []}),
+            StatusCode::ACCEPTED,
+        )
+        .await;
+        assert_eq!(spawned["task"]["status"], "queued");
+        let steered = post_json(
+            &app,
+            &format!("/api/v1/sessions/{session_id}/async-tasks/task_test:steer"),
+            json!({"input_parts": [{"type":"text", "text":"continue"}]}),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(steered["task"]["status"], "running");
+        let cancelled = post_json(
+            &app,
+            &format!("/api/v1/sessions/{session_id}/async-tasks/task_test:cancel"),
+            json!({}),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(cancelled["task"]["status"], "cancelled");
+
+        let interaction = post_json(
+            &app,
+            &format!("/api/v1/runs/{run_id}/interactions/approval_1:respond"),
+            json!({"decision": "approved"}),
+            StatusCode::OK,
+        )
+        .await;
+        assert_eq!(interaction["accepted"], true);
+
+        let bootstrap = post_json(
+            &app,
+            "/api/v1/agency:bootstrap",
+            json!({}),
+            StatusCode::ACCEPTED,
+        )
+        .await;
+        assert_eq!(bootstrap["accepted"], true);
+        let source = post_json(
+            &app,
+            "/api/v1/agency/source-session:submit",
+            json!({"session_id": session_id}),
+            StatusCode::ACCEPTED,
+        )
+        .await;
+        assert_eq!(source["status"], "queued");
+        let fires = get_json(&app, "/api/v1/agency/fires", StatusCode::OK).await;
+        assert_eq!(fires["fires"].as_array().expect("fires").len(), 1);
+
+        let notifications = get_json(&app, "/api/v1/claw/notifications", StatusCode::OK).await;
+        assert!(notifications["events"].as_array().expect("events").len() >= 3);
+
+        let clear = post_json(&app, "/api/v1/agency:clear", json!({}), StatusCode::OK).await;
+        assert_eq!(clear["accepted"], true);
     }
 
     #[tokio::test]

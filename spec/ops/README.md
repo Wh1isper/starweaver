@@ -57,6 +57,7 @@ flowchart TD
 - `04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, AGUI-compatible rendering, launcher dispatch, and GitHub install/update flow
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `06-workflow-orchestration.md` — Claw-owned workflow definitions, runs, node runs, events, toolset, schedules, and workflow console semantics
+- `07-ya-mono-parity-migration.md` — ya-mono parity, migration, API behavior, CLI parity, media fixes, and planned refactors
 
 ## Readiness Model
 

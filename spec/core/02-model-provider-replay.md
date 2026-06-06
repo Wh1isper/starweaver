@@ -4,8 +4,9 @@ The model layer is the compatibility boundary between Starweaver's canonical age
 
 ## Model Layer Responsibilities
 
-- Define canonical messages, request parts, response parts, usage, finish reasons, and provider metadata.
-- Define `ModelSettings`, `ModelRequestParameters`, `ModelProfile`, protocol families, and built-in model presets.
+- Define canonical messages, request parts, response parts, content parts, tool-call arguments, usage, finish reasons, response lifecycle state, and provider metadata.
+- Define `ModelSettings`, `ModelRequestParameters`, `ModelRequestContext`, `ModelProfile`, protocol families, and built-in model presets.
+- Prepare requests by merging settings, resolving profile-driven output/thinking/native-tool behavior, normalizing messages, and producing prepared request snapshots.
 - Translate canonical history into provider wire requests.
 - Parse provider responses into canonical `ModelResponse` values.
 - Support injectable HTTP clients, endpoint overrides, headers, extra body fields, retry policy, and gateway routing.
@@ -33,14 +34,42 @@ Provider mappers consume these presets through the same `ModelSettings`, `ModelP
 | Gemini             | generateContent         | text, function call, function response, system instruction, generation config, usage |
 | Bedrock            | Converse                | text, tool use, tool result, system field, inference config, usage                   |
 
+## Message and Request Abstraction Contract
+
+The model protocol uses a typed conversation AST defined in `06-message-request-abstractions.md`:
+
+- `ModelMessage` separates request history from response history.
+- `ModelRequestPart` owns system prompts, structured instructions, user prompts, tool returns, and retry prompts.
+- `ModelResponsePart` owns text, thinking, function tool calls, native tool calls/returns, generated files, and compaction summaries.
+- `ContentPart` owns text, URL media, inline binary media, data URLs, and resource references.
+- `ToolCallPart` should evolve from raw `serde_json::Value` arguments toward a typed argument state that preserves parsed objects, raw JSON strings, and invalid-marker evidence.
+
+`ModelRequestParameters` is the single per-call negotiation object for function tools, native tools, output mode/schema, instruction parts, thinking, HTTP overrides, provider extra body fields, and replay/audit metadata. Provider adapters receive prepared parameters after model-profile capability resolution.
+
+## Request Preparation and Normalization
+
+Before provider wire mapping, the model layer should:
+
+1. merge model defaults, agent settings, scoped overrides, and run settings
+2. customize tool and output schemas through profile-specific schema transforms
+3. resolve default output mode and validate output/media support
+4. resolve thinking/reasoning settings from unified model settings into request parameters
+5. deduplicate native tools and resolve native-tool/function-tool fallback policy
+6. append prompted-output instructions to instruction parts when the selected output mode requires them
+7. normalize message history according to the active `ModelProfile`
+8. emit a prepared request snapshot for traces and replay fixtures
+
+Normalization policies include preserving canonical items, merging adjacent provider roles, lifting system prompts into a top-level system field or system instruction object, and wrapping later system fragments as tagged user content for providers with top-level-only system support.
+
 ## Trace and Replay Evidence
 
-Model calls produce two evidence layers:
+Model calls produce three evidence layers:
 
 1. Canonical model evidence from the runtime: provider-neutral messages, settings, request parameters, canonical stream events, canonical response, usage, finish reason, provider metadata, run id, conversation id, and trace context. This is info-level telemetry and is enabled by default.
-2. Raw LLM-request evidence from the protocol client: exact HTTP request, merged headers/body/options, raw provider response, provider status, and future raw stream chunks. This is debug-level telemetry and is enabled by application policy.
+2. Prepared request evidence from the model layer: normalized messages, prepared request parameters, selected output mode, resolved thinking/native-tool behavior, profile id, and schema transformations. This is info-level telemetry with content redaction applied by policy.
+3. Raw LLM-request evidence from the protocol client: exact HTTP request, merged headers/body/options, raw provider response, provider status, and future raw stream chunks. This is debug-level telemetry and is enabled by application policy.
 
-Replay fixtures continue to use canonical history plus expected provider request/response. The debug recorder provides a direct capture path for generating or auditing fixtures. Sensitive headers and prompt content pass through redaction before exporter delivery; local fixture import keeps scrub rules in the replay tooling.
+Replay fixtures continue to use canonical history plus prepared request evidence plus expected provider request/response. The debug recorder provides a direct capture path for generating or auditing fixtures. Sensitive headers and prompt content pass through redaction before exporter delivery; local fixture import keeps scrub rules in the replay tooling.
 
 ## Replay Fixture Contract
 
@@ -51,13 +80,15 @@ flowchart TD
     history[canonical history]
     settings[model settings]
     params[request parameters]
+    prepared[prepared request snapshot]
     provider_request[expected provider request]
     provider_response[provider response]
     canonical_response[expected canonical response]
 
-    history --> provider_request
-    settings --> provider_request
-    params --> provider_request
+    history --> prepared
+    settings --> prepared
+    params --> prepared
+    prepared --> provider_request
     provider_response --> canonical_response
 ```
 
@@ -69,6 +100,7 @@ Required fixture fields:
 - `tools`
 - `native_tools`
 - `request_parameters`
+- `prepared_request`
 - `expected_provider_request`
 - `provider_response`
 - `expected_response`
@@ -79,28 +111,30 @@ Request-only fixtures omit provider response and expected canonical response.
 
 Current fixture-driven coverage includes:
 
-| Area                                       | Covered                               |
-| ------------------------------------------ | ------------------------------------- |
-| OpenAI Chat text                           | yes                                   |
-| OpenAI Chat tool call                      | yes                                   |
-| OpenAI Chat tool return history            | yes                                   |
-| OpenAI Responses text                      | yes                                   |
-| OpenAI Responses function call             | yes                                   |
-| OpenAI Responses native web search request | yes                                   |
-| OpenAI Responses native MCP request        | yes                                   |
-| Anthropic text                             | yes                                   |
-| Anthropic tool use                         | yes                                   |
-| Anthropic tool result history              | yes                                   |
-| Gemini text                                | yes                                   |
-| Gemini function call                       | yes                                   |
-| Gemini function response history           | yes                                   |
-| Bedrock text                               | yes                                   |
-| Bedrock tool use                           | yes                                   |
-| Bedrock tool result history                | yes                                   |
-| Request parameters serialization           | yes                                   |
-| Settings merge precedence                  | yes                                   |
-| Profile capability contracts               | yes                                   |
-| Structured output request mapping          | OpenAI Chat, OpenAI Responses, Gemini |
+| Area                                       | Covered                                                                                              |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| OpenAI Chat text                           | yes                                                                                                  |
+| OpenAI Chat tool call                      | yes                                                                                                  |
+| OpenAI Chat tool return history            | yes                                                                                                  |
+| OpenAI Responses text                      | yes                                                                                                  |
+| OpenAI Responses function call             | yes                                                                                                  |
+| OpenAI Responses native web search request | yes                                                                                                  |
+| OpenAI Responses native MCP request        | yes                                                                                                  |
+| Anthropic text                             | yes                                                                                                  |
+| Anthropic tool use                         | yes                                                                                                  |
+| Anthropic tool result history              | yes                                                                                                  |
+| Gemini text                                | yes                                                                                                  |
+| Gemini function call                       | yes                                                                                                  |
+| Gemini function response history           | yes                                                                                                  |
+| Bedrock text                               | yes                                                                                                  |
+| Bedrock tool use                           | yes                                                                                                  |
+| Bedrock tool result history                | yes                                                                                                  |
+| Request parameters serialization           | yes                                                                                                  |
+| Prepared request snapshots                 | model-layer snapshot type and preparation tests landed; per-provider fixture fields remain follow-up |
+| Typed tool-argument preservation           | yes                                                                                                  |
+| Settings merge precedence                  | yes                                                                                                  |
+| Profile capability contracts               | yes                                                                                                  |
+| Structured output request mapping          | OpenAI Chat, OpenAI Responses, Gemini                                                                |
 
 ## CI Gate
 
@@ -119,11 +153,12 @@ cargo test -p starweaver-model --test replay --test request_parameters --locked
 ## Migration Rules
 
 - Add a fixture before changing a provider mapper.
-- Keep canonical history and expected provider JSON in the same fixture.
-- Compare canonicalized JSON to avoid map ordering noise.
+- Keep canonical history, prepared request snapshots, and expected provider JSON in the same fixture.
+- Compare canonicalized JSON for map-order-independent assertions.
 - Assert usage, provider metadata, finish reason, and tool call parts in every response replay.
 - Store provider quirks in mapper tests first, then promote stable behavior into docs/spec.
 - Record unsupported Pydantic AI replay categories in `memos/implementation-todo.md`.
+- Add typed stream-delta fixtures before widening model stream event variants.
 
 ## Bug Fix Policy
 
@@ -139,6 +174,7 @@ Replay failures are handled in this order:
 
 Remaining replay families are tracked in `memos/implementation-todo.md`:
 
+- per-provider prepared request snapshot fixture fields
 - streaming chunk and delta fixtures
 - provider status and malformed response fixtures
 - refusal/content-filter fixtures

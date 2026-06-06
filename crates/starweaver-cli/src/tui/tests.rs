@@ -21,7 +21,7 @@ use super::{
         render_live_history_lines, render_shortcut_overlay, visible_width, SegmentStyle,
         StyledLine,
     },
-    state::{InteractiveTuiState, RunMode},
+    state::{InteractiveTuiState, RunMode, SlashCommandDefinition},
     terminal::{handle_key_event, visible_body_bounds, InteractiveTuiEvent},
 };
 
@@ -50,10 +50,7 @@ fn interactive_state_applies_streaming_text() {
         2,
         AgentStreamEvent::ModelStream {
             step: 0,
-            event: ModelResponseStreamEvent::PartDelta(PartDelta {
-                index: 0,
-                delta: "hello\nworld".to_string(),
-            }),
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "hello\nworld")),
         },
     ));
     assert!(state.body.iter().any(|line| line.contains("hello")));
@@ -154,6 +151,30 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         .body
         .iter()
         .any(|line| line == "[SYS] Usage: /goal <task description>"));
+
+    state.set_custom_commands(std::collections::BTreeMap::from([(
+        "commit".to_string(),
+        SlashCommandDefinition {
+            name: "commit".to_string(),
+            prompt: "Review and commit changes".to_string(),
+            mode: Some("plan".to_string()),
+            description: Some("Commit workflow".to_string()),
+            aliases: vec!["ci".to_string()],
+        },
+    )]));
+    state.input = "/COMMIT staged files".to_string();
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::Submit(
+            "Review and commit changes\n\nstaged files".to_string()
+        ))
+    );
+    assert_eq!(state.run_mode, RunMode::Plan);
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "[SYS] Running /commit"));
+    state.run_mode = RunMode::Act;
 
     state.input = "/goal migrate tui".to_string();
     assert_eq!(
@@ -348,7 +369,7 @@ fn interactive_state_covers_runtime_event_branches() {
     let call = ToolCallPart {
         id: "call_1".to_string(),
         name: "lookup".to_string(),
-        arguments: json!({"query": "starweaver"}),
+        arguments: json!({"query": "starweaver"}).into(),
     };
     state.apply_stream_record(&AgentStreamRecord::new(
         6,
@@ -450,10 +471,7 @@ fn thinking_stream_delta_does_not_suppress_final_text() {
         1,
         AgentStreamEvent::ModelStream {
             step: 0,
-            event: ModelResponseStreamEvent::PartDelta(PartDelta {
-                index: 0,
-                delta: "reasoning".to_string(),
-            }),
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "reasoning")),
         },
     ));
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -498,10 +516,7 @@ fn interleaved_thinking_part_does_not_mark_text_seen() {
         2,
         AgentStreamEvent::ModelStream {
             step: 0,
-            event: ModelResponseStreamEvent::PartDelta(PartDelta {
-                index: 0,
-                delta: "hidden chain".to_string(),
-            }),
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "hidden chain")),
         },
     ));
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -528,7 +543,7 @@ fn tool_call_from_model_response_and_tool_event_renders_once() {
     let call = ToolCallPart {
         id: "call_once".to_string(),
         name: "lookup".to_string(),
-        arguments: json!({"query":"once"}),
+        arguments: json!({"query":"once"}).into(),
     };
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
@@ -582,7 +597,7 @@ fn interactive_state_covers_model_response_finish_and_failure() {
                     ModelResponsePart::ToolCall(ToolCallPart {
                         id: "call_2".to_string(),
                         name: "search".to_string(),
-                        arguments: json!({}),
+                        arguments: json!({}).into(),
                     }),
                 ],
                 usage: starweaver_core::Usage {
@@ -1350,7 +1365,7 @@ fn model_response_thinking_and_tool_call_are_visible() {
                     ModelResponsePart::ToolCall(ToolCallPart {
                         id: "call_1".to_string(),
                         name: "lookup".to_string(),
-                        arguments: json!({"query": "starweaver"}),
+                        arguments: json!({"query": "starweaver"}).into(),
                     }),
                     ModelResponsePart::Text {
                         text: "done".to_string(),

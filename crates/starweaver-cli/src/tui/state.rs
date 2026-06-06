@@ -1,9 +1,11 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     env,
     path::Path,
     time::Instant,
 };
+
+use serde::{Deserialize, Serialize};
 
 use starweaver_core::Usage;
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
@@ -16,6 +18,24 @@ use super::{
     render::{snapshot_interactive_lines, value_preview},
     snapshot::TuiSnapshot,
 };
+
+/// Config-defined slash command prompt.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SlashCommandDefinition {
+    /// Canonical command name without a leading slash.
+    pub name: String,
+    /// Prompt submitted when the command is invoked.
+    pub prompt: String,
+    /// Optional mode hint such as `act` or `plan`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Human-readable description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Additional aliases without a leading slash.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum RunMode {
@@ -127,6 +147,7 @@ pub struct InteractiveTuiState {
     pub(super) context_window: Option<u64>,
     pub(super) steering_items: Vec<SteeringItem>,
     next_steering_id: u64,
+    custom_commands: BTreeMap<String, SlashCommandDefinition>,
 }
 
 impl InteractiveTuiState {
@@ -166,6 +187,7 @@ impl InteractiveTuiState {
             context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
             steering_items: Vec::new(),
             next_steering_id: 0,
+            custom_commands: BTreeMap::new(),
         }
     }
 
@@ -361,12 +383,12 @@ impl InteractiveTuiState {
                 match self.streaming_kind_for_delta(delta.index) {
                     StreamingPartKind::Text => {
                         self.phase = "streaming".to_string();
-                        self.append_stream_delta(&delta.delta);
+                        self.append_stream_delta(&delta.as_text());
                         self.streaming_text_seen = true;
                     }
                     StreamingPartKind::Thinking => {
                         self.phase = "thinking".to_string();
-                        self.append_thinking_delta(&delta.delta);
+                        self.append_thinking_delta(&delta.as_text());
                     }
                     StreamingPartKind::Other => {
                         self.phase = "streaming".to_string();
@@ -557,6 +579,11 @@ impl InteractiveTuiState {
         self.input_status = Some("help".to_string());
     }
 
+    /// Install config-defined slash command definitions.
+    pub fn set_custom_commands(&mut self, commands: BTreeMap<String, SlashCommandDefinition>) {
+        self.custom_commands = commands;
+    }
+
     fn take_local_command(&mut self) -> LocalCommandOutcome {
         let input = self.input.trim().to_string();
         if input == "/help" {
@@ -585,6 +612,9 @@ impl InteractiveTuiState {
             self.input_status = Some("cleared".to_string());
             return LocalCommandOutcome::Consumed;
         }
+        if let Some(outcome) = self.take_custom_command(&input) {
+            return outcome;
+        }
         if let Some(task) = input.strip_prefix("/goal") {
             self.input.clear();
             let task = task.trim();
@@ -606,6 +636,34 @@ impl InteractiveTuiState {
             return LocalCommandOutcome::Submit(task.to_string());
         }
         LocalCommandOutcome::None
+    }
+
+    fn take_custom_command(&mut self, input: &str) -> Option<LocalCommandOutcome> {
+        let (name, args) = input
+            .strip_prefix('/')?
+            .split_once(' ')
+            .unwrap_or_else(|| (input.strip_prefix('/').unwrap_or_default(), ""));
+        let command = self
+            .custom_commands
+            .get(&name.to_ascii_lowercase())?
+            .clone();
+        self.input.clear();
+        self.pasted_images.clear();
+        if let Some(mode) = command.mode.as_deref() {
+            match mode.to_ascii_lowercase().as_str() {
+                "act" => self.run_mode = RunMode::Act,
+                "plan" => self.run_mode = RunMode::Plan,
+                _ => {}
+            }
+        }
+        let prompt = if args.trim().is_empty() {
+            command.prompt
+        } else {
+            format!("{}\n\n{}", command.prompt, args.trim())
+        };
+        self.body.push(format!("[SYS] Running /{}", command.name));
+        self.input_status = Some("custom command".to_string());
+        Some(LocalCommandOutcome::Submit(prompt))
     }
 
     pub(super) fn steering_items(&self) -> &[SteeringItem] {
@@ -834,7 +892,7 @@ fn streaming_part_kind(part_kind: &str) -> StreamingPartKind {
 }
 
 fn format_tool_call_line(call: &starweaver_model::ToolCallPart) -> String {
-    let arguments = value_preview(&call.arguments);
+    let arguments = value_preview(&call.arguments.replay_value());
     if arguments == "{}" || arguments == "null" || arguments.is_empty() {
         format!("Tool call: {}", call.name)
     } else {

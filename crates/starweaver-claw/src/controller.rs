@@ -851,6 +851,327 @@ impl ClawController {
         })
     }
 
+    /// Replay service notification events.
+    pub async fn notification_events(
+        &self,
+        cursor: Option<usize>,
+    ) -> ClawResult<EventListResponse> {
+        let scope = ReplayScope::from_string("notifications");
+        let cursor = cursor.map(|sequence| ReplayCursor::new(scope.clone(), sequence));
+        let events = self.events.replay_after(&scope, cursor, None).await?;
+        Ok(EventListResponse {
+            scope: scope.as_str().to_string(),
+            events,
+        })
+    }
+
+    /// List async tasks for a session.
+    pub async fn list_async_tasks(&self, session_id: &str) -> ClawResult<Value> {
+        self.get_session(session_id).await?;
+        Ok(json!({
+            "session_id": session_id,
+            "tasks": self.runtime_state.list_async_tasks(session_id).await,
+        }))
+    }
+
+    /// Spawn a session async task.
+    pub async fn spawn_async_task(&self, session_id: &str, payload: Value) -> ClawResult<Value> {
+        self.get_session(session_id).await?;
+        let task = self
+            .runtime_state
+            .create_async_task(session_id, payload)
+            .await;
+        self.append_event(
+            ReplayScope::session(session_id),
+            next_event_sequence(),
+            ReplayEventKind::Raw(json!({
+                "type": "session.async_task_spawned",
+                "session_id": session_id,
+                "task_id": task.task_id,
+                "task": task,
+            })),
+        )
+        .await?;
+        self.append_notification(
+            "async_task.spawned",
+            json!({ "session_id": session_id, "task": task }),
+        )
+        .await?;
+        Ok(json!({
+            "session_id": session_id,
+            "status": "queued",
+            "task": task,
+        }))
+    }
+
+    /// Get one async task by id or name.
+    pub async fn get_async_task(
+        &self,
+        session_id: &str,
+        task_id_or_name: &str,
+    ) -> ClawResult<Value> {
+        self.get_session(session_id).await?;
+        let task = self
+            .runtime_state
+            .get_async_task(session_id, task_id_or_name)
+            .await;
+        let status = task
+            .as_ref()
+            .map(|task| task.status.as_str())
+            .unwrap_or("unknown");
+        Ok(json!({
+            "session_id": session_id,
+            "task_id_or_name": task_id_or_name,
+            "status": status,
+            "task": task,
+        }))
+    }
+
+    /// Cancel one async task.
+    pub async fn cancel_async_task(
+        &self,
+        session_id: &str,
+        task_id_or_name: &str,
+    ) -> ClawResult<Value> {
+        self.get_session(session_id).await?;
+        let task = self
+            .runtime_state
+            .update_async_task_status(session_id, task_id_or_name, "cancelled")
+            .await;
+        self.append_event(
+            ReplayScope::session(session_id),
+            next_event_sequence(),
+            ReplayEventKind::Raw(json!({
+                "type": "session.async_task_cancelled",
+                "session_id": session_id,
+                "task_id_or_name": task_id_or_name,
+                "task": task,
+            })),
+        )
+        .await?;
+        Ok(json!({
+            "session_id": session_id,
+            "task_id_or_name": task_id_or_name,
+            "status": task.as_ref().map(|task| task.status.as_str()).unwrap_or("cancelled"),
+            "task": task,
+        }))
+    }
+
+    /// Steer one async task.
+    pub async fn steer_async_task(
+        &self,
+        session_id: &str,
+        task_id_or_name: &str,
+        payload: Value,
+    ) -> ClawResult<Value> {
+        self.get_session(session_id).await?;
+        let task = self
+            .runtime_state
+            .steer_async_task(session_id, task_id_or_name, payload.clone())
+            .await;
+        self.append_event(
+            ReplayScope::session(session_id),
+            next_event_sequence(),
+            ReplayEventKind::Raw(json!({
+                "type": "session.async_task_steered",
+                "session_id": session_id,
+                "task_id_or_name": task_id_or_name,
+                "task": task,
+                "steering": payload,
+            })),
+        )
+        .await?;
+        Ok(json!({
+            "session_id": session_id,
+            "task_id_or_name": task_id_or_name,
+            "accepted": true,
+            "task": task,
+            "status": task.as_ref().map(|task| task.status.as_str()).unwrap_or("accepted"),
+        }))
+    }
+
+    /// Run a generic async task action.
+    pub async fn async_task_action(
+        &self,
+        session_id: &str,
+        task_id_or_name: &str,
+        payload: Value,
+    ) -> ClawResult<Value> {
+        if let Some(id) = task_id_or_name.strip_suffix(":cancel") {
+            return self.cancel_async_task(session_id, id).await;
+        }
+        if let Some(id) = task_id_or_name.strip_suffix(":steer") {
+            return self.steer_async_task(session_id, id, payload).await;
+        }
+        self.steer_async_task(session_id, task_id_or_name, payload)
+            .await
+    }
+
+    /// Record a session memory lifecycle action.
+    pub async fn session_memory_action(
+        &self,
+        session_id: &str,
+        kind: &str,
+        payload: Value,
+    ) -> ClawResult<Value> {
+        self.get_session(session_id).await?;
+        let memory = self
+            .runtime_state
+            .upsert_memory_state(session_id, kind, payload)
+            .await;
+        self.append_event(
+            ReplayScope::session(session_id),
+            next_event_sequence(),
+            ReplayEventKind::Raw(json!({
+                "type": "session.memory_queued",
+                "session_id": session_id,
+                "kind": kind,
+                "memory": memory,
+            })),
+        )
+        .await?;
+        self.append_notification(
+            "session.memory_queued",
+            json!({ "session_id": session_id, "kind": kind, "memory": memory }),
+        )
+        .await?;
+        Ok(json!({
+            "session_id": session_id,
+            "accepted": true,
+            "kind": kind,
+            "status": memory.status,
+            "run_id": memory.run_id,
+            "memory_state": memory,
+        }))
+    }
+
+    /// Record a same-run approval or deferred interaction response.
+    pub async fn respond_interaction(
+        &self,
+        run_id: &str,
+        interaction_id: &str,
+        response: Value,
+    ) -> ClawResult<Value> {
+        let run = self.find_run(run_id).await?;
+        let interaction = self
+            .runtime_state
+            .record_interaction_response(run_id, interaction_id, response.clone())
+            .await;
+        self.append_event(
+            ReplayScope::run(run_id),
+            next_event_sequence(),
+            ReplayEventKind::Raw(json!({
+                "type": "run.interaction_response",
+                "run_id": run_id,
+                "session_id": run.session_id.as_str(),
+                "interaction_id": interaction_id,
+                "response": response,
+            })),
+        )
+        .await?;
+        self.append_notification(
+            "run.interaction_response",
+            json!({
+                "run_id": run_id,
+                "session_id": run.session_id.as_str(),
+                "interaction_id": interaction_id,
+            }),
+        )
+        .await?;
+        Ok(json!({
+            "run_id": run_id,
+            "interaction_id": interaction_id,
+            "accepted": true,
+            "response": interaction.response,
+            "interaction": interaction,
+        }))
+    }
+
+    /// Bootstrap agency state.
+    pub async fn bootstrap_agency(&self) -> ClawResult<Value> {
+        let agency = self.runtime_state.bootstrap_agency().await;
+        self.append_notification("agency.bootstrap", json!({ "agency": agency }))
+            .await?;
+        Ok(json!({
+            "accepted": true,
+            "agency_session_id": agency.agency_session_id,
+            "status": "ready",
+            "agency": agency,
+        }))
+    }
+
+    /// Clear agency state.
+    pub async fn clear_agency(&self) -> ClawResult<Value> {
+        let agency = self.runtime_state.clear_agency().await;
+        self.append_notification("agency.clear", json!({ "agency": agency }))
+            .await?;
+        Ok(json!({
+            "accepted": true,
+            "cleared_session_id": null,
+            "new_agency_session_id": agency.agency_session_id,
+            "archived_run_ids": [],
+            "deleted_fire_count": 0,
+            "cleared_at": chrono::Utc::now(),
+            "agency_session": null,
+            "agency": agency,
+        }))
+    }
+
+    /// Return agency config projection.
+    pub async fn agency_config(&self, default_profile: Option<&str>) -> Value {
+        let agency = self.runtime_state.agency_state().await;
+        json!({
+            "enabled": agency.enabled,
+            "profile_name": default_profile.unwrap_or("default"),
+            "timer_interval_seconds": 3600,
+            "agency_session_id": agency.agency_session_id.clone().unwrap_or_else(|| "agency_disabled".to_string()),
+            "singleton_scope_key": "single_node",
+            "singleton_source_session_id": agency.agency_session_id.unwrap_or_else(|| "agency_disabled".to_string()),
+            "risk_policy": { "max_auto_action_risk": "low" },
+            "memory_files": {},
+            "next_fire_at": null,
+        })
+    }
+
+    /// Return agency status projection.
+    pub async fn agency_status(&self) -> Value {
+        let agency = self.runtime_state.agency_state().await;
+        json!({
+            "enabled": agency.enabled,
+            "agency_session_id": agency.agency_session_id.clone().unwrap_or_else(|| "agency_disabled".to_string()),
+            "state": agency.state,
+            "active_run": null,
+            "latest_run": null,
+            "active_run_id": agency.active_run_id,
+            "latest_run_id": agency.latest_run_id,
+            "next_fire_at": null,
+            "pending_fire_count": 0,
+            "last_fire": agency.last_fire,
+            "agency_session": null,
+        })
+    }
+
+    /// List agency fires.
+    pub async fn agency_fires(&self) -> Value {
+        json!({ "fires": self.runtime_state.agency_fires().await })
+    }
+
+    /// Submit agency source-session handoff.
+    pub async fn submit_agency_source_session(&self, payload: Value) -> ClawResult<Value> {
+        let fire = self.runtime_state.create_agency_fire(payload.clone()).await;
+        self.append_notification(
+            "agency.source_session_submitted",
+            json!({ "fire": fire, "payload": payload }),
+        )
+        .await?;
+        Ok(json!({
+            "accepted": true,
+            "status": "queued",
+            "fire": fire,
+            "payload": payload,
+        }))
+    }
+
     /// Build an execution supervisor for this controller.
     #[must_use]
     pub fn execution_supervisor(&self) -> ExecutionSupervisor {
@@ -990,6 +1311,18 @@ impl ClawController {
         let event = ReplayEvent::new(scope.clone(), sequence, kind);
         self.events.append(scope, event).await?;
         Ok(())
+    }
+
+    async fn append_notification(&self, event_type: &str, payload: Value) -> ClawResult<()> {
+        self.append_event(
+            ReplayScope::from_string("notifications"),
+            next_event_sequence(),
+            ReplayEventKind::Raw(json!({
+                "type": event_type,
+                "payload": payload,
+            })),
+        )
+        .await
     }
 }
 

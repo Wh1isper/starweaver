@@ -50,7 +50,7 @@ async fn tool_result_metadata_is_exposed_on_tool_return() {
             &starweaver_model::ToolCallPart {
                 id: "call-1".to_string(),
                 name: "mutating_tool".to_string(),
-                arguments: serde_json::json!({}),
+                arguments: serde_json::json!({}).into(),
             },
         )
         .await;

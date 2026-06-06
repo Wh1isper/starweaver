@@ -23,7 +23,10 @@ pub use replay::{
     ReplayScope, ReplaySnapshot, ReplaySubscription, StreamTerminalMarker,
 };
 pub use starweaver_core::SessionId;
-pub use transport::{InMemoryReplayTransport, ReplayTransport};
+pub use transport::{
+    replay_sse_event_name, replay_sse_frames, InMemoryReplayTransport, ReplaySseFrame,
+    ReplayTransport,
+};
 
 #[cfg(test)]
 mod tests;

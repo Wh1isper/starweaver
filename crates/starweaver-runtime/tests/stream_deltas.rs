@@ -55,14 +55,8 @@ impl ModelAdapter for StreamingModel {
                 index: 0,
                 part_kind: "text".to_string(),
             }),
-            ModelResponseStreamEvent::PartDelta(PartDelta {
-                index: 0,
-                delta: "hel".to_string(),
-            }),
-            ModelResponseStreamEvent::PartDelta(PartDelta {
-                index: 0,
-                delta: "lo".to_string(),
-            }),
+            ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "hel")),
+            ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "lo")),
             ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
             ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("hello"))),
         ])
@@ -88,6 +82,6 @@ async fn runtime_stream_includes_provider_delta_events() {
         AgentStreamEvent::ModelStream {
             event: ModelResponseStreamEvent::PartDelta(ref delta),
             ..
-        } if delta.delta == "hel"
+        } if delta.as_text() == "hel"
     )));
 }

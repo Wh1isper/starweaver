@@ -14,6 +14,7 @@ Working evidence, reference comparisons, migration notes, and release TODOs live
 - `core/03-tools-output-capabilities.md` — tool schema, tool loop, structured output, output functions, validators, hooks, and capability bundles
 - `core/04-context-state-executor.md` — `AgentContext`, `StateStore`, events, messages, notes, usage, checkpoints, and executor preparation
 - `core/05-pydantic-ai-feature-map.md` — Pydantic AI feature coverage map across agents, providers, tools, output, streaming, and testing
+- `core/06-message-request-abstractions.md` — Pydantic AI-informed message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
 
 ### First-Party Agent SDK
 
@@ -33,6 +34,7 @@ Working evidence, reference comparisons, migration notes, and release TODOs live
 - `ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, AGUI-compatible rendering, launcher dispatch, and GitHub install/update flow
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `ops/06-workflow-orchestration.md` — Claw-owned workflow definitions, runs, node runs, events, toolset, schedules, and workflow console semantics
+- `ops/07-ya-mono-parity-migration.md` — ya-mono parity, migration, API behavior, CLI parity, media fixes, and planned refactors
 
 ## System Shape
 
@@ -48,6 +50,7 @@ flowchart TD
     env[starweaver-environment]
     session[starweaver-session]
     stream[starweaver-stream]
+    storage[starweaver-storage]
     claw[starweaver-claw]
     workflow[Workflow orchestration]
     cli[starweaver-cli]
@@ -99,7 +102,7 @@ flowchart TD
 ## Layer Principles
 
 - `starweaver-core` defines shared identifiers, metadata, usage, serializable envelopes, and cross-layer contracts.
-- `starweaver-model` owns provider protocol translation, profiles, request settings, transports, replay fixtures, and production-request guards.
+- `starweaver-model` owns provider protocol translation, canonical message/request/response ASTs, request preparation, profiles, request settings, transports, replay fixtures, and production-request guards.
 - `starweaver-tools` owns provider-neutral tool definitions, toolsets, execution context, tool metadata, retries, approval/deferred metadata, and MCP foundations.
 - `starweaver-context` owns lifecycle context, typed dependencies, state, events, message bus, notes, usage, and exportable runtime evidence.
 - `starweaver-runtime` owns deterministic agent loop semantics: model request, tool execution, output handling, retry, streaming, history, capability hooks, and checkpoint emission.
@@ -107,7 +110,8 @@ flowchart TD
 - `starweaver-environment` provides file, shell, process, resource, sandbox, and environment state abstractions through an `EnvironmentProvider` boundary.
 - `starweaver-session` is the shared durable session crate for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
 - `starweaver-stream` is the shared display and replay stream crate for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes used by CLI, Claw, and platform adapters.
-- `starweaver-claw` persists and resumes sessions through concrete adapters over stable context, environment, event, checkpoint, trace, display-message, shared `SessionStore`, and stream contracts; it owns workflow orchestration resources, executor coordination, schedules, and workflow APIs.
+- `starweaver-storage` owns shared SQLite migrations, durable session/replay adapters, migration status reporting, and import foundations for CLI and Claw.
+- `starweaver-claw` persists and resumes sessions through shared storage adapters over stable context, environment, event, checkpoint, trace, display-message, shared `SessionStore`, and stream contracts; it owns workflow orchestration resources, executor coordination, schedules, and workflow APIs.
 - `starweaver-cli` is a product surface over the SDK, environment providers, shared session/stream contracts, CLI-owned config, and terminal renderers.
 - `starweaver-platform` hosts external protocol adapters such as A2A and AGUI over SDK, service, session, display-message, event, stream, and trace contracts. Pydantic AI's A2A and AGUI examples serve as adapter demos for this layer.
 
@@ -116,7 +120,7 @@ flowchart TD
 The core layer tracks Pydantic AI concepts:
 
 - agents, dependencies, outputs, capabilities, hooks, message history, direct runs
-- model providers, settings, request parameters, profiles, native tools, thinking, retries, gateway routing
+- model providers, message/request/response parts, settings, request parameters, profiles, native tools, thinking, retries, gateway routing
 - function tools, advanced tools, toolsets, deferred tools, common tools, third-party tools, MCP
 - streaming events, graph iteration, structured output, testing, and multi-agent patterns
 
@@ -128,6 +132,7 @@ The SDK layer tracks application-facing agent concepts:
 - shared `SessionStore`-backed durable services, stream replay transports, run trace projection, session tools, execution records, and workspace binding evidence
 - OpenTelemetry GenAI traces, external root trace propagation, Langfuse-friendly OTLP export, and nested subagent spans
 - first-party toolsets, skill loading, media handling, tool proxy, subagents, unified delegation
+- ya-mono parity for SDK filters, media preflight processing, yaacli behaviors, and ya-claw API/storage/frontend migration
 
 ## Maintenance Rules
 

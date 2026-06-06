@@ -440,7 +440,7 @@ pub fn tool_call_response(
         parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
             id: id.into(),
             name: name.into(),
-            arguments,
+            arguments: arguments.into(),
         })],
         usage: Usage::default(),
         model_name: Some("test".to_string()),
@@ -474,6 +474,9 @@ fn text_from_content(content: &[ContentPart]) -> String {
         .map(|part| match part {
             ContentPart::Text { text } => text.as_str(),
             ContentPart::ImageUrl { url } | ContentPart::FileUrl { url, .. } => url.as_str(),
+            ContentPart::Binary { media_type, .. }
+            | ContentPart::ResourceRef { media_type, .. }
+            | ContentPart::DataUrl { media_type, .. } => media_type.as_str(),
         })
         .collect::<Vec<_>>()
         .join("\n")

@@ -377,9 +377,9 @@ fn project_model_stream(
         .with_payload(json!({
             "message_id": format!("message-{}", delta.index),
             "part_index": delta.index,
-            "delta": delta.delta,
+            "delta": delta.as_text(),
         }))
-        .with_preview(delta.delta.clone())],
+        .with_preview(delta.as_text())],
         ModelResponseStreamEvent::PartEnd(part) => vec![DisplayMessage::new(
             sequence,
             context.session_id.clone(),
@@ -501,7 +501,7 @@ fn project_tool_call(
         "tool_call_id": call.id,
         "tool_name": call.name,
         "name": call.name,
-        "arguments": call.arguments,
+        "arguments": call.arguments.replay_value(),
     }))
     .with_preview(format!("tool call {}", call.name))
 }

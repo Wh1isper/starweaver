@@ -26,7 +26,7 @@ flowchart TD
 ```
 
 - `starweaver-core`: shared identifiers, metadata, usage, capability status, serializable cross-layer envelopes.
-- `starweaver-model`: messages, settings, profiles, provider mappers, transport, replay fixtures, test models, request guard.
+- `starweaver-model`: canonical message/request/response ASTs, model request preparation, settings, profiles, provider mappers, transport, replay fixtures, test models, request guard.
 - `starweaver-tools`: tool definitions, dynamic tool execution, toolsets, MCP foundations, metadata, retry and control-flow envelopes.
 - `starweaver-context`: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, notes, usage, resumable state.
 - `starweaver-runtime`: deterministic run loop, tool loop, output loop, hooks, budgets, stream records, checkpoints.
@@ -35,18 +35,19 @@ flowchart TD
 
 Core Starweaver should cover these feature families before broader SDK expansion:
 
-| Feature family         | Core contract                                        | Validation                                     |
-| ---------------------- | ---------------------------------------------------- | ---------------------------------------------- |
-| Agents                 | reusable runtime agent plus builder facade           | runtime and SDK builder tests                  |
-| Dependencies           | typed and named dependencies in context              | context/tool/runtime dependency tests          |
-| Model providers        | provider-neutral protocol and replay fixtures        | `make replay-check`                            |
-| Tools                  | function tools, toolsets, metadata, retries          | `starweaver-tools` and runtime tool loop tests |
-| Output                 | schemas, typed parsing, validators, output functions | structured output and typed output tests       |
-| Capabilities and hooks | composable runtime extensions                        | capability bundle and hook tests               |
-| Message history        | all/new messages, processors, reinjection            | message history tests                          |
-| Streaming              | run events, part events, tool events                 | stream tests                                   |
-| Testing                | deterministic models and request guard               | model and runtime test suites                  |
-| Durability seam        | context export and checkpoints                       | executor/context tests                         |
+| Feature family         | Core contract                                                         | Validation                                         |
+| ---------------------- | --------------------------------------------------------------------- | -------------------------------------------------- |
+| Agents                 | reusable runtime agent plus builder facade                            | runtime and SDK builder tests                      |
+| Dependencies           | typed and named dependencies in context                               | context/tool/runtime dependency tests              |
+| Model providers        | provider-neutral protocol and replay fixtures                         | `make replay-check`                                |
+| Message/request AST    | typed request/response parts, request envelope, streaming part events | message AST, request preparation, and stream tests |
+| Tools                  | function tools, toolsets, metadata, retries                           | `starweaver-tools` and runtime tool loop tests     |
+| Output                 | schemas, typed parsing, validators, output functions                  | structured output and typed output tests           |
+| Capabilities and hooks | composable runtime extensions                                         | capability bundle and hook tests                   |
+| Message history        | all/new messages, processors, reinjection                             | message history tests                              |
+| Streaming              | run events, part events, tool events                                  | stream tests                                       |
+| Testing                | deterministic models and request guard                                | model and runtime test suites                      |
+| Durability seam        | context export and checkpoints                                        | executor/context tests                             |
 
 ## Core Run Flow
 
@@ -63,7 +64,8 @@ sequenceDiagram
     Runtime->>Context: record request, dependencies, usage baseline
     Runtime->>Executor: checkpoint RunStart
     Runtime->>Runtime: prepare instructions, history, tools, settings
-    Runtime->>Model: provider-neutral request
+    Runtime->>Model: canonical messages, settings, request parameters, context
+    Model->>Model: profile-driven request preparation and message normalization
     Model-->>Runtime: canonical response
     Runtime->>Context: append response, usage, events
     alt tool calls
@@ -89,6 +91,7 @@ The core layer emits enough evidence for durable replay and resume:
 - Executor checkpoints capture graph-level progress, tool boundaries, suspend points, and completion.
 - Tool control-flow metadata captures approval and deferred execution boundaries.
 - Provider replay fixtures capture request/response compatibility across protocol families.
+- Prepared model request snapshots capture canonical history, normalized history, prepared parameters, provider wire request, and canonical response.
 
 Durability belongs above the core runtime, while the runtime emits stable evidence and accepts restored context state.
 

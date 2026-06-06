@@ -70,7 +70,7 @@ impl OpenAiChatAdapter {
                                 "type": "function",
                                 "function": {
                                     "name": call.name,
-                                    "arguments": call.arguments.to_string(),
+                                    "arguments": call.arguments.wire_json_string(),
                                 }
                             })),
                             _ => {}

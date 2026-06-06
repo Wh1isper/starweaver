@@ -147,7 +147,7 @@ impl AnthropicMessagesAdapter {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    arguments: block.get("input").cloned().unwrap_or(Value::Null),
+                    arguments: block.get("input").cloned().unwrap_or(Value::Null).into(),
                 })),
                 _ => {}
             }

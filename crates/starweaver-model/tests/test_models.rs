@@ -47,10 +47,7 @@ async fn test_model_streams_scripted_events_and_captures_requests() {
             index: 0,
             part_kind: "text".to_string(),
         }),
-        ModelResponseStreamEvent::PartDelta(PartDelta {
-            index: 0,
-            delta: "stream".to_string(),
-        }),
+        ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "stream")),
         ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
         ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("stream"))),
     ]]);
@@ -141,10 +138,7 @@ async fn function_model_streams_events_from_messages_and_params() {
                 index: 0,
                 part_kind: "text".to_string(),
             }),
-            ModelResponseStreamEvent::PartDelta(PartDelta {
-                index: 0,
-                delta: "ok".to_string(),
-            }),
+            ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "ok")),
             ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
             ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("ok"))),
         ])

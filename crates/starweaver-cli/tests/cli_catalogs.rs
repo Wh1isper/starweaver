@@ -22,6 +22,9 @@ fn setup_creates_config_catalogs_and_directories() {
     assert!(temp.path().join("global/config.toml").exists());
     assert!(temp.path().join("global/tools.toml").exists());
     assert!(temp.path().join("global/mcp.json").exists());
+    let global_gitignore = fs::read_to_string(temp.path().join("global/.gitignore")).unwrap();
+    assert!(global_gitignore.contains("worktrees/"));
+    assert!(global_gitignore.contains("message_history/"));
     assert!(temp.path().join("global/skills").is_dir());
     assert!(temp.path().join("global/subagents").is_dir());
     assert!(!temp.path().join(".starweaver/config.toml").exists());
@@ -33,6 +36,7 @@ fn setup_creates_config_catalogs_and_directories() {
         .collect::<Vec<_>>();
     assert!(rows.iter().any(|row| row["kind"] == "tools"));
     assert!(rows.iter().any(|row| row["kind"] == "mcp"));
+    assert!(rows.iter().any(|row| row["kind"] == "global-state-ignore"));
     assert!(!rows.iter().any(|row| row["kind"] == "state-ignore"));
 
     let project = cli(&temp).args(["setup", "--project"]).output().unwrap();

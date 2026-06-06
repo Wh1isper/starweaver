@@ -1,6 +1,7 @@
 //! Canonical model stream events.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::message::ModelResponse;
 
@@ -32,8 +33,81 @@ pub struct PartStart {
 pub struct PartDelta {
     /// Part index in response.
     pub index: usize,
-    /// Delta text or JSON payload encoded as text.
-    pub delta: String,
+    /// Typed delta payload.
+    #[serde(flatten)]
+    pub delta: StreamDelta,
+}
+
+impl PartDelta {
+    /// Build a text delta.
+    #[must_use]
+    pub fn text(index: usize, text: impl Into<String>) -> Self {
+        Self {
+            index,
+            delta: StreamDelta::Text { text: text.into() },
+        }
+    }
+
+    /// Build a thinking delta.
+    #[must_use]
+    pub fn thinking(index: usize, text: impl Into<String>) -> Self {
+        Self {
+            index,
+            delta: StreamDelta::Thinking { text: text.into() },
+        }
+    }
+
+    /// Return a text representation for legacy display paths.
+    #[must_use]
+    pub fn as_text(&self) -> String {
+        match &self.delta {
+            StreamDelta::Text { text }
+            | StreamDelta::Thinking { text }
+            | StreamDelta::ToolCallName { name: text }
+            | StreamDelta::ToolCallArguments {
+                arguments_delta: text,
+            } => text.clone(),
+            StreamDelta::NativePayload { payload } | StreamDelta::FileMetadata { payload } => {
+                payload.to_string()
+            }
+        }
+    }
+}
+
+/// Typed model stream delta payload.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "delta_kind", rename_all = "snake_case")]
+pub enum StreamDelta {
+    /// Text output delta.
+    Text {
+        /// Text fragment.
+        text: String,
+    },
+    /// Thinking output delta.
+    Thinking {
+        /// Thinking fragment.
+        text: String,
+    },
+    /// Tool call name delta.
+    ToolCallName {
+        /// Tool name fragment or final value.
+        name: String,
+    },
+    /// Tool call argument delta.
+    ToolCallArguments {
+        /// Argument fragment.
+        arguments_delta: String,
+    },
+    /// Provider-native payload delta.
+    NativePayload {
+        /// Native payload fragment.
+        payload: Value,
+    },
+    /// File metadata delta.
+    FileMetadata {
+        /// File metadata fragment.
+        payload: Value,
+    },
 }
 
 /// Part end event.
@@ -41,4 +115,55 @@ pub struct PartDelta {
 pub struct PartEnd {
     /// Part index in response.
     pub index: usize,
+}
+
+/// Lifecycle state of a streamed model response.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamLifecycle {
+    /// Events are still arriving.
+    #[default]
+    Incomplete,
+    /// Final response has been assembled.
+    Complete,
+    /// Stream ended by explicit cancellation or transport interruption.
+    Interrupted,
+}
+
+/// Lightweight stream assembly state for replay and lifecycle assertions.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ModelStreamState {
+    /// Current lifecycle.
+    pub lifecycle: StreamLifecycle,
+    /// Number of started parts.
+    pub started_parts: usize,
+    /// Number of ended parts.
+    pub ended_parts: usize,
+    /// Final response when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_response: Option<Box<ModelResponse>>,
+}
+
+impl ModelStreamState {
+    /// Apply one stream event.
+    pub fn apply(&mut self, event: &ModelResponseStreamEvent) {
+        match event {
+            ModelResponseStreamEvent::PartStart(_) => {
+                self.started_parts += 1;
+            }
+            ModelResponseStreamEvent::PartDelta(_) => {}
+            ModelResponseStreamEvent::PartEnd(_) => {
+                self.ended_parts += 1;
+            }
+            ModelResponseStreamEvent::FinalResult(response) => {
+                self.lifecycle = StreamLifecycle::Complete;
+                self.final_response = Some(response.clone());
+            }
+        }
+    }
+
+    /// Mark stream as interrupted.
+    pub fn interrupt(&mut self) {
+        self.lifecycle = StreamLifecycle::Interrupted;
+    }
 }

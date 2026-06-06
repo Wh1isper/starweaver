@@ -197,7 +197,7 @@ impl BedrockConverseAdapter {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    arguments: call.get("input").cloned().unwrap_or(Value::Null),
+                    arguments: call.get("input").cloned().unwrap_or(Value::Null).into(),
                 }));
             }
         }

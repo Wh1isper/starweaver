@@ -23,6 +23,7 @@
 //! execution profiles, workspace binding, queued run coordination, replayable
 //! events, and a local HTTP API.
 
+pub(crate) mod api;
 pub mod config;
 pub mod controller;
 pub mod error;

@@ -14,12 +14,12 @@ async fn runtime_records_approval_and_deferred_tool_returns() {
                 ModelResponsePart::ToolCall(ToolCallPart {
                     id: "approval".to_string(),
                     name: "dangerous".to_string(),
-                    arguments: serde_json::json!({}),
+                    arguments: serde_json::json!({}).into(),
                 }),
                 ModelResponsePart::ToolCall(ToolCallPart {
                     id: "deferred".to_string(),
                     name: "slow".to_string(),
-                    arguments: serde_json::json!({}),
+                    arguments: serde_json::json!({}).into(),
                 }),
             ],
             ..ModelResponse::text("")

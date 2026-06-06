@@ -41,7 +41,7 @@ fn delegate_then_finish_model(name: &'static str) -> FunctionModel {
                 parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                     id: "delegate-call".to_string(),
                     name: "delegate".to_string(),
-                    arguments: serde_json::json!({"name": name, "prompt": "help"}),
+                    arguments: serde_json::json!({"name": name, "prompt": "help"}).into(),
                 })],
                 ..ModelResponse::text("")
             })

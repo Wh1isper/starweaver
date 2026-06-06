@@ -11,7 +11,8 @@ The project focuses on these workspace layers:
 - `starweaver-environment`: filesystem, shell, resources, policy, state snapshots, virtual provider tests, and local provider foundations.
 - `starweaver-session`: shared durable session contracts for input parts, `SessionStore`, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
 - `starweaver-stream`: shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
-- `starweaver-claw`: durable orchestration host that re-exports shared session/stream contracts and will provide concrete storage, stream, service, and coordinator adapters.
+- `starweaver-storage`: shared SQLite migrations, concrete durable session storage, replay event storage, and migration import foundations.
+- `starweaver-claw`: durable orchestration host that re-exports shared session/stream/storage contracts and provides service, coordinator, workflow, schedule, profile, workspace, bridge, and API adapters.
 - `starweaver-cli`: CLI-first product surface for headless stdio runs, display-message rendering, session restore, launcher dispatch, and install/update workflows.
 
 Planned layers are specified before public API graduation:
@@ -62,6 +63,7 @@ Useful starting points:
 - [docs/release.md](docs/release.md)
 - [spec/README.md](spec/README.md)
 - [spec/ops/02-shared-execution-components.md](spec/ops/02-shared-execution-components.md)
+- [spec/ops/07-ya-mono-parity-migration.md](spec/ops/07-ya-mono-parity-migration.md)
 - [memos/implementation-todo.md](memos/implementation-todo.md)
 
 ## Quick Example

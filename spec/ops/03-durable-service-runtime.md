@@ -228,6 +228,23 @@ A Redis-backed event log should preserve the same replay contract:
 - terminal marker as a normal replay event
 - compact snapshots in side keys or durable stream archive rows
 
+## ya-claw API and Migration Compatibility
+
+Starweaver Claw should preserve the current ya-claw service contract so existing web clients, bridge adapters, and service users can migrate directly. The service compatibility gate covers exact route paths, colon-action endpoints, response envelopes, state transitions, and SSE replay behavior described in `07-ya-mono-parity-migration.md`.
+
+Compatibility requirements:
+
+- route aliases for both colon-action paths and slash-action convenience paths
+- typed response DTOs aligned with the web client `types.ts` surface
+- route contract tests generated from the ya-claw FastAPI route list and web API client methods
+- service-managed approval/deferred interaction responses on run endpoints
+- durable session memory, async tasks, bridge dedupe, HITL bridge messages, agency fires, schedules, heartbeat, workflows, and runtime instance metadata
+- notification SSE and run/session SSE implemented through shared replay transport contracts
+
+Starweaver-owned migrations should replace Alembic for migrated users. The migration runner records versions in `starweaver_schema_migrations`, supports dry-run reports, backs up source databases, imports ya-claw ORM tables into Starweaver records, and generates display/replay records when legacy raw stream records are unavailable. SQLite is the first compatibility target; PostgreSQL follows after the SQLite importer and schema snapshots stabilize.
+
+Shared storage now uses a `starweaver-storage` crate for the first reusable SQLite adapter slice. That crate owns SQLite connection management, migration registry, `SessionStore`, `StreamArchive`, and `ReplayEventLog` adapters, plus ya-claw and yaacli importers. Claw remains responsible for HTTP APIs, coordinator behavior, workspace binding, schedules, workflows, and bridge adapters.
+
 ## Interruption and Approval
 
 Suspend reasons:

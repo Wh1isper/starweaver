@@ -38,7 +38,7 @@ async fn process_shell_tools_use_process_capable_provider() {
             &starweaver_model::ToolCallPart {
                 id: "start".to_string(),
                 name: "shell_exec".to_string(),
-                arguments: serde_json::json!({"command": "sleep 1", "background": true}),
+                arguments: serde_json::json!({"command": "sleep 1", "background": true}).into(),
             },
         )
         .await;
@@ -48,7 +48,7 @@ async fn process_shell_tools_use_process_capable_provider() {
             &starweaver_model::ToolCallPart {
                 id: "wait".to_string(),
                 name: "shell_wait".to_string(),
-                arguments: serde_json::json!({"process_id": started.content["process_id"].as_str().unwrap(), "timeout_seconds": 0}),
+                arguments: serde_json::json!({"process_id": started.content["process_id"].as_str().unwrap(), "timeout_seconds": 0}).into(),
             },
         )
         .await;

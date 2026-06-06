@@ -110,7 +110,7 @@ async fn bare_agent_reports_tool_call_boundary_before_tools_phase() {
         parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
             id: "call_1".to_string(),
             name: "lookup".to_string(),
-            arguments: serde_json::json!({"query": "x"}),
+            arguments: serde_json::json!({"query": "x"}).into(),
         })],
         ..ModelResponse::text("")
     }));

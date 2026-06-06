@@ -1,6 +1,7 @@
 //! Ergonomic SDK facade over the Starweaver bare runtime.
 
 pub mod bundles;
+pub mod filters;
 pub mod mcp_live;
 pub mod presets;
 pub mod session;
@@ -21,6 +22,10 @@ pub use bundles::{
     HostSearchClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse,
     ProcessShellHandle, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
     SearchResultItem, SkillError, SkillPackage, SkillRegistry, SkillSourceScope, ToolProxyToolset,
+};
+pub use filters::{
+    default_filter_bundle, default_filter_processors, MediaUploadRequest, MediaUploader,
+    NamedFilterProcessor, DEFAULT_FILTER_ORDER,
 };
 pub use mcp_live::{
     live_mcp_toolset, DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot,

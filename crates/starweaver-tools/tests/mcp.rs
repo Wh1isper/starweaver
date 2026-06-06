@@ -62,7 +62,7 @@ async fn mcp_tool_call_defers_to_mcp_runtime_metadata() {
     let call = starweaver_model::ToolCallPart {
         id: "call_1".to_string(),
         name: "add".to_string(),
-        arguments: serde_json::json!({"a": 2, "b": 3}),
+        arguments: serde_json::json!({"a": 2, "b": 3}).into(),
     };
 
     let result = registry

@@ -83,7 +83,7 @@ async fn retry_budget_is_visible_in_tool_context() {
     let call = starweaver_model::ToolCallPart {
         id: "call_1".to_string(),
         name: "inspect".to_string(),
-        arguments: serde_json::json!({}),
+        arguments: serde_json::json!({}).into(),
     };
     let context = ToolContext::new(RunId::new(), ConversationId::new(), 0).with_retry_budget(4, 4);
 

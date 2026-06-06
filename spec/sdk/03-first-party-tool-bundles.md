@@ -86,6 +86,8 @@ Implementation requirements:
 - `load_media_url` accepts only HTTP and HTTPS URLs, detects content category through headers and extension hints, checks current model capabilities, returns provider-ready media/document URL parts when supported, and emits a precise fallback message that points to `read_image`, `read_video`, `read_audio`, or `download` plus document-conversion skills.
 - `read_image`, `read_video`, and `read_audio` use configurable fallback models, account usage into the parent `AgentContext`, preserve trace correlation, and return structured text evidence with source URL, model id, and truncation metadata.
 - Media and download tools share protocol validation, host-network-policy delegation, streaming size limits, content-type sniffing, and deterministic fake clients.
+- Media preflight processors handle binary media before provider mapping: validate image bytes, detect actual image MIME type, correct mismatched declarations, account for base64 expansion, compress static images, split tall screenshots, apply GIF support policy, enforce image/video count limits while keeping newest media, and preserve clear system-reminder replacements for removed media.
+- Media upload processors run after local image processing and replace binary image/video content with URL parts when the active model profile supports URL media or when large videos should leave the request body. S3-compatible upload and provider resource-store upload adapters share one `MediaUploader` trait.
 
 ### Search and Web Bundle
 

@@ -153,7 +153,7 @@ async fn runtime_delegate_tool_merges_child_context_into_parent_context() {
                     parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                         id: "delegate-call".to_string(),
                         name: "delegate".to_string(),
-                        arguments: serde_json::json!({"name": "child", "prompt": "help"}),
+                        arguments: serde_json::json!({"name": "child", "prompt": "help"}).into(),
                     })],
                     ..ModelResponse::text("")
                 })

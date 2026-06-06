@@ -46,8 +46,9 @@ The runtime assembles each model request in this order:
 4. Collect tools from registry, toolsets, capabilities, and prepare-tools hooks.
 5. Add output schema or output functions.
 6. Merge model defaults, agent settings, scoped overrides, and per-run settings.
-7. Attach request parameters: tools, native tools, output schema, HTTP overrides, extra body.
-8. Emit pre-request events and checkpoint records.
+7. Attach request parameters: tools, native tools, output schema, output mode, instruction parts, thinking, HTTP overrides, extra body, and replay/audit metadata.
+8. Hand canonical messages, settings, request parameters, and `ModelRequestContext` to `starweaver-model` for profile-driven preparation and message normalization.
+9. Emit pre-request events, prepared request evidence, and checkpoint records.
 
 ## Tool Boundary
 
@@ -59,7 +60,8 @@ sequenceDiagram
     participant Context
     participant Executor
 
-    Runtime->>Model: request(history, tools, settings)
+    Runtime->>Model: request(messages, settings, request parameters, context)
+    Model->>Model: prepare request and normalize messages
     Model-->>Runtime: response with tool calls
     Runtime->>Executor: checkpoint ToolCallBoundary
     Runtime->>Context: publish tool-call events
@@ -97,8 +99,8 @@ Runtime streaming exposes stable records for:
 
 - run start and completion
 - model request and response boundaries
-- response part start, delta, and end
-- text, thinking, and tool-call deltas
+- response part start, typed delta, and end
+- text, thinking, tool-call name, tool-call argument, native payload, and file metadata deltas
 - tool call and tool result events
 - output retry events
 - checkpoint and suspend events
@@ -187,5 +189,6 @@ This keeps checkpoint reload independent from UI/SSE replay. The checkpoint capt
 
 - graph transition tests cover final text, tool call, retry, idle redirect, and max-step paths
 - runtime tests cover settings forwarding, tool boundaries, output retries, usage limits, capability hooks, stream events, history processors, and checkpoints
-- replay tests cover provider response shapes that drive tool/output branches
+- replay tests cover provider response shapes and prepared request snapshots that drive tool/output branches
+- model tests cover typed message parts, request preparation, malformed tool-call argument preservation, and stream final assembly
 - durable resume tests cover restored context and checkpoint continuation before service runtime graduation

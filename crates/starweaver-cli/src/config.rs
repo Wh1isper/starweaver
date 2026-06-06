@@ -15,6 +15,7 @@ use crate::{
     args::{Cli, CliCommand, ConfigCommand, HitlPolicy, OutputMode, SetupCommand},
     error::io_error,
     oauth::CODEX_BASE_URL,
+    tui::SlashCommandDefinition,
     CliError, CliResult,
 };
 
@@ -67,6 +68,8 @@ pub struct CliConfig {
     pub mcp_config: serde_json::Value,
     /// Compatibility metadata for config sections preserved for migration audits.
     pub compatibility_metadata: serde_json::Value,
+    /// Custom slash commands loaded from `[commands.*]` config sections.
+    pub slash_commands: BTreeMap<String, SlashCommandDefinition>,
     /// Automatic trim after a run.
     pub auto_trim: bool,
     /// Recent runs to keep for automatic trim.
@@ -93,6 +96,7 @@ struct FileConfig {
     env: Option<BTreeMap<String, String>>,
     skills: Option<SkillsConfig>,
     subagents: Option<SubagentsConfig>,
+    commands: Option<BTreeMap<String, FileCommandDefinition>>,
     trim: Option<TrimConfig>,
 }
 
@@ -114,6 +118,14 @@ struct FileModelProfile {
     model: Option<String>,
     model_settings: Option<String>,
     model_cfg: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FileCommandDefinition {
+    prompt: Option<String>,
+    mode: Option<String>,
+    description: Option<String>,
+    aliases: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -290,6 +302,7 @@ impl ConfigResolver {
             tools_config: serde_json::Value::Null,
             mcp_config: serde_json::Value::Null,
             compatibility_metadata: serde_json::json!({}),
+            slash_commands: BTreeMap::new(),
             auto_trim: true,
             current_session_keep_recent_runs: 20,
             all_sessions_keep_days: 60,
@@ -364,6 +377,10 @@ fn bootstrap_global_config_dir(global_dir: &Path) -> CliResult<()> {
     for (path, content) in [
         (global_dir.join("tools.toml"), DEFAULT_TOOLS_TEMPLATE),
         (global_dir.join("mcp.json"), DEFAULT_MCP_TEMPLATE),
+        (
+            global_dir.join(".gitignore"),
+            DEFAULT_GLOBAL_GITIGNORE_TEMPLATE,
+        ),
     ] {
         if !path.exists() {
             fs::write(&path, content).map_err(|error| io_error(&path, error))?;
@@ -505,6 +522,9 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
     if let Some(subagents) = parsed.subagents {
         merge_subagent_config(config, subagents, base);
     }
+    if let Some(commands) = parsed.commands {
+        merge_slash_commands(config, commands);
+    }
     if let Some(trim) = parsed.trim {
         if let Some(auto_after_run) = trim.auto_after_run {
             config.auto_trim = auto_after_run;
@@ -551,6 +571,63 @@ fn merge_subagent_config(
     }
     config.disabled_subagents.sort();
     config.disabled_subagents.dedup();
+}
+
+fn merge_slash_commands(config: &mut CliConfig, commands: BTreeMap<String, FileCommandDefinition>) {
+    for (name, command) in commands {
+        let normalized = normalize_command_name(&name);
+        if normalized.is_empty() || reserved_slash_command(&normalized) {
+            continue;
+        }
+        let Some(prompt) = command.prompt.filter(|prompt| !prompt.trim().is_empty()) else {
+            continue;
+        };
+        let definition = SlashCommandDefinition {
+            name: normalized.clone(),
+            prompt,
+            mode: command.mode,
+            description: command.description,
+            aliases: command
+                .aliases
+                .unwrap_or_default()
+                .into_iter()
+                .map(|alias| normalize_command_name(&alias))
+                .filter(|alias| !alias.is_empty() && !reserved_slash_command(alias))
+                .collect(),
+        };
+        config.slash_commands.insert(normalized, definition.clone());
+        for alias in &definition.aliases {
+            config
+                .slash_commands
+                .insert(alias.clone(), definition.clone());
+        }
+    }
+}
+
+fn normalize_command_name(name: &str) -> String {
+    name.trim().trim_start_matches('/').to_ascii_lowercase()
+}
+
+fn reserved_slash_command(name: &str) -> bool {
+    matches!(
+        name,
+        "help"
+            | "config"
+            | "mode"
+            | "act"
+            | "plan"
+            | "loop"
+            | "tasks"
+            | "session"
+            | "dump"
+            | "load"
+            | "clear"
+            | "cost"
+            | "exit"
+            | "model"
+            | "paste-image"
+            | "goal"
+    )
 }
 
 fn merge_compatibility_metadata(config: &mut CliConfig, raw: &Value) {
@@ -923,6 +1000,13 @@ state.*.json.tmp
 starweaver.sqlite
 starweaver.sqlite-*
 store/
+";
+
+pub const DEFAULT_GLOBAL_GITIGNORE_TEMPLATE: &str = r"sessions/
+message_history/
+worktrees/
+state.json
+state.*.json.tmp
 ";
 
 const fn default_config_template(scope: ConfigScope) -> &'static str {

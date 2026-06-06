@@ -13,6 +13,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+base64.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 futures-util.workspace = true

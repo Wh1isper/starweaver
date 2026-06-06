@@ -198,6 +198,28 @@ Starweaver mapping layers:
 
 There is no separate AGUI domain model in Starweaver. External compatibility is a schema contract on `DisplayMessage`: standard AGUI event names where available, Starweaver extension fields where durable execution needs more context.
 
+## yaacli Parity Gate
+
+The CLI parity target tracks the current `yaacli` product behavior while preserving Starweaver's display-message-first architecture. The detailed gap matrix lives in `07-ya-mono-parity-migration.md`; this spec owns the product contract.
+
+Required parity additions:
+
+- `-s/--session`, `--model-profile`, `--worker`, `--worktree`, and `--branch` aliases and behaviors
+- interactive setup wizard for provider, model, environment variables, config files, bundled skills, and bundled subagents
+- startup asset seeding that copies missing built-in skills and subagents while preserving user edits
+- global and project config precedence for `config.toml`, `tools.toml`, and `mcp.json`, plus `[env]`, `[shell_env]`, and shell environment isolation
+- model profile catalog with labels, status display, and TUI switching
+- custom slash commands from config with optional mode hints
+- interactive TUI composer, mode switching, model switching, task/process panels, cost/status display, session restore, dump/load, clear, and exit workflows
+- clipboard image reading that attaches binary media and routes through SDK media preflight processors
+- S3 media upload configuration and model-backed shell review policy
+- yaacli session-folder importer/exporter with retention settings compatibility
+- git worktree create/resume workflow under the global config directory and resume guidance after exit
+
+Slash command coverage target: `/help`, `/config`, `/mode`, `/act`, `/plan`, `/loop`, `/tasks`, `/session`, `/dump`, `/load`, `/clear`, `/cost`, and `/exit`.
+
+The Starweaver CLI should keep its richer durable session model while providing import and compatibility commands for yaacli session folders.
+
 ## CLI Assembly Shape
 
 ```mermaid

@@ -1249,7 +1249,7 @@ fn scripted_tool_model(tool_name: &'static str) -> FunctionModel {
             parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                 id: format!("{tool_name}_call"),
                 name: tool_name.to_string(),
-                arguments: json!({"action": tool_name}),
+                arguments: json!({"action": tool_name}).into(),
             })],
             usage: starweaver_core::Usage::default(),
             model_name: Some(tool_name.to_string()),

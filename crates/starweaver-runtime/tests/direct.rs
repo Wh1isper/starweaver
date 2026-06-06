@@ -76,7 +76,7 @@ async fn direct_tool_call_executes_registry_tool() {
     let call = ToolCallPart {
         id: "call_1".to_string(),
         name: "echo".to_string(),
-        arguments: serde_json::json!({"value": 42}),
+        arguments: serde_json::json!({"value": 42}).into(),
     };
 
     let result = tool_call(&tools, context, &call).await;
@@ -93,10 +93,7 @@ fn model_stream_events_remain_replay_serializable() {
             index: 0,
             part_kind: "text".to_string(),
         }),
-        ModelResponseStreamEvent::PartDelta(PartDelta {
-            index: 0,
-            delta: "ok".to_string(),
-        }),
+        ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "ok")),
         ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
         ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("ok"))),
     ];

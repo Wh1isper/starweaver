@@ -317,10 +317,7 @@ async fn default_projector_maps_runtime_stream_parts_to_display_messages() {
         1,
         AgentStreamEvent::ModelStream {
             step: 0,
-            event: ModelResponseStreamEvent::PartDelta(PartDelta {
-                index: 0,
-                delta: "hi".to_string(),
-            }),
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "hi")),
         },
     );
     let part_start = AgentStreamRecord::new(
@@ -434,7 +431,7 @@ async fn default_projector_maps_thinking_and_tool_calls_from_model_response() {
             ModelResponsePart::ToolCall(ToolCallPart {
                 id: "call_1".to_string(),
                 name: "lookup".to_string(),
-                arguments: json!({"query": "starweaver"}),
+                arguments: json!({"query": "starweaver"}).into(),
             }),
             ModelResponsePart::Text {
                 text: "done".to_string(),

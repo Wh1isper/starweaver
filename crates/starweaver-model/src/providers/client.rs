@@ -12,6 +12,7 @@ use crate::{
         gemini::GeminiGenerateContentAdapter, openai_chat::OpenAiChatAdapter,
         openai_responses::OpenAiResponsesAdapter,
     },
+    request::prepare_model_request,
     settings::ModelSettings,
     transport::{
         build_http_request, send_with_retries, DynHttpClient, DynSleeper, HttpModelConfig,
@@ -185,15 +186,6 @@ impl ProtocolModelClient {
         )
     }
 
-    fn merged_settings(&self, settings: Option<ModelSettings>) -> Option<ModelSettings> {
-        match (&self.default_settings, settings) {
-            (Some(defaults), Some(settings)) => Some(defaults.merge(&settings)),
-            (Some(defaults), None) => Some(defaults.clone()),
-            (None, Some(settings)) => Some(settings),
-            (None, None) => None,
-        }
-    }
-
     fn build_wire_body(
         &self,
         messages: &[ModelMessage],
@@ -360,9 +352,19 @@ impl ModelAdapter for ProtocolModelClient {
         params: ModelRequestParameters,
         context: ModelRequestContext,
     ) -> Result<ModelResponse, ModelError> {
-        let settings = self.merged_settings(settings);
-        let wire_body = self.build_wire_body(&messages, settings.as_ref(), &params)?;
-        let options = Self::request_options(&context, settings.as_ref(), &params);
+        let prepared = prepare_model_request(
+            messages,
+            self.default_settings.as_ref(),
+            settings,
+            params,
+            &self.profile,
+        );
+        let wire_body = self.build_wire_body(
+            &prepared.normalized_messages,
+            prepared.settings.as_ref(),
+            &prepared.params,
+        )?;
+        let options = Self::request_options(&context, prepared.settings.as_ref(), &prepared.params);
         let request = build_http_request(&self.http_config, &options, wire_body);
         if !allow_real_model_requests() {
             return Err(ModelError::RealModelRequestBlocked { url: request.url });
@@ -411,12 +413,22 @@ impl ModelAdapter for ProtocolModelClient {
                 .await;
             return Ok(ModelResponseEventStream::new(receiver));
         }
-        let settings = self.merged_settings(settings);
-        let mut wire_body = self.build_wire_body(&messages, settings.as_ref(), &params)?;
+        let prepared = prepare_model_request(
+            messages,
+            self.default_settings.as_ref(),
+            settings,
+            params,
+            &self.profile,
+        );
+        let mut wire_body = self.build_wire_body(
+            &prepared.normalized_messages,
+            prepared.settings.as_ref(),
+            &prepared.params,
+        )?;
         if let Some(object) = wire_body.as_object_mut() {
             object.insert("stream".to_string(), Value::Bool(true));
         }
-        let options = Self::request_options(&context, settings.as_ref(), &params);
+        let options = Self::request_options(&context, prepared.settings.as_ref(), &prepared.params);
         let request = build_http_request(&self.http_config, &options, wire_body);
         if !allow_real_model_requests() {
             return Err(ModelError::RealModelRequestBlocked { url: request.url });

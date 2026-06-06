@@ -81,6 +81,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn args_and_error_helpers_cover_edge_branches() {
         let run = args::RunCommand {
             prompt: Some(" explicit ".to_string()),
@@ -93,6 +94,9 @@ mod tests {
             profile: None,
             output: None,
             hitl: None,
+            worker: None,
+            worktree: None,
+            branch: None,
         };
         assert_eq!(run.prompt_text().unwrap(), " explicit ");
 
@@ -107,6 +111,9 @@ mod tests {
             profile: None,
             output: None,
             hitl: None,
+            worker: None,
+            worktree: None,
+            branch: None,
         };
         assert_eq!(joined.prompt_text().unwrap(), "hello world");
 
@@ -121,6 +128,9 @@ mod tests {
             profile: None,
             output: None,
             hitl: None,
+            worker: None,
+            worktree: None,
+            branch: None,
         };
         assert!(
             matches!(empty.prompt_text(), Err(CliError::Usage(message)) if message.contains("run -p"))
@@ -133,6 +143,28 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(parsed.command, Some(args::CliCommand::Run(_))));
+
+        let parsed = args::parse_os([
+            OsString::from("starweaver-cli"),
+            OsString::from("-p"),
+            OsString::from("hello"),
+            OsString::from("-s"),
+            OsString::from("session_test"),
+            OsString::from("--model-profile"),
+            OsString::from("coding"),
+            OsString::from("--worker"),
+            OsString::from("off"),
+            OsString::from("--worktree"),
+            OsString::from("feature"),
+            OsString::from("--branch"),
+            OsString::from("feature/parity"),
+        ])
+        .unwrap();
+        assert_eq!(parsed.session.as_deref(), Some("session_test"));
+        assert_eq!(parsed.profile.as_deref(), Some("coding"));
+        assert_eq!(parsed.worker.as_deref(), Some("off"));
+        assert_eq!(parsed.worktree.as_deref(), Some("feature"));
+        assert_eq!(parsed.branch.as_deref(), Some("feature/parity"));
 
         let parse_error =
             args::parse_os([OsString::from("starweaver-cli"), OsString::from("--bad")]);

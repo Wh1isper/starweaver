@@ -39,6 +39,12 @@ Boundary invariants:
 - Memory, Redis Stream, SSE, JSONL, WebSocket, and service bus integrations are adapters over `starweaver-stream` contracts.
 - Claw can colocate session tables and stream archive tables in one database while keeping `SessionStore`, `StreamArchive`, `ReplayEventLog`, and `ReplayTransport` as separate contracts.
 
+## Shared Storage and Migration Direction
+
+The SQLite adapters currently used by CLI and Claw should converge into one storage package after the schema stabilizes. The `starweaver-storage` crate owns reusable SQLite connection management, migration registry, migration status reporting, `SessionStore` adapter, `StreamArchive` adapter, `ReplayEventLog` adapter, and importers for ya-claw databases and yaacli session folders.
+
+This split keeps session/stream contracts in `starweaver-session` and `starweaver-stream`, while moving concrete persistence away from product crates. CLI and Claw select adapters through host configuration and keep product behavior at the edge.
+
 ## Bottom-up Build Order
 
 ```mermaid

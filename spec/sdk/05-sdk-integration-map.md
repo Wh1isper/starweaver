@@ -65,6 +65,27 @@ Target filters:
 - system prompt capability
 - tool args capability
 
+### ya-mono Filter Parity Gate
+
+The SDK parity target tracks the ya-agent-sdk filter catalog from ya-mono. Starweaver has the generic runtime substrate through `HistoryProcessor`, `AgentCapability`, and `CapabilityBundle`; the remaining work is named default bundles, deterministic ordering, and fixture coverage.
+
+| Filter family            | Required Starweaver behavior                                                | Owner                               |
+| ------------------------ | --------------------------------------------------------------------------- | ----------------------------------- |
+| auto-load files          | append configured file context through provider file reads                  | SDK capability bundle               |
+| background shell         | inject completed background process results and spill large output to files | environment/process bundle          |
+| bus messages             | consume pending message bus entries exactly once per request pipeline pass  | context bundle                      |
+| cold start trim          | trim stale tool returns before compact decisions                            | runtime history processor           |
+| environment instructions | inject workspace, policy, and resource state summaries                      | environment bundle                  |
+| handoff                  | rebuild restored histories with keep tags and steering parts                | runtime history processor           |
+| image/media              | validate, split, compress, drop, and upload media before provider mapping   | SDK media bundle and model profiles |
+| model switch             | update model profile evidence and normalize history after provider changes  | SDK profile capability              |
+| reasoning normalize      | keep provider-compatible thinking/reasoning parts                           | model/runtime processor             |
+| runtime instructions     | reinject runtime state after compaction or handoff                          | runtime capability                  |
+| system prompt            | preserve canonical system prompt placement                                  | runtime processor                   |
+| tool args                | repair or flag truncated tool-call arguments before replay                  | runtime processor                   |
+
+Default processor order should be encoded in one SDK preset and tested with an ordered trace fixture. See `spec/ops/07-ya-mono-parity-migration.md` for the full parity and migration plan.
+
 ## Environment Integration
 
 Environment concepts map to provider traits:
@@ -129,6 +150,12 @@ A skill may contribute:
 - toolsets
 
 Skill loading integrates with `AgentBuilder` through capability bundles and with `EnvironmentProvider` for file/resource access. Environment, filesystem, shell, and skill bundles should share one path-space contract so skill scripts and references can be used by tools without remapping.
+
+## Media Processing Parity
+
+Starweaver media handling must include binary and resource-backed request content in addition to URL media. The ya-mono media fixes provide the acceptance target: detect true media type from bytes, account for base64 expansion before provider requests, compress oversized static images, preserve animated media for GIF/upload decisions, split tall screenshots with overlap, validate corrupted images, and upload processed media to external storage when profile policy prefers URLs.
+
+Provider profiles should expose limits for image count, video count, GIF support, max encoded image bytes, binary media support, URL media support, and document support. The media preflight processor should update both user messages and tool-return media content before provider mapping.
 
 ## Review Gate
 

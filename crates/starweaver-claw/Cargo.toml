@@ -33,6 +33,7 @@ starweaver-core.workspace = true
 starweaver-context.workspace = true
 starweaver-session.workspace = true
 starweaver-stream.workspace = true
+starweaver-storage.workspace = true
 starweaver-runtime.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

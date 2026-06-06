@@ -65,7 +65,7 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     let call = ToolCallPart {
         id: "call_1".to_string(),
         name: "inherited".to_string(),
-        arguments: json!({"ok": true}),
+        arguments: json!({"ok": true}).into(),
     };
     let returned = registry.execute_call(context(), &call).await;
     assert!(!returned.is_error);
@@ -74,7 +74,7 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     let error_call = ToolCallPart {
         id: "call_2".to_string(),
         name: "failing".to_string(),
-        arguments: json!({}),
+        arguments: json!({}).into(),
     };
     let error = registry.execute_call(context(), &error_call).await;
     assert!(error.is_error);
@@ -83,7 +83,7 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     let missing_call = ToolCallPart {
         id: "call_3".to_string(),
         name: "missing".to_string(),
-        arguments: json!({}),
+        arguments: json!({}).into(),
     };
     assert!(
         registry

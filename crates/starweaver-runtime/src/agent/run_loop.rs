@@ -569,8 +569,10 @@ impl Agent {
                     context_handle.replace(context.clone());
                     self.trace_recorder.record_event(
                         &tool_span,
-                        SpanEvent::new("starweaver.tool.call")
-                            .with_attribute("gen_ai.tool.call.arguments", call.arguments.clone()),
+                        SpanEvent::new("starweaver.tool.call").with_attribute(
+                            "gen_ai.tool.call.arguments",
+                            call.arguments.replay_value(),
+                        ),
                     );
                     let mut tool_return = self.tools.execute_call(tool_context, call).await;
                     self.trace_recorder.record_event(

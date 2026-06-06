@@ -11,31 +11,37 @@ This spec maps Pydantic AI's documented feature surface to Starweaver's core arc
 
 ## Core Concept Map
 
-| Pydantic AI feature | Starweaver owner                                               | Architecture target                                                                      | Validation path                                        |
-| ------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Agents              | `starweaver-runtime`, `starweaver-agent`                       | reusable runtime agent, SDK builder, app/session facade                                  | builder, runtime, session tests                        |
-| Dependencies        | `starweaver-context`                                           | typed and named dependencies available to tools, hooks, validators, dynamic instructions | context and runtime dependency tests                   |
-| Output              | `starweaver-runtime`, `starweaver-model`                       | text, JSON schema, typed parse, validators, output functions                             | structured output, typed output, output function tests |
-| Capabilities        | `starweaver-runtime`, `starweaver-agent`                       | composable tools, hooks, instructions, settings, validators, processors, usage limits    | capability bundle tests                                |
-| Hooks               | `starweaver-runtime`                                           | ordered lifecycle hooks with context event evidence                                      | hook and capability tests                              |
-| Agent Specs         | `starweaver-core`, `starweaver-agent`                          | serializable agent/subagent specs and loaders                                            | parser and loader tests                                |
-| Message History     | `starweaver-model`, `starweaver-runtime`, `starweaver-context` | canonical history, continuation, processors, reinjection                                 | history tests                                          |
-| Direct              | `starweaver-model`, `starweaver-tools`                         | direct model and tool invocation APIs for advanced composition                           | direct API tests                                       |
-| Testing             | `starweaver-model`, all crates                                 | deterministic models, request guard, replay fixtures, docs examples                      | `make replay-check`, `make ci`                         |
+| Pydantic AI feature | Starweaver owner                                               | Architecture target                                                                       | Validation path                                        |
+| ------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Agents              | `starweaver-runtime`, `starweaver-agent`                       | reusable runtime agent, SDK builder, app/session facade                                   | builder, runtime, session tests                        |
+| Dependencies        | `starweaver-context`                                           | typed and named dependencies available to tools, hooks, validators, dynamic instructions  | context and runtime dependency tests                   |
+| Output              | `starweaver-runtime`, `starweaver-model`                       | text, JSON schema, typed parse, validators, output functions                              | structured output, typed output, output function tests |
+| Capabilities        | `starweaver-runtime`, `starweaver-agent`                       | composable tools, hooks, instructions, settings, validators, processors, usage limits     | capability bundle tests                                |
+| Hooks               | `starweaver-runtime`                                           | ordered lifecycle hooks with context event evidence                                       | hook and capability tests                              |
+| Agent Specs         | `starweaver-core`, `starweaver-agent`                          | serializable agent/subagent specs and loaders                                             | parser and loader tests                                |
+| Message History     | `starweaver-model`, `starweaver-runtime`, `starweaver-context` | canonical history, continuation, processors, reinjection                                  | history tests                                          |
+| Message AST         | `starweaver-model`                                             | typed request parts, response parts, content parts, tool-call arguments, provider details | message AST and replay fixture tests                   |
+| Model Requests      | `starweaver-model`, `starweaver-runtime`                       | prepared request snapshots, profile negotiation, message normalization, request context   | request preparation and replay tests                   |
+| Direct              | `starweaver-model`, `starweaver-tools`                         | direct model and tool invocation APIs for advanced composition                            | direct API tests                                       |
+| Testing             | `starweaver-model`, all crates                                 | deterministic models, request guard, replay fixtures, docs examples                       | `make replay-check`, `make ci`                         |
 
 ## Model and Provider Map
 
-| Pydantic AI provider topic | Starweaver owner                                             | Architecture target                                              | Replay status                           |
-| -------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------- | --------------------------------------- |
-| Models overview            | `starweaver-model`                                           | profiles, settings, aliases, protocol clients                    | partial                                 |
-| OpenAI                     | `starweaver-model`                                           | Chat Completions and Responses families                          | broad fixture base landed               |
-| Anthropic                  | `starweaver-model`                                           | Messages protocol, tools, thinking                               | text/tools landed, thinking planned     |
-| Google/Gemini              | `starweaver-model`                                           | generateContent, tools, safety, native tools                     | text/tools landed, safety planned       |
-| Bedrock                    | `starweaver-model`                                           | Converse protocol, tools, gateway patterns                       | text/tools landed, strict tools planned |
-| Gateway                    | `starweaver-model`                                           | endpoint override, headers, extra body, alias registry           | client tests landed                     |
-| Native tools               | `starweaver-model`, `starweaver-tools`                       | provider-native request definitions and canonical response parts | request fixtures partial                |
-| Thinking                   | `starweaver-model`, `starweaver-runtime`                     | thinking parts and streaming deltas                              | canonical part partial                  |
-| Retries                    | `starweaver-model`, `starweaver-runtime`, `starweaver-tools` | provider retry, tool retry, output retry                         | partial                                 |
+| Pydantic AI provider topic | Starweaver owner                                             | Architecture target                                                                              | Replay status                                        |
+| -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| Models overview            | `starweaver-model`                                           | profiles, settings, aliases, protocol clients                                                    | partial                                              |
+| Messages                   | `starweaver-model`                                           | `ModelMessage`, `ModelRequest`, `ModelResponse`, typed part unions, typed tool arguments         | landed                                               |
+| Request parameters         | `starweaver-model`, `starweaver-runtime`                     | tools, native tools, output mode/schema, instructions, thinking, HTTP overrides, replay metadata | partial; per-provider prepared fixture fields remain |
+| Message preparation        | `starweaver-model`                                           | profile-driven output/thinking/native-tool negotiation and normalization                         | landed                                               |
+| Provider lifecycle         | `starweaver-model`                                           | provider-owned client/auth lifecycle and model profile lookup                                    | planned                                              |
+| OpenAI                     | `starweaver-model`                                           | Chat Completions and Responses families                                                          | broad fixture base landed                            |
+| Anthropic                  | `starweaver-model`                                           | Messages protocol, tools, thinking                                                               | text/tools landed, thinking planned                  |
+| Google/Gemini              | `starweaver-model`                                           | generateContent, tools, safety, native tools                                                     | text/tools landed, safety planned                    |
+| Bedrock                    | `starweaver-model`                                           | Converse protocol, tools, gateway patterns                                                       | text/tools landed, strict tools planned              |
+| Gateway                    | `starweaver-model`                                           | endpoint override, headers, extra body, alias registry                                           | client tests landed                                  |
+| Native tools               | `starweaver-model`, `starweaver-tools`                       | provider-native request definitions and canonical response parts                                 | request fixtures partial                             |
+| Thinking                   | `starweaver-model`, `starweaver-runtime`                     | thinking parts, signatures/provider details, and streaming deltas                                | canonical part partial                               |
+| Retries                    | `starweaver-model`, `starweaver-runtime`, `starweaver-tools` | provider retry, tool retry, output retry, retry prompt history                                   | partial                                              |
 
 ## Tools and Toolsets Map
 
@@ -51,29 +57,31 @@ This spec maps Pydantic AI's documented feature surface to Starweaver's core arc
 
 ## Advanced Feature Map
 
-| Pydantic AI feature  | Starweaver architecture                              | Planned evidence                                 |
-| -------------------- | ---------------------------------------------------- | ------------------------------------------------ |
-| Input                | canonical text/media/file parts                      | multimodal replay fixtures and docs examples     |
-| Streaming            | model deltas, runtime records, service stream replay | stream fixture tests and SSE tests               |
-| Graph iteration      | runtime graph state inspection                       | graph/iter API tests                             |
-| Multi-agent patterns | subagent specs, registry, unified delegation         | subagent lifecycle and inherited tool tests      |
-| Web/UI               | service stream adapters and CLI renderer             | SSE and CLI tests                                |
-| Observability        | OTel GenAI spans and Langfuse-friendly OTLP metadata | trace propagation and span snapshot tests        |
-| Embeddings           | future model-adjacent crate or module                | postponed until core agent loop review completes |
-| Evals                | future evaluation layer                              | postponed until SDK surface stabilizes           |
+| Pydantic AI feature  | Starweaver architecture                                                         | Planned evidence                                 |
+| -------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------ |
+| Input                | canonical text/media/file parts                                                 | multimodal replay fixtures and docs examples     |
+| Streaming            | typed part start/delta/end model events, runtime records, service stream replay | stream fixture tests and SSE tests               |
+| Graph iteration      | runtime graph state inspection                                                  | graph/iter API tests                             |
+| Multi-agent patterns | subagent specs, registry, unified delegation                                    | subagent lifecycle and inherited tool tests      |
+| Web/UI               | service stream adapters and CLI renderer                                        | SSE and CLI tests                                |
+| Observability        | OTel GenAI spans and Langfuse-friendly OTLP metadata                            | trace propagation and span snapshot tests        |
+| Embeddings           | future model-adjacent crate or module                                           | postponed until core agent loop review completes |
+| Evals                | future evaluation layer                                                         | postponed until SDK surface stabilizes           |
 
 ## Agent Loop Requirements From Feature Map
 
 The core loop must support:
 
 - reusable agent construction
+- typed message/request/response parts as the canonical conversation AST
 - per-run and default model settings
 - dynamic instructions with dependencies
 - model history continuation
 - tool loop continuation
 - output function termination
 - structured output retry
-- provider-neutral stream events
+- prepared request snapshots for replay and trace evidence
+- provider-neutral typed stream events
 - graph state inspection
 - checkpoint emission at model, tool, output, retry, suspend, and completion boundaries
 

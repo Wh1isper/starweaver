@@ -63,7 +63,7 @@ fn transitions_tool_call_path() {
         parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
             id: "call_1".to_string(),
             name: "lookup".to_string(),
-            arguments: serde_json::json!({"query": "x"}),
+            arguments: serde_json::json!({"query": "x"}).into(),
         })],
         ..ModelResponse::text("")
     });

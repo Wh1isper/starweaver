@@ -48,7 +48,7 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             &starweaver_model::ToolCallPart {
                 id: "read".to_string(),
                 name: "view".to_string(),
-                arguments: serde_json::json!({"path": "README.md"}),
+                arguments: serde_json::json!({"path": "README.md"}).into(),
             },
         )
         .await;
@@ -58,7 +58,9 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             &starweaver_model::ToolCallPart {
                 id: "write".to_string(),
                 name: "write".to_string(),
-                arguments: serde_json::json!({"path": "docs/output.txt", "content": "pub fn ok() {}"}),
+                arguments:
+                    serde_json::json!({"path": "docs/output.txt", "content": "pub fn ok() {}"})
+                        .into(),
             },
         )
         .await;
@@ -68,27 +70,30 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             &starweaver_model::ToolCallPart {
                 id: "glob".to_string(),
                 name: "glob".to_string(),
-                arguments: serde_json::json!({"path": "", "pattern": "*.rs"}),
+                arguments: serde_json::json!({"path": "", "pattern": "*.rs"}).into(),
             },
         )
         .await;
-    let grep = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "grep".to_string(),
-                name: "grep".to_string(),
-                arguments: serde_json::json!({"path": "", "pattern": "hello", "include": "**/*.rs"}),
-            },
-        )
-        .await;
+    let grep =
+        registry
+            .execute_call(
+                context.clone(),
+                &starweaver_model::ToolCallPart {
+                    id: "grep".to_string(),
+                    name: "grep".to_string(),
+                    arguments:
+                        serde_json::json!({"path": "", "pattern": "hello", "include": "**/*.rs"})
+                            .into(),
+                },
+            )
+            .await;
     let resource = registry
         .execute_call(
             context.clone(),
             &starweaver_model::ToolCallPart {
                 id: "resource".to_string(),
                 name: "resource_ref".to_string(),
-                arguments: serde_json::json!({"path": "README.md"}),
+                arguments: serde_json::json!({"path": "README.md"}).into(),
             },
         )
         .await;
@@ -98,7 +103,7 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             &starweaver_model::ToolCallPart {
                 id: "ignored-ls".to_string(),
                 name: "ls".to_string(),
-                arguments: serde_json::json!({"path": "", "ignore": ["src/main.rs"]}),
+                arguments: serde_json::json!({"path": "", "ignore": ["src/main.rs"]}).into(),
             },
         )
         .await;
@@ -108,7 +113,9 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             &starweaver_model::ToolCallPart {
                 id: "invalid-write-mode".to_string(),
                 name: "write".to_string(),
-                arguments: serde_json::json!({"path": "docs/output.txt", "content": "x", "mode": "bad"}),
+                arguments:
+                    serde_json::json!({"path": "docs/output.txt", "content": "x", "mode": "bad"})
+                        .into(),
             },
         )
         .await;
@@ -118,7 +125,7 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             &starweaver_model::ToolCallPart {
                 id: "edit-existing-create".to_string(),
                 name: "edit".to_string(),
-                arguments: serde_json::json!({"file_path": "README.md", "old_string": "", "new_string": "overwrite"}),
+                arguments: serde_json::json!({"file_path": "README.md", "old_string": "", "new_string": "overwrite"}).into(),
             },
         )
         .await;
@@ -131,7 +138,8 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
                 arguments: serde_json::json!({"file_path": "README.md", "edits": [
                     {"old_string": "hello", "new_string": "hi"},
                     {"old_string": "", "new_string": "boom", "replace_all": true}
-                ]}),
+                ]})
+                .into(),
             },
         )
         .await;
@@ -141,7 +149,7 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             &starweaver_model::ToolCallPart {
                 id: "shell".to_string(),
                 name: "shell_exec".to_string(),
-                arguments: serde_json::json!({"command": "echo ok"}),
+                arguments: serde_json::json!({"command": "echo ok"}).into(),
             },
         )
         .await;
@@ -155,7 +163,8 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
                     "path": "",
                     "pattern": "hello",
                     "context_lines": -1,
-                }),
+                })
+                .into(),
             },
         )
         .await;

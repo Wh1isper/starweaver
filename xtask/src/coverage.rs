@@ -12,16 +12,32 @@ struct FileCoverage {
 
 #[derive(Debug)]
 struct CoverageGroup {
-    packages: &'static [&'static str],
+    report_packages: &'static [&'static str],
     default_threshold: f64,
     measured_floor: Option<f64>,
     acceptance_paths: &'static [&'static str],
 }
 
+const WORKSPACE_PACKAGES: &[&str] = &[
+    "starweaver-agent",
+    "starweaver-context",
+    "starweaver-core",
+    "starweaver-model",
+    "starweaver-runtime",
+    "starweaver-tools",
+    "starweaver-environment",
+    "starweaver-session",
+    "starweaver-stream",
+    "starweaver-storage",
+    "starweaver-claw",
+    "starweaver-cli",
+    "xtask",
+];
+
 fn coverage_group(name: &str) -> Option<CoverageGroup> {
     match name {
         "core" => Some(CoverageGroup {
-            packages: &[
+            report_packages: &[
                 "starweaver-core",
                 "starweaver-model",
                 "starweaver-runtime",
@@ -39,13 +55,13 @@ fn coverage_group(name: &str) -> Option<CoverageGroup> {
             ],
         }),
         "agent" => Some(CoverageGroup {
-            packages: &["starweaver-agent"],
+            report_packages: &["starweaver-agent"],
             default_threshold: 90.0,
             measured_floor: Some(55.0),
             acceptance_paths: &["session.rs", "subagent.rs", "subagent_config.rs"],
         }),
         "service" => Some(CoverageGroup {
-            packages: &["starweaver-cli"],
+            report_packages: &["starweaver-cli"],
             default_threshold: 80.0,
             measured_floor: None,
             acceptance_paths: &[
@@ -53,14 +69,20 @@ fn coverage_group(name: &str) -> Option<CoverageGroup> {
                 "bin/starweaver.rs",
                 "bin/sw.rs",
                 "config.rs",
+                "environment.rs",
                 "error.rs",
                 "launcher.rs",
                 "lib.rs",
                 "local_store.rs",
                 "main.rs",
+                "profiles.rs",
+                "runner.rs",
                 "service.rs",
-                "starweaver-cli/src/",
-                "/starweaver-cli/src/",
+                "tui/markdown.rs",
+                "tui/render.rs",
+                "tui/snapshot.rs",
+                "tui/state.rs",
+                "update_check.rs",
             ],
         }),
         _ => None,
@@ -86,9 +108,11 @@ pub fn coverage_gate(args: &[String]) -> Result<(), String> {
     }
     let root = root()?;
     let mut command = Command::new("cargo");
-    command.arg("llvm-cov");
-    for package in group.packages {
-        command.arg("-p").arg(package);
+    command.arg("llvm-cov").arg("--workspace");
+    for package in WORKSPACE_PACKAGES {
+        if !group.report_packages.contains(package) {
+            command.arg("--exclude-from-report").arg(package);
+        }
     }
     command
         .arg("--all-features")

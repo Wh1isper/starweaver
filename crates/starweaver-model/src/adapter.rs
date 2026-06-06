@@ -9,8 +9,13 @@ use starweaver_core::{ConversationId, RunId, TraceContext, Usage};
 use thiserror::Error;
 
 use crate::{
-    message::ModelMessage, profile::ModelProfile, settings::ModelSettings,
-    stream::ModelResponseStreamEvent, transport::HttpRequestOptions, ModelResponse,
+    message::ModelMessage,
+    profile::ModelProfile,
+    request::{OutputMode, PreparedInstruction},
+    settings::{ModelSettings, ThinkingSettings},
+    stream::ModelResponseStreamEvent,
+    transport::HttpRequestOptions,
+    ModelResponse,
 };
 
 /// Receiver for incremental canonical model stream events.
@@ -132,12 +137,30 @@ pub struct ModelRequestParameters {
     /// Optional output schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
+    /// Selected output mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_mode: Option<OutputMode>,
+    /// Prepared instruction fragments attached during request preparation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub instructions: Vec<PreparedInstruction>,
+    /// Request-level thinking settings selected during request preparation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingSettings>,
+    /// Allow text output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_text_output: Option<bool>,
+    /// Allow image output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_image_output: Option<bool>,
     /// Request-level HTTP overrides for gateway, audit, and routing integrations.
     #[serde(default)]
     pub http: HttpRequestOptions,
     /// Provider-specific JSON object merged into the top-level request body.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub extra_body: Map<String, Value>,
+    /// Request metadata for replay, trace, and audit.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub metadata: Map<String, Value>,
 }
 
 /// Provider-neutral tool definition.

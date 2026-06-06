@@ -313,7 +313,7 @@ fn tool_call_response(call_id: &str, tool_name: &str) -> ModelResponse {
         parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
             id: call_id.to_string(),
             name: tool_name.to_string(),
-            arguments: serde_json::json!({"value": call_id}),
+            arguments: serde_json::json!({"value": call_id}).into(),
         })],
         ..ModelResponse::text("")
     }
@@ -411,12 +411,12 @@ async fn parallel_tool_calls_limit_is_checked_as_a_batch() {
             ModelResponsePart::ToolCall(ToolCallPart {
                 id: "call_1".to_string(),
                 name: "echo".to_string(),
-                arguments: serde_json::json!({"value": 1}),
+                arguments: serde_json::json!({"value": 1}).into(),
             }),
             ModelResponsePart::ToolCall(ToolCallPart {
                 id: "call_2".to_string(),
                 name: "echo".to_string(),
-                arguments: serde_json::json!({"value": 2}),
+                arguments: serde_json::json!({"value": 2}).into(),
             }),
         ],
         ..ModelResponse::text("")

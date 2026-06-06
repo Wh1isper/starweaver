@@ -301,6 +301,59 @@ impl LocalStore {
             .ok_or_else(|| CliError::NotFound(session_id.to_string()))
     }
 
+    /// Resolve a session id or unique session id prefix.
+    pub fn resolve_session_prefix(&self, session_id_or_prefix: &str) -> CliResult<String> {
+        if self.load_session(session_id_or_prefix).is_ok() {
+            return Ok(session_id_or_prefix.to_string());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT session_id FROM sessions WHERE session_id LIKE ?1 ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([format!("{session_id_or_prefix}%")], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let matches = rows.collect::<Result<Vec<_>, _>>()?;
+        match matches.as_slice() {
+            [session_id] => Ok(session_id.clone()),
+            [] => Err(CliError::NotFound(session_id_or_prefix.to_string())),
+            _ => Err(CliError::Usage(format!(
+                "session prefix '{session_id_or_prefix}' is ambiguous"
+            ))),
+        }
+    }
+
+    /// Delete one session and its retained evidence.
+    pub fn delete_session(&mut self, session_id: &str) -> CliResult<bool> {
+        self.load_session(session_id)?;
+        let path = self.file_store_path.join("sessions").join(session_id);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for table in [
+            "display_messages",
+            "raw_stream_records",
+            "context_states",
+            "environment_states",
+            "stream_cursors",
+            "checkpoints",
+            "approvals",
+            "deferred_tools",
+            "file_refs",
+            "runs",
+            "sessions",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                params![session_id],
+            )?;
+        }
+        tx.commit()?;
+        if path.exists() {
+            fs::remove_dir_all(&path).map_err(|error| io_error(&path, error))?;
+        }
+        Ok(true)
+    }
+
     /// Load a run.
     pub fn load_run(&self, session_id: &str, run_id: &str) -> CliResult<RunRecord> {
         self.conn

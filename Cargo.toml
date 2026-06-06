@@ -10,6 +10,7 @@ members = [
     "crates/starweaver-environment",
     "crates/starweaver-session",
     "crates/starweaver-stream",
+    "crates/starweaver-storage",
     "crates/starweaver-claw",
     "xtask",
 ]
@@ -38,6 +39,7 @@ starweaver-tools = { path = "crates/starweaver-tools", version = "0.1.0" }
 starweaver-environment = { path = "crates/starweaver-environment", version = "0.1.0" }
 starweaver-session = { path = "crates/starweaver-session", version = "0.1.0" }
 starweaver-stream = { path = "crates/starweaver-stream", version = "0.1.0" }
+starweaver-storage = { path = "crates/starweaver-storage", version = "0.1.0" }
 starweaver-claw = { path = "crates/starweaver-claw", version = "0.1.0" }
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde", "std"] }
@@ -63,6 +65,7 @@ toml = "0.8.23"
 tempfile = "3.23.0"
 unicode-width = "0.2.0"
 axum = "0.7.9"
+base64 = "0.22.1"
 futures-util = "0.3.31"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 tower = "0.5.3"

@@ -1,8 +1,8 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use starweaver_model::{
-    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
-    ToolCallPart,
+    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelStreamState, PartDelta,
+    PartEnd, PartStart, StreamDelta, StreamLifecycle, ToolCallPart,
 };
 
 #[test]
@@ -12,14 +12,8 @@ fn replays_openai_chat_streaming_text_delta_fixture() {
             index: 0,
             part_kind: "text".to_string(),
         }),
-        ModelResponseStreamEvent::PartDelta(PartDelta {
-            index: 0,
-            delta: "Hel".to_string(),
-        }),
-        ModelResponseStreamEvent::PartDelta(PartDelta {
-            index: 0,
-            delta: "lo".to_string(),
-        }),
+        ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "Hel")),
+        ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "lo")),
         ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
         ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("Hello"))),
     ];
@@ -30,6 +24,14 @@ fn replays_openai_chat_streaming_text_delta_fixture() {
         events[4],
         ModelResponseStreamEvent::FinalResult(_)
     ));
+
+    let mut state = ModelStreamState::default();
+    for event in &events {
+        state.apply(event);
+    }
+    assert_eq!(state.lifecycle, StreamLifecycle::Complete);
+    assert_eq!(state.started_parts, 1);
+    assert_eq!(state.ended_parts, 1);
 }
 
 #[test]
@@ -73,10 +75,7 @@ fn replays_cross_provider_streaming_delta_and_usage_at_end_fixtures() {
                 index: 0,
                 part_kind: "text".to_string(),
             }),
-            ModelResponseStreamEvent::PartDelta(PartDelta {
-                index: 0,
-                delta: "ok".to_string(),
-            }),
+            ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "ok")),
             ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
             ModelResponseStreamEvent::FinalResult(Box::new(final_result.clone())),
         ];
@@ -97,18 +96,22 @@ fn tool_call_delta_events(call_id: &str, name: &str) -> Vec<ModelResponseStreamE
         }),
         ModelResponseStreamEvent::PartDelta(PartDelta {
             index: 0,
-            delta: "{\"query\":".to_string(),
+            delta: StreamDelta::ToolCallArguments {
+                arguments_delta: "{\"query\":".to_string(),
+            },
         }),
         ModelResponseStreamEvent::PartDelta(PartDelta {
             index: 0,
-            delta: "\"Paris\"}".to_string(),
+            delta: StreamDelta::ToolCallArguments {
+                arguments_delta: "\"Paris\"}".to_string(),
+            },
         }),
         ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
         ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse {
             parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                 id: call_id.to_string(),
                 name: name.to_string(),
-                arguments: serde_json::json!({"query": "Paris"}),
+                arguments: serde_json::json!({"query": "Paris"}).into(),
             })],
             ..ModelResponse::text("")
         })),

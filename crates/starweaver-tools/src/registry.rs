@@ -114,7 +114,7 @@ impl ToolRegistry {
     /// Execute one tool call and return a model tool return part.
     pub async fn execute_call(&self, context: ToolContext, call: &ToolCallPart) -> ToolReturnPart {
         match self.tools.get(&call.name) {
-            Some(tool) => match tool.call(context, call.arguments.clone()).await {
+            Some(tool) => match tool.call(context, call.arguments.execution_value()).await {
                 Ok(result) => ToolReturnPart {
                     tool_call_id: call.id.clone(),
                     name: call.name.clone(),

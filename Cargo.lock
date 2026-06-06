@@ -1688,6 +1688,7 @@ dependencies = [
  "starweaver-model",
  "starweaver-runtime",
  "starweaver-session",
+ "starweaver-storage",
  "starweaver-stream",
  "tempfile",
  "thiserror",
@@ -1771,6 +1772,7 @@ name = "starweaver-model"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "futures-util",
  "reqwest",
@@ -1810,6 +1812,24 @@ dependencies = [
  "starweaver-environment",
  "starweaver-runtime",
  "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "starweaver-storage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "starweaver-context",
+ "starweaver-core",
+ "starweaver-runtime",
+ "starweaver-session",
+ "starweaver-stream",
+ "tempfile",
  "tokio",
 ]
 

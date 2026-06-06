@@ -114,6 +114,7 @@ fn model_request_parameters_serialize_round_trip() {
             metadata: Map::from_iter([("route".to_string(), json!("audit"))]),
         },
         extra_body,
+        ..ModelRequestParameters::default()
     };
 
     let encoded = serde_json::to_value(&params).unwrap();

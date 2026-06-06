@@ -98,7 +98,7 @@ impl OpenAiResponsesAdapter {
                             "type": "function_call",
                             "call_id": call.id,
                             "name": call.name,
-                            "arguments": call.arguments.to_string(),
+                            "arguments": call.arguments.wire_json_string(),
                         }));
                     }
                 }
@@ -229,10 +229,9 @@ impl OpenAiResponsesStreamParser {
                 }
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
                     self.text.push_str(delta);
-                    stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
-                        index: 0,
-                        delta: delta.to_string(),
-                    }));
+                    stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta::text(
+                        0, delta,
+                    )));
                 }
             }
             Some("response.output_text.done") if self.text_started => {

@@ -136,7 +136,7 @@ async fn stream_events_include_tool_calls_and_returns() {
             parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                 id: "call_1".to_string(),
                 name: "lookup".to_string(),
-                arguments: serde_json::json!({"query": "Paris"}),
+                arguments: serde_json::json!({"query": "Paris"}).into(),
             })],
             ..ModelResponse::text("")
         },
@@ -306,7 +306,7 @@ async fn stream_events_expose_context_sideband_events() {
             parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                 id: "call_1".to_string(),
                 name: "announce".to_string(),
-                arguments: serde_json::json!({"status": "working"}),
+                arguments: serde_json::json!({"status": "working"}).into(),
             })],
             ..ModelResponse::text("")
         },

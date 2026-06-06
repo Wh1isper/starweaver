@@ -63,7 +63,7 @@ async fn prefixed_toolset_prefixes_tools_and_instruction_groups() {
     let call = starweaver_model::ToolCallPart {
         id: "call_1".to_string(),
         name: "api_conditions".to_string(),
-        arguments: serde_json::json!({"city": "Paris"}),
+        arguments: serde_json::json!({"city": "Paris"}).into(),
     };
     let result = registry
         .execute_call(

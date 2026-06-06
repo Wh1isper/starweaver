@@ -18,7 +18,7 @@ fn retry_response(call_id: &str, tool_name: &str) -> ModelResponse {
         parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
             id: call_id.to_string(),
             name: tool_name.to_string(),
-            arguments: serde_json::json!({"value": call_id}),
+            arguments: serde_json::json!({"value": call_id}).into(),
         })],
         ..ModelResponse::text("")
     }

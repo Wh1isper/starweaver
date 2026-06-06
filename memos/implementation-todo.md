@@ -22,11 +22,13 @@ This memo tracks the execution roadmap for the architecture in `spec/`. It is or
   - info-level canonical SDK telemetry: agent, step, model, tool, checkpoint, compact history/filter spans, canonical request/response/stream events, and usage/correlation attributes.
   - debug-level raw LLM telemetry: exact provider HTTP request/response and future raw provider stream chunks, enabled by application policy.
 - Model reconstruction should use canonical model-layer events by default. Raw LLM request traces are for targeted provider, gateway, replay, and audit debugging.
+- Prepared model request snapshots should bridge canonical runtime evidence and raw provider HTTP evidence. They record normalized messages, prepared request parameters, selected output mode, resolved thinking/native-tool behavior, schema transformations, and profile-driven message normalization.
 - Compact capability/filter spans record structural before/after evidence by default. Full all-filter snapshots are debug-level high-volume telemetry.
 - `AgentContext` is the short-lived native evidence carrier. `EnvironmentProvider` is the long-lived resource owner. Context stores typed provider dependencies and serializable environment refs.
 - `EnvironmentProvider` should stay small until concrete host/service call sites prove richer operators. Rich file, process, resource, sandbox, and background-shell APIs should grow through extension traits and first-party bundles.
 - Checkpoint reload uses session state, latest checkpoint, and stream replay-after-cursor as separate concerns. Stream persistence is delivery-oriented; checkpoint persistence is execution-oriented.
 - Tool discovery for large tool surfaces uses a core fixed two-tool proxy: `ToolProxyToolset` exposes `search_tools` and `call_tool`; callers compose namespacing with `PrefixedToolset` or `namespaced_toolset`.
+- Pydantic AI message/model-request review at commit `837b03e` validates Starweaver's typed `ModelMessage` substrate and adds deepening priorities: typed tool-call argument state, instruction provenance, prepared request snapshots, provider lifecycle boundaries, and typed stream deltas.
 
 ## Validation Baseline
 
@@ -46,7 +48,7 @@ make ci
 Focused gates:
 
 ```bash
-cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
+cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test message_ast --test request_preparation --test stream_replay --locked
 cargo test -p starweaver-agent --test bundles --locked
 cargo test -p starweaver-tools --test typed_tool --test toolset --test prefixed --locked
 cargo llvm-cov --workspace --all-features --locked --fail-under-lines 70 --summary-only
@@ -64,14 +66,14 @@ Last recorded workspace line coverage snapshot before the latest toolset/tool-pr
 
 Current fixture-driven replay coverage is a maintenance area. New provider work should add fixtures before changing request/response mapping.
 
-| Provider family  | Coverage status                                                                                                                                                                                                                                                                                        |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| OpenAI Chat      | text, tools, structured output, JSON object mode, tool choice, parallel tools, refusal, malformed choices, streaming, multimodal input landed                                                                                                                                                          |
-| OpenAI Responses | text, function calls, structured output, reasoning, thinking summaries, native web search, native MCP, image/file output parsing, refusal, streaming, status errors landed; dedicated request fixtures pending for image generation, file search, web fetch, memory, and code interpreter native tools |
-| Anthropic        | text, tools, tool result history, thinking, signatures, image input, cache control, max token stop, safety-style refusal, streaming landed                                                                                                                                                             |
-| Gemini           | text, function calls, function responses, safety, tool config, code execution, Google search, multimodal input, streaming, malformed candidates landed                                                                                                                                                 |
-| Bedrock          | text, tools, strict tool calls, tool result errors, max token stop, content block variants, additional fields, status errors, streaming, SigV4/gateway metadata landed                                                                                                                                 |
-| Cross-provider   | cassette record/scrub/import/summary, schema validation, errors, retries, params merge precedence, profiles, native tool serialization landed                                                                                                                                                          |
+| Provider family  | Coverage status                                                                                                                                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenAI Chat      | text, tools, structured output, JSON object mode, tool choice, parallel tools, refusal, malformed choices, streaming, multimodal input landed                                                                                                                                                                 |
+| OpenAI Responses | text, function calls, structured output, reasoning, thinking summaries, native web search, native MCP, image/file output parsing, refusal, streaming, status errors landed; dedicated request fixtures pending for image generation, file search, web fetch, memory, and code interpreter native tools        |
+| Anthropic        | text, tools, tool result history, thinking, signatures, image input, cache control, max token stop, safety-style refusal, streaming landed                                                                                                                                                                    |
+| Gemini           | text, function calls, function responses, safety, tool config, code execution, Google search, multimodal input, streaming, malformed candidates landed                                                                                                                                                        |
+| Bedrock          | text, tools, strict tool calls, tool result errors, max token stop, content block variants, additional fields, status errors, streaming, SigV4/gateway metadata landed                                                                                                                                        |
+| Cross-provider   | cassette record/scrub/import/summary, schema validation, errors, retries, params merge precedence, profiles, native tool serialization, typed tool-argument preservation, prepared request snapshot type/tests, and typed stream-delta fixtures landed; per-provider prepared fixture fields remain follow-up |
 
 ## Completed Near-Term Milestones
 
@@ -225,6 +227,46 @@ Focused implementation slices:
 22. **Redis replay adapter:** add Redis Stream replay event-log adapter after memory and SQLite contracts stabilize.
 23. **Validation and docs:** add `starweaver-cli`, `starweaver-stream`, `starweaver-session`, and `starweaver-claw` tests, then document CLI durable app workflows.
 
+### N2.1 Message and Model Request Abstraction Deepening
+
+Status: implementation slice landed after the Pydantic AI reference review at commit `837b03e`; planning spec added in `spec/core/06-message-request-abstractions.md`, related core specs updated, and model-layer foundations implemented in `starweaver-model`.
+
+Primary conclusions:
+
+- Starweaver's current `ModelMessage`, `ModelRequest`, `ModelResponse`, request parts, response parts, content parts, provider metadata, `ModelRequestParameters`, `ModelRequestContext`, `ModelProfile`, and structured stream events align with the useful Pydantic AI shape.
+- The next value is focused refinement: preserve malformed tool-call arguments, record prepared request snapshots, deepen instruction provenance, and type stream deltas.
+- `ModelRequestParameters` should become the single per-call negotiation object for tools, native tools, output mode/schema, instruction parts, thinking, HTTP overrides, provider extra body, and replay/audit metadata.
+- Profile-driven request preparation should sit in the model layer before provider wire mapping: settings merge, schema transforms, output/thinking/media validation, native-tool fallback, prompted output instructions, and message normalization.
+- Provider lifecycle should become explicit once protocol clients stabilize: provider name/base URL, auth, injected HTTP client, async lifecycle, model profile lookup, and gateway/audit routing metadata.
+
+Implementation evidence:
+
+1. `ToolArguments` landed with parsed-object, raw-JSON-string, and invalid-marker states; `ToolCallPart` now stores typed arguments while preserving JSON replay serialization.
+2. `ModelRequestParameters` now includes output mode, text/image output allowances, prepared instructions, thinking, and replay/audit metadata.
+3. `PreparedModelRequest` landed with canonical history, normalized history, prepared params, selected profile, selected output mode, thinking, and preparation metadata.
+4. `prepare_model_request` landed in `starweaver-model` for settings merge, output-mode selection, thinking extraction, native-tool dedupe, and prompted-output instruction insertion.
+5. `prepare_messages` landed for `PreserveItems`, `MergeAdjacentSameRole`, `SystemField`, `SystemInstruction`, and `WrapInlineSystem`.
+6. `ProtocolModelClient` now builds provider wire requests from prepared snapshots so profile-driven message normalization is part of production request flow.
+7. Typed stream deltas landed for text, thinking, tool-call name, tool-call arguments, native payload fragments, and file metadata, plus `ModelStreamState` lifecycle: `incomplete`, `complete`, and `interrupted`.
+
+Remaining follow-up slices:
+
+1. Promote instruction provenance into typed fields after cache-control and handoff call sites stabilize beyond metadata helpers.
+2. Add provider-owned client/auth lifecycle traits after current `ProtocolModelClient` fixtures are stable.
+3. Add stable media identifiers for URL, resource, binary, uploaded-file, and data-url content.
+4. Extend replay fixture schema with prepared request snapshots for every provider family.
+5. Add schema-transform evidence and redaction status to `PreparedModelRequest` once trace redaction policy is wired through `ModelRequestContext`.
+
+Focused validation:
+
+```bash
+cargo test -p starweaver-model --test message_ast --locked
+cargo test -p starweaver-model --test request_preparation --locked
+cargo test -p starweaver-model --test stream_replay --locked
+cargo test -p starweaver-runtime --test history_processors --locked
+make replay-check
+```
+
 ### N2.5 Remaining SDK Deepening
 
 These items can run alongside durable runtime work when their call sites are needed:
@@ -234,6 +276,148 @@ These items can run alongside durable runtime work when their call sites are nee
 - Implement concrete `rmcp` stdio and streamable HTTP clients behind the `LiveMcpClient` seam.
 - Add sandboxed shell providers with aligned filesystem/shell path spaces, workspace mounts, diagnostics, and state export.
 - Add bundled first-party skill publishing and upgrade metadata after fileops-loaded skills stabilize through real application use.
+
+### N2.6 ya-mono Parity and Migration
+
+Status: active audit completed against `Wh1isper/ya-mono` commit `788c926`; planning spec added in `spec/ops/07-ya-mono-parity-migration.md`.
+
+Primary conclusions:
+
+- SDK filters have the Starweaver substrate through `HistoryProcessor`, `AgentCapability`, and `CapabilityBundle`, and named ya-agent-sdk filter bundles remain to be implemented and tested.
+- The ya-agent-sdk image/media fixes apply directly to Starweaver because current model content supports URL/file media while binary media, byte-sniffing, base64-aware compression, tall screenshot splitting, GIF policy, and upload-to-URL processors are still gaps.
+- Starweaver Claw has a broad API skeleton, SQLite migrations, embedded web assets, workflows, schedules, bridge, heartbeat, agency, profiles, sessions, runs, SSE, and compatibility route tests, while exact ya-claw behavior still needs endpoint-by-endpoint contract fixtures and durable state semantics.
+- The current Starweaver Claw web source mirrors ya-claw-web; functional parity depends on backend behavior, web tests, service-backed smoke tests, SSE reconnect validation, and embedded asset build checks.
+- Starweaver CLI has headless run, durable local sessions, display JSONL, launcher/update, setup/auth/catalog/session/approval/deferred/resume/config commands, and retained TUI snapshots, with major parity gaps around interactive TUI, slash commands, worktrees, setup wizard, media clipboard, shell review, model profile switching, and yaacli session import.
+- Refactor pressure is concentrated in `starweaver-claw/src/service.rs`, `starweaver-claw/src/storage.rs`, duplicated CLI/Claw SQLite concepts, service-owned SSE framing, broad JSON DTOs, and pending shared storage extraction.
+
+#### SDK filter parity work
+
+Implement named default SDK filter bundles in the order captured by `spec/sdk/05-sdk-integration-map.md`:
+
+01. `cold_start` processor for idle-start tool-return truncation.
+02. capability filter for unsupported image, video, and document content.
+03. image/video preflight processors for validation, counting, GIF policy, compression, splitting, and nested tool-return media.
+04. media upload processor with a `MediaUploader` trait and S3/resource-store adapters.
+05. cache-friendly compact processor that uses current-agent prompts and keep tags.
+06. handoff processor for restored histories and steering parts.
+07. auto-load files capability over `EnvironmentProvider` file reads.
+08. background shell result injection over process-capable environment providers.
+09. message bus consume-once injection.
+10. environment instruction injection.
+11. runtime instruction reinjection after compaction/handoff.
+12. system prompt canonical reinjection verification.
+13. tool-argument repair or explicit error markers for truncated JSON.
+14. provider-aware reasoning/thinking normalization.
+
+Focused tests to add:
+
+```bash
+cargo test -p starweaver-agent --test sdk_filter_order --locked
+cargo test -p starweaver-agent --test media_filters --locked
+cargo test -p starweaver-runtime --test history_processors --locked
+```
+
+#### Media/image fix parity work
+
+Add canonical binary/resource media parts and provider mapping coverage:
+
+- `ContentPart::Binary { data, media_type }`
+- `ContentPart::ResourceRef { uri, media_type, kind, metadata }`
+- optional `ContentPart::DataUrl { data_url, media_type }` for adapters that accept inline data URLs
+
+Implement media preflight utilities:
+
+- PNG/JPEG/GIF/WebP byte detection
+- declared media-type correction from detected bytes
+- base64 encoded size budgeting
+- progressive JPEG compression and dimension reduction
+- alpha compositing onto a white background before JPEG encoding
+- animated media retention plus GIF support policy
+- tall image splitting with overlap
+- corrupted image replacement with system reminders
+- upload-to-URL replacement after local processing
+
+Focused tests to add:
+
+```bash
+cargo test -p starweaver-model --test multimodal_mapping --locked
+cargo test -p starweaver-agent --test media_preflight --locked
+make replay-check
+```
+
+#### Claw backend and migration work
+
+Complete ya-claw backend parity in slices:
+
+1. Generate route inventory fixtures from ya-claw FastAPI routes and ya-claw-web client calls.
+2. Add Axum route tests for every route, including colon-action paths.
+3. Add typed response DTOs aligned with `crates/starweaver-claw/web/src/types.ts`.
+4. Fill behavior for memory extract/summarize, async tasks, interaction response, bridge HITL, agency bootstrap/clear/source submit, notification replay, run/session SSE reconnect, and cancellation/interruption state transitions.
+5. Add service coordinator tests for same-run waiting/resume semantics.
+6. Add migration runner status and dry-run commands.
+7. Add ya-claw SQLite fixture importer tests for profiles, sessions/runs, schedules, workflows, bridges, HITL, async tasks, memory, and runtime instances.
+8. Add backup-before-migrate and migration report output.
+9. Add PostgreSQL after SQLite importer/schema snapshots stabilize.
+
+Focused tests to add:
+
+```bash
+cargo test -p starweaver-claw --test api_contract --locked
+cargo test -p starweaver-claw --test migration_ya_claw --locked
+cargo test -p starweaver-claw --test service_sse --locked
+```
+
+#### Claw frontend parity work
+
+The source layout already mirrors ya-claw-web. Add validation gates:
+
+```bash
+npm --prefix crates/starweaver-claw/web test
+npm --prefix crates/starweaver-claw/web run build
+cargo test -p starweaver-claw --test web_console_smoke --locked
+```
+
+Service-backed smoke coverage should include overview, chat/session history, run events, profiles, schedules, workflows, bridges, heartbeat, agency, settings, auth header handling, and SSE reconnect.
+
+#### CLI parity work
+
+Add yaacli-compatible product behavior while keeping Starweaver durable sessions as the native store:
+
+1. Add `-s/--session`, `--model-profile`, `--worker`, `--worktree`, and `--branch`.
+2. Add interactive setup wizard and startup asset seeding for built-in skills/subagents.
+3. Align config precedence for global/project `config.toml`, `tools.toml`, `mcp.json`, `[env]`, `[shell_env]`, shell environment isolation, media S3 config, OAuth refresh, shell review, model profiles, and custom commands.
+4. Implement yaacli session-folder import/export and retention config compatibility.
+5. Implement interactive TUI composer and slash commands: `/help`, `/config`, `/mode`, `/act`, `/plan`, `/loop`, `/tasks`, `/session`, `/dump`, `/load`, `/clear`, `/cost`, `/exit`.
+6. Add binary clipboard image attachments through SDK media preflight.
+7. Add worktree create/resume metadata under global config and exit resume hints.
+8. Add fatal error diagnostic hints and log-path output.
+
+Focused tests to add:
+
+```bash
+cargo test -p starweaver-cli --test yaacli_parity --locked
+cargo test -p starweaver-cli --test tui_slash_commands --locked
+cargo test -p starweaver-cli --test worktree_workflow --locked
+```
+
+#### Shared infrastructure refactor work
+
+Refactor after the compatibility fixtures exist:
+
+1. Split `starweaver-claw/src/service.rs` into `api/routes`, `api/dto`, `api/extractors`, `api/sse`, and `api/compat`.
+2. Split `starweaver-claw/src/storage.rs` into migration registry, schema modules, session adapter, stream adapter, replay adapter, importers, and tests.
+3. Introduce `starweaver-storage` for shared SQLite connection management, migrations, `SessionStore`, `StreamArchive`, `ReplayEventLog`, ya-claw import, and yaacli import.
+4. Move SSE replay framing into `starweaver-stream` as `SseReplayTransport` behind an HTTP feature.
+5. Add typed DTO snapshots and route schema snapshots.
+6. Split CLI TUI code into slash-command registry, composer/media attachment, renderer, session controller, and task/process panels.
+
+Design debt to carry until compatibility locks:
+
+- Claw currently accepts broad `serde_json::Value` payloads on several API paths. Typed DTOs should replace these once route fixtures lock behavior.
+- SQLite schema SQL is embedded in Rust constants. Versioned migration modules with checksums should replace the monolithic SQL string.
+- CLI and Claw currently keep storage logic in product crates. The shared adapter crate should land before another persisted schema revision.
+- Media handling is split between TUI placeholders, URL media tools, and provider mapping. A single media preflight pipeline should own binary/resource media decisions.
+- Service SSE is implemented at the Axum edge. The replay contract belongs in `starweaver-stream` with HTTP adapters at the edge.
 
 ### N3 SDK Documentation and Examples
 

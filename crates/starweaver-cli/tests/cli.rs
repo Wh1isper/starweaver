@@ -110,6 +110,42 @@ fn cli_run_prints_display_messages() {
 }
 
 #[test]
+fn cli_session_alias_and_delete_accept_unique_prefix() {
+    let temp = tempfile::tempdir().unwrap();
+    let run = cli(&temp)
+        .args(["-p", "delete me", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(run.status.success());
+    let list = cli(&temp).args(["sessions", "list"]).output().unwrap();
+    assert!(list.status.success());
+    let stdout = String::from_utf8(list.stdout).unwrap();
+    let session: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    let session_id = session["session_id"].as_str().unwrap();
+    let prefix = &session_id[..16];
+    let delete = cli(&temp)
+        .args(["session", "delete", prefix, "--yes", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(
+        delete.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&delete.stderr)
+    );
+    assert!(String::from_utf8(delete.stdout)
+        .unwrap()
+        .contains("status=deleted"));
+    let empty = cli(&temp).args(["sessions", "list"]).output().unwrap();
+    assert!(empty.status.success());
+    assert!(String::from_utf8(empty.stdout).unwrap().trim().is_empty());
+    assert!(!temp
+        .path()
+        .join(".starweaver/store/sessions")
+        .join(session_id)
+        .exists());
+}
+
+#[test]
 fn cli_session_list_and_show_print_local_projection() {
     let temp = tempfile::tempdir().unwrap();
     let run = cli(&temp)

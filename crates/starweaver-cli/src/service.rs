@@ -1,14 +1,24 @@
 //! CLI service layer over local storage and SDK execution.
 
 use std::{
-    fmt::Write as _, fs, io::IsTerminal as _, path::Path, sync::mpsc, thread, time::Duration,
+    collections::hash_map::DefaultHasher,
+    fmt::Write as _,
+    fs,
+    hash::{Hash, Hasher},
+    io::IsTerminal as _,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::mpsc,
+    thread,
+    time::Duration,
 };
 
+use chrono::Utc;
 use clap_complete::Shell;
 use serde_json::{json, Value};
 use starweaver_core::sdk_name;
 use starweaver_runtime::AgentStreamRecord;
-use starweaver_session::{ApprovalRecord, ApprovalStatus, DeferredToolRecord};
+use starweaver_session::{ApprovalRecord, ApprovalStatus, DeferredToolRecord, RunRecord};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
 use crate::{
@@ -21,8 +31,8 @@ use crate::{
     },
     config::{
         get_config_value, init_config_file, mcp_servers, read_current_session, tool_need_approval,
-        write_current_session, CliConfig, ConfigScope, DEFAULT_MCP_TEMPLATE,
-        DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
+        write_current_session, CliConfig, ConfigScope, DEFAULT_GLOBAL_GITIGNORE_TEMPLATE,
+        DEFAULT_MCP_TEMPLATE, DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
     },
     environment::resolve_environment,
     local_store::{LocalStore, RunSummary, SessionSummary, TrimReport},
@@ -103,6 +113,9 @@ impl CliService {
                 profile: cli.profile.clone(),
                 output: cli.output,
                 hitl: cli.hitl,
+                worker: cli.worker.clone(),
+                worktree: cli.worktree.clone(),
+                branch: cli.branch,
             };
             return self.run_prompt(&command);
         }
@@ -197,12 +210,17 @@ impl CliService {
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<PromptRunExecution> {
         let prompt = command.prompt_text()?;
+        let worktree = self.resolve_worktree(command)?;
         let selected_profile = command
             .profile
             .as_deref()
             .unwrap_or(&self.config.default_profile);
         let resolved_profile = resolve_profile(&self.config, Some(selected_profile))?;
-        let environment = resolve_environment(&self.config)?;
+        let mut run_config = self.config.clone();
+        if let Some(worktree) = worktree.as_ref() {
+            run_config.workspace_root.clone_from(&worktree.path);
+        }
+        let environment = resolve_environment(&run_config)?;
         let (session_id, created) = self.resolve_session(command, &resolved_profile.name)?;
         let mut restore_from = command.run.clone().or_else(|| command.branch_from.clone());
         if restore_from.is_none() && !created {
@@ -222,6 +240,7 @@ impl CliService {
             restore_from.clone(),
             &resolved_profile.name,
         )?;
+        apply_yaacli_run_metadata(&mut run, command, worktree.as_ref());
         write_current_session(&self.config, &session_id)?;
         let restore_state = self
             .store()?
@@ -343,6 +362,20 @@ impl CliService {
                     )),
                 }
             }
+            SessionCommand::Delete(command) => {
+                if !command.yes {
+                    return Err(CliError::Usage(
+                        "pass --yes to delete a local session".to_string(),
+                    ));
+                }
+                let session_id = self.store()?.resolve_session_prefix(&command.session_id)?;
+                let deleted = self.store()?.delete_session(&session_id)?;
+                if read_current_session(&self.config)?.as_deref() == Some(session_id.as_str()) {
+                    let _removed =
+                        remove_file_if_exists(&self.config.project_dir.join("state.json"))?;
+                }
+                render_session_delete(&session_id, deleted, command.output)
+            }
             SessionCommand::Trim(command) => {
                 let sessions = if command.all {
                     self.store()?.all_session_ids()?
@@ -391,6 +424,12 @@ impl CliService {
                 command.force,
             )?);
             setup_catalog_files(&self.config.global_dir, command.force, &mut rows)?;
+            rows.push(write_template_if_missing(
+                &self.config.global_dir.join(".gitignore"),
+                DEFAULT_GLOBAL_GITIGNORE_TEMPLATE,
+                command.force,
+                "global-state-ignore",
+            )?);
         }
         if command.project {
             rows.push(setup_config_file(
@@ -541,6 +580,7 @@ impl CliService {
     #[allow(clippy::too_many_lines)]
     fn interactive_tui(&mut self, command: &TuiCommand) -> CliResult<()> {
         let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.global_dir);
+        state.set_custom_commands(self.config.slash_commands.clone());
         state.set_profile(
             self.config.default_profile.clone(),
             default_model_label(&self.config),
@@ -768,6 +808,9 @@ impl CliService {
             profile: source_run.profile.clone(),
             output: command.output,
             hitl: command.hitl,
+            worker: None,
+            worktree: None,
+            branch: None,
         };
         self.run_prompt(&run_command)
     }
@@ -940,6 +983,9 @@ fn spawn_tui_run(config: &CliConfig, command: &TuiCommand, prompt: String) -> Ac
                 profile: None,
                 output: Some(OutputMode::Text),
                 hitl: None,
+                worker: None,
+                worktree: None,
+                branch: None,
             };
             service.run_prompt_streaming_with_steering(
                 &run_command,
@@ -1080,6 +1126,156 @@ fn provider_ready(provider: &crate::config::ProviderConfig) -> bool {
             let name = name.trim();
             !name.is_empty() && std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
         })
+}
+
+#[derive(Clone, Debug)]
+struct WorktreeResolution {
+    git_root: PathBuf,
+    path: PathBuf,
+    branch: String,
+    resumed: bool,
+}
+
+impl CliService {
+    fn resolve_worktree(&self, command: &RunCommand) -> CliResult<Option<WorktreeResolution>> {
+        if command.worktree.is_none() && command.branch.is_none() {
+            return Ok(None);
+        }
+        let git_root = git_root(&self.config.workspace_root)?;
+        let branch = command
+            .branch
+            .clone()
+            .unwrap_or_else(default_worktree_branch);
+        let worktree_name = command.worktree.clone().unwrap_or_else(|| branch.clone());
+        let path = worktree_path(&self.config.global_dir, &git_root, &worktree_name);
+        let resumed = path.exists();
+        let group_dir = path.parent().unwrap_or(&self.config.global_dir);
+        fs::create_dir_all(group_dir).map_err(|error| crate::error::io_error(group_dir, error))?;
+        write_worktree_group_metadata(group_dir, &git_root)?;
+        if !resumed {
+            let status = Command::new("git")
+                .arg("worktree")
+                .arg("add")
+                .arg("-b")
+                .arg(&branch)
+                .arg(&path)
+                .current_dir(&git_root)
+                .status()
+                .map_err(|error| CliError::Run(error.to_string()))?;
+            if !status.success() {
+                return Err(CliError::Run(format!(
+                    "git worktree add failed with status {status}"
+                )));
+            }
+        }
+        Ok(Some(WorktreeResolution {
+            git_root,
+            path,
+            branch,
+            resumed,
+        }))
+    }
+}
+
+fn git_root(workspace_root: &Path) -> CliResult<PathBuf> {
+    let output = Command::new("git")
+        .arg("rev-parse")
+        .arg("--show-toplevel")
+        .current_dir(workspace_root)
+        .output()
+        .map_err(|error| CliError::Run(error.to_string()))?;
+    if !output.status.success() {
+        return Err(CliError::Usage(
+            "--worktree/--branch requires a git repository workspace".to_string(),
+        ));
+    }
+    let root =
+        String::from_utf8(output.stdout).map_err(|error| CliError::Run(error.to_string()))?;
+    Ok(PathBuf::from(root.trim()))
+}
+
+fn default_worktree_branch() -> String {
+    format!("yaacli/{}", Utc::now().format("%Y%m%d-%H%M%S"))
+}
+
+fn worktree_path(global_dir: &Path, git_root: &Path, name: &str) -> PathBuf {
+    global_dir
+        .join("worktrees")
+        .join(project_hash(git_root))
+        .join(sanitize_worktree_name(name))
+}
+
+fn write_worktree_group_metadata(group_dir: &Path, git_root: &Path) -> CliResult<()> {
+    let path = group_dir.join("metadata.json");
+    if path.exists() {
+        return Ok(());
+    }
+    let value = json!({
+        "git_root": git_root.display().to_string(),
+        "created_at": Utc::now(),
+    });
+    fs::write(&path, serde_json::to_vec_pretty(&value)?)
+        .map_err(|error| crate::error::io_error(&path, error))?;
+    Ok(())
+}
+
+fn project_hash(path: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+    path.display().to_string().hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+        .chars()
+        .take(12)
+        .collect()
+}
+
+fn sanitize_worktree_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
+fn apply_yaacli_run_metadata(
+    run: &mut RunRecord,
+    command: &RunCommand,
+    worktree: Option<&WorktreeResolution>,
+) {
+    if let Some(worker) = command.worker.as_ref() {
+        run.metadata
+            .insert("cli.yaacli.worker".to_string(), json!(worker));
+    }
+    if let Some(worktree) = worktree {
+        run.metadata.insert(
+            "cli.yaacli.worktree".to_string(),
+            json!(worktree.path.display().to_string()),
+        );
+        run.metadata.insert(
+            "cli.yaacli.worktree_git_root".to_string(),
+            json!(worktree.git_root.display().to_string()),
+        );
+        run.metadata.insert(
+            "cli.yaacli.worktree_resumed".to_string(),
+            json!(worktree.resumed),
+        );
+        run.metadata
+            .insert("cli.yaacli.branch".to_string(), json!(worktree.branch));
+    } else {
+        if let Some(worktree) = command.worktree.as_ref() {
+            run.metadata
+                .insert("cli.yaacli.worktree".to_string(), json!(worktree));
+        }
+        if let Some(branch) = command.branch.as_ref() {
+            run.metadata
+                .insert("cli.yaacli.branch".to_string(), json!(branch));
+        }
+    }
 }
 
 const fn run_status_name(status: starweaver_session::RunStatus) -> &'static str {
@@ -1366,6 +1562,23 @@ const fn execution_status_name(status: starweaver_session::ExecutionStatus) -> &
         starweaver_session::ExecutionStatus::Completed => "completed",
         starweaver_session::ExecutionStatus::Failed => "failed",
         starweaver_session::ExecutionStatus::Cancelled => "cancelled",
+    }
+}
+
+fn render_session_delete(session_id: &str, deleted: bool, output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Text => Ok(format!(
+            "session_id={session_id}\ndeleted={deleted}\nstatus=deleted\n"
+        )),
+        OutputMode::DisplayJsonl => Ok(format!(
+            "{}\n",
+            serde_json::to_string(&json!({
+                "session_id": session_id,
+                "deleted": deleted,
+                "status": "deleted"
+            }))?
+        )),
+        OutputMode::Silent => Ok(format!("session_id={session_id}\nstatus=deleted\n")),
     }
 }
 

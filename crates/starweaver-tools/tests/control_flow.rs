@@ -21,7 +21,7 @@ async fn approval_required_error_returns_structured_control_flow_metadata() {
     let call = starweaver_model::ToolCallPart {
         id: "call_1".to_string(),
         name: "dangerous".to_string(),
-        arguments: serde_json::json!({}),
+        arguments: serde_json::json!({}).into(),
     };
 
     let result = ToolRegistry::new()
@@ -54,7 +54,7 @@ async fn deferred_call_error_returns_structured_control_flow_metadata() {
     let call = starweaver_model::ToolCallPart {
         id: "call_1".to_string(),
         name: "slow".to_string(),
-        arguments: serde_json::json!({}),
+        arguments: serde_json::json!({}).into(),
     };
 
     let result = ToolRegistry::new()

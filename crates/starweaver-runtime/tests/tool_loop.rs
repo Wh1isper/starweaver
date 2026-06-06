@@ -100,7 +100,7 @@ async fn agent_executes_tool_calls_and_continues_model_loop() {
             parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                 id: "call_1".to_string(),
                 name: "lookup".to_string(),
-                arguments: serde_json::json!({"query": "Paris"}),
+                arguments: serde_json::json!({"query": "Paris"}).into(),
             })],
             ..ModelResponse::text("")
         },

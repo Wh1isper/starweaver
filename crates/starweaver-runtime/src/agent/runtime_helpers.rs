@@ -548,7 +548,7 @@ impl Agent {
                 OutputFunctionContext {
                     state: state.clone(),
                 },
-                call.arguments.clone(),
+                call.arguments.execution_value(),
             )
             .await
             .map_err(Self::output_validation_error)

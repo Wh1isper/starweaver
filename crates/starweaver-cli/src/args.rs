@@ -17,6 +17,7 @@ pub struct Cli {
     pub prompt: Option<String>,
     /// Append a run to the selected session.
     #[arg(
+        short = 's',
         long,
         global = false,
         conflicts_with_all = ["new_session", "continue_session"]
@@ -40,8 +41,17 @@ pub struct Cli {
     #[arg(long, global = false, conflicts_with = "run")]
     pub branch_from: Option<String>,
     /// Agent profile name or YAML path.
-    #[arg(long, global = false)]
+    #[arg(long, alias = "model-profile", global = false)]
     pub profile: Option<String>,
+    /// Worker mode label for yaacli-compatible headless execution.
+    #[arg(long, global = false)]
+    pub worker: Option<String>,
+    /// Git worktree name or path for yaacli-compatible workflow metadata.
+    #[arg(long, global = false)]
+    pub worktree: Option<String>,
+    /// Git branch for yaacli-compatible worktree metadata.
+    #[arg(long, global = false)]
+    pub branch: Option<String>,
     /// Output mode.
     #[arg(long, global = false)]
     pub output: Option<OutputMode>,
@@ -64,6 +74,7 @@ pub enum CliCommand {
     /// Run a prompt.
     Run(RunCommand),
     /// Manage local sessions.
+    #[command(alias = "sessions")]
     Session {
         /// Session subcommand.
         #[command(subcommand)]
@@ -153,7 +164,7 @@ pub struct RunCommand {
     /// Positional prompt text.
     pub prompt_parts: Vec<String>,
     /// Append a run to the selected session.
-    #[arg(conflicts_with_all = ["new_session", "continue_session"], long)]
+    #[arg(short = 's', conflicts_with_all = ["new_session", "continue_session"], long)]
     pub session: Option<String>,
     /// Continue the latest local session.
     #[arg(long, conflicts_with = "new_session")]
@@ -168,8 +179,17 @@ pub struct RunCommand {
     #[arg(long, conflicts_with = "run")]
     pub branch_from: Option<String>,
     /// Agent profile name or YAML path.
-    #[arg(long)]
+    #[arg(long, alias = "model-profile")]
     pub profile: Option<String>,
+    /// Worker mode label for yaacli-compatible headless execution.
+    #[arg(long)]
+    pub worker: Option<String>,
+    /// Git worktree name or path for yaacli-compatible workflow metadata.
+    #[arg(long)]
+    pub worktree: Option<String>,
+    /// Git branch for yaacli-compatible worktree metadata.
+    #[arg(long)]
+    pub branch: Option<String>,
     /// Output mode.
     #[arg(long)]
     pub output: Option<OutputMode>,
@@ -204,6 +224,8 @@ pub enum SessionCommand {
     Show(SessionShowCommand),
     /// Replay stored display messages.
     Replay(SessionReplayCommand),
+    /// Delete one local session and its retained evidence.
+    Delete(SessionDeleteCommand),
     /// Trim retained run evidence.
     Trim(SessionTrimCommand),
 }
@@ -245,6 +267,19 @@ pub struct SessionReplayCommand {
     pub after: Option<usize>,
     /// Output mode.
     #[arg(long, default_value = "display-jsonl")]
+    pub output: OutputMode,
+}
+
+/// Session delete command.
+#[derive(Clone, Debug, Args)]
+pub struct SessionDeleteCommand {
+    /// Session id or unique prefix.
+    pub session_id: String,
+    /// Confirm deletion.
+    #[arg(long)]
+    pub yes: bool,
+    /// Output mode.
+    #[arg(long, default_value = "text")]
     pub output: OutputMode,
 }
 

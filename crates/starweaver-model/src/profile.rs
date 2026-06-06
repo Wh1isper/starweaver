@@ -167,4 +167,6 @@ pub enum MessageNormalization {
     SystemField,
     /// Move system prompts to a top-level system instruction object.
     SystemInstruction,
+    /// Wrap system fragments into tagged user content.
+    WrapInlineSystem,
 }
