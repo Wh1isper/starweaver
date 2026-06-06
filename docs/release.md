@@ -159,7 +159,7 @@ The Docker build has three stages:
 2. Rust builds `starweaver-claw` in release mode after the build script copies the generated web `dist` into `OUT_DIR` for `include_dir!`.
 3. Debian slim runs `starweaver-claw start` as an unprivileged user on port 9042.
 
-The image accepts build metadata through `YA_CLAW_SERVICE_VERSION`, `YA_CLAW_SERVICE_COMMIT`, `YA_CLAW_SERVICE_BUILD`, and `YA_CLAW_SERVICE_IMAGE` build args. The runtime exposes the values through `/api/v1/claw/info`.
+The image accepts build metadata through `STARWEAVER_CLAW_SERVICE_VERSION`, `STARWEAVER_CLAW_SERVICE_COMMIT`, `STARWEAVER_CLAW_SERVICE_BUILD`, and `STARWEAVER_CLAW_SERVICE_IMAGE` build args. The runtime exposes the values through `/api/v1/claw/info`.
 
 `.github/workflows/claw-image.yml` validates image builds on pull requests that touch Claw, crate, Docker, or workflow inputs. It publishes `ghcr.io/<owner>/starweaver-claw:dev` on main and publishes release-tag plus `latest` images when a GitHub Release is published.
 

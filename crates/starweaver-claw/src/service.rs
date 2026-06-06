@@ -126,8 +126,11 @@ pub fn build_router(settings: ClawSettings) -> Router {
 pub fn build_router_with_state(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/v1/healthz", get(healthz))
         .route("/api/v1/claw/info", get(claw_info))
+        .route("/api/v1/info", get(claw_info))
         .route("/api/v1/claw/notifications", get(empty_sse))
+        .route("/api/v1/notifications", get(empty_sse))
         .route("/api/v1/profiles", get(list_profiles).post(upsert_profile))
         .route("/api/v1/profiles/seed", post(seed_profiles))
         .route("/api/v1/profiles:seed", post(seed_profiles))
@@ -174,6 +177,26 @@ pub fn build_router_with_state(state: AppState) -> Router {
         .route("/api/v1/sessions/:session_id/cancel", post(cancel_session))
         .route("/api/v1/sessions/:session_id/fork", post(fork_session))
         .route("/api/v1/sessions/:session_id/events", get(session_events))
+        .route(
+            "/api/v1/sessions/:session_id/async-tasks",
+            get(list_session_async_tasks),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/async-tasks:spawn",
+            post(spawn_session_async_task),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/async-tasks/:task_id_or_name",
+            get(get_session_async_task).post(session_async_task_action),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/async-tasks/:task_id_or_name/cancel",
+            post(cancel_session_async_task),
+        )
+        .route(
+            "/api/v1/sessions/:session_id/async-tasks/:task_id_or_name/steer",
+            post(steer_session_async_task),
+        )
         .route("/api/v1/runs", post(create_run))
         .route("/api/v1/runs:stream", post(create_run_stream))
         .route("/api/v1/runs/:run_id", get(get_run))
@@ -196,6 +219,11 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/workflows/:workflow_id/trigger",
             post(trigger_workflow),
         )
+        .route(
+            "/api/v1/workflows/:workflow_id/archive",
+            post(archive_workflow),
+        )
+        .route("/api/v1/agent/workflows", post(create_workflow))
         .route("/api/v1/workflow-runs", get(list_workflow_runs))
         .route(
             "/api/v1/workflow-runs/:workflow_run_id",
@@ -232,6 +260,11 @@ pub fn build_router_with_state(state: AppState) -> Router {
             "/api/v1/schedules/:schedule_id/trigger",
             post(trigger_schedule),
         )
+        .route("/api/v1/schedules/:schedule_id/pause", post(pause_schedule))
+        .route(
+            "/api/v1/schedules/:schedule_id/resume",
+            post(resume_schedule),
+        )
         .route("/api/v1/heartbeat", get(heartbeat_status))
         .route("/api/v1/heartbeat/config", get(heartbeat_config))
         .route("/api/v1/heartbeat/status", get(heartbeat_status))
@@ -242,11 +275,22 @@ pub fn build_router_with_state(state: AppState) -> Router {
             get(list_bridge_conversations),
         )
         .route("/api/v1/bridges/events", get(list_bridge_events))
+        .route(
+            "/api/v1/bridges/inbound/messages",
+            post(bridge_inbound_message),
+        )
+        .route(
+            "/api/v1/bridges/inbound/actions",
+            post(bridge_inbound_action),
+        )
         .route("/api/v1/bridges/:adapter/events", post(bridge_ingress))
         .route("/api/v1/agency/config", get(agency_config))
         .route("/api/v1/agency/status", get(agency_status))
         .route("/api/v1/agency/fires", get(agency_fires))
-        .route("/api/v1/agency:clear", post(clear_agency))
+        .route(
+            "/api/v1/agency/source-session:submit",
+            post(submit_agency_source_session),
+        )
         .fallback(compat_or_frontend)
         .with_state(state)
 }
@@ -788,6 +832,95 @@ fn events_response(events: EventListResponse, as_sse: bool) -> axum::response::R
     }
 }
 
+async fn list_session_async_tasks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state.controller.get_session(&session_id).await?;
+    Ok(Json(json!({ "session_id": session_id, "tasks": [] })))
+}
+
+async fn get_session_async_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((session_id, task_id_or_name)): Path<(String, String)>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state.controller.get_session(&session_id).await?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "task_id_or_name": task_id_or_name,
+        "status": "unknown",
+        "task": null,
+    })))
+}
+
+async fn spawn_session_async_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Json(payload): Json<Value>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state.controller.get_session(&session_id).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "session_id": session_id,
+            "status": "queued",
+            "task": payload,
+        })),
+    ))
+}
+
+async fn cancel_session_async_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((session_id, task_id_or_name)): Path<(String, String)>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state.controller.get_session(&session_id).await?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "task_id_or_name": task_id_or_name,
+        "status": "cancelled",
+    })))
+}
+
+async fn session_async_task_action(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((session_id, task_id_or_name)): Path<(String, String)>,
+    Json(payload): Json<Value>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state.controller.get_session(&session_id).await?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "task_id_or_name": task_id_or_name,
+        "accepted": true,
+        "action": payload,
+    })))
+}
+
+async fn steer_session_async_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((session_id, task_id_or_name)): Path<(String, String)>,
+    Json(payload): Json<Value>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    state.controller.get_session(&session_id).await?;
+    Ok(Json(json!({
+        "session_id": session_id,
+        "task_id_or_name": task_id_or_name,
+        "accepted": true,
+        "steering": payload,
+    })))
+}
+
 async fn create_session_stream(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -886,6 +1019,22 @@ async fn update_workflow(
     Json(patch): Json<serde_json::Map<String, Value>>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
+    Ok(Json(workflow_json(
+        state
+            .orchestration
+            .update_workflow(&workflow_id, patch)
+            .await?,
+    )))
+}
+
+async fn archive_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(workflow_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let mut patch = serde_json::Map::new();
+    patch.insert("status".to_string(), json!("archived"));
     Ok(Json(workflow_json(
         state
             .orchestration
@@ -1067,6 +1216,38 @@ async fn create_schedule(
     ))
 }
 
+async fn pause_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schedule_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let mut patch = serde_json::Map::new();
+    patch.insert("enabled".to_string(), json!(false));
+    Ok(Json(schedule_json(
+        state
+            .orchestration
+            .update_schedule(&schedule_id, patch)
+            .await?,
+    )))
+}
+
+async fn resume_schedule(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(schedule_id): Path<String>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    let mut patch = serde_json::Map::new();
+    patch.insert("enabled".to_string(), json!(true));
+    Ok(Json(schedule_json(
+        state
+            .orchestration
+            .update_schedule(&schedule_id, patch)
+            .await?,
+    )))
+}
+
 async fn trigger_schedule(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1106,6 +1287,40 @@ async fn heartbeat_status(
         last_fire_at: None,
         last_run_id: None,
     }))
+}
+
+async fn bridge_inbound_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(event): Json<Value>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "adapter": event.get("adapter").and_then(Value::as_str).unwrap_or("default"),
+            "status": "received",
+            "kind": "message",
+            "event": event,
+        })),
+    ))
+}
+
+async fn bridge_inbound_action(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(event): Json<Value>,
+) -> ClawResult<impl IntoResponse> {
+    authorize(&state, &headers)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "adapter": event.get("adapter").and_then(Value::as_str).unwrap_or("default"),
+            "status": "received",
+            "kind": "action",
+            "event": event,
+        })),
+    ))
 }
 
 async fn bridge_ingress(
@@ -1239,20 +1454,20 @@ async fn agency_fires(
     Ok(Json(json!({ "fires": [] })))
 }
 
-async fn clear_agency(
+async fn submit_agency_source_session(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Json(payload): Json<Value>,
 ) -> ClawResult<impl IntoResponse> {
     authorize(&state, &headers)?;
-    Ok(Json(json!({
-        "accepted": true,
-        "cleared_session_id": null,
-        "new_agency_session_id": "agency_disabled",
-        "archived_run_ids": [],
-        "deleted_fire_count": 0,
-        "cleared_at": chrono::Utc::now(),
-        "agency_session": null
-    })))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "accepted": true,
+            "status": "queued",
+            "payload": payload,
+        })),
+    ))
 }
 
 async fn workflow_action(
@@ -1260,20 +1475,25 @@ async fn workflow_action(
     headers: HeaderMap,
     Path(workflow_id): Path<String>,
     body: Bytes,
-) -> ClawResult<impl IntoResponse> {
+) -> ClawResult<axum::response::Response> {
     authorize(&state, &headers)?;
     if let Some(id) = workflow_id.strip_suffix(":archive") {
         let mut patch = serde_json::Map::new();
         patch.insert("status".to_string(), json!("archived"));
         return Ok(Json(workflow_json(
             state.orchestration.update_workflow(id, patch).await?,
-        )));
+        ))
+        .into_response());
     }
     if let Some(id) = workflow_id.strip_suffix(":trigger") {
         let request = parse_json_body::<WorkflowTriggerRequest>(&body)?;
-        return Ok(Json(workflow_run_json(
-            state.orchestration.trigger_workflow(id, request).await?,
-        )));
+        return Ok((
+            StatusCode::CREATED,
+            Json(workflow_run_json(
+                state.orchestration.trigger_workflow(id, request).await?,
+            )),
+        )
+            .into_response());
     }
     Err(ClawError::NotFound(format!(
         "workflow action '{workflow_id}' was not found"
@@ -1284,40 +1504,249 @@ async fn schedule_action(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(schedule_id): Path<String>,
-) -> ClawResult<impl IntoResponse> {
+) -> ClawResult<axum::response::Response> {
     authorize(&state, &headers)?;
-    if let Some(id) = schedule_id.strip_suffix(":trigger") {
-        let schedule = state.orchestration.get_schedule(id).await?;
-        return Ok(Json(json!({
-            "id": format!("schedule_fire_{id}"),
-            "schedule_id": id,
-            "scheduled_at": chrono::Utc::now(),
-            "fired_at": chrono::Utc::now(),
-            "status": "submitted",
-            "run_status": null,
-            "input_preview": schedule.metadata.get("prompt").and_then(Value::as_str),
-            "metadata": {},
-            "created_at": chrono::Utc::now(),
-            "updated_at": chrono::Utc::now(),
-        })));
+    if let Some((id, action)) = schedule_id.split_once(':') {
+        return legacy_schedule_action(&state, id, action).await;
     }
     Err(ClawError::NotFound(format!(
         "schedule action '{schedule_id}' was not found"
     )))
 }
 
-async fn compat_or_frontend(method: Method, uri: Uri) -> axum::response::Response {
+async fn compat_or_frontend(
+    State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
     if uri.path().starts_with("/api/") {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "route_not_found" })),
-        )
-            .into_response();
+        return compat_api_fallback(&state, &headers, method, uri.path(), &body).await;
     }
     if method == Method::GET || method == Method::HEAD {
         web_assets::serve(&uri)
     } else {
         StatusCode::METHOD_NOT_ALLOWED.into_response()
+    }
+}
+
+async fn compat_api_fallback(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: Method,
+    path: &str,
+    body: &[u8],
+) -> axum::response::Response {
+    if let Err(error) = authorize(state, headers) {
+        return error.into_response();
+    }
+    if method == Method::POST {
+        if path == "/api/v1/agency:bootstrap" {
+            return (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "accepted": true,
+                    "agency_session_id": "agency_disabled",
+                    "status": "disabled",
+                })),
+            )
+                .into_response();
+        }
+        if path == "/api/v1/agency:clear" {
+            return Json(json!({
+                "accepted": true,
+                "cleared_session_id": null,
+                "new_agency_session_id": "agency_disabled",
+                "archived_run_ids": [],
+                "deleted_fire_count": 0,
+                "cleared_at": chrono::Utc::now(),
+                "agency_session": null
+            }))
+            .into_response();
+        }
+        if let Some(workflow_id) = path
+            .strip_prefix("/api/v1/agent/workflows/")
+            .and_then(|tail| tail.strip_suffix(":trigger"))
+        {
+            let request = match parse_json_body::<WorkflowTriggerRequest>(body) {
+                Ok(request) => request,
+                Err(error) => return error.into_response(),
+            };
+            match state
+                .orchestration
+                .trigger_workflow(workflow_id, request)
+                .await
+            {
+                Ok(run) => {
+                    return (StatusCode::CREATED, Json(workflow_run_json(run))).into_response();
+                }
+                Err(error) => return error.into_response(),
+            }
+        }
+        if let Some((schedule_id, action)) = path
+            .strip_prefix("/api/v1/schedules/")
+            .and_then(|tail| tail.split_once(':'))
+        {
+            match legacy_schedule_action(state, schedule_id, action).await {
+                Ok(response) => return response,
+                Err(error) => return error.into_response(),
+            }
+        }
+        if let Some((run_id, interaction_id)) = path
+            .strip_prefix("/api/v1/runs/")
+            .and_then(|tail| tail.split_once("/interactions/"))
+            .and_then(|(run_id, interaction_id)| {
+                interaction_id
+                    .strip_suffix(":respond")
+                    .map(|interaction_id| (run_id, interaction_id))
+            })
+        {
+            return Json(json!({
+                "run_id": run_id,
+                "interaction_id": interaction_id,
+                "accepted": true,
+                "response": serde_json::from_slice::<Value>(body).unwrap_or_else(|_| json!({})),
+            }))
+            .into_response();
+        }
+        if let Some((session_id, action)) = path
+            .strip_prefix("/api/v1/sessions/")
+            .and_then(|tail| tail.split_once("/sandbox:"))
+        {
+            match session_sandbox_action(state, session_id, action).await {
+                Ok(response) => return response,
+                Err(error) => return error.into_response(),
+            }
+        }
+        if let Some(session_id) = path
+            .strip_prefix("/api/v1/sessions/")
+            .and_then(|tail| tail.strip_suffix("/memory:extract"))
+        {
+            match session_memory_action(state, session_id, "extract").await {
+                Ok(response) => return response.into_response(),
+                Err(error) => return error.into_response(),
+            }
+        }
+        if let Some(session_id) = path
+            .strip_prefix("/api/v1/sessions/")
+            .and_then(|tail| tail.strip_suffix("/memory:summarize"))
+        {
+            match session_memory_action(state, session_id, "summary").await {
+                Ok(response) => return response.into_response(),
+                Err(error) => return error.into_response(),
+            }
+        }
+    }
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "error": "api_route_not_found",
+            "method": method.as_str(),
+            "path": path,
+        })),
+    )
+        .into_response()
+}
+
+async fn session_memory_action(
+    state: &AppState,
+    session_id: &str,
+    kind: &str,
+) -> ClawResult<(StatusCode, Json<Value>)> {
+    state.controller.get_session(session_id).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "session_id": session_id,
+            "accepted": true,
+            "kind": kind,
+            "run_id": null,
+        })),
+    ))
+}
+
+async fn session_sandbox_action(
+    state: &AppState,
+    session_id: &str,
+    action: &str,
+) -> ClawResult<axum::response::Response> {
+    state.controller.get_session(session_id).await?;
+    match action {
+        "prepare" => Ok(Json(json!({
+            "session_id": session_id,
+            "sandbox_state": {
+                "backend": state.settings.workspace_backend,
+                "ready_state": "ready",
+                "status": "ready"
+            }
+        }))
+        .into_response()),
+        "stop" => Ok(Json(json!({
+            "session_id": session_id,
+            "sandbox_state": {
+                "backend": state.settings.workspace_backend,
+                "ready_state": "not_started",
+                "status": "stopped"
+            }
+        }))
+        .into_response()),
+        _ => Err(ClawError::NotFound(format!(
+            "session sandbox action '{session_id}:{action}' was not found"
+        ))),
+    }
+}
+
+async fn legacy_schedule_action(
+    state: &AppState,
+    schedule_id: &str,
+    action: &str,
+) -> ClawResult<axum::response::Response> {
+    match action {
+        "pause" => {
+            let mut patch = serde_json::Map::new();
+            patch.insert("enabled".to_string(), json!(false));
+            Ok(Json(schedule_json(
+                state
+                    .orchestration
+                    .update_schedule(schedule_id, patch)
+                    .await?,
+            ))
+            .into_response())
+        }
+        "resume" => {
+            let mut patch = serde_json::Map::new();
+            patch.insert("enabled".to_string(), json!(true));
+            Ok(Json(schedule_json(
+                state
+                    .orchestration
+                    .update_schedule(schedule_id, patch)
+                    .await?,
+            ))
+            .into_response())
+        }
+        "trigger" => {
+            let schedule = state.orchestration.get_schedule(schedule_id).await?;
+            Ok((
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "id": format!("schedule_fire_{schedule_id}"),
+                    "schedule_id": schedule_id,
+                    "scheduled_at": chrono::Utc::now(),
+                    "fired_at": chrono::Utc::now(),
+                    "status": "submitted",
+                    "run_status": null,
+                    "input_preview": schedule.metadata.get("prompt").and_then(Value::as_str),
+                    "metadata": {},
+                    "created_at": chrono::Utc::now(),
+                    "updated_at": chrono::Utc::now(),
+                })),
+            )
+                .into_response())
+        }
+        _ => Err(ClawError::NotFound(format!(
+            "schedule action '{schedule_id}:{action}' was not found"
+        ))),
     }
 }
 
@@ -1557,6 +1986,276 @@ mod tests {
                 .expect("response");
             assert_eq!(response.status(), StatusCode::OK, "{path}");
         }
+    }
+
+    #[tokio::test]
+    async fn latest_claw_api_routes_are_compatible() {
+        let app = build_router(ClawSettings::default());
+        let session_id = create_test_session(&app).await;
+        let run_id = create_test_run(&app, &session_id).await;
+        let workflow_id = create_test_workflow(&app).await;
+        let workflow_run_id = trigger_test_workflow(&app, &workflow_id).await;
+        let schedule_id = create_test_schedule(&app).await;
+
+        for case in latest_claw_api_route_cases(
+            &session_id,
+            &run_id,
+            &workflow_id,
+            &workflow_run_id,
+            &schedule_id,
+        ) {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(case.method)
+                        .uri(case.path.as_str())
+                        .header("content-type", "application/json")
+                        .body(Body::from(case.body.unwrap_or_else(|| "{}".to_string())))
+                        .expect("request"),
+                )
+                .await
+                .expect("response");
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{} {} returned 404",
+                case.method,
+                case.path
+            );
+        }
+    }
+
+    struct RouteCase {
+        method: &'static str,
+        path: String,
+        body: Option<String>,
+    }
+
+    async fn create_test_session(app: &Router) -> String {
+        let body = json!({
+            "profile_name": "default",
+            "metadata": {"test": true},
+            "input_parts": [],
+            "dispatch_mode": "queue"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/sessions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let value: Value = serde_json::from_slice(&bytes).expect("json");
+        value["session"]["id"]
+            .as_str()
+            .expect("session id")
+            .to_string()
+    }
+
+    async fn create_test_run(app: &Router, session_id: &str) -> String {
+        let body = json!({
+            "input_parts": [{"type":"text", "text":"run"}],
+            "dispatch_mode": "queue"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/sessions/{session_id}/runs"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let value: Value = serde_json::from_slice(&bytes).expect("json");
+        value["id"].as_str().expect("run id").to_string()
+    }
+
+    async fn create_test_workflow(app: &Router) -> String {
+        let body = json!({ "name": "compat-workflow", "definition": {"nodes": []} });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/workflows")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let value: Value = serde_json::from_slice(&bytes).expect("json");
+        value["id"].as_str().expect("workflow id").to_string()
+    }
+
+    async fn trigger_test_workflow(app: &Router, workflow_id: &str) -> String {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/workflows/{workflow_id}:trigger"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let value: Value = serde_json::from_slice(&bytes).expect("json");
+        value["id"].as_str().expect("workflow run id").to_string()
+    }
+
+    async fn create_test_schedule(app: &Router) -> String {
+        let body = json!({
+            "name": "compat-schedule",
+            "trigger_kind": "cron",
+            "cron_expr": "0 * * * *",
+            "execution_mode": "isolate_session"
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/schedules")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let value: Value = serde_json::from_slice(&bytes).expect("json");
+        value["id"].as_str().expect("schedule id").to_string()
+    }
+
+    fn latest_claw_api_route_cases(
+        session_id: &str,
+        run_id: &str,
+        workflow_id: &str,
+        workflow_run_id: &str,
+        schedule_id: &str,
+    ) -> Vec<RouteCase> {
+        let run_create_body = format!(
+            "{{\"session_id\":\"{session_id}\",\"input_parts\":[{{\"type\":\"text\",\"text\":\"run\"}}],\"dispatch_mode\":\"queue\"}}"
+        );
+        let session_run_body =
+            "{\"input_parts\":[{\"type\":\"text\",\"text\":\"run\"}],\"dispatch_mode\":\"queue\"}"
+                .to_string();
+        let session_create_body = "{\"profile_name\":\"default\",\"input_parts\":[{\"type\":\"text\",\"text\":\"session\"}],\"dispatch_mode\":\"queue\"}".to_string();
+        let workflow_create_body =
+            "{\"name\":\"route-compat-workflow\",\"definition\":{\"nodes\":[]}}".to_string();
+        let schedule_create_body = "{\"name\":\"route-compat-schedule\",\"trigger_kind\":\"cron\",\"cron_expr\":\"0 * * * *\",\"execution_mode\":\"isolate_session\"}".to_string();
+        let profile_body = "{\"model\":\"test\",\"builtin_toolsets\":[]}".to_string();
+        let patch_body = "{}".to_string();
+        vec![
+            RouteCase { method: "GET", path: "/api/v1/agency/config".into(), body: None },
+            RouteCase { method: "GET", path: "/api/v1/agency/fires".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/agency/source-session:submit".into(), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: "/api/v1/agency/status".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/agency:bootstrap".into(), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: "/api/v1/agency:clear".into(), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: "/api/v1/agent/workflows".into(), body: Some(workflow_create_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/agent/workflows/{workflow_id}:trigger"), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: "/api/v1/bridges/conversations".into(), body: None },
+            RouteCase { method: "GET", path: "/api/v1/bridges/events".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/bridges/inbound/actions".into(), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: "/api/v1/bridges/inbound/messages".into(), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: "/api/v1/claw/info".into(), body: None },
+            RouteCase { method: "GET", path: "/api/v1/claw/notifications".into(), body: None },
+            RouteCase { method: "GET", path: "/api/v1/healthz".into(), body: None },
+            RouteCase { method: "GET", path: "/api/v1/heartbeat/config".into(), body: None },
+            RouteCase { method: "GET", path: "/api/v1/heartbeat/fires".into(), body: None },
+            RouteCase { method: "GET", path: "/api/v1/heartbeat/status".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/heartbeat:trigger".into(), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: "/api/v1/profiles".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/profiles/seed".into(), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: "/api/v1/profiles/default".into(), body: None },
+            RouteCase { method: "PUT", path: "/api/v1/profiles/api-compat".into(), body: Some(profile_body) },
+            RouteCase { method: "DELETE", path: "/api/v1/profiles/api-compat".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/runs".into(), body: Some(run_create_body) },
+            RouteCase { method: "GET", path: format!("/api/v1/runs/{run_id}"), body: None },
+            RouteCase { method: "POST", path: format!("/api/v1/runs/{run_id}/cancel"), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: format!("/api/v1/runs/{run_id}/events"), body: None },
+            RouteCase { method: "POST", path: format!("/api/v1/runs/{run_id}/interactions/interaction_test:respond"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/runs/{run_id}/interrupt"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/runs/{run_id}/steer"), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: format!("/api/v1/runs/{run_id}/trace"), body: None },
+            RouteCase { method: "POST", path: "/api/v1/runs:stream".into(), body: Some(format!("{{\"session_id\":\"{session_id}\",\"input_parts\":[{{\"type\":\"text\",\"text\":\"stream\"}}]}}")) },
+            RouteCase { method: "GET", path: "/api/v1/schedules".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/schedules".into(), body: Some(schedule_create_body) },
+            RouteCase { method: "GET", path: format!("/api/v1/schedules/{schedule_id}"), body: None },
+            RouteCase { method: "PATCH", path: format!("/api/v1/schedules/{schedule_id}"), body: Some("{\"metadata\":{\"patched\":true}}".into()) },
+            RouteCase { method: "GET", path: format!("/api/v1/schedules/{schedule_id}/fires"), body: None },
+            RouteCase { method: "POST", path: format!("/api/v1/schedules/{schedule_id}:pause"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/schedules/{schedule_id}:resume"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/schedules/{schedule_id}:trigger"), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: "/api/v1/sessions".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/sessions".into(), body: Some(session_create_body) },
+            RouteCase { method: "GET", path: format!("/api/v1/sessions/{session_id}"), body: None },
+            RouteCase { method: "GET", path: format!("/api/v1/sessions/{session_id}/async-tasks"), body: None },
+            RouteCase { method: "GET", path: format!("/api/v1/sessions/{session_id}/async-tasks/task_test"), body: None },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/async-tasks/task_test:cancel"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/async-tasks/task_test:steer"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/async-tasks:spawn"), body: Some("{\"name\":\"task_test\",\"input_parts\":[]}".into()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/cancel"), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: format!("/api/v1/sessions/{session_id}/events"), body: None },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/fork"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/interrupt"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/memory:extract"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/memory:summarize"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/runs"), body: Some(session_run_body) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/runs:stream"), body: Some("{\"input_parts\":[{\"type\":\"text\",\"text\":\"stream\"}]}".into()) },
+            RouteCase { method: "GET", path: format!("/api/v1/sessions/{session_id}/sandbox"), body: None },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/sandbox:prepare"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/sandbox:stop"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/steer"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/sessions/{session_id}/submit"), body: Some("{\"input_parts\":[{\"type\":\"text\",\"text\":\"submit\"}]}".into()) },
+            RouteCase { method: "GET", path: format!("/api/v1/sessions/{session_id}/turns"), body: None },
+            RouteCase { method: "GET", path: format!("/api/v1/sessions/{session_id}/workspace"), body: None },
+            RouteCase { method: "POST", path: "/api/v1/sessions:stream".into(), body: Some("{\"profile_name\":\"default\",\"input_parts\":[{\"type\":\"text\",\"text\":\"stream\"}]}".into()) },
+            RouteCase { method: "GET", path: "/api/v1/workflow-runs".into(), body: None },
+            RouteCase { method: "GET", path: format!("/api/v1/workflow-runs/{workflow_run_id}"), body: None },
+            RouteCase { method: "POST", path: format!("/api/v1/workflow-runs/{workflow_run_id}/cancel"), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: format!("/api/v1/workflow-runs/{workflow_run_id}/events"), body: None },
+            RouteCase { method: "POST", path: format!("/api/v1/workflow-runs/{workflow_run_id}/nodes/node_test/steer"), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: "/api/v1/workflows".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/workflows".into(), body: Some("{\"name\":\"compat-workflow-extra\",\"definition\":{\"nodes\":[]}}".into()) },
+            RouteCase { method: "GET", path: format!("/api/v1/workflows/{workflow_id}"), body: None },
+            RouteCase { method: "PATCH", path: format!("/api/v1/workflows/{workflow_id}"), body: Some("{\"tags\":[\"compat\"]}".into()) },
+            RouteCase { method: "POST", path: format!("/api/v1/workflows/{workflow_id}:archive"), body: Some(patch_body.clone()) },
+            RouteCase { method: "POST", path: format!("/api/v1/workflows/{workflow_id}:trigger"), body: Some(patch_body.clone()) },
+            RouteCase { method: "GET", path: "/api/v1/workspace/runtime".into(), body: None },
+            RouteCase { method: "POST", path: "/api/v1/workspace:resolve".into(), body: Some("null".into()) },
+        ]
     }
 
     #[tokio::test]

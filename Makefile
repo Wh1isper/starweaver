@@ -94,14 +94,46 @@ build: ## Build the workspace
 	@echo "Building Rust workspace"
 	@cargo build --workspace --all-targets --all-features --locked
 
+.PHONY: claw-db-migrate
+claw-db-migrate: ## Apply pending Starweaver Claw SQLite database migrations
+	@echo "Migrating Starweaver Claw database"
+	@cargo run --package starweaver-claw --bin starweaver-claw --locked -- migrate
+
+.PHONY: claw-dev-api
+claw-dev-api: claw-db-migrate ## Run the Starweaver Claw API locally for development
+	@echo "Starting Starweaver Claw API on http://127.0.0.1:9042"
+	@STARWEAVER_CLAW_WORKSPACE_BACKEND="$${STARWEAVER_CLAW_WORKSPACE_BACKEND:-local}" cargo run --package starweaver-claw --bin starweaver-claw --locked -- start --host 127.0.0.1 --port 9042
+
+.PHONY: claw-dev-web
+claw-dev-web: claw-web-install ## Run the Starweaver Claw web console locally for development
+	@echo "Starting Starweaver Claw web console on http://127.0.0.1:5173"
+	@cd $(CLAW_WEB_DIR) && pnpm dev
+
+.PHONY: claw-dev
+claw-dev: claw-web-install ## Run Starweaver Claw API and web console locally for development
+	@echo "Starting Starweaver Claw API and web console"
+	@set -e; \
+	api_pid=""; \
+	web_pid=""; \
+	cleanup() { \
+		[ -z "$$api_pid" ] || kill "$$api_pid" 2>/dev/null || true; \
+		[ -z "$$web_pid" ] || kill "$$web_pid" 2>/dev/null || true; \
+	}; \
+	trap cleanup INT TERM EXIT; \
+	$(MAKE) --no-print-directory claw-dev-api & \
+	api_pid=$$!; \
+	cd $(CLAW_WEB_DIR) && pnpm dev & \
+	web_pid=$$!; \
+	wait $$api_pid $$web_pid
+
 .PHONY: docker-build-claw
 docker-build-claw: ## Build the Starweaver Claw Docker image
 	@echo "Building Starweaver Claw Docker image"
 	@docker build \
-		--build-arg YA_CLAW_SERVICE_VERSION="$(STARWEAVER_CLAW_SERVICE_VERSION)" \
-		--build-arg YA_CLAW_SERVICE_COMMIT="$(STARWEAVER_CLAW_SERVICE_COMMIT)" \
-		--build-arg YA_CLAW_SERVICE_BUILD="$(STARWEAVER_CLAW_SERVICE_BUILD)" \
-		--build-arg YA_CLAW_SERVICE_IMAGE="$(STARWEAVER_CLAW_SERVICE_IMAGE)" \
+		--build-arg STARWEAVER_CLAW_SERVICE_VERSION="$(STARWEAVER_CLAW_SERVICE_VERSION)" \
+		--build-arg STARWEAVER_CLAW_SERVICE_COMMIT="$(STARWEAVER_CLAW_SERVICE_COMMIT)" \
+		--build-arg STARWEAVER_CLAW_SERVICE_BUILD="$(STARWEAVER_CLAW_SERVICE_BUILD)" \
+		--build-arg STARWEAVER_CLAW_SERVICE_IMAGE="$(STARWEAVER_CLAW_SERVICE_IMAGE)" \
 		-f Dockerfile.starweaver-claw -t "$(STARWEAVER_CLAW_SERVICE_IMAGE)" .
 
 .PHONY: docker-run-claw

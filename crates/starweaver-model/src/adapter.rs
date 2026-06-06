@@ -13,6 +13,26 @@ use crate::{
     stream::ModelResponseStreamEvent, transport::HttpRequestOptions, ModelResponse,
 };
 
+/// Receiver for incremental canonical model stream events.
+pub struct ModelResponseEventStream {
+    receiver: tokio::sync::mpsc::Receiver<Result<ModelResponseStreamEvent, ModelError>>,
+}
+
+impl ModelResponseEventStream {
+    /// Build a stream from a channel receiver.
+    #[must_use]
+    pub const fn new(
+        receiver: tokio::sync::mpsc::Receiver<Result<ModelResponseStreamEvent, ModelError>>,
+    ) -> Self {
+        Self { receiver }
+    }
+
+    /// Receive the next canonical model stream event.
+    pub async fn recv(&mut self) -> Option<Result<ModelResponseStreamEvent, ModelError>> {
+        self.receiver.recv().await
+    }
+}
+
 static ALLOW_REAL_MODEL_REQUESTS: AtomicBool = AtomicBool::new(true);
 
 /// Return whether production model requests are globally allowed.
@@ -274,6 +294,24 @@ pub trait ModelAdapter: Send + Sync {
         Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
             response,
         ))])
+    }
+
+    /// Stream a model request and yield canonical events as they arrive.
+    async fn request_stream_incremental(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<ModelResponseEventStream, ModelError> {
+        let events = self
+            .request_stream(messages, settings, params, context)
+            .await?;
+        let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
+        for event in events {
+            let _ = sender.send(Ok(event)).await;
+        }
+        Ok(ModelResponseEventStream::new(receiver))
     }
 
     /// Count tokens for a request where provider support exists.

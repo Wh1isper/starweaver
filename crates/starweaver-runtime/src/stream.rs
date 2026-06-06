@@ -95,6 +95,13 @@ pub enum AgentStreamEvent {
         /// Retry prompt sent to the model.
         prompt: String,
     },
+    /// Pending user steering requested another model turn before finalization.
+    SteeringGuard {
+        /// Current run step.
+        step: usize,
+        /// Control prompt sent to the model before finalization.
+        prompt: String,
+    },
     /// A run completed successfully.
     RunComplete {
         /// Run identifier.

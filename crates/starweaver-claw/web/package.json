@@ -54,7 +54,7 @@
     "vite": "^7.1.10",
     "vitest": "^4.1.5"
   },
-  "name": "ya-claw-web",
+  "name": "starweaver-claw-web",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && vite build",

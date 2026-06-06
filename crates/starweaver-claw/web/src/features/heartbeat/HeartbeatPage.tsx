@@ -214,11 +214,11 @@ function mapFireStatus(status: string, runStatus?: string | null) {
 }
 
 function formatProfileSource(source?: string) {
-  if (source === 'heartbeat') return 'YA_CLAW_HEARTBEAT_PROFILE'
-  return 'YA_CLAW_DEFAULT_PROFILE'
+  if (source === 'heartbeat') return 'STARWEAVER_CLAW_HEARTBEAT_PROFILE'
+  return 'STARWEAVER_CLAW_DEFAULT_PROFILE'
 }
 
 function formatPromptSource(source?: string) {
-  if (source === 'heartbeat_setting') return 'YA_CLAW_HEARTBEAT_PROMPT'
+  if (source === 'heartbeat_setting') return 'STARWEAVER_CLAW_HEARTBEAT_PROMPT'
   return source ?? 'unknown'
 }

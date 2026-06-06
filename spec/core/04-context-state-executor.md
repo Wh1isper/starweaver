@@ -143,7 +143,7 @@ Checkpoint fields:
 
 ## SessionStore Fit
 
-A ya-claw-style `SessionStore` should be an upper-layer consumer of `AgentContext`, `StateStore`, event records, executor checkpoints, environment state, and trace ids. The core contract supports this shape by keeping serializable state separate from process-local dependencies and by assigning stable run, conversation, checkpoint, and stream cursor identifiers.
+A Starweaver Claw-style `SessionStore` should be an upper-layer consumer of `AgentContext`, `StateStore`, event records, executor checkpoints, environment state, and trace ids. The core contract supports this shape by keeping serializable state separate from process-local dependencies and by assigning stable run, conversation, checkpoint, and stream cursor identifiers.
 
 ```mermaid
 flowchart TD

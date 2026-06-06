@@ -2,10 +2,13 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_model::{
-    get_model_config, get_model_settings, ModelAdapter, ModelPresetError, ModelSettings,
+    get_model_config, get_model_settings, ModelAdapter, ModelError, ModelMessage, ModelPresetError,
+    ModelProfile, ModelRequestContext, ModelRequestParameters, ModelResponse,
+    ModelResponseEventStream, ModelResponseStreamEvent, ModelSettings,
 };
 use starweaver_runtime::{AgentRuntimePolicy, OutputPolicy, OutputSchema, UsageLimits};
 use starweaver_tools::{DynToolset, ToolRegistry};
@@ -539,11 +542,14 @@ impl AgentSpec {
             .or(self.preset.model.as_ref())
             .map(|model| model.model_id.as_str())
             .ok_or_else(|| AgentSpecError::UnknownModel("<missing>".to_string()))?;
-        let model = registry
+        let mut model = registry
             .model(model_id)
             .ok_or_else(|| AgentSpecError::UnknownModel(model_id.to_string()))?;
         let retry = self.resolved_retry(registry)?;
         let model_config = self.resolved_model_config()?;
+        if let Some(config) = model_config.as_ref() {
+            model = Arc::new(ProfileOverrideModel::new(model, config.profile.clone()));
+        }
         let mut runtime = self.preset.runtime.clone();
         retry.apply_runtime(&mut runtime);
         self.validate_policy_refs(registry)?;
@@ -713,6 +719,81 @@ impl AgentSpec {
             }
         }
         Ok(())
+    }
+}
+
+struct ProfileOverrideModel {
+    inner: Arc<dyn ModelAdapter>,
+    profile: ModelProfile,
+}
+
+impl ProfileOverrideModel {
+    const fn new(inner: Arc<dyn ModelAdapter>, profile: ModelProfile) -> Self {
+        Self { inner, profile }
+    }
+}
+
+#[async_trait]
+impl ModelAdapter for ProfileOverrideModel {
+    fn model_name(&self) -> &str {
+        self.inner.model_name()
+    }
+
+    fn provider_name(&self) -> Option<&str> {
+        self.inner.provider_name()
+    }
+
+    fn profile(&self) -> &ModelProfile {
+        &self.profile
+    }
+
+    fn default_settings(&self) -> Option<&ModelSettings> {
+        self.inner.default_settings()
+    }
+
+    async fn request(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        self.inner
+            .request(messages, settings, params, context)
+            .await
+    }
+
+    async fn request_stream(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        self.inner
+            .request_stream(messages, settings, params, context)
+            .await
+    }
+
+    async fn request_stream_incremental(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<ModelResponseEventStream, ModelError> {
+        self.inner
+            .request_stream_incremental(messages, settings, params, context)
+            .await
+    }
+
+    async fn count_tokens(
+        &self,
+        messages: &[ModelMessage],
+        settings: Option<&ModelSettings>,
+        params: &ModelRequestParameters,
+    ) -> Result<starweaver_core::Usage, ModelError> {
+        self.inner.count_tokens(messages, settings, params).await
     }
 }
 

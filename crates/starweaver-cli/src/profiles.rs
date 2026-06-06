@@ -19,7 +19,7 @@ use starweaver_agent::{
     ToolResult, Toolset,
 };
 use starweaver_model::{
-    anthropic_http_config, gemini_http_config, openai_chat_http_config,
+    anthropic_http_config, gemini_http_config, get_model_config, openai_chat_http_config,
     openai_responses_http_config, HttpModelConfig, ModelMessage, ModelProfile, ModelRequestPart,
     ModelResponse, ModelResponsePart, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient,
     ToolCallPart,
@@ -653,7 +653,11 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
         registry = registry.with_mcp_server(server.name.clone(), server);
     }
     let inherited_model_id = spec_model_id(spec).unwrap_or("local_echo");
-    if let Some(model) = provider_model(config, inherited_model_id)? {
+    let inherited_model_config = spec
+        .model
+        .as_ref()
+        .and_then(|model| model.config_preset.as_deref());
+    if let Some(model) = provider_model(config, inherited_model_id, inherited_model_config)? {
         registry = registry.with_model(inherited_model_id, model);
     }
     registry = register_configured_subagents(config, registry, inherited_model_id)?;
@@ -1029,7 +1033,7 @@ fn subagent_model(
         "local_echo" => Ok(Arc::new(local_echo_model())),
         "approval_model" => Ok(Arc::new(scripted_tool_model("approval_probe"))),
         "deferred_model" => Ok(Arc::new(scripted_tool_model("deferred_probe"))),
-        other => provider_model(config, other)?
+        other => provider_model(config, other, None)?
             .ok_or_else(|| CliError::Config(format!("unknown subagent model id {other}"))),
     }
 }
@@ -1037,6 +1041,7 @@ fn subagent_model(
 fn provider_model(
     config: &CliConfig,
     model_id: &str,
+    model_config_preset: Option<&str>,
 ) -> CliResult<Option<Arc<dyn starweaver_model::ModelAdapter>>> {
     let Some(parsed) = ProviderModelId::parse(model_id) else {
         return Ok(None);
@@ -1051,10 +1056,11 @@ fn provider_model(
         http_config
             .metadata
             .insert("oauth_provider".to_string(), json!("codex"));
+        let profile = provider_model_profile(model_config_preset, ProtocolFamily::OpenAiResponses)?;
         let client = ProtocolModelClient::new(
             "codex",
             parsed.model_name,
-            ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+            profile,
             http_config,
             Arc::new(CodexOAuthHttpClient::new().map_err(|error| {
                 CliError::Config(format!("failed to build Codex OAuth client: {error}"))
@@ -1102,10 +1108,11 @@ fn provider_model(
         http_config.endpoint_path.clone_from(endpoint_path);
     }
     http_config.max_tokens_parameter = provider_config.max_tokens_parameter;
+    let profile = provider_model_profile(model_config_preset, parsed.protocol)?;
     let client = ProtocolModelClient::new(
         parsed.provider,
         parsed.model_name,
-        ModelProfile::for_protocol(parsed.protocol),
+        profile,
         http_config,
         Arc::new(ReqwestHttpClient::new().map_err(|error| CliError::Config(error.to_string()))?),
     );
@@ -1196,6 +1203,17 @@ impl ProviderModelId {
             _ => "STARWEAVER_API_KEY",
         }
     }
+}
+
+fn provider_model_profile(
+    model_config_preset: Option<&str>,
+    fallback_protocol: ProtocolFamily,
+) -> CliResult<ModelProfile> {
+    let Some(preset) = model_config_preset else {
+        return Ok(ModelProfile::for_protocol(fallback_protocol));
+    };
+    let config = get_model_config(preset).map_err(|error| CliError::Config(error.to_string()))?;
+    Ok(config.profile)
 }
 
 fn missing_provider_key(api_key_env: &str, model_id: &str) -> CliError {

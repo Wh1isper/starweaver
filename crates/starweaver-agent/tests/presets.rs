@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use starweaver_agent::{
     get_model_config, get_model_settings, model_runtime_preset, AgentSpec, AgentSpecRegistry,
-    TestModel,
+    FunctionModel, FunctionModelInfo, ModelSettings, TestModel,
 };
+use starweaver_model::{ModelMessage, ModelResponse};
 
 #[tokio::test]
 async fn agent_spec_loads_yaml_and_builds_agent() {
@@ -80,4 +81,45 @@ model:
     let result = agent.run("hello").await.unwrap();
 
     assert_eq!(result.output, "preset");
+}
+
+#[tokio::test]
+async fn agent_spec_model_settings_preset_reaches_runtime_requests() {
+    let spec = AgentSpec::from_yaml(
+        r"
+name: settings-helper
+model:
+  model_id: settings-model
+  settings_preset: openai_responses_high
+  settings:
+    max_tokens: 99
+",
+    )
+    .unwrap();
+    let model = FunctionModel::new(
+        |_messages: Vec<ModelMessage>,
+         settings: Option<ModelSettings>,
+         _info: FunctionModelInfo| {
+            let Some(settings) = settings else {
+                panic!("settings preset should reach model request");
+            };
+            assert_eq!(settings.max_tokens, Some(99));
+            let Some(thinking) = settings.thinking.as_ref() else {
+                panic!("thinking preset should reach model request");
+            };
+            assert_eq!(thinking.effort, "high");
+            Ok(ModelResponse::text("settings ok"))
+        },
+    );
+    let registry = AgentSpecRegistry::new().with_model("settings-model", Arc::new(model));
+
+    let result = spec
+        .builder(&registry)
+        .unwrap()
+        .build()
+        .run("hello")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "settings ok");
 }

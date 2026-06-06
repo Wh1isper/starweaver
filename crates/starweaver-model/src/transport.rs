@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -122,10 +123,45 @@ pub trait ModelHttpClient: Send + Sync {
     ///
     /// Returns an error when transport, status, or event decoding fails.
     async fn send_event_stream(&self, request: HttpRequest) -> Result<Vec<Value>, ModelError> {
+        let mut stream = self.send_event_stream_incremental(request).await?;
+        let mut events = Vec::new();
+        while let Some(event) = stream.recv().await {
+            events.push(event?);
+        }
+        Ok(events)
+    }
+
+    /// Send a server-sent events model request and return events as they arrive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when transport setup fails.
+    async fn send_event_stream_incremental(
+        &self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
         Err(ModelError::Transport(format!(
             "server-sent event streaming is not implemented for {}",
             request.url
         )))
+    }
+}
+
+/// Receiver for incremental model SSE JSON events.
+pub struct ModelEventStream {
+    receiver: tokio::sync::mpsc::Receiver<Result<Value, ModelError>>,
+}
+
+impl ModelEventStream {
+    /// Build a stream from a channel receiver.
+    #[must_use]
+    pub const fn new(receiver: tokio::sync::mpsc::Receiver<Result<Value, ModelError>>) -> Self {
+        Self { receiver }
+    }
+
+    /// Receive the next JSON event from the stream.
+    pub async fn recv(&mut self) -> Option<Result<Value, ModelError>> {
+        self.receiver.recv().await
     }
 }
 
@@ -215,14 +251,17 @@ impl ModelHttpClient for ReqwestHttpClient {
         }
     }
 
-    async fn send_event_stream(&self, request: HttpRequest) -> Result<Vec<Value>, ModelError> {
+    async fn send_event_stream_incremental(
+        &self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
         let response = self.send_request(&request).await?;
         let status = response.status().as_u16();
-        let text = response
-            .text()
-            .await
-            .map_err(|err| ModelError::Transport(err.to_string()))?;
         if !(200..300).contains(&status) {
+            let text = response
+                .text()
+                .await
+                .map_err(|err| ModelError::Transport(err.to_string()))?;
             let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
             return Err(ModelError::ProviderStatus {
                 status,
@@ -230,7 +269,107 @@ impl ModelHttpClient for ReqwestHttpClient {
                 retryable: is_retryable_status(status),
             });
         }
-        parse_sse_json_events(&text)
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut parser = SseJsonParser::default();
+            let mut bytes = response.bytes_stream();
+            let mut utf8_buffer = Vec::new();
+            while let Some(chunk) = bytes.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        utf8_buffer.extend_from_slice(&bytes);
+                        match push_sse_utf8_buffer(&sender, &mut parser, &mut utf8_buffer).await {
+                            Ok(()) => {}
+                            Err(StreamSendError::Closed) => return,
+                            Err(StreamSendError::InvalidUtf8(error)) => {
+                                let _ = sender
+                                    .send(Err(ModelError::ResponseParsing(format!(
+                                        "invalid server-sent event UTF-8: {error}"
+                                    ))))
+                                    .await;
+                                return;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender
+                            .send(Err(ModelError::Transport(error.to_string())))
+                            .await;
+                        return;
+                    }
+                }
+            }
+            if !utf8_buffer.is_empty() {
+                match std::str::from_utf8(&utf8_buffer) {
+                    Ok(text) => {
+                        if !send_sse_parser_events(&sender, parser.push_str(text)).await {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender
+                            .send(Err(ModelError::ResponseParsing(format!(
+                                "invalid server-sent event UTF-8: {error}"
+                            ))))
+                            .await;
+                        return;
+                    }
+                }
+            }
+            let _ = send_sse_parser_events(&sender, parser.finish()).await;
+        });
+        Ok(ModelEventStream::new(receiver))
+    }
+}
+
+async fn send_sse_parser_events(
+    sender: &tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
+    events: Vec<Result<Value, ModelError>>,
+) -> bool {
+    for event in events {
+        if sender.send(event).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+#[derive(Debug)]
+enum StreamSendError {
+    Closed,
+    InvalidUtf8(std::str::Utf8Error),
+}
+
+async fn push_sse_utf8_buffer(
+    sender: &tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
+    parser: &mut SseJsonParser,
+    utf8_buffer: &mut Vec<u8>,
+) -> Result<(), StreamSendError> {
+    match std::str::from_utf8(utf8_buffer) {
+        Ok(text) => {
+            if !send_sse_parser_events(sender, parser.push_str(text)).await {
+                return Err(StreamSendError::Closed);
+            }
+            utf8_buffer.clear();
+            Ok(())
+        }
+        Err(error) => {
+            let valid_up_to = error.valid_up_to();
+            if valid_up_to > 0 {
+                let text = match std::str::from_utf8(&utf8_buffer[..valid_up_to]) {
+                    Ok(text) => text,
+                    Err(error) => return Err(StreamSendError::InvalidUtf8(error)),
+                };
+                if !send_sse_parser_events(sender, parser.push_str(text)).await {
+                    return Err(StreamSendError::Closed);
+                }
+                utf8_buffer.drain(..valid_up_to);
+            }
+            if error.error_len().is_some() {
+                return Err(StreamSendError::InvalidUtf8(error));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -247,35 +386,78 @@ fn response_headers(response: &reqwest::Response) -> BTreeMap<String, String> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn parse_sse_json_events(text: &str) -> Result<Vec<Value>, ModelError> {
+    let mut parser = SseJsonParser::default();
     let mut events = Vec::new();
-    let mut data_lines = Vec::new();
-    for line in text.lines() {
-        if let Some(data) = line.strip_prefix("data:") {
-            data_lines.push(data.trim_start().to_string());
-            continue;
-        }
-        if line.trim().is_empty() && !data_lines.is_empty() {
-            push_sse_json_event(&mut events, &data_lines)?;
-            data_lines.clear();
-        }
-    }
-    if !data_lines.is_empty() {
-        push_sse_json_event(&mut events, &data_lines)?;
+    for event in parser.push_str(text).into_iter().chain(parser.finish()) {
+        events.push(event?);
     }
     Ok(events)
 }
 
-fn push_sse_json_event(events: &mut Vec<Value>, data_lines: &[String]) -> Result<(), ModelError> {
+#[derive(Default)]
+struct SseJsonParser {
+    buffer: String,
+    data_lines: Vec<String>,
+}
+
+impl SseJsonParser {
+    fn push_str(&mut self, text: &str) -> Vec<Result<Value, ModelError>> {
+        self.buffer.push_str(text);
+        let mut events = Vec::new();
+        while let Some(newline) = self.buffer.find('\n') {
+            let mut line = self.buffer.drain(..=newline).collect::<String>();
+            if line.ends_with('\n') {
+                line.pop();
+            }
+            if line.ends_with('\r') {
+                line.pop();
+            }
+            if let Some(event) = self.push_line(&line) {
+                events.push(event);
+            }
+        }
+        events
+    }
+
+    fn finish(&mut self) -> Vec<Result<Value, ModelError>> {
+        let mut events = Vec::new();
+        if !self.buffer.is_empty() {
+            let line = std::mem::take(&mut self.buffer);
+            if let Some(event) = self.push_line(&line) {
+                events.push(event);
+            }
+        }
+        if !self.data_lines.is_empty() {
+            events.push(parse_sse_json_event(&self.data_lines));
+            self.data_lines.clear();
+        }
+        events
+    }
+
+    fn push_line(&mut self, line: &str) -> Option<Result<Value, ModelError>> {
+        if let Some(data) = line.strip_prefix("data:") {
+            self.data_lines.push(data.trim_start().to_string());
+            return None;
+        }
+        if line.trim().is_empty() && !self.data_lines.is_empty() {
+            let event = parse_sse_json_event(&self.data_lines);
+            self.data_lines.clear();
+            return Some(event);
+        }
+        None
+    }
+}
+
+fn parse_sse_json_event(data_lines: &[String]) -> Result<Value, ModelError> {
     let data = data_lines.join("\n");
     if data.trim() == "[DONE]" {
-        return Ok(());
+        return Ok(Value::Null);
     }
-    let value = serde_json::from_str::<Value>(&data).map_err(|error| {
+    serde_json::from_str::<Value>(&data).map_err(|error| {
         ModelError::ResponseParsing(format!("invalid server-sent event JSON: {error}"))
-    })?;
-    events.push(value);
-    Ok(())
+    })
 }
 
 /// Authentication strategy for HTTP model adapters.

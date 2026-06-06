@@ -38,7 +38,7 @@ export const useConnectionStore = create<ConnectionState>()(
       logout: () => set({ baseUrl: getDefaultBaseUrl(), apiToken: '' }),
     }),
     {
-      name: 'ya-claw-connection',
+      name: 'starweaver-claw-connection',
     },
   ),
 )

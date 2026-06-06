@@ -198,7 +198,7 @@ Starweaver adds low-cardinality attributes for trace-to-state joins:
 - `starweaver.capability.name`
 - `starweaver.stream.cursor`
 
-These attributes mirror persisted store identifiers and support ya-claw-style session APIs such as run trace, session turns, and execution inspection.
+These attributes mirror persisted store identifiers and support Starweaver Claw-style session APIs such as run trace, session turns, and execution inspection.
 
 ## Langfuse Adapter
 
@@ -247,7 +247,7 @@ sequenceDiagram
 
 ## SessionStore Integration
 
-Observability links to durable state through `SessionStore` and `StateStore` identifiers. A ya-claw-style service can persist traces, compact trace projections, and runtime events separately while preserving the same correlation ids.
+Observability links to durable state through `SessionStore` and `StateStore` identifiers. A Starweaver Claw-style service can persist traces, compact trace projections, and runtime events separately while preserving the same correlation ids.
 
 ```mermaid
 flowchart LR

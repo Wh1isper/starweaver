@@ -1,6 +1,15 @@
-use std::{env, path::Path, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    path::Path,
+    time::Instant,
+};
 
+use starweaver_core::Usage;
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
+
+const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
+const MAX_STEERING_ITEMS: usize = 5;
 
 use super::{
     markdown::ASSISTANT_CONTENT_PREFIX,
@@ -42,6 +51,33 @@ impl FooterMode {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum SteeringStatus {
+    Pending,
+    Acked,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SteeringItem {
+    pub(super) id: String,
+    pub(super) text: String,
+    pub(super) status: SteeringStatus,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SteeringSubmission {
+    pub id: String,
+    pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamingPartKind {
+    Text,
+    Thinking,
+    Other,
+}
+
 /// Interactive terminal UI state.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
@@ -77,8 +113,9 @@ pub struct InteractiveTuiState {
     pub(super) history: Vec<String>,
     pub(super) history_index: Option<usize>,
     pub(super) history_draft: String,
-    streaming_part: Option<usize>,
+    streaming_parts: HashMap<usize, StreamingPartKind>,
     streaming_text_seen: bool,
+    visible_tool_calls: HashSet<String>,
     pub(super) last_ctrl_c: Option<Instant>,
     pub(super) cancel_requested: bool,
     pub(super) footer_mode: FooterMode,
@@ -88,6 +125,8 @@ pub struct InteractiveTuiState {
     pub(super) goal_max_iterations: usize,
     pub(super) context_tokens: Option<u64>,
     pub(super) context_window: Option<u64>,
+    pub(super) steering_items: Vec<SteeringItem>,
+    next_steering_id: u64,
 }
 
 impl InteractiveTuiState {
@@ -106,15 +145,16 @@ impl InteractiveTuiState {
             model: "local_echo".to_string(),
             phase: "ready".to_string(),
             running: false,
-            scroll_offset: 0,
+            scroll_offset: usize::MAX,
             input_status: None,
             pasted_images: Vec::new(),
             run_mode: RunMode::Act,
             history: Vec::new(),
             history_index: None,
             history_draft: String::new(),
-            streaming_part: None,
+            streaming_parts: HashMap::new(),
             streaming_text_seen: false,
+            visible_tool_calls: HashSet::new(),
             last_ctrl_c: None,
             cancel_requested: false,
             footer_mode: FooterMode::Context,
@@ -123,7 +163,9 @@ impl InteractiveTuiState {
             goal_iteration: 0,
             goal_max_iterations: 10,
             context_tokens: None,
-            context_window: None,
+            context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
+            steering_items: Vec::new(),
+            next_steering_id: 0,
         }
     }
 
@@ -154,12 +196,13 @@ impl InteractiveTuiState {
         self.cancel_requested = false;
         self.status = "RUNNING".to_string();
         self.phase = "queued".to_string();
-        self.streaming_part = None;
+        self.streaming_parts.clear();
         self.streaming_text_seen = false;
+        self.visible_tool_calls.clear();
         self.footer_mode = FooterMode::Context;
         self.input_status = None;
         self.pasted_images.clear();
-        self.scroll_offset = 0;
+        self.scroll_to_bottom();
         self.body.push(String::new());
         self.body.push(format!("User: {prompt}"));
         self.body.push(String::new());
@@ -176,7 +219,8 @@ impl InteractiveTuiState {
         self.cancel_requested = false;
         self.status = "IDLE".to_string();
         self.phase = "completed".to_string();
-        self.streaming_part = None;
+        self.streaming_parts.clear();
+        self.visible_tool_calls.clear();
     }
 
     /// Mark a run failed.
@@ -185,12 +229,25 @@ impl InteractiveTuiState {
         self.cancel_requested = false;
         self.status = "ERROR".to_string();
         self.phase = "failed".to_string();
-        self.streaming_part = None;
+        self.streaming_parts.clear();
+        self.visible_tool_calls.clear();
         self.body.push(format!("Error: {error}"));
+    }
+
+    /// Mark a run cancelled by the interactive user.
+    pub fn cancel_run(&mut self, reason: &str) {
+        self.running = false;
+        self.cancel_requested = false;
+        self.status = "IDLE".to_string();
+        self.phase = "cancelled".to_string();
+        self.streaming_parts.clear();
+        self.visible_tool_calls.clear();
+        self.body.push(format!("Run cancelled: {reason}"));
     }
 
     /// Apply a live runtime stream event to the view state.
     pub fn apply_stream_record(&mut self, record: &AgentStreamRecord) {
+        let was_at_bottom = self.is_at_bottom();
         match &record.event {
             AgentStreamEvent::RunStart { .. } => {
                 self.status = "RUNNING".to_string();
@@ -205,6 +262,7 @@ impl InteractiveTuiState {
             AgentStreamEvent::ModelStream { event, .. } => self.apply_model_stream_event(event),
             AgentStreamEvent::ModelResponse { response, .. } => {
                 self.phase = "response".to_string();
+                self.add_context_usage(&response.usage);
                 for part in &response.parts {
                     match part {
                         starweaver_model::ModelResponsePart::Text { text }
@@ -217,16 +275,14 @@ impl InteractiveTuiState {
                             self.body.push(format!("Thinking: {text}"));
                         }
                         starweaver_model::ModelResponsePart::ToolCall(call) => {
-                            self.body.push(format_tool_call_line(call));
-                            self.phase = "tools".to_string();
+                            self.push_tool_call(call);
                         }
                         _ => {}
                     }
                 }
             }
             AgentStreamEvent::ToolCall { call, .. } => {
-                self.phase = "tools".to_string();
-                self.body.push(format_tool_call_line(call));
+                self.push_tool_call(call);
             }
             AgentStreamEvent::ToolReturn { tool_return, .. } => {
                 self.phase = "tools".to_string();
@@ -245,6 +301,11 @@ impl InteractiveTuiState {
                 self.phase = "retry".to_string();
                 self.body.push(format!("Output retry: {retries}"));
             }
+            AgentStreamEvent::SteeringGuard { .. } => {
+                self.phase = "steering".to_string();
+                self.body
+                    .push("Steering update pending; continuing run.".to_string());
+            }
             AgentStreamEvent::Suspended { reason, .. } => {
                 self.status = "WAITING".to_string();
                 self.phase = "suspended".to_string();
@@ -255,6 +316,18 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::Custom { event } => {
                 self.phase.clone_from(&event.kind);
+                if event.kind == "steering_received" {
+                    let steering_id = event
+                        .payload
+                        .get("id")
+                        .or_else(|| event.payload.get("message_id"))
+                        .and_then(serde_json::Value::as_str);
+                    let text = event
+                        .payload
+                        .get("text")
+                        .and_then(serde_json::Value::as_str);
+                    self.ack_steering_event(steering_id, text);
+                }
             }
             AgentStreamEvent::RunComplete { output, .. } => {
                 self.phase = "completed".to_string();
@@ -265,31 +338,43 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::NodeComplete { .. } => {}
         }
-        self.scroll_offset = 0;
+        if was_at_bottom {
+            self.scroll_to_bottom();
+        }
     }
 
     fn apply_model_stream_event(&mut self, event: &ModelResponseStreamEvent) {
         match event {
             ModelResponseStreamEvent::PartStart(part) => {
-                self.streaming_part = Some(part.index);
-                self.phase = if part.part_kind.contains("thinking") {
-                    "thinking".to_string()
-                } else {
-                    "streaming".to_string()
+                let kind = streaming_part_kind(&part.part_kind);
+                self.streaming_parts.insert(part.index, kind);
+                self.phase = match kind {
+                    StreamingPartKind::Text => "streaming".to_string(),
+                    StreamingPartKind::Thinking => "thinking".to_string(),
+                    StreamingPartKind::Other => format!("streaming:{}", part.part_kind),
                 };
-                if part.part_kind.contains("thinking") {
+                if matches!(kind, StreamingPartKind::Thinking) {
                     self.body.push("Thinking:".to_string());
                 }
             }
             ModelResponseStreamEvent::PartDelta(delta) => {
-                self.phase = "streaming".to_string();
-                self.append_stream_delta(&delta.delta);
-                self.streaming_text_seen = true;
+                match self.streaming_kind_for_delta(delta.index) {
+                    StreamingPartKind::Text => {
+                        self.phase = "streaming".to_string();
+                        self.append_stream_delta(&delta.delta);
+                        self.streaming_text_seen = true;
+                    }
+                    StreamingPartKind::Thinking => {
+                        self.phase = "thinking".to_string();
+                        self.append_thinking_delta(&delta.delta);
+                    }
+                    StreamingPartKind::Other => {
+                        self.phase = "streaming".to_string();
+                    }
+                }
             }
             ModelResponseStreamEvent::PartEnd(part) => {
-                if self.streaming_part == Some(part.index) {
-                    self.streaming_part = None;
-                }
+                self.streaming_parts.remove(&part.index);
             }
             ModelResponseStreamEvent::FinalResult(response) => {
                 self.phase = "finalizing".to_string();
@@ -308,24 +393,42 @@ impl InteractiveTuiState {
         if self.body.is_empty() {
             self.body.push(assistant_content_line(""));
         }
-        for segment in delta.split_inclusive('\n') {
-            if segment.ends_with('\n') {
-                let trimmed = segment.trim_end_matches('\n').trim_end_matches('\r');
-                if !trimmed.is_empty() {
-                    if let Some(last) = self.body.last_mut() {
-                        last.push_str(trimmed);
-                    }
-                }
-                self.body.push(assistant_content_line(""));
-            } else if let Some(last) = self.body.last_mut() {
-                last.push_str(segment);
+        append_delta_segments(&mut self.body, delta, |line| assistant_content_line(line));
+    }
+
+    fn append_thinking_delta(&mut self, delta: &str) {
+        if self
+            .body
+            .last()
+            .map_or(true, |line| !line.starts_with("Thinking:"))
+        {
+            self.body.push("Thinking:".to_string());
+        }
+        if self.body.last().is_some_and(|line| line == "Thinking:") {
+            if let Some(last) = self.body.last_mut() {
+                last.push(' ');
             }
         }
+        append_delta_segments(&mut self.body, delta, |line| format!("Thinking: {line}"));
+    }
+
+    fn streaming_kind_for_delta(&self, index: usize) -> StreamingPartKind {
+        self.streaming_parts
+            .get(&index)
+            .copied()
+            .unwrap_or(StreamingPartKind::Other)
     }
 
     fn push_text_lines(&mut self, text: &str) {
         for line in text.lines() {
             self.body.push(assistant_content_line(line));
+        }
+    }
+
+    fn push_tool_call(&mut self, call: &starweaver_model::ToolCallPart) {
+        self.phase = "tools".to_string();
+        if self.visible_tool_calls.insert(call.id.clone()) {
+            self.body.push(format_tool_call_line(call));
         }
     }
 
@@ -351,6 +454,19 @@ impl InteractiveTuiState {
     }
 
     pub(super) fn take_submission_prompt(&mut self) -> Option<String> {
+        self.take_prompt(SubmissionKind::Message)
+    }
+
+    pub(super) fn take_queued_prompt(&mut self) -> Option<String> {
+        self.take_prompt(SubmissionKind::Queued)
+    }
+
+    pub(super) fn take_steering_prompt(&mut self) -> Option<SteeringSubmission> {
+        self.take_prompt(SubmissionKind::Steering)
+            .map(|text| self.record_steering_message(text))
+    }
+
+    fn take_prompt(&mut self, kind: SubmissionKind) -> Option<String> {
         let command = self.take_local_command();
         if matches!(command, LocalCommandOutcome::Consumed) {
             return None;
@@ -375,11 +491,13 @@ impl InteractiveTuiState {
         }
         self.input.clear();
         self.pasted_images.clear();
-        self.input_status = Some(if self.running {
-            "steer sent".to_string()
-        } else {
-            "message sent".to_string()
-        });
+        match kind {
+            SubmissionKind::Message => self.input_status = Some("message sent".to_string()),
+            SubmissionKind::Queued => self.input_status = Some("queued".to_string()),
+            SubmissionKind::Steering => {
+                self.input_status = Some("steer sent".to_string());
+            }
+        }
         Some(output)
     }
 
@@ -490,6 +608,60 @@ impl InteractiveTuiState {
         LocalCommandOutcome::None
     }
 
+    pub(super) fn steering_items(&self) -> &[SteeringItem] {
+        &self.steering_items
+    }
+
+    pub(crate) fn ack_steering_event(&mut self, id: Option<&str>, text: Option<&str>) {
+        let index = if let Some(id) = id {
+            self.steering_items
+                .iter()
+                .position(|item| matches!(item.status, SteeringStatus::Pending) && item.id == id)
+        } else {
+            text.and_then(|text| {
+                self.steering_items.iter().position(|item| {
+                    matches!(item.status, SteeringStatus::Pending) && item.text == text
+                })
+            })
+        };
+        if let Some(index) = index {
+            self.steering_items[index].status = SteeringStatus::Acked;
+        }
+    }
+
+    fn record_steering_message(&mut self, text: String) -> SteeringSubmission {
+        let id = format!("steer_{}", self.next_steering_id);
+        self.next_steering_id = self.next_steering_id.saturating_add(1);
+        self.steering_items.push(SteeringItem {
+            id: id.clone(),
+            text: text.clone(),
+            status: SteeringStatus::Pending,
+        });
+        let overflow = self.steering_items.len().saturating_sub(MAX_STEERING_ITEMS);
+        if overflow > 0 {
+            self.steering_items.drain(0..overflow);
+        }
+        SteeringSubmission { id, text }
+    }
+
+    pub(super) const fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = usize::MAX;
+    }
+
+    pub(super) const fn is_at_bottom(&self) -> bool {
+        self.scroll_offset == usize::MAX
+    }
+
+    fn add_context_usage(&mut self, usage: &Usage) {
+        if usage.total_tokens > 0 {
+            self.context_tokens = Some(
+                self.context_tokens
+                    .unwrap_or_default()
+                    .saturating_add(usage.total_tokens),
+            );
+        }
+    }
+
     pub(super) fn pasted_image_count(&self) -> usize {
         self.pasted_images.len()
     }
@@ -544,7 +716,7 @@ impl InteractiveTuiState {
         self.status = "INTERRUPT".to_string();
         self.phase = "cancel requested".to_string();
         self.body
-            .push("Interrupt requested. Current run will finish in the background.".to_string());
+            .push("Interrupt requested. Cancelling active run.".to_string());
     }
 
     pub(super) fn show_run_active_hint(&mut self) {
@@ -560,6 +732,7 @@ impl InteractiveTuiState {
                     tokens.saturating_mul(100).saturating_add(window / 2) / window
                 )
             }
+            (None, Some(window)) if window > 0 => "0%".to_string(),
             _ => "--%".to_string(),
         }
     }
@@ -622,8 +795,42 @@ enum LocalCommandOutcome {
     Submit(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SubmissionKind {
+    Message,
+    Queued,
+    Steering,
+}
+
 fn assistant_content_line(line: impl AsRef<str>) -> String {
     format!("{ASSISTANT_CONTENT_PREFIX}{}", line.as_ref())
+}
+
+fn append_delta_segments(body: &mut Vec<String>, delta: &str, new_line: impl Fn(&str) -> String) {
+    for segment in delta.split_inclusive('\n') {
+        if segment.ends_with('\n') {
+            let trimmed = segment.trim_end_matches('\n').trim_end_matches('\r');
+            if !trimmed.is_empty() {
+                if let Some(last) = body.last_mut() {
+                    last.push_str(trimmed);
+                }
+            }
+            body.push(new_line(""));
+        } else if let Some(last) = body.last_mut() {
+            last.push_str(segment);
+        }
+    }
+}
+
+fn streaming_part_kind(part_kind: &str) -> StreamingPartKind {
+    let normalized = part_kind.to_ascii_lowercase();
+    if normalized.contains("thinking") || normalized.contains("reasoning") {
+        StreamingPartKind::Thinking
+    } else if normalized.contains("text") || normalized.contains("message") {
+        StreamingPartKind::Text
+    } else {
+        StreamingPartKind::Other
+    }
 }
 
 fn format_tool_call_line(call: &starweaver_model::ToolCallPart) -> String {

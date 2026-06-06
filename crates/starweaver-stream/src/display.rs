@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use starweaver_core::{AgentId, Metadata, RunId, SessionId, TraceContext};
-use starweaver_model::{ModelResponse, ToolCallPart, ToolReturnPart};
+use starweaver_model::{ModelResponse, ModelResponsePart, ToolCallPart, ToolReturnPart};
 use starweaver_runtime::{
     AgentExecutionNode, AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent,
 };
@@ -280,7 +280,7 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
                 project_model_stream(context, record.sequence, run_id, event)
             }
             AgentStreamEvent::ModelResponse { response, .. } => {
-                project_model_response(context, record.sequence, run_id, response)
+                project_model_response(context, record.sequence, &run_id, response)
             }
             AgentStreamEvent::ToolCall { call, .. } => {
                 vec![project_tool_call(context, record.sequence, run_id, call)]
@@ -300,6 +300,15 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
                     run_id,
                     *node,
                     *step,
+                )]
+            }
+            AgentStreamEvent::SteeringGuard { step, prompt } => {
+                vec![project_steering_guard(
+                    context,
+                    record.sequence,
+                    run_id,
+                    *step,
+                    prompt,
                 )]
             }
             AgentStreamEvent::RunComplete { output, .. } => {
@@ -382,7 +391,7 @@ fn project_model_stream(
             "part_index": part.index,
         }))],
         ModelResponseStreamEvent::FinalResult(response) => {
-            project_model_response(context, sequence, run_id, response)
+            project_model_response(context, sequence, &run_id, response)
         }
     }
 }
@@ -390,45 +399,90 @@ fn project_model_stream(
 fn project_model_response(
     context: &DisplayProjectionContext,
     sequence: usize,
-    run_id: RunId,
+    run_id: &RunId,
     response: &ModelResponse,
 ) -> Vec<DisplayMessage> {
-    let text = response.text_output();
-    if text.is_empty() {
-        return Vec::new();
+    let mut messages = Vec::new();
+    for (part_index, part) in response.parts.iter().enumerate() {
+        match part {
+            ModelResponsePart::Text { text } if !text.is_empty() => {
+                let message_id = format!("model-response-{sequence}-{part_index}");
+                messages.push(
+                    DisplayMessage::new(
+                        sequence,
+                        context.session_id.clone(),
+                        run_id.clone(),
+                        DisplayMessageKind::AssistantTextStart,
+                    )
+                    .with_payload(json!({
+                        "message_id": message_id,
+                        "role": "assistant",
+                        "part_index": part_index,
+                        "part_kind": "text",
+                    })),
+                );
+                messages.push(
+                    DisplayMessage::new(
+                        sequence,
+                        context.session_id.clone(),
+                        run_id.clone(),
+                        DisplayMessageKind::AssistantTextDelta,
+                    )
+                    .with_payload(json!({
+                        "message_id": message_id,
+                        "part_index": part_index,
+                        "part_kind": "text",
+                        "delta": text,
+                    }))
+                    .with_preview(text.clone()),
+                );
+                messages.push(
+                    DisplayMessage::new(
+                        sequence,
+                        context.session_id.clone(),
+                        run_id.clone(),
+                        DisplayMessageKind::AssistantTextEnd,
+                    )
+                    .with_payload(json!({
+                        "message_id": message_id,
+                        "part_index": part_index,
+                    })),
+                );
+            }
+            ModelResponsePart::Thinking { text, signature } if !text.is_empty() => {
+                let mut message = DisplayMessage::new(
+                    sequence,
+                    context.session_id.clone(),
+                    run_id.clone(),
+                    DisplayMessageKind::AssistantTextDelta,
+                )
+                .with_payload(json!({
+                    "message_id": format!("thinking-{sequence}-{part_index}"),
+                    "part_index": part_index,
+                    "part_kind": "thinking",
+                    "delta": text,
+                    "thinking": text,
+                    "signature": signature,
+                }))
+                .with_preview(text.clone());
+                message
+                    .metadata
+                    .insert("reasoning".to_string(), json!(true));
+                messages.push(message);
+            }
+            ModelResponsePart::ToolCall(call) => {
+                messages.push(project_tool_call(context, sequence, run_id.clone(), call));
+                messages.push(project_tool_call_end(
+                    context,
+                    sequence,
+                    run_id.clone(),
+                    call,
+                ));
+            }
+            _ => {}
+        }
     }
-    vec![
-        DisplayMessage::new(
-            sequence,
-            context.session_id.clone(),
-            run_id.clone(),
-            DisplayMessageKind::AssistantTextStart,
-        )
-        .with_payload(json!({
-            "message_id": format!("model-response-{sequence}"),
-            "role": "assistant",
-        })),
-        DisplayMessage::new(
-            sequence,
-            context.session_id.clone(),
-            run_id.clone(),
-            DisplayMessageKind::AssistantTextDelta,
-        )
-        .with_payload(json!({
-            "message_id": format!("model-response-{sequence}"),
-            "delta": text,
-        }))
-        .with_preview(text),
-        DisplayMessage::new(
-            sequence,
-            context.session_id.clone(),
-            run_id,
-            DisplayMessageKind::AssistantTextEnd,
-        )
-        .with_payload(json!({
-            "message_id": format!("model-response-{sequence}"),
-        })),
-    ]
+    messages
 }
 
 fn project_tool_call(
@@ -443,10 +497,33 @@ fn project_tool_call(
         run_id,
         DisplayMessageKind::ToolCallStart,
     )
-    .with_payload(
-        json!({"tool_call_id": call.id, "tool_name": call.name, "arguments": call.arguments}),
-    )
+    .with_payload(json!({
+        "tool_call_id": call.id,
+        "tool_name": call.name,
+        "name": call.name,
+        "arguments": call.arguments,
+    }))
     .with_preview(format!("tool call {}", call.name))
+}
+
+fn project_tool_call_end(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    call: &ToolCallPart,
+) -> DisplayMessage {
+    DisplayMessage::new(
+        sequence,
+        context.session_id.clone(),
+        run_id,
+        DisplayMessageKind::ToolCallEnd,
+    )
+    .with_payload(json!({
+        "tool_call_id": call.id,
+        "tool_name": call.name,
+        "name": call.name,
+    }))
+    .with_preview(format!("tool call {} ended", call.name))
 }
 
 fn project_tool_return(
@@ -485,6 +562,23 @@ fn project_checkpoint(
     )
     .with_payload(json!({"node": node, "step": step}))
     .with_preview(format!("checkpoint {node:?}"))
+}
+
+fn project_steering_guard(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    step: usize,
+    prompt: &str,
+) -> DisplayMessage {
+    DisplayMessage::new(
+        sequence,
+        context.session_id.clone(),
+        run_id,
+        DisplayMessageKind::Checkpoint,
+    )
+    .with_payload(json!({"step": step, "kind": "steering_guard", "prompt": prompt}))
+    .with_preview("steering update pending")
 }
 
 fn project_run_completed(

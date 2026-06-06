@@ -65,7 +65,7 @@ export function SettingsPage() {
               value={draftToken}
               onChange={(event) => setDraftToken(event.target.value)}
               type="password"
-              placeholder="YA_CLAW_API_TOKEN"
+              placeholder="STARWEAVER_CLAW_API_TOKEN"
               autoComplete="current-password"
             />
           </label>

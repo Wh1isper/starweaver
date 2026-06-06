@@ -83,7 +83,7 @@ impl ClawTriggerType {
     }
 }
 
-/// API input part with YA Claw-compatible `type` tags.
+/// API input part with Claw-compatible `type` tags.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClawInputPart {

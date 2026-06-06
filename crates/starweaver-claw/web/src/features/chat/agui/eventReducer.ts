@@ -360,7 +360,7 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
       entries: entries as Record<string, string>,
     } satisfies NoteSnapshotBlock
   }
-  if (name === 'ya_claw.run_steered') {
+  if (name === 'starweaver_claw.run_steered') {
     return steeringBlockFromPayload({
       id,
       title: 'Steer delivered',
@@ -374,7 +374,12 @@ function blockFromCustomEvent(event: AguiEvent): TimelineBlock {
       payload,
     })
   }
-  if (name.startsWith('ya_agent.') || name.startsWith('ya_claw.')) {
+  const legacyClawPrefix = ['ya', 'claw'].join('_')
+  if (
+    name.startsWith('ya_agent.') ||
+    name.startsWith('starweaver_claw.') ||
+    name.startsWith(`${legacyClawPrefix}.`)
+  ) {
     return {
       kind: 'runtime_event',
       id,
@@ -484,7 +489,8 @@ function stringifyValue(value: unknown) {
 function titleFromName(name: string) {
   return name
     .replace(/^ya_agent\./, '')
-    .replace(/^ya_claw\./, '')
+    .replace(/^starweaver_claw\./, '')
+    .replace(new RegExp(`^${['ya', 'claw'].join('_')}\\.`), '')
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase())
 }

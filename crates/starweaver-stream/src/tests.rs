@@ -2,7 +2,10 @@
 
 use serde_json::json;
 use starweaver_core::RunId;
-use starweaver_model::{ModelResponse, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
+use starweaver_model::{
+    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
+    ToolCallPart,
+};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 
 use super::*;
@@ -414,4 +417,57 @@ async fn default_projector_maps_final_results_and_prefers_context_run_id() {
     );
     assert_eq!(final_result_messages[1].payload["delta"], "done");
     assert_eq!(runtime_start_messages[0].run_id, run_id);
+}
+
+#[tokio::test]
+async fn default_projector_maps_thinking_and_tool_calls_from_model_response() {
+    let projector = DefaultDisplayMessageProjector;
+    let session_id = SessionId::from_string("session-project-parts");
+    let run_id = RunId::from_string("run-project-parts");
+    let context = DisplayProjectionContext::new(session_id, run_id.clone());
+    let response = ModelResponse {
+        parts: vec![
+            ModelResponsePart::Thinking {
+                text: "inspect context".to_string(),
+                signature: Some("sig".to_string()),
+            },
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_1".to_string(),
+                name: "lookup".to_string(),
+                arguments: json!({"query": "starweaver"}),
+            }),
+            ModelResponsePart::Text {
+                text: "done".to_string(),
+            },
+        ],
+        usage: starweaver_core::Usage::default(),
+        model_name: None,
+        provider: None,
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: starweaver_core::Metadata::default(),
+    };
+    let record = AgentStreamRecord::new(9, AgentStreamEvent::ModelResponse { step: 1, response });
+
+    let messages = projector.project(&context, &record).await;
+
+    assert!(messages.iter().any(|message| {
+        message.kind == DisplayMessageKind::AssistantTextDelta
+            && message.payload["part_kind"] == "thinking"
+            && message.payload["delta"] == "inspect context"
+    }));
+    assert!(messages.iter().any(|message| {
+        message.kind == DisplayMessageKind::ToolCallStart
+            && message.payload["tool_name"] == "lookup"
+            && message.payload["arguments"] == json!({"query": "starweaver"})
+    }));
+    assert!(messages.iter().any(|message| {
+        message.kind == DisplayMessageKind::ToolCallEnd
+            && message.payload["tool_call_id"] == "call_1"
+    }));
+    assert!(messages.iter().any(|message| {
+        message.kind == DisplayMessageKind::AssistantTextDelta && message.payload["delta"] == "done"
+    }));
 }

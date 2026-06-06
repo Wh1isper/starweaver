@@ -341,6 +341,10 @@ impl Agent {
             let skipped_response = self
                 .call_before_model_request(&mut state, context, &mut request, &mut settings)
                 .await?;
+            if skipped_response.is_none() {
+                Self::apply_steering_messages(context, &mut request);
+                stream_context_events!(&state, context_event_cursor);
+            }
             state.message_history.push(ModelMessage::Request(request));
             context.message_history.clone_from(&state.message_history);
             stream_event!(
@@ -357,6 +361,7 @@ impl Agent {
                 context_event_cursor
             );
 
+            let response_was_skipped = skipped_response.is_some();
             let response = if let Some(response) = skipped_response {
                 response
             } else {
@@ -383,11 +388,12 @@ impl Agent {
                         .with_trace_context(model_span.context().clone());
                 if stream_events.is_some() {
                     let mut response = None;
-                    for model_event in self
+                    let mut model_stream = self
                         .model
-                        .request_stream(messages, settings, params, request_context)
-                        .await?
-                    {
+                        .request_stream_incremental(messages, settings, params, request_context)
+                        .await?;
+                    while let Some(model_event) = model_stream.recv().await {
+                        let model_event = model_event?;
                         stream_event!(
                             &state,
                             AgentStreamEvent::ModelStream {
@@ -645,6 +651,20 @@ impl Agent {
                 .validate_final_output(&mut state, context, &output)
                 .await
             {
+                Ok(()) if !response_was_skipped && Self::has_pending_steering_messages(context) => {
+                    let Some(message) = Self::pending_steering_guard_message(context) else {
+                        unreachable!("pending steering guard message must exist");
+                    };
+                    stream_event!(
+                        &state,
+                        AgentStreamEvent::SteeringGuard {
+                            step: state.run_step,
+                            prompt: message.clone(),
+                        }
+                    );
+                    next_prompt = message;
+                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                }
                 Ok(()) => {
                     state.output = Some(output.clone());
                     state.status = RunStatus::Completed;

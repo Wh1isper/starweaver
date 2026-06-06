@@ -1254,6 +1254,7 @@ const fn raw_stream_kind(event: &AgentStreamEvent) -> &'static str {
         AgentStreamEvent::ToolCall { .. } => "tool_call",
         AgentStreamEvent::ToolReturn { .. } => "tool_return",
         AgentStreamEvent::OutputRetry { .. } => "output_retry",
+        AgentStreamEvent::SteeringGuard { .. } => "steering_guard",
         AgentStreamEvent::RunComplete { .. } => "run_complete",
     }
 }

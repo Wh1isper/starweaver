@@ -102,7 +102,7 @@ export function Composer({
                 ? 'Steer the active run...'
                 : canAppend
                   ? 'Append to the queued run...'
-                  : 'Send a debug prompt to YA Claw...'
+                  : 'Send a debug prompt to Starweaver Claw...'
             }
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {

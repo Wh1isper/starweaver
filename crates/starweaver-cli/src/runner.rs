@@ -1,13 +1,19 @@
 //! CLI run execution and display augmentation.
 
-use std::sync::{mpsc, Arc};
+use std::{
+    collections::VecDeque,
+    sync::{mpsc, Arc, Mutex},
+    thread,
+};
 
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use starweaver_agent::{AgentSession, AgentStreamRecord, ResumableState};
+use starweaver_context::{AgentContext, BusMessage};
 use starweaver_environment::DynEnvironmentProvider;
+use starweaver_model::{ModelRequest, ModelSettings};
 use starweaver_runtime::{
     AgentCapability, AgentRunState, AgentStreamEvent, CapabilityResult, ModelResponseStreamEvent,
 };
@@ -29,6 +35,15 @@ use crate::{
 pub struct CliRunPolicy {
     /// Headless human-in-the-loop behavior.
     pub hitl: HitlPolicy,
+}
+
+/// Steering message sent from the interactive UI into the running agent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CliSteeringMessage {
+    /// UI-generated stable steering id used to correlate runtime acknowledgements.
+    pub id: String,
+    /// User steering text.
+    pub text: String,
 }
 
 /// CLI execution output and durable artifacts.
@@ -69,9 +84,44 @@ pub fn execute_agent_session_with_stream_sender(
     policy: CliRunPolicy,
     stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
 ) -> CliResult<CliRunExecution> {
+    execute_agent_session_with_channels(
+        prompt,
+        run,
+        profile,
+        environment,
+        restore_state,
+        policy,
+        stream_sender,
+        None,
+        None,
+    )
+}
+
+/// Execute a resolved profile, forward live stream records, and poll caller-owned steering messages.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_agent_session_with_channels(
+    prompt: String,
+    run: &RunRecord,
+    profile: &ResolvedProfile,
+    environment: &DynEnvironmentProvider,
+    restore_state: Option<ResumableState>,
+    policy: CliRunPolicy,
+    stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
+    cancel_receiver: Option<mpsc::Receiver<()>>,
+) -> CliResult<CliRunExecution> {
     let mut agent = profile.build_agent()?;
-    if let Some(sender) = stream_sender {
-        agent = agent.with_stream_observer(Arc::new(CliStreamObserver { sender }));
+    let pending_steering = steering_receiver.map(start_steering_collector);
+    let observed_records = Arc::new(Mutex::new(Vec::new()));
+    let should_observe_stream = stream_sender.is_some() || cancel_receiver.is_some();
+    if should_observe_stream {
+        agent = agent.with_stream_observer(Arc::new(CliStreamObserver {
+            sender: stream_sender,
+            records: Arc::clone(&observed_records),
+        }));
+    }
+    if let Some(pending) = pending_steering {
+        agent = agent.with_capability(Arc::new(CliSteeringBridge { pending }));
     }
     let mut session = restore_state.map_or_else(
         || AgentSession::new(agent.clone()),
@@ -86,9 +136,7 @@ pub fn execute_agent_session_with_stream_sender(
     session.set_metadata("cli.run_id", json!(run.run_id.as_str()));
     let runtime =
         tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?;
-    let stream = runtime
-        .block_on(session.run_stream(prompt))
-        .map_err(|error| CliError::Run(error.to_string()))?;
+    let run_outcome = run_session_stream(&runtime, &mut session, prompt, cancel_receiver)?;
     let environment_state = runtime
         .block_on(environment.export_state())
         .map_err(|error| CliError::Run(error.to_string()))?;
@@ -99,25 +147,90 @@ pub fn execute_agent_session_with_stream_sender(
     state
         .metadata
         .insert("cli.session_id".to_string(), json!(run.session_id.as_str()));
-    let projection = project_display_messages(run, &stream.events, policy, &runtime);
+    let (output, raw_records, projection) = match run_outcome {
+        SessionRunOutcome::Completed(stream) => {
+            let projection = project_display_messages(run, &stream.events, policy, &runtime);
+            (stream.result.output, stream.events, projection)
+        }
+        SessionRunOutcome::Cancelled => {
+            let raw_records = observed_records
+                .lock()
+                .map_or_else(|_| Vec::new(), |records| records.clone());
+            let projection = cancelled_display_projection(run, &raw_records, policy, &runtime);
+            ("cancelled".to_string(), raw_records, projection)
+        }
+    };
     let artifacts = RunArtifacts {
         state,
         environment_state: Some(environment_state),
-        raw_records: stream.events,
+        raw_records,
         display_messages: projection.messages,
         display_snapshot: projection.snapshot,
         approvals: projection.approvals,
         deferred_tools: projection.deferred_tools,
         status: projection.status,
     };
-    Ok(CliRunExecution {
-        output: stream.result.output,
-        artifacts,
-    })
+    Ok(CliRunExecution { output, artifacts })
+}
+
+enum SessionRunOutcome {
+    Completed(Box<starweaver_agent::AgentStreamResult>),
+    Cancelled,
+}
+
+fn run_session_stream(
+    runtime: &tokio::runtime::Runtime,
+    session: &mut AgentSession,
+    prompt: String,
+    cancel_receiver: Option<mpsc::Receiver<()>>,
+) -> CliResult<SessionRunOutcome> {
+    let run_future = session.run_stream(prompt);
+    if let Some(cancel_receiver) = cancel_receiver {
+        runtime.block_on(async move {
+            tokio::select! {
+                result = run_future => result
+                    .map(Box::new)
+                    .map(SessionRunOutcome::Completed)
+                    .map_err(|error| CliError::Run(error.to_string())),
+                () = wait_for_cancel(cancel_receiver) => Ok(SessionRunOutcome::Cancelled),
+            }
+        })
+    } else {
+        runtime
+            .block_on(run_future)
+            .map(Box::new)
+            .map(SessionRunOutcome::Completed)
+            .map_err(|error| CliError::Run(error.to_string()))
+    }
+}
+
+async fn wait_for_cancel(cancel_receiver: mpsc::Receiver<()>) {
+    loop {
+        match cancel_receiver.try_recv() {
+            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => return,
+            Err(mpsc::TryRecvError::Empty) => {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
+    }
+}
+
+fn start_steering_collector(receiver: mpsc::Receiver<CliSteeringMessage>) -> Arc<PendingSteering> {
+    let pending = Arc::new(PendingSteering::default());
+    let thread_pending = Arc::clone(&pending);
+    thread::spawn(move || {
+        while let Ok(message) = receiver.recv() {
+            if let Ok(mut messages) = thread_pending.messages.lock() {
+                messages.push_back(message);
+            }
+        }
+    });
+    pending
 }
 
 struct CliStreamObserver {
-    sender: mpsc::Sender<AgentStreamRecord>,
+    sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    records: Arc<Mutex<Vec<AgentStreamRecord>>>,
 }
 
 #[async_trait]
@@ -127,9 +240,66 @@ impl AgentCapability for CliStreamObserver {
         _state: &AgentRunState,
         event: &AgentStreamRecord,
     ) -> CapabilityResult<()> {
-        let _ = self.sender.send(event.clone());
+        if let Ok(mut records) = self.records.lock() {
+            records.push(event.clone());
+        }
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(event.clone());
+        }
         Ok(())
     }
+}
+
+#[derive(Default)]
+struct PendingSteering {
+    messages: Mutex<VecDeque<CliSteeringMessage>>,
+}
+
+struct CliSteeringBridge {
+    pending: Arc<PendingSteering>,
+}
+
+#[async_trait]
+impl AgentCapability for CliSteeringBridge {
+    async fn before_model_request_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        _request: &mut ModelRequest,
+        _settings: &mut Option<ModelSettings>,
+    ) -> CapabilityResult<()> {
+        drain_pending_steering(&self.pending, context);
+        Ok(())
+    }
+
+    async fn validate_output_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        _output: &str,
+    ) -> CapabilityResult<()> {
+        if drain_pending_steering(&self.pending, context) {
+            return Err(starweaver_runtime::CapabilityError::ModelRetry(
+                "<system-reminder>There are pending steering messages. Continue and incorporate them before finalizing.</system-reminder>"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn drain_pending_steering(pending: &PendingSteering, context: &mut AgentContext) -> bool {
+    let mut drained = false;
+    if let Ok(mut messages) = pending.messages.lock() {
+        while let Some(message) = messages.pop_front() {
+            context.enqueue_message(BusMessage::new(
+                "steering",
+                json!({"id": message.id, "text": message.text}),
+            ));
+            drained = true;
+        }
+    }
+    drained
 }
 
 struct DisplayProjection {
@@ -182,26 +352,9 @@ fn project_display_messages(
             {
                 final_result_projected_text = false;
             }
-            AgentStreamEvent::ModelResponse { response, .. } => {
+            AgentStreamEvent::ModelResponse { .. } => {
                 final_result_projected_text = false;
                 display_messages.extend(projected);
-                for part in &response.parts {
-                    if let starweaver_model::ModelResponsePart::Thinking { text, signature } = part
-                    {
-                        let mut message = DisplayMessage::new(
-                            record.sequence,
-                            run.session_id.clone(),
-                            run.run_id.clone(),
-                            DisplayMessageKind::AssistantTextDelta,
-                        )
-                        .with_payload(json!({"thinking": text, "signature": signature}))
-                        .with_preview(text.clone());
-                        message
-                            .metadata
-                            .insert("reasoning".to_string(), json!(true));
-                        display_messages.push(message);
-                    }
-                }
             }
             AgentStreamEvent::ToolReturn { tool_return, .. } => {
                 display_messages.extend(projected);
@@ -476,4 +629,151 @@ pub fn failed_display_message(run: &RunRecord, error: &str) -> Vec<DisplayMessag
         .with_payload(json!({"error": error}))
         .with_preview(error.to_string()),
     ]
+}
+
+fn cancelled_display_projection(
+    run: &RunRecord,
+    raw_records: &[AgentStreamRecord],
+    policy: CliRunPolicy,
+    runtime: &tokio::runtime::Runtime,
+) -> DisplayProjection {
+    let mut projection = project_display_messages(run, raw_records, policy, runtime);
+    projection.messages.retain(|message| {
+        !matches!(
+            message.kind,
+            DisplayMessageKind::CompactionStarted | DisplayMessageKind::CompactionCompleted
+        )
+    });
+    projection.messages.push(
+        DisplayMessage::new(
+            projection.messages.len(),
+            run.session_id.clone(),
+            run.run_id.clone(),
+            DisplayMessageKind::RunCancelled,
+        )
+        .with_payload(json!({"reason": "cancelled by user"}))
+        .with_preview("run cancelled"),
+    );
+    projection.messages.push(
+        DisplayMessage::new(
+            projection.messages.len(),
+            run.session_id.clone(),
+            run.run_id.clone(),
+            DisplayMessageKind::CompactionStarted,
+        )
+        .with_payload(json!({"scope": format!("run:{}", run.run_id.as_str())}))
+        .with_preview("display compaction started"),
+    );
+    resequence_display_messages(&mut projection.messages);
+    let mut buffer = RealtimeCompactionBuffer::new(ReplayScope::run(run.run_id.as_str()));
+    for message in projection.messages.clone() {
+        buffer.push(message);
+    }
+    projection.snapshot = buffer.snapshot();
+    projection.messages.push(
+        DisplayMessage::new(
+            projection.messages.len(),
+            run.session_id.clone(),
+            run.run_id.clone(),
+            DisplayMessageKind::CompactionCompleted,
+        )
+        .with_payload(json!({
+            "revision": projection.snapshot.revision,
+            "messages": projection.snapshot.display_messages.len(),
+        }))
+        .with_preview("display compaction completed"),
+    );
+    resequence_display_messages(&mut projection.messages);
+    projection.status = RunStatus::Cancelled;
+    projection
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+    use std::{sync::mpsc, thread, time::Duration};
+
+    use starweaver_core::{ConversationId, RunId, SessionId};
+    use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
+    use starweaver_session::{RunRecord, RunStatus};
+    use starweaver_stream::DisplayMessageKind;
+
+    use super::{
+        cancelled_display_projection, start_steering_collector, CliRunPolicy, CliSteeringMessage,
+    };
+    use crate::args::HitlPolicy;
+
+    #[test]
+    fn steering_collector_buffers_messages_without_runtime_ack() {
+        let (steer_sender, steer_receiver) = mpsc::channel::<CliSteeringMessage>();
+        let pending = start_steering_collector(steer_receiver);
+
+        assert!(steer_sender
+            .send(CliSteeringMessage {
+                id: "steer_test".to_string(),
+                text: "tighten scroll".to_string(),
+            })
+            .is_ok());
+
+        let mut buffered = None;
+        for _ in 0..20 {
+            buffered = {
+                let mut messages = pending
+                    .messages
+                    .lock()
+                    .expect("pending steering lock should be available");
+                messages.pop_front()
+            };
+            if buffered.is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let buffered = buffered.expect("steering message should be buffered");
+        assert_eq!(buffered.id, "steer_test");
+        assert_eq!(buffered.text, "tighten scroll");
+    }
+
+    #[test]
+    fn cancelled_projection_preserves_partial_stream_and_terminal_status() {
+        let run = RunRecord::new(
+            SessionId::from_string("session_cancel"),
+            RunId::from_string("run_cancel"),
+            ConversationId::from_string("conversation_cancel"),
+        );
+        let records = vec![AgentStreamRecord::new(
+            0,
+            AgentStreamEvent::RunStart {
+                run_id: RunId::from_string("runtime_run"),
+                conversation_id: ConversationId::from_string("conversation_cancel"),
+            },
+        )];
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should start");
+        let projection = cancelled_display_projection(
+            &run,
+            &records,
+            CliRunPolicy {
+                hitl: HitlPolicy::Deny,
+            },
+            &runtime,
+        );
+
+        assert_eq!(projection.status, RunStatus::Cancelled);
+        assert!(projection
+            .messages
+            .iter()
+            .any(|message| message.kind == DisplayMessageKind::RunStarted));
+        assert!(projection
+            .messages
+            .iter()
+            .any(|message| message.kind == DisplayMessageKind::RunCancelled));
+        assert_eq!(
+            projection
+                .messages
+                .iter()
+                .filter(|message| message.kind == DisplayMessageKind::CompactionCompleted)
+                .count(),
+            1
+        );
+    }
 }

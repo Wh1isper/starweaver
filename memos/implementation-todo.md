@@ -184,7 +184,7 @@ Target outcome:
 - CLI headless mode is landed through `sw cli -p <prompt>` with text, display JSONL, and silent output modes.
 - `clap` command parsing, `clap_complete` completions, and retained TUI snapshot rendering are landed; full `ratatui + crossterm` interactivity remains a later renderer pass.
 - Persisted `DisplayMessage` records are the session replay and TUI snapshot source for local CLI restore and future service UI flows.
-- AGUI-compatible display adapter and replay compaction paths are landed based on ya-claw behavior.
+- AGUI-compatible display adapter and replay compaction paths are landed based on Starweaver Claw behavior.
 - `starweaver` launcher dispatch, `sw` alias, `starweaver-{command}` convention, GitHub release installer, update command, and CLI release smoke validation are landed.
 - CLI configuration resolution is landed for global/project config roots, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, narrow environment overrides, setup UX, auth status/logout, and command-line flag precedence.
 - CLI app-profile workflows over `AgentSpec` are landed for streamed runs, environment provider selection, display-message rendering, compact run trace projection, compact session commands for list/show/replay/trim, default first-party tool catalog assembly, configured MCP server validation, and skill/subagent catalog inspection.

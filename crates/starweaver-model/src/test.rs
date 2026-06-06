@@ -7,7 +7,7 @@ use serde_json::Value;
 use starweaver_core::Usage;
 
 use crate::{
-    adapter::{ModelRequestContext, ModelRequestParameters},
+    adapter::{ModelRequestContext, ModelRequestParameters, ModelResponseEventStream},
     message::{
         ContentPart, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
     },
@@ -188,10 +188,27 @@ impl ModelAdapter for TestModel {
     async fn request_stream(
         &self,
         messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        let mut stream = self
+            .request_stream_incremental(messages, settings, params, context)
+            .await?;
+        let mut events = Vec::new();
+        while let Some(event) = stream.recv().await {
+            events.push(event?);
+        }
+        Ok(events)
+    }
+
+    async fn request_stream_incremental(
+        &self,
+        messages: Vec<ModelMessage>,
         _settings: Option<ModelSettings>,
         params: ModelRequestParameters,
         _context: ModelRequestContext,
-    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+    ) -> Result<ModelResponseEventStream, ModelError> {
         if let Ok(mut captured) = self.captured_messages.lock() {
             captured.push(messages);
         }
@@ -203,18 +220,26 @@ impl ModelAdapter for TestModel {
             .lock()
             .map_err(|err| ModelError::Transport(err.to_string()))?
             .pop();
-        if let Some(events) = stream_events {
-            return Ok(events);
-        }
-        let response = self
-            .responses
-            .lock()
-            .map_err(|err| ModelError::Transport(err.to_string()))?
-            .pop()
-            .ok_or_else(|| ModelError::Transport("test model script exhausted".to_string()))?;
-        Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
-            response,
-        ))])
+        let events = if let Some(events) = stream_events {
+            events
+        } else {
+            let response = self
+                .responses
+                .lock()
+                .map_err(|err| ModelError::Transport(err.to_string()))?
+                .pop()
+                .ok_or_else(|| ModelError::Transport("test model script exhausted".to_string()))?;
+            vec![ModelResponseStreamEvent::FinalResult(Box::new(response))]
+        };
+        let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
+        tokio::spawn(async move {
+            for event in events {
+                if sender.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(ModelResponseEventStream::new(receiver))
     }
 }
 
@@ -367,13 +392,40 @@ impl ModelAdapter for FunctionModel {
         params: ModelRequestParameters,
         context: ModelRequestContext,
     ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        let mut stream = self
+            .request_stream_incremental(messages, settings, params, context)
+            .await?;
+        let mut events = Vec::new();
+        while let Some(event) = stream.recv().await {
+            events.push(event?);
+        }
+        Ok(events)
+    }
+
+    async fn request_stream_incremental(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<ModelResponseEventStream, ModelError> {
         if let Ok(mut captured) = self.captured_messages.lock() {
             captured.push(messages.clone());
         }
         if let Ok(mut captured) = self.captured_params.lock() {
             captured.push(params.clone());
         }
-        (self.stream_function)(messages, settings, FunctionModelInfo { params, context })
+        let events =
+            (self.stream_function)(messages, settings, FunctionModelInfo { params, context })?;
+        let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
+        tokio::spawn(async move {
+            for event in events {
+                if sender.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(ModelResponseEventStream::new(receiver))
     }
 }
 

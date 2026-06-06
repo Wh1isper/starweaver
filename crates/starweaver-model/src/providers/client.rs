@@ -17,7 +17,7 @@ use crate::{
         build_http_request, send_with_retries, DynHttpClient, DynSleeper, HttpModelConfig,
         HttpRequestOptions, MaxTokensParameter, ReqwestHttpClient, TokioSleeper,
     },
-    ModelAdapter, ModelError, ModelResponseStreamEvent,
+    ModelAdapter, ModelError, ModelResponseEventStream, ModelResponseStreamEvent,
 };
 
 /// Shared production model client for a supported wire protocol family.
@@ -56,6 +56,13 @@ impl ProtocolModelClient {
     #[must_use]
     pub fn with_default_settings(mut self, settings: ModelSettings) -> Self {
         self.default_settings = Some(settings);
+        self
+    }
+
+    /// Override the model capability profile.
+    #[must_use]
+    pub const fn with_profile(mut self, profile: ModelProfile) -> Self {
+        self.profile = profile;
         self
     }
 
@@ -377,11 +384,32 @@ impl ModelAdapter for ProtocolModelClient {
         params: ModelRequestParameters,
         context: ModelRequestContext,
     ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        let mut stream = self
+            .request_stream_incremental(messages, settings, params, context)
+            .await?;
+        let mut events = Vec::new();
+        while let Some(event) = stream.recv().await {
+            events.push(event?);
+        }
+        Ok(events)
+    }
+
+    async fn request_stream_incremental(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<ModelResponseEventStream, ModelError> {
         if self.profile.protocol != ProtocolFamily::OpenAiResponses {
             let response = self.request(messages, settings, params, context).await?;
-            return Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
-                response,
-            ))]);
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            let _ = sender
+                .send(Ok(ModelResponseStreamEvent::FinalResult(Box::new(
+                    response,
+                ))))
+                .await;
+            return Ok(ModelResponseEventStream::new(receiver));
         }
         let settings = self.merged_settings(settings);
         let mut wire_body = self.build_wire_body(&messages, settings.as_ref(), &params)?;
@@ -393,7 +421,41 @@ impl ModelAdapter for ProtocolModelClient {
         if !allow_real_model_requests() {
             return Err(ModelError::RealModelRequestBlocked { url: request.url });
         }
-        let events = self.http_client.send_event_stream(request).await?;
-        OpenAiResponsesAdapter::parse_stream_events(&events)
+        let mut events = self
+            .http_client
+            .send_event_stream_incremental(request)
+            .await?;
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            let mut parser =
+                crate::providers::openai_responses::OpenAiResponsesStreamParser::default();
+            while let Some(event) = events.recv().await {
+                let events = match event.and_then(|event| parser.push_event(&event)) {
+                    Ok(events) => events,
+                    Err(error) => {
+                        let _ = sender.send(Err(error)).await;
+                        return;
+                    }
+                };
+                for event in events {
+                    if sender.send(Ok(event)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            match parser.finish() {
+                Ok(events) => {
+                    for event in events {
+                        if sender.send(Ok(event)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error)).await;
+                }
+            }
+        });
+        Ok(ModelResponseEventStream::new(receiver))
     }
 }

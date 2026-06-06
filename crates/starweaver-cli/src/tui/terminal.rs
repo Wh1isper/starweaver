@@ -20,7 +20,7 @@ use super::{
         composer_cursor_column, input_tail_lines, queue_styled_line_at, render_composer_lines,
         render_footer_lines, render_live_history_lines, terminal_error,
     },
-    state::{FooterMode, InteractiveTuiState, RunMode},
+    state::{FooterMode, InteractiveTuiState, RunMode, SteeringSubmission},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +31,8 @@ pub enum InteractiveTuiEvent {
     Submit(String),
     /// Queue a prompt while a run is active.
     Queue(String),
+    /// Send steering to the active run UI pane.
+    Steer(SteeringSubmission),
     /// Interrupt the active run.
     Cancel,
     /// Quit the TUI.
@@ -70,15 +72,8 @@ impl InteractiveTui {
         let fixed_height = composer_lines.len().saturating_add(status_lines.len());
         let body_height = height.saturating_sub(fixed_height).max(1);
         let rendered_body = render_live_history_lines(state, width);
-        let max_scroll = rendered_body.len().saturating_sub(body_height);
-        let scroll_offset = state.scroll_offset.min(max_scroll);
-        let visible_start = rendered_body
-            .len()
-            .saturating_sub(body_height.saturating_add(scroll_offset));
-        let visible_end = rendered_body
-            .len()
-            .saturating_sub(scroll_offset)
-            .max(visible_start);
+        let (visible_start, visible_end) =
+            visible_body_bounds(state, rendered_body.len(), body_height);
 
         let visible_body = rendered_body
             .iter()
@@ -163,6 +158,70 @@ impl InteractiveTui {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollDirection {
+    Up,
+    Down,
+}
+
+fn scroll_viewport(state: &mut InteractiveTuiState, amount: usize, direction: ScrollDirection) {
+    let (width, height) = terminal::size().unwrap_or((80, 24));
+    let width = if width == 0 { 80 } else { width };
+    let height = if height == 0 { 24 } else { height };
+    let width = usize::from(width);
+    let height = usize::from(height).max(8);
+    let fixed_height = render_composer_lines(state, width)
+        .len()
+        .saturating_add(render_footer_lines(state, width).len());
+    let body_height = height.saturating_sub(fixed_height).max(1);
+    let rendered_body_len = render_live_history_lines(state, width).len();
+    let max_scroll = rendered_body_len.saturating_sub(body_height);
+    let current = if state.is_at_bottom() {
+        max_scroll
+    } else {
+        state.scroll_offset.min(max_scroll)
+    };
+    let next = match direction {
+        ScrollDirection::Up => current.saturating_sub(amount),
+        ScrollDirection::Down => current.saturating_add(amount),
+    };
+    if next >= max_scroll {
+        state.scroll_to_bottom();
+    } else {
+        state.scroll_offset = next;
+    }
+}
+
+fn viewport_is_scrollable(state: &InteractiveTuiState) -> bool {
+    let (width, height) = terminal::size().unwrap_or((80, 24));
+    let width = if width == 0 { 80 } else { width };
+    let height = if height == 0 { 24 } else { height };
+    let width = usize::from(width);
+    let height = usize::from(height).max(8);
+    let fixed_height = render_composer_lines(state, width)
+        .len()
+        .saturating_add(render_footer_lines(state, width).len());
+    let body_height = height.saturating_sub(fixed_height).max(1);
+    render_live_history_lines(state, width).len() > body_height
+}
+
+pub(super) fn visible_body_bounds(
+    state: &InteractiveTuiState,
+    rendered_body_len: usize,
+    body_height: usize,
+) -> (usize, usize) {
+    let max_scroll = rendered_body_len.saturating_sub(body_height);
+    let visible_start = if state.is_at_bottom() {
+        max_scroll
+    } else {
+        state.scroll_offset.min(max_scroll)
+    };
+    let visible_end = visible_start
+        .saturating_add(body_height)
+        .min(rendered_body_len);
+    (visible_start, visible_end)
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn handle_key_event(
     state: &mut InteractiveTuiState,
@@ -192,7 +251,7 @@ pub(super) fn handle_key_event(
             }
         }
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.scroll_offset = 0;
+            state.scroll_to_bottom();
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.clear_composer();
@@ -231,9 +290,15 @@ pub(super) fn handle_key_event(
             };
         }
         KeyCode::Tab if state.running => {
-            if let Some(prompt) = state.take_submission_prompt() {
+            if let Some(prompt) = state.take_queued_prompt() {
                 state.push_history(prompt.clone());
                 return Some(InteractiveTuiEvent::Queue(prompt));
+            }
+        }
+        KeyCode::Enter if state.running => {
+            if let Some(steering) = state.take_steering_prompt() {
+                state.push_history(steering.text.clone());
+                return Some(InteractiveTuiEvent::Steer(steering));
             }
         }
         KeyCode::Tab | KeyCode::Enter => {
@@ -246,16 +311,22 @@ pub(super) fn handle_key_event(
             state.backspace_composer();
         }
         KeyCode::PageUp => {
-            state.scroll_offset = state.scroll_offset.saturating_add(10).min(state.body.len());
+            scroll_viewport(state, 10, ScrollDirection::Up);
         }
         KeyCode::PageDown => {
-            state.scroll_offset = state.scroll_offset.saturating_sub(10);
+            scroll_viewport(state, 10, ScrollDirection::Down);
         }
         KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.scroll_offset = state.scroll_offset.saturating_add(1).min(state.body.len());
+            scroll_viewport(state, 1, ScrollDirection::Up);
         }
         KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.scroll_offset = state.scroll_offset.saturating_sub(1);
+            scroll_viewport(state, 1, ScrollDirection::Down);
+        }
+        KeyCode::Up if state.composer_is_empty() && viewport_is_scrollable(state) => {
+            scroll_viewport(state, 1, ScrollDirection::Up);
+        }
+        KeyCode::Down if state.composer_is_empty() && viewport_is_scrollable(state) => {
+            scroll_viewport(state, 1, ScrollDirection::Down);
         }
         KeyCode::Up => state.previous_history(),
         KeyCode::Down => state.next_history(),

@@ -19,9 +19,9 @@
 //! Durable single-node orchestration service for Starweaver.
 //!
 //! The crate keeps the shared `starweaver-session` and `starweaver-stream`
-//! contracts as its foundation and adds the YA Claw product surface: execution
-//! profiles, workspace binding, queued run coordination, replayable events, and
-//! a local HTTP API.
+//! contracts as its foundation and adds the Starweaver Claw product surface:
+//! execution profiles, workspace binding, queued run coordination, replayable
+//! events, and a local HTTP API.
 
 pub mod config;
 pub mod controller;
@@ -52,7 +52,7 @@ pub use orchestration::{
 pub use profile::{AgentProfile, ProfileResolver};
 pub use runtime_state::{ClawRuntimeState, RuntimeRunHandle};
 pub use service::{build_router, serve};
-pub use storage::{SqliteReplayEventLog, SqliteSessionStore};
+pub use storage::{migrate_sqlite_database, SqliteReplayEventLog, SqliteSessionStore};
 pub use workspace::{
     ResolvedWorkspaceBinding, WorkspaceBindingSpec, WorkspaceMountMode, WorkspaceMountSpec,
     WorkspaceProvider,

@@ -180,65 +180,113 @@ impl OpenAiResponsesAdapter {
     pub fn parse_stream_events(
         events: &[Value],
     ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        let mut parser = OpenAiResponsesStreamParser::default();
         let mut stream = Vec::new();
-        let mut text_started = false;
-        let mut text = String::new();
         for event in events {
-            match event.get("type").and_then(Value::as_str) {
-                Some("response.output_text.delta") => {
-                    if !text_started {
-                        text_started = true;
-                        stream.push(ModelResponseStreamEvent::PartStart(crate::PartStart {
-                            index: 0,
-                            part_kind: "text".to_string(),
-                        }));
-                    }
-                    if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                        text.push_str(delta);
-                        stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
-                            index: 0,
-                            delta: delta.to_string(),
-                        }));
-                    }
-                }
-                Some("response.output_text.done") if text_started => {
-                    stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
-                        index: 0,
-                    }));
-                    text_started = false;
-                }
-                Some("response.completed") => {
-                    if text_started {
-                        stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
-                            index: 0,
-                        }));
-                        text_started = false;
-                    }
-                    let response = event
-                        .get("response")
-                        .map(Self::parse_response)
-                        .transpose()?
-                        .unwrap_or_else(|| text_response(text.clone()));
-                    stream.push(ModelResponseStreamEvent::FinalResult(Box::new(response)));
-                }
-                _ => {}
-            }
+            stream.extend(parser.push_event(event)?);
         }
+        stream.extend(parser.finish()?);
         if stream
             .iter()
             .any(|event| matches!(event, ModelResponseStreamEvent::FinalResult(_)))
         {
-            Ok(stream)
-        } else if !text.is_empty() {
-            stream.push(ModelResponseStreamEvent::FinalResult(Box::new(
-                text_response(text),
-            )));
             Ok(stream)
         } else {
             Err(ModelError::ResponseParsing(
                 "missing response.completed event".to_string(),
             ))
         }
+    }
+}
+
+/// Incremental parser for `OpenAI` Responses server-sent JSON payloads.
+#[derive(Default)]
+pub struct OpenAiResponsesStreamParser {
+    text_started: bool,
+    text: String,
+    final_seen: bool,
+}
+
+impl OpenAiResponsesStreamParser {
+    /// Push one provider event and return zero or more canonical stream events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a completed response payload is malformed.
+    pub fn push_event(
+        &mut self,
+        event: &Value,
+    ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        let mut stream = Vec::new();
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => {
+                if !self.text_started {
+                    self.text_started = true;
+                    stream.push(ModelResponseStreamEvent::PartStart(crate::PartStart {
+                        index: 0,
+                        part_kind: "text".to_string(),
+                    }));
+                }
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    self.text.push_str(delta);
+                    stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
+                        index: 0,
+                        delta: delta.to_string(),
+                    }));
+                }
+            }
+            Some("response.output_text.done") if self.text_started => {
+                stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+                    index: 0,
+                }));
+                self.text_started = false;
+            }
+            Some("response.completed") => {
+                if self.text_started {
+                    stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+                        index: 0,
+                    }));
+                    self.text_started = false;
+                }
+                let response = event
+                    .get("response")
+                    .map(OpenAiResponsesAdapter::parse_response)
+                    .transpose()?
+                    .unwrap_or_else(|| text_response(self.text.clone()));
+                stream.push(ModelResponseStreamEvent::FinalResult(Box::new(response)));
+                self.final_seen = true;
+            }
+            _ => {}
+        }
+        Ok(stream)
+    }
+
+    /// Finish parsing buffered text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no text or completed response was received.
+    pub fn finish(&mut self) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
+        if self.final_seen {
+            return Ok(Vec::new());
+        }
+        if self.text.is_empty() {
+            return Err(ModelError::ResponseParsing(
+                "missing response.completed event".to_string(),
+            ));
+        }
+        let mut stream = Vec::new();
+        if self.text_started {
+            stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+                index: 0,
+            }));
+            self.text_started = false;
+        }
+        stream.push(ModelResponseStreamEvent::FinalResult(Box::new(
+            text_response(self.text.clone()),
+        )));
+        self.final_seen = true;
+        Ok(stream)
     }
 }
 

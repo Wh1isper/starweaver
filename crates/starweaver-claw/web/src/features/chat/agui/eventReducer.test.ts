@@ -66,19 +66,19 @@ describe('AGUI event reducer', () => {
 
   it('keeps runtime custom events as visible runtime cards by default', () => {
     const timeline = buildTimeline([
-      custom('ya_claw.run_queued', { run_id: 'run-a', status: 'queued' }),
+      custom('starweaver_claw.run_queued', { run_id: 'run-a', status: 'queued' }),
     ])
 
     expect(timeline.blocks[0]).toMatchObject({
       kind: 'runtime_event',
-      name: 'ya_claw.run_queued',
+      name: 'starweaver_claw.run_queued',
     })
   })
 
   it('can hide runtime events for chat rendering', () => {
     const timeline = buildTimeline(
       [
-        custom('ya_claw.run_queued', { run_id: 'run-a', status: 'queued' }),
+        custom('starweaver_claw.run_queued', { run_id: 'run-a', status: 'queued' }),
         { type: 'TEXT_MESSAGE_CHUNK', messageId: 'm1', delta: 'Done' },
         { type: 'RUN_FINISHED', result: 'Done' },
       ],
@@ -97,7 +97,7 @@ describe('AGUI event reducer', () => {
   it('renders steering delivery and SDK message injection events', () => {
     const timeline = buildTimeline(
       [
-        custom('ya_claw.run_steered', {
+        custom('starweaver_claw.run_steered', {
           input_parts: [{ type: 'text', text: 'please continue' }],
         }),
         custom('ya_agent.message_received', {

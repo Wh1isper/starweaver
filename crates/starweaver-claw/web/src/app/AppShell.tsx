@@ -171,11 +171,11 @@ export function AppShell() {
       <aside className="hidden w-72 shrink-0 flex-col border-r border-slate-200/80 bg-white/95 shadow-sm backdrop-blur lg:flex">
         <div className="border-b border-slate-200 p-5">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 to-indigo-600 text-sm font-semibold text-white shadow-sm">
-              YA
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500 via-blue-600 to-violet-600 text-sm font-semibold text-white shadow-sm shadow-blue-500/25">
+              SW
             </div>
             <div className="min-w-0">
-              <p className="font-semibold tracking-tight">YA Claw</p>
+              <p className="font-semibold tracking-tight">Starweaver Claw</p>
               <p className="text-xs text-slate-500">Runtime Console</p>
             </div>
           </div>
@@ -224,7 +224,7 @@ export function AppShell() {
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200/80 bg-white/85 px-3 backdrop-blur sm:px-6">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">
-              {activeRoute.eyebrow}
+              Starweaver Claw / {activeRoute.eyebrow}
             </p>
             <h1 className="truncate text-lg font-semibold tracking-tight text-slate-950">
               {activeRoute.title}

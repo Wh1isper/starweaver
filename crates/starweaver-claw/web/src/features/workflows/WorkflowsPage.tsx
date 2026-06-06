@@ -98,7 +98,7 @@ type WorkflowScheduleFormValues = {
 }
 
 const blankDefinition = {
-  schema: 'ya-claw.workflow.v1',
+  schema: 'starweaver-claw.workflow.v1',
   name: 'New workflow',
   version: 1,
   inputs: {

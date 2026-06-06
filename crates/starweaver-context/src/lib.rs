@@ -177,6 +177,12 @@ impl MessageBus {
         self.messages.len()
     }
 
+    /// Return whether any queued message has the provided topic.
+    #[must_use]
+    pub fn has_topic(&self, topic: &str) -> bool {
+        self.messages.iter().any(|message| message.topic == topic)
+    }
+
     /// Return whether the bus has no messages.
     #[must_use]
     pub fn is_empty(&self) -> bool {

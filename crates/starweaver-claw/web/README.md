@@ -1,6 +1,6 @@
-# YA Claw Web
+# Starweaver Claw Web
 
-Vite + React + TypeScript web shell for YA Claw.
+Vite + React + TypeScript web console for Starweaver Claw.
 
 ## Focus
 
@@ -11,10 +11,19 @@ Vite + React + TypeScript web shell for YA Claw.
 
 ## Development
 
+From the repository root:
+
 ```bash
-cd apps/ya-claw-web
-pnpm install
-pnpm dev
+make claw-dev
+```
+
+This starts the API at `http://127.0.0.1:9042`, applies pending SQLite migrations, and starts the web console at `http://127.0.0.1:5173`.
+
+For split terminals:
+
+```bash
+make claw-dev-api
+make claw-dev-web
 ```
 
 Set `VITE_CLAW_BASE_URL` when the backend runs on a different origin.

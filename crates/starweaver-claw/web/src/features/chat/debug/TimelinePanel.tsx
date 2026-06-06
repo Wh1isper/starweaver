@@ -173,7 +173,7 @@ export function PrunedArtifactsNotice() {
             storage usage.
           </p>
           <p className="text-slate-500">
-            YA Claw still keeps the run database row, input parts, status,
+            Starweaver Claw still keeps the run database row, input parts, status,
             output text, and compact summary when available.
           </p>
         </div>

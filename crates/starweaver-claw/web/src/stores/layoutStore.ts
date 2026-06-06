@@ -188,7 +188,7 @@ export const useLayoutStore = create<LayoutState>()(
       },
     }),
     {
-      name: 'ya-claw-layout',
+      name: 'starweaver-claw-layout',
       partialize: (state) => ({
         inspectorTab: state.inspectorTab,
       }),

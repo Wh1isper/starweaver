@@ -177,7 +177,7 @@ Persisted display messages support local CLI restore, TUI rehydration, service w
 
 `DisplayMessage` is the AGUI-compatible Starweaver wire event. It carries AGUI-style lifecycle event types in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads.
 
-Reference behavior from ya-claw:
+Reference behavior from Starweaver Claw:
 
 - map run lifecycle into `RUN_STARTED`, `RUN_FINISHED`, `RUN_ERROR`, and custom run events
 - map text deltas into text message start/content/end style events
@@ -828,7 +828,7 @@ STARWEAVER_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Wh1isper/
 06. Add local SQLite and file-store adapters for session/run/display indexes, checkpoint refs, raw evidence blobs, compact snapshots, archives, and attachments.
 07. Add headless `-p/--prompt` shorthand, session selectors, run selectors, HITL policy flags, and `--output display-jsonl|silent`.
 08. Add `DisplayJsonlOutput` over `DisplayMessage` and golden output tests.
-09. Add `DisplayMessage` AGUI-compatible lifecycle, text, tool, terminal, and compaction tests based on ya-claw behavior.
+09. Add `DisplayMessage` AGUI-compatible lifecycle, text, tool, terminal, and compaction tests based on Starweaver Claw behavior.
 10. Persist display messages through the chosen `StreamArchive` in local run tests.
 11. Add compact session list/show/replay/trim commands.
 12. Add current-session and all-sessions trim with dry-run reports, age and recent-run policies, compact-before-delete behavior, and orphaned file-store cleanup.

@@ -410,7 +410,7 @@ function ChatTranscript({
           <EmptyState
             icon={Bot}
             title={hasSession ? 'No messages yet' : 'Start a web chat'}
-            description="Send a message below and YA Claw will create a dedicated web chat session."
+            description="Send a message below and Starweaver Claw will create a dedicated web chat session."
             className="min-h-80 bg-white"
           />
         ) : null}
@@ -624,7 +624,7 @@ function ChatComposer({
                 ? 'Steer the active response...'
                 : canAppend
                   ? 'Append to the queued run...'
-                  : 'Message YA Claw...'
+                  : 'Message Starweaver Claw...'
             }
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {

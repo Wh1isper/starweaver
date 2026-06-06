@@ -36,6 +36,8 @@ pub enum AgentIterationKind {
     ToolReturn,
     /// Output validation requested another model turn.
     OutputRetry,
+    /// Pending steering requested another model turn.
+    SteeringGuard,
     /// The run completed.
     RunComplete,
 }
@@ -90,6 +92,9 @@ impl AgentIterationStep {
                 (AgentIterationKind::ToolReturn, Some(*step), None)
             }
             AgentStreamEvent::OutputRetry { .. } => (AgentIterationKind::OutputRetry, None, None),
+            AgentStreamEvent::SteeringGuard { step, .. } => {
+                (AgentIterationKind::SteeringGuard, Some(*step), None)
+            }
             AgentStreamEvent::RunComplete { .. } => (AgentIterationKind::RunComplete, None, None),
         };
         Self {

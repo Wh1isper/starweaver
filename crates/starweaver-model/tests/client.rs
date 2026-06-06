@@ -14,7 +14,7 @@ use starweaver_model::{
     profile::{ModelProfile, ProtocolFamily},
     transport::{
         AuthConfig, HttpModelConfig, HttpRequest, HttpResponse, MaxTokensParameter,
-        ModelHttpClient, NoopSleeper, RetryPolicy,
+        ModelEventStream, ModelHttpClient, NoopSleeper, RetryPolicy,
     },
     ModelAdapter, ModelError, ModelSettings, ProtocolModelClient, ProviderAlias,
     ProviderAliasRegistry,
@@ -56,12 +56,21 @@ impl ModelHttpClient for CaptureHttpClient {
         Ok(self.response.lock().unwrap().clone().unwrap())
     }
 
-    async fn send_event_stream(
+    async fn send_event_stream_incremental(
         &self,
         request: HttpRequest,
-    ) -> Result<Vec<serde_json::Value>, ModelError> {
+    ) -> Result<ModelEventStream, ModelError> {
         self.requests.lock().unwrap().push(request);
-        Ok(self.stream_events.lock().unwrap().clone().unwrap())
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        let events = self.stream_events.lock().unwrap().clone().unwrap();
+        tokio::spawn(async move {
+            for event in events {
+                if sender.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(ModelEventStream::new(receiver))
     }
 }
 
@@ -450,4 +459,18 @@ impl ModelHttpClient for SequenceHttpClient {
             Err(error) => Err(ModelError::Transport(error)),
         }
     }
+}
+
+#[test]
+fn protocol_client_with_profile_overrides_capabilities() {
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-test",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        HttpModelConfig::new("https://example.test", "responses"),
+        Arc::new(CaptureHttpClient::default()),
+    )
+    .with_profile(ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses));
+
+    assert_eq!(client.profile().protocol, ProtocolFamily::OpenAiResponses);
 }

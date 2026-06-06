@@ -22,7 +22,7 @@ use super::{
         StyledLine,
     },
     state::{InteractiveTuiState, RunMode},
-    terminal::{handle_key_event, InteractiveTuiEvent},
+    terminal::{handle_key_event, visible_body_bounds, InteractiveTuiEvent},
 };
 
 #[test]
@@ -92,7 +92,7 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     assert!(footer_text.contains("[Steering messages will appear here during agent execution]"));
     assert!(footer_text.contains(" ACT  | State: IDLE"));
     assert!(footer_text.contains("Model: local_echo"));
-    assert!(footer_text.contains("Context: --%"));
+    assert!(footer_text.contains("Context: 0%"));
     assert!(footer_text.contains("Enter:Send | Tab:Multiline"));
     assert!(has_segment(&footer_lines, " ACT ", SegmentStyle::MODE_BG));
     assert!(footer_lines.iter().any(|line| line
@@ -115,6 +115,7 @@ fn codex_style_shortcut_overlay_matches_footer_model() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     assert_eq!(handle_key_event(&mut state, key_char('h')), None);
@@ -174,22 +175,38 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     state
         .body
         .extend((0..30).map(|line| format!("line {line}")));
+    let rendered_len = render_live_history_lines(&state, 80).len();
+    assert_eq!(
+        visible_body_bounds(&state, rendered_len, 10),
+        (rendered_len - 10, rendered_len)
+    );
+    state.push_history("old prompt".to_string());
+    state.input.clear();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Up)), None);
+    assert!(state.input.is_empty());
+    assert!(!state.is_at_bottom());
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
+    assert!(state.input.is_empty());
+    assert!(state.is_at_bottom());
     assert_eq!(
         handle_key_event(&mut state, key_code(KeyCode::PageUp)),
         None
     );
-    assert_eq!(state.scroll_offset, 10);
+    assert!(!state.is_at_bottom());
+    let (start_after_page_up, end_after_page_up) = visible_body_bounds(&state, rendered_len, 10);
+    assert!(start_after_page_up < rendered_len - 10);
+    assert_eq!(end_after_page_up, start_after_page_up + 10);
     assert_eq!(
         handle_key_event(&mut state, key_code(KeyCode::PageDown)),
         None
     );
-    assert_eq!(state.scroll_offset, 0);
+    assert!(state.is_at_bottom());
     state.scroll_offset = 3;
     assert_eq!(
         handle_key_event(&mut state, key_modified('l', KeyModifiers::CONTROL)),
         None
     );
-    assert_eq!(state.scroll_offset, 0);
+    assert!(state.is_at_bottom());
 
     assert_eq!(state.run_mode, RunMode::Act);
     assert_eq!(
@@ -199,6 +216,19 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     assert_eq!(state.run_mode, RunMode::Plan);
 
     state.running = true;
+    state.input = "steer now".to_string();
+    let event = handle_key_event(&mut state, key_code(KeyCode::Enter));
+    let steering = match event {
+        Some(InteractiveTuiEvent::Steer(steering)) => steering,
+        other => panic!("expected steering event, got {other:?}"),
+    };
+    assert_eq!(steering.id, "steer_0");
+    assert_eq!(steering.text, "steer now");
+    assert!(state.input.is_empty());
+    assert!(line_texts(&render_footer_lines(&state, 120))
+        .join("\n")
+        .contains(">>> steer now"));
+
     state.input = "queued".to_string();
     assert_eq!(
         handle_key_event(&mut state, key_code(KeyCode::Tab)),
@@ -213,6 +243,28 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
     assert_eq!(state.status, "INTERRUPT");
     assert!(state.cancel_requested);
+}
+
+#[test]
+fn scroll_bounds_move_visible_viewport_and_preserve_bottom_sentinel() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state
+        .body
+        .extend((0..50).map(|line| format!("line {line}")));
+    assert_eq!(visible_body_bounds(&state, 50, 10), (40, 50));
+
+    state.scroll_offset = 30;
+    assert_eq!(visible_body_bounds(&state, 50, 10), (30, 40));
+
+    state.scroll_offset = 0;
+    assert_eq!(visible_body_bounds(&state, 50, 10), (0, 10));
+
+    state.scroll_offset = 60;
+    assert_eq!(visible_body_bounds(&state, 50, 10), (40, 50));
+
+    state.scroll_to_bottom();
+    assert!(state.is_at_bottom());
+    assert_eq!(visible_body_bounds(&state, 50, 10), (40, 50));
 }
 
 #[test]
@@ -377,7 +429,137 @@ fn interactive_state_covers_runtime_event_branches() {
             status: RunStatus::Completed,
         },
     ));
-    assert_eq!(state.scroll_offset, 0);
+    assert!(state.is_at_bottom());
+}
+
+#[test]
+fn thinking_stream_delta_does_not_suppress_final_text() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "thinking".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta {
+                index: 0,
+                delta: "reasoning".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text(
+                "final answer",
+            ))),
+        },
+    ));
+
+    assert!(state.body.iter().any(|line| line == "Thinking: reasoning"));
+    assert!(body_has_line(&state, "final answer"));
+}
+
+#[test]
+fn interleaved_thinking_part_does_not_mark_text_seen() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "thinking".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 1,
+                part_kind: "text".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta {
+                index: 0,
+                delta: "hidden chain".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text(
+                "visible answer",
+            ))),
+        },
+    ));
+
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Thinking: hidden chain"));
+    assert!(body_has_line(&state, "visible answer"));
+}
+
+#[test]
+fn tool_call_from_model_response_and_tool_event_renders_once() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("use tool");
+    let call = ToolCallPart {
+        id: "call_once".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"query":"once"}),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelResponse {
+            step: 0,
+            response: ModelResponse {
+                parts: vec![ModelResponsePart::ToolCall(call.clone())],
+                usage: starweaver_core::Usage::default(),
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            },
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall { step: 1, call },
+    ));
+
+    assert_eq!(
+        state
+            .body
+            .iter()
+            .filter(|line| line.starts_with("Tool call: lookup"))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -403,7 +585,13 @@ fn interactive_state_covers_model_response_finish_and_failure() {
                         arguments: json!({}),
                     }),
                 ],
-                usage: starweaver_core::Usage::default(),
+                usage: starweaver_core::Usage {
+                    requests: 1,
+                    input_tokens: 1_000,
+                    output_tokens: 500,
+                    total_tokens: 1_500,
+                    tool_calls: 0,
+                },
                 model_name: None,
                 provider: None,
                 finish_reason: None,
@@ -418,9 +606,34 @@ fn interactive_state_covers_model_response_finish_and_failure() {
     assert!(body_has_line(&state, "answer"));
     assert!(state.body.iter().any(|line| line == "Thinking: reasoning"));
     assert!(state.body.iter().any(|line| line == "Tool call: search"));
-
+    assert_eq!(state.context_percent_label(), "1%");
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
+        AgentStreamEvent::ModelResponse {
+            step: 1,
+            response: ModelResponse {
+                parts: Vec::new(),
+                usage: starweaver_core::Usage {
+                    requests: 1,
+                    input_tokens: 6_000,
+                    output_tokens: 500,
+                    total_tokens: 6_500,
+                    tool_calls: 0,
+                },
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            },
+        },
+    ));
+    assert_eq!(state.context_percent_label(), "4%");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
         AgentStreamEvent::RunComplete {
             run_id: RunId::from_string("run_test"),
             output: "unused because streamed".to_string(),
@@ -693,12 +906,24 @@ fn fullscreen_composer_tracks_paste_images_and_steering_status() {
     assert_eq!(state.input_mode_label(), "STEER");
     let steer_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(steer_footer.contains("STEER"));
-    assert!(steer_footer.contains("tighten this section"));
-    assert_eq!(
-        state.take_submission_prompt().as_deref(),
-        Some("tighten this section")
-    );
+    assert!(steer_footer.contains("[Steering messages will appear here during agent execution]"));
+    let steering = state.take_steering_prompt().unwrap();
+    assert_eq!(steering.id, "steer_0");
+    assert_eq!(steering.text, "tighten this section");
     assert!(state.input_status_text().contains("steer sent"));
+    let pending_steer_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(pending_steer_footer.contains(">>> tighten this section"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "steering_received",
+                json!({"id": "steer_0", "text": "tighten this section"}),
+            ),
+        },
+    ));
+    let acked_steer_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(acked_steer_footer.contains("[v] tighten this section"));
 }
 
 #[test]
@@ -1086,4 +1311,70 @@ fn key_modified(ch: char, modifiers: KeyModifiers) -> KeyEvent {
         kind: KeyEventKind::Press,
         state: KeyEventState::NONE,
     }
+}
+
+#[test]
+fn steering_guard_displays_as_steering_not_retry() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::SteeringGuard {
+            step: 1,
+            prompt: "continue with steering".to_string(),
+        },
+    ));
+
+    assert_eq!(state.phase, "steering");
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Steering update pending; continuing run."));
+    assert!(!state.body.iter().any(|line| line.contains("Output retry")));
+}
+
+#[test]
+fn model_response_thinking_and_tool_call_are_visible() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelResponse {
+            step: 1,
+            response: ModelResponse {
+                parts: vec![
+                    ModelResponsePart::Thinking {
+                        text: "inspect tools".to_string(),
+                        signature: None,
+                    },
+                    ModelResponsePart::ToolCall(ToolCallPart {
+                        id: "call_1".to_string(),
+                        name: "lookup".to_string(),
+                        arguments: json!({"query": "starweaver"}),
+                    }),
+                    ModelResponsePart::Text {
+                        text: "done".to_string(),
+                    },
+                ],
+                usage: starweaver_core::Usage::default(),
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            },
+        },
+    ));
+
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Thinking: inspect tools"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}"));
+    assert!(body_has_line(&state, "done"));
 }

@@ -14,7 +14,8 @@ pub mod transport;
 pub use adapter::{
     allow_real_model_requests, allow_real_model_requests_guard, block_real_model_requests,
     set_allow_real_model_requests, ModelAdapter, ModelError, ModelRequestContext,
-    ModelRequestParameters, NativeToolDefinition, RealModelRequestGuard, ToolDefinition,
+    ModelRequestParameters, ModelResponseEventStream, NativeToolDefinition, RealModelRequestGuard,
+    ToolDefinition,
 };
 pub use message::{
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
@@ -34,6 +35,6 @@ pub use stream::{ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
 pub use test::{latest_user_text, tool_call_response, FunctionModel, FunctionModelInfo, TestModel};
 pub use transport::{
     AuthConfig, DynHttpClient, DynSleeper, HttpModelConfig, HttpRequest, HttpRequestOptions,
-    HttpResponse, MaxTokensParameter, ModelHttpClient, ModelSleeper, NoopSleeper,
+    HttpResponse, MaxTokensParameter, ModelEventStream, ModelHttpClient, ModelSleeper, NoopSleeper,
     ReqwestHttpClient, RetryPolicy, TokioSleeper,
 };

@@ -15,7 +15,7 @@ use crate::{CliError, CliResult};
 use super::{
     markdown::{render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
     snapshot::TuiSnapshot,
-    state::InteractiveTuiState,
+    state::{InteractiveTuiState, SteeringStatus},
 };
 
 const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56;
@@ -254,19 +254,39 @@ pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> 
     } else {
         Vec::new()
     };
-    lines.push(render_steering_line(state, width));
+    lines.extend(render_steering_lines(state, width));
     lines.extend(render_status_bar_lines(state, width));
     lines
 }
 
-fn render_steering_line(state: &InteractiveTuiState, width: usize) -> StyledLine {
+fn render_steering_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
     let style = SegmentStyle::steering_bar();
-    let text = if state.running && !state.input.trim().is_empty() {
-        format!(">>> {}", state.input.trim())
-    } else {
-        " [Steering messages will appear here during agent execution]".to_string()
-    };
-    pad_styled_line_with_style(StyledLine::styled(text, style), width, style)
+    if state.steering_items().is_empty() {
+        return vec![pad_styled_line_with_style(
+            StyledLine::styled(
+                " [Steering messages will appear here during agent execution]",
+                style,
+            ),
+            width,
+            style,
+        )];
+    }
+    state
+        .steering_items()
+        .iter()
+        .rev()
+        .map(|item| {
+            let prefix = match item.status {
+                SteeringStatus::Acked => "[v] ",
+                SteeringStatus::Pending => ">>> ",
+            };
+            pad_styled_line_with_style(
+                StyledLine::styled(format!("{prefix}{}", item.text), style),
+                width,
+                style,
+            )
+        })
+        .collect()
 }
 
 fn render_status_bar_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
@@ -333,7 +353,7 @@ fn render_status_bar_primary(state: &InteractiveTuiState) -> StyledLine {
 
 fn render_status_bar_secondary(state: &InteractiveTuiState) -> StyledLine {
     let mut line = StyledLine::styled(secondary_status_text(state), SegmentStyle::status_bar());
-    if state.scroll_offset > 0 {
+    if !state.is_at_bottom() {
         line.push(" | ", SegmentStyle::status_bar());
         line.push(
             format!("Scrolled: {}", state.scroll_offset),

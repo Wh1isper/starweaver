@@ -1,31 +1,24 @@
 <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <title>YA Claw</title>
+  <title>Starweaver Claw</title>
   <defs>
     <linearGradient id="bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#2563EB" />
-      <stop offset="0.58" stop-color="#4F46E5" />
+      <stop stop-color="#06B6D4" />
+      <stop offset="0.52" stop-color="#2563EB" />
       <stop offset="1" stop-color="#7C3AED" />
     </linearGradient>
-    <linearGradient id="cut" x1="21" y1="12" x2="46" y2="52" gradientUnits="userSpaceOnUse">
+    <linearGradient id="star" x1="20" y1="10" x2="45" y2="51" gradientUnits="userSpaceOnUse">
       <stop stop-color="#FFFFFF" />
-      <stop offset="1" stop-color="#DDEBFF" />
+      <stop offset="1" stop-color="#CFFAFE" />
     </linearGradient>
     <filter id="shadow" x="2" y="2" width="60" height="62" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#1E1B4B" flood-opacity="0.28" />
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#172554" flood-opacity="0.28" />
     </filter>
   </defs>
 
-  <rect x="6" y="5" width="52" height="54" rx="15" fill="url(#bg)" filter="url(#shadow)" />
-  <path d="M18 15L31 7H47L55 19V35L47 52H29L17 43L11 29L18 15Z" fill="#0F172A" fill-opacity="0.16" />
-
-  <path d="M24 16C30 22 31 34 26 49" stroke="url(#cut)" stroke-width="6" stroke-linecap="round" />
-  <path d="M34 14C39 23 39 35 34 51" stroke="url(#cut)" stroke-width="6" stroke-linecap="round" />
-  <path d="M44 17C47 26 46 37 40 49" stroke="url(#cut)" stroke-width="6" stroke-linecap="round" />
-
-  <path d="M21 16C27 23 27 34 22 47" stroke="#93C5FD" stroke-width="1.5" stroke-linecap="round" opacity="0.55" />
-  <path d="M31 14C36 23 36 35 30 49" stroke="#93C5FD" stroke-width="1.5" stroke-linecap="round" opacity="0.5" />
-  <path d="M41 17C44 26 43 36 37 47" stroke="#93C5FD" stroke-width="1.5" stroke-linecap="round" opacity="0.45" />
-
-  <circle cx="48" cy="17" r="5" fill="#22D3EE" />
-  <circle cx="48" cy="17" r="2" fill="#ECFEFF" />
+  <rect x="6" y="5" width="52" height="54" rx="16" fill="url(#bg)" filter="url(#shadow)" />
+  <path d="M32 11L36.9 25.5L52 25.6L39.8 34.6L44.4 49L32 40.5L19.6 49L24.2 34.6L12 25.6L27.1 25.5L32 11Z" fill="url(#star)" />
+  <path d="M21 17C28 25 29 37 23 50" stroke="#0F172A" stroke-width="4.5" stroke-linecap="round" opacity="0.24" />
+  <path d="M32 15C37 26 37 38 31 51" stroke="#0F172A" stroke-width="4.5" stroke-linecap="round" opacity="0.24" />
+  <path d="M43 18C47 29 46 39 39 50" stroke="#0F172A" stroke-width="4.5" stroke-linecap="round" opacity="0.24" />
+  <circle cx="49" cy="16" r="4" fill="#67E8F9" />
 </svg>

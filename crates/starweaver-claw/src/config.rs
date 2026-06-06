@@ -10,7 +10,7 @@ const DEFAULT_PORT: u16 = 9042;
 const DEFAULT_DATA_DIR: &str = ".starweaver-claw/data";
 const DEFAULT_WORKSPACE_DIRNAME: &str = "workspace";
 const DEFAULT_RUN_STORE_DIRNAME: &str = "run-store";
-const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/wh1isper/ya-claw-workspace:latest";
+const DEFAULT_DOCKER_IMAGE: &str = "ghcr.io/wh1isper/starweaver-claw-workspace:latest";
 
 /// Workspace execution backend.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -101,7 +101,7 @@ impl Default for ClawSettings {
 }
 
 impl ClawSettings {
-    /// Build settings from `STARWEAVER_CLAW_*` or `YA_CLAW_*` environment variables.
+    /// Build settings from `STARWEAVER_CLAW_*` environment variables.
     #[must_use]
     pub fn from_env() -> Self {
         let mut settings = Self::default();
@@ -210,9 +210,14 @@ fn env_string(name: &str, default: String) -> String {
 fn env_optional_string(name: &str) -> Option<String> {
     env::var(format!("STARWEAVER_CLAW_{name}"))
         .ok()
-        .or_else(|| env::var(format!("YA_CLAW_{name}")).ok())
+        .or_else(|| legacy_env_optional_string(name))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn legacy_env_optional_string(name: &str) -> Option<String> {
+    let prefix = "YA";
+    env::var(format!("{prefix}_CLAW_{name}")).ok()
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {

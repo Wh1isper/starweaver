@@ -109,7 +109,7 @@ export function OverviewPage() {
             <QuickAction
               icon={MessageSquare}
               title="Open web chat"
-              description="Talk with YA Claw from a clean ChatGPT-style surface."
+              description="Talk with Starweaver Claw from a clean ChatGPT-style surface."
               onClick={() => setRoute('chat')}
             />
             <QuickAction

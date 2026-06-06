@@ -378,6 +378,7 @@ impl AgentCapability for StreamObserverRecorder {
                 AgentStreamEvent::ToolCall { .. } => "tool_call",
                 AgentStreamEvent::ToolReturn { .. } => "tool_return",
                 AgentStreamEvent::OutputRetry { .. } => "output_retry",
+                AgentStreamEvent::SteeringGuard { .. } => "steering_guard",
                 AgentStreamEvent::RunComplete { .. } => "run_complete",
             }
             .to_string(),

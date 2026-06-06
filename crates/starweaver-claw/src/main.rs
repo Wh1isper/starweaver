@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use starweaver_claw::{serve, ClawResult, ClawSettings};
+use starweaver_claw::{migrate_sqlite_database, serve, ClawResult, ClawSettings};
 
 /// Starweaver Claw service command.
 #[derive(Debug, Parser)]
@@ -23,6 +23,8 @@ struct Cli {
 enum Command {
     /// Start the HTTP service.
     Start(StartArgs),
+    /// Apply pending database migrations and exit.
+    Migrate(MigrateArgs),
     /// Print resolved service configuration.
     Config,
 }
@@ -41,6 +43,14 @@ struct StartArgs {
     port: Option<u16>,
 }
 
+/// Database migration options.
+#[derive(Debug, Parser)]
+struct MigrateArgs {
+    /// Optional TOML config path.
+    #[arg(long)]
+    config: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> ClawResult<()> {
     let cli = Cli::parse();
@@ -50,11 +60,7 @@ async fn main() -> ClawResult<()> {
         port: None,
     })) {
         Command::Start(args) => {
-            let mut settings = if let Some(config) = args.config {
-                ClawSettings::from_file(config)?
-            } else {
-                ClawSettings::from_env()
-            };
+            let mut settings = load_settings(args.config)?;
             if let Some(host) = args.host {
                 settings.host = host;
             }
@@ -63,10 +69,25 @@ async fn main() -> ClawResult<()> {
             }
             serve(settings).await
         }
+        Command::Migrate(args) => {
+            let settings = load_settings(args.config)?;
+            settings.ensure_dirs()?;
+            let applied = migrate_sqlite_database(&settings.sqlite_path)?;
+            println!(
+                "{{\"database\":{},\"applied_migrations\":{}}}",
+                serde_json::to_string(&settings.sqlite_path)?,
+                serde_json::to_string(&applied)?,
+            );
+            Ok(())
+        }
         Command::Config => {
             let settings = ClawSettings::from_env();
             println!("{}", serde_json::to_string_pretty(&settings)?);
             Ok(())
         }
     }
+}
+
+fn load_settings(config: Option<PathBuf>) -> ClawResult<ClawSettings> {
+    config.map_or_else(|| Ok(ClawSettings::from_env()), ClawSettings::from_file)
 }

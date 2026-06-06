@@ -85,7 +85,7 @@ These notes capture reference mapping and phase-specific implementation observat
 - Added `starweaver-stream` crate for display messages, replay event logs, replay transports, stream archives, realtime compaction buffers, and protocol envelopes.
 - Add CLI headless mode through `sw cli -p <prompt>` with text, JSONL, AGUI JSONL, and silent output modes.
 - Persist `DisplayMessage` records through `StreamArchive` and use them as the session restore source for CLI, TUI, and future service UI flows.
-- Add AGUI-compatible display adapter and replay compaction path based on ya-claw behavior.
+- Add AGUI-compatible display adapter and replay compaction path based on Starweaver Claw behavior.
 - Add `starweaver` launcher dispatch, `sw` alias, `starweaver-{command}` command convention, and GitHub release install/update scripts.
 - Define CLI app-profile workflows over `AgentSpec`, environment providers, first-party bundles, shared session/stream contracts, and `SessionStore`.
 - Add command-line session create/list/restore/replay/inspect with display-message rendering, compact trace projection, and stream replay.

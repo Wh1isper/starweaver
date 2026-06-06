@@ -31,8 +31,8 @@ use crate::{
         list_subagents, resolve_profile, show_mcp_server, show_profile, show_skill, show_subagent,
     },
     runner::{
-        execute_agent_session, execute_agent_session_with_stream_sender, failed_display_message,
-        CliRunPolicy,
+        execute_agent_session, execute_agent_session_with_channels, failed_display_message,
+        CliRunPolicy, CliSteeringMessage,
     },
     CliError, CliResult,
 };
@@ -54,6 +54,9 @@ struct CompletedPromptRun {
 
 struct ActiveTuiRun {
     receiver: mpsc::Receiver<TuiRunMessage>,
+    steering_sender: mpsc::Sender<CliSteeringMessage>,
+    cancel_sender: mpsc::Sender<()>,
+    cancelling: bool,
 }
 
 enum TuiRunMessage {
@@ -141,12 +144,19 @@ impl CliService {
         }
     }
 
-    fn run_prompt_streaming(
+    fn run_prompt_streaming_with_steering(
         &mut self,
         command: &RunCommand,
         stream_sender: mpsc::Sender<AgentStreamRecord>,
+        steering_receiver: mpsc::Receiver<CliSteeringMessage>,
+        cancel_receiver: mpsc::Receiver<()>,
     ) -> CliResult<CompletedPromptRun> {
-        let execution = self.execute_prompt_run(command, Some(stream_sender))?;
+        let execution = self.execute_prompt_run_with_steering(
+            command,
+            stream_sender,
+            steering_receiver,
+            cancel_receiver,
+        )?;
         let output_text = render_display_text(&execution.messages);
         Ok(CompletedPromptRun {
             session_id: execution.session_id,
@@ -160,6 +170,31 @@ impl CliService {
         &mut self,
         command: &RunCommand,
         stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    ) -> CliResult<PromptRunExecution> {
+        self.execute_prompt_run_with_channels(command, stream_sender, None, None)
+    }
+
+    fn execute_prompt_run_with_steering(
+        &mut self,
+        command: &RunCommand,
+        stream_sender: mpsc::Sender<AgentStreamRecord>,
+        steering_receiver: mpsc::Receiver<CliSteeringMessage>,
+        cancel_receiver: mpsc::Receiver<()>,
+    ) -> CliResult<PromptRunExecution> {
+        self.execute_prompt_run_with_channels(
+            command,
+            Some(stream_sender),
+            Some(steering_receiver),
+            Some(cancel_receiver),
+        )
+    }
+
+    fn execute_prompt_run_with_channels(
+        &mut self,
+        command: &RunCommand,
+        stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+        steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
+        cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<PromptRunExecution> {
         let prompt = command.prompt_text()?;
         let selected_profile = command
@@ -192,15 +227,20 @@ impl CliService {
             .store()?
             .load_restore_state(&session_id, restore_from.as_deref())?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
-        let result = if let Some(sender) = stream_sender {
-            execute_agent_session_with_stream_sender(
+        let result = if stream_sender.is_some()
+            || steering_receiver.is_some()
+            || cancel_receiver.is_some()
+        {
+            execute_agent_session_with_channels(
                 prompt,
                 &run,
                 &resolved_profile,
                 &environment.provider,
                 restore_state,
                 CliRunPolicy { hitl },
-                Some(sender),
+                stream_sender,
+                steering_receiver,
+                cancel_receiver,
             )
         } else {
             execute_agent_session(
@@ -498,6 +538,7 @@ impl CliService {
         )))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn interactive_tui(&mut self, command: &TuiCommand) -> CliResult<()> {
         let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.global_dir);
         state.set_profile(
@@ -521,24 +562,33 @@ impl CliService {
                         dirty = true;
                     }
                     Ok(TuiRunMessage::Completed(completed)) => {
-                        state.finish_run(Some(completed.session_id));
+                        let was_cancelled = completed.status == "cancelled";
+                        if was_cancelled {
+                            state.session_id = Some(completed.session_id.clone());
+                            state.cancel_run("cancelled by user");
+                        } else {
+                            state.finish_run(Some(completed.session_id.clone()));
+                        }
                         state.body.push(format!(
                             "Run completed: {} status={}",
                             completed.run_id, completed.status
                         ));
                         active_run = None;
                         dirty = true;
-                        match state.complete_goal_iteration(&completed.output_text) {
-                            crate::tui::GoalIterationOutcome::Continue(prompt) => {
-                                state.begin_run(&prompt);
-                                active_run = Some(spawn_tui_run(&self.config, command, prompt));
-                            }
-                            crate::tui::GoalIterationOutcome::Inactive
-                            | crate::tui::GoalIterationOutcome::Complete
-                            | crate::tui::GoalIterationOutcome::MaxIterations => {
-                                if let Some(prompt) = queued_prompt.take() {
+                        if !was_cancelled {
+                            match state.complete_goal_iteration(&completed.output_text) {
+                                crate::tui::GoalIterationOutcome::Continue(prompt) => {
                                     state.begin_run(&prompt);
                                     active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                                }
+                                crate::tui::GoalIterationOutcome::Inactive
+                                | crate::tui::GoalIterationOutcome::Complete
+                                | crate::tui::GoalIterationOutcome::MaxIterations => {
+                                    if let Some(prompt) = queued_prompt.take() {
+                                        state.begin_run(&prompt);
+                                        active_run =
+                                            Some(spawn_tui_run(&self.config, command, prompt));
+                                    }
                                 }
                             }
                         }
@@ -568,14 +618,38 @@ impl CliService {
                 Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
                     return Ok(())
                 }
+                Some(crate::tui::InteractiveTuiEvent::Cancel) => {
+                    if let Some(run) = active_run.as_mut() {
+                        if !run.cancelling {
+                            let _ = run.cancel_sender.send(());
+                            run.cancelling = true;
+                        }
+                    }
+                    dirty = true;
+                }
                 Some(
-                    crate::tui::InteractiveTuiEvent::Redraw
-                    | crate::tui::InteractiveTuiEvent::Quit
-                    | crate::tui::InteractiveTuiEvent::Cancel,
+                    crate::tui::InteractiveTuiEvent::Redraw | crate::tui::InteractiveTuiEvent::Quit,
                 ) => {
                     dirty = true;
                 }
                 None => {}
+                Some(crate::tui::InteractiveTuiEvent::Steer(steering)) => {
+                    if let Some(run) = active_run.as_ref() {
+                        if !run.cancelling
+                            && run
+                                .steering_sender
+                                .send(CliSteeringMessage {
+                                    id: steering.id,
+                                    text: steering.text,
+                                })
+                                .is_err()
+                        {
+                            state.fail_run("background steering channel closed");
+                            active_run = None;
+                        }
+                    }
+                    dirty = true;
+                }
                 Some(crate::tui::InteractiveTuiEvent::Queue(prompt)) => {
                     queued_prompt = Some(prompt);
                     dirty = true;
@@ -839,6 +913,8 @@ fn spawn_tui_run(config: &CliConfig, command: &TuiCommand, prompt: String) -> Ac
     let command = command.clone();
     let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
     let (stream_sender, stream_receiver) = mpsc::channel::<AgentStreamRecord>();
+    let (steering_sender, steering_receiver) = mpsc::channel::<CliSteeringMessage>();
+    let (cancel_sender, cancel_receiver) = mpsc::channel::<()>();
     let stream_ui_sender = ui_sender.clone();
     let forward_handle = thread::spawn(move || {
         while let Ok(record) = stream_receiver.recv() {
@@ -865,7 +941,12 @@ fn spawn_tui_run(config: &CliConfig, command: &TuiCommand, prompt: String) -> Ac
                 output: Some(OutputMode::Text),
                 hitl: None,
             };
-            service.run_prompt_streaming(&run_command, stream_sender)
+            service.run_prompt_streaming_with_steering(
+                &run_command,
+                stream_sender,
+                steering_receiver,
+                cancel_receiver,
+            )
         });
         let _ = forward_handle.join();
         let message = match result {
@@ -874,7 +955,12 @@ fn spawn_tui_run(config: &CliConfig, command: &TuiCommand, prompt: String) -> Ac
         };
         let _ = ui_sender.send(message);
     });
-    ActiveTuiRun { receiver }
+    ActiveTuiRun {
+        receiver,
+        steering_sender,
+        cancel_sender,
+        cancelling: false,
+    }
 }
 
 fn default_model_label(config: &CliConfig) -> String {
@@ -1113,8 +1199,22 @@ fn render_display_text(messages: &[DisplayMessage]) -> String {
         match message.kind {
             DisplayMessageKind::AssistantTextDelta => {
                 if let Some(delta) = message.payload.get("delta").and_then(Value::as_str) {
-                    output.push_str(delta);
-                    last_was_text = true;
+                    if message.payload.get("part_kind").and_then(Value::as_str) == Some("thinking")
+                        || message
+                            .metadata
+                            .get("reasoning")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    {
+                        if last_was_text && !output.ends_with('\n') {
+                            output.push('\n');
+                        }
+                        let _ = writeln!(output, "thinking={delta}");
+                        last_was_text = false;
+                    } else {
+                        output.push_str(delta);
+                        last_was_text = true;
+                    }
                 }
             }
             DisplayMessageKind::ToolCallStart => {
@@ -1127,6 +1227,7 @@ fn render_display_text(messages: &[DisplayMessage]) -> String {
                     message
                         .payload
                         .get("name")
+                        .or_else(|| message.payload.get("tool_name"))
                         .and_then(Value::as_str)
                         .or(message.preview.as_deref())
                         .unwrap_or("tool")

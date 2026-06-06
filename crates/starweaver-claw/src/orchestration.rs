@@ -415,7 +415,7 @@ impl OrchestrationCatalog {
             description: request.description,
             status: request.status,
             definition_version: 1,
-            schema_version: "starweaver.workflow.v1".to_string(),
+            schema_version: "starweaver-claw.workflow.v1".to_string(),
             scope: request.scope,
             tags: request.tags,
             when_to_use: request.when_to_use,

@@ -32,14 +32,14 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-100 px-6 py-10 text-slate-950">
-      <div className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white p-7 shadow-xl shadow-slate-200/70">
+    <main className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top_left,_rgba(34,211,238,0.16),_transparent_28rem),linear-gradient(135deg,#f8fafc_0%,#eef2ff_45%,#f5f3ff_100%)] px-6 py-10 text-slate-950">
+      <div className="w-full max-w-lg rounded-3xl border border-white/70 bg-white/90 p-7 shadow-xl shadow-blue-950/10 backdrop-blur">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-600 text-sm font-semibold text-white">
-            YA
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-500 via-blue-600 to-violet-600 text-sm font-semibold text-white shadow-sm shadow-blue-500/25">
+            SW
           </div>
           <div>
-            <p className="text-sm font-medium text-blue-600">YA Claw Console</p>
+            <p className="text-sm font-medium text-blue-600">Starweaver Claw Console</p>
             <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
               Connect to runtime
             </h1>
@@ -82,7 +82,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
                 value={draftToken}
                 onChange={(event) => setDraftToken(event.target.value)}
                 type={showToken ? 'text' : 'password'}
-                placeholder="YA_CLAW_API_TOKEN"
+                placeholder="STARWEAVER_CLAW_API_TOKEN"
                 autoComplete="current-password"
               />
               <button

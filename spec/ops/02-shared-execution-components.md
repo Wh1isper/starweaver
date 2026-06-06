@@ -295,7 +295,7 @@ pub trait ReplayEventLog: Send + Sync {
 }
 ```
 
-The initial `InMemoryReplayEventLog` should mirror ya-claw's event buffer: replayable per-run buffers, session-to-latest-run routing, compact replay snapshots, steering/control queues, termination signals, and live subscriber counts.
+The initial `InMemoryReplayEventLog` should mirror Starweaver Claw's event buffer: replayable per-run buffers, session-to-latest-run routing, compact replay snapshots, steering/control queues, termination signals, and live subscriber counts.
 
 A future `RedisStreamReplayEventLog` can map:
 
@@ -361,7 +361,7 @@ Responsibilities:
 - expose `tail_after(cursor)` for CLI and SSE reconnect
 - flush compact snapshots at commit and best-effort checkpoint boundaries
 
-Reference behavior from ya-claw's AGUI replay buffer:
+Reference behavior from Starweaver Claw's AGUI replay buffer:
 
 - live events keep streaming responsiveness
 - compact replay folds `TEXT_MESSAGE_CHUNK` fragments into one message item

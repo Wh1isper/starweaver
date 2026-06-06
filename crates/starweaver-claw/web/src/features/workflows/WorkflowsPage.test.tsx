@@ -37,7 +37,7 @@ const workflow: WorkflowDefinitionDetail = {
   description: 'Research and summarize the market',
   status: 'active',
   definition_version: 1,
-  schema_version: 'ya-claw.workflow.v1',
+  schema_version: 'starweaver-claw.workflow.v1',
   owner_kind: 'user',
   owner_session_id: null,
   owner_run_id: null,
@@ -52,7 +52,7 @@ const workflow: WorkflowDefinitionDetail = {
   archived_at: null,
   input_schema: { type: 'object' },
   definition: {
-    schema: 'ya-claw.workflow.v1',
+    schema: 'starweaver-claw.workflow.v1',
     nodes: {
       draft: { profile: 'Self', prompt: 'Draft research' },
     },
