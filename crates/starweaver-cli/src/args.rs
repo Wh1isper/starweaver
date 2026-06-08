@@ -150,6 +150,8 @@ pub enum CliCommand {
     Reset(ResetCommand),
     /// Print diagnostics.
     Diagnostics,
+    /// Run the newline-delimited JSON-RPC stdio runtime.
+    Rpc(RpcCommand),
     /// Print replay-check guidance.
     ReplayCheck,
     /// Update installed Starweaver components.
@@ -534,6 +536,23 @@ pub struct ResetCommand {
     pub output: OutputMode,
 }
 
+/// RPC runtime command.
+#[derive(Clone, Debug, Args)]
+pub struct RpcCommand {
+    /// Runtime transport.
+    #[arg(default_value = "stdio")]
+    pub transport: RpcTransport,
+}
+
+/// RPC runtime transport.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum RpcTransport {
+    /// Newline-delimited JSON-RPC over stdin/stdout.
+    #[default]
+    Stdio,
+}
+
 /// Update command.
 #[derive(Clone, Debug, Args)]
 pub struct UpdateCommand {
@@ -585,6 +604,8 @@ pub enum OutputMode {
     DisplayJsonl,
     /// YAACLI AG-UI compatible top-level event JSON lines.
     AguiJsonl,
+    /// Compact JSON command result.
+    Json,
     /// Persist and print compact status.
     Silent,
 }

@@ -91,7 +91,39 @@ pub struct SteeringSubmission {
 enum StreamingPartKind {
     Text,
     Thinking,
+    ToolCall,
     Other,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ModelChoice {
+    /// Profile id used by `--profile` and `/model`.
+    pub profile: String,
+    /// Optional human label.
+    pub label: Option<String>,
+    /// Provider model id.
+    pub model_id: String,
+    /// Model settings preset name, when configured.
+    pub model_settings: Option<String>,
+    /// Model config preset name, when configured.
+    pub model_cfg: Option<String>,
+    /// Context window in tokens for this profile, when known.
+    pub context_window: Option<u64>,
+    /// Profile source kind.
+    pub source: String,
+}
+
+impl ModelChoice {
+    pub(super) fn display_name(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.profile)
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct StreamingToolCallState {
+    name: Option<String>,
+    arguments: String,
+    line_index: Option<usize>,
 }
 
 /// Interactive terminal UI state.
@@ -132,7 +164,11 @@ pub struct InteractiveTuiState {
     streaming_parts: HashMap<usize, StreamingPartKind>,
     streaming_text_seen: bool,
     streaming_reasoning_seen: bool,
+    streaming_tool_calls: HashMap<usize, StreamingToolCallState>,
     visible_tool_calls: HashSet<String>,
+    model_choices: Vec<ModelChoice>,
+    model_picker_open: bool,
+    model_picker_index: usize,
     pub(super) last_ctrl_c: Option<Instant>,
     pub(super) cancel_requested: bool,
     pub(super) footer_mode: FooterMode,
@@ -172,7 +208,11 @@ impl InteractiveTuiState {
             streaming_parts: HashMap::new(),
             streaming_text_seen: false,
             streaming_reasoning_seen: false,
+            streaming_tool_calls: HashMap::new(),
             visible_tool_calls: HashSet::new(),
+            model_choices: Vec::new(),
+            model_picker_open: false,
+            model_picker_index: 0,
             last_ctrl_c: None,
             cancel_requested: false,
             footer_mode: FooterMode::Context,
@@ -193,6 +233,86 @@ impl InteractiveTuiState {
         self.model = model.into();
     }
 
+    /// Set the context window shown by the footer and cost summary.
+    pub fn set_context_window(&mut self, context_window: Option<u64>) {
+        self.context_window = context_window.or(Some(DEFAULT_CONTEXT_WINDOW_TOKENS));
+    }
+
+    /// Set model choices shown by `/model`.
+    pub fn set_model_choices(&mut self, choices: Vec<ModelChoice>) {
+        self.model_choices = choices;
+        self.sync_model_picker_index_to_current();
+    }
+
+    /// Return configured model choices.
+    pub fn model_choices(&self) -> &[ModelChoice] {
+        &self.model_choices
+    }
+
+    pub(super) const fn model_picker_visible(&self) -> bool {
+        self.model_picker_open
+    }
+
+    pub(super) const fn model_picker_index(&self) -> usize {
+        self.model_picker_index
+    }
+
+    pub(super) fn open_model_picker(&mut self) {
+        if self.running {
+            self.body.push(
+                "[SYS] Model selection is available after the current run finishes.".to_string(),
+            );
+            self.input_status = Some("model blocked".to_string());
+            return;
+        }
+        self.input.clear();
+        self.pasted_images.clear();
+        self.footer_mode = FooterMode::Context;
+        self.model_picker_open = true;
+        self.sync_model_picker_index_to_current();
+        self.input_status = Some("model picker".to_string());
+    }
+
+    pub(super) fn close_model_picker(&mut self) {
+        self.model_picker_open = false;
+        self.input_status = Some("model picker closed".to_string());
+    }
+
+    pub(super) fn move_model_picker_selection(&mut self, delta: isize) {
+        let len = self.model_choices.len();
+        if len == 0 {
+            self.model_picker_index = 0;
+            return;
+        }
+        let current = self.model_picker_index.min(len.saturating_sub(1));
+        let steps = delta.unsigned_abs() % len;
+        self.model_picker_index = if delta.is_negative() {
+            (current + len - steps) % len
+        } else {
+            (current + steps) % len
+        };
+        self.input_status = Some("model picker".to_string());
+    }
+
+    pub(super) fn select_model_picker_choice(&mut self) {
+        let Some(choice) = self.model_choices.get(self.model_picker_index).cloned() else {
+            self.close_model_picker();
+            return;
+        };
+        self.apply_model_choice(&choice);
+        self.model_picker_open = false;
+        self.input_status = Some("model selected".to_string());
+    }
+
+    fn sync_model_picker_index_to_current(&mut self) {
+        self.model_picker_index = self
+            .model_choices
+            .iter()
+            .position(|choice| choice.profile == self.profile)
+            .unwrap_or(0)
+            .min(self.model_choices.len().saturating_sub(1));
+    }
+
     /// Replace body with a persisted snapshot.
     pub fn set_snapshot(&mut self, snapshot: &TuiSnapshot) {
         self.session_id = Some(snapshot.session_id.clone());
@@ -205,6 +325,7 @@ impl InteractiveTuiState {
             .clone()
             .unwrap_or_else(|| "IDLE".to_string())
             .to_ascii_uppercase();
+        self.model_picker_open = false;
         self.phase = "replay".to_string();
     }
 
@@ -217,8 +338,10 @@ impl InteractiveTuiState {
         self.streaming_parts.clear();
         self.streaming_text_seen = false;
         self.streaming_reasoning_seen = false;
+        self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
         self.footer_mode = FooterMode::Context;
+        self.model_picker_open = false;
         self.input_status = None;
         self.pasted_images.clear();
         self.scroll_to_bottom();
@@ -239,7 +362,9 @@ impl InteractiveTuiState {
         self.status = "IDLE".to_string();
         self.phase = "completed".to_string();
         self.streaming_parts.clear();
+        self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.model_picker_open = false;
     }
 
     /// Mark a run failed.
@@ -249,7 +374,9 @@ impl InteractiveTuiState {
         self.status = "ERROR".to_string();
         self.phase = "failed".to_string();
         self.streaming_parts.clear();
+        self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.model_picker_open = false;
         self.body.push(format!("Error: {error}"));
     }
 
@@ -260,7 +387,9 @@ impl InteractiveTuiState {
         self.status = "IDLE".to_string();
         self.phase = "cancelled".to_string();
         self.streaming_parts.clear();
+        self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.model_picker_open = false;
         self.body.push(format!("Run cancelled: {reason}"));
     }
 
@@ -282,26 +411,7 @@ impl InteractiveTuiState {
             AgentStreamEvent::ModelResponse { response, .. } => {
                 self.phase = "response".to_string();
                 self.add_context_usage(&response.usage);
-                for part in &response.parts {
-                    match part {
-                        starweaver_model::ModelResponsePart::Text { text }
-                            if !self.streaming_text_seen =>
-                        {
-                            self.push_text_lines(text);
-                            self.streaming_text_seen = true;
-                        }
-                        starweaver_model::ModelResponsePart::Thinking { text, .. }
-                            if !self.streaming_reasoning_seen =>
-                        {
-                            self.push_thinking_lines(text);
-                            self.streaming_reasoning_seen = true;
-                        }
-                        starweaver_model::ModelResponsePart::ToolCall(call) => {
-                            self.push_tool_call(call);
-                        }
-                        _ => {}
-                    }
-                }
+                self.apply_model_response_parts(&response.parts);
             }
             AgentStreamEvent::ToolCall { call, .. } => {
                 self.push_tool_call(call);
@@ -376,6 +486,10 @@ impl InteractiveTuiState {
                         "streaming".to_string()
                     }
                     StreamingPartKind::Thinking => "thinking".to_string(),
+                    StreamingPartKind::ToolCall => {
+                        self.ensure_streaming_tool_call_line(part.index);
+                        "tools".to_string()
+                    }
                     StreamingPartKind::Other => format!("streaming:{}", part.part_kind),
                 };
             }
@@ -390,6 +504,10 @@ impl InteractiveTuiState {
                         self.phase = "thinking".to_string();
                         self.append_thinking_delta(&delta.as_text());
                         self.streaming_reasoning_seen = true;
+                    }
+                    StreamingPartKind::ToolCall => {
+                        self.phase = "tools".to_string();
+                        self.append_tool_call_delta(delta);
                     }
                     StreamingPartKind::Other => {
                         self.phase = "streaming".to_string();
@@ -408,6 +526,7 @@ impl InteractiveTuiState {
                         self.streaming_text_seen = true;
                     }
                 }
+                self.apply_model_response_parts(&response.parts);
             }
         }
     }
@@ -449,10 +568,10 @@ impl InteractiveTuiState {
         match &delta.delta {
             StreamDelta::Text { .. } => StreamingPartKind::Text,
             StreamDelta::Thinking { .. } => StreamingPartKind::Thinking,
-            StreamDelta::ToolCallName { .. }
-            | StreamDelta::ToolCallArguments { .. }
-            | StreamDelta::NativePayload { .. }
-            | StreamDelta::FileMetadata { .. } => self
+            StreamDelta::ToolCallName { .. } | StreamDelta::ToolCallArguments { .. } => {
+                StreamingPartKind::ToolCall
+            }
+            StreamDelta::NativePayload { .. } | StreamDelta::FileMetadata { .. } => self
                 .streaming_parts
                 .get(&delta.index)
                 .copied()
@@ -473,20 +592,104 @@ impl InteractiveTuiState {
 
     fn ensure_text_stream_line(&mut self) {
         if self.body.is_empty()
-            || self
-                .body
-                .last()
-                .is_some_and(|line| is_thinking_quote_line(line))
+            || self.body.last().is_some_and(|line| {
+                !is_assistant_content_line(line) || is_thinking_quote_line(line)
+            })
         {
             self.body.push(assistant_content_line(""));
         }
     }
 
+    fn apply_model_response_parts(&mut self, parts: &[starweaver_model::ModelResponsePart]) {
+        for part in parts {
+            match part {
+                starweaver_model::ModelResponsePart::Text { text } if !self.streaming_text_seen => {
+                    self.push_text_lines(text);
+                    self.streaming_text_seen = true;
+                }
+                starweaver_model::ModelResponsePart::Thinking { text, .. }
+                    if !self.streaming_reasoning_seen =>
+                {
+                    self.push_thinking_lines(text);
+                    self.streaming_reasoning_seen = true;
+                }
+                starweaver_model::ModelResponsePart::ToolCall(call) => {
+                    self.push_tool_call(call);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn append_tool_call_delta(&mut self, delta: &PartDelta) {
+        match &delta.delta {
+            StreamDelta::ToolCallName { name } => {
+                let state = self.streaming_tool_calls.entry(delta.index).or_default();
+                state.name = Some(merge_stream_fragment(state.name.as_deref(), name));
+            }
+            StreamDelta::ToolCallArguments { arguments_delta } => {
+                let state = self.streaming_tool_calls.entry(delta.index).or_default();
+                state.arguments.push_str(arguments_delta);
+            }
+            _ => {}
+        }
+        self.update_streaming_tool_call_line(delta.index);
+    }
+
+    fn ensure_streaming_tool_call_line(&mut self, index: usize) {
+        if self
+            .streaming_tool_calls
+            .get(&index)
+            .and_then(|state| state.line_index)
+            .is_some()
+        {
+            return;
+        }
+        let line_index = self.body.len();
+        self.body.push(format_streaming_tool_call_line(
+            self.streaming_tool_calls.get(&index),
+        ));
+        self.streaming_tool_calls
+            .entry(index)
+            .or_default()
+            .line_index = Some(line_index);
+    }
+
+    fn update_streaming_tool_call_line(&mut self, index: usize) {
+        self.ensure_streaming_tool_call_line(index);
+        let line = format_streaming_tool_call_line(self.streaming_tool_calls.get(&index));
+        if let Some(line_index) = self
+            .streaming_tool_calls
+            .get(&index)
+            .and_then(|state| state.line_index)
+        {
+            if let Some(existing) = self.body.get_mut(line_index) {
+                *existing = line;
+            }
+        }
+    }
+
     fn push_tool_call(&mut self, call: &starweaver_model::ToolCallPart) {
         self.phase = "tools".to_string();
-        if self.visible_tool_calls.insert(call.id.clone()) {
-            self.body.push(format_tool_call_line(call));
+        let key = tool_call_visibility_key(call);
+        if !self.visible_tool_calls.insert(key) {
+            return;
         }
+        let line = format_tool_call_line(call);
+        if let Some(line_index) = self.matching_streamed_tool_line(call) {
+            if let Some(existing) = self.body.get_mut(line_index) {
+                *existing = line;
+                return;
+            }
+        }
+        self.body.push(line);
+    }
+
+    fn matching_streamed_tool_line(&self, call: &starweaver_model::ToolCallPart) -> Option<usize> {
+        self.streaming_tool_calls
+            .values()
+            .find(|state| state.name.as_deref() == Some(call.name.as_str()))
+            .and_then(|state| state.line_index)
     }
 
     pub(super) fn apply_paste(&mut self, text: &str) {
@@ -591,7 +794,9 @@ impl InteractiveTuiState {
     }
 
     pub(super) fn input_mode_label(&self) -> &'static str {
-        if self.running && self.composer_has_draft() {
+        if self.model_picker_open {
+            "MODEL"
+        } else if self.running && self.composer_has_draft() {
             "STEER"
         } else if self.running {
             "RUNNING"
@@ -639,6 +844,16 @@ impl InteractiveTuiState {
             self.input_status = Some("cost".to_string());
             return LocalCommandOutcome::Consumed;
         }
+        if input == "/model" || input.starts_with("/model ") {
+            self.input.clear();
+            self.pasted_images.clear();
+            self.footer_mode = FooterMode::Context;
+            self.handle_model_command(input.strip_prefix("/model").unwrap_or_default().trim());
+            if !self.model_picker_open {
+                self.input_status = Some("model".to_string());
+            }
+            return LocalCommandOutcome::Consumed;
+        }
         if let Some(command) = input.strip_prefix('!') {
             self.input.clear();
             self.pasted_images.clear();
@@ -672,7 +887,7 @@ impl InteractiveTuiState {
             self.pasted_images.clear();
             self.footer_mode = FooterMode::Context;
             self.body.push(format!(
-                "[SYS] Unknown command: {input}. Available commands: /help, /clear, /cost, /goal, !<cmd>"
+                "[SYS] Unknown command: {input}. Available commands: /help, /clear, /cost, /model, /goal, !<command>"
             ));
             self.input_status = Some("unknown command".to_string());
             return LocalCommandOutcome::Consumed;
@@ -682,14 +897,86 @@ impl InteractiveTuiState {
 
     fn append_help_to_body(&mut self) {
         self.body.extend([
-            "[SYS] Starweaver TUI help".to_string(),
-            "[SYS] /help - Print this help in the transcript".to_string(),
-            "[SYS] /clear - Clear output".to_string(),
-            "[SYS] /cost - Show usage and cost summary".to_string(),
-            "[SYS] /goal <task> - Run toward a verified goal".to_string(),
-            "[SYS] !<cmd> - Execute a shell command".to_string(),
-            "[SYS] Enter sends a message. Tab queues a draft while running. Ctrl+C interrupts or exits.".to_string(),
+            "Starweaver TUI help".to_string(),
+            String::new(),
+            "Commands".to_string(),
+            "  /help             Show this help".to_string(),
+            "  /clear            Clear the transcript".to_string(),
+            "  /cost             Show usage and context".to_string(),
+            "  /model [profile]  Open or select a model profile".to_string(),
+            "  /goal <task>      Run toward a verified goal".to_string(),
+            "  !<command>        Run a shell command inline".to_string(),
+            String::new(),
+            "Shortcuts".to_string(),
+            "  Up/Down           Browse prompt history".to_string(),
+            "  PageUp/PageDown   Scroll transcript".to_string(),
+            "  Mouse wheel       Scroll transcript".to_string(),
+            "  Enter             Send message or select model".to_string(),
+            "  Tab               Queue a draft while running".to_string(),
+            "  Ctrl+C            Interrupt or exit".to_string(),
         ]);
+    }
+
+    fn handle_model_command(&mut self, requested: &str) {
+        if self.running {
+            self.body.push(
+                "[SYS] Model selection is available after the current run finishes.".to_string(),
+            );
+            return;
+        }
+        if requested.is_empty() {
+            self.open_model_picker();
+            return;
+        }
+        let Some(choice) = self
+            .model_choices
+            .iter()
+            .find(|choice| choice.profile == requested || choice.display_name() == requested)
+            .cloned()
+        else {
+            self.body
+                .push(format!("[SYS] Unknown model profile: {requested}"));
+            self.append_model_choices();
+            return;
+        };
+        self.apply_model_choice(&choice);
+    }
+
+    fn apply_model_choice(&mut self, choice: &ModelChoice) {
+        self.profile.clone_from(&choice.profile);
+        self.model = model_choice_label(choice);
+        self.set_context_window(choice.context_window);
+        self.sync_model_picker_index_to_current();
+        self.body.push(format!(
+            "[SYS] Switched model to {} ({})",
+            choice.display_name(),
+            choice.model_id
+        ));
+    }
+
+    fn append_model_choices(&mut self) {
+        self.body.push("[SYS] Model profiles".to_string());
+        self.body
+            .push(format!("[SYS] Current: {} ({})", self.profile, self.model));
+        if self.model_choices.is_empty() {
+            self.body
+                .push("[SYS] No model profiles are configured.".to_string());
+            return;
+        }
+        for choice in &self.model_choices {
+            let marker = if choice.profile == self.profile {
+                "*"
+            } else {
+                " "
+            };
+            self.body.push(format!(
+                "[SYS] {marker} /model {:<18} {} ({}){}",
+                choice.profile,
+                choice.display_name(),
+                choice.model_id,
+                model_choice_config_suffix(choice)
+            ));
+        }
     }
 
     fn append_cost_summary(&mut self) {
@@ -711,25 +998,29 @@ impl InteractiveTuiState {
 
     fn run_shell_command(&mut self, command: &str) {
         if command.is_empty() {
-            self.body.push("[SYS] Usage: !<cmd>".to_string());
+            self.body.push(
+                "[SYS] Shell command usage: !<command> (example: !git status --short)".to_string(),
+            );
             return;
         }
-        self.body.push(format!("$ {command}"));
+        self.body.push(format!("Shell command: {command}"));
         match Command::new("/bin/bash").arg("-lc").arg(command).output() {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 push_shell_output_lines(&mut self.body, "stdout", &stdout);
                 push_shell_output_lines(&mut self.body, "stderr", &stderr);
-                self.body.push(format!(
-                    "[SYS] Shell status: {}",
-                    output
-                        .status
-                        .code()
-                        .map_or_else(|| "signal".to_string(), |code| code.to_string())
-                ));
+                let status = output
+                    .status
+                    .code()
+                    .map_or_else(|| "signal".to_string(), |code| code.to_string());
+                if output.status.success() {
+                    self.body.push(format!("Shell completed: exit {status}"));
+                } else {
+                    self.body.push(format!("Shell failed: exit {status}"));
+                }
             }
-            Err(error) => self.body.push(format!("[SYS] Shell error: {error}")),
+            Err(error) => self.body.push(format!("Shell error: {error}")),
         }
     }
 
@@ -931,6 +1222,10 @@ fn assistant_content_line(line: impl AsRef<str>) -> String {
     format!("{ASSISTANT_CONTENT_PREFIX}{}", line.as_ref())
 }
 
+fn is_assistant_content_line(line: &str) -> bool {
+    line.starts_with(ASSISTANT_CONTENT_PREFIX)
+}
+
 fn is_thinking_quote_line(line: &str) -> bool {
     line.strip_prefix(ASSISTANT_CONTENT_PREFIX)
         .unwrap_or(line)
@@ -957,10 +1252,73 @@ fn streaming_part_kind(part_kind: &str) -> StreamingPartKind {
     let normalized = part_kind.to_ascii_lowercase();
     if normalized.contains("thinking") || normalized.contains("reasoning") {
         StreamingPartKind::Thinking
+    } else if normalized.contains("tool") || normalized.contains("function_call") {
+        StreamingPartKind::ToolCall
     } else if normalized.contains("text") || normalized.contains("message") {
         StreamingPartKind::Text
     } else {
         StreamingPartKind::Other
+    }
+}
+
+fn merge_stream_fragment(current: Option<&str>, fragment: &str) -> String {
+    match current {
+        Some(current) if !current.is_empty() && fragment.starts_with(current) => {
+            fragment.to_string()
+        }
+        Some(current) => format!("{current}{fragment}"),
+        None => fragment.to_string(),
+    }
+}
+
+fn format_streaming_tool_call_line(state: Option<&StreamingToolCallState>) -> String {
+    let name = state
+        .and_then(|state| state.name.as_deref())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("tool");
+    let arguments = state.map_or("", |state| state.arguments.trim());
+    if arguments.is_empty() || arguments == "{}" || arguments == "null" {
+        format!("Tool call: {name}")
+    } else {
+        format!("Tool call: {name} {arguments}")
+    }
+}
+
+fn tool_call_visibility_key(call: &starweaver_model::ToolCallPart) -> String {
+    if call.id.is_empty() {
+        format!(
+            "{}:{}",
+            call.name,
+            value_preview(&call.arguments.replay_value())
+        )
+    } else {
+        call.id.clone()
+    }
+}
+
+fn model_choice_label(choice: &ModelChoice) -> String {
+    if choice.display_name() == choice.model_id {
+        choice.model_id.clone()
+    } else {
+        format!("{} ({})", choice.display_name(), choice.model_id)
+    }
+}
+
+fn model_choice_config_suffix(choice: &ModelChoice) -> String {
+    let mut parts = Vec::new();
+    if let Some(settings) = choice.model_settings.as_deref() {
+        parts.push(format!("settings={settings}"));
+    }
+    if let Some(config) = choice.model_cfg.as_deref() {
+        parts.push(format!("cfg={config}"));
+    }
+    if let Some(window) = choice.context_window {
+        parts.push(format!("context={window}"));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join(" "))
     }
 }
 
@@ -991,8 +1349,9 @@ fn push_shell_output_lines(body: &mut Vec<String>, label: &str, output: &str) {
     if output.trim().is_empty() {
         return;
     }
+    body.push(format!("Shell {label}:"));
     for line in output.lines().take(SHELL_OUTPUT_MAX_LINES) {
-        body.push(format!("[{label}] {line}"));
+        body.push(format!("  {line}"));
     }
     if output.lines().count() > SHELL_OUTPUT_MAX_LINES {
         body.push(format!(

@@ -97,6 +97,14 @@ impl AgentRunState {
             .push(ModelMessage::Response(response.clone()));
         self.latest_response = Some(response);
     }
+
+    /// Replace the latest response after lifecycle hooks mutate it.
+    pub fn replace_latest_response(&mut self, response: ModelResponse) {
+        if let Some(ModelMessage::Response(history_response)) = self.message_history.last_mut() {
+            *history_response = response.clone();
+        }
+        self.latest_response = Some(response);
+    }
 }
 
 /// Result returned when an agent run completes.

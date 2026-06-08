@@ -32,6 +32,12 @@ fn registry_collects_toolsets_and_deduplicates_instructions() {
     assert_eq!(registry.definitions().len(), 2);
     assert_eq!(
         registry.get_instructions(),
-        vec!["Use example tools.".to_string()]
+        vec![
+            "<tool-instruction name=\"example\">Use example tools.</tool-instruction>".to_string()
+        ]
     );
+    let instructions = registry.instructions();
+    assert_eq!(instructions.len(), 1);
+    assert_eq!(instructions[0].group, "example");
+    assert_eq!(instructions[0].content, "Use example tools.");
 }

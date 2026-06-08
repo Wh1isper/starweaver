@@ -52,8 +52,11 @@ impl HostMediaCapabilities {
 pub struct MediaUnderstandingRequest {
     /// Media kind: image, video, or audio.
     pub media_kind: String,
-    /// Source URL.
+    /// Source URL or data URL.
     pub url: String,
+    /// Optional focused analysis instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 /// Media understanding response returned by fallback adapters.
@@ -89,7 +92,7 @@ pub trait HostMediaUnderstandingClient: Send + Sync {
 /// Typed dependency wrapper for a fallback media understanding adapter.
 #[derive(Clone)]
 pub struct HostMediaUnderstandingClientHandle {
-    pub(super) client: Arc<dyn HostMediaUnderstandingClient>,
+    pub(crate) client: Arc<dyn HostMediaUnderstandingClient>,
 }
 
 impl HostMediaUnderstandingClientHandle {
@@ -209,6 +212,7 @@ async fn read_media(
             .understand(MediaUnderstandingRequest {
                 media_kind: media_kind.as_str().to_string(),
                 url,
+                instructions: None,
             })
             .await
             .map_err(|error| tool_execution_error(media_kind.as_str(), error))?;

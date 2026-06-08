@@ -11,7 +11,7 @@ use crate::{error_return, DynTool, DynToolset, ToolContext, ToolError, ToolInstr
 pub struct ToolRegistry {
     tools: BTreeMap<String, DynTool>,
     toolset_max_retries: BTreeMap<String, usize>,
-    instructions: BTreeMap<String, String>,
+    instructions: BTreeMap<String, ToolInstruction>,
     max_retries: Option<usize>,
 }
 
@@ -49,8 +49,8 @@ impl ToolRegistry {
     /// Add an instruction block, deduplicated by group.
     pub fn insert_instruction(&mut self, instruction: ToolInstruction) {
         self.instructions
-            .entry(instruction.group)
-            .or_insert(instruction.content);
+            .entry(instruction.group.clone())
+            .or_insert(instruction);
     }
 
     /// Add all tools and instructions from a toolset.
@@ -88,15 +88,24 @@ impl ToolRegistry {
         for tool in registry.tools.values() {
             self.insert(tool.clone());
         }
-        for (group, content) in &registry.instructions {
-            self.insert_instruction(ToolInstruction::new(group.clone(), content.clone()));
+        for instruction in registry.instructions.values() {
+            self.insert_instruction(instruction.clone());
         }
     }
 
-    /// Return instruction text in stable group order.
+    /// Return instruction blocks in stable group order.
+    #[must_use]
+    pub fn instructions(&self) -> Vec<ToolInstruction> {
+        self.instructions.values().cloned().collect()
+    }
+
+    /// Return rendered instruction text in stable group order.
     #[must_use]
     pub fn get_instructions(&self) -> Vec<String> {
-        self.instructions.values().cloned().collect()
+        self.instructions
+            .values()
+            .map(ToolInstruction::render_xml)
+            .collect()
     }
 
     /// Return all tool definitions sorted by name.

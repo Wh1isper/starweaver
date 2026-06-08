@@ -15,7 +15,8 @@ use starweaver_tools::{DynToolset, PrefixedToolset};
 
 pub use environment::{
     attach_environment, attach_process_shell, environment_toolsets, filesystem_tools,
-    process_shell_toolsets, shell_tools, EnvironmentHandle, ProcessShellHandle,
+    process_shell_toolsets, shell_tools, EnvironmentContextCapability, EnvironmentHandle,
+    ProcessShellHandle,
 };
 pub use external::host_operation_tools;
 pub use media::{

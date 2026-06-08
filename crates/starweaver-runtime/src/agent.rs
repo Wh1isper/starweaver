@@ -45,6 +45,7 @@ pub struct Agent {
     executor: DynAgentExecutor,
     trace_recorder: DynTraceRecorder,
     policy: AgentRuntimePolicy,
+    context_window: Option<u64>,
 }
 
 impl Agent {
@@ -68,6 +69,7 @@ impl Agent {
             executor: Arc::new(DirectAgentExecutor),
             trace_recorder: Arc::new(NoopTraceRecorder),
             policy: AgentRuntimePolicy::default(),
+            context_window: None,
         }
     }
 
@@ -166,6 +168,13 @@ impl Agent {
     #[must_use]
     pub const fn with_usage_limits(mut self, limits: UsageLimits) -> Self {
         self.usage_limits = Some(limits);
+        self
+    }
+
+    /// Set the model context window exposed to `AgentContext` runtime instructions.
+    #[must_use]
+    pub const fn with_context_window(mut self, context_window: u64) -> Self {
+        self.context_window = Some(context_window);
         self
     }
 

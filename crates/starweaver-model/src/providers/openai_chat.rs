@@ -35,6 +35,12 @@ impl OpenAiChatAdapter {
         for message in messages {
             match message {
                 ModelMessage::Request(request) => {
+                    if let Some(request_instructions) = request.instructions.as_ref() {
+                        if !request_instructions.trim().is_empty() {
+                            wire_messages
+                                .push(json!({"role": "system", "content": request_instructions}));
+                        }
+                    }
                     for part in &request.parts {
                         match part {
                             ModelRequestPart::SystemPrompt { text, .. }

@@ -2,13 +2,15 @@
 
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+use crossterm::event::{
+    KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use serde_json::json;
 use starweaver_context::AgentEvent;
 use starweaver_core::{ConversationId, Metadata, RunId, SessionId};
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
-    ToolCallPart, ToolReturnPart,
+    StreamDelta, ToolCallPart, ToolReturnPart,
 };
 use starweaver_runtime::{AgentExecutionNode, AgentStreamEvent, AgentStreamRecord, RunStatus};
 use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus};
@@ -21,8 +23,8 @@ use super::{
         render_live_history_lines, render_shortcut_overlay, visible_width, SegmentStyle,
         StyledLine,
     },
-    state::{FooterMode, InteractiveTuiState, RunMode},
-    terminal::{handle_key_event, visible_body_bounds, InteractiveTuiEvent},
+    state::{FooterMode, InteractiveTuiState, ModelChoice, RunMode},
+    terminal::{handle_key_event, handle_mouse_event, visible_body_bounds, InteractiveTuiEvent},
 };
 
 #[test]
@@ -70,7 +72,7 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     assert!(line_texts(&history)
         .iter()
         .any(|line| line.contains("model:")));
-    assert!(!line_texts(&history)
+    assert!(line_texts(&history)
         .iter()
         .any(|line| line.contains("/model")));
     assert!(line_texts(&history)
@@ -90,7 +92,9 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     assert!(footer_text.contains(" ACT  | State: IDLE"));
     assert!(footer_text.contains("Model: local_echo"));
     assert!(footer_text.contains("Context: 0%"));
-    assert!(footer_text.contains("Enter:Send | Tab:Multiline"));
+    assert!(footer_text.contains("Enter: Send"));
+    assert!(footer_text.contains("Up/Down: History"));
+    assert!(footer_text.contains("PageUp/PageDown/Mouse: Scroll"));
     assert!(has_segment(&footer_lines, " ACT ", SegmentStyle::MODE_BG));
     assert!(footer_lines.iter().any(|line| line
         .segments
@@ -105,10 +109,13 @@ fn codex_style_shortcut_overlay_matches_footer_model() {
     assert!(text.contains("Available Commands"));
     assert!(text.contains("/help"));
     assert!(text.contains("Print this help in the transcript"));
+    assert!(text.contains("/model [profile]"));
     assert!(text.contains("/goal <task>"));
     assert!(text.contains("Run task toward a verified goal until complete"));
     assert!(text.contains("Key Bindings"));
     assert!(text.contains("Ctrl+C"));
+    assert!(text.contains("Scroll transcript"));
+    assert!(text.contains("Mouse wheel"));
 }
 
 #[test]
@@ -190,8 +197,8 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     state.push_history("old prompt".to_string());
     state.input.clear();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Up)), None);
-    assert!(state.input.is_empty());
-    assert!(!state.is_at_bottom());
+    assert_eq!(state.input, "old prompt");
+    assert!(state.is_at_bottom());
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
     assert!(state.input.is_empty());
     assert!(state.is_at_bottom());
@@ -206,6 +213,16 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     assert_eq!(
         handle_key_event(&mut state, key_code(KeyCode::PageDown)),
         None
+    );
+    assert!(state.is_at_bottom());
+    assert_eq!(
+        handle_mouse_event(&mut state, mouse_event(MouseEventKind::ScrollUp)),
+        Some(InteractiveTuiEvent::Redraw)
+    );
+    assert!(!state.is_at_bottom());
+    assert_eq!(
+        handle_mouse_event(&mut state, mouse_event(MouseEventKind::ScrollDown)),
+        Some(InteractiveTuiEvent::Redraw)
     );
     assert!(state.is_at_bottom());
     state.scroll_offset = 3;
@@ -563,6 +580,246 @@ fn tool_call_from_model_response_and_tool_event_renders_once() {
 }
 
 #[test]
+fn streaming_tool_call_delta_is_visible_and_deduped_by_final_call() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("use tool");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 2,
+                part_kind: "tool_call".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta {
+                index: 2,
+                delta: StreamDelta::ToolCallName {
+                    name: "lookup".to_string(),
+                },
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta {
+                index: 2,
+                delta: StreamDelta::ToolCallArguments {
+                    arguments_delta: "{\"query\":\"star".to_string(),
+                },
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta {
+                index: 2,
+                delta: StreamDelta::ToolCallArguments {
+                    arguments_delta: "weaver\"}".to_string(),
+                },
+            }),
+        },
+    ));
+
+    assert_eq!(state.phase, "tools");
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}"));
+
+    let final_call = ToolCallPart {
+        id: "call_streamed".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"query":"starweaver"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        4,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse {
+                parts: vec![ModelResponsePart::ToolCall(final_call.clone())],
+                usage: starweaver_core::Usage::default(),
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            })),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        5,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: final_call,
+        },
+    ));
+
+    assert_eq!(
+        state
+            .body
+            .iter()
+            .filter(|line| line.starts_with("Tool call: lookup"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn streamed_text_after_tool_return_starts_new_assistant_line() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("use tool");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new("call_after_tool", "lookup", json!({"answer": "ok"})),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 1,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 3,
+                part_kind: "text".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 1,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(3, "final answer")),
+        },
+    ));
+
+    let Some(tool_index) = state
+        .body
+        .iter()
+        .position(|line| line.starts_with("Tool result: lookup"))
+    else {
+        panic!("tool result should be visible");
+    };
+    let Some(text_index) = state
+        .body
+        .iter()
+        .position(|line| body_line_text(line) == "final answer")
+    else {
+        panic!("streamed text should be visible");
+    };
+    assert!(text_index > tool_index);
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| line.contains("Tool result: lookup") && line.contains("final answer")));
+}
+
+#[test]
+fn model_command_opens_picker_selects_directly_and_blocks_while_running() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_model_choices(vec![
+        ModelChoice {
+            profile: "general".to_string(),
+            label: Some("General".to_string()),
+            model_id: "local_echo".to_string(),
+            model_settings: None,
+            model_cfg: None,
+            context_window: None,
+            source: "builtin".to_string(),
+        },
+        ModelChoice {
+            profile: "coding".to_string(),
+            label: Some("Coding".to_string()),
+            model_id: "openai-responses:gpt-5".to_string(),
+            model_settings: Some("openai_responses_medium".to_string()),
+            model_cfg: Some("gpt5_270k".to_string()),
+            context_window: Some(270_000),
+            source: "config".to_string(),
+        },
+    ]);
+
+    state.input = "/model".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(state.model_picker_visible());
+    assert_eq!(state.model_picker_index(), 0);
+    assert!(!state.body.iter().any(|line| line == "[SYS] Model profiles"));
+    let picker_text = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(picker_text.contains("Model Profiles"));
+    assert!(picker_text.contains("Enter: select"));
+    assert!(picker_text.contains("general"));
+    assert!(picker_text.contains("coding"));
+    assert!(picker_text.contains("Highlighted config"));
+    assert!(picker_text.contains("model:"));
+    assert!(picker_text.contains("local_echo"));
+    assert!(picker_text.contains("model_settings:"));
+    assert!(picker_text.contains("model_cfg:"));
+    assert!(picker_text.contains("context:"));
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Up)), None);
+    assert_eq!(state.model_picker_index(), 1);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
+    assert_eq!(state.model_picker_index(), 0);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Down)), None);
+    assert_eq!(state.model_picker_index(), 1);
+    let coding_picker_text = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(coding_picker_text.contains("openai-responses:gpt-5"));
+    assert!(coding_picker_text.contains("openai_responses_medium"));
+    assert!(coding_picker_text.contains("gpt5_270k"));
+    assert!(coding_picker_text.contains("270000 tokens"));
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(!state.model_picker_visible());
+    assert_eq!(state.profile, "coding");
+    assert_eq!(state.model, "Coding (openai-responses:gpt-5)");
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "[SYS] Switched model to Coding (openai-responses:gpt-5)"));
+
+    state.input = "/model".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(state.model_picker_visible());
+    assert_eq!(state.model_picker_index(), 1);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+    assert!(!state.model_picker_visible());
+    assert_eq!(state.profile, "coding");
+
+    state.input = "/model general".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.profile, "general");
+    assert_eq!(state.model, "General (local_echo)");
+
+    state.input = "/model missing".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.profile, "general");
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "[SYS] Unknown model profile: missing"));
+    assert!(state.body.iter().any(|line| line.contains("/model coding")));
+
+    state.running = true;
+    state.input = "/model coding".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.profile, "general");
+    assert!(!state.model_picker_visible());
+    assert!(state.body.iter().any(|line| {
+        line == "[SYS] Model selection is available after the current run finishes."
+    }));
+}
+
+#[test]
 fn interactive_state_covers_model_response_finish_and_failure() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("respond");
@@ -825,10 +1082,48 @@ fn help_command_prints_help_to_body_without_submitting() {
     assert!(state.input.is_empty());
     assert!(!FooterMode::is_help());
     assert!(state.input_status_text().contains("help"));
+    assert!(state.body.iter().any(|line| line == "Starweaver TUI help"));
+    assert!(state.body.iter().any(|line| line == "Commands"));
     assert!(state
         .body
         .iter()
-        .any(|line| line == "[SYS] /help - Print this help in the transcript"));
+        .any(|line| line == "  /help             Show this help"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "  !<command>        Run a shell command inline"));
+    assert!(state.body.iter().any(|line| line == "Shortcuts"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| line.starts_with("[SYS] /help")));
+}
+
+#[test]
+fn bang_command_prints_natural_shell_transcript() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+
+    state.input = "!".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(state.input.is_empty());
+    assert_eq!(state.input_status_text(), "shell");
+    assert!(state.body.iter().any(|line| {
+        line == "[SYS] Shell command usage: !<command> (example: !git status --short)"
+    }));
+
+    state.input = "!printf 'hello\\n'".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(state.input.is_empty());
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Shell command: printf 'hello\\n'"));
+    assert!(state.body.iter().any(|line| line == "Shell stdout:"));
+    assert!(state.body.iter().any(|line| line == "  hello"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Shell completed: exit 0"));
 }
 
 #[test]
@@ -1304,6 +1599,15 @@ fn key_modified(ch: char, modifiers: KeyModifiers) -> KeyEvent {
         modifiers,
         kind: KeyEventKind::Press,
         state: KeyEventState::NONE,
+    }
+}
+
+fn mouse_event(kind: MouseEventKind) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
     }
 }
 

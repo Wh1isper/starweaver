@@ -12,7 +12,7 @@ use starweaver_agent::{
     SearchResultItem, ToolContext, ToolRegistry, ToolResult,
 };
 use starweaver_core::{ConversationId, Metadata, RunId, Usage};
-use starweaver_environment::{ShellOutput, VirtualEnvironmentProvider};
+use starweaver_environment::{EnvironmentProvider, ShellOutput, VirtualEnvironmentProvider};
 use starweaver_model::{tool_call_response, ModelProfile, ModelResponse, ProtocolFamily};
 
 #[tokio::test]
@@ -36,7 +36,7 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
     registry.insert_toolset(&filesystem_tools());
     registry.insert_toolset(&shell_tools());
     let mut agent_context = AgentContext::default();
-    attach_environment(&mut agent_context, provider);
+    attach_environment(&mut agent_context, provider.clone());
     let mut dependencies = agent_context.dependencies.clone();
     dependencies.insert(agent_context.clone());
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
@@ -169,7 +169,7 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
         )
         .await;
 
-    assert_eq!(read.content["content"], "hello");
+    assert_eq!(read.content, serde_json::json!("hello"));
     assert_eq!(write.content["written"], true);
     assert_eq!(glob.content["matches"].as_array().unwrap().len(), 2);
     assert_eq!(grep.content["matches"].as_array().unwrap().len(), 2);
@@ -196,11 +196,374 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
         .unwrap()
         .contains("old_string must be non-empty"));
     assert_eq!(shell.content["stdout"], "ok\n");
+
+    let mut process_agent_context = AgentContext::default();
+    attach_environment(&mut process_agent_context, provider.clone());
+    starweaver_agent::attach_process_shell(&mut process_agent_context, provider.clone());
+    let mut process_dependencies = process_agent_context.dependencies.clone();
+    process_dependencies.insert(process_agent_context);
+    let process_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(process_dependencies);
+    let background_shell = registry
+        .execute_call(
+            process_context,
+            &starweaver_model::ToolCallPart {
+                id: "background-shell".to_string(),
+                name: "shell_exec".to_string(),
+                arguments: serde_json::json!({
+                    "command": "sleep 1",
+                    "background": true,
+                    "cwd": "src",
+                    "timeout_seconds": 42,
+                    "environment": {"STARWEAVER_BACKGROUND": "yes"},
+                })
+                .into(),
+            },
+        )
+        .await;
+    assert_eq!(background_shell.content["command"], "sleep 1");
+    assert_eq!(background_shell.content["metadata"]["cwd"], "src");
+    assert_eq!(background_shell.content["metadata"]["timeout_seconds"], 42);
+    assert_eq!(
+        background_shell.content["metadata"]["environment"]["STARWEAVER_BACKGROUND"],
+        "yes"
+    );
+
     assert!(invalid_grep_context.is_error);
     assert!(invalid_grep_context.content["error"]
         .as_str()
         .unwrap()
         .contains("context_lines must be greater than or equal to 0"));
+}
+
+#[tokio::test]
+async fn filesystem_mutation_tools_execute_through_environment_provider() {
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_file("README.md", "hello")
+            .with_file("src/lib.rs", "pub fn hello() {}\n"),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&filesystem_tools());
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider.clone());
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let mkdir = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "mkdir".to_string(),
+                name: "mkdir".to_string(),
+                arguments: serde_json::json!({"paths": ["docs/generated"], "parents": true}).into(),
+            },
+        )
+        .await;
+    assert!(!mkdir.is_error, "mkdir failed: {:?}", mkdir.content);
+    assert!(provider.stat("docs/generated").await.unwrap().is_dir);
+
+    let copy = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "copy".to_string(),
+                name: "copy".to_string(),
+                arguments: serde_json::json!({
+                    "pairs": [{"src": "README.md", "dst": "docs/generated/readme-copy.md"}],
+                })
+                .into(),
+            },
+        )
+        .await;
+    assert!(!copy.is_error, "copy failed: {:?}", copy.content);
+    assert_eq!(
+        provider
+            .read_text("docs/generated/readme-copy.md")
+            .await
+            .unwrap(),
+        "hello"
+    );
+
+    let move_result = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "move".to_string(),
+                name: "move".to_string(),
+                arguments: serde_json::json!({
+                    "pairs": [{"src": "docs/generated/readme-copy.md", "dst": "docs/generated/readme-moved.md"}],
+                })
+                .into(),
+            },
+        )
+        .await;
+    assert!(
+        !move_result.is_error,
+        "move failed: {:?}",
+        move_result.content
+    );
+    assert!(provider
+        .read_text("docs/generated/readme-copy.md")
+        .await
+        .is_err());
+    assert_eq!(
+        provider
+            .read_text("docs/generated/readme-moved.md")
+            .await
+            .unwrap(),
+        "hello"
+    );
+
+    let delete = registry
+        .execute_call(
+            context,
+            &starweaver_model::ToolCallPart {
+                id: "delete".to_string(),
+                name: "delete".to_string(),
+                arguments: serde_json::json!({"paths": ["docs"], "recursive": true}).into(),
+            },
+        )
+        .await;
+    assert!(!delete.is_error, "delete failed: {:?}", delete.content);
+    assert!(provider.stat("docs").await.is_err());
+}
+
+#[tokio::test]
+async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_file("paged.txt", "line 1\nline 2\n")
+            .with_file("long.txt", "abcdef\n")
+            .with_bytes("binary.dat", vec![b'a', 0, b'b'])
+            .with_bytes("image.png", b"\x89PNG\r\n\x1a\nsmall".to_vec()),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&filesystem_tools());
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider.clone());
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context.clone());
+    dependencies.insert(HostMediaUnderstandingClientHandle::new(Arc::new(
+        FakeMediaUnderstandingClient,
+    )));
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies.clone());
+
+    let paged = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "paged".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "paged.txt", "line_limit": 1}).into(),
+            },
+        )
+        .await;
+    assert_eq!(paged.content["content"], "line 1\n");
+    assert_eq!(
+        paged.content["metadata"]["current_segment"]["has_more_content"],
+        true
+    );
+
+    let long = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "long".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "long.txt", "max_line_length": 3}).into(),
+            },
+        )
+        .await;
+    assert!(long.content["content"]
+        .as_str()
+        .unwrap()
+        .contains("... (line truncated)"));
+    assert_eq!(
+        long.content["metadata"]["truncation_info"]["lines_truncated"],
+        true
+    );
+
+    let binary = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "binary".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "binary.dat"}).into(),
+            },
+        )
+        .await;
+    assert!(binary
+        .content
+        .as_str()
+        .unwrap()
+        .contains("appears to be a binary file"));
+
+    let image = registry
+        .execute_call(
+            context,
+            &starweaver_model::ToolCallPart {
+                id: "image".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "image.png", "instructions": "describe it"})
+                    .into(),
+            },
+        )
+        .await;
+    assert_eq!(image.content["content"], "image analysis");
+    assert!(image.content["url"]
+        .as_str()
+        .unwrap()
+        .starts_with("data:image/png;base64,"));
+}
+
+#[tokio::test]
+async fn filesystem_view_native_media_returns_provider_backed_content_parts() {
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_bytes("image.png", b"\x89PNG\r\n\x1a\nsmall".to_vec()),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&filesystem_tools());
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider);
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    dependencies.insert(HostMediaCapabilities {
+        model_id: Some("vision-model".to_string()),
+        supports_image_url: true,
+        supports_video_url: false,
+        supports_audio_url: false,
+        supports_document_url: false,
+    });
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let image = registry
+        .execute_call(
+            context,
+            &starweaver_model::ToolCallPart {
+                id: "image".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "image.png", "instructions": "describe it"})
+                    .into(),
+            },
+        )
+        .await;
+
+    assert_eq!(image.content["native_supported"], true);
+    let parts = image.private_metadata["starweaver_tool_return_content_parts"]
+        .as_array()
+        .unwrap();
+    assert_eq!(parts[0]["kind"], "data_url");
+    assert_eq!(parts[0]["media_type"], "image/png");
+    assert!(image.private_metadata["starweaver_tool_return_prompt"]
+        .as_str()
+        .unwrap()
+        .contains("describe it"));
+}
+
+#[tokio::test]
+async fn glob_grep_and_shell_large_outputs_are_saved_to_environment_tmp_files() {
+    let mut provider_value = VirtualEnvironmentProvider::new("test").with_shell_output(
+        "big output",
+        ShellOutput {
+            status: 0,
+            stdout: "o".repeat(25_000),
+            stderr: "e".repeat(25_000),
+            metadata: Metadata::default(),
+        },
+    );
+    for index in 0..900 {
+        provider_value = provider_value.with_file(
+            format!("src/generated/very_long_file_name_{index:04}.rs"),
+            format!("needle line {index}\n"),
+        );
+    }
+    let provider = Arc::new(provider_value);
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&filesystem_tools());
+    registry.insert_toolset(&shell_tools());
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider.clone());
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let glob = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "glob".to_string(),
+                name: "glob".to_string(),
+                arguments: serde_json::json!({"path": "", "pattern": "*.rs", "max_results": -1})
+                    .into(),
+            },
+        )
+        .await;
+    let glob_path = glob.content["output_file_path"].as_str().unwrap();
+    assert!(glob_path.starts_with(".starweaver/tmp/glob-"));
+    assert!(provider
+        .read_text(glob_path)
+        .await
+        .unwrap()
+        .contains("very_long_file_name_0000"));
+
+    let grep = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "grep".to_string(),
+                name: "grep".to_string(),
+                arguments: serde_json::json!({
+                    "path": "",
+                    "pattern": "needle",
+                    "include": "**/*.rs",
+                    "max_results": -1,
+                    "max_matches_per_file": 1,
+                    "max_files": -1,
+                })
+                .into(),
+            },
+        )
+        .await;
+    let grep_path = grep.content["output_file_path"].as_str().unwrap();
+    assert!(grep_path.starts_with(".starweaver/tmp/grep-"));
+    assert!(provider
+        .read_text(grep_path)
+        .await
+        .unwrap()
+        .contains("needle line"));
+
+    let shell = registry
+        .execute_call(
+            context,
+            &starweaver_model::ToolCallPart {
+                id: "shell".to_string(),
+                name: "shell_exec".to_string(),
+                arguments: serde_json::json!({"command": "big output"}).into(),
+            },
+        )
+        .await;
+    let stdout_path = shell.content["stdout_file_path"].as_str().unwrap();
+    let stderr_path = shell.content["stderr_file_path"].as_str().unwrap();
+    assert!(stdout_path.starts_with(".starweaver/tmp/stdout-"));
+    assert!(stderr_path.starts_with(".starweaver/tmp/stderr-"));
+    assert_eq!(provider.read_text(stdout_path).await.unwrap().len(), 25_000);
+    assert_eq!(provider.read_text(stderr_path).await.unwrap().len(), 25_000);
+    assert!(shell.content["stdout"]
+        .as_str()
+        .unwrap()
+        .contains("truncated"));
+    assert!(shell.content["stderr"]
+        .as_str()
+        .unwrap()
+        .contains("truncated"));
 }
 
 #[tokio::test]
@@ -660,7 +1023,7 @@ async fn tool_proxy_searches_and_calls_namespaced_toolsets() {
         .await
         .unwrap();
 
-    assert_eq!(call_result.content["content"], "proxied content");
+    assert_eq!(call_result.content, serde_json::json!("proxied content"));
 }
 
 #[tokio::test]

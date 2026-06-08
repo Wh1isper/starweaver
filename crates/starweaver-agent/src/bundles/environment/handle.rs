@@ -1,5 +1,7 @@
+use async_trait::async_trait;
 use starweaver_context::AgentContext;
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
+use starweaver_runtime::{AgentCapability, AgentRunState, CapabilityError, CapabilityResult};
 use starweaver_tools::{ToolContext, ToolError};
 
 use crate::bundles::helpers::tool_execution_error;
@@ -21,6 +23,43 @@ impl EnvironmentHandle {
     #[must_use]
     pub fn provider(&self) -> DynEnvironmentProvider {
         self.provider.clone()
+    }
+}
+
+/// Capability that injects provider-supplied environment context into model requests.
+#[derive(Clone, Debug, Default)]
+pub struct EnvironmentContextCapability;
+
+#[async_trait]
+impl AgentCapability for EnvironmentContextCapability {
+    async fn before_model_request_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        request: &mut starweaver_model::ModelRequest,
+        _settings: &mut Option<starweaver_model::ModelSettings>,
+    ) -> CapabilityResult<()> {
+        let Some(environment) = context.dependencies.get::<EnvironmentHandle>() else {
+            return Ok(());
+        };
+        let Some(text) = environment
+            .provider()
+            .get_context_instructions()
+            .await
+            .map_err(|error| CapabilityError::Failed(error.to_string()))?
+        else {
+            return Ok(());
+        };
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "starweaver_instruction_origin".to_string(),
+            serde_json::json!("environment_context"),
+        );
+        request.parts.insert(
+            0,
+            starweaver_model::ModelRequestPart::Instruction { text, metadata },
+        );
+        Ok(())
     }
 }
 
@@ -62,4 +101,10 @@ pub(super) fn environment_provider(
             tool_execution_error(tool, "EnvironmentHandle is missing from AgentContext")
         })?;
     Ok(environment.provider())
+}
+
+pub(super) fn maybe_environment_provider(context: &ToolContext) -> Option<DynEnvironmentProvider> {
+    let agent_context = context.dependency::<AgentContext>()?;
+    let environment = agent_context.dependencies.get::<EnvironmentHandle>()?;
+    Some(environment.provider())
 }

@@ -1,14 +1,6 @@
-use serde_json::Value;
-use starweaver_tools::{ToolError, ToolResult};
+use starweaver_tools::ToolError;
 
 use crate::bundles::helpers::tool_execution_error;
-
-pub(super) fn operation(name: &str, payload: Value) -> ToolResult {
-    let mut content = serde_json::Map::new();
-    content.insert("operation".to_string(), Value::String(name.to_string()));
-    content.insert("payload".to_string(), payload);
-    ToolResult::new(Value::Object(content))
-}
 
 pub(super) fn non_negative_limit(
     tool: &str,

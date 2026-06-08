@@ -277,6 +277,9 @@ impl Agent {
         context.trace_context = run_span.context().clone();
         let run_id = RunId::new();
         context.run_id = Some(run_id.clone());
+        if let Some(context_window) = self.context_window {
+            context.set_context_window(Some(context_window));
+        }
         let conversation_id = context.conversation_id.clone();
         let history_len = context.message_history.len();
         let mut state = AgentRunState::new(run_id.clone(), conversation_id.clone());
@@ -366,8 +369,9 @@ impl Agent {
                 response
             } else {
                 self.check_before_request(&state)?;
-                let messages = self.process_history(&state, context).await?;
+                let mut messages = self.process_history(&state, context).await?;
                 let params = self.effective_request_params(&state, context).await?;
+                Self::inject_runtime_context(context, &mut messages);
                 let mut model_spec = SpanSpec::new("gen_ai.inference")
                     .with_kind(SpanKind::Client)
                     .with_attribute("gen_ai.operation.name", serde_json::json!("chat"))
@@ -450,7 +454,8 @@ impl Agent {
                 .ok_or_else(|| AgentError::Capability("missing latest response".to_string()))?;
             self.call_after_model_response(&mut state, context, &mut response)
                 .await?;
-            state.latest_response = Some(response.clone());
+            state.replace_latest_response(response.clone());
+            context.message_history.clone_from(&state.message_history);
 
             let tool_calls = response.tool_calls();
             if !tool_calls.is_empty() {

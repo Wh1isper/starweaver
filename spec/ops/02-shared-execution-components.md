@@ -13,18 +13,20 @@ Key properties:
 - one renderer-neutral display protocol for terminal, service transports, logs, and external protocols
 - one replay event-log abstraction for live tail, resume, compaction, and future queue-backed delivery
 - one transport-envelope abstraction for SSE, JSONL, WebSocket, and external protocol adapters
-- renderer-specific formatting at the product edge
+- product-owned control surfaces for host coordination, with JSON-RPC stdio as the complete local runtime API and CLI commands as a shell-friendly subset over the same shared session and stream contracts
+- shared local configuration under `~/.starweaver/config.toml`, with frontend-specific client state under `~/.starweaver/tui` and `~/.starweaver/desktop`
+- renderer-specific formatting and frontend state at the product edge
 - storage, stream-log, and transport adapters selected by host configuration
 
 ## Recommended Split
 
-| Area                      | Crate                 | Primary contract                     | Owns                                                                                                                                                 | Concrete adapters                                                                              |
-| ------------------------- | --------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Session state             | `starweaver-session`  | `SessionStore`                       | `InputPart`, session/run records, checkpoint refs, context/env state refs, approvals, deferred records, resume snapshots, compact session/run traces | in-memory test store; SQLite adapter in `starweaver-storage`; PostgreSQL planned               |
-| Display and replay stream | `starweaver-stream`   | `ReplayEventLog` / `ReplayTransport` | `DisplayMessage`, display projector traits, replay events, replay cursors/scopes, realtime compaction buffers, stream archives, protocol envelopes   | in-memory event log, JSONL adapters, service transports, future queue-backed event-log adapter |
-| Shared persistence        | `starweaver-storage`  | SQLite adapters                      | migration registry, migration status, `SessionStore`, `StreamArchive`, `ReplayEventLog` adapters                                                     | SQLite database file or memory database                                                        |
-| Terminal product          | `starweaver-cli`      | command assembly                     | CLI config, local defaults, argv parsing, renderer selection, approval prompts                                                                       | local store path, in-memory tail, JSONL stdout                                                 |
-| Platform adapters         | future platform crate | external protocol adapters           | A2A, AGUI, hosted orchestration, remote transports                                                                                                   | selected by platform host                                                                      |
+| Area                      | Crate                 | Primary contract                     | Owns                                                                                                                                                  | Concrete adapters                                                                                      |
+| ------------------------- | --------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Session state             | `starweaver-session`  | `SessionStore`                       | `InputPart`, session/run records, checkpoint refs, context/env state refs, approvals, deferred records, resume snapshots, compact session/run traces  | in-memory test store; SQLite adapter in `starweaver-storage`; PostgreSQL planned                       |
+| Display and replay stream | `starweaver-stream`   | `ReplayEventLog` / `ReplayTransport` | `DisplayMessage`, display projector traits, replay events, replay cursors/scopes, realtime compaction buffers, stream archives, protocol envelopes    | in-memory event log, JSONL adapters, service transports, future queue-backed event-log adapter         |
+| Shared persistence        | `starweaver-storage`  | SQLite adapters                      | migration registry, migration status, `SessionStore`, `StreamArchive`, `ReplayEventLog` adapters                                                      | SQLite database file or memory database                                                                |
+| Terminal product          | `starweaver-cli`      | command assembly                     | CLI config, frontend state roots, local defaults, argv parsing, JSON-RPC stdio runtime API, CLI command subset, TUI terminal client, approval prompts | local store path, active-run registry, JSON-RPC stdin/stdout, JSON stdout, JSONL/display-jsonl streams |
+| Platform adapters         | future platform crate | external protocol adapters           | A2A, AGUI, hosted orchestration, remote transports                                                                                                    | selected by platform host                                                                              |
 
 Boundary invariants:
 
@@ -32,6 +34,8 @@ Boundary invariants:
 - `SessionStore` exposes stable cursor references for stream replay while stream archive and replay contracts stay in `starweaver-stream`.
 - `starweaver-stream` owns display protocol records, replay event-log semantics, stream archives, realtime compaction, and protocol envelope abstractions.
 - Memory, service transports, JSONL, WebSocket, and queue integrations are adapters over `starweaver-stream` contracts.
+- JSON-RPC stdio is the complete local host-control surface for sessions, runs, replay, cancellation, steering, approvals, deferred calls, profiles, config, diagnostics, and client model selection; CLI commands are shell-friendly subsets that map onto the same handlers.
+- Model profiles and provider settings live in shared config; the selected profile for TUI/Desktop is frontend state, not shared config.
 - `starweaver-storage` keeps concrete SQLite persistence reusable and product-neutral.
 
 ## Shared Storage Direction
@@ -83,15 +87,16 @@ flowchart TD
 
 Implementation sequence:
 
-1. shared ids and serializable session records
-2. `SessionStore` trait and in-memory contract tests
-3. display-message records and replay protocol records
-4. `ReplayEventLog`, `ReplayTransport`, and realtime compaction contract tests
-5. CLI display-message restore contract, headless JSONL transport, renderer assembly, and Starweaver `DisplayMessage` protocol
-6. launcher dispatch, `sw` alias install behavior, GitHub installer, and update path
-7. SQLite session store, replay event log, stream archive adapter, and migrations in `starweaver-storage`
-8. CLI local storage convergence onto shared storage adapters
-9. platform adapter specs over the shared session/stream/storage contracts
+01. shared ids and serializable session records
+02. `SessionStore` trait and in-memory contract tests
+03. display-message records and replay protocol records
+04. `ReplayEventLog`, `ReplayTransport`, and realtime compaction contract tests
+05. CLI display-message restore contract, headless JSONL transport, renderer assembly, and Starweaver `DisplayMessage` protocol
+06. CLI JSON-RPC stdio runtime surface that exposes complete session management, run orchestration, replay, profile/config/diagnostics, client model selection, cancellation, steering, approvals, and deferred calls over the same contracts
+07. launcher dispatch, `sw` alias install behavior, GitHub installer, and update path
+08. SQLite session store, replay event log, stream archive adapter, and migrations in `starweaver-storage`
+09. CLI local storage convergence onto shared storage adapters
+10. platform adapter specs over the shared session/stream/storage contracts
 
 ## Shared Session Records
 
@@ -158,6 +163,8 @@ Stream records describe observable execution output and replay behavior:
 - `StreamTerminalMarker`
 
 `DisplayMessageProjector` transforms runtime stream records, lifecycle events, checkpoint events, tool events, subagent events, approval events, and terminal results into stable display messages. Display messages are product-facing semantic events and the Starweaver wire protocol.
+
+JSON-RPC host-control responses, CLI command responses, and stream outputs should embed `DisplayMessage`, `ReplayCursor`, `ReplaySnapshot`, approval records, deferred records, and run status values from these shared crates so Desktop, TUI, shell commands, and service transports consume the same durable evidence. JSON-RPC carries the full method set; CLI commands expose a shell-friendly subset. RPC model-selection methods operate at the product edge by reading shared profiles and writing frontend state, leaving session and stream contracts renderer-neutral.
 
 ## Acceptance Gates
 

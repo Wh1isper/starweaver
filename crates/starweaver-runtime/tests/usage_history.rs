@@ -136,7 +136,7 @@ async fn history_processor_filters_messages_sent_to_model() {
     assert!(matches!(
         &provider_messages[0],
         ModelMessage::Request(request)
-            if matches!(&request.parts[0], ModelRequestPart::UserPrompt { content, .. } if format!("{content:?}").contains("new"))
+            if request.parts.iter().any(|part| matches!(part, ModelRequestPart::UserPrompt { content, .. } if format!("{content:?}").contains("new")))
     ));
 }
 

@@ -108,10 +108,17 @@ fn context_instructions_escape_note_keys() {
 }
 
 #[test]
-fn context_instructions_skip_empty_notes_and_tool_responses() {
+fn context_instructions_include_runtime_context_without_leaking_tool_response_notes() {
     let mut context = AgentContext::default();
-    assert_eq!(context.context_instructions(true), None);
+    let empty_user_context = context.context_instructions(true).unwrap();
+    assert!(empty_user_context.contains("<runtime-context>"));
+    assert!(empty_user_context.contains("<current-time>"));
+    assert!(!empty_user_context.contains("<notes "));
 
     context.notes.set("lang", "Chinese");
-    assert_eq!(context.context_instructions(false), None);
+    let tool_context = context.context_instructions(false).unwrap();
+    assert!(tool_context.contains("<runtime-context>"));
+    assert!(!tool_context.contains("<notes "));
+    assert!(!tool_context.contains("lang"));
+    assert!(!tool_context.contains("Chinese"));
 }

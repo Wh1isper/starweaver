@@ -800,9 +800,12 @@ impl AgentSpec {
         if let Some(settings) = self.resolved_model_settings()? {
             builder = builder.model_settings(settings);
         }
+        if let Some(model_config) = model_config.as_ref() {
+            builder = builder.context_window(u64::from(model_config.context_window));
+        }
         if let Some(limits) = self.preset.usage_limits.clone() {
             builder = builder.usage_limits(limits);
-        } else if let Some(model_config) = model_config {
+        } else if let Some(model_config) = model_config.as_ref() {
             builder = builder.usage_limits(
                 UsageLimits::new().with_total_tokens_limit(u64::from(model_config.context_window)),
             );

@@ -1,21 +1,38 @@
 use std::sync::Arc;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde_json::{Map, Value};
 use starweaver_environment::{
-    EnvironmentError, EnvironmentProvider, FileGlobOptions, FileGrepOptions,
+    EnvironmentError, EnvironmentProvider, FileGlobOptions, FileGrepMatch, FileGrepOptions,
+    FileStat,
 };
 use starweaver_tools::{
     DynToolset, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
 };
+use uuid::Uuid;
 
 use super::{
     args::{
         DeleteArgs, EditArgs, FilePathArgs, GlobArgs, GrepArgs, ListArgs, MkdirArgs, MultiEditArgs,
         PathPairsArgs, ViewArgs, WriteArgs,
     },
-    common::{limit_or_unlimited, non_negative_limit, operation},
+    common::{limit_or_unlimited, non_negative_limit},
     handle::environment_provider,
 };
-use crate::bundles::helpers::{static_tool, tool_execution_error};
+use crate::bundles::{
+    helpers::{static_tool, tool_execution_error},
+    HostMediaCapabilities, HostMediaUnderstandingClientHandle, MediaUnderstandingRequest,
+};
+
+const VIEW_MAX_TEXT_FILE_SIZE: u64 = 10 * 1024 * 1024;
+const VIEW_MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const VIEW_MAX_INLINE_VIDEO_BYTES: u64 = 50 * 1024 * 1024;
+const VIEW_MAX_INLINE_AUDIO_BYTES: u64 = 50 * 1024 * 1024;
+const BINARY_CHECK_BYTES: usize = 8192;
+const VIEW_CONTENT_TRUNCATE_LIMIT: usize = 60_000;
+const OUTPUT_TRUNCATE_LIMIT: usize = 20_000;
+const GREP_TRUNCATION_THRESHOLD: usize = 30_000;
+const GREP_TRUNCATED_LINE_MAX: usize = 300;
 
 /// Create filesystem tools backed by the `EnvironmentHandle` stored in `AgentContext`.
 #[must_use]
@@ -25,10 +42,10 @@ pub fn filesystem_tools() -> DynToolset {
             .with_id("filesystem")
             .with_instruction(ToolInstruction::new(
                 "filesystem",
-                "Filesystem tools operate inside the active AgentContext environment. Prefer glob to discover candidate paths, grep to find matching text, view for focused reads, write for intentional writes, edit or multi_edit for precise replacements, and resource_ref when a durable provider-scoped reference is enough.",
+                "Filesystem tools operate inside the active AgentContext environment. Prefer glob to discover candidate paths, grep to find matching text, view for focused reads, write for intentional writes, edit or multi_edit for precise replacements, and resource_ref when a durable provider-scoped reference is enough. Large glob, grep, and shell-style outputs are saved through the provider tmp file abstraction instead of bypassing the active environment.",
             ))
             .with_tools([
-                static_tool("view", "Read a provider-scoped UTF-8 text file.", read_text),
+                static_tool("view", "Read a provider-scoped file. Text reads support pagination and truncation metadata; image, video, and audio files are loaded through the active environment and either attached for native model media support or analyzed by the configured fallback client.", read_text),
                 static_tool("ls", "List provider-scoped file entries.", list_files),
                 static_tool("write", "Write a provider-scoped UTF-8 text file.", write_text),
                 static_tool("edit", "Perform exact string replacement in files.", edit_text),
@@ -49,25 +66,45 @@ async fn read_text(
     arguments: ViewArgs,
 ) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&tool_context, "view")?;
-    let content = provider
-        .read_text(&arguments.file_path)
-        .await
-        .map_err(|error| tool_execution_error("view", error))?;
-    let selected = select_text_lines(
-        &content,
-        arguments.line_offset.unwrap_or(0),
-        arguments.line_limit,
-        arguments.max_line_length,
-    );
-    Ok(ToolResult::new(serde_json::json!({
-        "file_path": arguments.file_path,
-        "content": selected.content,
-        "line_offset": arguments.line_offset,
-        "line_limit": arguments.line_limit,
-        "max_line_length": arguments.max_line_length,
-        "instructions": arguments.instructions,
-        "truncated": selected.truncated,
-    })))
+    let stat = match provider.stat(&arguments.file_path).await {
+        Ok(stat) => stat,
+        Err(EnvironmentError::NotFound(_)) => {
+            return Ok(ToolResult::new(Value::String(format!(
+                "Error: File not found: {}",
+                arguments.file_path
+            ))));
+        }
+        Err(error) => return Err(tool_execution_error("view", error)),
+    };
+    if stat.is_dir {
+        return Ok(ToolResult::new(Value::String(format!(
+            "Error: Path is a directory, not a file: {}",
+            arguments.file_path
+        ))));
+    }
+
+    match classify_view_path(&arguments.file_path) {
+        ViewFileKind::Image | ViewFileKind::Video | ViewFileKind::Audio => {
+            read_media_file(&tool_context, provider.as_ref(), &arguments, stat).await
+        }
+        ViewFileKind::Pdf => Ok(ToolResult::new(serde_json::json!({
+            "success": false,
+            "file_path": arguments.file_path,
+            "media_kind": "document",
+            "message": "PDF files are not parsed by view. Use pdf_convert for provider-scoped PDF conversion.",
+            "next_tool": "pdf_convert",
+        }))),
+        ViewFileKind::Office => Ok(ToolResult::new(serde_json::json!({
+            "success": false,
+            "file_path": arguments.file_path,
+            "media_kind": "document",
+            "message": "Office and EPUB files are not parsed by view. Use office_to_markdown for provider-scoped conversion.",
+            "next_tool": "office_to_markdown",
+        }))),
+        ViewFileKind::Text | ViewFileKind::Unknown => {
+            read_text_file(provider.as_ref(), &arguments, &stat).await
+        }
+    }
 }
 
 async fn list_files(context: ToolContext, arguments: ListArgs) -> Result<ToolResult, ToolError> {
@@ -219,11 +256,12 @@ async fn glob_files(context: ToolContext, arguments: GlobArgs) -> Result<ToolRes
         )
         .await
         .map_err(|error| tool_execution_error("glob", error))?;
-    Ok(ToolResult::new(serde_json::json!({
+    let result = serde_json::json!({
         "root": arguments.root,
         "pattern": arguments.pattern,
         "matches": matches,
-    })))
+    });
+    guard_glob_output(provider.as_ref(), result).await
 }
 
 async fn grep_files(context: ToolContext, arguments: GrepArgs) -> Result<ToolResult, ToolError> {
@@ -252,61 +290,89 @@ async fn grep_files(context: ToolContext, arguments: GrepArgs) -> Result<ToolRes
         )
         .await
         .map_err(|error| tool_execution_error("grep", error))?;
+    guard_grep_output(
+        provider.as_ref(),
+        &arguments.root,
+        &arguments.pattern,
+        matches,
+    )
+    .await
+}
+
+async fn mkdir_paths(context: ToolContext, arguments: MkdirArgs) -> Result<ToolResult, ToolError> {
+    let provider = environment_provider(&context, "mkdir")?;
+    let mut created = Vec::new();
+    for path in arguments.paths {
+        provider
+            .create_dir(&path, arguments.parents)
+            .await
+            .map_err(|error| tool_execution_error("mkdir", error))?;
+        created.push(path);
+    }
     Ok(ToolResult::new(serde_json::json!({
-        "root": arguments.root,
-        "pattern": arguments.pattern,
-        "matches": matches,
+        "created": created,
+        "parents": arguments.parents,
     })))
 }
 
-async fn mkdir_paths(_context: ToolContext, arguments: MkdirArgs) -> Result<ToolResult, ToolError> {
-    Ok(operation(
-        "mkdir",
-        serde_json::json!({
-            "paths": arguments.paths,
-            "parents": arguments.parents,
-        }),
-    ))
-}
-
 async fn delete_paths(
-    _context: ToolContext,
+    context: ToolContext,
     arguments: DeleteArgs,
 ) -> Result<ToolResult, ToolError> {
-    Ok(operation(
-        "delete",
-        serde_json::json!({
-            "paths": arguments.paths,
-            "recursive": arguments.recursive,
-            "force": arguments.force,
-        }),
-    ))
+    let provider = environment_provider(&context, "delete")?;
+    let mut deleted = Vec::new();
+    let mut missing = Vec::new();
+    for path in arguments.paths {
+        match provider.delete_path(&path, arguments.recursive).await {
+            Ok(()) => deleted.push(path),
+            Err(EnvironmentError::NotFound(_)) if arguments.force => missing.push(path),
+            Err(error) => return Err(tool_execution_error("delete", error)),
+        }
+    }
+    Ok(ToolResult::new(serde_json::json!({
+        "deleted": deleted,
+        "missing": missing,
+        "recursive": arguments.recursive,
+        "force": arguments.force,
+    })))
 }
 
 async fn move_paths(
-    _context: ToolContext,
+    context: ToolContext,
     arguments: PathPairsArgs,
 ) -> Result<ToolResult, ToolError> {
-    Ok(operation(
-        "move",
-        serde_json::json!({
-            "pairs": arguments.pairs,
-            "overwrite": arguments.overwrite,
-        }),
-    ))
+    let provider = environment_provider(&context, "move")?;
+    let mut moved = Vec::new();
+    for pair in arguments.pairs {
+        provider
+            .move_path(&pair.src, &pair.dst, arguments.overwrite)
+            .await
+            .map_err(|error| tool_execution_error("move", error))?;
+        moved.push(serde_json::json!({"src": pair.src, "dst": pair.dst}));
+    }
+    Ok(ToolResult::new(serde_json::json!({
+        "moved": moved,
+        "overwrite": arguments.overwrite,
+    })))
 }
 
 async fn copy_paths(
-    _context: ToolContext,
+    context: ToolContext,
     arguments: PathPairsArgs,
 ) -> Result<ToolResult, ToolError> {
-    Ok(operation(
-        "copy",
-        serde_json::json!({
-            "pairs": arguments.pairs,
-            "overwrite": arguments.overwrite,
-        }),
-    ))
+    let provider = environment_provider(&context, "copy")?;
+    let mut copied = Vec::new();
+    for pair in arguments.pairs {
+        provider
+            .copy_path(&pair.src, &pair.dst, arguments.overwrite)
+            .await
+            .map_err(|error| tool_execution_error("copy", error))?;
+        copied.push(serde_json::json!({"src": pair.src, "dst": pair.dst}));
+    }
+    Ok(ToolResult::new(serde_json::json!({
+        "copied": copied,
+        "overwrite": arguments.overwrite,
+    })))
 }
 
 async fn resource_ref(
@@ -319,6 +385,297 @@ async fn resource_ref(
         "uri": format!("env://{}/{}", provider.id(), arguments.file_path),
         "metadata": {"provider_id": provider.id(), "file_path": arguments.file_path},
     })))
+}
+
+async fn read_text_file(
+    provider: &dyn EnvironmentProvider,
+    arguments: &ViewArgs,
+    stat: &FileStat,
+) -> Result<ToolResult, ToolError> {
+    if stat.size > VIEW_MAX_TEXT_FILE_SIZE {
+        return Ok(ToolResult::new(serde_json::json!({
+            "success": false,
+            "error": format!(
+                "File is too large to inspect safely ({}). Maximum supported text view size is {}. Use shell tools (e.g. head, tail, sed -n) to read portions of this file.",
+                format_size(stat.size),
+                format_size(VIEW_MAX_TEXT_FILE_SIZE),
+            ),
+        })));
+    }
+    let binary_probe = provider
+        .read_bytes(&arguments.file_path, 0, Some(BINARY_CHECK_BYTES))
+        .await
+        .map_err(|error| tool_execution_error("view", error))?;
+    if binary_probe.contains(&0) {
+        return Ok(ToolResult::new(Value::String(format!(
+            "Error: {} appears to be a binary file. Use appropriate tools (e.g. pdf_convert for PDFs, office_to_markdown for Office/EPUB, or xxd for hex dumps) instead.",
+            arguments.file_path
+        ))));
+    }
+    let full_content = provider
+        .read_text(&arguments.file_path)
+        .await
+        .map_err(|error| tool_execution_error("view", error))?;
+    let selection = select_text_lines(
+        &arguments.file_path,
+        &full_content,
+        stat.size,
+        arguments.line_offset,
+        arguments.line_limit,
+        arguments.max_line_length,
+    );
+    Ok(selection.into_tool_result())
+}
+
+#[allow(clippy::too_many_lines)]
+async fn read_media_file(
+    context: &ToolContext,
+    provider: &dyn EnvironmentProvider,
+    arguments: &ViewArgs,
+    stat: FileStat,
+) -> Result<ToolResult, ToolError> {
+    let media_kind = classify_media_path(&arguments.file_path);
+    let max_inline = match media_kind {
+        MediaKind::Image => VIEW_MAX_INLINE_IMAGE_BYTES,
+        MediaKind::Video => VIEW_MAX_INLINE_VIDEO_BYTES,
+        MediaKind::Audio => VIEW_MAX_INLINE_AUDIO_BYTES,
+    };
+    if stat.size > max_inline {
+        return Ok(ToolResult::new(serde_json::json!({
+            "success": false,
+            "file_path": arguments.file_path,
+            "media_kind": media_kind.as_str(),
+            "error": format!(
+                "{} file is too large to inline ({}). Maximum supported inline size is {}.",
+                media_kind.title(),
+                format_size(stat.size),
+                format_size(max_inline),
+            ),
+        })));
+    }
+    let data = provider
+        .read_bytes(&arguments.file_path, 0, None)
+        .await
+        .map_err(|error| tool_execution_error("view", error))?;
+    let media_type = match media_kind {
+        MediaKind::Image => detect_image_media_type(&data)
+            .or_else(|| image_media_type(&arguments.file_path))
+            .unwrap_or("application/octet-stream"),
+        MediaKind::Video => video_media_type(&arguments.file_path),
+        MediaKind::Audio => audio_media_type(&arguments.file_path),
+    };
+    if media_kind == MediaKind::Image && !is_supported_inline_image(media_type) {
+        return Ok(ToolResult::new(Value::String(format!(
+            "Error: unsupported image format '{media_type}' for {}. Supported formats: image/gif, image/jpeg, image/png, image/webp.",
+            arguments.file_path
+        ))));
+    }
+
+    let data_url = data_url(media_type, &data);
+    let capabilities = context.dependency::<HostMediaCapabilities>();
+    let native_supported = capabilities
+        .as_ref()
+        .is_some_and(|capabilities| media_capability_supported(capabilities, media_kind));
+    if native_supported {
+        let message = format!(
+            "The {} is attached in a provider-native media message.",
+            media_kind.as_str()
+        );
+        let mut private_metadata = Map::new();
+        private_metadata.insert(
+            "starweaver_tool_return_content_parts".to_string(),
+            serde_json::json!([{
+                "kind": "data_url",
+                "data_url": data_url,
+                "media_type": media_type,
+            }]),
+        );
+        private_metadata.insert(
+            "starweaver_tool_return_prompt".to_string(),
+            serde_json::json!(media_prompt(
+                media_kind,
+                &arguments.file_path,
+                arguments.instructions.as_deref()
+            )),
+        );
+        return Ok(ToolResult::new(serde_json::json!({
+            "success": true,
+            "file_path": arguments.file_path,
+            "media_kind": media_kind.as_str(),
+            "media_type": media_type,
+            "native_supported": true,
+            "model_id": capabilities.and_then(|capabilities| capabilities.model_id.clone()),
+            "message": message,
+            "instructions": arguments.instructions,
+        }))
+        .with_private_metadata(private_metadata));
+    }
+
+    if let Some(handle) = context.dependency::<HostMediaUnderstandingClientHandle>() {
+        let response = handle
+            .client
+            .understand(MediaUnderstandingRequest {
+                media_kind: media_kind.as_str().to_string(),
+                url: data_url,
+                instructions: arguments.instructions.clone(),
+            })
+            .await
+            .map_err(|error| tool_execution_error("view", error))?;
+        return serde_json::to_value(response)
+            .map(ToolResult::new)
+            .map_err(|error| tool_execution_error("view", error));
+    }
+
+    Ok(ToolResult::new(serde_json::json!({
+        "success": false,
+        "file_path": arguments.file_path,
+        "media_kind": media_kind.as_str(),
+        "media_type": media_type,
+        "native_supported": false,
+        "model_id": capabilities.and_then(|capabilities| capabilities.model_id.clone()),
+        "missing_dependency": "HostMediaUnderstandingClientHandle",
+        "message": "The active model does not advertise native support for this local media kind. Configure a HostMediaUnderstandingClientHandle fallback adapter or switch to a media-capable model.",
+    })))
+}
+
+async fn guard_glob_output(
+    provider: &dyn EnvironmentProvider,
+    result: Value,
+) -> Result<ToolResult, ToolError> {
+    let serialized =
+        serde_json::to_string(&result).map_err(|error| tool_execution_error("glob", error))?;
+    if serialized.len() <= OUTPUT_TRUNCATE_LIMIT {
+        return Ok(ToolResult::new(result));
+    }
+    let output_path = write_tool_output(provider, "glob", "json", &serialized).await;
+    let matches = result
+        .get("matches")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let total = matches.len();
+    let mut preview = serde_json::json!({
+        "matches": [],
+        "truncated": true,
+        "total_matches": total,
+        "showing": 0,
+        "note": output_path.as_ref().map_or_else(
+            || format!("Output too large ({} chars). Failed to save temp file; showing truncated preview.", serialized.len()),
+            |_| format!("Output too large ({} chars). Full results saved to output_file_path.", serialized.len()),
+        ),
+    });
+    if let Some(path) = output_path {
+        preview["output_file_path"] = Value::String(path);
+    }
+    let mut kept = Vec::new();
+    for entry in matches {
+        kept.push(entry);
+        preview["matches"] = Value::Array(kept.clone());
+        preview["showing"] = serde_json::json!(kept.len());
+        if serde_json::to_string(&preview).map_or(true, |value| value.len() > OUTPUT_TRUNCATE_LIMIT)
+        {
+            kept.pop();
+            preview["matches"] = Value::Array(kept.clone());
+            preview["showing"] = serde_json::json!(kept.len());
+            break;
+        }
+    }
+    Ok(ToolResult::new(preview))
+}
+
+async fn guard_grep_output(
+    provider: &dyn EnvironmentProvider,
+    root: &str,
+    pattern: &str,
+    matches: Vec<FileGrepMatch>,
+) -> Result<ToolResult, ToolError> {
+    let original = serde_json::json!({
+        "root": root,
+        "pattern": pattern,
+        "matches": matches,
+    });
+    let serialized =
+        serde_json::to_string(&original).map_err(|error| tool_execution_error("grep", error))?;
+    if serialized.len() <= GREP_TRUNCATION_THRESHOLD {
+        return Ok(ToolResult::new(original));
+    }
+
+    let simplified_matches = original["matches"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .map(simplify_grep_match)
+        .collect::<Vec<_>>();
+    let simplified = serde_json::json!({
+        "root": root,
+        "pattern": pattern,
+        "matches": simplified_matches,
+        "system": "Context dropped to reduce output size. Use view to read specific files.",
+    });
+    let simplified_serialized =
+        serde_json::to_string(&simplified).map_err(|error| tool_execution_error("grep", error))?;
+    if simplified_serialized.len() <= OUTPUT_TRUNCATE_LIMIT {
+        return Ok(ToolResult::new(simplified));
+    }
+
+    let output_path = write_tool_output(provider, "grep", "json", &simplified_serialized).await;
+    let matches = simplified["matches"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut preview = serde_json::json!({
+        "root": root,
+        "pattern": pattern,
+        "matches": [],
+        "system": output_path.as_ref().map_or_else(
+            || format!("Output too large ({} chars). Failed to save temp file; showing truncated preview.", simplified_serialized.len()),
+            |_| format!("Output too large ({} chars). Full results saved to temp file. Use view to read it.", simplified_serialized.len()),
+        ),
+        "total_matches": matches.len(),
+        "showing": 0,
+    });
+    if let Some(path) = output_path {
+        preview["output_file_path"] = Value::String(path);
+    }
+    let mut kept = Vec::new();
+    for entry in matches {
+        kept.push(entry);
+        preview["matches"] = Value::Array(kept.clone());
+        preview["showing"] = serde_json::json!(kept.len());
+        if serde_json::to_string(&preview).map_or(true, |value| value.len() > OUTPUT_TRUNCATE_LIMIT)
+        {
+            kept.pop();
+            preview["matches"] = Value::Array(kept.clone());
+            preview["showing"] = serde_json::json!(kept.len());
+            break;
+        }
+    }
+    Ok(ToolResult::new(preview))
+}
+
+async fn write_tool_output(
+    provider: &dyn EnvironmentProvider,
+    prefix: &str,
+    extension: &str,
+    content: &str,
+) -> Option<String> {
+    let filename = format!("{prefix}-{}.{}", Uuid::new_v4().simple(), extension);
+    provider
+        .write_tmp_file(&filename, content.as_bytes())
+        .await
+        .ok()
+}
+
+fn simplify_grep_match(value: &Value) -> Value {
+    let matching_line = value
+        .get("matching_line")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    serde_json::json!({
+        "path": value.get("path").cloned().unwrap_or(Value::Null),
+        "line_number": value.get("line_number").cloned().unwrap_or(Value::Null),
+        "matching_line": truncate_chars(matching_line, GREP_TRUNCATED_LINE_MAX),
+    })
 }
 
 fn apply_replacement(
@@ -352,29 +709,106 @@ fn apply_replacement(
 
 struct TextSelection {
     content: String,
-    truncated: bool,
+    metadata: Option<Value>,
+}
+
+impl TextSelection {
+    fn into_tool_result(self) -> ToolResult {
+        if let Some(metadata) = self.metadata {
+            ToolResult::new(metadata)
+        } else {
+            ToolResult::new(Value::String(self.content))
+        }
+    }
 }
 
 fn select_text_lines(
+    file_path: &str,
     content: &str,
-    line_offset: usize,
+    file_size: u64,
+    line_offset: Option<usize>,
     line_limit: usize,
     max_line_length: usize,
 ) -> TextSelection {
-    let lines = content.lines().skip(line_offset).take(line_limit);
-    let mut truncated = content.lines().count() > line_offset.saturating_add(line_limit);
-    let content = lines
-        .map(|line| {
-            if line.chars().count() > max_line_length {
-                truncated = true;
+    let all_lines = split_lines_keepends(content);
+    let total_lines = all_lines.len();
+    let start_index = line_offset.filter(|offset| *offset > 0).unwrap_or(0);
+    let has_offset = start_index > 0;
+    let selected_lines = all_lines
+        .iter()
+        .skip(start_index)
+        .take(line_limit)
+        .copied()
+        .collect::<Vec<_>>();
+    let has_line_limit = all_lines.len().saturating_sub(start_index) > line_limit;
+    let mut lines_truncated = false;
+    let mut processed = Vec::new();
+    for line in selected_lines {
+        if line.chars().count() > max_line_length {
+            lines_truncated = true;
+            processed.push(format!(
+                "{}... (line truncated)\n",
                 line.chars().take(max_line_length).collect::<String>()
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    TextSelection { content, truncated }
+            ));
+        } else {
+            processed.push(line.to_string());
+        }
+    }
+    let mut selected_content = processed.concat();
+    let content_truncated = if selected_content.chars().count() > VIEW_CONTENT_TRUNCATE_LIMIT {
+        selected_content = selected_content
+            .chars()
+            .take(VIEW_CONTENT_TRUNCATE_LIMIT)
+            .collect::<String>();
+        selected_content.push_str("\n... (content truncated)");
+        true
+    } else {
+        false
+    };
+
+    let needs_metadata = has_offset || has_line_limit || lines_truncated || content_truncated;
+    if !needs_metadata {
+        return TextSelection {
+            content: selected_content,
+            metadata: None,
+        };
+    }
+
+    let actual_lines_read = processed.len();
+    let start_line = start_index + 1;
+    let end_line = if actual_lines_read > 0 {
+        start_line + actual_lines_read - 1
+    } else {
+        start_line
+    };
+    TextSelection {
+        content: selected_content.clone(),
+        metadata: Some(serde_json::json!({
+            "content": selected_content,
+            "metadata": {
+                "file_path": file_name(file_path),
+                "total_lines": total_lines,
+                "total_characters": content.chars().count(),
+                "file_size_bytes": file_size,
+                "current_segment": {
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "lines_to_show": actual_lines_read,
+                    "has_more_content": end_line < total_lines,
+                },
+                "reading_parameters": {
+                    "line_offset": if has_offset { serde_json::json!(start_index) } else { Value::Null },
+                    "line_limit": line_limit,
+                },
+                "truncation_info": {
+                    "lines_truncated": lines_truncated,
+                    "content_truncated": content_truncated,
+                    "max_line_length": max_line_length,
+                },
+            },
+            "system": "Increase the line_limit and max_line_length if you need more context.",
+        })),
+    }
 }
 
 async fn ensure_file_missing(
@@ -382,7 +816,7 @@ async fn ensure_file_missing(
     tool: &str,
     path: &str,
 ) -> Result<(), ToolError> {
-    match provider.read_text(path).await {
+    match provider.stat(path).await {
         Ok(_) => Err(tool_execution_error(
             tool,
             "file already exists; use write to overwrite existing content",
@@ -399,4 +833,208 @@ fn ignore_match(pattern: &str, entry: &str) -> bool {
         || pattern
             .strip_suffix('/')
             .is_some_and(|prefix| entry.starts_with(prefix))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ViewFileKind {
+    Text,
+    Image,
+    Video,
+    Audio,
+    Pdf,
+    Office,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MediaKind {
+    Image,
+    Video,
+    Audio,
+}
+
+impl MediaKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Video => "video",
+            Self::Audio => "audio",
+        }
+    }
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Image => "Image",
+            Self::Video => "Video",
+            Self::Audio => "Audio",
+        }
+    }
+}
+
+fn classify_view_path(path: &str) -> ViewFileKind {
+    match extension(path).as_deref() {
+        Some("jpg" | "jpeg" | "png" | "gif" | "bmp" | "ico" | "webp") => ViewFileKind::Image,
+        Some(
+            "mp4" | "webm" | "mov" | "avi" | "flv" | "wmv" | "mpg" | "mpeg" | "3gp" | "mkv" | "m4v"
+            | "ogv",
+        ) => ViewFileKind::Video,
+        Some("mp3" | "wav" | "ogg" | "flac" | "m4a" | "aac" | "wma" | "opus" | "aiff" | "aif") => {
+            ViewFileKind::Audio
+        }
+        Some("pdf") => ViewFileKind::Pdf,
+        Some("doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "epub") => ViewFileKind::Office,
+        Some(
+            "txt" | "md" | "json" | "xml" | "csv" | "html" | "htm" | "rs" | "py" | "js" | "ts"
+            | "tsx" | "jsx" | "toml" | "yaml" | "yml",
+        ) => ViewFileKind::Text,
+        _ => ViewFileKind::Unknown,
+    }
+}
+
+fn classify_media_path(path: &str) -> MediaKind {
+    match classify_view_path(path) {
+        ViewFileKind::Image => MediaKind::Image,
+        ViewFileKind::Video => MediaKind::Video,
+        ViewFileKind::Audio => MediaKind::Audio,
+        ViewFileKind::Text | ViewFileKind::Pdf | ViewFileKind::Office | ViewFileKind::Unknown => {
+            MediaKind::Image
+        }
+    }
+}
+
+const fn media_capability_supported(capabilities: &HostMediaCapabilities, kind: MediaKind) -> bool {
+    match kind {
+        MediaKind::Image => capabilities.supports_image_url,
+        MediaKind::Video => capabilities.supports_video_url,
+        MediaKind::Audio => capabilities.supports_audio_url,
+    }
+}
+
+fn extension(path: &str) -> Option<String> {
+    let filename = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    filename
+        .rsplit_once('.')
+        .filter(|(stem, _)| !stem.is_empty())
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+}
+
+fn image_media_type(path: &str) -> Option<&'static str> {
+    match extension(path).as_deref() {
+        Some("png") => Some("image/png"),
+        Some("jpg" | "jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        Some("bmp") => Some("image/bmp"),
+        Some("ico") => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+fn video_media_type(path: &str) -> &'static str {
+    match extension(path).as_deref() {
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        Some("avi") => "video/x-msvideo",
+        Some("flv") => "video/x-flv",
+        Some("wmv") => "video/x-ms-wmv",
+        Some("mpg" | "mpeg") => "video/mpeg",
+        Some("3gp") => "video/3gpp",
+        Some("mkv") => "video/x-matroska",
+        Some("m4v") => "video/x-m4v",
+        Some("ogv") => "video/ogg",
+        _ => "video/mp4",
+    }
+}
+
+fn audio_media_type(path: &str) -> &'static str {
+    match extension(path).as_deref() {
+        Some("wav") => "audio/wav",
+        Some("ogg") => "audio/ogg",
+        Some("flac") => "audio/flac",
+        Some("m4a") => "audio/mp4",
+        Some("aac") => "audio/aac",
+        Some("wma") => "audio/x-ms-wma",
+        Some("opus") => "audio/opus",
+        Some("aiff" | "aif") => "audio/aiff",
+        _ => "audio/mpeg",
+    }
+}
+
+fn detect_image_media_type(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if data.starts_with(b"\xff\xd8\xff") {
+        return Some("image/jpeg");
+    }
+    if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if data.len() >= 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    None
+}
+
+fn is_supported_inline_image(media_type: &str) -> bool {
+    matches!(
+        media_type,
+        "image/gif" | "image/jpeg" | "image/png" | "image/webp"
+    )
+}
+
+fn media_prompt(kind: MediaKind, file_path: &str, instructions: Option<&str>) -> String {
+    let mut prompt = format!(
+        "The view tool loaded local {kind} file `{file_path}` through the active environment. Inspect the attached media and answer accordingly.",
+        kind = kind.as_str(),
+    );
+    if let Some(instructions) = instructions.filter(|value| !value.trim().is_empty()) {
+        prompt.push_str(
+            "
+
+Analysis instructions:
+",
+        );
+        prompt.push_str(instructions.trim());
+    }
+    prompt
+}
+
+fn data_url(media_type: &str, data: &[u8]) -> String {
+    format!("data:{media_type};base64,{}", STANDARD.encode(data))
+}
+
+fn split_lines_keepends(content: &str) -> Vec<&str> {
+    if content.is_empty() {
+        Vec::new()
+    } else {
+        content.split_inclusive('\n').collect()
+    }
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn format_size(size_bytes: u64) -> String {
+    if size_bytes < 1024 {
+        return format!("{size_bytes} bytes");
+    }
+    if size_bytes < 1024 * 1024 {
+        let tenths = size_bytes.saturating_mul(10).saturating_add(512) / 1024;
+        return format!("{}.{:01} KB", tenths / 10, tenths % 10);
+    }
+    let hundredths = size_bytes
+        .saturating_mul(100)
+        .saturating_add(1024 * 1024 / 2)
+        / (1024 * 1024);
+    format!("{}.{:02} MB", hundredths / 100, hundredths % 100)
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        value.to_string()
+    } else {
+        format!("{}...", value.chars().take(limit).collect::<String>())
+    }
 }

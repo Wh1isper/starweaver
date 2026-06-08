@@ -6,10 +6,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub use starweaver_core::AgentId;
-use starweaver_core::{ConversationId, Metadata, RunId, TraceContext, Usage};
+use starweaver_core::{ConversationId, Metadata, RunId, TraceContext, Usage, XmlWriter};
 use starweaver_model::ModelMessage;
 
 /// In-memory state store for context domains.
@@ -264,6 +265,12 @@ pub struct ResumableState {
     /// Accumulated usage.
     #[serde(default)]
     pub usage: Usage,
+    /// Model/runtime configuration used for injected runtime context.
+    #[serde(default, skip_serializing_if = "RuntimeModelConfig::is_empty")]
+    pub model_config: RuntimeModelConfig,
+    /// Context creation time used for elapsed runtime context.
+    #[serde(default = "Utc::now")]
+    pub started_at: DateTime<Utc>,
     /// State domains.
     #[serde(default)]
     pub state: StateStore,
@@ -358,6 +365,22 @@ impl std::fmt::Debug for DependencyStore {
     }
 }
 
+/// Runtime model configuration exposed to model-facing context instructions.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RuntimeModelConfig {
+    /// Context window in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+}
+
+impl RuntimeModelConfig {
+    /// Return whether no runtime model config is known.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.context_window.is_none()
+    }
+}
+
 /// Lifecycle-wide agent context.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentContext {
@@ -374,6 +397,12 @@ pub struct AgentContext {
     /// Accumulated usage.
     #[serde(default)]
     pub usage: Usage,
+    /// Model/runtime configuration used for injected runtime context.
+    #[serde(default, skip_serializing_if = "RuntimeModelConfig::is_empty")]
+    pub model_config: RuntimeModelConfig,
+    /// Context creation time used for elapsed runtime context.
+    #[serde(default = "Utc::now")]
+    pub started_at: DateTime<Utc>,
     /// State store.
     #[serde(default)]
     pub state: StateStore,
@@ -407,6 +436,8 @@ impl AgentContext {
             conversation_id: ConversationId::new(),
             message_history: Vec::new(),
             usage: Usage::default(),
+            model_config: RuntimeModelConfig::default(),
+            started_at: Utc::now(),
             state: StateStore::new(),
             events: EventBus::new(),
             notes: NoteStore::new(),
@@ -426,6 +457,8 @@ impl AgentContext {
             conversation_id: state.conversation_id.unwrap_or_default(),
             message_history: state.message_history,
             usage: state.usage,
+            model_config: state.model_config,
+            started_at: state.started_at,
             state: state.state,
             events: EventBus::new(),
             notes: state.notes,
@@ -445,6 +478,8 @@ impl AgentContext {
             conversation_id: Some(self.conversation_id.clone()),
             message_history: self.message_history.clone(),
             usage: self.usage.clone(),
+            model_config: self.model_config.clone(),
+            started_at: self.started_at,
             state: self.state.clone(),
             notes: self.notes.clone(),
             message_bus: self.messages.clone(),
@@ -483,6 +518,8 @@ impl AgentContext {
             conversation_id: self.conversation_id.clone(),
             message_history: Vec::new(),
             usage: self.usage.clone(),
+            model_config: self.model_config.clone(),
+            started_at: Utc::now(),
             state: self.state.clone(),
             events: EventBus::new(),
             notes: self.notes.clone(),
@@ -565,20 +602,54 @@ impl AgentContext {
         self.dependencies.get_named::<T>(name)
     }
 
+    /// Set the context window exposed in model-facing runtime context.
+    pub const fn set_context_window(&mut self, context_window: Option<u64>) {
+        self.model_config.context_window = context_window;
+    }
+
+    /// Render runtime context instructions for model-facing requests.
+    #[must_use]
+    pub fn inject_runtime_context(&self, is_user_prompt: bool) -> Option<String> {
+        let now = Utc::now();
+        let elapsed_milliseconds = (now - self.started_at).num_milliseconds().max(0);
+        let elapsed_tenths = (elapsed_milliseconds + 50) / 100;
+        let elapsed = format!("{}.{:01}s", elapsed_tenths / 10, elapsed_tenths % 10);
+        let mut xml = XmlWriter::new();
+        xml.open("runtime-context")
+            .text_element("agent-id", self.agent_id.as_str())
+            .text_element("current-time", now.to_rfc3339())
+            .text_element("elapsed-time", elapsed);
+
+        if let Some(context_window) = self.model_config.context_window {
+            xml.open("model-config")
+                .text_element("context-window", context_window.to_string())
+                .close("model-config");
+        }
+
+        if self.usage.total_tokens > 0 {
+            xml.open("token-usage")
+                .text_element("total-tokens", self.usage.total_tokens.to_string())
+                .close("token-usage");
+        }
+
+        if is_user_prompt && !self.notes.is_empty() {
+            let entries = self.notes.list_all();
+            let count = entries.len().to_string();
+            xml.open_attrs("notes", [("count", count.as_str())]);
+            for (key, _value) in entries {
+                xml.empty_element_attrs("note", [("key", key.as_str())]);
+            }
+            xml.close("notes");
+        }
+
+        xml.close("runtime-context");
+        Some(xml.finish())
+    }
+
     /// Render context instructions for model-facing user prompts.
     #[must_use]
     pub fn context_instructions(&self, is_user_prompt: bool) -> Option<String> {
-        if !is_user_prompt || self.notes.is_empty() {
-            return None;
-        }
-        let entries = self.notes.list_all();
-        let mut keys = String::new();
-        for (key, _value) in &entries {
-            keys.push_str("<note key=\"");
-            keys.push_str(&escape_xml_attribute(key));
-            keys.push_str("\" />");
-        }
-        Some(format!("<notes count=\"{}\">{keys}</notes>", entries.len()))
+        self.inject_runtime_context(is_user_prompt)
     }
 }
 
@@ -586,15 +657,6 @@ impl Default for AgentContext {
     fn default() -> Self {
         Self::new(AgentId::default())
     }
-}
-
-fn escape_xml_attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// Shared context snapshot handle for tools that need to report context mutations.

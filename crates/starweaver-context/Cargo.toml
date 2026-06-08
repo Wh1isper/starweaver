@@ -13,6 +13,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 starweaver-core.workspace = true

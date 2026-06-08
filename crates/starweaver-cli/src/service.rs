@@ -137,6 +137,9 @@ impl CliService {
             }
             CliCommand::Update(command) => Self::update(&command),
             CliCommand::Run(command) => self.run_prompt(&command),
+            CliCommand::Rpc(_) => Err(CliError::Usage(
+                "rpc owns stdin/stdout and must be run through run_from_env".to_string(),
+            )),
             CliCommand::Session { command } => self.session(command),
             CliCommand::Profile { command } => self.profile(command),
             CliCommand::Setup(command) => self.setup(&command),
@@ -161,6 +164,7 @@ impl CliService {
             OutputMode::Text => Ok(render_display_text(&execution.messages)),
             OutputMode::DisplayJsonl => render_display_jsonl(&execution.messages),
             OutputMode::AguiJsonl => render_agui_jsonl(&execution.messages),
+            OutputMode::Json => render_prompt_run_json(&execution),
             OutputMode::Silent => Ok(format!(
                 "session_id={}\nrun_id={}\nstatus={}\n",
                 execution.session_id, execution.run_id, execution.status
@@ -362,6 +366,15 @@ impl CliService {
                     OutputMode::Text => Ok(render_display_text(&messages)),
                     OutputMode::DisplayJsonl => render_display_jsonl(&messages),
                     OutputMode::AguiJsonl => render_agui_jsonl(&messages),
+                    OutputMode::Json => Ok(format!(
+                        "{}\n",
+                        serde_json::to_string(&json!({
+                            "sessionId": command.session_id,
+                            "runId": command.run,
+                            "messages": messages,
+                            "status": "replayed"
+                        }))?
+                    )),
                     OutputMode::Silent => Ok(format!(
                         "session_id={}\nmessages={}\nstatus=replayed\n",
                         command.session_id,
@@ -551,7 +564,7 @@ impl CliService {
         };
         match command.output {
             OutputMode::Text => Ok(snapshot.render_text()),
-            OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+            OutputMode::DisplayJsonl | OutputMode::AguiJsonl | OutputMode::Json => {
                 Ok(format!("{}\n", serde_json::to_string(&snapshot)?))
             }
             OutputMode::Silent => Ok(format!(
@@ -588,12 +601,29 @@ impl CliService {
 
     #[allow(clippy::too_many_lines)]
     fn interactive_tui(&mut self, command: &TuiCommand) -> CliResult<()> {
-        let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.global_dir);
+        let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.tui_state_dir);
         state.set_custom_commands(self.config.slash_commands.clone());
+        state.set_model_choices(model_choices(&self.config));
+        let choices = state.model_choices().to_vec();
+        let selected_profile = read_tui_selected_profile(&self.config)?
+            .filter(|profile| {
+                state
+                    .model_choices()
+                    .iter()
+                    .any(|choice| choice.profile == *profile)
+            })
+            .or_else(|| selectable_profile(&choices, &self.config.default_profile))
+            .or_else(|| selectable_profile(&choices, "general"))
+            .or_else(|| choices.first().map(|choice| choice.profile.clone()))
+            .unwrap_or_else(|| self.config.default_profile.clone());
+        let selected_choice = choices
+            .iter()
+            .find(|choice| choice.profile == selected_profile);
         state.set_profile(
-            self.config.default_profile.clone(),
-            default_model_label(&self.config),
+            selected_profile.clone(),
+            selected_choice.map_or_else(|| selected_profile.clone(), model_choice_label),
         );
+        state.set_context_window(selected_choice.and_then(|choice| choice.context_window));
         if command.session.is_some() {
             if let Some(snapshot) = self.tui_snapshot_state(command)? {
                 state.set_snapshot(&snapshot);
@@ -602,6 +632,7 @@ impl CliService {
         let mut tui = crate::tui::InteractiveTui::enter()?;
         let mut active_run: Option<ActiveTuiRun> = None;
         let mut queued_prompt: Option<String> = None;
+        let mut persisted_profile = state.profile.clone();
         let mut dirty = true;
         loop {
             while let Some(run) = active_run.as_mut() {
@@ -633,6 +664,7 @@ impl CliService {
                                         command,
                                         state.session_id.clone(),
                                         prompt,
+                                        Some(state.profile.clone()),
                                     ));
                                 }
                                 crate::tui::GoalIterationOutcome::Inactive
@@ -645,6 +677,7 @@ impl CliService {
                                             command,
                                             state.session_id.clone(),
                                             prompt,
+                                            Some(state.profile.clone()),
                                         ));
                                     }
                                 }
@@ -672,7 +705,9 @@ impl CliService {
                 tui.render(&state)?;
                 dirty = false;
             }
-            match crate::tui::InteractiveTui::poll_event(&mut state, Duration::from_millis(33))? {
+            let event =
+                crate::tui::InteractiveTui::poll_event(&mut state, Duration::from_millis(33))?;
+            match event {
                 Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
                     return Ok(())
                 }
@@ -724,9 +759,14 @@ impl CliService {
                         command,
                         state.session_id.clone(),
                         prompt,
+                        Some(state.profile.clone()),
                     ));
                     dirty = true;
                 }
+            }
+            if state.profile != persisted_profile {
+                write_tui_selected_profile(&self.config, &state.profile)?;
+                persisted_profile.clone_from(&state.profile);
             }
         }
     }
@@ -769,7 +809,7 @@ impl CliService {
                 approval_status_name(approval.status),
                 approval.run_id.as_str()
             )),
-            OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+            OutputMode::DisplayJsonl | OutputMode::AguiJsonl | OutputMode::Json => {
                 Ok(format!("{}\n", serde_json::to_string(&approval)?))
             }
             OutputMode::Silent => Ok(format!(
@@ -889,7 +929,7 @@ impl CliService {
             OutputMode::Text => Ok(format!(
                 "removed_database={removed_database}\nremoved_state={removed_state}\nremoved_store={removed_store}\nstatus=reset\n"
             )),
-            OutputMode::DisplayJsonl | OutputMode::AguiJsonl => Ok(format!(
+            OutputMode::DisplayJsonl | OutputMode::AguiJsonl | OutputMode::Json => Ok(format!(
                 "{}\n",
                 serde_json::to_string(&json!({
                     "removed_database": removed_database,
@@ -983,6 +1023,7 @@ fn spawn_tui_run(
     command: &TuiCommand,
     session_id: Option<String>,
     prompt: String,
+    profile: Option<String>,
 ) -> ActiveTuiRun {
     let config = config.clone();
     let command = command.clone();
@@ -1011,7 +1052,7 @@ fn spawn_tui_run(
                 new_session: false,
                 run: None,
                 branch_from: None,
-                profile: None,
+                profile,
                 output: Some(OutputMode::Text),
                 hitl: None,
                 worker: None,
@@ -1042,18 +1083,72 @@ fn spawn_tui_run(
     }
 }
 
-fn default_model_label(config: &CliConfig) -> String {
-    config
-        .model_profiles
-        .get(&config.default_profile)
-        .map(|model| model.model_id.clone())
-        .or_else(|| {
-            config
-                .default_model
-                .as_ref()
-                .map(|model| model.model_id.clone())
+fn model_choices(config: &CliConfig) -> Vec<crate::tui::ModelChoice> {
+    list_profiles(config)
+        .into_iter()
+        .filter(|profile| is_user_selectable_model_profile(&profile.name))
+        .map(|profile| crate::tui::ModelChoice {
+            profile: profile.name,
+            label: profile.label,
+            model_id: profile.model_id,
+            model_settings: profile.model_settings,
+            model_cfg: profile.model_cfg,
+            context_window: profile.context_window,
+            source: profile.source,
         })
-        .unwrap_or_else(|| "local_echo".to_string())
+        .collect()
+}
+
+fn is_user_selectable_model_profile(profile: &str) -> bool {
+    !matches!(profile, "approval_model" | "deferred_model")
+}
+
+fn selectable_profile(choices: &[crate::tui::ModelChoice], profile: &str) -> Option<String> {
+    choices
+        .iter()
+        .find(|choice| choice.profile == profile)
+        .map(|choice| choice.profile.clone())
+}
+
+fn model_choice_label(choice: &crate::tui::ModelChoice) -> String {
+    let display_name = choice.label.as_deref().unwrap_or(&choice.profile);
+    if display_name == choice.model_id {
+        choice.model_id.clone()
+    } else {
+        format!("{} ({})", display_name, choice.model_id)
+    }
+}
+
+fn read_tui_selected_profile(config: &CliConfig) -> CliResult<Option<String>> {
+    let path = config.tui_state_dir.join("state.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content =
+        fs::read_to_string(&path).map_err(|error| crate::error::io_error(&path, error))?;
+    let value = serde_json::from_str::<Value>(&content)?;
+    Ok(value
+        .get("selected_profile")
+        .or_else(|| value.get("selectedProfile"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string))
+}
+
+fn write_tui_selected_profile(config: &CliConfig, profile: &str) -> CliResult<()> {
+    fs::create_dir_all(&config.tui_state_dir)
+        .map_err(|error| crate::error::io_error(&config.tui_state_dir, error))?;
+    let path = config.tui_state_dir.join("state.json");
+    let temp = config
+        .tui_state_dir
+        .join(format!("state.{}.json.tmp", std::process::id()));
+    let value = json!({
+        "selected_profile": profile,
+        "updated_at": Utc::now().to_rfc3339(),
+    });
+    fs::write(&temp, serde_json::to_vec_pretty(&value)?)
+        .map_err(|error| crate::error::io_error(&temp, error))?;
+    fs::rename(&temp, &path).map_err(|error| crate::error::io_error(&path, error))?;
+    Ok(())
 }
 
 fn should_run_interactive_tui(command: &TuiCommand) -> bool {
@@ -1396,6 +1491,10 @@ fn render_sessions(sessions: &[SessionSummary], output: OutputMode) -> CliResult
             .map(|session| serde_json::to_string(session).map(|line| format!("{line}\n")))
             .collect::<Result<String, _>>()
             .map_err(CliError::from),
+        OutputMode::Json => Ok(format!(
+            "{}\n",
+            serde_json::to_string(&json!({"sessions": sessions, "status": "list"}))?
+        )),
         OutputMode::Silent => Ok(format!("sessions={}\nstatus=list\n", sessions.len())),
     }
 }
@@ -1435,6 +1534,10 @@ fn render_session_show(
             }
             Ok(lines)
         }
+        OutputMode::Json => Ok(format!(
+            "{}\n",
+            serde_json::to_string(&json!({"session": session, "runs": runs}))?
+        )),
         OutputMode::Silent => Ok(format!(
             "session_id={}\nruns={}\nstatus=shown\n",
             session["session_id"].as_str().unwrap_or_default(),
@@ -1458,6 +1561,36 @@ fn render_agui_jsonl(messages: &[DisplayMessage]) -> CliResult<String> {
         .map(|event| serde_json::to_string(&event).map(|line| format!("{line}\n")))
         .collect::<Result<String, _>>()
         .map_err(CliError::from)
+}
+
+fn render_prompt_run_json(execution: &PromptRunExecution) -> CliResult<String> {
+    let output_preview = execution
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| {
+            message
+                .payload
+                .get("output")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .or_else(|| message.preview.clone())
+        })
+        .unwrap_or_default();
+    let latest_sequence = execution.messages.last().map(|message| message.sequence);
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string(&json!({
+            "sessionId": execution.session_id,
+            "runId": execution.run_id,
+            "status": execution.status,
+            "outputPreview": output_preview,
+            "latestCursor": latest_sequence.map(|sequence| json!({
+                "scope": format!("run:{}", execution.run_id),
+                "sequence": sequence,
+            })),
+        }))?
+    ))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1783,6 +1916,10 @@ fn render_approvals(approvals: &[ApprovalRecord], output: OutputMode) -> CliResu
             Ok(lines)
         }
         OutputMode::DisplayJsonl | OutputMode::AguiJsonl => render_json_lines(approvals),
+        OutputMode::Json => Ok(format!(
+            "{}\n",
+            serde_json::to_string(&json!({"approvals": approvals, "status": "list"}))?
+        )),
         OutputMode::Silent => Ok(format!("approvals={}\nstatus=list\n", approvals.len())),
     }
 }
@@ -1804,6 +1941,10 @@ fn render_deferred(records: &[DeferredToolRecord], output: OutputMode) -> CliRes
             Ok(lines)
         }
         OutputMode::DisplayJsonl | OutputMode::AguiJsonl => render_json_lines(records),
+        OutputMode::Json => Ok(format!(
+            "{}\n",
+            serde_json::to_string(&json!({"deferred": records, "status": "list"}))?
+        )),
         OutputMode::Silent => Ok(format!("deferred={}\nstatus=list\n", records.len())),
     }
 }
@@ -1816,7 +1957,7 @@ fn render_deferred_decision(record: &DeferredToolRecord, output: OutputMode) -> 
             execution_status_name(record.status),
             record.run_id.as_str()
         )),
-        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl | OutputMode::Json => {
             Ok(format!("{}\n", serde_json::to_string(record)?))
         }
         OutputMode::Silent => Ok(format!(
@@ -1853,7 +1994,7 @@ fn render_session_delete(session_id: &str, deleted: bool, output: OutputMode) ->
         OutputMode::Text => Ok(format!(
             "session_id={session_id}\ndeleted={deleted}\nstatus=deleted\n"
         )),
-        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => Ok(format!(
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl | OutputMode::Json => Ok(format!(
             "{}\n",
             serde_json::to_string(&json!({
                 "session_id": session_id,
@@ -1875,7 +2016,7 @@ fn render_trim_report(report: &TrimReport, output: OutputMode) -> CliResult<Stri
             report.bytes_reclaimed,
             report.dry_run
         )),
-        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl | OutputMode::Json => {
             Ok(format!("{}\n", serde_json::to_string(report)?))
         }
         OutputMode::Silent => Ok(format!(
@@ -2078,6 +2219,36 @@ mod tests {
                     .contains("deferred_test")
             );
         }
+    }
+
+    #[test]
+    fn tui_model_choices_filter_internal_profiles_and_keep_config_details() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = crate::args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = crate::ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let choices = model_choices(&config);
+
+        assert!(choices.iter().any(|choice| choice.profile == "coding"));
+        assert!(!choices
+            .iter()
+            .any(|choice| choice.profile == "approval_model"));
+        assert!(!choices
+            .iter()
+            .any(|choice| choice.profile == "deferred_model"));
+
+        let coding = choices
+            .iter()
+            .find(|choice| choice.profile == "coding")
+            .unwrap();
+        assert_eq!(coding.model_id, "openai:gpt-5");
+        assert_eq!(
+            coding.model_settings.as_deref(),
+            Some("openai_responses_medium")
+        );
+        assert_eq!(coding.model_cfg.as_deref(), Some("gpt5_270k"));
+        assert_eq!(coding.context_window, Some(270_000));
     }
 
     #[test]

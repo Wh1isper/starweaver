@@ -26,6 +26,10 @@ pub struct CliConfig {
     pub global_dir: PathBuf,
     /// Project config root.
     pub project_dir: PathBuf,
+    /// TUI client state root.
+    pub tui_state_dir: PathBuf,
+    /// Desktop client state root.
+    pub desktop_state_dir: PathBuf,
     /// `SQLite` database path.
     pub database_path: PathBuf,
     /// Local file store path.
@@ -272,6 +276,8 @@ impl ConfigResolver {
         let mut config = CliConfig {
             global_dir: global_dir.clone(),
             project_dir: project_dir.clone(),
+            tui_state_dir: global_dir.join("tui"),
+            desktop_state_dir: global_dir.join("desktop"),
             database_path: project_dir.join("starweaver.sqlite"),
             file_store_path: project_dir.join("store"),
             default_profile: "general".to_string(),
@@ -378,7 +384,7 @@ fn bootstrap_global_config_dir(global_dir: &Path) -> CliResult<()> {
             fs::write(&path, content).map_err(|error| io_error(&path, error))?;
         }
     }
-    for name in ["skills", "subagents"] {
+    for name in ["skills", "subagents", "tui", "desktop"] {
         let path = global_dir.join(name);
         fs::create_dir_all(&path).map_err(|error| io_error(path, error))?;
     }
@@ -823,6 +829,7 @@ fn parse_output_mode(value: &str) -> Option<OutputMode> {
         "text" | "Text" => Some(OutputMode::Text),
         "display-jsonl" | "display_jsonl" | "DisplayJsonl" => Some(OutputMode::DisplayJsonl),
         "agui-jsonl" | "agui_jsonl" | "AguiJsonl" | "yaacli" => Some(OutputMode::AguiJsonl),
+        "json" | "Json" => Some(OutputMode::Json),
         "silent" | "Silent" => Some(OutputMode::Silent),
         _ => None,
     }
@@ -1550,6 +1557,10 @@ store/
 pub const DEFAULT_GLOBAL_GITIGNORE_TEMPLATE: &str = r"sessions/
 message_history/
 worktrees/
+tui/state.json
+tui/state.*.json.tmp
+desktop/state.json
+desktop/state.*.json.tmp
 state.json
 state.*.json.tmp
 ";
@@ -1878,6 +1889,7 @@ const fn output_mode_name(output: OutputMode) -> &'static str {
         OutputMode::Text => "text",
         OutputMode::DisplayJsonl => "display-jsonl",
         OutputMode::AguiJsonl => "agui-jsonl",
+        OutputMode::Json => "json",
         OutputMode::Silent => "silent",
     }
 }
@@ -1966,9 +1978,10 @@ fn validated_output_mode(value: &str) -> CliResult<&'static str> {
         Some(OutputMode::Text) => Ok("text"),
         Some(OutputMode::DisplayJsonl) => Ok("display-jsonl"),
         Some(OutputMode::AguiJsonl) => Ok("agui-jsonl"),
+        Some(OutputMode::Json) => Ok("json"),
         Some(OutputMode::Silent) => Ok("silent"),
         None => Err(CliError::Usage(format!(
-            "invalid general.default_output: {value}; expected text, display-jsonl, agui-jsonl, or silent"
+            "invalid general.default_output: {value}; expected text, display-jsonl, agui-jsonl, json, or silent"
         ))),
     }
 }

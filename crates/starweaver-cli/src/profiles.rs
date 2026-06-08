@@ -114,10 +114,22 @@ impl ResolvedProfile {
 pub struct ProfileSummary {
     /// Profile name.
     pub name: String,
+    /// Optional human label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     /// Profile source kind.
     pub source: String,
     /// Default model id.
     pub model_id: String,
+    /// Model settings preset name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_settings: Option<String>,
+    /// Model config preset name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_cfg: Option<String>,
+    /// Context window in tokens.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
     /// Profile path for file-backed profiles.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -211,36 +223,53 @@ pub fn resolve_profile(config: &CliConfig, requested: Option<&str>) -> CliResult
 
 /// List built-in and configured profiles.
 pub fn list_profiles(config: &CliConfig) -> Vec<ProfileSummary> {
-    let mut profiles = builtin_profile_specs()
-        .into_iter()
-        .map(|(name, spec)| ProfileSummary {
-            name: name.to_string(),
-            source: ProfileSource::BuiltIn.kind().to_string(),
-            model_id: profile_model_id(&spec),
-            path: None,
-        })
-        .collect::<Vec<_>>();
-    if let Some(profile) = config.default_model.as_ref() {
-        profiles.push(ProfileSummary {
-            name: "default_model".to_string(),
-            source: ProfileSource::Config.kind().to_string(),
-            model_id: profile.model_id.clone(),
-            path: None,
-        });
+    let mut profiles = BTreeMap::<String, ProfileSummary>::new();
+    for (name, spec) in builtin_profile_specs() {
+        profiles.insert(
+            name.to_string(),
+            ProfileSummary {
+                name: name.to_string(),
+                label: None,
+                source: ProfileSource::BuiltIn.kind().to_string(),
+                model_id: profile_model_id(&spec),
+                model_settings: profile_model_settings(&spec).map(ToString::to_string),
+                model_cfg: profile_model_cfg(&spec).map(ToString::to_string),
+                context_window: profile_context_window(&spec),
+                path: None,
+            },
+        );
     }
-    profiles.extend(
-        config
-            .model_profiles
-            .iter()
-            .map(|(name, profile)| ProfileSummary {
-                name: name.clone(),
+    if let Some(profile) = config.default_model.as_ref() {
+        profiles.insert(
+            "default_model".to_string(),
+            ProfileSummary {
+                name: "default_model".to_string(),
+                label: profile.label.clone(),
                 source: ProfileSource::Config.kind().to_string(),
                 model_id: profile.model_id.clone(),
+                model_settings: profile.model_settings.clone(),
+                model_cfg: profile.model_cfg.clone(),
+                context_window: profile.model_cfg.as_deref().and_then(model_context_window),
                 path: None,
-            }),
-    );
-    profiles.sort_by(|left, right| left.name.cmp(&right.name));
-    profiles
+            },
+        );
+    }
+    for (name, profile) in &config.model_profiles {
+        profiles.insert(
+            name.clone(),
+            ProfileSummary {
+                name: name.clone(),
+                label: profile.label.clone(),
+                source: ProfileSource::Config.kind().to_string(),
+                model_id: profile.model_id.clone(),
+                model_settings: profile.model_settings.clone(),
+                model_cfg: profile.model_cfg.clone(),
+                context_window: profile.model_cfg.as_deref().and_then(model_context_window),
+                path: None,
+            },
+        );
+    }
+    profiles.into_values().collect()
 }
 
 /// Render a built-in or file-backed profile as YAML.
@@ -431,9 +460,6 @@ pub fn list_default_tools(config: &CliConfig) -> Vec<ToolSummary> {
 }
 
 fn load_profile_spec(config: &CliConfig, requested: &str) -> CliResult<(AgentSpec, ProfileSource)> {
-    if let Some(spec) = builtin_spec(requested) {
-        return Ok((spec, ProfileSource::BuiltIn));
-    }
     if requested == "default_model" {
         if let Some(profile) = config.default_model.as_ref() {
             return Ok((
@@ -444,6 +470,9 @@ fn load_profile_spec(config: &CliConfig, requested: &str) -> CliResult<(AgentSpe
     }
     if let Some(profile) = config.model_profiles.get(requested) {
         return Ok((config_model_spec(requested, profile), ProfileSource::Config));
+    }
+    if let Some(spec) = builtin_spec(requested) {
+        return Ok((spec, ProfileSource::BuiltIn));
     }
     if let Some(path) = find_profile_path(config, requested) {
         let content = fs::read_to_string(&path).map_err(|error| io_error(&path, error))?;
@@ -812,11 +841,29 @@ fn configured_media_model(
 }
 
 fn media_understanding_request(request: &MediaUnderstandingRequest) -> ModelRequest {
-    let prompt = format!(
-        "Analyze this {kind} URL for the Starweaver CLI user. Return concise, useful observations.\n\nURL: {url}",
-        kind = request.media_kind,
-        url = request.url
-    );
+    let source_line = if request.url.starts_with("data:") {
+        "Source: attached inline media data URL content part".to_string()
+    } else {
+        format!("URL: {}", request.url)
+    };
+    let prompt = request
+        .instructions
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map_or_else(
+            || {
+                format!(
+                    "Analyze this {kind} for the Starweaver CLI user. Return concise, useful observations.\n\n{source_line}",
+                    kind = request.media_kind,
+                )
+            },
+            |instructions| {
+                format!(
+                    "Analyze this {kind} for the Starweaver CLI user. Return concise, useful observations.\n\nFocused instructions:\n{instructions}\n\n{source_line}",
+                    kind = request.media_kind,
+                )
+            },
+        );
     let mut content = vec![ContentPart::Text { text: prompt }];
     content.push(match request.media_kind.as_str() {
         "image" => ContentPart::ImageUrl {
@@ -1310,6 +1357,30 @@ fn spec_model_id(spec: &AgentSpec) -> Option<&str> {
 
 fn profile_model_id(spec: &AgentSpec) -> String {
     spec_model_id(spec).map_or_else(|| "<missing>".to_string(), ToString::to_string)
+}
+
+fn profile_model_settings(spec: &AgentSpec) -> Option<&str> {
+    spec.model
+        .as_ref()
+        .or(spec.preset.model.as_ref())
+        .and_then(|model| model.settings_preset.as_deref())
+}
+
+fn profile_model_cfg(spec: &AgentSpec) -> Option<&str> {
+    spec.model
+        .as_ref()
+        .or(spec.preset.model.as_ref())
+        .and_then(|model| model.config_preset.as_deref())
+}
+
+fn profile_context_window(spec: &AgentSpec) -> Option<u64> {
+    profile_model_cfg(spec).and_then(model_context_window)
+}
+
+fn model_context_window(model_cfg: &str) -> Option<u64> {
+    get_model_config(model_cfg)
+        .ok()
+        .map(|config| u64::from(config.context_window))
 }
 
 fn local_echo_model() -> FunctionModel {

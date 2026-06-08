@@ -42,7 +42,14 @@ fn mcp_toolset_exposes_declared_tools_and_instructions() {
     assert_eq!(definitions[0].metadata["mcp_transport"], "streamable_http");
     assert_eq!(definitions[0].metadata["mcp_tool_name"], "forecast");
     assert_eq!(definitions[0].metadata["mcp_task"], true);
-    assert_eq!(registry.get_instructions(), vec!["Use weather MCP tools."]);
+    assert_eq!(
+        registry.get_instructions(),
+        vec!["<tool-instruction name=\"mcp:weather\">Use weather MCP tools.</tool-instruction>"]
+    );
+    let instructions = registry.instructions();
+    assert_eq!(instructions.len(), 1);
+    assert_eq!(instructions[0].group, "mcp:weather");
+    assert_eq!(instructions[0].content, "Use weather MCP tools.");
 }
 
 #[tokio::test]

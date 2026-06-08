@@ -1,5 +1,7 @@
 //! `OpenAI` Responses wire mapper.
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value};
 use starweaver_core::Usage;
 
@@ -63,6 +65,11 @@ impl OpenAiResponsesAdapter {
         for message in messages {
             match message {
                 ModelMessage::Request(request) => {
+                    if let Some(request_instructions) = request.instructions.as_ref() {
+                        if !request_instructions.trim().is_empty() {
+                            instructions.push(request_instructions.clone());
+                        }
+                    }
                     for part in &request.parts {
                         match part {
                             ModelRequestPart::SystemPrompt { text, .. }
@@ -199,6 +206,17 @@ impl OpenAiResponsesAdapter {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct StreamedFunctionCall {
+    index: usize,
+    item_id: String,
+    call_id: String,
+    name: String,
+    arguments: String,
+    started: bool,
+    ended: bool,
+}
+
 /// Incremental parser for `OpenAI` Responses server-sent JSON payloads.
 #[derive(Default)]
 pub struct OpenAiResponsesStreamParser {
@@ -206,6 +224,8 @@ pub struct OpenAiResponsesStreamParser {
     text: String,
     reasoning_started: bool,
     reasoning: String,
+    function_calls: BTreeMap<String, StreamedFunctionCall>,
+    next_tool_index: usize,
     final_seen: bool,
 }
 
@@ -253,6 +273,18 @@ impl OpenAiResponsesStreamParser {
             ) if self.reasoning_started => {
                 self.end_reasoning_part(&mut stream);
             }
+            Some("response.output_item.added") => {
+                self.push_output_item_added(event, &mut stream);
+            }
+            Some("response.function_call_arguments.delta") => {
+                self.push_function_call_arguments_delta(event, &mut stream);
+            }
+            Some("response.function_call_arguments.done") => {
+                self.push_function_call_arguments_done(event, &mut stream);
+            }
+            Some("response.output_item.done") => {
+                self.push_output_item_done(event, &mut stream);
+            }
             Some("response.completed") => {
                 self.end_open_parts(&mut stream);
                 let response = event
@@ -260,8 +292,8 @@ impl OpenAiResponsesStreamParser {
                     .map(OpenAiResponsesAdapter::parse_response)
                     .transpose()?
                     .map_or_else(
-                        || text_response(self.text.clone()),
-                        |response| self.response_with_streamed_text_fallback(response),
+                        || self.response_from_streamed_parts(),
+                        |response| self.response_with_streamed_parts_fallback(response),
                     );
                 stream.push(ModelResponseStreamEvent::FinalResult(Box::new(response)));
                 self.final_seen = true;
@@ -316,15 +348,275 @@ impl OpenAiResponsesStreamParser {
         }
     }
 
-    fn response_with_streamed_text_fallback(&self, response: ModelResponse) -> ModelResponse {
-        if response.text_output().is_empty() && !self.text.is_empty() {
-            return text_response_with_streamed_parts_and_response_metadata(
-                self.reasoning.clone(),
-                self.text.clone(),
-                response,
-            );
+    fn push_output_item_added(
+        &mut self,
+        event: &Value,
+        stream: &mut Vec<ModelResponseStreamEvent>,
+    ) {
+        let Some(item) = event.get("item") else {
+            return;
+        };
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            return;
+        }
+        let key = function_call_item_key(event, item);
+        self.ensure_function_call_started(&key, item, stream);
+        self.update_function_call_from_item(&key, item, stream, false);
+    }
+
+    fn push_function_call_arguments_delta(
+        &mut self,
+        event: &Value,
+        stream: &mut Vec<ModelResponseStreamEvent>,
+    ) {
+        let Some(key) = event.get("item_id").and_then(Value::as_str) else {
+            return;
+        };
+        let key = key.to_string();
+        self.ensure_function_call_started(&key, &Value::Null, stream);
+        if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+            if delta.is_empty() {
+                return;
+            }
+            if let Some(call) = self.function_calls.get_mut(&key) {
+                call.arguments.push_str(delta);
+                stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
+                    index: call.index,
+                    delta: crate::StreamDelta::ToolCallArguments {
+                        arguments_delta: delta.to_string(),
+                    },
+                }));
+            }
+        }
+    }
+
+    fn push_function_call_arguments_done(
+        &mut self,
+        event: &Value,
+        stream: &mut Vec<ModelResponseStreamEvent>,
+    ) {
+        let Some(key) = event.get("item_id").and_then(Value::as_str) else {
+            return;
+        };
+        let key = key.to_string();
+        self.ensure_function_call_started(&key, &Value::Null, stream);
+        let Some(arguments) = event
+            .get("arguments")
+            .or_else(|| event.get("delta"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        self.update_function_call_arguments(&key, arguments, stream);
+    }
+
+    fn push_output_item_done(&mut self, event: &Value, stream: &mut Vec<ModelResponseStreamEvent>) {
+        let Some(item) = event.get("item") else {
+            return;
+        };
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            return;
+        }
+        let key = function_call_item_key(event, item);
+        self.ensure_function_call_started(&key, item, stream);
+        self.update_function_call_from_item(&key, item, stream, true);
+        if let Some(call) = self.function_calls.get_mut(&key) {
+            if !call.ended {
+                stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+                    index: call.index,
+                    part_kind: Some("tool_call".to_string()),
+                }));
+                call.ended = true;
+            }
+        }
+    }
+
+    fn ensure_function_call_started(
+        &mut self,
+        key: &str,
+        item: &Value,
+        stream: &mut Vec<ModelResponseStreamEvent>,
+    ) {
+        if self.next_tool_index == 0 {
+            self.next_tool_index = 2;
+        }
+        let mut start_index = None;
+        let call = self
+            .function_calls
+            .entry(key.to_string())
+            .or_insert_with(|| {
+                let index = self.next_tool_index;
+                self.next_tool_index = self.next_tool_index.saturating_add(1);
+                StreamedFunctionCall {
+                    index,
+                    item_id: item
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or(key)
+                        .to_string(),
+                    call_id: item
+                        .get("call_id")
+                        .or_else(|| item.get("id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(key)
+                        .to_string(),
+                    name: String::new(),
+                    arguments: String::new(),
+                    started: false,
+                    ended: false,
+                }
+            });
+        if !call.started {
+            call.started = true;
+            start_index = Some(call.index);
+        }
+        if let Some(index) = start_index {
+            stream.push(ModelResponseStreamEvent::PartStart(crate::PartStart {
+                index,
+                part_kind: "tool_call".to_string(),
+            }));
+        }
+    }
+
+    fn update_function_call_from_item(
+        &mut self,
+        key: &str,
+        item: &Value,
+        stream: &mut Vec<ModelResponseStreamEvent>,
+        final_item: bool,
+    ) {
+        let Some(call) = self.function_calls.get_mut(key) else {
+            return;
+        };
+        if let Some(item_id) = item.get("id").and_then(Value::as_str) {
+            call.item_id = item_id.to_string();
+        }
+        if let Some(call_id) = item
+            .get("call_id")
+            .or_else(|| item.get("id"))
+            .and_then(Value::as_str)
+        {
+            call.call_id = call_id.to_string();
+        }
+        if let Some(name) = item.get("name").and_then(Value::as_str) {
+            if !name.is_empty() && call.name != name {
+                call.name = name.to_string();
+                stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
+                    index: call.index,
+                    delta: crate::StreamDelta::ToolCallName {
+                        name: name.to_string(),
+                    },
+                }));
+            }
+        }
+        let arguments = item.get("arguments").and_then(Value::as_str);
+        if let Some(arguments) = arguments {
+            self.update_function_call_arguments(key, arguments, stream);
+        } else if final_item && call.arguments.is_empty() {
+            call.arguments = "{}".to_string();
+        }
+    }
+
+    fn update_function_call_arguments(
+        &mut self,
+        key: &str,
+        arguments: &str,
+        stream: &mut Vec<ModelResponseStreamEvent>,
+    ) {
+        let Some(call) = self.function_calls.get_mut(key) else {
+            return;
+        };
+        if arguments.is_empty() || call.arguments == arguments {
+            return;
+        }
+        let delta = if call.arguments.is_empty() {
+            Some(arguments.to_string())
+        } else {
+            arguments
+                .strip_prefix(&call.arguments)
+                .filter(|suffix| !suffix.is_empty())
+                .map(ToString::to_string)
+        };
+        call.arguments = arguments.to_string();
+        if let Some(arguments_delta) = delta {
+            stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
+                index: call.index,
+                delta: crate::StreamDelta::ToolCallArguments { arguments_delta },
+            }));
+        }
+    }
+
+    fn response_with_streamed_parts_fallback(&self, mut response: ModelResponse) -> ModelResponse {
+        let has_text = !response.text_output().is_empty();
+        let has_thinking = response
+            .parts
+            .iter()
+            .any(|part| matches!(part, ModelResponsePart::Thinking { .. }));
+        let existing_tool_keys = response
+            .tool_calls()
+            .into_iter()
+            .map(|call| tool_call_key(&call.id, &call.name))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut prefix = Vec::new();
+        if !has_thinking && !self.reasoning.is_empty() {
+            prefix.push(ModelResponsePart::Thinking {
+                text: self.reasoning.clone(),
+                signature: response
+                    .provider
+                    .as_ref()
+                    .and_then(|provider| provider.response_id.clone()),
+            });
+        }
+        if !prefix.is_empty() {
+            prefix.extend(response.parts);
+            response.parts = prefix;
+        }
+        if !has_text && !self.text.is_empty() {
+            response.parts.push(ModelResponsePart::Text {
+                text: self.text.clone(),
+            });
+        }
+        for call in self.streamed_tool_calls() {
+            if !existing_tool_keys.contains(&tool_call_key(&call.id, &call.name)) {
+                response.parts.push(ModelResponsePart::ToolCall(call));
+            }
         }
         response
+    }
+
+    fn response_from_streamed_parts(&self) -> ModelResponse {
+        self.response_with_streamed_parts_fallback(ModelResponse {
+            parts: Vec::new(),
+            usage: Usage::default(),
+            model_name: None,
+            provider: Some(ProviderInfo {
+                name: "openai".to_string(),
+                response_id: None,
+            }),
+            finish_reason: None,
+            timestamp: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        })
+    }
+
+    fn streamed_tool_calls(&self) -> Vec<ToolCallPart> {
+        let mut calls = self.function_calls.values().collect::<Vec<_>>();
+        calls.sort_by_key(|call| call.index);
+        calls
+            .into_iter()
+            .filter(|call| !call.name.is_empty())
+            .map(|call| ToolCallPart {
+                id: if call.call_id.is_empty() {
+                    call.item_id.clone()
+                } else {
+                    call.call_id.clone()
+                },
+                name: call.name.clone(),
+                arguments: parse_tool_call_arguments(&Value::String(call.arguments.clone())),
+            })
+            .collect()
     }
 
     /// Finish parsing buffered text.
@@ -336,7 +628,7 @@ impl OpenAiResponsesStreamParser {
         if self.final_seen {
             return Ok(Vec::new());
         }
-        if self.text.is_empty() {
+        if self.text.is_empty() && self.reasoning.is_empty() && self.function_calls.is_empty() {
             return Err(ModelError::ResponseParsing(
                 "missing response.completed event".to_string(),
             ));
@@ -344,64 +636,34 @@ impl OpenAiResponsesStreamParser {
         let mut stream = Vec::new();
         self.end_open_parts(&mut stream);
         stream.push(ModelResponseStreamEvent::FinalResult(Box::new(
-            text_response(self.text.clone()),
+            self.response_from_streamed_parts(),
         )));
         self.final_seen = true;
         Ok(stream)
     }
 }
 
-fn text_response(text: String) -> ModelResponse {
-    ModelResponse {
-        parts: vec![ModelResponsePart::Text { text }],
-        usage: Usage::default(),
-        model_name: None,
-        provider: Some(ProviderInfo {
-            name: "openai".to_string(),
-            response_id: None,
-        }),
-        finish_reason: None,
-        timestamp: None,
-        run_id: None,
-        conversation_id: None,
-        metadata: serde_json::Map::new(),
-    }
+fn function_call_item_key(event: &Value, item: &Value) -> String {
+    event
+        .get("item_id")
+        .or_else(|| item.get("id"))
+        .or_else(|| item.get("call_id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .map(|index| format!("output-{index}"))
+        })
+        .unwrap_or_else(|| "function-call".to_string())
 }
 
-fn text_response_with_streamed_parts_and_response_metadata(
-    reasoning: String,
-    text: String,
-    response: ModelResponse,
-) -> ModelResponse {
-    let signature = response
-        .provider
-        .as_ref()
-        .and_then(|provider| provider.response_id.clone());
-    let mut parts = response.parts;
-    if !reasoning.is_empty()
-        && !parts
-            .iter()
-            .any(|part| matches!(part, ModelResponsePart::Thinking { .. }))
-    {
-        parts.insert(
-            0,
-            ModelResponsePart::Thinking {
-                text: reasoning,
-                signature,
-            },
-        );
-    }
-    parts.push(ModelResponsePart::Text { text });
-    ModelResponse {
-        parts,
-        usage: response.usage,
-        model_name: response.model_name,
-        provider: response.provider,
-        finish_reason: response.finish_reason,
-        timestamp: response.timestamp,
-        run_id: response.run_id,
-        conversation_id: response.conversation_id,
-        metadata: response.metadata,
+fn tool_call_key(id: &str, name: &str) -> String {
+    if id.is_empty() {
+        format!("name:{name}")
+    } else {
+        format!("id:{id}")
     }
 }
 
@@ -544,4 +806,124 @@ fn native_response_tool_def(tool: &NativeToolDefinition) -> Value {
         object.insert(key.clone(), value.clone());
     }
     Value::Object(object)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::{ModelResponsePart, ModelResponseStreamEvent, StreamDelta};
+
+    fn final_response(events: &[ModelResponseStreamEvent]) -> &ModelResponse {
+        events
+            .iter()
+            .find_map(|event| match event {
+                ModelResponseStreamEvent::FinalResult(response) => Some(response.as_ref()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn responses_stream_function_call_deltas_become_final_tool_call() {
+        let events = vec![
+            json!({
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {
+                    "id": "fc_1",
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "shell_exec",
+                    "arguments": ""
+                }
+            }),
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_1",
+                "delta": "{\"command\":\"ls"
+            }),
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "fc_1",
+                "delta": "\"}"
+            }),
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "id": "fc_1",
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "shell_exec",
+                    "arguments": "{\"command\":\"ls\"}"
+                }
+            }),
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "output": []
+                }
+            }),
+        ];
+
+        let stream = OpenAiResponsesAdapter::parse_stream_events(&events).unwrap();
+        assert!(stream.iter().any(|event| matches!(
+            event,
+            ModelResponseStreamEvent::PartStart(part)
+                if part.part_kind == "tool_call" && part.index == 2
+        )));
+        assert!(stream.iter().any(|event| matches!(
+            event,
+            ModelResponseStreamEvent::PartDelta(delta)
+                if matches!(&delta.delta, StreamDelta::ToolCallName { name } if name == "shell_exec")
+        )));
+        assert!(stream.iter().any(|event| matches!(
+            event,
+            ModelResponseStreamEvent::PartDelta(delta)
+                if matches!(&delta.delta, StreamDelta::ToolCallArguments { arguments_delta } if arguments_delta.contains("command"))
+        )));
+
+        let response = final_response(&stream);
+        let tool_calls = response.tool_calls();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].id, "call_1");
+        assert_eq!(tool_calls[0].name, "shell_exec");
+        assert_eq!(tool_calls[0].arguments.execution_value()["command"], "ls");
+    }
+
+    #[test]
+    fn responses_stream_preserves_thinking_and_text_when_completed_output_is_empty() {
+        let events = vec![
+            json!({"type": "response.reasoning_summary_text.delta", "delta": "inspect"}),
+            json!({"type": "response.output_text.delta", "delta": "done"}),
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_text",
+                    "status": "completed",
+                    "output": []
+                }
+            }),
+        ];
+
+        let stream = OpenAiResponsesAdapter::parse_stream_events(&events).unwrap();
+        assert!(stream.iter().any(|event| matches!(
+            event,
+            ModelResponseStreamEvent::PartDelta(delta)
+                if matches!(&delta.delta, StreamDelta::Thinking { text } if text == "inspect")
+        )));
+        assert!(stream.iter().any(|event| matches!(
+            event,
+            ModelResponseStreamEvent::PartDelta(delta)
+                if matches!(&delta.delta, StreamDelta::Text { text } if text == "done")
+        )));
+        let response = final_response(&stream);
+        assert_eq!(response.text_output(), "done");
+        assert!(response.parts.iter().any(
+            |part| matches!(part, ModelResponsePart::Thinking { text, .. } if text == "inspect")
+        ));
+    }
 }

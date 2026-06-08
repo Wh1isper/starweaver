@@ -9,6 +9,7 @@ pub mod launcher;
 mod local_store;
 mod oauth;
 mod profiles;
+mod rpc;
 mod runner;
 mod service;
 mod tui;
@@ -29,7 +30,12 @@ pub fn run_from_env() -> CliResult<()> {
 
 /// Run the CLI from an argument iterator.
 pub fn run(args: impl IntoIterator<Item = String>) -> CliResult<()> {
-    let output = command_output(args)?;
+    let cli = args::parse(args)?;
+    let config = ConfigResolver::default().resolve(&cli)?;
+    if matches!(cli.command, Some(CliCommand::Rpc(_))) {
+        return rpc::run_stdio(&config);
+    }
+    let output = command_output_from_parts(cli, config)?;
     print!("{output}");
     Ok(())
 }
@@ -38,6 +44,10 @@ pub fn run(args: impl IntoIterator<Item = String>) -> CliResult<()> {
 pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<String> {
     let cli = args::parse(args)?;
     let config = ConfigResolver::default().resolve(&cli)?;
+    command_output_from_parts(cli, config)
+}
+
+fn command_output_from_parts(cli: Cli, config: CliConfig) -> CliResult<String> {
     let show_update_hint = should_show_update_hint(&cli, &config);
     if show_update_hint {
         update_check::spawn_update_check_if_due(&config);

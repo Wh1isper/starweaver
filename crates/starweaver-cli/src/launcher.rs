@@ -192,6 +192,8 @@ mod tests {
             temp.path().join("sessions.sqlite").display().to_string(),
             "-p".to_string(),
             "hello".to_string(),
+            "--profile".to_string(),
+            "general".to_string(),
             "--output".to_string(),
             "display-jsonl".to_string(),
         ];

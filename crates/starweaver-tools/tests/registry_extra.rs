@@ -60,7 +60,17 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     assert_eq!(registry.max_retries_for("inherited"), 4);
     assert_eq!(registry.max_retries_for("failing"), 2);
     assert_eq!(registry.max_retries_for("missing"), 7);
-    assert_eq!(registry.get_instructions(), vec!["Use a.", "Use b."]);
+    assert_eq!(
+        registry.get_instructions(),
+        vec![
+            "<tool-instruction name=\"a\">Use a.</tool-instruction>",
+            "<tool-instruction name=\"b\">Use b.</tool-instruction>",
+        ]
+    );
+    let instructions = registry.instructions();
+    assert_eq!(instructions.len(), 2);
+    assert_eq!(instructions[0].content, "Use a.");
+    assert_eq!(instructions[1].content, "Use b.");
 
     let call = ToolCallPart {
         id: "call_1".to_string(),
@@ -127,5 +137,8 @@ fn registry_insert_registry_carries_retry_and_instructions() {
     target.insert_registry(&source);
     assert_eq!(target.max_retries(), Some(5));
     assert_eq!(target.max_retries_for("plain"), 3);
-    assert_eq!(target.get_instructions(), vec!["Use source."]);
+    assert_eq!(
+        target.get_instructions(),
+        vec!["<tool-instruction name=\"source\">Use source.</tool-instruction>"]
+    );
 }

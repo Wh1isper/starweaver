@@ -17,11 +17,12 @@ pub use bundles::{
     attach_environment, attach_process_shell, core_toolsets, environment_toolsets,
     filesystem_tools, host_operation_tools, namespaced_toolset, parse_skill_markdown,
     process_shell_toolsets, shell_tools, skill_tools, task_tools, tool_proxy_toolset,
-    EnvironmentHandle, HostMediaCapabilities, HostMediaUnderstandingClient,
-    HostMediaUnderstandingClientHandle, HostScrapeClient, HostScrapeClientHandle, HostSearchClient,
-    HostSearchClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse,
-    ProcessShellHandle, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
-    SearchResultItem, SkillError, SkillPackage, SkillRegistry, SkillSourceScope, ToolProxyToolset,
+    EnvironmentContextCapability, EnvironmentHandle, HostMediaCapabilities,
+    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
+    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
+    MediaUnderstandingResponse, ProcessShellHandle, ScrapeRequest, ScrapeResponse, SearchRequest,
+    SearchResponse, SearchResultItem, SkillError, SkillPackage, SkillRegistry, SkillSourceScope,
+    ToolProxyToolset,
 };
 pub use filters::{
     default_filter_bundle, default_filter_processors, MediaUploadRequest, MediaUploader,
@@ -100,6 +101,7 @@ pub struct AgentBuilder {
     output_functions: Vec<Arc<dyn OutputFunction>>,
     dynamic_instructions: Vec<Arc<dyn DynamicInstruction>>,
     usage_limits: Option<UsageLimits>,
+    context_window: Option<u64>,
     history_processors: Vec<Arc<dyn HistoryProcessor>>,
     tools: ToolRegistry,
     capabilities: Vec<Arc<dyn AgentCapability>>,
@@ -124,6 +126,7 @@ impl AgentBuilder {
             output_functions: Vec::new(),
             dynamic_instructions: Vec::new(),
             usage_limits: None,
+            context_window: None,
             history_processors: Vec::new(),
             tools: ToolRegistry::new(),
             capabilities: Vec::new(),
@@ -194,6 +197,13 @@ impl AgentBuilder {
     #[must_use]
     pub const fn usage_limits(mut self, limits: UsageLimits) -> Self {
         self.usage_limits = Some(limits);
+        self
+    }
+
+    /// Set the model context window exposed to runtime context instructions.
+    #[must_use]
+    pub const fn context_window(mut self, context_window: u64) -> Self {
+        self.context_window = Some(context_window);
         self
     }
 
@@ -319,6 +329,7 @@ impl AgentBuilder {
         }
         let parent_tools = tools.clone();
         let parent_tools_hook = Arc::new(ParentToolsCapabilityHook { parent_tools });
+        let environment_context_hook = Arc::new(EnvironmentContextCapability);
         let mut agent = RuntimeAgent::new(self.model)
             .with_request_params(self.request_params)
             .with_tools(tools)
@@ -341,6 +352,9 @@ impl AgentBuilder {
         if let Some(limits) = self.usage_limits {
             agent = agent.with_usage_limits(limits);
         }
+        if let Some(context_window) = self.context_window {
+            agent = agent.with_context_window(context_window);
+        }
         for processor in self.history_processors {
             agent = agent.with_history_processor(processor);
         }
@@ -352,6 +366,7 @@ impl AgentBuilder {
         }
         agent = agent.with_capability(media_capability_hook);
         agent = agent.with_capability(parent_tools_hook);
+        agent = agent.with_capability(environment_context_hook);
         for capability in self.capabilities {
             agent = agent.with_capability(capability);
         }

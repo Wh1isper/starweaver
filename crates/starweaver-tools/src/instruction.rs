@@ -1,6 +1,7 @@
 //! Tool instruction blocks.
 
 use serde::{Deserialize, Serialize};
+use starweaver_core::XmlWriter;
 
 /// Toolset or tool instruction block.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -19,5 +20,17 @@ impl ToolInstruction {
             group: group.into(),
             content: content.into(),
         }
+    }
+
+    /// Render this instruction block in the ya-agent-sdk tool-instruction XML shape.
+    #[must_use]
+    pub fn render_xml(&self) -> String {
+        let mut xml = XmlWriter::new();
+        xml.text_element_attrs(
+            "tool-instruction",
+            [("name", self.group.as_str())],
+            &self.content,
+        );
+        xml.finish()
     }
 }

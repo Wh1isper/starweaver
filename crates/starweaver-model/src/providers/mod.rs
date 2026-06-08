@@ -17,6 +17,7 @@ use crate::{
     ModelSettings,
 };
 
+#[cfg(test)]
 fn text_from_content(content: &[ContentPart]) -> String {
     content
         .iter()
@@ -193,6 +194,11 @@ fn collect_system_and_non_system(messages: &[ModelMessage]) -> (Vec<String>, Vec
     for message in messages {
         match message {
             ModelMessage::Request(request) => {
+                if let Some(request_instructions) = request.instructions.as_ref() {
+                    if !request_instructions.trim().is_empty() {
+                        system.push(request_instructions.clone());
+                    }
+                }
                 let mut has_non_system = false;
                 for part in &request.parts {
                     match part {

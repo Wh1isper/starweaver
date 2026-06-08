@@ -53,7 +53,7 @@ flowchart TD
 - `01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `02-shared-execution-components.md` — shared session storage and stream protocol contracts
 - `03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
-- `04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI compatibility adapters, launcher dispatch, and GitHub install/update flow
+- `04-cli-product.md` — CLI-first product surface with JSON-RPC stdio as the complete local runtime and management API, CLI commands as a shell-friendly subset, TUI as the terminal client, Desktop as a future client, headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI compatibility adapters, launcher dispatch, and GitHub install/update flow
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `07-ya-mono-parity-migration.md` — foundation and CLI parity reference map with CLI audit postponed
 - `09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening

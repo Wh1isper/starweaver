@@ -377,6 +377,20 @@ sw cli tui
 make cli
 ```
 
+Interactive slash commands:
+
+| Command            | Action                                              |
+| ------------------ | --------------------------------------------------- |
+| `/help`            | Print command help into the transcript              |
+| `/clear`           | Clear output                                        |
+| `/cost`            | Show usage/context summary                          |
+| `/model`           | Open the in-TUI model profile selector              |
+| `/model <profile>` | Select a model profile directly for future TUI runs |
+| `/goal <task>`     | Run toward a verified goal                          |
+| `!<command>`       | Run a shell command and show output inline          |
+
+The `/model` selector is embedded in the TUI. Use `Up` / `Down` to move, `Enter` to select, and `Esc` to cancel. The selector shows only user-facing profiles and expands the highlighted profile with its model id, settings preset, config preset, context window, and source so long model ids are easier to inspect. The TUI selected model is client state stored in `~/.starweaver/tui/state.json`. It does not mutate `~/.starweaver/config.toml`; shared config still owns the profile definitions and provider settings. Model selection is only allowed while no run is active.
+
 Interactive keys:
 
 | Key                     | Action                                             |
@@ -388,8 +402,9 @@ Interactive keys:
 | `Shift-Tab`             | Toggle ACT/PLAN mode                               |
 | `Ctrl-R`                | Recall the previous prompt                         |
 | `Up` / `Down`           | Browse prompt history                              |
-| `PageUp` / `PageDown`   | Scroll output                                      |
-| `Ctrl-Up` / `Ctrl-Down` | Scroll output one line                             |
+| `PageUp` / `PageDown`   | Scroll transcript                                  |
+| Mouse wheel             | Scroll transcript                                  |
+| `Ctrl-Up` / `Ctrl-Down` | Scroll transcript one line                         |
 | `Ctrl-L`                | Jump to the live bottom                            |
 | `Ctrl-C`                | Request interruption during a run; exit while idle |
 | `Ctrl-D`                | Exit                                               |
@@ -433,6 +448,28 @@ starweaver-cli resume --session <session-id> --prompt "continue after review"
 ```
 
 `resume` appends a continuation run from the waiting or head run state. Service-managed same-run checkpoint reload, interruption APIs, service transports, workflows, and schedules belong to future service adapters.
+
+## JSON-RPC stdio runtime
+
+`starweaver-cli rpc` starts a newline-delimited JSON-RPC 2.0 runtime over stdin/stdout. It is the local host API for TUI/Desktop integrations and exposes the management surface that CLI commands wrap for shell use.
+
+```bash
+sw cli rpc
+starweaver cli rpc
+starweaver-cli rpc
+```
+
+Example handshake and client model selection:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tui"}}}
+{"jsonrpc":"2.0","id":2,"method":"model.list","params":{"client":"tui"}}
+{"jsonrpc":"2.0","id":3,"method":"model.select","params":{"client":"tui","profile":"coding"}}
+{"jsonrpc":"2.0","id":4,"method":"run.prompt","params":{"client":"tui","prompt":"hello","newSession":true}}
+{"jsonrpc":"2.0","id":5,"method":"shutdown","params":{}}
+```
+
+`model.select` writes `~/.starweaver/tui/state.json` or `~/.starweaver/desktop/state.json` depending on the `client` parameter. `run.prompt` and `run.start` use this priority for model selection: explicit `profile`/`modelProfile`, then selected profile for the supplied `client`, then the resolved config default profile. The current implementation returns a blocking compact run summary; the live coordinator will later add non-blocking run start, display notifications, cancellation, steering, and attach semantics.
 
 ## Environment
 
@@ -486,7 +523,9 @@ sw cli reset --yes
 
 ## Config
 
-Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_PROFILE`, `STARWEAVER_SKILL_DIRS`, `STARWEAVER_SUBAGENT_DIRS`, `STARWEAVER_DISABLED_SUBAGENTS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_IMAGE_UNDERSTANDING_MODEL`, `STARWEAVER_VIDEO_UNDERSTANDING_MODEL`, `STARWEAVER_AUDIO_UNDERSTANDING_MODEL`, `STARWEAVER_UPDATE_CHANNEL`, `STARWEAVER_UPDATE_CHECK`, `STARWEAVER_OAUTH_AUTH_FILE`, and `STARWEAVER_NO_AUTO_TRIM`.
+Global Starweaver configuration lives under `~/.starweaver`. `~/.starweaver/config.toml` stores shared defaults, provider settings, and model profile definitions. `~/.starweaver/tools.toml`, `~/.starweaver/mcp.json`, `~/.starweaver/skills`, and `~/.starweaver/subagents` are shared by CLI, TUI, Desktop, and RPC hosts. Frontend state is separate: TUI uses `~/.starweaver/tui/state.json`, Desktop uses `~/.starweaver/desktop/state.json`, and project runtime state keeps the current session pointer in `.starweaver/state.json`.
+
+Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_CONFIG_DIR`, `STARWEAVER_PROJECT_DIR`, `STARWEAVER_PROFILE`, `STARWEAVER_SKILL_DIRS`, `STARWEAVER_SUBAGENT_DIRS`, `STARWEAVER_DISABLED_SUBAGENTS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_IMAGE_UNDERSTANDING_MODEL`, `STARWEAVER_VIDEO_UNDERSTANDING_MODEL`, `STARWEAVER_AUDIO_UNDERSTANDING_MODEL`, `STARWEAVER_UPDATE_CHANNEL`, `STARWEAVER_UPDATE_CHECK`, `STARWEAVER_OAUTH_AUTH_FILE`, and `STARWEAVER_NO_AUTO_TRIM`.
 
 Get resolved config values and persist project or global config overrides:
 

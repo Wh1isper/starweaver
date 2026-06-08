@@ -1,16 +1,18 @@
 //! Anthropic Messages wire mapper.
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 
 use crate::{
     adapter::ToolDefinition,
+    media::parse_data_url,
     message::{
-        FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
-        ProviderInfo, ToolCallPart, ToolReturnPart,
+        ContentPart, FinishReason, ModelMessage, ModelRequestPart, ModelResponse,
+        ModelResponsePart, ProviderInfo, ToolCallPart, ToolReturnPart,
     },
     providers::{
         collect_system_and_non_system, insert_optional_description, provider_tool_parameters,
-        text_from_content, usage_from_named,
+        usage_from_named,
     },
     ModelError, ModelSettings,
 };
@@ -43,7 +45,7 @@ impl AnthropicMessagesAdapter {
                                 content: user_content,
                                 ..
                             } => {
-                                content.push(json!({"type": "text", "text": text_from_content(user_content)}));
+                                content.extend(anthropic_content_from_content(user_content)?);
                             }
                             ModelRequestPart::ToolReturn(tool_return) => {
                                 content.push(anthropic_tool_result(tool_return));
@@ -177,6 +179,89 @@ impl AnthropicMessagesAdapter {
             metadata: serde_json::Map::new(),
         })
     }
+}
+
+fn anthropic_content_from_content(content: &[ContentPart]) -> Result<Vec<Value>, ModelError> {
+    content
+        .iter()
+        .map(|part| match part {
+            ContentPart::Text { text } => Ok(json!({"type": "text", "text": text})),
+            ContentPart::ImageUrl { url } => Ok(anthropic_image_url(url)),
+            ContentPart::FileUrl { url, media_type } => anthropic_url_content(url, media_type),
+            ContentPart::Binary { data, media_type } => anthropic_binary_content(data, media_type),
+            ContentPart::ResourceRef {
+                uri, media_type, ..
+            } => anthropic_url_content(uri, media_type),
+            ContentPart::DataUrl { data_url, .. } => {
+                let parsed = parse_data_url(data_url).map_err(|error| {
+                    ModelError::MessageMapping(format!("invalid Anthropic data URL: {error}"))
+                })?;
+                anthropic_binary_content(&parsed.data, &parsed.media_type)
+            }
+        })
+        .collect()
+}
+
+fn anthropic_url_content(url: &str, media_type: &str) -> Result<Value, ModelError> {
+    if media_type.starts_with("image/") {
+        return Ok(anthropic_image_url(url));
+    }
+    if media_type.starts_with("audio/") || media_type.starts_with("video/") {
+        return Err(ModelError::MessageMapping(format!(
+            "Anthropic Messages does not support media type {media_type}"
+        )));
+    }
+    Ok(anthropic_document_url(url))
+}
+
+fn anthropic_image_url(url: &str) -> Value {
+    json!({
+        "type": "image",
+        "source": {"type": "url", "url": url},
+    })
+}
+
+fn anthropic_document_url(url: &str) -> Value {
+    json!({
+        "type": "document",
+        "source": {"type": "url", "url": url},
+    })
+}
+
+fn anthropic_binary_content(data: &[u8], media_type: &str) -> Result<Value, ModelError> {
+    if media_type.starts_with("image/") {
+        return Ok(json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": STANDARD.encode(data),
+            },
+        }));
+    }
+    if media_type.starts_with("audio/") || media_type.starts_with("video/") {
+        return Err(ModelError::MessageMapping(format!(
+            "Anthropic Messages does not support media type {media_type}"
+        )));
+    }
+    if media_type == "text/plain" {
+        return Ok(json!({
+            "type": "document",
+            "source": {
+                "type": "text",
+                "media_type": media_type,
+                "data": String::from_utf8_lossy(data).into_owned(),
+            },
+        }));
+    }
+    Ok(json!({
+        "type": "document",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": STANDARD.encode(data),
+        },
+    }))
 }
 
 fn apply_anthropic_settings(

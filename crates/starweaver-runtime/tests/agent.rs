@@ -147,6 +147,15 @@ async fn capability_hooks_can_mutate_response_and_record_lifecycle() {
     let result = agent.run("Rewrite output").await.unwrap();
 
     assert_eq!(result.output, "rewritten");
+    let latest_history_response = match result.messages.last() {
+        Some(ModelMessage::Response(response)) => response,
+        other => panic!("latest canonical message should be the mutated response, got {other:?}"),
+    };
+    assert_eq!(latest_history_response.text_output(), "rewritten");
+    let Some(latest_response) = result.state.latest_response.as_ref() else {
+        panic!("latest response should be recorded");
+    };
+    assert_eq!(latest_response.text_output(), "rewritten");
     assert_eq!(
         hook.events.lock().unwrap().as_slice(),
         ["start", "before", "after", "validate", "complete"]

@@ -6,7 +6,7 @@ use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent, BusMessag
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
-    ModelResponse, ModelResponseStreamEvent, ModelSettings, ToolDefinition,
+    ModelResponse, ModelResponseStreamEvent, ModelSettings, PreparedInstruction, ToolDefinition,
 };
 
 use crate::{
@@ -27,6 +27,54 @@ const STEERING_GUARD_PROMPT: &str = "<system-reminder>There are pending steering
 struct SteeringMessage {
     id: Option<String>,
     text: String,
+}
+
+fn tool_return_media_prompt(
+    tool_return: &starweaver_model::ToolReturnPart,
+) -> Option<ModelRequestPart> {
+    let value = tool_return
+        .private_metadata
+        .get("starweaver_tool_return_content_parts")?
+        .clone();
+    let mut content = Vec::new();
+    let prompt = tool_return
+        .private_metadata
+        .get("starweaver_tool_return_prompt")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map_or_else(
+            || {
+                format!(
+                    "Tool {} returned provider-native media content.",
+                    tool_return.name
+                )
+            },
+            str::to_string,
+        );
+    content.push(ContentPart::Text { text: prompt });
+    let mut media_parts = serde_json::from_value::<Vec<ContentPart>>(value).ok()?;
+    if media_parts.is_empty() {
+        return None;
+    }
+    content.append(&mut media_parts);
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        "starweaver_instruction_origin".to_string(),
+        serde_json::json!("tool_return_media"),
+    );
+    metadata.insert(
+        "tool_call_id".to_string(),
+        serde_json::json!(tool_return.tool_call_id.clone()),
+    );
+    metadata.insert(
+        "tool_name".to_string(),
+        serde_json::json!(tool_return.name.clone()),
+    );
+    Some(ModelRequestPart::UserPrompt {
+        content,
+        name: None,
+        metadata,
+    })
 }
 
 pub(super) fn is_steering_guard_prompt(prompt: &str) -> bool {
@@ -76,24 +124,14 @@ impl Agent {
                     metadata: serde_json::Map::new(),
                 }
             }));
-            parts.extend(
-                self.tools
-                    .get_instructions()
-                    .into_iter()
-                    .map(|instruction| ModelRequestPart::Instruction {
-                        text: instruction,
-                        metadata: serde_json::Map::new(),
-                    }),
-            );
         }
         if !state.pending_tool_returns.is_empty() {
-            parts.extend(
-                state
-                    .pending_tool_returns
-                    .iter()
-                    .cloned()
-                    .map(ModelRequestPart::ToolReturn),
-            );
+            for tool_return in &state.pending_tool_returns {
+                parts.push(ModelRequestPart::ToolReturn(tool_return.clone()));
+                if let Some(media_prompt) = tool_return_media_prompt(tool_return) {
+                    parts.push(media_prompt);
+                }
+            }
         } else if state.run_step == 0 {
             parts.push(ModelRequestPart::UserPrompt {
                 content: vec![starweaver_model::ContentPart::Text {
@@ -167,6 +205,28 @@ impl Agent {
                     metadata,
                 }
             }));
+    }
+
+    pub(super) fn inject_runtime_context(context: &AgentContext, messages: &mut Vec<ModelMessage>) {
+        let is_user_prompt = messages.iter().rev().any(|message| {
+            matches!(
+                message,
+                ModelMessage::Request(request)
+                    if request.parts.iter().any(|part| matches!(part, ModelRequestPart::UserPrompt { .. }))
+            )
+        });
+        let Some(text) = context.inject_runtime_context(is_user_prompt) else {
+            return;
+        };
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "starweaver_instruction_origin".to_string(),
+            serde_json::json!("runtime_context"),
+        );
+        insert_instruction_into_latest_request(
+            messages,
+            ModelRequestPart::Instruction { text, metadata },
+        );
     }
 
     pub(super) fn has_pending_steering_messages(context: &AgentContext) -> bool {
@@ -423,6 +483,21 @@ impl Agent {
             }
         }
         params.tools = self.prepare_tools(state, context, params.tools).await?;
+        for instruction in self.tools.instructions() {
+            let mut metadata = serde_json::Map::new();
+            metadata.insert(
+                "starweaver_instruction_origin".to_string(),
+                serde_json::json!("toolset"),
+            );
+            metadata.insert(
+                "starweaver_toolset_group".to_string(),
+                serde_json::json!(instruction.group.clone()),
+            );
+            params.instructions.push(PreparedInstruction {
+                text: instruction.render_xml(),
+                metadata,
+            });
+        }
         Ok(params)
     }
 
@@ -709,4 +784,24 @@ impl Agent {
             CapabilityError::Failed(message) => AgentError::Capability(message),
         }
     }
+}
+
+fn insert_instruction_into_latest_request(
+    messages: &mut Vec<ModelMessage>,
+    part: ModelRequestPart,
+) {
+    for message in messages.iter_mut().rev() {
+        if let ModelMessage::Request(request) = message {
+            request.parts.insert(0, part);
+            return;
+        }
+    }
+    messages.push(ModelMessage::Request(ModelRequest {
+        parts: vec![part],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    }));
 }

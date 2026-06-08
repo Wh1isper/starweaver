@@ -6,8 +6,8 @@ use std::{
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{
-        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     execute, queue,
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
@@ -50,7 +50,13 @@ impl InteractiveTui {
     pub fn enter() -> CliResult<Self> {
         let mut stdout = io::stdout();
         terminal::enable_raw_mode().map_err(terminal_error)?;
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide) {
+        if let Err(error) = execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture,
+            Hide
+        ) {
             let _ = terminal::disable_raw_mode();
             return Err(terminal_error(error));
         }
@@ -152,6 +158,7 @@ impl InteractiveTui {
                 state.apply_paste(&text);
                 Ok(Some(InteractiveTuiEvent::Redraw))
             }
+            Event::Mouse(mouse) => Ok(handle_mouse_event(state, mouse)),
             Event::Resize(_, _) => Ok(Some(InteractiveTuiEvent::Redraw)),
             _ => Ok(None),
         }
@@ -192,17 +199,21 @@ fn scroll_viewport(state: &mut InteractiveTuiState, amount: usize, direction: Sc
     }
 }
 
-fn viewport_is_scrollable(state: &InteractiveTuiState) -> bool {
-    let (width, height) = terminal::size().unwrap_or((80, 24));
-    let width = if width == 0 { 80 } else { width };
-    let height = if height == 0 { 24 } else { height };
-    let width = usize::from(width);
-    let height = usize::from(height).max(8);
-    let fixed_height = render_composer_lines(state, width)
-        .len()
-        .saturating_add(render_footer_lines(state, width).len());
-    let body_height = height.saturating_sub(fixed_height).max(1);
-    render_live_history_lines(state, width).len() > body_height
+pub(super) fn handle_mouse_event(
+    state: &mut InteractiveTuiState,
+    mouse: MouseEvent,
+) -> Option<InteractiveTuiEvent> {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            scroll_viewport(state, 3, ScrollDirection::Up);
+            Some(InteractiveTuiEvent::Redraw)
+        }
+        MouseEventKind::ScrollDown => {
+            scroll_viewport(state, 3, ScrollDirection::Down);
+            Some(InteractiveTuiEvent::Redraw)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn visible_body_bounds(
@@ -227,6 +238,27 @@ pub(super) fn handle_key_event(
     state: &mut InteractiveTuiState,
     key: KeyEvent,
 ) -> Option<InteractiveTuiEvent> {
+    if state.model_picker_visible() {
+        match key.code {
+            KeyCode::Esc => state.close_model_picker(),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.close_model_picker();
+            }
+            KeyCode::Enter => state.select_model_picker_choice(),
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll_viewport(state, 1, ScrollDirection::Up);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll_viewport(state, 1, ScrollDirection::Down);
+            }
+            KeyCode::PageUp => scroll_viewport(state, 10, ScrollDirection::Up),
+            KeyCode::PageDown => scroll_viewport(state, 10, ScrollDirection::Down),
+            KeyCode::Up => state.move_model_picker_selection(-1),
+            KeyCode::Down => state.move_model_picker_selection(1),
+            _ => {}
+        }
+        return None;
+    }
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if state.running {
@@ -318,12 +350,6 @@ pub(super) fn handle_key_event(
         KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
             scroll_viewport(state, 1, ScrollDirection::Down);
         }
-        KeyCode::Up if state.composer_is_empty() && viewport_is_scrollable(state) => {
-            scroll_viewport(state, 1, ScrollDirection::Up);
-        }
-        KeyCode::Down if state.composer_is_empty() && viewport_is_scrollable(state) => {
-            scroll_viewport(state, 1, ScrollDirection::Down);
-        }
         KeyCode::Up => state.previous_history(),
         KeyCode::Down => state.next_history(),
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -342,6 +368,7 @@ impl Drop for InteractiveTui {
             let _ = execute!(
                 self.stdout,
                 Show,
+                DisableMouseCapture,
                 DisableBracketedPaste,
                 LeaveAlternateScreen
             );

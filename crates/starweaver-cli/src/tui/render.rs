@@ -15,7 +15,7 @@ use crate::{CliError, CliResult};
 use super::{
     markdown::{render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
     snapshot::TuiSnapshot,
-    state::{InteractiveTuiState, SteeringStatus},
+    state::{InteractiveTuiState, ModelChoice, SteeringStatus},
 };
 
 const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56;
@@ -139,7 +139,8 @@ fn render_startup_help() -> Vec<StyledLine> {
         startup_help_line("Tab", " - submit, or queue a draft while running"),
         startup_help_line("Ctrl-O", " - insert a newline"),
         startup_help_line("/help", " - print available commands"),
-        startup_help_line("!<cmd>", " - execute a shell command"),
+        startup_help_line("/model", " - open the model profile selector"),
+        startup_help_line("!<command>", " - run a shell command inline"),
     ]
 }
 
@@ -242,9 +243,226 @@ pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> 
     } else {
         Vec::new()
     };
+    if state.model_picker_visible() {
+        lines.extend(render_model_picker_panel(state, width));
+    }
     lines.extend(render_steering_lines(state, width));
     lines.extend(render_status_bar_lines(state, width));
     lines
+}
+
+fn render_model_picker_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    if width < 4 {
+        return Vec::new();
+    }
+    let inner_width = width.saturating_sub(4);
+    let mut rows = Vec::<Vec<StyledSegment>>::new();
+    rows.push(vec![
+        StyledSegment {
+            text: "Model Profiles".to_string(),
+            style: SegmentStyle::code().merge(SegmentStyle::bold()),
+        },
+        StyledSegment {
+            text: "  Enter: select | Esc: close | Up/Down: navigate".to_string(),
+            style: SegmentStyle::dim(),
+        },
+    ]);
+    if state.model_choices().is_empty() {
+        rows.push(vec![StyledSegment {
+            text: "No model profiles are configured.".to_string(),
+            style: SegmentStyle::dim(),
+        }]);
+    } else {
+        let max_visible = 8usize;
+        let total = state.model_choices().len();
+        let selected_index = state.model_picker_index().min(total.saturating_sub(1));
+        let start = selected_index
+            .saturating_sub(max_visible / 2)
+            .min(total.saturating_sub(max_visible));
+        let end = total.min(start.saturating_add(max_visible));
+        if start > 0 {
+            rows.push(vec![StyledSegment {
+                text: "    ...".to_string(),
+                style: SegmentStyle::dim(),
+            }]);
+        }
+        for (index, choice) in state
+            .model_choices()
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
+            let selected = index == selected_index;
+            let current = choice.profile == state.profile;
+            rows.push(render_model_picker_choice_row(choice, selected, current));
+        }
+        if end < total {
+            rows.push(vec![StyledSegment {
+                text: "    ...".to_string(),
+                style: SegmentStyle::dim(),
+            }]);
+        }
+        if let Some(choice) = state.model_choices().get(selected_index) {
+            rows.extend(render_model_choice_detail_rows(
+                choice,
+                choice.profile == state.profile,
+                inner_width,
+            ));
+        }
+    }
+    let mut lines = vec![StyledLine::plain("")];
+    lines.extend(with_codex_border(rows, inner_width));
+    lines
+}
+
+fn render_model_picker_choice_row(
+    choice: &ModelChoice,
+    selected: bool,
+    current: bool,
+) -> Vec<StyledSegment> {
+    let label = if choice.display_name() == choice.profile {
+        String::new()
+    } else {
+        format!("  {}", choice.display_name())
+    };
+    vec![
+        StyledSegment {
+            text: if selected { "> " } else { "  " }.to_string(),
+            style: if selected {
+                SegmentStyle::warning().merge(SegmentStyle::bold())
+            } else {
+                SegmentStyle::dim()
+            },
+        },
+        StyledSegment {
+            text: if current { "* " } else { "  " }.to_string(),
+            style: if current {
+                SegmentStyle::blockquote().merge(SegmentStyle::bold())
+            } else {
+                SegmentStyle::dim()
+            },
+        },
+        StyledSegment {
+            text: format!("{:<18}", choice.profile),
+            style: if selected {
+                SegmentStyle::bold()
+            } else {
+                SegmentStyle::default()
+            },
+        },
+        StyledSegment {
+            text: label,
+            style: SegmentStyle::dim(),
+        },
+    ]
+}
+
+fn render_model_choice_detail_rows(
+    choice: &ModelChoice,
+    current: bool,
+    inner_width: usize,
+) -> Vec<Vec<StyledSegment>> {
+    let mut rows = vec![
+        Vec::new(),
+        vec![StyledSegment {
+            text: "Highlighted config".to_string(),
+            style: SegmentStyle::code().merge(SegmentStyle::bold()),
+        }],
+    ];
+    let profile = if current {
+        format!("{} (current)", choice.profile)
+    } else {
+        choice.profile.clone()
+    };
+    push_detail_row(
+        &mut rows,
+        "profile:",
+        &profile,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    if choice.display_name() != choice.profile {
+        push_detail_row(
+            &mut rows,
+            "label:",
+            choice.display_name(),
+            inner_width,
+            SegmentStyle::default(),
+        );
+    }
+    push_detail_row(
+        &mut rows,
+        "model:",
+        &choice.model_id,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    let model_settings = choice.model_settings.as_deref().unwrap_or("default");
+    push_detail_row(
+        &mut rows,
+        "model_settings:",
+        model_settings,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    let model_cfg = choice.model_cfg.as_deref().unwrap_or("default");
+    push_detail_row(
+        &mut rows,
+        "model_cfg:",
+        model_cfg,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    let context = choice.context_window.map_or_else(
+        || "unknown".to_string(),
+        |window| format!("{window} tokens"),
+    );
+    push_detail_row(
+        &mut rows,
+        "context:",
+        &context,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    push_detail_row(
+        &mut rows,
+        "source:",
+        &choice.source,
+        inner_width,
+        SegmentStyle::dim(),
+    );
+    rows
+}
+
+fn push_detail_row(
+    rows: &mut Vec<Vec<StyledSegment>>,
+    label: &str,
+    value: &str,
+    inner_width: usize,
+    value_style: SegmentStyle,
+) {
+    let label_text = format!("  {label:<15}");
+    let value_width = inner_width
+        .saturating_sub(visible_width(&label_text))
+        .max(1);
+    let continuation = " ".repeat(visible_width(&label_text));
+    for (index, line) in wrap_text_width(value, value_width).into_iter().enumerate() {
+        rows.push(vec![
+            StyledSegment {
+                text: if index == 0 {
+                    label_text.clone()
+                } else {
+                    continuation.clone()
+                },
+                style: SegmentStyle::dim(),
+            },
+            StyledSegment {
+                text: line,
+                style: value_style,
+            },
+        ]);
+    }
 }
 
 fn render_steering_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
@@ -380,12 +598,14 @@ fn status_style(state: &InteractiveTuiState) -> SegmentStyle {
 }
 
 fn secondary_status_text(state: &InteractiveTuiState) -> &'static str {
-    if state.running {
-        "Ctrl+C: Interrupt"
+    if state.model_picker_visible() {
+        "Up/Down: Select model | Enter: Use | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
+    } else if state.running {
+        "Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll"
     } else if state.input.trim().is_empty() && state.pasted_image_count() == 0 {
-        "Enter:Send | Tab:Multiline | Ctrl+Up/Down: Scroll | Ctrl+C: Exit"
+        "Enter: Send | Up/Down: History | PageUp/PageDown/Mouse: Scroll | Ctrl+C: Exit"
     } else {
-        "Enter:Send | Tab:Multiline | Ctrl+U: Clear | Ctrl+C: Exit"
+        "Enter: Send | Tab: Multiline | Up/Down: History | Ctrl+U: Clear | Ctrl+C: Exit"
     }
 }
 
@@ -399,6 +619,7 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         ("/help", "Print this help in the transcript"),
         ("/clear", "Clear output"),
         ("/cost", "Show usage and cost summary"),
+        ("/model [profile]", "Open selector or select model profile"),
         (
             "/goal <task>",
             "Run task toward a verified goal until complete",
@@ -410,8 +631,9 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         ("Ctrl+V", "Paste text or attach image paths"),
         ("Tab", "Send or queue a draft while running"),
         ("Ctrl+O", "Insert newline"),
-        ("Up/Down, Ctrl+P/N", "Browse history"),
-        ("PageUp/PageDown", "Scroll output"),
+        ("Up/Down, Ctrl+P/N", "Browse prompt history"),
+        ("PageUp/PageDown", "Scroll transcript"),
+        ("Mouse wheel", "Scroll transcript"),
     ];
     let mut lines = Vec::new();
     lines.push(StyledLine::plain(""));
@@ -433,8 +655,8 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         SegmentStyle::code().merge(SegmentStyle::bold()),
     ));
     lines.push(render_help_table_row(
-        "!<cmd>",
-        "Execute shell command directly",
+        "!<command>",
+        "Run a shell command and show output inline",
         SegmentStyle::warning(),
         width,
     ));
@@ -536,6 +758,28 @@ fn take_suffix_width(text: &str, width: usize) -> String {
         used = used.saturating_add(char_width);
     }
     chars.into_iter().rev().collect()
+}
+
+fn wrap_text_width(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let compact = text.replace('\n', " ");
+    if compact.is_empty() || visible_width(&compact) <= width {
+        return vec![compact];
+    }
+    let mut lines = Vec::new();
+    let mut remaining = compact.as_str();
+    while !remaining.is_empty() {
+        let line = take_prefix_width(remaining, width);
+        if line.is_empty() {
+            break;
+        }
+        remaining = &remaining[line.len()..];
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 pub(super) fn composer_cursor_column(input_tail: &[String]) -> usize {

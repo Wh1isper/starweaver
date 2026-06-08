@@ -15,6 +15,7 @@ use starweaver_tools::{
 #[derive(Clone, Default)]
 struct CaptureModel {
     captured: Arc<Mutex<Vec<Vec<ModelMessage>>>>,
+    captured_params: Arc<Mutex<Vec<ModelRequestParameters>>>,
 }
 
 #[async_trait]
@@ -41,10 +42,11 @@ impl ModelAdapter for CaptureModel {
         &self,
         messages: Vec<ModelMessage>,
         _settings: Option<ModelSettings>,
-        _params: ModelRequestParameters,
+        params: ModelRequestParameters,
         _context: ModelRequestContext,
     ) -> Result<ModelResponse, ModelError> {
         self.captured.lock().unwrap().push(messages);
+        self.captured_params.lock().unwrap().push(params);
         Ok(ModelResponse::text("ok"))
     }
 }
@@ -73,5 +75,9 @@ async fn toolset_instructions_are_injected_on_first_request() {
 
     let captured = model.captured.lock().unwrap()[0].clone();
     assert!(format!("{captured:?}").contains("Base instruction"));
-    assert!(format!("{captured:?}").contains("Use echo for mirroring"));
+    let captured_params = model.captured_params.lock().unwrap()[0].clone();
+    assert!(captured_params
+        .instructions
+        .iter()
+        .any(|instruction| instruction.text.contains("Use echo for mirroring")));
 }

@@ -88,6 +88,7 @@ pub fn prepare_model_request(
 
     dedupe_native_tools(&mut prepared_params, &mut metadata);
     attach_prompted_output_instruction(&mut prepared_params, output_mode);
+    let messages = attach_prepared_instructions(messages, &prepared_params.instructions);
 
     let normalized_messages = prepare_messages(&messages, profile.message_normalization);
     if normalized_messages != messages {
@@ -173,6 +174,74 @@ fn attach_prompted_output_instruction(
     });
 }
 
+fn attach_prepared_instructions(
+    mut messages: Vec<ModelMessage>,
+    instructions: &[PreparedInstruction],
+) -> Vec<ModelMessage> {
+    if instructions.is_empty() {
+        return messages;
+    }
+
+    if let Some(ModelMessage::Request(request)) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| matches!(message, ModelMessage::Request(_)))
+    {
+        let missing_instructions = instructions
+            .iter()
+            .filter(|instruction| !request_contains_instruction(request, &instruction.text))
+            .collect::<Vec<_>>();
+        if missing_instructions.is_empty() {
+            return messages;
+        }
+        let instruction_text = instruction_text(&missing_instructions);
+        request.instructions = Some(match request.instructions.take() {
+            Some(existing) if !existing.trim().is_empty() => {
+                format!("{instruction_text}\n\n{existing}")
+            }
+            _ => instruction_text,
+        });
+        return messages;
+    }
+
+    messages.push(ModelMessage::Request(ModelRequest {
+        parts: Vec::new(),
+        timestamp: None,
+        instructions: Some(instruction_text(&instructions.iter().collect::<Vec<_>>())),
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    }));
+    messages
+}
+
+fn instruction_text(instructions: &[&PreparedInstruction]) -> String {
+    instructions
+        .iter()
+        .map(|instruction| instruction.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn request_contains_instruction(request: &ModelRequest, text: &str) -> bool {
+    request
+        .instructions
+        .as_deref()
+        .is_some_and(|instructions| instruction_list_contains(instructions, text))
+        || request.parts.iter().any(|part| match part {
+            ModelRequestPart::SystemPrompt { text: existing, .. }
+            | ModelRequestPart::Instruction { text: existing, .. } => existing == text,
+            _ => false,
+        })
+}
+
+fn instruction_list_contains(instructions: &str, text: &str) -> bool {
+    instructions == text
+        || instructions
+            .split("\n\n")
+            .any(|instruction| instruction == text)
+}
+
 /// Normalize canonical history according to a provider profile policy.
 #[must_use]
 pub fn prepare_messages(
@@ -196,11 +265,30 @@ fn merge_adjacent_requests(messages: &[ModelMessage]) -> Vec<ModelMessage> {
             (Some(ModelMessage::Request(previous)), ModelMessage::Request(next)) => {
                 previous.parts.extend(next.parts.clone());
                 previous.metadata.extend(next.metadata.clone());
+                previous.instructions = merge_optional_instructions(
+                    previous.instructions.take(),
+                    next.instructions.clone(),
+                );
             }
             _ => output.push(message.clone()),
         }
     }
     output
+}
+
+fn merge_optional_instructions(left: Option<String>, right: Option<String>) -> Option<String> {
+    match (left, right) {
+        (Some(left), Some(right)) if !left.trim().is_empty() && !right.trim().is_empty() => {
+            Some(format!(
+                "{left}
+
+{right}"
+            ))
+        }
+        (Some(left), _) if !left.trim().is_empty() => Some(left),
+        (_, Some(right)) if !right.trim().is_empty() => Some(right),
+        _ => None,
+    }
 }
 
 fn lift_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
@@ -209,6 +297,11 @@ fn lift_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
     for message in messages {
         match message {
             ModelMessage::Request(request) => {
+                if let Some(instructions) = request.instructions.as_ref() {
+                    if !instructions.trim().is_empty() {
+                        lifted.push(instructions.clone());
+                    }
+                }
                 let mut remaining = Vec::new();
                 for part in &request.parts {
                     match part {
@@ -220,6 +313,7 @@ fn lift_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
                 if !remaining.is_empty() {
                     let mut request = request.clone();
                     request.parts = remaining;
+                    request.instructions = None;
                     output.push(ModelMessage::Request(request));
                 }
             }
@@ -257,10 +351,20 @@ fn wrap_inline_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
         .map(|message| match message {
             ModelMessage::Request(request) => {
                 let mut request = request.clone();
-                request.parts = request
-                    .parts
+                let request_level_instruction =
+                    request
+                        .instructions
+                        .take()
+                        .map(|text| ModelRequestPart::UserPrompt {
+                            content: vec![crate::message::ContentPart::Text {
+                                text: format!("<system>{text}</system>"),
+                            }],
+                            name: None,
+                            metadata: Map::new(),
+                        });
+                request.parts = request_level_instruction
                     .into_iter()
-                    .map(|part| match part {
+                    .chain(request.parts.into_iter().map(|part| match part {
                         ModelRequestPart::SystemPrompt { text, metadata }
                         | ModelRequestPart::Instruction { text, metadata } => {
                             ModelRequestPart::UserPrompt {
@@ -272,7 +376,7 @@ fn wrap_inline_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
                             }
                         }
                         other => other,
-                    })
+                    }))
                     .collect();
                 ModelMessage::Request(request)
             }

@@ -104,6 +104,13 @@ impl TuiSnapshot {
                             .get("delta")
                             .and_then(Value::as_str)
                             .map(ToString::to_string)
+                    })
+                    .or_else(|| {
+                        message
+                            .payload
+                            .get("arguments_delta")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
                     });
                 if let Some(arguments) =
                     arguments.filter(|value| !value.is_empty() && value != "{}" && value != "null")

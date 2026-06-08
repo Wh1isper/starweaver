@@ -33,6 +33,13 @@
           {
             "type": "text",
             "text": "Describe this image: "
+          },
+          {
+            "type": "image",
+            "source": {
+              "type": "url",
+              "url": "https://example.test/cat.png"
+            }
           }
         ]
       }
