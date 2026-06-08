@@ -202,7 +202,7 @@ impl Agent {
             "span_id".to_string(),
             serde_json::json!(checkpoint_span.context().span_id),
         );
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             capability
                 .on_checkpoint_with_context(state, context, &checkpoint)
                 .await
@@ -431,7 +431,7 @@ impl Agent {
         state: &mut AgentRunState,
         context: &mut AgentContext,
     ) -> Result<(), AgentError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             capability
                 .on_run_start_with_context(state, context)
                 .await
@@ -446,7 +446,7 @@ impl Agent {
         context: &AgentContext,
         mut tools: Vec<ToolDefinition>,
     ) -> Result<Vec<ToolDefinition>, AgentError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             tools = capability
                 .prepare_tools_with_context(state, context, tools)
                 .await
@@ -462,7 +462,7 @@ impl Agent {
         request: &mut ModelRequest,
         settings: &mut Option<ModelSettings>,
     ) -> Result<Option<ModelResponse>, AgentError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             match capability
                 .before_model_request_with_context(state, context, request, settings)
                 .await
@@ -483,7 +483,7 @@ impl Agent {
         context: &mut AgentContext,
         response: &mut ModelResponse,
     ) -> Result<(), AgentError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             capability
                 .after_model_response_with_context(state, context, response)
                 .await
@@ -499,7 +499,7 @@ impl Agent {
         tool_context: &mut starweaver_tools::ToolContext,
         call: &starweaver_model::ToolCallPart,
     ) -> Result<(), AgentError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             capability
                 .before_tool_execution_with_context(state, context, tool_context, call)
                 .await
@@ -515,7 +515,7 @@ impl Agent {
         call: &starweaver_model::ToolCallPart,
         tool_return: &mut starweaver_model::ToolReturnPart,
     ) -> Result<(), AgentError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             capability
                 .after_tool_result_with_context(state, context, call, tool_return)
                 .await
@@ -581,7 +581,7 @@ impl Agent {
         context: &mut AgentContext,
         output: &str,
     ) -> Result<(), CapabilityError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities_for_validation()? {
             capability
                 .before_output_validation_with_context(state, context, output)
                 .await?;
@@ -609,7 +609,7 @@ impl Agent {
         context: &mut AgentContext,
         output: &str,
     ) -> Result<(), CapabilityError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities_for_validation()? {
             capability
                 .validate_output_with_context(state, context, output)
                 .await?;
@@ -623,7 +623,7 @@ impl Agent {
         context: &mut AgentContext,
         output: &str,
     ) -> Result<(), CapabilityError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities_for_validation()? {
             capability
                 .after_output_validation_with_context(state, context, output)
                 .await?;
@@ -639,7 +639,7 @@ impl Agent {
         retries: usize,
         message: &str,
     ) -> Result<(), AgentError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             capability
                 .on_retry_with_context(state, context, kind, retries, message)
                 .await
@@ -654,7 +654,7 @@ impl Agent {
         context: &AgentContext,
         event: &crate::stream::AgentStreamRecord,
     ) -> Result<(), AgentError> {
-        for observer in &self.stream_observers {
+        for observer in &self.ordered_stream_observers()? {
             observer
                 .on_stream_event_with_context(state, context, event)
                 .await
@@ -668,7 +668,7 @@ impl Agent {
         state: &mut AgentRunState,
         context: &mut AgentContext,
     ) -> Result<(), AgentError> {
-        for capability in &self.capabilities {
+        for capability in &self.ordered_capabilities()? {
             capability
                 .on_run_complete_with_context(state, context)
                 .await

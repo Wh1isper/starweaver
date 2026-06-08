@@ -44,7 +44,7 @@ Service runtimes can persist `AgentCheckpoint` values, suspend on interruption, 
 
 ## Resume evidence for SessionStore implementations
 
-Every `AgentCheckpoint` includes `resume: AgentResumeEvidence`. This compact evidence is designed for service runtimes such as Starweaver Claw, the CLI, and external applications that implement a real `SessionStore`.
+Every `AgentCheckpoint` includes `resume: AgentResumeEvidence`. This compact evidence is designed for the CLI, service runtimes, and external applications that implement a real `SessionStore`.
 
 A durable store should persist these records together:
 

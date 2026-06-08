@@ -7,7 +7,7 @@ use starweaver_tools::ToolRegistry;
 
 use crate::{
     agent::helpers::merge_request_params,
-    capability::{AgentCapability, CapabilityBundle},
+    capability::{resolve_capability_order, AgentCapability, CapabilityBundle},
     executor::{DirectAgentExecutor, DynAgentExecutor},
     graph::{inspect_graph, AgentGraphTrace, AgentNode, GraphError},
     history::HistoryProcessor,
@@ -181,6 +181,23 @@ impl Agent {
     pub fn with_capability(mut self, capability: Arc<dyn AgentCapability>) -> Self {
         self.capabilities.push(capability);
         self
+    }
+
+    pub(super) fn ordered_capabilities(&self) -> Result<Vec<Arc<dyn AgentCapability>>, AgentError> {
+        resolve_capability_order(&self.capabilities).map_err(AgentError::from)
+    }
+
+    pub(super) fn ordered_stream_observers(
+        &self,
+    ) -> Result<Vec<Arc<dyn AgentCapability>>, AgentError> {
+        resolve_capability_order(&self.stream_observers).map_err(AgentError::from)
+    }
+
+    pub(super) fn ordered_capabilities_for_validation(
+        &self,
+    ) -> Result<Vec<Arc<dyn AgentCapability>>, crate::capability::CapabilityError> {
+        resolve_capability_order(&self.capabilities)
+            .map_err(|error| crate::capability::CapabilityError::Failed(error.to_string()))
     }
 
     /// Add a stream observer hook.

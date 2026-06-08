@@ -19,7 +19,6 @@ starweaver version
 starweaver doctor
 starweaver update
 starweaver update cli
-starweaver update claw
 starweaver cli
 starweaver cli -p "hello"
 sw cli
@@ -30,14 +29,12 @@ sw cli -p "hello"
 
 ## Updates
 
-`starweaver update` updates the installed CLI component through the installer workflow. `starweaver update claw` updates the Claw service binary. The direct CLI command supports the same target selection:
+`starweaver update` updates the installed CLI component through the installer workflow. The direct CLI command supports the same target selection:
 
 ```bash
 starweaver update
 starweaver update cli
-starweaver update claw
 starweaver-cli update
-starweaver-cli update claw
 ```
 
 The CLI also performs a short background release lookup and caches the result in `~/.starweaver/update-check.json`. Human-readable commands append a compact hint when the cache reports a newer release:
@@ -435,7 +432,7 @@ starweaver-cli deferred fail <deferred-id> --error "worker failed"
 starweaver-cli resume --session <session-id> --prompt "continue after review"
 ```
 
-`resume` appends a continuation run from the waiting or head run state. Claw remains the owner for service-managed same-run checkpoint reload, interruption APIs, SSE transports, workflows, and schedules.
+`resume` appends a continuation run from the waiting or head run state. Service-managed same-run checkpoint reload, interruption APIs, service transports, workflows, and schedules belong to future service adapters.
 
 ## Environment
 
@@ -489,7 +486,7 @@ sw cli reset --yes
 
 ## Config
 
-Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_PROFILE`, `STARWEAVER_PROFILE_PATHS`, `STARWEAVER_SKILL_DIRS`, `STARWEAVER_SUBAGENT_DIRS`, `STARWEAVER_DISABLED_SUBAGENTS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_UPDATE_CHANNEL`, `STARWEAVER_UPDATE_CHECK`, `STARWEAVER_OAUTH_AUTH_FILE`, and `STARWEAVER_NO_AUTO_TRIM`.
+Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_PROFILE`, `STARWEAVER_SKILL_DIRS`, `STARWEAVER_SUBAGENT_DIRS`, `STARWEAVER_DISABLED_SUBAGENTS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_IMAGE_UNDERSTANDING_MODEL`, `STARWEAVER_VIDEO_UNDERSTANDING_MODEL`, `STARWEAVER_AUDIO_UNDERSTANDING_MODEL`, `STARWEAVER_UPDATE_CHANNEL`, `STARWEAVER_UPDATE_CHECK`, `STARWEAVER_OAUTH_AUTH_FILE`, and `STARWEAVER_NO_AUTO_TRIM`.
 
 Get resolved config values and persist project or global config overrides:
 
@@ -501,7 +498,7 @@ starweaver-cli config set trim.current_session_keep_recent_runs 10
 starweaver-cli config set --global general.default_profile general
 ```
 
-Starweaver preserves recognized display, browser, subagent, command, security, and max-request fields in compatibility metadata so configuration audits can map those sections into first-class Starweaver settings over time.
+Starweaver preserves recognized display, subagent, command, security, and max-request fields in compatibility metadata so configuration audits can map those sections into first-class Starweaver settings over time.
 
 ## Shell completions
 

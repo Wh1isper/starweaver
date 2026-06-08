@@ -31,7 +31,7 @@ assert_eq!(toolset.get_tools().len(), 1);
 
 Live MCP clients, transports, resources, prompts, sampling, roots, logging, completions, notifications, subscriptions, long-running tasks, and protocol tests are tracked in `spec/sdk/03-first-party-tool-bundles.md` and `memos/implementation-todo.md`. Starweaver's live MCP work should use the official Model Context Protocol Rust SDK at <https://github.com/modelcontextprotocol/rust-sdk> through the `rmcp` crate.
 
-## Host-backed live MCP bridge
+## Host-backed live MCP adapter
 
 `LiveMcpClient` is the SDK seam for hosts that use `rmcp` or another MCP runtime to discover a live server. The helper returns a normal `McpToolset`, so discovered tools participate in the same registry, prefixing, and instruction flows as static MCP specs.
 

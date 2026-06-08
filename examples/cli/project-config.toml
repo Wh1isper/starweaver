@@ -3,9 +3,8 @@
 
 [general]
 default_profile = "workspace"
-default_output = "text"
-default_hitl = "deny"
-profile_search_paths = ["profiles", "agents", "../examples/profiles"]
+default_output = "agui-jsonl"
+default_hitl = "prompt"
 
 [storage]
 database_path = "starweaver.sqlite"
@@ -13,8 +12,8 @@ file_store_path = "store"
 
 [environment]
 provider = "local"
-files_policy = "read_only"
-shell_enabled = false
+files_policy = "read_write"
+shell_enabled = true
 workspace_root = ".."
 
 [trim]

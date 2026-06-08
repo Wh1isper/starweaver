@@ -29,7 +29,6 @@ const WORKSPACE_PACKAGES: &[&str] = &[
     "starweaver-session",
     "starweaver-stream",
     "starweaver-storage",
-    "starweaver-claw",
     "starweaver-cli",
     "xtask",
 ];

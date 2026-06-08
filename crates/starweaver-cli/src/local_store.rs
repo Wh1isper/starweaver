@@ -653,7 +653,7 @@ impl LocalStore {
             SELECT dm.message_json
             FROM display_messages dm
             JOIN runs r ON r.session_id = dm.session_id AND r.run_id = dm.run_id
-            WHERE dm.session_id = ?1 AND dm.sequence_no > ?3
+            WHERE dm.session_id = ?1 AND dm.sequence_no > ?2
             ORDER BY r.sequence_no, dm.sequence_no
             "
         };
@@ -664,10 +664,8 @@ impl LocalStore {
             })?
             .collect::<Result<Vec<_>, _>>()?
         } else {
-            stmt.query_map(params![session_id, "", after], |row| {
-                row.get::<_, String>(0)
-            })?
-            .collect::<Result<Vec<_>, _>>()?
+            stmt.query_map(params![session_id, after], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?
         };
         mapped
             .into_iter()
@@ -740,7 +738,6 @@ impl LocalStore {
                   SELECT COALESCE(MAX(sequence_no), 0) FROM runs WHERE session_id = ?1
               ) - ?2
               AND (?3 IS NULL OR r.updated_at < ?3)
-              AND (s.head_success_run_id IS NULL OR r.run_id != s.head_success_run_id)
               AND (s.active_run_id IS NULL OR r.run_id != s.active_run_id)
             ORDER BY r.sequence_no
             ",

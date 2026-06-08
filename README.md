@@ -6,13 +6,12 @@ The project focuses on these workspace layers:
 
 - `starweaver-model`: provider-neutral model messages, settings, profiles, transport, and replay-tested provider mappings.
 - `starweaver-tools`: function tools, toolsets, MCP foundations, tool metadata, approval/deferred markers, and execution primitives.
-- `starweaver-runtime`: the deterministic agent loop, tool loop, output validation, retries, stream records, capability hooks, trace recording, and executor checkpoints.
-- `starweaver-agent`: the public SDK facade with `AgentBuilder`, `AgentApp`, SDK sessions, spec presets, first-party tool bundles, subagents, and application-facing helpers.
+- `starweaver-runtime`: deterministic agent loop, tool loop, output validation, retries, stream records, capability hooks, trace recording, and executor checkpoints.
+- `starweaver-agent`: public SDK facade with `AgentBuilder`, `AgentApp`, SDK sessions, spec presets, first-party tool bundles, subagents, and application-facing helpers.
 - `starweaver-environment`: filesystem, shell, resources, policy, state snapshots, virtual provider tests, and local provider foundations.
-- `starweaver-session`: shared durable session contracts for input parts, `SessionStore`, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
-- `starweaver-stream`: shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
-- `starweaver-storage`: shared SQLite migrations, concrete durable session storage, replay event storage, and migration import foundations.
-- `starweaver-claw`: durable orchestration host that re-exports shared session/stream/storage contracts and provides service, coordinator, workflow, schedule, profile, workspace, bridge, and API adapters.
+- `starweaver-session`: durable session contracts for input parts, `SessionStore`, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
+- `starweaver-stream`: display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
+- `starweaver-storage`: SQLite migrations, concrete durable session storage, replay event storage, stream archives, and migration status reporting.
 - `starweaver-cli`: CLI-first product surface for headless stdio runs, display-message rendering, session restore, launcher dispatch, and install/update workflows.
 
 Planned layers are specified before public API graduation:
@@ -40,10 +39,9 @@ Run the CLI through the product launcher:
 starweaver cli -p "hello" --output text
 sw cli -p "hello" --output text
 starweaver update cli
-starweaver update claw
 ```
 
-CLI configuration examples live in `examples/cli/`. `starweaver update claw` updates Claw through an explicit target.
+CLI configuration examples live in `examples/cli/`.
 
 ## Documentation
 
@@ -62,8 +60,10 @@ Useful starting points:
 - [docs/session-stream.md](docs/session-stream.md)
 - [docs/release.md](docs/release.md)
 - [spec/README.md](spec/README.md)
+- [spec/core/07-pydantic-ai-maturity-roadmap.md](spec/core/07-pydantic-ai-maturity-roadmap.md)
 - [spec/ops/02-shared-execution-components.md](spec/ops/02-shared-execution-components.md)
-- [spec/ops/07-ya-mono-parity-migration.md](spec/ops/07-ya-mono-parity-migration.md)
+- [spec/ops/03-durable-service-runtime.md](spec/ops/03-durable-service-runtime.md)
+- [spec/ops/04-cli-product.md](spec/ops/04-cli-product.md)
 - [memos/implementation-todo.md](memos/implementation-todo.md)
 
 ## Quick Example

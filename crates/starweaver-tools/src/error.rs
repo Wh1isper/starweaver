@@ -67,6 +67,9 @@ pub fn error_return(call: &ToolCallPart, error: &ToolError) -> ToolReturnPart {
         }),
         is_error: true,
         metadata,
+        app_value: None,
+        user_content: None,
+        private_metadata: Metadata::default(),
     }
 }
 

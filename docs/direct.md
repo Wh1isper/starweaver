@@ -88,7 +88,7 @@ let context = ToolContext::new(RunId::new(), ConversationId::new(), 0);
 let call = ToolCallPart {
     id: "call_1".to_string(),
     name: "echo".to_string(),
-    arguments: serde_json::json!({"value": 42}),
+    arguments: serde_json::json!({"value": 42}).into(),
 };
 
 let result = tool_call(&tools, context, &call).await;

@@ -47,7 +47,7 @@ flowchart TD
     subagent --> subtool
 ```
 
-A service runtime such as `starweaver-claw` can create the coordinator span when an execution request enters the service. The SDK receives the parent context and starts the agent span under it. In a local SDK application, the SDK can create the root agent span directly.
+A service runtime can create the coordinator span when an execution request enters the service. The SDK receives the parent context and starts the agent span under it. In a local SDK application, the SDK can create the root agent span directly.
 
 The loop-step span groups one model/tool/output iteration. Model and tool spans attach to the active loop-step span so trace viewers can show each loop turn with its model request, sibling tool calls, retries, output validation, and checkpoint evidence.
 
@@ -198,7 +198,7 @@ Starweaver adds low-cardinality attributes for trace-to-state joins:
 - `starweaver.capability.name`
 - `starweaver.stream.cursor`
 
-These attributes mirror persisted store identifiers and support Starweaver Claw-style session APIs such as run trace, session turns, and execution inspection.
+These attributes mirror persisted store identifiers and support service session APIs such as run trace, session turns, and execution inspection.
 
 ## Langfuse Adapter
 
@@ -247,7 +247,7 @@ sequenceDiagram
 
 ## SessionStore Integration
 
-Observability links to durable state through `SessionStore` and `StateStore` identifiers. A Starweaver Claw-style service can persist traces, compact trace projections, and runtime events separately while preserving the same correlation ids.
+Observability links to durable state through `SessionStore` and `StateStore` identifiers. A service host can persist traces, compact trace projections, and runtime events separately while preserving the same correlation ids.
 
 ```mermaid
 flowchart LR

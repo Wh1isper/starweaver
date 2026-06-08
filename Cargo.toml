@@ -11,7 +11,6 @@ members = [
     "crates/starweaver-session",
     "crates/starweaver-stream",
     "crates/starweaver-storage",
-    "crates/starweaver-claw",
     "xtask",
 ]
 resolver = "2"
@@ -40,7 +39,6 @@ starweaver-environment = { path = "crates/starweaver-environment", version = "0.
 starweaver-session = { path = "crates/starweaver-session", version = "0.1.0" }
 starweaver-stream = { path = "crates/starweaver-stream", version = "0.1.0" }
 starweaver-storage = { path = "crates/starweaver-storage", version = "0.1.0" }
-starweaver-claw = { path = "crates/starweaver-claw", version = "0.1.0" }
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde", "std"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -60,17 +58,13 @@ clap = { version = "4.5.51", features = ["derive"] }
 clap_complete = "4.5.61"
 crossterm = "0.28.1"
 pulldown-cmark = "0.10"
+ring = "0.17.14"
 rusqlite = { version = "0.32.1", features = ["bundled", "chrono", "serde_json"] }
 toml = "0.8.23"
 tempfile = "3.23.0"
 unicode-width = "0.2.0"
-axum = "0.7.9"
 base64 = "0.22.1"
 futures-util = "0.3.31"
-tokio-stream = { version = "0.1.17", features = ["sync"] }
-tower = "0.5.3"
-include_dir = "0.7.4"
-mime_guess = "2.0.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

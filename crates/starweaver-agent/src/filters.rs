@@ -559,6 +559,18 @@ fn truncate_tool_return(tool_return: &mut ToolReturnPart, limit: usize) -> bool 
         "original_bytes": serialized.len(),
         "preview": serialized.chars().take(limit).collect::<String>(),
     });
+    if let Some(user_content) = &mut tool_return.user_content {
+        let Ok(user_serialized) = serde_json::to_string(user_content) else {
+            return true;
+        };
+        if user_serialized.len() > limit {
+            *user_content = json!({
+                "starweaver_truncated": true,
+                "original_bytes": user_serialized.len(),
+                "preview": user_serialized.chars().take(limit).collect::<String>(),
+            });
+        }
+    }
     tool_return
         .metadata
         .insert("starweaver_truncated".to_string(), json!(true));

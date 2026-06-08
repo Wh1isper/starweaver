@@ -54,8 +54,10 @@ starweaver-environment = {{ path = "{}" }}
 starweaver-model = {{ path = "{}" }}
 starweaver-runtime = {{ path = "{}" }}
 starweaver-session = {{ path = "{}" }}
+starweaver-storage = {{ path = "{}" }}
 starweaver-stream = {{ path = "{}" }}
 starweaver-tools = {{ path = "{}" }}
+tempfile = "3.23.0"
 tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
 "#,
             root.join("crates/starweaver-agent").display(),
@@ -65,6 +67,7 @@ tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
             root.join("crates/starweaver-model").display(),
             root.join("crates/starweaver-runtime").display(),
             root.join("crates/starweaver-session").display(),
+            root.join("crates/starweaver-storage").display(),
             root.join("crates/starweaver-stream").display(),
             root.join("crates/starweaver-tools").display(),
         ),

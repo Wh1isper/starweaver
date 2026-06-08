@@ -216,7 +216,7 @@ pub struct RunRecord {
     pub run_id: RunId,
     /// Conversation id.
     pub conversation_id: ConversationId,
-    /// User/API/bridge input parts.
+    /// User, API, or service input parts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input: Vec<InputPart>,
     /// Durable run status.
@@ -246,7 +246,7 @@ pub struct RunRecord {
     /// Run snapshot used as continuation source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_from_run_id: Option<RunId>,
-    /// Trigger source such as cli, service, bridge, schedule, or delegated.
+    /// Trigger source such as cli, service, schedule, or delegated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_type: Option<String>,
     /// Profile resolved for this run.

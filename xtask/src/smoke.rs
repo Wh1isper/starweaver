@@ -52,7 +52,6 @@ pub fn check_install_script() -> Result<(), String> {
     for required in [
         "STARWEAVER_COMPONENTS:-cli",
         "starweaver-cli-$tag-$target",
-        "starweaver-claw-$tag-$target",
         "archive missing expected binary",
         "checksums.txt",
         "ln -s \"starweaver\" \"$INSTALL_DIR/sw\"",

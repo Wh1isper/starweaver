@@ -48,7 +48,9 @@ assert_eq!(result.output, "echo: hello");
 use std::sync::Arc;
 
 use starweaver_agent::{AgentBuilder, AgentStreamEvent, TestModel};
-use starweaver_model::{ModelResponse, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
+use starweaver_model::{
+    ModelResponse, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart, StreamDelta,
+};
 
 # async fn example() -> Result<(), starweaver_agent::AgentError> {
 let model = TestModel::with_stream_events(vec![vec![
@@ -58,9 +60,14 @@ let model = TestModel::with_stream_events(vec![vec![
     }),
     ModelResponseStreamEvent::PartDelta(PartDelta {
         index: 0,
-        delta: "hel".to_string(),
+        delta: StreamDelta::Text {
+            text: "hel".to_string(),
+        },
     }),
-    ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+    ModelResponseStreamEvent::PartEnd(PartEnd {
+        index: 0,
+        part_kind: Some("text".to_string()),
+    }),
     ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("hello"))),
 ]]);
 let agent = AgentBuilder::new(Arc::new(model)).build();

@@ -1,10 +1,8 @@
 //! CLI service layer over local storage and SDK execution.
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::Write as _,
     fs,
-    hash::{Hash, Hasher},
     io::IsTerminal as _,
     path::{Path, PathBuf},
     process::Command,
@@ -15,6 +13,7 @@ use std::{
 
 use chrono::Utc;
 use clap_complete::Shell;
+use ring::digest;
 use serde_json::{json, Value};
 use starweaver_core::sdk_name;
 use starweaver_runtime::AgentStreamRecord;
@@ -31,8 +30,9 @@ use crate::{
     },
     config::{
         get_config_value, init_config_file, mcp_servers, read_current_session, tool_need_approval,
-        write_current_session, CliConfig, ConfigScope, DEFAULT_GLOBAL_GITIGNORE_TEMPLATE,
-        DEFAULT_MCP_TEMPLATE, DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
+        write_current_session, write_default_subagent_presets, CliConfig, ConfigScope,
+        DEFAULT_GLOBAL_GITIGNORE_TEMPLATE, DEFAULT_MCP_TEMPLATE,
+        DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
     },
     environment::resolve_environment,
     local_store::{LocalStore, RunSummary, SessionSummary, TrimReport},
@@ -114,12 +114,22 @@ impl CliService {
                 output: cli.output,
                 hitl: cli.hitl,
                 worker: cli.worker.clone(),
+                worker_label: cli.worker_label.clone(),
                 worktree: cli.worktree.clone(),
+                worktree_name: cli.worktree_name.clone(),
                 branch: cli.branch,
             };
             return self.run_prompt(&command);
         }
-        match cli.command.unwrap_or(CliCommand::Version) {
+        let default_command = CliCommand::Tui(TuiCommand {
+            session: cli.session.clone(),
+            run: cli.run.clone(),
+            after: None,
+            interactive: false,
+            snapshot: false,
+            output: OutputMode::Text,
+        });
+        match cli.command.unwrap_or(default_command) {
             CliCommand::Version => Ok(format!("{}\n", sdk_name())),
             CliCommand::Diagnostics => Ok(self.diagnostics()?),
             CliCommand::ReplayCheck => {
@@ -150,6 +160,7 @@ impl CliService {
         match execution.output_mode {
             OutputMode::Text => Ok(render_display_text(&execution.messages)),
             OutputMode::DisplayJsonl => render_display_jsonl(&execution.messages),
+            OutputMode::AguiJsonl => render_agui_jsonl(&execution.messages),
             OutputMode::Silent => Ok(format!(
                 "session_id={}\nrun_id={}\nstatus={}\n",
                 execution.session_id, execution.run_id, execution.status
@@ -323,11 +334,6 @@ impl CliService {
                 return Ok((session.session_id.as_str().to_string(), false));
             }
         }
-        if let Some(session_id) = read_current_session(&self.config)? {
-            if self.store()?.load_session(&session_id).is_ok() {
-                return Ok((session_id, false));
-            }
-        }
         let session = self
             .store()?
             .create_session(profile, Some("CLI session".to_string()))?;
@@ -355,6 +361,7 @@ impl CliService {
                 match command.output {
                     OutputMode::Text => Ok(render_display_text(&messages)),
                     OutputMode::DisplayJsonl => render_display_jsonl(&messages),
+                    OutputMode::AguiJsonl => render_agui_jsonl(&messages),
                     OutputMode::Silent => Ok(format!(
                         "session_id={}\nmessages={}\nstatus=replayed\n",
                         command.session_id,
@@ -402,7 +409,7 @@ impl CliService {
 
     fn profile(&self, command: ProfileCommand) -> CliResult<String> {
         match command {
-            ProfileCommand::List => list_profiles(&self.config)?
+            ProfileCommand::List => list_profiles(&self.config)
                 .iter()
                 .map(|profile| serde_json::to_string(profile).map(|line| format!("{line}\n")))
                 .collect::<Result<String, _>>()
@@ -544,7 +551,9 @@ impl CliService {
         };
         match command.output {
             OutputMode::Text => Ok(snapshot.render_text()),
-            OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(&snapshot)?)),
+            OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+                Ok(format!("{}\n", serde_json::to_string(&snapshot)?))
+            }
             OutputMode::Silent => Ok(format!(
                 "session_id={}\nmessages={}\napprovals={}\ndeferred={}\nstatus=tui\n",
                 snapshot.session_id,
@@ -619,15 +628,24 @@ impl CliService {
                             match state.complete_goal_iteration(&completed.output_text) {
                                 crate::tui::GoalIterationOutcome::Continue(prompt) => {
                                     state.begin_run(&prompt);
-                                    active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                                    active_run = Some(spawn_tui_run(
+                                        &self.config,
+                                        command,
+                                        state.session_id.clone(),
+                                        prompt,
+                                    ));
                                 }
                                 crate::tui::GoalIterationOutcome::Inactive
                                 | crate::tui::GoalIterationOutcome::Complete
                                 | crate::tui::GoalIterationOutcome::MaxIterations => {
                                     if let Some(prompt) = queued_prompt.take() {
                                         state.begin_run(&prompt);
-                                        active_run =
-                                            Some(spawn_tui_run(&self.config, command, prompt));
+                                        active_run = Some(spawn_tui_run(
+                                            &self.config,
+                                            command,
+                                            state.session_id.clone(),
+                                            prompt,
+                                        ));
                                     }
                                 }
                             }
@@ -701,7 +719,12 @@ impl CliService {
                         continue;
                     }
                     state.begin_run(&prompt);
-                    active_run = Some(spawn_tui_run(&self.config, command, prompt));
+                    active_run = Some(spawn_tui_run(
+                        &self.config,
+                        command,
+                        state.session_id.clone(),
+                        prompt,
+                    ));
                     dirty = true;
                 }
             }
@@ -746,7 +769,9 @@ impl CliService {
                 approval_status_name(approval.status),
                 approval.run_id.as_str()
             )),
-            OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(&approval)?)),
+            OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+                Ok(format!("{}\n", serde_json::to_string(&approval)?))
+            }
             OutputMode::Silent => Ok(format!(
                 "approval_id={}\nstatus={}\n",
                 approval.approval_id,
@@ -809,7 +834,9 @@ impl CliService {
             output: command.output,
             hitl: command.hitl,
             worker: None,
+            worker_label: None,
             worktree: None,
+            worktree_name: None,
             branch: None,
         };
         self.run_prompt(&run_command)
@@ -862,7 +889,7 @@ impl CliService {
             OutputMode::Text => Ok(format!(
                 "removed_database={removed_database}\nremoved_state={removed_state}\nremoved_store={removed_store}\nstatus=reset\n"
             )),
-            OutputMode::DisplayJsonl => Ok(format!(
+            OutputMode::DisplayJsonl | OutputMode::AguiJsonl => Ok(format!(
                 "{}\n",
                 serde_json::to_string(&json!({
                     "removed_database": removed_database,
@@ -951,7 +978,12 @@ impl CliService {
     }
 }
 
-fn spawn_tui_run(config: &CliConfig, command: &TuiCommand, prompt: String) -> ActiveTuiRun {
+fn spawn_tui_run(
+    config: &CliConfig,
+    command: &TuiCommand,
+    session_id: Option<String>,
+    prompt: String,
+) -> ActiveTuiRun {
     let config = config.clone();
     let command = command.clone();
     let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
@@ -971,12 +1003,11 @@ fn spawn_tui_run(config: &CliConfig, command: &TuiCommand, prompt: String) -> Ac
     });
     thread::spawn(move || {
         let result = CliService::open(config).and_then(|mut service| {
-            let continue_session = command.session.is_none();
             let run_command = RunCommand {
                 prompt: Some(prompt),
                 prompt_parts: Vec::new(),
-                session: command.session,
-                continue_session,
+                session: session_id.or(command.session),
+                continue_session: false,
                 new_session: false,
                 run: None,
                 branch_from: None,
@@ -984,7 +1015,9 @@ fn spawn_tui_run(config: &CliConfig, command: &TuiCommand, prompt: String) -> Ac
                 output: Some(OutputMode::Text),
                 hitl: None,
                 worker: None,
+                worker_label: None,
                 worktree: None,
+                worktree_name: None,
                 branch: None,
             };
             service.run_prompt_streaming_with_steering(
@@ -1071,6 +1104,9 @@ fn setup_catalog_files(root: &Path, force: bool, rows: &mut Vec<Value>) -> CliRe
         fs::create_dir_all(&path).map_err(|error| crate::error::io_error(&path, error))?;
         rows.push(json!({"kind": "directory", "path": path, "status": "ready"}));
     }
+    for path in write_default_subagent_presets(root, force)? {
+        rows.push(json!({"kind": "subagent", "path": path, "status": "ready"}));
+    }
     Ok(())
 }
 
@@ -1138,7 +1174,8 @@ struct WorktreeResolution {
 
 impl CliService {
     fn resolve_worktree(&self, command: &RunCommand) -> CliResult<Option<WorktreeResolution>> {
-        if command.worktree.is_none() && command.branch.is_none() {
+        if command.worktree.is_none() && command.worktree_name.is_none() && command.branch.is_none()
+        {
             return Ok(None);
         }
         let git_root = git_root(&self.config.workspace_root)?;
@@ -1146,7 +1183,11 @@ impl CliService {
             .branch
             .clone()
             .unwrap_or_else(default_worktree_branch);
-        let worktree_name = command.worktree.clone().unwrap_or_else(|| branch.clone());
+        let worktree_name = command
+            .worktree_name
+            .clone()
+            .or_else(|| command.worktree.as_ref().and_then(explicit_flag_value))
+            .unwrap_or_else(|| branch.clone());
         let path = worktree_path(&self.config.global_dir, &git_root, &worktree_name);
         let resumed = path.exists();
         let group_dir = path.parent().unwrap_or(&self.config.global_dir);
@@ -1220,12 +1261,12 @@ fn write_worktree_group_metadata(group_dir: &Path, git_root: &Path) -> CliResult
 }
 
 fn project_hash(path: &Path) -> String {
-    let mut hasher = DefaultHasher::new();
-    path.display().to_string().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-        .chars()
-        .take(12)
-        .collect()
+    let digest = digest::digest(&digest::SHA256, path.display().to_string().as_bytes());
+    let mut hex = String::with_capacity(digest.as_ref().len() * 2);
+    for byte in digest.as_ref() {
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
 }
 
 fn sanitize_worktree_name(name: &str) -> String {
@@ -1242,12 +1283,25 @@ fn sanitize_worktree_name(name: &str) -> String {
         .to_string()
 }
 
+fn explicit_flag_value(value: &String) -> Option<String> {
+    (value != "true").then(|| value.clone())
+}
+
 fn apply_yaacli_run_metadata(
     run: &mut RunRecord,
     command: &RunCommand,
     worktree: Option<&WorktreeResolution>,
 ) {
-    if let Some(worker) = command.worker.as_ref() {
+    if command.worker.is_some() || command.worker_label.is_some() {
+        run.metadata
+            .insert("cli.yaacli.worker_enabled".to_string(), json!(true));
+    }
+    let worker_label = command
+        .worker_label
+        .as_deref()
+        .map(ToString::to_string)
+        .or_else(|| command.worker.as_ref().and_then(explicit_flag_value));
+    if let Some(worker) = worker_label {
         run.metadata
             .insert("cli.yaacli.worker".to_string(), json!(worker));
     }
@@ -1267,7 +1321,16 @@ fn apply_yaacli_run_metadata(
         run.metadata
             .insert("cli.yaacli.branch".to_string(), json!(worktree.branch));
     } else {
-        if let Some(worktree) = command.worktree.as_ref() {
+        let worktree_label = command
+            .worktree_name
+            .as_deref()
+            .map(ToString::to_string)
+            .or_else(|| command.worktree.as_ref().and_then(explicit_flag_value));
+        if command.worktree.is_some() || command.worktree_name.is_some() {
+            run.metadata
+                .insert("cli.yaacli.worktree_enabled".to_string(), json!(true));
+        }
+        if let Some(worktree) = worktree_label {
             run.metadata
                 .insert("cli.yaacli.worktree".to_string(), json!(worktree));
         }
@@ -1328,7 +1391,7 @@ fn render_sessions(sessions: &[SessionSummary], output: OutputMode) -> CliResult
             }
             Ok(lines)
         }
-        OutputMode::DisplayJsonl => sessions
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => sessions
             .iter()
             .map(|session| serde_json::to_string(session).map(|line| format!("{line}\n")))
             .collect::<Result<String, _>>()
@@ -1362,7 +1425,7 @@ fn render_session_show(
             }
             Ok(lines)
         }
-        OutputMode::DisplayJsonl => {
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
             let mut lines = String::new();
             lines.push_str(&serde_json::to_string(session)?);
             lines.push('\n');
@@ -1386,6 +1449,224 @@ fn render_display_jsonl(messages: &[DisplayMessage]) -> CliResult<String> {
         .map(DisplayMessage::to_jsonl_line)
         .collect::<Result<String, _>>()
         .map_err(CliError::from)
+}
+
+fn render_agui_jsonl(messages: &[DisplayMessage]) -> CliResult<String> {
+    messages
+        .iter()
+        .filter_map(display_message_to_agui_event)
+        .map(|event| serde_json::to_string(&event).map(|line| format!("{line}\n")))
+        .collect::<Result<String, _>>()
+        .map_err(CliError::from)
+}
+
+#[allow(clippy::too_many_lines)]
+fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
+    let mut event = match message.kind {
+        DisplayMessageKind::RunQueued => {
+            let value = json!({"sequence_no": message.payload.get("sequence_no").cloned()});
+            custom_agui_event("yaacli.run_queued", message, &value)
+        }
+        DisplayMessageKind::RunStarted => json!({
+            "type": "RUN_STARTED",
+            "threadId": message.session_id.as_str(),
+            "runId": message.run_id.as_str(),
+        }),
+        DisplayMessageKind::AssistantTextStart => {
+            if is_reasoning_message(message) {
+                json!({
+                    "type": "REASONING_MESSAGE_START",
+                    "messageId": message_id(message),
+                    "role": "reasoning",
+                })
+            } else {
+                json!({
+                    "type": "TEXT_MESSAGE_START",
+                    "messageId": message_id(message),
+                    "role": message.payload.get("role").and_then(Value::as_str).unwrap_or("assistant"),
+                    "name": message.agent_name,
+                })
+            }
+        }
+        DisplayMessageKind::AssistantTextDelta => {
+            if is_reasoning_message(message) {
+                json!({
+                    "type": "REASONING_MESSAGE_CHUNK",
+                    "messageId": message_id(message),
+                    "delta": message_delta(message),
+                })
+            } else {
+                json!({
+                    "type": "TEXT_MESSAGE_CHUNK",
+                    "messageId": message_id(message),
+                    "role": "assistant",
+                    "name": message.agent_name,
+                    "delta": message_delta(message),
+                })
+            }
+        }
+        DisplayMessageKind::AssistantTextEnd => {
+            if is_reasoning_message(message) {
+                json!({
+                    "type": "REASONING_MESSAGE_END",
+                    "messageId": message_id(message),
+                })
+            } else {
+                json!({
+                    "type": "TEXT_MESSAGE_END",
+                    "messageId": message_id(message),
+                })
+            }
+        }
+        DisplayMessageKind::ToolCallStart => json!({
+            "type": "TOOL_CALL_START",
+            "toolCallId": tool_call_id(message),
+            "toolCallName": tool_call_name(message),
+            "parentMessageId": message.payload.get("parent_message_id").cloned(),
+        }),
+        DisplayMessageKind::ToolCallDelta => json!({
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": tool_call_id(message),
+            "toolCallName": tool_call_name(message),
+            "delta": message_delta(message),
+        }),
+        DisplayMessageKind::ToolCallEnd => json!({
+            "type": "TOOL_CALL_END",
+            "toolCallId": tool_call_id(message),
+        }),
+        DisplayMessageKind::ToolResult => json!({
+            "type": "TOOL_CALL_RESULT",
+            "messageId": format!("{}:result", tool_call_id(message)),
+            "toolCallId": tool_call_id(message),
+            "toolCallName": tool_call_name(message),
+            "content": message.payload.get("content").cloned().unwrap_or_else(|| json!(message.preview)),
+            "role": "tool",
+            "error": message.payload.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+        }),
+        DisplayMessageKind::RunCompleted => {
+            let output = message
+                .payload
+                .get("output")
+                .cloned()
+                .or_else(|| message.preview.clone().map(Value::String));
+            json!({
+                "type": "RUN_FINISHED",
+                "threadId": message.session_id.as_str(),
+                "runId": message.run_id.as_str(),
+                "result": output.map(|output| json!({"output_text": output})),
+            })
+        }
+        DisplayMessageKind::RunFailed => json!({
+            "type": "RUN_ERROR",
+            "message": message.preview.as_deref().unwrap_or("run failed"),
+            "code": message.payload.get("code").and_then(Value::as_str),
+        }),
+        DisplayMessageKind::RunCancelled => {
+            custom_agui_event("yaacli.run_cancelled", message, &message.payload)
+        }
+        DisplayMessageKind::ApprovalRequested
+        | DisplayMessageKind::ApprovalResolved
+        | DisplayMessageKind::Checkpoint
+        | DisplayMessageKind::SubagentStarted
+        | DisplayMessageKind::SubagentCompleted
+        | DisplayMessageKind::CompactionStarted
+        | DisplayMessageKind::CompactionCompleted => custom_agui_event(
+            display_extension_name(message.kind),
+            message,
+            &message.payload,
+        ),
+    };
+    strip_null_object_fields(&mut event);
+    event.as_object_mut().map(|object| {
+        object.insert(
+            "timestamp".to_string(),
+            json!(message.timestamp.timestamp_millis()),
+        );
+        object.insert("starweaverSequence".to_string(), json!(message.sequence));
+    })?;
+    Some(event)
+}
+
+fn custom_agui_event(name: &str, message: &DisplayMessage, value: &Value) -> Value {
+    json!({
+        "type": "CUSTOM",
+        "name": name,
+        "value": {
+            "run_id": message.run_id.as_str(),
+            "session_id": message.session_id.as_str(),
+            "payload": value,
+            "preview": message.preview,
+        }
+    })
+}
+
+const fn display_extension_name(kind: DisplayMessageKind) -> &'static str {
+    match kind {
+        DisplayMessageKind::ApprovalRequested => "yaacli.approval_requested",
+        DisplayMessageKind::ApprovalResolved => "yaacli.approval_resolved",
+        DisplayMessageKind::Checkpoint => "ya_agent.checkpoint",
+        DisplayMessageKind::SubagentStarted => "ya_agent.subagent_started",
+        DisplayMessageKind::SubagentCompleted => "ya_agent.subagent_completed",
+        DisplayMessageKind::CompactionStarted => "ya_agent.compaction_started",
+        DisplayMessageKind::CompactionCompleted => "ya_agent.compaction_completed",
+        _ => "ya_agent.display_message",
+    }
+}
+
+fn message_id(message: &DisplayMessage) -> String {
+    message
+        .payload
+        .get("message_id")
+        .and_then(Value::as_str)
+        .map_or_else(
+            || format!("{}:message:{}", message.run_id.as_str(), message.sequence),
+            ToString::to_string,
+        )
+}
+
+fn tool_call_id(message: &DisplayMessage) -> String {
+    message
+        .payload
+        .get("tool_call_id")
+        .and_then(Value::as_str)
+        .map_or_else(
+            || format!("{}:tool:{}", message.run_id.as_str(), message.sequence),
+            ToString::to_string,
+        )
+}
+
+fn tool_call_name(message: &DisplayMessage) -> Option<String> {
+    message
+        .payload
+        .get("tool_name")
+        .or_else(|| message.payload.get("name"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn message_delta(message: &DisplayMessage) -> String {
+    message
+        .payload
+        .get("delta")
+        .and_then(Value::as_str)
+        .or(message.preview.as_deref())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn is_reasoning_message(message: &DisplayMessage) -> bool {
+    message.payload.get("part_kind").and_then(Value::as_str) == Some("thinking")
+        || message
+            .metadata
+            .get("reasoning")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+fn strip_null_object_fields(value: &mut Value) {
+    if let Some(object) = value.as_object_mut() {
+        object.retain(|_, value| !value.is_null());
+    }
 }
 
 fn render_display_text(messages: &[DisplayMessage]) -> String {
@@ -1501,7 +1782,7 @@ fn render_approvals(approvals: &[ApprovalRecord], output: OutputMode) -> CliResu
             }
             Ok(lines)
         }
-        OutputMode::DisplayJsonl => render_json_lines(approvals),
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => render_json_lines(approvals),
         OutputMode::Silent => Ok(format!("approvals={}\nstatus=list\n", approvals.len())),
     }
 }
@@ -1522,7 +1803,7 @@ fn render_deferred(records: &[DeferredToolRecord], output: OutputMode) -> CliRes
             }
             Ok(lines)
         }
-        OutputMode::DisplayJsonl => render_json_lines(records),
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => render_json_lines(records),
         OutputMode::Silent => Ok(format!("deferred={}\nstatus=list\n", records.len())),
     }
 }
@@ -1535,7 +1816,9 @@ fn render_deferred_decision(record: &DeferredToolRecord, output: OutputMode) -> 
             execution_status_name(record.status),
             record.run_id.as_str()
         )),
-        OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(record)?)),
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+            Ok(format!("{}\n", serde_json::to_string(record)?))
+        }
         OutputMode::Silent => Ok(format!(
             "deferred_id={}\nstatus={}\n",
             record.deferred_id,
@@ -1570,7 +1853,7 @@ fn render_session_delete(session_id: &str, deleted: bool, output: OutputMode) ->
         OutputMode::Text => Ok(format!(
             "session_id={session_id}\ndeleted={deleted}\nstatus=deleted\n"
         )),
-        OutputMode::DisplayJsonl => Ok(format!(
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => Ok(format!(
             "{}\n",
             serde_json::to_string(&json!({
                 "session_id": session_id,
@@ -1592,7 +1875,9 @@ fn render_trim_report(report: &TrimReport, output: OutputMode) -> CliResult<Stri
             report.bytes_reclaimed,
             report.dry_run
         )),
-        OutputMode::DisplayJsonl => Ok(format!("{}\n", serde_json::to_string(report)?)),
+        OutputMode::DisplayJsonl | OutputMode::AguiJsonl => {
+            Ok(format!("{}\n", serde_json::to_string(report)?))
+        }
         OutputMode::Silent => Ok(format!(
             "sessions_scanned={}\nruns_to_trim={}\nruns_trimmed={}\nbytes_reclaimed={}\ndry_run={}\nstatus=trimmed\n",
             report.sessions_scanned,

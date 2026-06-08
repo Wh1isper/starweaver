@@ -4,13 +4,13 @@ use crate::common::{root, run_capture, run_command};
 
 const WORKSPACE_CRATES: [&str; 10] = [
     "starweaver-agent",
-    "starweaver-claw",
     "starweaver-context",
     "starweaver-core",
     "starweaver-environment",
     "starweaver-model",
     "starweaver-runtime",
     "starweaver-session",
+    "starweaver-storage",
     "starweaver-stream",
     "starweaver-tools",
 ];
@@ -23,8 +23,8 @@ const PUBLISH_PACKAGES: [&str; 11] = [
     "starweaver-environment",
     "starweaver-session",
     "starweaver-stream",
+    "starweaver-storage",
     "starweaver-agent",
-    "starweaver-claw",
     "starweaver-cli",
 ];
 

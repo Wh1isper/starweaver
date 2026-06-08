@@ -121,7 +121,7 @@ pub fn execute_agent_session_with_channels(
         }));
     }
     if let Some(pending) = pending_steering {
-        agent = agent.with_capability(Arc::new(CliSteeringBridge { pending }));
+        agent = agent.with_capability(Arc::new(CliSteeringAdapter { pending }));
     }
     let mut session = restore_state.map_or_else(
         || AgentSession::new(agent.clone()),
@@ -255,12 +255,12 @@ struct PendingSteering {
     messages: Mutex<VecDeque<CliSteeringMessage>>,
 }
 
-struct CliSteeringBridge {
+struct CliSteeringAdapter {
     pending: Arc<PendingSteering>,
 }
 
 #[async_trait]
-impl AgentCapability for CliSteeringBridge {
+impl AgentCapability for CliSteeringAdapter {
     async fn before_model_request_with_context(
         &self,
         _state: &mut AgentRunState,
@@ -278,12 +278,7 @@ impl AgentCapability for CliSteeringBridge {
         context: &mut AgentContext,
         _output: &str,
     ) -> CapabilityResult<()> {
-        if drain_pending_steering(&self.pending, context) {
-            return Err(starweaver_runtime::CapabilityError::ModelRetry(
-                "<system-reminder>There are pending steering messages. Continue and incorporate them before finalizing.</system-reminder>"
-                    .to_string(),
-            ));
-        }
+        drain_pending_steering(&self.pending, context);
         Ok(())
     }
 }
@@ -328,33 +323,59 @@ fn project_display_messages(
     )
     .with_payload(json!({"sequence_no": run.sequence_no}))
     .with_preview("run queued")];
+    let mut streamed_text_projected = false;
+    let mut streamed_reasoning_projected = false;
     let mut final_result_projected_text = false;
+    let mut final_result_projected_reasoning = false;
     let mut approvals = Vec::new();
     let mut deferred_tools = Vec::new();
     let mut status = RunStatus::Completed;
     for record in raw_records {
         let projected = runtime.block_on(projector.project(&context, record));
-        let projected_has_text_delta = projected
-            .iter()
-            .any(|message| message.kind == DisplayMessageKind::AssistantTextDelta);
+        let projected_has_text_delta = projected.iter().any(is_visible_assistant_text_delta);
+        let projected_has_reasoning_delta = projected.iter().any(is_reasoning_assistant_delta);
         match &record.event {
+            AgentStreamEvent::ModelStream {
+                event: ModelResponseStreamEvent::PartDelta(_),
+                ..
+            } => {
+                if projected_has_text_delta {
+                    streamed_text_projected = true;
+                }
+                if projected_has_reasoning_delta {
+                    streamed_reasoning_projected = true;
+                }
+                display_messages.extend(projected);
+            }
             AgentStreamEvent::ModelStream {
                 event: ModelResponseStreamEvent::FinalResult(_),
                 ..
             } => {
-                if projected_has_text_delta {
+                if projected_has_text_delta && !streamed_text_projected {
                     final_result_projected_text = true;
                 }
-                display_messages.extend(projected);
-            }
-            AgentStreamEvent::ModelResponse { .. }
-                if final_result_projected_text && projected_has_text_delta =>
-            {
-                final_result_projected_text = false;
+                if projected_has_reasoning_delta && !streamed_reasoning_projected {
+                    final_result_projected_reasoning = true;
+                }
+                display_messages.extend(filter_projected_model_messages(
+                    projected,
+                    streamed_text_projected,
+                    streamed_reasoning_projected,
+                ));
             }
             AgentStreamEvent::ModelResponse { .. } => {
+                let suppress_text = streamed_text_projected || final_result_projected_text;
+                let suppress_reasoning =
+                    streamed_reasoning_projected || final_result_projected_reasoning;
+                streamed_text_projected = false;
+                streamed_reasoning_projected = false;
                 final_result_projected_text = false;
-                display_messages.extend(projected);
+                final_result_projected_reasoning = false;
+                display_messages.extend(filter_projected_model_messages(
+                    projected,
+                    suppress_text,
+                    suppress_reasoning,
+                ));
             }
             AgentStreamEvent::ToolReturn { tool_return, .. } => {
                 display_messages.extend(projected);
@@ -608,6 +629,63 @@ fn resequence_display_messages(messages: &mut [DisplayMessage]) {
     for (sequence, message) in messages.iter_mut().enumerate() {
         message.sequence = sequence;
     }
+}
+
+fn filter_projected_model_messages(
+    messages: Vec<DisplayMessage>,
+    suppress_text: bool,
+    suppress_reasoning: bool,
+) -> impl Iterator<Item = DisplayMessage> {
+    messages.into_iter().filter(move |message| {
+        !(is_tool_call_message(message.kind)
+            || suppress_text && is_visible_assistant_text_message(message)
+            || suppress_reasoning && is_reasoning_assistant_message(message))
+    })
+}
+
+fn is_visible_assistant_text_delta(message: &DisplayMessage) -> bool {
+    message.kind == DisplayMessageKind::AssistantTextDelta
+        && !is_reasoning_assistant_message(message)
+}
+
+fn is_reasoning_assistant_delta(message: &DisplayMessage) -> bool {
+    message.kind == DisplayMessageKind::AssistantTextDelta
+        && is_reasoning_assistant_message(message)
+}
+
+fn is_visible_assistant_text_message(message: &DisplayMessage) -> bool {
+    is_assistant_text_message(message.kind) && !is_reasoning_assistant_message(message)
+}
+
+fn is_reasoning_assistant_message(message: &DisplayMessage) -> bool {
+    message
+        .payload
+        .get("part_kind")
+        .and_then(serde_json::Value::as_str)
+        == Some("thinking")
+        || message
+            .metadata
+            .get("reasoning")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+}
+
+const fn is_assistant_text_message(kind: DisplayMessageKind) -> bool {
+    matches!(
+        kind,
+        DisplayMessageKind::AssistantTextStart
+            | DisplayMessageKind::AssistantTextDelta
+            | DisplayMessageKind::AssistantTextEnd
+    )
+}
+
+const fn is_tool_call_message(kind: DisplayMessageKind) -> bool {
+    matches!(
+        kind,
+        DisplayMessageKind::ToolCallStart
+            | DisplayMessageKind::ToolCallDelta
+            | DisplayMessageKind::ToolCallEnd
+    )
 }
 
 /// Build a terminal display message for execution failures.

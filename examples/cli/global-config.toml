@@ -3,9 +3,8 @@
 
 [general]
 default_profile = "default_model"
-default_output = "text"
-default_hitl = "deny"
-profile_search_paths = ["profiles", "agents", "~/.starweaver/profiles"]
+default_output = "agui-jsonl"
+default_hitl = "prompt"
 model = "openai-responses:gpt-5"
 model_settings = "openai_responses_high"
 model_cfg = "gpt5_270k"
@@ -32,6 +31,8 @@ model_cfg = "gpt5_270k"
 [env]
 # Values here are exported into the process when the variable is absent.
 # Keep raw secrets in your shell or secret manager when possible.
+# STARWEAVER_IMAGE_UNDERSTANDING_MODEL = "openai-responses:gpt-5-mini"
+# STARWEAVER_VIDEO_UNDERSTANDING_MODEL = "openai-responses:gpt-5-mini"
 
 [skills]
 dirs = ["~/.starweaver/skills"]

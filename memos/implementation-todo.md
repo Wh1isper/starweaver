@@ -1,526 +1,130 @@
-# Starweaver Implementation TODO
+# Implementation TODO
 
-This memo tracks the execution roadmap for the architecture in `spec/`. It is organized around landed foundations, active design decisions, validation evidence, near-term milestones, later milestones, open design questions, and acceptance gates.
+Current priority: finish Starweaver foundation work across core/model/context/runtime/tools/agent/environment/session/stream/storage. CLI parity audit is postponed until foundation gates stay stable.
 
-## Current Status
+## P0 Foundation Closeout
 
-### Landed Foundations
+Owner: foundation crates.
 
-- Workspace structure, unified workspace version, two-step release workflow, and Rust `xtask` repository automation are landed.
-- Replay compatibility is broad across OpenAI Chat, OpenAI Responses, Anthropic Messages, Gemini generateContent, and Bedrock Converse.
-- Core runtime foundations are landed: deterministic agent loop, graph inspection, iteration inspection, stream records, direct model/tool APIs, output policy, retry handling, capability hooks, message history processors, usage limits, trace recording, and executor checkpoints.
-- SDK facade foundations are landed: `AgentBuilder`, `AgentApp`, `AgentSession`, context export/restore, direct API re-exports, first-party tool bundles, agent spec presets, subagent registry foundations, and markdown subagent config parsing.
-- Environment foundations are landed in `starweaver-environment`: provider trait, file and shell policies, resource references, state snapshots, virtual provider, and local provider with policy-aware read/write/list/glob support.
-- Durable session foundations are landed in `starweaver-claw`: `SessionStore`, in-memory store, session/run records, checkpoint append/load/latest, stream replay, resume snapshots, and compact run trace projection.
-- Command-line foundations are landed: `version`, `run`, `diagnostics`, session list/show/replay/trim, replay-check guidance, setup/auth/catalog commands, default first-party tool catalog assembly, tool approval policy loading, MCP metadata wiring, retained TUI snapshots, approval/deferred commands, continuation-run resume, and release CLI smoke validation with deterministic tests.
-- First-party tool abstraction foundations are landed: typed tool argument schemas via `schemars`, `Toolset::get_tools`, `Toolset::get_instructions`, registry-level instruction aggregation, `PrefixedToolset`, and core `ToolProxyToolset`.
-- Specs are organized across `spec/core`, `spec/sdk`, and `spec/ops` with matching roadmap ownership.
+Scope:
 
-### Active Design Decisions
+01. Keep provider-neutral model protocol and replay fixtures stable.
+02. Keep model wrappers covered by order and request/response transform tests.
+03. Keep tool schema, toolset combinators, metadata, retries, approvals, deferred records, and MCP foundations deterministic.
+04. Keep runtime capability hooks, structured output modes, output functions, retry semantics, stream records, trace seams, and executor checkpoints covered.
+05. Keep SDK `AgentBuilder`, `AgentApp`, `AgentSession`, `AgentSpec`, first-party tool bundles, filters, media helpers, and subagent registry covered.
+06. Keep environment provider contracts and local/virtual provider tests green.
+07. Keep `starweaver-session` contracts for sessions, runs, checkpoints, approvals, deferred records, resume snapshots, and compact traces stable.
+08. Keep `starweaver-stream` display/replay contracts, UI adapters, sanitizers, realtime compaction, replay logs, and stream archives stable.
+09. Keep `starweaver-storage` SQLite schema focused on shared session/run/checkpoint/stream/approval/deferred/replay/snapshot tables.
+10. Keep docs examples compiling.
 
-- Trace/span design has two layers:
-  - info-level canonical SDK telemetry: agent, step, model, tool, checkpoint, compact history/filter spans, canonical request/response/stream events, and usage/correlation attributes.
-  - debug-level raw LLM telemetry: exact provider HTTP request/response and future raw provider stream chunks, enabled by application policy.
-- Model reconstruction should use canonical model-layer events by default. Raw LLM request traces are for targeted provider, gateway, replay, and audit debugging.
-- Prepared model request snapshots should bridge canonical runtime evidence and raw provider HTTP evidence. They record normalized messages, prepared request parameters, selected output mode, resolved thinking/native-tool behavior, schema transformations, and profile-driven message normalization.
-- Compact capability/filter spans record structural before/after evidence by default. Full all-filter snapshots are debug-level high-volume telemetry.
-- `AgentContext` is the short-lived native evidence carrier. `EnvironmentProvider` is the long-lived resource owner. Context stores typed provider dependencies and serializable environment refs.
-- `EnvironmentProvider` should stay small until concrete host/service call sites prove richer operators. Rich file, process, resource, sandbox, and background-shell APIs should grow through extension traits and first-party bundles.
-- Checkpoint reload uses session state, latest checkpoint, and stream replay-after-cursor as separate concerns. Stream persistence is delivery-oriented; checkpoint persistence is execution-oriented.
-- Tool discovery for large tool surfaces uses a core fixed two-tool proxy: `ToolProxyToolset` exposes `search_tools` and `call_tool`; callers compose namespacing with `PrefixedToolset` or `namespaced_toolset`.
-- Pydantic AI message/model-request review at commit `837b03e` validates Starweaver's typed `ModelMessage` substrate and adds deepening priorities: typed tool-call argument state, instruction provenance, prepared request snapshots, provider lifecycle boundaries, and typed stream deltas.
-
-## Validation Baseline
-
-Use these commands while executing TODO items:
+Validation:
 
 ```bash
+cargo fmt --check
+cargo test -p starweaver-core -p starweaver-model -p starweaver-context -p starweaver-runtime -p starweaver-tools -p starweaver-agent -p starweaver-environment -p starweaver-session -p starweaver-stream -p starweaver-storage --locked
 make replay-check
-make coverage-ci
+make docs-check
+```
+
+## P0.1 Storage Foundation
+
+Owner: `starweaver-storage`, `starweaver-session`, `starweaver-stream`.
+
+Tasks:
+
+1. Keep `SQLITE_MIGRATIONS` product-neutral.
+2. Keep migration status DTOs minimal: applied, pending, latest, current.
+3. Keep adapter modules split: connection, errors, migrations, session store, replay log, stream archive.
+4. Add idempotency tests for migration application.
+5. Add round-trip tests for sessions/runs, replay events, stream archive raw/display/snapshots, and live subscriptions.
+6. Keep schema names product-neutral.
+
+Validation:
+
+```bash
+cargo test -p starweaver-storage --locked
+```
+
+## P0.2 Stream and UI Adapter Foundation
+
+Owner: `starweaver-stream`, `starweaver-runtime`.
+
+Tasks:
+
+1. Keep `DisplayMessage` as the Starweaver-native wire event.
+2. Keep JSONL and AGUI-compatible adapters explicit.
+3. Keep sanitizer behavior deterministic for trusted and external views.
+4. Keep compaction snapshots replayable by scope/cursor.
+5. Add tests for stream deltas and part-end records.
+
+Validation:
+
+```bash
+cargo test -p starweaver-stream -p starweaver-runtime --locked
+```
+
+## P0.3 SDK and Tool Foundation
+
+Owner: `starweaver-agent`, `starweaver-tools`, `starweaver-environment`.
+
+Tasks:
+
+1. Keep `AgentSpec` v2 YAML round-trip and registry resolution tests.
+2. Keep first-party tool bundle constructors small and host-neutral.
+3. Keep toolset combinator tests for prefix/include/exclude/metadata behavior.
+4. Keep live MCP client as a host adapter seam.
+5. Keep filters/media helper tests deterministic.
+
+Validation:
+
+```bash
+cargo test -p starweaver-agent -p starweaver-tools -p starweaver-environment --locked
+```
+
+## P1 CLI Audit Parking Lot
+
+CLI parity audit resumes after the P0 gates stay green.
+
+Expected areas:
+
+- live stdout streaming for headless output
+- AGUI-compatible top-level event adapter coverage
+- slash command parity
+- TUI model/session/cost/task/HITL/media workflows
+- startup asset seeding and config import
+- shell environment isolation and review flows
+- media and browser configuration
+- worktree flag semantics
+- session-folder import/export
+
+Validation after resuming:
+
+```bash
+cargo test -p starweaver-cli --locked
+make scripts-check
+```
+
+## P2 Platform and Service Adapters
+
+Platform and service adapters should graduate from specs after ownership, call sites, storage scope, and validation commands are concrete.
+
+Candidate areas:
+
+- service transports over `ReplayTransport`
+- hosted orchestration adapters
+- A2A adapters
+- distributed replay event-log adapter
+- OpenTelemetry exporter integration
+
+## Current Acceptance Gate
+
+```bash
 make fmt-check
 make check
 make test
+make replay-check
 make scripts-check
 make docs-check
-make ci
 ```
-
-Focused gates:
-
-```bash
-cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test message_ast --test request_preparation --test stream_replay --locked
-cargo test -p starweaver-agent --test bundles --locked
-cargo test -p starweaver-tools --test typed_tool --test toolset --test prefixed --locked
-cargo llvm-cov --workspace --all-features --locked --fail-under-lines 70 --summary-only
-```
-
-Last verified local validation set after the toolset/tool-proxy refactor:
-
-```bash
-make fmt-check && make check && make test && make docs-check && make replay-check
-```
-
-Last recorded workspace line coverage snapshot before the latest toolset/tool-proxy pass: 83.08% with the default 70% gate. Core grouped measured floor was 75% while acceptance paths kept a stricter 95% gate over stable high-coverage contract files. Rerun coverage after major API changes before using coverage numbers for release evidence.
-
-## Provider Replay Status
-
-Current fixture-driven replay coverage is a maintenance area. New provider work should add fixtures before changing request/response mapping.
-
-| Provider family  | Coverage status                                                                                                                                                                                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenAI Chat      | text, tools, structured output, JSON object mode, tool choice, parallel tools, refusal, malformed choices, streaming, multimodal input landed                                                                                                                                                                 |
-| OpenAI Responses | text, function calls, structured output, reasoning, thinking summaries, native web search, native MCP, image/file output parsing, refusal, streaming, status errors landed; dedicated request fixtures pending for image generation, file search, web fetch, memory, and code interpreter native tools        |
-| Anthropic        | text, tools, tool result history, thinking, signatures, image input, cache control, max token stop, safety-style refusal, streaming landed                                                                                                                                                                    |
-| Gemini           | text, function calls, function responses, safety, tool config, code execution, Google search, multimodal input, streaming, malformed candidates landed                                                                                                                                                        |
-| Bedrock          | text, tools, strict tool calls, tool result errors, max token stop, content block variants, additional fields, status errors, streaming, SigV4/gateway metadata landed                                                                                                                                        |
-| Cross-provider   | cassette record/scrub/import/summary, schema validation, errors, retries, params merge precedence, profiles, native tool serialization, typed tool-argument preservation, prepared request snapshot type/tests, and typed stream-delta fixtures landed; per-provider prepared fixture fields remain follow-up |
-
-## Completed Near-Term Milestones
-
-### M1 SDK Usability
-
-Status: first implementation landed.
-
-- SDK preset types: `ModelPreset`, `SdkPreset`, `text_output_preset`; model-layer built-in settings/config/runtime presets are available through `starweaver-model` and re-exported by `starweaver-agent`.
-- Serializable `AgentSpec` YAML loader and `AgentSpecRegistry` that resolve model ids, toolsets, subagents, runtime policy, settings, and usage limits into `AgentBuilder`.
-- `AgentSession` convenience APIs for state, notes, message bus, metadata, trace context, and W3C traceparent setup.
-- Public SDK re-exports for new presets, bundles, trace recorder types, and runtime/tool/model helpers.
-- Tests cover spec loading, session helpers, trace parent propagation, and SDK builder behavior.
-
-### M2 Environment Provider
-
-Status: first implementation landed.
-
-- `starweaver-environment` crate with `EnvironmentProvider`, `DynEnvironmentProvider`, `FilePolicy`, `ShellPolicy`, `EnvironmentPolicy`, `ResourceRef`, `ShellOutput`, and `EnvironmentState`.
-- `VirtualEnvironmentProvider` supports deterministic shared in-memory files, fake shell outputs, policy checks, glob/grep, and state export.
-- `LocalEnvironmentProvider` supports policy-guarded read, write, list, glob, and state export. Local shell execution is reserved for a shell tool/provider implementation.
-- Workspace, README, and AGENTS include the new crate boundary.
-- Tests cover file read/write/list, shell fake execution, policy denial, glob/grep with native matchers, local gitignore/hidden behavior, and state export.
-
-### M3 First-Party Tool Bundles
-
-Status: first implementation landed.
-
-- Filesystem bundle with `view`, `ls`, `write`, `edit`, `multi_edit`, `glob`, `grep`, `mkdir`, `delete`, `move`, `copy`, and `resource_ref` over `EnvironmentProvider` through `AgentContext` dependencies.
-- Filesystem execution state: `view`, `ls`, `write`, `edit`, `multi_edit`, `glob`, `grep`, and `resource_ref` execute against the active provider; `mkdir`, `delete`, `move`, and `copy` emit operation envelopes pending richer provider operation traits.
-- Shell bundle with `shell_exec`, `shell_wait`, `shell_status`, `shell_input`, `shell_signal`, `shell_kill`, stdout/stderr/status evidence, and approval metadata.
-- Shell execution state: foreground `shell_exec` executes through `EnvironmentProvider::run_shell`; background `shell_exec` returns an explicit durable-shell-provider requirement, and lifecycle tools emit durable operation envelopes pending a process-capable provider.
-- Task bundle with `task_create`, `task_get`, `task_update`, and `task_list` operation envelopes.
-- Host-operation bundle with web, fetch/scrape/download, media, summarize, note, and thinking tools; document conversion is planned as skill-driven shell workflows. Bundle internals are split by tool category under `crates/starweaver-agent/src/bundles/`.
-- Core tool proxy foundation through fixed `search_tools` and `call_tool` via `ToolProxyToolset`, plus `PrefixedToolset`/`namespaced_toolset` for namespace-prefixed proxy surfaces or wrapped tools.
-- Bundle APIs return `DynToolset` for direct `ToolRegistry` and `AgentBuilder` registration.
-- Tests cover stable tool names, instructions, fake-backed execution, resource refs, explicit background-shell provider requirements, context propagation, proxy search/call, namespacing, and agent builder registration.
-
-### M4 Durable Session Runtime
-
-Status: first implementation landed and refined.
-
-- `starweaver-claw` crate with `SessionStore` and `InMemorySessionStore`.
-- `SessionRecord`, `RunRecord`, `CompactRunTrace`, `SessionId`, and `SessionResumeSnapshot`.
-- Session save/load, run append, checkpoint append/load/latest, stream record append, stream replay, stream replay after cursor, resume snapshot, and compact run projection.
-- `SessionStoreExecutor` persists runtime checkpoints into any `SessionStore`.
-- Compact projections include run id, checkpoint ids, latest checkpoint id, stream event count, stream cursor, and trace context.
-- Tests cover session save/load, run append, checkpoint persistence/load/latest, runtime executor persistence, stream replay, replay after cursor, and compact projection.
-
-### M5 Observability and Command-Line Inspection
-
-Status: first implementation landed and refined.
-
-- Runtime `TraceRecorder` abstraction with `SpanSpec`, `SpanKind`, `TraceLevel`, `SpanHandle`, `SpanEvent`, `SpanStatus`, `RecordedSpan`, `NoopTraceRecorder`, `InMemoryTraceRecorder`, and `AdapterTraceRecorder` exporter seam.
-- Runtime loop spans for `gen_ai.invoke_agent`, `starweaver.loop.step`, `gen_ai.inference`, `gen_ai.execute_tool`, `starweaver.history.compaction`, and `starweaver.checkpoint`.
-- Default model-layer canonical events for request, stream events, and response.
-- Debug LLM-request recorder seam for raw provider request/response evidence through `ModelRequestContext` metadata.
-- Tool spans record tool call arguments and tool return result events.
-- Trace context propagation into model request contexts, tool contexts, checkpoints, and compact run projections.
-- Nested span tests cover agent, loop step, model, tool, checkpoint spans, and the adapter seam in one trace.
-- Command-line commands cover local run, diagnostics, version, session inspect, and replay-check guidance with deterministic tests.
-
-### M6 Toolset and Tool Registration Alignment
-
-Status: first implementation landed.
-
-- `Toolset` exposes `get_tools()` and `get_instructions()`.
-- `ToolRegistry::insert_toolset` registers tool definitions and deduplicated instruction groups.
-- `TypedFunctionTool<Args, F>` and `typed_tool::<Args, _, _>()` derive JSON Schema from typed Rust argument objects through `schemars`.
-- `ToolContext` carries execution metadata and typed dependencies. Runtime injects the active `AgentContext` into tool dependencies before tool calls.
-- First-party SDK tools access environment handles through `ToolContext -> AgentContext -> EnvironmentHandle`.
-- Instruction presets moved to prompt examples under `examples/prompts`.
-- Tests cover typed schema generation, toolset instructions, runtime dependency injection, first-party bundles, and tool proxy behavior.
-
-## Next Milestones
-
-### N1 Agent SDK P0/P1 Foundation
-
-Status: landed in the current workspace. See `memos/agent-sdk-foundation-plan.md` for merged evidence, API decisions, focused tests, docs touched, and validation commands.
-
-Current landed substrate:
-
-- `AgentBuilder`, `AgentApp`, `AgentSession`, and `AgentRunOptions` provide the primary reusable and run-scoped SDK surface.
-- `AgentSpec` and `AgentSpecRegistry` cover app-profile fields for model selection, SDK policy presets, output profile, selected toolsets/subagents, skill config, host adapters, MCP servers, environment policy, and durability policy.
-- SDK policy presets cover approval, retry, streaming, observability, environment, and durability.
-- First-party bundle helpers cover filesystem, shell, task, host operations, tool proxy, skills, environment toolsets, process shell toolsets, and live MCP toolsets.
-- Fileops-loaded skills are represented by `SkillPackage`, `SkillSourceScope`, `SkillRegistry`, `parse_skill_markdown`, and `skill_tools()` over `EnvironmentProvider` file operations.
-- Subagent inheritance supports required, optional, denied, and auto-inherited tools, with approval metadata preservation and nested delegation guardrails.
-- Host web/media/download tools have executable adapter seams: `HostSearchClient`, Brave Search fallback by env key, `HostScrapeClient`, Firecrawl/local scrape paths, text download through `EnvironmentProvider`, media URL classification, and fallback media understanding clients.
-- Process shell support includes `ProcessShellProvider`, durable process snapshots, context attachment, and shell lifecycle tools against process-capable providers.
-- Live MCP support includes `LiveMcpClient`, discovered server snapshots, and `live_mcp_toolset()` mapping to `McpToolset`.
-
-Validation recorded for this slice:
-
-```bash
-make check
-make test
-make docs-check
-make fmt-check
-git diff --check
-```
-
-### N2 CLI-First Product, Shared Session/Stream Runtime, and Durable Service
-
-This is the recommended active implementation milestone after the Agent SDK foundation work. The next product layer should start with the CLI because it provides the self-hosting surface: prompt-driven local runs, display-protocol stdio streams, session restore from persisted display messages, and a launcher/install path that users can adopt before service adapters deepen.
-
-Target outcome:
-
-- Added `starweaver-session` crate for input parts, `SessionStore`, session/run records, checkpoint refs, approvals, deferred records, resume snapshots, and compact trace projections.
-- Added `starweaver-stream` crate for display messages, replay event logs, replay transports, stream archives, realtime compaction buffers, and protocol envelopes.
-- CLI headless mode is landed through `sw cli -p <prompt>` with text, display JSONL, and silent output modes.
-- `clap` command parsing, `clap_complete` completions, and retained TUI snapshot rendering are landed; full `ratatui + crossterm` interactivity remains a later renderer pass.
-- Persisted `DisplayMessage` records are the session replay and TUI snapshot source for local CLI restore and future service UI flows.
-- AGUI-compatible display adapter and replay compaction paths are landed based on Starweaver Claw behavior.
-- `starweaver` launcher dispatch, `sw` alias, `starweaver-{command}` convention, GitHub release installer, update command, and CLI release smoke validation are landed.
-- CLI configuration resolution is landed for global/project config roots, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, narrow environment overrides, setup UX, auth status/logout, and command-line flag precedence.
-- CLI app-profile workflows over `AgentSpec` are landed for streamed runs, environment provider selection, display-message rendering, compact run trace projection, compact session commands for list/show/replay/trim, default first-party tool catalog assembly, configured MCP server validation, and skill/subagent catalog inspection.
-- Claw-style session/run selectors for `-p/--prompt` are landed: `--session`, `--continue`, `--new-session`, `--run`, and `--branch-from`, where every prompt-backed invocation appends a run under a session.
-- Headless HITL policy handling is landed for deny, defer, fail, and prompt policy selection, with persisted approval/deferred records for deferred workflows.
-- CLI approval and deferred commands are landed for list/show/approve/reject/complete/fail control-flow management.
-- CLI `resume` is landed as a continuation-run path over saved session state and persisted control-flow decisions.
-- Local SQLite plus file-store persistence is landed in the CLI path for session/run/display indexes, checkpoint refs, raw evidence blobs, compact snapshots, approval/deferred records, and local trim.
-- Current-session and all-sessions trim policies are landed for recent run count, age filters, active runs, latest successful run preservation, and bytes-reclaimed reporting.
-- Service execution loop, cancellation/interruption, same-run approval/deferred resume endpoints, SSE replay, and compact run trace APIs use the same display/replay contracts in the Claw layer.
-- Add runtime checkpoint reload APIs that hydrate from `AgentCheckpoint.state` and continue from safe execution nodes.
-- Add idempotency metadata for external tool calls, host adapters, environment resources, and process handles.
-- Add deployment metadata propagation into trace/session records: profile, workspace provider, build version, release, user id, and tags.
-
-Focused implementation slices:
-
-01. **CLI framework and parser:** add `clap` derive command schemas, `ValueEnum` types, command parsing tests, and `clap_complete` shell completion generation.
-02. **CLI display contract:** define display-message restore semantics, headless replay envelopes, terminal markers, and renderer input contracts.
-03. **CLI configuration resolver:** landed global/project config discovery, `config.toml`, `tools.toml`, `mcp.json`, `state.json`, layered skills/subagents, selected env overrides, setup command, and command-line precedence tests.
-04. **CLI module split:** split `starweaver-cli` into args/config/commands/render/stream/session/storage modules while preserving current deterministic commands.
-05. **Headless stdio runs:** add `-p/--prompt`, session selectors, run selectors, `--hitl deny|defer|fail`, `--output display-jsonl|silent`, and golden output tests.
-06. **AGUI-compatible DisplayMessage protocol:** make `DisplayMessage` the AGUI-compatible Starweaver wire event for lifecycle, text, reasoning, tool call, tool result, custom, and terminal events with compaction tests.
-07. **Local SQLite and file store:** implement SQLite-backed session/run/display indexes plus file-store blobs for raw stream records, checkpoint blobs, compact snapshots, archives, and attachments.
-08. **Display-message persistence:** persist and replay display messages through `StreamArchive` for local runs and session restore tests.
-09. **CLI session workflows:** add compact session list/show/replay/trim commands over the session/run model.
-10. **Trim engine:** add current-session and all-sessions trim with dry-run reports, compaction-before-delete, preserved active/latest-success runs, age policies, recent-run policies, and orphan cleanup.
-11. **Launcher and install path:** add `starweaver` launcher, `sw` alias install behavior, `starweaver-{command}` dispatch, GitHub release installer, update command, checksums, and package metadata.
-12. **CLI profile/session workflows:** assemble CLI config, commands, environment/profile resolution, store/stream/transport selection, and renderers over shared session and stream contracts.
-13. **Shared session records:** keep `InputPart`, session/run records, checkpoint refs, control records, compact projections, stream cursor refs, and serialization tests aligned with CLI restore needs.
-14. **Shared stream protocols:** keep AGUI-compatible `DisplayMessage`, replay cursors/scopes, replay events, replay snapshots, stream archive records, protocol envelopes, and realtime compaction tests aligned with CLI, TUI, and Claw use.
-15. **Service storage adapters:** lift SQLite-backed `SessionStore` and `StreamArchive` adapters into reusable Claw/service storage once the CLI-local schema stabilizes; add PostgreSQL after schema stability.
-16. **TUI renderer:** retained text/JSON snapshot is landed for replay inspection; add `ratatui + crossterm` interactive views after headless replay and session restore contracts are stable.
-17. **Approval/deferred UX and resume:** CLI approval/deferred commands and continuation-run `resume` are landed; Claw remains responsible for service-managed same-run checkpoint reload and service-side HITL endpoints.
-18. **Release smoke and coverage:** `make cli-smoke` is landed for release-binary CLI validation; `make coverage-service` and `make coverage-ci` remain release-readiness gates for coverage.
-19. **Service executor:** wrap runtime execution with persisted run records, cancellation tokens, approval/deferred state, shared replay transport, display-message projection, and resume snapshots.
-20. **Checkpoint reload:** define continuation semantics for `RunStart`, `PrepareModelRequest`, `BeforeModelRequest`, `ModelResponse`, `ToolCall`, `ToolReturn`, `ValidateOutput`, `RunComplete`, and `RunFailed`.
-21. **SSE and JSONL replay:** serve replay transport events with replay-after-cursor behavior and trace correlation.
-22. **Redis replay adapter:** add Redis Stream replay event-log adapter after memory and SQLite contracts stabilize.
-23. **Validation and docs:** add `starweaver-cli`, `starweaver-stream`, `starweaver-session`, and `starweaver-claw` tests, then document CLI durable app workflows.
-
-### N2.1 Message and Model Request Abstraction Deepening
-
-Status: implementation slice landed after the Pydantic AI reference review at commit `837b03e`; planning spec added in `spec/core/06-message-request-abstractions.md`, related core specs updated, and model-layer foundations implemented in `starweaver-model`.
-
-Primary conclusions:
-
-- Starweaver's current `ModelMessage`, `ModelRequest`, `ModelResponse`, request parts, response parts, content parts, provider metadata, `ModelRequestParameters`, `ModelRequestContext`, `ModelProfile`, and structured stream events align with the useful Pydantic AI shape.
-- The next value is focused refinement: preserve malformed tool-call arguments, record prepared request snapshots, deepen instruction provenance, and type stream deltas.
-- `ModelRequestParameters` should become the single per-call negotiation object for tools, native tools, output mode/schema, instruction parts, thinking, HTTP overrides, provider extra body, and replay/audit metadata.
-- Profile-driven request preparation should sit in the model layer before provider wire mapping: settings merge, schema transforms, output/thinking/media validation, native-tool fallback, prompted output instructions, and message normalization.
-- Provider lifecycle should become explicit once protocol clients stabilize: provider name/base URL, auth, injected HTTP client, async lifecycle, model profile lookup, and gateway/audit routing metadata.
-
-Implementation evidence:
-
-1. `ToolArguments` landed with parsed-object, raw-JSON-string, and invalid-marker states; `ToolCallPart` now stores typed arguments while preserving JSON replay serialization.
-2. `ModelRequestParameters` now includes output mode, text/image output allowances, prepared instructions, thinking, and replay/audit metadata.
-3. `PreparedModelRequest` landed with canonical history, normalized history, prepared params, selected profile, selected output mode, thinking, and preparation metadata.
-4. `prepare_model_request` landed in `starweaver-model` for settings merge, output-mode selection, thinking extraction, native-tool dedupe, and prompted-output instruction insertion.
-5. `prepare_messages` landed for `PreserveItems`, `MergeAdjacentSameRole`, `SystemField`, `SystemInstruction`, and `WrapInlineSystem`.
-6. `ProtocolModelClient` now builds provider wire requests from prepared snapshots so profile-driven message normalization is part of production request flow.
-7. Typed stream deltas landed for text, thinking, tool-call name, tool-call arguments, native payload fragments, and file metadata, plus `ModelStreamState` lifecycle: `incomplete`, `complete`, and `interrupted`.
-
-Remaining follow-up slices:
-
-1. Promote instruction provenance into typed fields after cache-control and handoff call sites stabilize beyond metadata helpers.
-2. Add provider-owned client/auth lifecycle traits after current `ProtocolModelClient` fixtures are stable.
-3. Add stable media identifiers for URL, resource, binary, uploaded-file, and data-url content.
-4. Extend replay fixture schema with prepared request snapshots for every provider family.
-5. Add schema-transform evidence and redaction status to `PreparedModelRequest` once trace redaction policy is wired through `ModelRequestContext`.
-
-Focused validation:
-
-```bash
-cargo test -p starweaver-model --test message_ast --locked
-cargo test -p starweaver-model --test request_preparation --locked
-cargo test -p starweaver-model --test stream_replay --locked
-cargo test -p starweaver-runtime --test history_processors --locked
-make replay-check
-```
-
-### N2.5 Remaining SDK Deepening
-
-These items can run alongside durable runtime work when their call sites are needed:
-
-- Add binary/resource write extension traits to `starweaver-environment` and implement streaming binary downloads with checksums and resource metadata.
-- Add concrete first-party fallback media model clients and parent-context usage accounting.
-- Implement concrete `rmcp` stdio and streamable HTTP clients behind the `LiveMcpClient` seam.
-- Add sandboxed shell providers with aligned filesystem/shell path spaces, workspace mounts, diagnostics, and state export.
-- Add bundled first-party skill publishing and upgrade metadata after fileops-loaded skills stabilize through real application use.
-
-### N2.6 ya-mono Parity and Migration
-
-Status: active audit completed against `Wh1isper/ya-mono` commit `788c926`; planning spec added in `spec/ops/07-ya-mono-parity-migration.md`.
-
-Primary conclusions:
-
-- SDK filters have the Starweaver substrate through `HistoryProcessor`, `AgentCapability`, and `CapabilityBundle`, and named ya-agent-sdk filter bundles remain to be implemented and tested.
-- The ya-agent-sdk image/media fixes apply directly to Starweaver because current model content supports URL/file media while binary media, byte-sniffing, base64-aware compression, tall screenshot splitting, GIF policy, and upload-to-URL processors are still gaps.
-- Starweaver Claw has a broad API skeleton, SQLite migrations, embedded web assets, workflows, schedules, bridge, heartbeat, agency, profiles, sessions, runs, SSE, and compatibility route tests, while exact ya-claw behavior still needs endpoint-by-endpoint contract fixtures and durable state semantics.
-- The current Starweaver Claw web source mirrors ya-claw-web; functional parity depends on backend behavior, web tests, service-backed smoke tests, SSE reconnect validation, and embedded asset build checks.
-- Starweaver CLI has headless run, durable local sessions, display JSONL, launcher/update, setup/auth/catalog/session/approval/deferred/resume/config commands, and retained TUI snapshots, with major parity gaps around interactive TUI, slash commands, worktrees, setup wizard, media clipboard, shell review, model profile switching, and yaacli session import.
-- Refactor pressure is concentrated in `starweaver-claw/src/service.rs`, `starweaver-claw/src/storage.rs`, duplicated CLI/Claw SQLite concepts, service-owned SSE framing, broad JSON DTOs, and pending shared storage extraction.
-
-#### SDK filter parity work
-
-Implement named default SDK filter bundles in the order captured by `spec/sdk/05-sdk-integration-map.md`:
-
-01. `cold_start` processor for idle-start tool-return truncation.
-02. capability filter for unsupported image, video, and document content.
-03. image/video preflight processors for validation, counting, GIF policy, compression, splitting, and nested tool-return media.
-04. media upload processor with a `MediaUploader` trait and S3/resource-store adapters.
-05. cache-friendly compact processor that uses current-agent prompts and keep tags.
-06. handoff processor for restored histories and steering parts.
-07. auto-load files capability over `EnvironmentProvider` file reads.
-08. background shell result injection over process-capable environment providers.
-09. message bus consume-once injection.
-10. environment instruction injection.
-11. runtime instruction reinjection after compaction/handoff.
-12. system prompt canonical reinjection verification.
-13. tool-argument repair or explicit error markers for truncated JSON.
-14. provider-aware reasoning/thinking normalization.
-
-Focused tests to add:
-
-```bash
-cargo test -p starweaver-agent --test sdk_filter_order --locked
-cargo test -p starweaver-agent --test media_filters --locked
-cargo test -p starweaver-runtime --test history_processors --locked
-```
-
-#### Media/image fix parity work
-
-Add canonical binary/resource media parts and provider mapping coverage:
-
-- `ContentPart::Binary { data, media_type }`
-- `ContentPart::ResourceRef { uri, media_type, kind, metadata }`
-- optional `ContentPart::DataUrl { data_url, media_type }` for adapters that accept inline data URLs
-
-Implement media preflight utilities:
-
-- PNG/JPEG/GIF/WebP byte detection
-- declared media-type correction from detected bytes
-- base64 encoded size budgeting
-- progressive JPEG compression and dimension reduction
-- alpha compositing onto a white background before JPEG encoding
-- animated media retention plus GIF support policy
-- tall image splitting with overlap
-- corrupted image replacement with system reminders
-- upload-to-URL replacement after local processing
-
-Focused tests to add:
-
-```bash
-cargo test -p starweaver-model --test multimodal_mapping --locked
-cargo test -p starweaver-agent --test media_preflight --locked
-make replay-check
-```
-
-#### Claw backend and migration work
-
-Complete ya-claw backend parity in slices:
-
-1. Generate route inventory fixtures from ya-claw FastAPI routes and ya-claw-web client calls.
-2. Add Axum route tests for every route, including colon-action paths.
-3. Add typed response DTOs aligned with `crates/starweaver-claw/web/src/types.ts`.
-4. Fill behavior for memory extract/summarize, async tasks, interaction response, bridge HITL, agency bootstrap/clear/source submit, notification replay, run/session SSE reconnect, and cancellation/interruption state transitions.
-5. Add service coordinator tests for same-run waiting/resume semantics.
-6. Add migration runner status and dry-run commands.
-7. Add ya-claw SQLite fixture importer tests for profiles, sessions/runs, schedules, workflows, bridges, HITL, async tasks, memory, and runtime instances.
-8. Add backup-before-migrate and migration report output.
-9. Add PostgreSQL after SQLite importer/schema snapshots stabilize.
-
-Focused tests to add:
-
-```bash
-cargo test -p starweaver-claw --test api_contract --locked
-cargo test -p starweaver-claw --test migration_ya_claw --locked
-cargo test -p starweaver-claw --test service_sse --locked
-```
-
-#### Claw frontend parity work
-
-The source layout already mirrors ya-claw-web. Add validation gates:
-
-```bash
-npm --prefix crates/starweaver-claw/web test
-npm --prefix crates/starweaver-claw/web run build
-cargo test -p starweaver-claw --test web_console_smoke --locked
-```
-
-Service-backed smoke coverage should include overview, chat/session history, run events, profiles, schedules, workflows, bridges, heartbeat, agency, settings, auth header handling, and SSE reconnect.
-
-#### CLI parity work
-
-Add yaacli-compatible product behavior while keeping Starweaver durable sessions as the native store:
-
-1. Add `-s/--session`, `--model-profile`, `--worker`, `--worktree`, and `--branch`.
-2. Add interactive setup wizard and startup asset seeding for built-in skills/subagents.
-3. Align config precedence for global/project `config.toml`, `tools.toml`, `mcp.json`, `[env]`, `[shell_env]`, shell environment isolation, media S3 config, OAuth refresh, shell review, model profiles, and custom commands.
-4. Implement yaacli session-folder import/export and retention config compatibility.
-5. Implement interactive TUI composer and slash commands: `/help`, `/config`, `/mode`, `/act`, `/plan`, `/loop`, `/tasks`, `/session`, `/dump`, `/load`, `/clear`, `/cost`, `/exit`.
-6. Add binary clipboard image attachments through SDK media preflight.
-7. Add worktree create/resume metadata under global config and exit resume hints.
-8. Add fatal error diagnostic hints and log-path output.
-
-Focused tests to add:
-
-```bash
-cargo test -p starweaver-cli --test yaacli_parity --locked
-cargo test -p starweaver-cli --test tui_slash_commands --locked
-cargo test -p starweaver-cli --test worktree_workflow --locked
-```
-
-#### Shared infrastructure refactor work
-
-Refactor after the compatibility fixtures exist:
-
-1. Split `starweaver-claw/src/service.rs` into `api/routes`, `api/dto`, `api/extractors`, `api/sse`, and `api/compat`.
-2. Split `starweaver-claw/src/storage.rs` into migration registry, schema modules, session adapter, stream adapter, replay adapter, importers, and tests.
-3. Introduce `starweaver-storage` for shared SQLite connection management, migrations, `SessionStore`, `StreamArchive`, `ReplayEventLog`, ya-claw import, and yaacli import.
-4. Move SSE replay framing into `starweaver-stream` as `SseReplayTransport` behind an HTTP feature.
-5. Add typed DTO snapshots and route schema snapshots.
-6. Split CLI TUI code into slash-command registry, composer/media attachment, renderer, session controller, and task/process panels.
-
-Design debt to carry until compatibility locks:
-
-- Claw currently accepts broad `serde_json::Value` payloads on several API paths. Typed DTOs should replace these once route fixtures lock behavior.
-- SQLite schema SQL is embedded in Rust constants. Versioned migration modules with checksums should replace the monolithic SQL string.
-- CLI and Claw currently keep storage logic in product crates. The shared adapter crate should land before another persisted schema revision.
-- Media handling is split between TUI placeholders, URL media tools, and provider mapping. A single media preflight pipeline should own binary/resource media decisions.
-- Service SSE is implemented at the Axum edge. The replay contract belongs in `starweaver-stream` with HTTP adapters at the edge.
-
-### N3 SDK Documentation and Examples
-
-- Deepen docs for `AgentSpec`, SDK presets, model settings/config presets, first-party tool bundles, environment providers, runtime tracing hooks, session helpers, subagents, and streaming helpers.
-- Keep new examples runnable through `make docs-check`.
-
-## Later Milestones
-
-### Trace Export, Redaction, and Sampling
-
-- Add feature-gated `tracing`, OpenTelemetry, OTLP, and Langfuse-friendly exporters.
-- Add redaction policy for model content, tool arguments/results, HTTP headers, media refs, and debug raw events.
-- Add sampling controls based on span name, level, provider, model, agent, conversation, and error status.
-- Add snapshot tests for trace levels, span kinds, content export decisions, and Langfuse metadata.
-
-### Checkpoint Reload and Resume Execution
-
-- Add runtime APIs that can restart from a loaded `AgentCheckpoint` and continue from safe boundaries.
-- Define resumable-node semantics for `RunStart`, `PrepareModelRequest`, `BeforeModelRequest`, `ModelResponse`, `ToolCall`, `ToolReturn`, `ValidateOutput`, `RunComplete`, and `RunFailed`.
-- Persist stream cursor in checkpoints from service-managed stream observers or executor metadata.
-- Add idempotency keys for external tool calls and environment resources.
-- Add tests for reload from latest checkpoint plus stream replay-after-cursor.
-
-### CLI Product Deepening
-
-- Deepen retained TUI snapshots into interactive `ratatui + crossterm` views over the same persisted display messages.
-- Expand CLI resume from continuation-run workflows toward service-managed same-run checkpoint reload through Claw APIs.
-- Deepen live MCP execution from configured MCP metadata and SDK `LiveMcpClient` seams into concrete `rmcp` stdio and streamable HTTP clients when service call sites require them.
-- Expand release smoke coverage as installer and packaging behavior grows.
-- Keep app profile loading over `AgentApp`, environment providers, first-party bundles, `SessionStore`, SQLite local storage, file-store blobs, and trim policy aligned with docs and coverage gates.
-
-### Durable Service Runtime Deepening
-
-- Lift the CLI-local SQLite/file-store schema into reusable Claw storage adapters after the CLI display/restore/trim contract is stable, then add PostgreSQL after schema stabilizes.
-- Add service execution loop, cancellation/interruption, approval/deferred resume endpoints, SSE replay, and compact run trace APIs using the same display/replay contracts.
-- Add trace/session inspection surfaces shared by command-line and service layers.
-- Add environment state persistence and restore factory hooks.
-- Add deployment metadata propagation into trace/session records: profile, workspace provider, build version, release, user id, and tags.
-
-### Subagents and Skills Beyond P1
-
-- Add durable subagent polling extension after service runtime cancellation and resume endpoints land.
-- Add bundled first-party skill publishing and upgrade metadata after the fileops-loaded skill bundle stabilizes.
-- Add remote skill registry sync after local/project/global fileops discovery and pre-scan hooks are validated.
-
-### Advanced Observability
-
-- Add `starweaver.filter.all` debug-level tracing for all filter/capability input-output snapshots.
-- Add provider raw streaming debug capture for SSE/chunked APIs before canonical normalization.
-- Add compact trace projection tools for command-line/UI inspection with content previews and truncation flags.
-- Add OTel semantic convention conformance tests and GenAI attribute mapping coverage.
-
-### Advanced Provider Coverage
-
-- Maintain replay coverage as providers evolve.
-- Add new native tools, media parts, reasoning/thinking variants, raw streaming chunks, and gateway/audit routing fixtures when public APIs require them.
-- Use debug raw LLM recorder output as a fixture capture path with scrub/import tooling.
-
-### Embeddings, Evals, and Retrieval
-
-- Add embeddings and retrieval APIs after core agent, environment, and service contracts stabilize.
-- Add evaluation layer after SDK and command-line surfaces are stable enough for repeatable benchmark workflows.
-
-### Platform Adapter Layer
-
-- A2A adapter over service/session contracts.
-- AGUI-compatible client transport over service/session/`DisplayMessage` contracts.
-- Adapter conformance tests after core SDK and service runtime stabilize.
-
-## Open Design Questions
-
-- Exact extension-trait split for `EnvironmentProvider`: file/search/shell/process/resource/sandbox traits and default capability discovery.
-- Sandboxed shell runtime selection across Linux bubblewrap/seccomp, macOS seatbelt, Windows restricted tokens, Docker/Podman, and remote microVM providers.
-- Environment state domain schema for resources, background shell handles, sandbox mounts, output cursors, policy revisions, sandbox diagnostics, and workspace trust.
-- Resume safety for already-started external resources, long-running shell processes, and deferred tool calls.
-- Unified delegation schema for subagent selection, task metadata, inherited tools, and durable polling.
-- Typed output ergonomics in Rust with manageable generic complexity.
-- Skill pre-scan hook API and bundled-skill sync strategy across provider-visible roots.
-- Trace redaction policy API and default sensitive-key list.
-- Langfuse extension attribute names and release/session/user mapping.
-- Compact run trace projection schema for model/tool/content previews across session tools, command-line workflows, and UI.
-- command-line configuration format for model/profile/environment/session settings.
-
-## Validation Matrix
-
-| Area                       | Commands                                                                                                  |
-| -------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Formatting                 | `make fmt-check`                                                                                          |
-| Workspace compile and lint | `make check`                                                                                              |
-| Tests                      | `make test`                                                                                               |
-| Replay compatibility       | `make replay-check`                                                                                       |
-| Repository automation      | `make scripts-check`                                                                                      |
-| Docs examples              | `make docs-check`                                                                                         |
-| Docs site                  | `make docs-build`                                                                                         |
-| Coverage                   | `make coverage-core`, `make coverage-agent`, `make coverage-service`, `make coverage-ci`, `make coverage` |
-| Release prep               | `make upversion VERSION=0.2.0`, `cargo run -p xtask --locked -- workspace-version`                        |
-
-## Review Checklist
-
-Before implementation resumes or public APIs graduate:
-
-- Review the owning spec in `spec/core`, `spec/sdk`, or `spec/ops`.
-- Confirm crate ownership and dependency direction.
-- Add targeted tests before expanding docs examples.
-- Update `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, specs, docs, and workflow files when project structure or validation commands change.
-- Keep new user-facing examples runnable through `make docs-check`.

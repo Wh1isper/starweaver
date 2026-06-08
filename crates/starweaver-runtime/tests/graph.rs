@@ -76,13 +76,11 @@ fn transitions_tool_call_path() {
         AgentNode::ExecuteTools
     );
 
-    state.pending_tool_returns.push(ToolReturnPart {
-        tool_call_id: "call_1".to_string(),
-        name: "lookup".to_string(),
-        content: serde_json::json!({"value": "x"}),
-        is_error: false,
-        metadata: serde_json::Map::new(),
-    });
+    state.pending_tool_returns.push(ToolReturnPart::new(
+        "call_1",
+        "lookup",
+        serde_json::json!({"value": "x"}),
+    ));
     assert_eq!(
         next_node(AgentNode::ExecuteTools, &state, 8).unwrap().next,
         AgentNode::PrepareRequest
@@ -92,13 +90,14 @@ fn transitions_tool_call_path() {
 #[test]
 fn transitions_retry_path() {
     let mut state = state();
-    state.pending_tool_returns.push(ToolReturnPart {
-        tool_call_id: "retry".to_string(),
-        name: "output_validation".to_string(),
-        content: serde_json::json!({"error": "invalid"}),
-        is_error: true,
-        metadata: serde_json::Map::new(),
-    });
+    state.pending_tool_returns.push(
+        ToolReturnPart::new(
+            "retry",
+            "output_validation",
+            serde_json::json!({"error": "invalid"}),
+        )
+        .with_error(true),
+    );
 
     assert_eq!(
         next_node(AgentNode::HandleResponse, &state, 8)

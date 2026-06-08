@@ -8,7 +8,7 @@ use starweaver_agent::{
 };
 
 #[tokio::test]
-async fn live_mcp_bridge_discovers_toolset() {
+async fn live_mcp_adapter_discovers_toolset() {
     struct FakeMcp;
 
     #[async_trait]

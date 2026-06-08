@@ -1,158 +1,118 @@
 # Built-in Tool Alignment Audit
 
-This note tracks Starweaver alignment with provider-executed native tools and first-party SDK tool bundles. It is a working memo; specs describe Starweaver principles and public API direction.
+This memo tracks provider-native tools, SDK first-party bundles, and advanced tool follow-ups after the latest Pydantic AI and ya-mono audit.
 
-## Model-layer native tools
+## Model-Layer Native Tools
 
-Starweaver represents provider-executed tools through `NativeToolDefinition` in `crates/starweaver-model/src/adapter.rs`. Provider adapters map those definitions into wire requests while replay fixtures validate stable provider behavior.
+Starweaver represents provider-executed tools through `NativeToolDefinition` in `crates/starweaver-model/src/adapter.rs`. Provider adapters map these definitions into wire requests and replay fixtures validate stable behavior.
 
-| Native tool kind                      | Implementation evidence                                                              | Test coverage                                                                                                     | Replay fixture status                                                                               |
-| ------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| OpenAI Responses `web_search_preview` | `OpenAiResponsesAdapter::build_request` appends native tool definitions              | `crates/starweaver-model/tests/replay.rs::maps_native_tools_to_openai_responses_tools`; `native_tool_coverage.rs` | `tests/fixtures/openai_responses/native_web_search_request.json`; `native_web_search_response.json` |
-| OpenAI Responses `mcp`                | `NativeMcpServer::native_tool_definition`; OpenAI Responses native mapping           | `crates/starweaver-tools/tests/mcp.rs`; `crates/starweaver-model/tests/native_mcp.rs`; replay mapping test        | `tests/fixtures/openai_responses/native_mcp_request.json`; `native_mcp_approval_response.json`      |
-| OpenAI Responses `code_interpreter`   | generic native tool pass-through                                                     | `crates/starweaver-model/tests/native_tool_coverage.rs`                                                           | dedicated replay fixture pending                                                                    |
-| OpenAI Responses `image_generation`   | native tool pass-through plus `image_generation_call` response parsing to file parts | `crates/starweaver-model/tests/native_tool_coverage.rs`; OpenAI Responses replay response parsing                 | `tests/fixtures/openai_responses/file_image_output.json`; request fixture pending                   |
-| OpenAI Responses `file_search`        | native tool pass-through plus `file_search_call` parser branch                       | `crates/starweaver-model/tests/native_tool_coverage.rs`                                                           | dedicated request/response fixture pending                                                          |
-| OpenAI Responses `web_fetch`          | generic native tool pass-through                                                     | `crates/starweaver-model/tests/native_tool_coverage.rs`                                                           | dedicated replay fixture pending                                                                    |
-| OpenAI Responses `memory`             | generic native tool pass-through                                                     | `crates/starweaver-model/tests/native_tool_coverage.rs`                                                           | dedicated replay fixture pending                                                                    |
-| Gemini `google_search`                | `GeminiGenerateContentAdapter::gemini_native_tool` maps to `googleSearch`            | `crates/starweaver-model/tests/native_tool_coverage.rs`; Gemini replay response set                               | `tests/fixtures/gemini/native_google_search_request.json`                                           |
-| Gemini `code_execution`               | `GeminiGenerateContentAdapter::gemini_native_tool` maps to `codeExecution`           | `crates/starweaver-model/tests/native_tool_coverage.rs`; Gemini replay response set                               | `tests/fixtures/gemini/native_code_execution_request.json`                                          |
-| Gemini generic native tools           | generic object mapping keyed by `tool_type`                                          | `crates/starweaver-model/tests/native_tool_coverage.rs` with `url_context`                                        | dedicated fixture added when a provider contract requires it                                        |
-| Provider-private tool search          | planned provider/private built-in mode                                               | public SDK path uses core `ToolProxyToolset`                                                                      | tracked in roadmap                                                                                  |
+| Native tool kind                      | Current state                                 | Evidence                                                                        | Remaining replay work                                      |
+| ------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| OpenAI Responses `web_search_preview` | landed                                        | `OpenAiResponsesAdapter`, `native_tool_coverage.rs`, native web search fixtures | maintain with provider changes                             |
+| OpenAI Responses `mcp`                | landed                                        | `NativeMcpServer`, `native_mcp.rs`, `mcp.rs`, native MCP fixtures               | add live server integration after concrete transports land |
+| OpenAI Responses `code_interpreter`   | pass-through landed                           | `native_tool_coverage.rs`                                                       | dedicated request/response fixture                         |
+| OpenAI Responses `image_generation`   | pass-through and response file parsing landed | `native_tool_coverage.rs`, image/file output parsing fixtures                   | dedicated request fixture                                  |
+| OpenAI Responses `file_search`        | pass-through and parser branch landed         | `native_tool_coverage.rs`                                                       | dedicated request/response fixture                         |
+| OpenAI Responses `web_fetch`          | pass-through landed                           | `native_tool_coverage.rs`                                                       | dedicated fixture                                          |
+| OpenAI Responses `memory`             | pass-through landed                           | `native_tool_coverage.rs`                                                       | dedicated fixture                                          |
+| Gemini `google_search`                | landed                                        | Gemini native tool mapper and request fixture                                   | maintain with provider changes                             |
+| Gemini `code_execution`               | landed                                        | Gemini native tool mapper and request fixture                                   | maintain with provider changes                             |
+| Gemini generic native tools           | generic object mapping landed                 | `url_context` coverage in `native_tool_coverage.rs`                             | add fixture when public API depends on a specific tool     |
+| Provider-private tool search          | pending                                       | SDK uses `ToolProxyToolset` for public large-tool surfaces                      | revisit after provider private tool APIs stabilize         |
 
-## First-party tool bundle names
+## First-Party SDK Tool Bundles
 
-Implemented in `crates/starweaver-agent/src/bundles` and covered by `crates/starweaver-agent/tests/bundles.rs`. Bundle internals now use category modules: `environment/` for filesystem and shell, `external/` for host web/media/download/context tools, plus top-level re-export shims for `web` and `media` public types.
-
-### Filesystem bundle
+### Filesystem Bundle
 
 Toolset: `filesystem`
 
-Tools:
+Tools: `view`, `ls`, `write`, `edit`, `multi_edit`, `glob`, `grep`, `mkdir`, `delete`, `move`, `copy`, `resource_ref`.
 
-- `view`
-- `ls`
-- `write`
-- `edit`
-- `multi_edit`
-- `glob`
-- `grep`
-- `mkdir`
-- `delete`
-- `move`
-- `copy`
-- `resource_ref`
+Current state:
 
-Execution status:
+- `view`, `ls`, `write`, `edit`, `multi_edit`, `glob`, `grep`, and `resource_ref` execute through the active `EnvironmentProvider`.
+- `mkdir`, `delete`, `move`, and `copy` currently return operation envelopes pending richer provider mutation traits.
 
-- `view`, `ls`, `write`, `edit`, `multi_edit`, `glob`, `grep`, and `resource_ref` execute against the active `EnvironmentProvider` stored in `AgentContext` dependencies.
-- `mkdir`, `delete`, `move`, and `copy` currently emit host/provider operation envelopes pending richer provider operation traits.
-
-### Shell bundle
+### Shell Bundle
 
 Toolset: `shell`
 
-Tools:
+Tools: `shell_exec`, `shell_wait`, `shell_status`, `shell_input`, `shell_signal`, `shell_kill`.
 
-- `shell_exec`
-- `shell_wait`
-- `shell_status`
-- `shell_input`
-- `shell_signal`
-- `shell_kill`
+Current state:
 
-Execution status:
+- Foreground execution runs through `EnvironmentProvider::run_shell`.
+- Process-capable shell providers, durable process snapshots, handles, wait/status/input/signal/kill behavior, and deterministic tests are landed.
+- Host policy, sandbox-backed execution, and CLI shell review remain active work.
 
-- Foreground `shell_exec` executes through `EnvironmentProvider::run_shell`.
-- Background `shell_exec` and lifecycle tools emit durable operation envelopes until a process-capable provider lands.
-- `shell_exec` carries approval metadata for host policy integration.
-
-### Task bundle
+### Task Bundle
 
 Toolset: `task`
 
-Tools:
+Tools: `task_create`, `task_get`, `task_update`, `task_list`.
 
-- `task_create`
-- `task_get`
-- `task_update`
-- `task_list`
+Current state: task tools emit structured operation envelopes for SDK hosts or service layers to persist and route.
 
-Execution status: task tools emit operation envelopes for an SDK host or service layer to persist and route.
-
-### Host-operation bundle
+### Host-Operation Bundle
 
 Toolset: `host_operations`
 
-Current tools:
+Current default tools: `search`, `fetch`, `scrape`, `download`, `read_image`, `read_video`, `read_audio`, `load_media_url`, `summarize`, `note`, `note_get`, `thinking`.
 
-- `search`
-- `fetch`
-- `scrape`
-- `download`
-- `read_image`
-- `read_video`
-- `read_audio`
-- `load_media_url`
-- `summarize`
-- `note`
-- `note_get`
-- `thinking`
+Current state:
 
-Target public host-backed tools for web, media, download, and document work:
+- `search` executes through injectable `HostSearchClientHandle` or configured Brave Search environment settings.
+- `scrape` executes through injectable `HostScrapeClientHandle`, Firecrawl settings, Cloudflare seam, or local static-HTML fallback.
+- `fetch` remains a public compatibility tool and shares the internal HTTP substrate.
+- `download` writes text-like resources into the active `EnvironmentProvider`; binary downloads return a structured requirement for binary/resource provider extensions.
+- `load_media_url` classifies HTTP/HTTPS media and document URLs and checks model media capabilities.
+- `read_image`, `read_video`, and `read_audio` execute through injectable fallback media understanding clients when configured.
+- `summarize`, `note`, `note_get`, and `thinking` remain lightweight context/control envelopes.
 
-- `search`
-- `scrape`
-- `download`
-- `load_media_url`
-- `read_image`
-- `read_video`
-- `read_audio`
+Target cleanup:
 
-Execution status: host-operation tools execute web, scrape, download, and media helper paths through SDK adapters. Notes, thinking, and context handoff remain lightweight operation envelopes, and task tracking lives in the dedicated task bundle.
+- Keep `search` and `scrape` as the compact public web surface for default model-facing use.
+- Keep `fetch` available as compatibility/internal-adapter behavior until callers migrate.
+- Add binary/resource write extensions and concrete fallback media clients.
+- Keep PDF/Office conversion as skill workflows backed by shell tools.
 
-### Tool proxy
+### Tool Proxy
 
-Core implementation: `crates/starweaver-tools/src/tool_proxy.rs`
+Toolset: `tool_proxy`
 
-Agent SDK re-export: `crates/starweaver-agent/src/bundles/tool_proxy.rs`
+Tools: `search_tools`, `call_tool`.
 
-Tools:
-
-- `search_tools`
-- `call_tool`
-
-Execution status:
+Current state:
 
 - `ToolProxyToolset` exposes a fixed two-tool proxy over wrapped toolsets.
-- Prefixing is composed externally with `PrefixedToolset` / `namespaced_toolset`.
+- Prefixing and namespacing compose through `PrefixedToolset` and `namespaced_toolset`.
 - Approval and deferred control-flow errors propagate through `call_tool`.
 
-## Coverage gaps to track
+Remaining parity depth from ya-agent-sdk:
 
-- Dedicated replay fixtures for OpenAI Responses `code_interpreter`, `image_generation` request mapping, `file_search` request/response, `web_fetch`, and `memory`.
-- Provider-backed execution for currently envelope-only filesystem, shell lifecycle, task, and host-operation tools.
-- Host-backed replacements for ya-agent-sdk web/search/crawler/media/download tools are tracked in `memos/sdk-host-tool-gap-report.md`.
-- Target public web tools: `search(query, num)` and `scrape(url)`. Raw `fetch` behavior becomes an internal adapter.
-- Target media/download tools: `download(urls, save_dir)`, `load_media_url(url)`, `read_image(url)`, `read_video(url)`, and `read_audio(url)`. Document conversion is provided through skill workflows backed by shell commands.
-- Search/scrape/media/download adapters should cover protocol validation, host network policy delegation, streaming size limits, text truncation, binary guards, safe environment writes, URL accessibility metadata, citation metadata, model capability detection, usage accounting, and deterministic fixtures.
-- `glob`, `grep`, `search_tools`, and `call_tool` have direct executable Starweaver replacements; the fixed `ToolProxyToolset` is the public SDK replacement for large searchable tool surfaces.
-- Unified delegation tool and skill-contributed toolsets in the SDK subagent/skill layer.
+- Pluggable search strategies such as BM25 and keyword ranking.
+- Loaded namespace/tool state stored in `AgentContext` for restore and follow-up calls.
+- Namespace initialization report events for loaded, skipped, and failed tool namespaces.
+- Session restore evidence showing which large tool surfaces were active.
+- Optional namespace failure reporting that can be displayed by CLI and service hosts.
 
-## Validation evidence
+## Advanced Tool Follow-Ups From Pydantic AI
 
-Last verified local validation set:
+- Add tool definition fields for strictness, timeout, return schema, native fallback hints, capability owner, and approval/deferred policy instead of relying on generic metadata.
+- Add tool argument validators and per-tool prepare hooks.
+- Add toolset combinators: filtered, prepared, renamed, approval-required, dynamic, and deferred-loading.
+- Add advanced tool return envelopes with application return value, model-visible content, user-visible content, and private metadata.
+- Add SDK-level deferred tool requests/results and inline handler capability.
 
-```bash
-make fmt-check && make check && make test && make docs-check && make replay-check
-```
-
-Focused checks for this audit:
+## Focused Validation
 
 ```bash
 cargo test -p starweaver-agent --test bundles --locked
+cargo test -p starweaver-agent --test process_shell --locked
+cargo test -p starweaver-agent --test live_mcp --locked
 cargo test -p starweaver-model --test native_tool_coverage --locked
 cargo test -p starweaver-model --test native_mcp --locked
 cargo test -p starweaver-model --test replay --locked
-cargo test -p starweaver-tools --test mcp --locked
+cargo test -p starweaver-tools --locked
+make replay-check
 ```

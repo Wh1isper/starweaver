@@ -14,7 +14,7 @@ fn replays_openai_chat_streaming_text_delta_fixture() {
         }),
         ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "Hel")),
         ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "lo")),
-        ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+        ModelResponseStreamEvent::PartEnd(PartEnd::new(0)),
         ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("Hello"))),
     ];
 
@@ -76,7 +76,7 @@ fn replays_cross_provider_streaming_delta_and_usage_at_end_fixtures() {
                 part_kind: "text".to_string(),
             }),
             ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "ok")),
-            ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+            ModelResponseStreamEvent::PartEnd(PartEnd::new(0)),
             ModelResponseStreamEvent::FinalResult(Box::new(final_result.clone())),
         ];
         assert_eq!(
@@ -106,7 +106,7 @@ fn tool_call_delta_events(call_id: &str, name: &str) -> Vec<ModelResponseStreamE
                 arguments_delta: "\"Paris\"}".to_string(),
             },
         }),
-        ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+        ModelResponseStreamEvent::PartEnd(PartEnd::new(0)),
         ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse {
             parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
                 id: call_id.to_string(),

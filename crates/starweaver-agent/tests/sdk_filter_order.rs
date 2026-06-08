@@ -119,10 +119,10 @@ async fn media_preflight_limits_newest_images() -> starweaver_agent::HistoryProc
 async fn media_preflight_traverses_nested_tool_returns(
 ) -> starweaver_agent::HistoryProcessorResult<()> {
     let request = ModelRequest {
-        parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart {
-            tool_call_id: "call_media".to_string(),
-            name: "browser_capture".to_string(),
-            content: serde_json::json!({
+        parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+            "call_media",
+            "browser_capture",
+            serde_json::json!({
                 "items": [{
                     "media": {
                         "data_url": "data:image/gif;base64,R0lGODlhAQABAAAAAA==",
@@ -130,9 +130,7 @@ async fn media_preflight_traverses_nested_tool_returns(
                     }
                 }]
             }),
-            is_error: false,
-            metadata: serde_json::Map::new(),
-        })],
+        ))],
         timestamp: None,
         instructions: None,
         run_id: None,
@@ -228,13 +226,11 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
 
     let messages = vec![
         ModelMessage::Request(ModelRequest {
-            parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart {
-                tool_call_id: "call_1".to_string(),
-                name: "big_tool".to_string(),
-                content: serde_json::json!({ "data": "abcdefghijklmnopqrstuvwxyz" }),
-                is_error: false,
-                metadata: serde_json::Map::new(),
-            })],
+            parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                "call_1",
+                "big_tool",
+                serde_json::json!({ "data": "abcdefghijklmnopqrstuvwxyz" }),
+            ))],
             timestamp: None,
             instructions: None,
             run_id: None,

@@ -12,6 +12,7 @@ pub mod settings;
 pub mod stream;
 pub mod test;
 pub mod transport;
+pub mod wrappers;
 
 pub use adapter::{
     allow_real_model_requests, allow_real_model_requests_guard, block_real_model_requests,
@@ -51,3 +52,4 @@ pub use transport::{
     HttpResponse, MaxTokensParameter, ModelEventStream, ModelHttpClient, ModelSleeper, NoopSleeper,
     ReqwestHttpClient, RetryPolicy, TokioSleeper,
 };
+pub use wrappers::{ConcurrencyLimitedModel, DynModelAdapter, FallbackModel, ProfileOverrideModel};

@@ -1,5 +1,6 @@
 //! Function tools, registries, toolsets, and execution primitives for Starweaver.
 
+pub mod combinators;
 pub mod context;
 pub mod error;
 pub mod instruction;
@@ -10,7 +11,11 @@ pub mod tool;
 pub mod tool_proxy;
 pub mod toolset;
 
-pub use context::ToolContext;
+pub use combinators::{
+    ApprovalRequiredToolset, DeferredLoadingToolset, DynamicToolset, FilteredToolset,
+    PreparedToolset, RenamedToolset, ToolPredicate,
+};
+pub use context::{ToolApprovalState, ToolContext};
 pub use error::{error_return, ToolError};
 pub use instruction::ToolInstruction;
 pub use mcp::{

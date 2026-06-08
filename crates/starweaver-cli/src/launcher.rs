@@ -47,13 +47,6 @@ pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<Strin
             let cli_args = std::iter::once("starweaver-cli".to_string()).chain(remaining);
             crate::command_output(cli_args)
         }
-        Some("claw") => {
-            let remaining = args.collect::<Vec<_>>();
-            if remaining.first().is_some_and(|arg| arg == "update") {
-                return update_component("claw");
-            }
-            dispatch_external("claw", remaining)
-        }
         Some(command) => dispatch_external(command, args.collect()),
     }
 }
@@ -75,7 +68,6 @@ pub(crate) fn update_component_with_options(
 ) -> CliResult<String> {
     let normalized = match component {
         "cli" | "starweaver-cli" | "starweaver" | "launcher" => "cli",
-        "claw" | "starweaver-claw" => "claw",
         other => return Err(CliError::Usage(format!("unknown update target {other}"))),
     };
     let command = format!(
@@ -225,8 +217,8 @@ mod tests {
         assert!(update.contains("update=github-release"));
         assert!(update.contains("target=cli"));
         assert!(update.contains("status=dry-run"));
-        let quoted = update_component_with_options("claw", "dir with ' quote", true).unwrap();
-        assert!(quoted.contains("target=claw"));
+        let quoted = update_component_with_options("cli", "dir with ' quote", true).unwrap();
+        assert!(quoted.contains("target=cli"));
         assert!(quoted.contains("'\\''"));
     }
 
@@ -246,8 +238,6 @@ mod tests {
         assert!(starweaver.contains("target=cli"));
         let launcher = update_component_with_options("launcher", "/tmp/install", true).unwrap();
         assert!(launcher.contains("target=cli"));
-        let claw = update_component_with_options("starweaver-claw", "/tmp/install", true).unwrap();
-        assert!(claw.contains("target=claw"));
         assert!(matches!(
             update_component_with_options("unknown", "/tmp/install", true),
             Err(CliError::Usage(message)) if message.contains("unknown update target unknown")
@@ -263,10 +253,10 @@ mod tests {
         assert!(matches!(
             command_output([
                 "starweaver".to_string(),
-                "claw".to_string(),
+                "external".to_string(),
                 "doctor".to_string(),
             ]),
-            Err(CliError::Usage(message)) if message.contains("unknown command claw")
+            Err(CliError::Usage(message)) if message.contains("unknown command external")
         ));
         assert!(command_output(["sw".to_string()])
             .unwrap()

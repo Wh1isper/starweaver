@@ -8,22 +8,27 @@ use std::{
 };
 
 use async_trait::async_trait;
-
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Map};
 use starweaver_agent::{
     core_toolsets, load_subagents_from_dir, parse_skill_markdown, skill_tools, string_tool,
-    AgentBuilder, AgentSpec, AgentSpecRegistry, DynTool, DynToolset, FunctionModel, McpServerSpec,
-    McpToolSpec, McpToolset, McpToolsetConfig, McpTransport, SkillPackage, StaticToolset,
-    SubagentConfig, SubagentToolInheritancePolicy, Tool, ToolContext, ToolError, ToolInstruction,
-    ToolResult, Toolset,
+    AgentBuilder, AgentCapability, AgentRunState, AgentSpec, AgentSpecRegistry,
+    ApprovalRequiredToolset, CapabilityResult, DynToolset, FunctionModel,
+    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, McpServerSpec, McpToolSpec,
+    McpToolset, McpToolsetConfig, McpTransport, MediaUnderstandingRequest,
+    MediaUnderstandingResponse, SkillPackage, StaticToolset, SubagentConfig,
+    SubagentToolInheritancePolicy, ToolContext, ToolError, ToolResult,
 };
 use starweaver_model::{
     anthropic_http_config, gemini_http_config, get_model_config, openai_chat_http_config,
-    openai_responses_http_config, HttpModelConfig, ModelMessage, ModelProfile, ModelRequestPart,
+    openai_responses_http_config, ContentPart, HttpModelConfig, ModelAdapter, ModelMessage,
+    ModelProfile, ModelRequest, ModelRequestContext, ModelRequestParameters, ModelRequestPart,
     ModelResponse, ModelResponsePart, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient,
     ToolCallPart,
 };
+
+use starweaver_context::AgentContext;
+use starweaver_core::{ConversationId, RunId};
 
 use crate::{
     config::{mcp_servers, tool_need_approval, CliConfig, CliModelProfile, ProviderConfig},
@@ -42,6 +47,8 @@ pub struct ResolvedProfile {
     pub spec: AgentSpec,
     /// Registry with CLI-provided models and toolsets.
     pub registry: AgentSpecRegistry,
+    /// Optional CLI media-understanding fallback client.
+    pub media_client: Option<Arc<dyn HostMediaUnderstandingClient>>,
 }
 
 /// Source of a resolved profile.
@@ -89,10 +96,16 @@ impl ProfileSource {
 impl ResolvedProfile {
     /// Build the runtime agent from the profile.
     pub fn build_agent(&self) -> CliResult<starweaver_runtime::Agent> {
-        self.spec
+        let mut builder = self
+            .spec
             .builder(&self.registry)
-            .map_err(|error| CliError::Config(error.to_string()))
-            .map(starweaver_agent::AgentBuilder::build)
+            .map_err(|error| CliError::Config(error.to_string()))?;
+        if let Some(client) = self.media_client.as_ref() {
+            builder = builder.capability(Arc::new(CliMediaUnderstandingCapability {
+                handle: HostMediaUnderstandingClientHandle::new(client.clone()),
+            }));
+        }
+        Ok(builder.build())
     }
 }
 
@@ -186,16 +199,18 @@ pub fn resolve_profile(config: &CliConfig, requested: Option<&str>) -> CliResult
     let (spec, source) = load_profile_spec(config, requested)?;
     let name = spec.name.clone();
     let registry = default_registry(config, &spec)?;
+    let media_client = configured_media_client(config)?;
     Ok(ResolvedProfile {
         name,
         source,
         spec,
         registry,
+        media_client,
     })
 }
 
 /// List built-in and configured profiles.
-pub fn list_profiles(config: &CliConfig) -> CliResult<Vec<ProfileSummary>> {
+pub fn list_profiles(config: &CliConfig) -> Vec<ProfileSummary> {
     let mut profiles = builtin_profile_specs()
         .into_iter()
         .map(|(name, spec)| ProfileSummary {
@@ -224,32 +239,8 @@ pub fn list_profiles(config: &CliConfig) -> CliResult<Vec<ProfileSummary>> {
                 path: None,
             }),
     );
-    for root in &config.profile_search_paths {
-        if !root.exists() {
-            continue;
-        }
-        for entry in fs::read_dir(root).map_err(|error| io_error(root, error))? {
-            let entry = entry.map_err(|error| io_error(root, error))?;
-            let path = entry.path();
-            let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-                continue;
-            };
-            if !matches!(extension, "yaml" | "yml") {
-                continue;
-            }
-            let content = fs::read_to_string(&path).map_err(|error| io_error(&path, error))?;
-            let spec = AgentSpec::from_yaml(&content)
-                .map_err(|error| CliError::Config(error.to_string()))?;
-            profiles.push(ProfileSummary {
-                name: spec.name.clone(),
-                source: ProfileSource::File(path.clone()).kind().to_string(),
-                model_id: profile_model_id(&spec),
-                path: Some(path.display().to_string()),
-            });
-        }
-    }
     profiles.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(profiles)
+    profiles
 }
 
 /// Render a built-in or file-backed profile as YAML.
@@ -468,15 +459,27 @@ fn find_profile_path(config: &CliConfig, requested: &str) -> Option<PathBuf> {
     if direct.exists() {
         return Some(direct);
     }
-    config.profile_search_paths.iter().find_map(|root| {
-        [
-            root.join(requested),
-            root.join(format!("{requested}.yaml")),
-            root.join(format!("{requested}.yml")),
-        ]
-        .into_iter()
-        .find(|path| path.exists())
-    })
+    let candidates = [
+        config.project_dir.join("profiles").join(requested),
+        config
+            .project_dir
+            .join("profiles")
+            .join(format!("{requested}.yaml")),
+        config
+            .project_dir
+            .join("profiles")
+            .join(format!("{requested}.yml")),
+        config.global_dir.join("profiles").join(requested),
+        config
+            .global_dir
+            .join("profiles")
+            .join(format!("{requested}.yaml")),
+        config
+            .global_dir
+            .join("profiles")
+            .join(format!("{requested}.yml")),
+    ];
+    candidates.into_iter().find(|path| path.exists())
 }
 
 fn builtin_profile_specs() -> Vec<(&'static str, AgentSpec)> {
@@ -520,6 +523,7 @@ fn default_spec(name: &str) -> AgentSpec {
             settings: None,
         }),
         all_toolsets: true,
+        all_subagents: true,
         ..AgentSpec::default()
     }
 }
@@ -538,6 +542,7 @@ fn coding_spec() -> AgentSpec {
             settings: None,
         }),
         all_toolsets: true,
+        all_subagents: true,
         ..AgentSpec::default()
     }
 }
@@ -556,6 +561,7 @@ fn research_spec() -> AgentSpec {
             settings: None,
         }),
         all_toolsets: true,
+        all_subagents: true,
         ..AgentSpec::default()
     }
 }
@@ -574,6 +580,7 @@ fn workspace_spec() -> AgentSpec {
             settings: None,
         }),
         all_toolsets: true,
+        all_subagents: true,
         ..AgentSpec::default()
     }
 }
@@ -589,6 +596,7 @@ fn config_model_spec(name: &str, profile: &CliModelProfile) -> AgentSpec {
             settings: None,
         }),
         all_toolsets: true,
+        all_subagents: true,
         ..AgentSpec::default()
     }
 }
@@ -667,8 +675,21 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
 fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
     let approval = tool_need_approval(config);
     let mut toolsets = vec![Arc::new(control_flow_toolset()) as DynToolset];
+    let mut filesystem = None;
+    let mut shell = None;
     for toolset in core_toolsets() {
+        match toolset.name() {
+            "filesystem" => filesystem = Some(toolset.clone()),
+            "shell" => shell = Some(toolset.clone()),
+            _ => {}
+        }
         toolsets.push(policy_toolset(toolset, &approval));
+    }
+    if let (Some(filesystem), Some(shell)) = (filesystem, shell) {
+        toolsets.push(policy_toolset(
+            environment_toolset(&filesystem, &shell),
+            &approval,
+        ));
     }
     toolsets.push(policy_toolset(configured_skill_toolset(config), &approval));
     toolsets.extend(
@@ -677,6 +698,166 @@ fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
             .map(|toolset| policy_toolset(toolset, &approval)),
     );
     toolsets
+}
+
+#[derive(Clone)]
+struct CliMediaUnderstandingCapability {
+    handle: HostMediaUnderstandingClientHandle,
+}
+
+#[async_trait]
+impl AgentCapability for CliMediaUnderstandingCapability {
+    async fn before_tool_execution_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        tool_context: &mut ToolContext,
+        _call: &ToolCallPart,
+    ) -> CapabilityResult<()> {
+        tool_context.dependencies.insert(self.handle.clone());
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct CliMediaUnderstandingClient {
+    image: Option<CliMediaUnderstandingModel>,
+    video: Option<CliMediaUnderstandingModel>,
+    audio: Option<CliMediaUnderstandingModel>,
+}
+
+#[derive(Clone)]
+struct CliMediaUnderstandingModel {
+    model_id: String,
+    model: Arc<dyn ModelAdapter>,
+}
+
+#[async_trait]
+impl HostMediaUnderstandingClient for CliMediaUnderstandingClient {
+    async fn understand(
+        &self,
+        request: MediaUnderstandingRequest,
+    ) -> Result<MediaUnderstandingResponse, String> {
+        let selected = match request.media_kind.as_str() {
+            "image" => self.image.as_ref(),
+            "video" => self.video.as_ref(),
+            "audio" => self.audio.as_ref(),
+            other => return Err(format!("unsupported media kind {other}")),
+        }
+        .ok_or_else(|| {
+            format!(
+                "missing fallback model for {} understanding",
+                request.media_kind
+            )
+        })?;
+        let response = selected
+            .model
+            .request(
+                vec![ModelMessage::Request(media_understanding_request(&request))],
+                None,
+                ModelRequestParameters::default(),
+                ModelRequestContext::new(RunId::new(), ConversationId::new()),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut content = response.text_output();
+        if content.trim().is_empty() {
+            content = "Media understanding model returned no text output.".to_string();
+        }
+        Ok(MediaUnderstandingResponse {
+            success: true,
+            media_kind: request.media_kind,
+            url: request.url,
+            model_id: selected.model_id.clone(),
+            content,
+            truncated: false,
+            metadata: Map::new(),
+        })
+    }
+}
+
+fn configured_media_client(
+    config: &CliConfig,
+) -> CliResult<Option<Arc<dyn HostMediaUnderstandingClient>>> {
+    let image = configured_media_model(config, "STARWEAVER_IMAGE_UNDERSTANDING_MODEL")?;
+    let video = configured_media_model(config, "STARWEAVER_VIDEO_UNDERSTANDING_MODEL")?;
+    let audio = configured_media_model(config, "STARWEAVER_AUDIO_UNDERSTANDING_MODEL")?;
+    if image.is_none() && video.is_none() && audio.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(CliMediaUnderstandingClient {
+        image,
+        video,
+        audio,
+    })))
+}
+
+fn configured_media_model(
+    config: &CliConfig,
+    env_name: &str,
+) -> CliResult<Option<CliMediaUnderstandingModel>> {
+    let Some(model_id) = env::var(env_name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let model = match model_id.as_str() {
+        "local_echo" => Arc::new(local_echo_model()) as Arc<dyn ModelAdapter>,
+        other => provider_model(config, other, None)?.ok_or_else(|| {
+            CliError::Config(format!("unknown media understanding model id {other}"))
+        })?,
+    };
+    Ok(Some(CliMediaUnderstandingModel { model_id, model }))
+}
+
+fn media_understanding_request(request: &MediaUnderstandingRequest) -> ModelRequest {
+    let prompt = format!(
+        "Analyze this {kind} URL for the Starweaver CLI user. Return concise, useful observations.\n\nURL: {url}",
+        kind = request.media_kind,
+        url = request.url
+    );
+    let mut content = vec![ContentPart::Text { text: prompt }];
+    content.push(match request.media_kind.as_str() {
+        "image" => ContentPart::ImageUrl {
+            url: request.url.clone(),
+        },
+        "video" => ContentPart::FileUrl {
+            url: request.url.clone(),
+            media_type: "video/*".to_string(),
+        },
+        "audio" => ContentPart::FileUrl {
+            url: request.url.clone(),
+            media_type: "audio/*".to_string(),
+        },
+        _ => ContentPart::FileUrl {
+            url: request.url.clone(),
+            media_type: "application/octet-stream".to_string(),
+        },
+    });
+    ModelRequest {
+        parts: vec![ModelRequestPart::UserPrompt {
+            content,
+            name: Some("media_understanding".to_string()),
+            metadata: Map::new(),
+        }],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    }
+}
+
+fn environment_toolset(filesystem: &DynToolset, shell: &DynToolset) -> DynToolset {
+    Arc::new(
+        StaticToolset::new("environment")
+            .with_id("environment")
+            .with_tools(filesystem.get_tools())
+            .with_tools(shell.get_tools())
+            .with_instructions(filesystem.get_instructions())
+            .with_instructions(shell.get_instructions()),
+    )
 }
 
 fn configured_skill_toolset(config: &CliConfig) -> DynToolset {
@@ -690,116 +871,13 @@ fn configured_skill_toolset(config: &CliConfig) -> DynToolset {
 }
 
 fn policy_toolset(inner: DynToolset, approval: &[String]) -> DynToolset {
-    Arc::new(PolicyToolset {
-        inner,
-        approval: approval.iter().cloned().collect(),
-    })
-}
-
-struct PolicyToolset {
-    inner: DynToolset,
-    approval: BTreeSet<String>,
-}
-
-impl Toolset for PolicyToolset {
-    fn name(&self) -> &str {
-        self.inner.name()
+    let name = inner.name().to_string();
+    let id = inner.id().map(str::to_string);
+    let mut wrapper = ApprovalRequiredToolset::new(inner, approval.iter().cloned()).with_name(name);
+    if let Some(id) = id {
+        wrapper = wrapper.with_id(id);
     }
-
-    fn id(&self) -> Option<&str> {
-        self.inner.id()
-    }
-
-    fn get_tools(&self) -> Vec<DynTool> {
-        let toolset_key = self.id().unwrap_or_else(|| self.name()).to_string();
-        self.inner
-            .get_tools()
-            .into_iter()
-            .map(|tool| {
-                Arc::new(PolicyTool {
-                    tool,
-                    toolset_key: toolset_key.clone(),
-                    approval: self.approval.clone(),
-                }) as DynTool
-            })
-            .collect()
-    }
-
-    fn max_retries(&self) -> Option<usize> {
-        self.inner.max_retries()
-    }
-
-    fn get_instructions(&self) -> Vec<ToolInstruction> {
-        self.inner.get_instructions()
-    }
-}
-
-struct PolicyTool {
-    tool: DynTool,
-    toolset_key: String,
-    approval: BTreeSet<String>,
-}
-
-impl PolicyTool {
-    fn requires_approval(&self) -> bool {
-        let metadata = self.tool.metadata();
-        self.approval.iter().any(|entry| {
-            entry == self.tool.name()
-                || entry == &self.toolset_key
-                || metadata
-                    .get("bundle")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|bundle| entry == bundle)
-        })
-    }
-}
-
-#[async_trait]
-impl Tool for PolicyTool {
-    fn name(&self) -> &str {
-        self.tool.name()
-    }
-
-    fn description(&self) -> Option<&str> {
-        self.tool.description()
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        self.tool.parameters_schema()
-    }
-
-    fn metadata(&self) -> serde_json::Map<String, serde_json::Value> {
-        let mut metadata = self.tool.metadata();
-        if self.requires_approval() {
-            metadata.insert(
-                "approval_required".to_string(),
-                serde_json::Value::Bool(true),
-            );
-        }
-        metadata
-    }
-
-    fn max_retries(&self) -> Option<usize> {
-        self.tool.max_retries()
-    }
-
-    async fn call(
-        &self,
-        context: ToolContext,
-        arguments: serde_json::Value,
-    ) -> Result<ToolResult, ToolError> {
-        if self.requires_approval() {
-            return Err(ToolError::ApprovalRequired {
-                tool: self.name().to_string(),
-                metadata: json!({
-                    "arguments": arguments,
-                    "reason": "configured tool approval policy",
-                    "toolset": self.toolset_key,
-                }),
-            });
-        }
-        self.tool.call(context, arguments).await
-    }
+    Arc::new(wrapper)
 }
 
 fn configured_mcp_server_specs(config: &CliConfig) -> Vec<McpServerSpec> {
@@ -1019,7 +1097,8 @@ fn build_subagent_config(
         .collect::<Vec<_>>();
     let inheritance =
         SubagentToolInheritancePolicy::new(spec.tools.clone(), spec.optional_tools.clone())
-            .with_denied_tools(denied_tools);
+            .with_denied_tools(denied_tools)
+            .with_inherit_all_when_empty(spec.tools.is_empty() && spec.optional_tools.is_empty());
     Ok(SubagentConfig::new(spec.name.clone(), Arc::new(agent))
         .with_description(spec.description.clone())
         .with_tool_inheritance(inheritance))

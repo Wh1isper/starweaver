@@ -682,13 +682,11 @@ mod tests {
         });
         let response = ModelMessage::Response(ModelResponse::text("assistant"));
         let tool_return = ModelMessage::Request(ModelRequest {
-            parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart {
-                tool_call_id: "call_1".to_string(),
-                name: "tool".to_string(),
-                content: json!({"ok": true}),
-                is_error: false,
-                metadata: Map::new(),
-            })],
+            parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                "call_1",
+                "tool",
+                json!({"ok": true}),
+            ))],
             timestamp: None,
             instructions: None,
             run_id: None,

@@ -115,6 +115,29 @@ pub enum StreamDelta {
 pub struct PartEnd {
     /// Part index in response.
     pub index: usize,
+    /// Part kind when the provider includes it or the parser can infer it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part_kind: Option<String>,
+}
+
+impl PartEnd {
+    /// Build a part end event without a known part kind.
+    #[must_use]
+    pub const fn new(index: usize) -> Self {
+        Self {
+            index,
+            part_kind: None,
+        }
+    }
+
+    /// Build a part end event with an explicit part kind.
+    #[must_use]
+    pub fn with_kind(index: usize, part_kind: impl Into<String>) -> Self {
+        Self {
+            index,
+            part_kind: Some(part_kind.into()),
+        }
+    }
 }
 
 /// Lifecycle state of a streamed model response.

@@ -20,7 +20,7 @@ use super::{
         composer_cursor_column, input_tail_lines, queue_styled_line_at, render_composer_lines,
         render_footer_lines, render_live_history_lines, terminal_error,
     },
-    state::{FooterMode, InteractiveTuiState, RunMode, SteeringSubmission},
+    state::{InteractiveTuiState, RunMode, SteeringSubmission},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -279,10 +279,6 @@ pub(super) fn handle_key_event(
                 return Some(InteractiveTuiEvent::Quit);
             }
         }
-        KeyCode::Char('?') if state.composer_is_empty() && !state.running => {
-            state.footer_mode.toggle_help();
-            state.input_status = Some("help".to_string());
-        }
         KeyCode::BackTab => {
             state.run_mode = match state.run_mode {
                 RunMode::Act => RunMode::Plan,
@@ -332,15 +328,8 @@ pub(super) fn handle_key_event(
         KeyCode::Down => state.next_history(),
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.input.push(ch);
-            state.input_status = if state.input.trim_start().starts_with("/help") {
-                Some("help".to_string())
-            } else {
-                None
-            };
+            state.input_status = None;
             state.history_index = None;
-            if !state.input.trim_start().starts_with("/help") {
-                state.footer_mode = FooterMode::Context;
-            }
         }
         _ => {}
     }

@@ -21,7 +21,7 @@ use super::{
         render_live_history_lines, render_shortcut_overlay, visible_width, SegmentStyle,
         StyledLine,
     },
-    state::{InteractiveTuiState, RunMode, SlashCommandDefinition},
+    state::{FooterMode, InteractiveTuiState, RunMode},
     terminal::{handle_key_event, visible_body_bounds, InteractiveTuiEvent},
 };
 
@@ -70,9 +70,9 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     assert!(line_texts(&history)
         .iter()
         .any(|line| line.contains("model:")));
-    assert!(line_texts(&history)
+    assert!(!line_texts(&history)
         .iter()
-        .any(|line| line.contains("/model to change")));
+        .any(|line| line.contains("/model")));
     assert!(line_texts(&history)
         .iter()
         .any(|line| line.contains("directory:")));
@@ -104,7 +104,7 @@ fn codex_style_shortcut_overlay_matches_footer_model() {
     let text = line_texts(&overlay).join("\n");
     assert!(text.contains("Available Commands"));
     assert!(text.contains("/help"));
-    assert!(text.contains("Show this help"));
+    assert!(text.contains("Print this help in the transcript"));
     assert!(text.contains("/goal <task>"));
     assert!(text.contains("Run task toward a verified goal until complete"));
     assert!(text.contains("Key Bindings"));
@@ -141,9 +141,10 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
     assert!(state.input.is_empty());
 
-    assert!(!state.footer_mode.is_help());
+    assert!(!FooterMode::is_help());
     assert_eq!(handle_key_event(&mut state, key_char('?')), None);
-    assert!(state.footer_mode.is_help());
+    assert_eq!(state.input, "?");
+    state.input.clear();
 
     state.input = "/goal".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
@@ -152,29 +153,14 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         .iter()
         .any(|line| line == "[SYS] Usage: /goal <task description>"));
 
-    state.set_custom_commands(std::collections::BTreeMap::from([(
-        "commit".to_string(),
-        SlashCommandDefinition {
-            name: "commit".to_string(),
-            prompt: "Review and commit changes".to_string(),
-            mode: Some("plan".to_string()),
-            description: Some("Commit workflow".to_string()),
-            aliases: vec!["ci".to_string()],
-        },
-    )]));
+    state.set_custom_commands(std::collections::BTreeMap::new());
     state.input = "/COMMIT staged files".to_string();
-    assert_eq!(
-        handle_key_event(&mut state, key_code(KeyCode::Enter)),
-        Some(InteractiveTuiEvent::Submit(
-            "Review and commit changes\n\nstaged files".to_string()
-        ))
-    );
-    assert_eq!(state.run_mode, RunMode::Plan);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(state.input.is_empty());
     assert!(state
         .body
         .iter()
-        .any(|line| line == "[SYS] Running /commit"));
-    state.run_mode = RunMode::Act;
+        .any(|line| line.contains("Unknown command: /COMMIT staged files")));
 
     state.input = "/goal migrate tui".to_string();
     assert_eq!(
@@ -336,13 +322,19 @@ fn interactive_state_covers_runtime_event_branches() {
         },
     ));
     assert_eq!(state.phase, "thinking");
-    assert!(state.body.iter().any(|line| line == "Thinking:"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with('>')));
 
     state.apply_stream_record(&AgentStreamRecord::new(
         3,
         AgentStreamEvent::ModelStream {
             step: 0,
-            event: ModelResponseStreamEvent::PartEnd(PartEnd { index: 1 }),
+            event: ModelResponseStreamEvent::PartEnd(PartEnd {
+                index: 1,
+                part_kind: Some("thinking".to_string()),
+            }),
         },
     ));
 
@@ -387,13 +379,11 @@ fn interactive_state_covers_runtime_event_branches() {
         7,
         AgentStreamEvent::ToolReturn {
             step: 1,
-            tool_return: ToolReturnPart {
-                tool_call_id: call.id.clone(),
-                name: call.name,
-                content: json!({"answer": "ok\nnext"}),
-                is_error: false,
-                metadata: Metadata::default(),
-            },
+            tool_return: ToolReturnPart::new(
+                call.id.clone(),
+                call.name,
+                json!({"answer": "ok\nnext"}),
+            ),
         },
     ));
     assert!(state
@@ -405,13 +395,8 @@ fn interactive_state_covers_runtime_event_branches() {
         8,
         AgentStreamEvent::ToolReturn {
             step: 1,
-            tool_return: ToolReturnPart {
-                tool_call_id: call.id,
-                name: "lookup".to_string(),
-                content: json!("permission denied"),
-                is_error: true,
-                metadata: Metadata::default(),
-            },
+            tool_return: ToolReturnPart::new(call.id, "lookup", json!("permission denied"))
+                .with_error(true),
         },
     ));
     assert!(state
@@ -484,7 +469,7 @@ fn thinking_stream_delta_does_not_suppress_final_text() {
         },
     ));
 
-    assert!(state.body.iter().any(|line| line == "Thinking: reasoning"));
+    assert!(body_has_line(&state, "> reasoning"));
     assert!(body_has_line(&state, "final answer"));
 }
 
@@ -532,7 +517,7 @@ fn interleaved_thinking_part_does_not_mark_text_seen() {
     assert!(state
         .body
         .iter()
-        .any(|line| line == "Thinking: hidden chain"));
+        .any(|line| body_line_text(line) == "> hidden chain"));
     assert!(body_has_line(&state, "visible answer"));
 }
 
@@ -619,7 +604,7 @@ fn interactive_state_covers_model_response_finish_and_failure() {
     ));
     assert_eq!(state.phase, "tools");
     assert!(body_has_line(&state, "answer"));
-    assert!(state.body.iter().any(|line| line == "Thinking: reasoning"));
+    assert!(body_has_line(&state, "> reasoning"));
     assert!(state.body.iter().any(|line| line == "Tool call: search"));
     assert_eq!(state.context_percent_label(), "1%");
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -826,27 +811,24 @@ fn input_tail_preserves_trailing_empty_line() {
 }
 
 #[test]
-fn help_command_auto_opens_colored_panel_without_submitting() {
+fn help_command_prints_help_to_body_without_submitting() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     assert_eq!(handle_key_event(&mut state, key_char('/')), None);
     assert_eq!(handle_key_event(&mut state, key_char('h')), None);
     assert_eq!(handle_key_event(&mut state, key_char('e')), None);
     assert_eq!(handle_key_event(&mut state, key_char('l')), None);
     assert_eq!(handle_key_event(&mut state, key_char('p')), None);
-    assert!(state.help_panel_visible());
+    assert!(!InteractiveTuiState::help_panel_visible());
     let footer_text = line_texts(&render_footer_lines(&state, 100)).join("\n");
-    assert!(footer_text.contains("Available Commands"));
-    assert!(footer_text.contains("/help"));
-    assert!(footer_text.contains("/goal <task>"));
-    assert!(has_segment(
-        &render_footer_lines(&state, 100),
-        "/help",
-        SegmentStyle::GREEN
-    ));
+    assert!(!footer_text.contains("Available Commands"));
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
     assert!(state.input.is_empty());
-    assert!(state.footer_mode.is_help());
+    assert!(!FooterMode::is_help());
     assert!(state.input_status_text().contains("help"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "[SYS] /help - Print this help in the transcript"));
 }
 
 #[test]
@@ -1114,11 +1096,8 @@ fn render_helpers_cover_footer_and_truncation_branches() {
         .iter()
         .any(|line| line.contains("draft")));
 
-    let mut overlay_state = state.clone();
-    overlay_state.footer_mode.toggle_help();
-    let footer_overlay_text = line_texts(&render_footer_lines(&overlay_state, 72)).join("\n");
-    assert!(footer_overlay_text.contains("Available Commands"));
-    assert!(footer_overlay_text.contains("Ctrl+C"));
+    let footer_overlay_text = line_texts(&render_footer_lines(&state, 72)).join("\n");
+    assert!(!footer_overlay_text.contains("Available Commands"));
 
     let overlay = render_shortcut_overlay(12);
     let overlay_text = line_texts(&overlay).join("\n");
@@ -1215,7 +1194,7 @@ fn key_handler_covers_quit_and_history_edges() {
     );
     assert_eq!(state.input, "draf");
     assert_eq!(handle_key_event(&mut state, key_char('z')), None);
-    assert!(!state.footer_mode.is_help());
+    assert!(!FooterMode::is_help());
 
     state.input.clear();
     assert_eq!(
@@ -1386,7 +1365,7 @@ fn model_response_thinking_and_tool_call_are_visible() {
     assert!(state
         .body
         .iter()
-        .any(|line| line == "Thinking: inspect tools"));
+        .any(|line| body_line_text(line) == "> inspect tools"));
     assert!(state
         .body
         .iter()

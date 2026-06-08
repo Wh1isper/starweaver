@@ -329,7 +329,7 @@ let started = registry
         &starweaver_model::ToolCallPart {
             id: "start".to_string(),
             name: "shell_exec".to_string(),
-            arguments: serde_json::json!({"command": "sleep 1", "background": true}),
+            arguments: serde_json::json!({"command": "sleep 1", "background": true}).into(),
         },
     )
     .await;

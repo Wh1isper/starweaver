@@ -10,7 +10,10 @@ mod resume;
 mod store;
 mod trace;
 
-pub use approval::{ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord};
+pub use approval::{
+    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, DeferredToolRequest,
+    DeferredToolRequests, DeferredToolResult, DeferredToolResults, ToolApprovalDecision,
+};
 pub use error::{SessionStoreError, SessionStoreResult};
 pub use input::{BinaryRef, FileRef, InputPart};
 pub use records::{

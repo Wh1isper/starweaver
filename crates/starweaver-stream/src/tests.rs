@@ -161,7 +161,7 @@ fn realtime_compaction_merges_text_and_tool_deltas_and_retains_terminal() {
     buffer.push(display_message(
         3,
         DisplayMessageKind::ToolCallDelta,
-        json!({"tool_call_id": "call-1", "delta": "{\"q\""}),
+        json!({"tool_call_id": "call-1", "tool_name": "lookup", "delta": "{\"q\""}),
     ));
     buffer.push(display_message(
         4,
@@ -182,6 +182,7 @@ fn realtime_compaction_merges_text_and_tool_deltas_and_retains_terminal() {
         snapshot.display_messages[1].payload["arguments_delta"],
         "{\"q\":\"x\"}"
     );
+    assert_eq!(snapshot.display_messages[1].payload["tool_name"], "lookup");
     assert_eq!(
         snapshot.display_messages[2].kind,
         DisplayMessageKind::RunCompleted
@@ -334,7 +335,10 @@ async fn default_projector_maps_runtime_stream_parts_to_display_messages() {
         3,
         AgentStreamEvent::ModelStream {
             step: 0,
-            event: ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+            event: ModelResponseStreamEvent::PartEnd(PartEnd {
+                index: 0,
+                part_kind: Some("text".to_string()),
+            }),
         },
     );
 
@@ -458,7 +462,12 @@ async fn default_projector_maps_thinking_and_tool_calls_from_model_response() {
     assert!(messages.iter().any(|message| {
         message.kind == DisplayMessageKind::ToolCallStart
             && message.payload["tool_name"] == "lookup"
+    }));
+    assert!(messages.iter().any(|message| {
+        message.kind == DisplayMessageKind::ToolCallDelta
+            && message.payload["tool_name"] == "lookup"
             && message.payload["arguments"] == json!({"query": "starweaver"})
+            && message.payload["delta"] == r#"{"query":"starweaver"}"#
     }));
     assert!(messages.iter().any(|message| {
         message.kind == DisplayMessageKind::ToolCallEnd

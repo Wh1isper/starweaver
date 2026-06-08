@@ -31,10 +31,11 @@ pub use mcp_live::{
     live_mcp_toolset, DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot,
 };
 pub use presets::{
-    text_output_preset, AgentSpec, AgentSpecError, AgentSpecRegistry, ApprovalPolicyPreset,
-    DurabilityPolicyPreset, EnvironmentPolicyPreset, HostAdapterSpec, McpServerSpec, ModelPreset,
-    ObservabilityPolicyPreset, OutputSpec, RetryPolicyPreset, SdkPreset, SkillBundleSpec,
-    StreamingPolicyPreset,
+    text_output_preset, AgentSpec, AgentSpecError, AgentSpecHostPolicies, AgentSpecRegistry,
+    ApprovalPolicyPreset, DurabilityPolicyPreset, EnvironmentPolicyPreset, HostAdapterSpec,
+    HostPolicySpec, McpServerSpec, ModelPreset, ObservabilityPolicyPreset, OutputSpec,
+    RetryPolicyPreset, SdkPreset, SkillBundleSpec, StreamingPolicyPreset, TemplateStringSpec,
+    ToolsetWrapperSpec, WorkspacePolicySpec,
 };
 pub use session::{AgentRunOptions, AgentSession};
 pub use starweaver_context::{AgentContext, AgentContextHandle, ResumableState};
@@ -52,16 +53,17 @@ pub use starweaver_model::{
     ModelConfigPresetData, ModelPresetError, ModelRuntimePreset, ModelSettingsPreset,
 };
 pub use starweaver_model::{
-    FunctionModel, FunctionModelInfo, ModelRequestParameters, ModelSettings, ProtocolFamily,
-    TestModel,
+    ConcurrencyLimitedModel, DynModelAdapter, FallbackModel, FunctionModel, FunctionModelInfo,
+    ModelRequestParameters, ModelSettings, ProfileOverrideModel, ProtocolFamily, TestModel,
 };
 pub use starweaver_runtime::{
-    model_request, model_request_stream, tool_call, AdapterTraceRecorder, AgentCapability,
-    AgentCheckpoint, AgentError, AgentExecutionDecision, AgentExecutionNode, AgentExecutor,
-    AgentExecutorError, AgentGraphStep, AgentGraphTrace, AgentIterResult, AgentIterationKind,
-    AgentIterationStep, AgentIterationTrace, AgentNode, AgentOverride, AgentResult,
-    AgentResumeCursor, AgentResumeEvidence, AgentRunState, AgentRuntimePolicy, AgentStreamEvent,
-    AgentStreamRecord, AgentStreamResult, CapabilityBundle, CapabilityResult, CostBudget,
+    model_request, model_request_stream, resolve_capability_order, tool_call, AdapterTraceRecorder,
+    AgentCapability, AgentCheckpoint, AgentError, AgentExecutionDecision, AgentExecutionNode,
+    AgentExecutor, AgentExecutorError, AgentGraphStep, AgentGraphTrace, AgentIterResult,
+    AgentIterationKind, AgentIterationStep, AgentIterationTrace, AgentNode, AgentOverride,
+    AgentResult, AgentResumeCursor, AgentResumeEvidence, AgentRunState, AgentRuntimePolicy,
+    AgentStreamEvent, AgentStreamRecord, AgentStreamResult, CapabilityBundle, CapabilityId,
+    CapabilityOrderError, CapabilityOrdering, CapabilityResult, CapabilitySpec, CostBudget,
     DirectModelRequest, DynamicInstruction, DynamicInstructionError, DynamicInstructionResult,
     FunctionDynamicInstruction, FunctionHistoryProcessor, FunctionOutputFunction,
     FunctionOutputValidator, GraphError, HistoryProcessor, HistoryProcessorError,
@@ -72,10 +74,11 @@ pub use starweaver_runtime::{
     UsageLimitError, UsageLimits,
 };
 pub use starweaver_tools::{
-    mcp_tool_definition, string_tool, typed_tool, DynTool, DynToolset, EmptyToolArgs, FunctionTool,
-    McpToolSpec, McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool,
-    PrefixedToolset, StaticToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolRegistry,
-    ToolResult, Toolset, TypedFunctionTool,
+    mcp_tool_definition, string_tool, typed_tool, ApprovalRequiredToolset, DeferredLoadingToolset,
+    DynTool, DynToolset, DynamicToolset, EmptyToolArgs, FilteredToolset, FunctionTool, McpToolSpec,
+    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset,
+    PreparedToolset, RenamedToolset, StaticToolset, Tool, ToolApprovalState, ToolContext,
+    ToolError, ToolInstruction, ToolRegistry, ToolResult, Toolset, TypedFunctionTool,
 };
 pub use subagent::{
     AgentApp, SubagentConfig, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
@@ -308,11 +311,17 @@ impl AgentBuilder {
             self.model.profile(),
         );
         let media_capability_hook = Arc::new(HostMediaCapabilityHook { media_capabilities });
-        let parent_tools = self.tools.clone();
+        let mut tools = self.tools;
+        if !self.subagents.is_empty() {
+            let subagents = Arc::new(self.subagents.clone());
+            tools.insert(subagents.delegate_tool());
+            tools.insert(subagents.subagent_info_tool());
+        }
+        let parent_tools = tools.clone();
         let parent_tools_hook = Arc::new(ParentToolsCapabilityHook { parent_tools });
         let mut agent = RuntimeAgent::new(self.model)
             .with_request_params(self.request_params)
-            .with_tools(self.tools)
+            .with_tools(tools)
             .with_policy(self.policy);
         for instruction in self.instructions {
             agent = agent.with_instruction(instruction);

@@ -115,13 +115,22 @@ impl ToolRegistry {
     pub async fn execute_call(&self, context: ToolContext, call: &ToolCallPart) -> ToolReturnPart {
         match self.tools.get(&call.name) {
             Some(tool) => match tool.call(context, call.arguments.execution_value()).await {
-                Ok(result) => ToolReturnPart {
-                    tool_call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    content: result.content,
-                    is_error: false,
-                    metadata: result.metadata,
-                },
+                Ok(result) => {
+                    let model_return_content = result
+                        .model_content
+                        .clone()
+                        .unwrap_or_else(|| result.content.clone());
+                    ToolReturnPart {
+                        tool_call_id: call.id.clone(),
+                        name: call.name.clone(),
+                        content: model_return_content,
+                        is_error: false,
+                        metadata: result.metadata,
+                        app_value: result.app_value,
+                        user_content: result.user_content,
+                        private_metadata: result.private_metadata,
+                    }
+                }
                 Err(error) => error_return(call, &error),
             },
             None => error_return(call, &ToolError::NotFound(call.name.clone())),

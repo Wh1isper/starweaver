@@ -1,4 +1,4 @@
-//! Host-backed MCP live bridge seam.
+//! Host-backed MCP live adapter seam.
 
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ pub struct LiveMcpServerSnapshot {
     pub tools: Vec<McpToolSpec>,
 }
 
-/// Host-implemented MCP client bridge.
+/// Host-implemented MCP client adapter.
 #[async_trait]
 pub trait LiveMcpClient: Send + Sync {
     /// Discover MCP server capabilities and tools.
@@ -31,12 +31,12 @@ pub trait LiveMcpClient: Send + Sync {
 /// Shared live MCP client reference.
 pub type DynLiveMcpClient = Arc<dyn LiveMcpClient>;
 
-/// Live MCP bridge failure.
+/// Live MCP adapter failure.
 #[derive(Debug, Error)]
 pub enum LiveMcpError {
-    /// Host bridge failed.
-    #[error("live MCP bridge failed: {0}")]
-    Bridge(String),
+    /// Host adapter failed.
+    #[error("live MCP adapter failed: {0}")]
+    Adapter(String),
 }
 
 /// Discover a live MCP server and return a Starweaver toolset foundation.

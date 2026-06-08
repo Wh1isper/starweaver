@@ -7,13 +7,20 @@ use starweaver_model::{
     FunctionModel, ModelMessage, ModelRequestPart, ModelResponse, ModelSettings,
 };
 use starweaver_runtime::{
-    Agent, AgentCapability, CapabilityResult, FunctionHistoryProcessor, OutputValidationError,
+    resolve_capability_order, Agent, AgentCapability, CapabilityOrderError, CapabilityOrdering,
+    CapabilityResult, CapabilitySpec, FunctionHistoryProcessor, OutputValidationError,
     OutputValidationResult, OutputValidator, OutputValue, StaticCapabilityBundle, UsageLimits,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolResult};
 
 struct CompleteRecorder {
     completed: Arc<Mutex<bool>>,
+}
+
+struct OrderedRecorder {
+    id: &'static str,
+    ordering: CapabilityOrdering,
+    calls: Arc<Mutex<Vec<&'static str>>>,
 }
 
 struct BundleAnswerValidator;
@@ -42,6 +49,83 @@ impl AgentCapability for CompleteRecorder {
         *self.completed.lock().unwrap() = true;
         Ok(())
     }
+}
+
+#[async_trait]
+impl AgentCapability for OrderedRecorder {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new(self.id).with_ordering(self.ordering.clone())
+    }
+
+    async fn on_run_start(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+    ) -> CapabilityResult<()> {
+        self.calls.lock().unwrap().push(self.id);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn capability_order_resolver_sorts_and_reports_diagnostics() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let first = Arc::new(OrderedRecorder {
+        id: "first",
+        ordering: CapabilityOrdering::default(),
+        calls: calls.clone(),
+    });
+    let second = Arc::new(OrderedRecorder {
+        id: "second",
+        ordering: CapabilityOrdering::default().after("first"),
+        calls: calls.clone(),
+    });
+    let ordered = resolve_capability_order(&[second, first.clone()]).unwrap();
+    assert_eq!(ordered[0].spec().id.as_str(), "first");
+    assert_eq!(ordered[1].spec().id.as_str(), "second");
+
+    let duplicate = resolve_capability_order(&[first.clone(), first]);
+    assert!(matches!(
+        duplicate,
+        Err(CapabilityOrderError::DuplicateId(_))
+    ));
+
+    let missing = Arc::new(OrderedRecorder {
+        id: "missing",
+        ordering: CapabilityOrdering::default().after("absent"),
+        calls,
+    });
+    assert!(matches!(
+        resolve_capability_order(&[missing]),
+        Err(CapabilityOrderError::MissingDependency { .. })
+    ));
+}
+
+#[tokio::test]
+async fn agent_executes_capabilities_in_spec_order() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let first = Arc::new(OrderedRecorder {
+        id: "first",
+        ordering: CapabilityOrdering::default(),
+        calls: calls.clone(),
+    });
+    let second = Arc::new(OrderedRecorder {
+        id: "second",
+        ordering: CapabilityOrdering::default().after("first"),
+        calls: calls.clone(),
+    });
+    let model = Arc::new(FunctionModel::new(|_messages, _settings, _info| {
+        Ok(ModelResponse::text("ok"))
+    }));
+
+    let result = Agent::new(model)
+        .with_capability(second)
+        .with_capability(first)
+        .run("hello")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "ok");
+    assert_eq!(*calls.lock().unwrap(), vec!["first", "second"]);
 }
 
 #[tokio::test]

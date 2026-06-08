@@ -113,7 +113,10 @@ subagents:
     let app = spec.builder(&registry).unwrap().build_app();
     app.run("hello").await.unwrap();
 
-    assert_eq!(captured_tools.lock().unwrap()[0], vec!["view"]);
+    assert_eq!(
+        captured_tools.lock().unwrap()[0],
+        vec!["delegate", "subagent_info", "view"]
+    );
     assert_eq!(app.subagents().names(), vec!["child"]);
 }
 
@@ -175,7 +178,7 @@ all_subagents: true
 
     assert_eq!(
         captured_tools.lock().unwrap()[0],
-        vec!["shell_exec", "view"]
+        vec!["delegate", "shell_exec", "subagent_info", "view"]
     );
     assert_eq!(app.subagents().names(), vec!["child"]);
 }

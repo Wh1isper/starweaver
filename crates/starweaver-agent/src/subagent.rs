@@ -260,6 +260,9 @@ pub struct SubagentToolInheritancePolicy {
     /// Inherit tools whose metadata includes `auto_inherit=true`.
     #[serde(default = "default_auto_inherit")]
     pub auto_inherit: bool,
+    /// Inherit every parent tool except denied and nested delegation tools.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub inherit_all_when_empty: bool,
     /// Required parent tool names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_tools: Vec<String>,
@@ -278,6 +281,7 @@ impl Default for SubagentToolInheritancePolicy {
     fn default() -> Self {
         Self {
             auto_inherit: true,
+            inherit_all_when_empty: false,
             required_tools: Vec::new(),
             optional_tools: Vec::new(),
             denied_tools: Vec::new(),
@@ -295,6 +299,13 @@ impl SubagentToolInheritancePolicy {
             optional_tools,
             ..Self::default()
         }
+    }
+
+    /// Inherit all parent tools when no explicit required or optional tools are configured.
+    #[must_use]
+    pub const fn with_inherit_all_when_empty(mut self, enabled: bool) -> Self {
+        self.inherit_all_when_empty = enabled;
+        self
     }
 
     /// Disable metadata-driven auto inheritance.
@@ -327,7 +338,10 @@ impl SubagentToolInheritancePolicy {
         &self,
         parent: &ToolRegistry,
     ) -> Result<ToolRegistry, SubagentToolInheritanceError> {
-        let mut inherited = if self.auto_inherit {
+        let explicit_tools = !self.required_tools.is_empty() || !self.optional_tools.is_empty();
+        let mut inherited = if self.inherit_all_when_empty && !explicit_tools {
+            parent.clone()
+        } else if self.auto_inherit {
             parent.auto_inherited()
         } else {
             ToolRegistry::new()

@@ -143,7 +143,7 @@ Checkpoint fields:
 
 ## SessionStore Fit
 
-A Starweaver Claw-style `SessionStore` should be an upper-layer consumer of `AgentContext`, `StateStore`, event records, executor checkpoints, environment state, and trace ids. The core contract supports this shape by keeping serializable state separate from process-local dependencies and by assigning stable run, conversation, checkpoint, and stream cursor identifiers.
+A durable `SessionStore` should be an upper-layer consumer of `AgentContext`, `StateStore`, event records, executor checkpoints, environment state, and trace ids. The core contract supports this shape by keeping serializable state separate from process-local dependencies and by assigning stable run, conversation, checkpoint, and stream cursor identifiers.
 
 ```mermaid
 flowchart TD
@@ -187,6 +187,21 @@ flowchart TD
 
 The environment provider owns concrete restoration semantics. The context stores serializable identifiers, policies, and resource references.
 
+## Agent Loop Refactor Invariants
+
+Runtime loop decomposition should preserve the observable evidence produced by `AgentContext`, checkpoints, traces, and stream records. Before splitting `run_loop.rs` or `runtime_helpers.rs`, add golden tests for:
+
+- checkpoint node ordering and checkpoint identifiers
+- stream record ordering across model request, model stream, model response, tool call, tool return, output retry, steering guard, and run completion
+- trace span names, parent/child relationships, and correlation metadata
+- retry counters for model requests, output validation, and per-tool execution
+- tool usage accounting and parent/subagent usage absorption
+- context event flushing and message bus consumption semantics
+- approval/deferred pending state and resume metadata
+- graph transition alignment between the imperative loop and `graph.rs`
+
+These tests are the acceptance boundary for splitting request preparation, model invocation, tool execution, output flow, streaming, checkpointing, and trace event modules.
+
 ## Acceptance Gates
 
 - context export/restore tests
@@ -199,4 +214,4 @@ The environment provider owns concrete restoration semantics. The context stores
 - executor checkpoint serialization tests
 - environment state reference tests before `starweaver-environment` graduation
 - trace context export/restore tests
-- SessionStore contract tests before `starweaver-claw` graduation
+- SessionStore contract tests before service-host graduation

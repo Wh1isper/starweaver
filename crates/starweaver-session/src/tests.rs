@@ -29,6 +29,41 @@ async fn input_parts_are_stable_json_contracts() {
     );
 }
 
+#[test]
+fn deferred_tool_facades_round_trip_records_and_decisions() {
+    let session_id = SessionId::from_string("session-deferred");
+    let run_id = RunId::from_string("run-deferred");
+    let mut record =
+        DeferredToolRecord::new("deferred-1", session_id, run_id, "call-1", "slow_tool");
+    record.request = json!({"query":"rust"});
+    let requests = DeferredToolRequests::from_records(&[record.clone()]);
+    assert_eq!(requests.requests[0].arguments["query"], "rust");
+    let rebuilt = requests.requests[0].clone().into_record();
+    assert_eq!(rebuilt.deferred_id, "deferred-1");
+    assert_eq!(rebuilt.request["query"], "rust");
+
+    let mut result_metadata = Metadata::default();
+    result_metadata.insert("source".to_string(), json!("worker"));
+    let mut result = DeferredToolResult::completed("deferred-1", json!({"answer":"ok"}));
+    result.metadata = result_metadata;
+    let results = DeferredToolResults::new([result.clone()]);
+    assert_eq!(results.results.len(), 1);
+    result.apply_to_record(&mut record);
+    assert_eq!(record.status, ExecutionStatus::Completed);
+    assert_eq!(record.response["answer"], "ok");
+    assert_eq!(record.metadata["source"], "worker");
+
+    let decision = ToolApprovalDecision::approved()
+        .with_override_arguments(json!({"path":"safe.txt"}))
+        .into_approval_decision();
+    assert_eq!(decision.status, ApprovalStatus::Approved);
+    assert_eq!(decision.metadata["override_arguments"]["path"], "safe.txt");
+
+    let denied = ToolApprovalDecision::denied("unsafe").into_approval_decision();
+    assert_eq!(denied.status, ApprovalStatus::Denied);
+    assert_eq!(denied.reason.as_deref(), Some("unsafe"));
+}
+
 #[tokio::test]
 async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     let store = InMemorySessionStore::new();

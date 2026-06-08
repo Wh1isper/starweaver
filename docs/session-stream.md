@@ -1,110 +1,111 @@
 # Session and Stream Contracts
 
-`starweaver-session` and `starweaver-stream` provide shared operational contracts for durable agent products. CLI, Claw, and future platform adapters can reuse these crates while keeping storage state, display replay, and transport delivery as separate layers.
+`starweaver-session` and `starweaver-stream` provide shared operational contracts for durable agent products. CLI, service hosts, SDK applications, and future platform adapters can reuse these crates while keeping storage state, display replay, and transport delivery as separate layers.
 
 ```mermaid
 flowchart TD
     runtime[starweaver-runtime]
     session[starweaver-session]
     stream[starweaver-stream]
-    claw[starweaver-claw]
+    storage[starweaver-storage]
     cli[starweaver-cli]
     platform[future platform adapters]
 
     runtime --> session
     runtime --> stream
-    session --> claw
-    stream --> claw
+    session --> storage
+    stream --> storage
     session --> cli
     stream --> cli
+    storage --> cli
     session --> platform
     stream --> platform
 ```
 
-## Session contracts
+## Session records
 
-`starweaver-session` owns durable session state:
+`starweaver-session` owns serializable durable state:
 
-- `InputPart` for text, URLs, files, binary references, modes, and product commands
-- `SessionRecord` and `RunRecord`
-- `SessionStore` and `InMemorySessionStore`
+- `InputPart`
+- `SessionRecord`
+- `RunRecord`
+- `SessionStore`
 - `SessionResumeSnapshot`
-- `ApprovalRecord` and `DeferredToolRecord`
-- `CheckpointRef`, `EnvironmentStateRef`, and `StreamCursorRef`
-- `CompactRunTrace` and `CompactSessionTrace`
-- `SessionStoreExecutor` for persisting runtime checkpoints through `AgentExecutor`
+- `ApprovalRecord`
+- `DeferredToolRecord`
+- `CompactRunTrace`
+- `CompactSessionTrace`
+- environment and stream cursor references
 
-The in-memory store is useful for tests and local single-process hosts. Persistent adapters belong in product crates such as `starweaver-claw`.
+The in-memory store is useful for tests and local single-process hosts. Persistent SQLite adapters live in `starweaver-storage`.
 
 ```rust
-use starweaver_session::{InMemorySessionStore, InputPart, RunRecord, SessionId, SessionRecord, SessionStore};
-use starweaver_core::{ConversationId, RunId};
+use starweaver_session::{InMemorySessionStore, SessionRecord, SessionStore};
+use starweaver_core::SessionId;
 
 # async fn example() -> Result<(), starweaver_session::SessionStoreError> {
-let store = InMemorySessionStore::new();
-let session_id = SessionId::from_string("session-1");
-let run_id = RunId::from_string("run-1");
-
+let store = InMemorySessionStore::default();
+let session_id = SessionId::from_string("session_docs");
 store.save_session(SessionRecord::new(session_id.clone())).await?;
-
-let mut run = RunRecord::new(
-    session_id.clone(),
-    run_id.clone(),
-    ConversationId::from_string("conv-1"),
-);
-run.input = vec![InputPart::text("hello")];
-store.append_run(run).await?;
-
-let trace = store.compact_session_trace(&session_id).await?;
-assert_eq!(trace.runs, 1);
+let loaded = store.load_session(&session_id).await?;
+assert_eq!(loaded.session_id, session_id);
 # Ok(())
 # }
 ```
 
-## Stream contracts
+## Display and replay streams
 
-`starweaver-stream` owns observable execution stream semantics:
+`starweaver-stream` owns product-facing display and replay contracts:
 
-- `DisplayMessage`, `DisplayMessageKind`, and `DisplayVisibility`
-- `DisplayMessageProjector` and `DefaultDisplayMessageProjector`
-- `ReplayScope`, `ReplayCursor`, `ReplayEvent`, and `ReplaySnapshot`
-- `ReplayEventLog` and `InMemoryReplayEventLog`
-- `StreamArchive` and `InMemoryStreamArchive`
-- `ReplayTransport`, SSE envelopes, JSONL envelopes, and terminal markers
-- `RealtimeCompactionBuffer` for compact replay snapshots
+- `DisplayMessage`
+- `DisplayMessageKind`
+- `DisplayMessageProjector`
+- `ReplayEventLog`
+- `ReplayTransport`
+- `StreamArchive`
+- `RealtimeCompactionBuffer`
+- protocol envelopes and adapters
+
+Display messages are the stable Starweaver wire protocol. CLI output can print one message per JSONL line, service transports can wrap the same message in SSE or WebSocket frames, and replay archives can reconstruct visible state from persisted messages.
 
 ```rust
-use serde_json::json;
 use starweaver_core::{RunId, SessionId};
-use starweaver_stream::{
-    DisplayMessage, DisplayMessageKind, InMemoryReplayEventLog, ReplayEvent, ReplayEventKind,
-    ReplayEventLog, ReplayScope,
-};
+use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
-# async fn example() -> Result<(), starweaver_stream::ReplayError> {
-let log = InMemoryReplayEventLog::new();
-let scope = ReplayScope::run("run-1");
 let message = DisplayMessage::new(
     1,
-    SessionId::from_string("session-1"),
-    RunId::from_string("run-1"),
-    DisplayMessageKind::AssistantTextDelta,
-)
-.with_payload(json!({"delta": "hello"}));
+    SessionId::from_string("session_docs"),
+    RunId::from_string("run_docs"),
+    DisplayMessageKind::RunStarted,
+);
+assert_eq!(message.schema, DisplayMessage::SCHEMA);
+```
 
-log.append(
-    scope.clone(),
-    ReplayEvent::new(scope.clone(), 1, ReplayEventKind::DisplayMessage(Box::new(message))),
-).await?;
+## SQLite storage
 
-let replay = log.replay_after(&scope, None, None).await?;
-assert_eq!(replay.len(), 1);
+`starweaver-storage` provides concrete adapters for foundation storage:
+
+- SQLite migration registry and status reporting
+- `SqliteSessionStore`
+- `SqliteReplayEventLog`
+- `SqliteStreamArchive`
+
+```rust
+use starweaver_storage::{migrate_sqlite_database, sqlite_migration_status};
+
+# fn example() -> Result<(), starweaver_session::SessionStoreError> {
+let dir = tempfile::tempdir().expect("tempdir");
+let database = dir.path().join("starweaver.sqlite3");
+let applied = migrate_sqlite_database(&database)?;
+assert_eq!(applied, vec!["20260605_000001_session_stream_store"]);
+let status = sqlite_migration_status(&database)?;
+assert!(status.current);
 # Ok(())
 # }
 ```
 
-## Boundary model
+## Durable app shape
 
 `SessionStore` persists session/run state, checkpoint evidence, approvals, deferred records, compact traces, and stable stream cursor references. `StreamArchive`, `ReplayEventLog`, and `ReplayTransport` handle raw runtime records, display messages, replay buffers, live subscriptions, compaction snapshots, and protocol envelopes.
 
-`starweaver-claw` re-exports the shared contracts today and is the host for concrete durable adapters and run coordination.
+Foundation crates keep these boundaries stable so CLI, SDK apps, service hosts, and platform adapters can select storage and transport implementations without changing runtime semantics.

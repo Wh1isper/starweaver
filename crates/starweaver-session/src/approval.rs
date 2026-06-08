@@ -164,3 +164,258 @@ impl DeferredToolRecord {
         }
     }
 }
+
+/// SDK-facing deferred tool request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeferredToolRequest {
+    /// Deferred request id.
+    pub deferred_id: String,
+    /// Session id.
+    pub session_id: SessionId,
+    /// Run id.
+    pub run_id: RunId,
+    /// Tool call id.
+    pub tool_call_id: String,
+    /// Tool name.
+    pub tool_name: String,
+    /// Arguments requested by the model or host.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub arguments: Value,
+    /// Trace context.
+    #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
+    pub trace_context: TraceContext,
+    /// Request metadata.
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
+}
+
+impl DeferredToolRequest {
+    /// Convert a durable record into an SDK request facade.
+    #[must_use]
+    pub fn from_record(record: &DeferredToolRecord) -> Self {
+        Self {
+            deferred_id: record.deferred_id.clone(),
+            session_id: record.session_id.clone(),
+            run_id: record.run_id.clone(),
+            tool_call_id: record.tool_call_id.clone(),
+            tool_name: record.tool_name.clone(),
+            arguments: record.request.clone(),
+            trace_context: record.trace_context.clone(),
+            metadata: record.metadata.clone(),
+        }
+    }
+
+    /// Convert this request into a durable record.
+    #[must_use]
+    pub fn into_record(self) -> DeferredToolRecord {
+        let mut record = DeferredToolRecord::new(
+            self.deferred_id,
+            self.session_id,
+            self.run_id,
+            self.tool_call_id,
+            self.tool_name,
+        );
+        record.request = self.arguments;
+        record.trace_context = self.trace_context;
+        record.metadata = self.metadata;
+        record
+    }
+}
+
+/// Collection of deferred tool requests.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeferredToolRequests {
+    /// Deferred requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<DeferredToolRequest>,
+}
+
+impl DeferredToolRequests {
+    /// Build a request collection from durable records.
+    #[must_use]
+    pub fn from_records(records: &[DeferredToolRecord]) -> Self {
+        Self {
+            requests: records
+                .iter()
+                .map(DeferredToolRequest::from_record)
+                .collect(),
+        }
+    }
+
+    /// Return whether the collection is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+}
+
+/// Tool approval decision supplied by a host or user.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum ToolApprovalDecision {
+    /// Approve tool execution.
+    Approved {
+        /// Actor that approved the call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<String>,
+        /// Optional reason.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Optional replacement arguments for the approved call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        override_arguments: Option<Value>,
+        /// Decision metadata.
+        #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+        metadata: Metadata,
+    },
+    /// Deny tool execution.
+    Denied {
+        /// Actor that denied the call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<String>,
+        /// Optional reason.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Decision metadata.
+        #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+        metadata: Metadata,
+    },
+}
+
+impl ToolApprovalDecision {
+    /// Build an approved decision.
+    #[must_use]
+    pub fn approved() -> Self {
+        Self::Approved {
+            decided_by: None,
+            reason: None,
+            override_arguments: None,
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Build a denied decision with a reason.
+    #[must_use]
+    pub fn denied(reason: impl Into<String>) -> Self {
+        Self::Denied {
+            decided_by: None,
+            reason: Some(reason.into()),
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Attach replacement arguments to an approved decision.
+    #[must_use]
+    pub fn with_override_arguments(self, arguments: Value) -> Self {
+        match self {
+            Self::Approved {
+                decided_by,
+                reason,
+                metadata,
+                ..
+            } => Self::Approved {
+                decided_by,
+                reason,
+                override_arguments: Some(arguments),
+                metadata,
+            },
+            denied @ Self::Denied { .. } => denied,
+        }
+    }
+
+    /// Convert this SDK decision into a durable approval decision.
+    #[must_use]
+    pub fn into_approval_decision(self) -> ApprovalDecision {
+        let decided_at = Utc::now();
+        match self {
+            Self::Approved {
+                decided_by,
+                reason,
+                override_arguments,
+                mut metadata,
+            } => {
+                if let Some(arguments) = override_arguments {
+                    metadata.insert("override_arguments".to_string(), arguments);
+                }
+                ApprovalDecision {
+                    status: ApprovalStatus::Approved,
+                    decided_by,
+                    decided_at,
+                    reason,
+                    metadata,
+                }
+            }
+            Self::Denied {
+                decided_by,
+                reason,
+                metadata,
+            } => ApprovalDecision {
+                status: ApprovalStatus::Denied,
+                decided_by,
+                decided_at,
+                reason,
+                metadata,
+            },
+        }
+    }
+}
+
+/// SDK-facing deferred tool result.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeferredToolResult {
+    /// Deferred request id.
+    pub deferred_id: String,
+    /// Result status.
+    pub status: ExecutionStatus,
+    /// Response payload.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub response: Value,
+    /// Result metadata.
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
+}
+
+impl DeferredToolResult {
+    /// Build a completed deferred result.
+    #[must_use]
+    pub fn completed(deferred_id: impl Into<String>, response: Value) -> Self {
+        Self {
+            deferred_id: deferred_id.into(),
+            status: ExecutionStatus::Completed,
+            response,
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Apply this result to a durable deferred record.
+    pub fn apply_to_record(self, record: &mut DeferredToolRecord) {
+        record.status = self.status;
+        record.response = self.response;
+        record.updated_at = Utc::now();
+        record.metadata.extend(self.metadata);
+    }
+}
+
+/// Collection of deferred tool results.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeferredToolResults {
+    /// Deferred results.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub results: Vec<DeferredToolResult>,
+}
+
+impl DeferredToolResults {
+    /// Build a result collection.
+    #[must_use]
+    pub fn new(results: impl IntoIterator<Item = DeferredToolResult>) -> Self {
+        Self {
+            results: results.into_iter().collect(),
+        }
+    }
+
+    /// Return whether the collection is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.results.is_empty()
+    }
+}

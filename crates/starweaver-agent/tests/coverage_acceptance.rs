@@ -77,7 +77,7 @@ impl ModelAdapter for StreamingCaptureModel {
                 part_kind: "text".to_string(),
             }),
             ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "stream")),
-            ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+            ModelResponseStreamEvent::PartEnd(PartEnd::new(0)),
             ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("streamed"))),
         ])
     }

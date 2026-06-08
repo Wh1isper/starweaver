@@ -92,20 +92,27 @@ flowchart TD
     provider_response --> canonical_response
 ```
 
-Required fixture fields:
+Current required fixture fields:
 
 - `model`
 - `history`
+- `expected_provider_request`
+
+Optional fixture fields supported by current tests or target schema:
+
 - `settings`
 - `tools`
 - `native_tools`
 - `request_parameters`
-- `prepared_request`
-- `expected_provider_request`
 - `provider_response`
 - `expected_response`
+- `expected_error`
 
-Request-only fixtures omit provider response and expected canonical response.
+Target fixture field after the next replay-schema migration:
+
+- `prepared_request`
+
+Request-only fixtures omit provider response and expected canonical response. The `prepared_request` snapshot type and preparation tests are landed, while provider fixture JSON entries should adopt `prepared_request` provider-by-provider before this field becomes required.
 
 ## Replay Matrix
 
@@ -153,12 +160,24 @@ cargo test -p starweaver-model --test replay --test request_parameters --locked
 ## Migration Rules
 
 - Add a fixture before changing a provider mapper.
-- Keep canonical history, prepared request snapshots, and expected provider JSON in the same fixture.
+- Keep canonical history and expected provider JSON in the same fixture; add prepared request snapshots to fixtures as the replay-schema migration progresses.
 - Compare canonicalized JSON for map-order-independent assertions.
 - Assert usage, provider metadata, finish reason, and tool call parts in every response replay.
 - Store provider quirks in mapper tests first, then promote stable behavior into docs/spec.
 - Record unsupported Pydantic AI replay categories in `memos/implementation-todo.md`.
 - Add typed stream-delta fixtures before widening model stream event variants.
+
+## Provider Mapper Boundaries
+
+Provider protocol support should move toward explicit mapper boundaries after replay fixtures lock behavior:
+
+- request mapping from canonical `ModelRequest` and prepared parameters to provider wire JSON
+- response parsing from provider wire JSON into canonical `ModelResponse`
+- stream parsing from provider chunks into typed part start/delta/end events
+- common content, tool, usage, settings, and error helpers shared across providers
+- transport concerns for auth, retry, headers, endpoint overrides, reqwest execution, and SSE parsing
+
+The transport layer should remain provider-neutral. Provider-specific response parsing should stay independent from reqwest and HTTP retry internals. Refactors should preserve replay fixture request JSON, canonical response fields, usage mapping, finish reason mapping, OpenAI Responses incremental stream events, and `STARWEAVER_ALLOW_REAL_MODEL_REQUESTS` guard behavior.
 
 ## Bug Fix Policy
 

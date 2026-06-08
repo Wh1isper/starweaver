@@ -217,6 +217,83 @@ fn cli_config_set_persists_project_config() {
 }
 
 #[test]
+fn cli_prompt_runs_create_new_session_unless_continue_is_requested() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = cli(&temp)
+        .args(["-p", "first", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first_stdout = String::from_utf8(first.stdout).unwrap();
+    let first_session_id = first_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .unwrap()
+        .to_string();
+
+    let second = cli(&temp)
+        .args(["-p", "second", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(
+        second.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second_stdout = String::from_utf8(second.stdout).unwrap();
+    let second_session_id = second_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .unwrap()
+        .to_string();
+    assert_ne!(first_session_id, second_session_id);
+
+    let continued = cli(&temp)
+        .args(["-p", "third", "--continue", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(
+        continued.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&continued.stderr)
+    );
+    let continued_stdout = String::from_utf8(continued.stdout).unwrap();
+    let continued_session_id = continued_stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("session_id="))
+        .unwrap()
+        .to_string();
+    assert_eq!(continued_session_id, second_session_id);
+
+    let list = cli(&temp).args(["session", "list"]).output().unwrap();
+    assert!(
+        list.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let sessions = String::from_utf8(list.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(sessions.len(), 2);
+    let first_summary = sessions
+        .iter()
+        .find(|session| session["session_id"].as_str() == Some(first_session_id.as_str()))
+        .unwrap();
+    let second_summary = sessions
+        .iter()
+        .find(|session| session["session_id"].as_str() == Some(second_session_id.as_str()))
+        .unwrap();
+    assert_eq!(first_summary["run_count"], 1);
+    assert_eq!(second_summary["run_count"], 2);
+}
+
+#[test]
 fn concurrent_cli_runs_append_without_sequence_races() {
     let temp = tempfile::tempdir().unwrap();
     let seed = cli(&temp)
@@ -313,8 +390,16 @@ fn cli_config_set_rejects_negative_unsigned_values() {
 #[test]
 fn cli_session_replay_orders_runs_by_session_sequence() {
     let temp = tempfile::tempdir().unwrap();
-    for prompt in ["first", "second", "third", "fourth", "fifth", "sixth"] {
-        let output = cli(&temp).args(["run", prompt]).output().unwrap();
+    for (index, prompt) in ["first", "second", "third", "fourth", "fifth", "sixth"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut command = cli(&temp);
+        command.args(["run", prompt]);
+        if index > 0 {
+            command.arg("--continue-session");
+        }
+        let output = command.output().unwrap();
         assert!(
             output.status.success(),
             "stderr={}",
@@ -451,6 +536,7 @@ toolsets:
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn cli_global_config_set_and_env_hitl_override_work() {
     let temp = tempfile::tempdir().unwrap();
     let set = cli(&temp)
@@ -500,6 +586,62 @@ fn cli_global_config_set_and_env_hitl_override_work() {
     assert!(messages
         .iter()
         .all(|message| { message["metadata"]["cli_run_policy"]["hitl"].as_str() == Some("fail") }));
+
+    let prompt_run = cli(&temp)
+        .args([
+            "run",
+            "needs default prompt approval",
+            "--profile",
+            "approval_model",
+            "--output",
+            "display-jsonl",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        prompt_run.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&prompt_run.stderr)
+    );
+    let prompt_messages = String::from_utf8(prompt_run.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let prompt_types = prompt_messages
+        .iter()
+        .map(|message| message["type"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(prompt_types.contains(&"APPROVAL_REQUESTED"));
+    assert!(!prompt_types.contains(&"APPROVAL_RESOLVED"));
+    assert!(prompt_messages.iter().all(|message| {
+        message["metadata"]["cli_run_policy"]["hitl"].as_str() == Some("prompt")
+    }));
+    let prompt_session_id = prompt_messages[0]["session_id"].as_str().unwrap();
+    let prompt_run_id = prompt_messages[0]["run_id"].as_str().unwrap();
+    let approvals = cli(&temp)
+        .args([
+            "approval",
+            "list",
+            "--session",
+            prompt_session_id,
+            "--run",
+            prompt_run_id,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        approvals.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&approvals.stderr)
+    );
+    let approval_rows = String::from_utf8(approvals.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(approval_rows.len(), 1);
+    assert_eq!(approval_rows[0]["status"], "pending");
 
     let list = cli(&temp).args(["session", "list"]).output().unwrap();
     let session: serde_json::Value = serde_json::from_str(
@@ -633,11 +775,13 @@ fn cli_persists_restore_environment_control_flow_and_storage_artifacts() {
 #[test]
 fn cli_trim_older_than_dry_run_preserves_recent_and_active_runs() {
     let temp = tempfile::tempdir().unwrap();
-    for prompt in ["one", "two", "three"] {
-        let output = cli(&temp)
-            .args(["run", prompt, "--output", "silent"])
-            .output()
-            .unwrap();
+    for (index, prompt) in ["one", "two", "three"].into_iter().enumerate() {
+        let mut command = cli(&temp);
+        command.args(["run", prompt, "--output", "silent"]);
+        if index > 0 {
+            command.arg("--continue-session");
+        }
+        let output = command.output().unwrap();
         assert!(output.status.success());
     }
     let list = cli(&temp).args(["session", "list"]).output().unwrap();

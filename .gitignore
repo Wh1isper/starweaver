@@ -1,7 +1,6 @@
 /target/
 /book/
 .starweaver/
-.starweaver-claw/
 /.idea/
 /.vscode/
 *.swp
@@ -15,8 +14,4 @@ scripts/.venv/
 .env.*
 !.env.example
 
-/crates/starweaver-claw/web/node_modules/
-/crates/starweaver-claw/web/dist/
-/crates/starweaver-claw/web/.pnpm-store/
-/crates/starweaver-claw/web/.vite/
-/crates/starweaver-claw/web/coverage/
+/refs/

@@ -137,7 +137,7 @@ flowchart TD
     Context --> Store
 ```
 
-Recommended shape for Claw, CLI, and external services:
+Recommended shape for CLI and external services:
 
 1. Build an agent through `AgentBuilder` and policies from application configuration.
 2. Create an `AgentSession` per conversation and persist `session.export_state()` after each run.

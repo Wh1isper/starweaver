@@ -95,7 +95,9 @@ mod tests {
             output: None,
             hitl: None,
             worker: None,
+            worker_label: None,
             worktree: None,
+            worktree_name: None,
             branch: None,
         };
         assert_eq!(run.prompt_text().unwrap(), " explicit ");
@@ -112,7 +114,9 @@ mod tests {
             output: None,
             hitl: None,
             worker: None,
+            worker_label: None,
             worktree: None,
+            worktree_name: None,
             branch: None,
         };
         assert_eq!(joined.prompt_text().unwrap(), "hello world");
@@ -129,7 +133,9 @@ mod tests {
             output: None,
             hitl: None,
             worker: None,
+            worker_label: None,
             worktree: None,
+            worktree_name: None,
             branch: None,
         };
         assert!(
@@ -165,6 +171,23 @@ mod tests {
         assert_eq!(parsed.worker.as_deref(), Some("off"));
         assert_eq!(parsed.worktree.as_deref(), Some("feature"));
         assert_eq!(parsed.branch.as_deref(), Some("feature/parity"));
+
+        let parsed = args::parse_os([
+            OsString::from("starweaver-cli"),
+            OsString::from("-p"),
+            OsString::from("hello"),
+            OsString::from("--worker"),
+            OsString::from("-w"),
+            OsString::from("--worker-label"),
+            OsString::from("executor"),
+            OsString::from("--worktree-name"),
+            OsString::from("feature"),
+        ])
+        .unwrap();
+        assert_eq!(parsed.worker.as_deref(), Some("true"));
+        assert_eq!(parsed.worker_label.as_deref(), Some("executor"));
+        assert_eq!(parsed.worktree.as_deref(), Some("true"));
+        assert_eq!(parsed.worktree_name.as_deref(), Some("feature"));
 
         let parse_error =
             args::parse_os([OsString::from("starweaver-cli"), OsString::from("--bad")]);
@@ -261,6 +284,7 @@ HOMELAB_API_KEY = "test-key"
     fn configured_subagent_inherits_profile_model() {
         let temp = tempfile::tempdir().unwrap();
         let global = temp.path().join("global");
+        let project = temp.path().join("project/.starweaver");
         std::fs::create_dir_all(global.join("subagents")).unwrap();
         std::fs::write(
             global.join("config.toml"),
@@ -285,6 +309,24 @@ You are a helper.
         )
         .unwrap();
 
+        let cli = args::parse([
+            "starweaver-cli".to_string(),
+            "-p".to_string(),
+            "hello".to_string(),
+            "--profile".to_string(),
+            "default_model".to_string(),
+        ])
+        .unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        assert_eq!(config.project_dir, project);
+        let profile = crate::profiles::resolve_profile(&config, Some("default_model")).unwrap();
+        let agent = profile.build_agent().unwrap();
+        let tools = agent.tools().names();
+        assert!(tools.contains(&"delegate".to_string()));
+        assert!(tools.contains(&"subagent_info".to_string()));
+
         let run = output(
             temp.path(),
             &[
@@ -308,6 +350,21 @@ You are a helper.
             serde_json::from_str(first.lines().next().unwrap()).unwrap();
         assert_eq!(first_message["schema"], "starweaver.display.v1");
         assert_eq!(first_message["type"], "RUN_QUEUED");
+        let agui_temp = tempfile::tempdir().unwrap();
+        let agui = output(agui_temp.path(), &["-p", "hello", "--output", "agui-jsonl"]).unwrap();
+        let agui_events = agui
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(agui_events
+            .iter()
+            .any(|event| event["type"] == "RUN_STARTED"));
+        assert!(agui_events
+            .iter()
+            .any(|event| event["type"] == "TEXT_MESSAGE_CHUNK"));
+        assert!(agui_events
+            .iter()
+            .any(|event| event["type"] == "RUN_FINISHED"));
         let sessions = output(temp.path(), &["session", "list"]).unwrap();
         assert!(sessions.contains("session_"));
         let value: serde_json::Value =

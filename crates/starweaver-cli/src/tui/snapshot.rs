@@ -64,13 +64,29 @@ impl TuiSnapshot {
     pub fn apply_message(&mut self, message: &DisplayMessage) {
         match message.kind {
             DisplayMessageKind::AssistantTextDelta => {
-                if let Some(delta) = message.payload.get("delta").and_then(Value::as_str) {
-                    self.assistant_text.push_str(delta);
-                } else if let Some(preview) = message.preview.as_deref() {
-                    self.assistant_text.push_str(preview);
+                let content = message
+                    .payload
+                    .get("delta")
+                    .or_else(|| message.payload.get("text"))
+                    .and_then(Value::as_str)
+                    .or(message.preview.as_deref());
+                if message.payload.get("part_kind").and_then(Value::as_str) == Some("thinking")
+                    || message
+                        .metadata
+                        .get("reasoning")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                {
+                    if let Some(content) = content {
+                        append_blockquote_text(&mut self.assistant_text, content);
+                    }
+                    return;
+                }
+                if let Some(content) = content {
+                    self.assistant_text.push_str(content);
                 }
             }
-            DisplayMessageKind::ToolCallStart => {
+            DisplayMessageKind::ToolCallStart | DisplayMessageKind::ToolCallDelta => {
                 let name = message
                     .payload
                     .get("tool_name")
@@ -78,7 +94,17 @@ impl TuiSnapshot {
                     .and_then(Value::as_str)
                     .or(message.preview.as_deref())
                     .unwrap_or("tool");
-                let arguments = message.payload.get("arguments").map(value_preview);
+                let arguments = message
+                    .payload
+                    .get("arguments")
+                    .map(value_preview)
+                    .or_else(|| {
+                        message
+                            .payload
+                            .get("delta")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    });
                 if let Some(arguments) =
                     arguments.filter(|value| !value.is_empty() && value != "{}" && value != "null")
                 {
@@ -145,6 +171,17 @@ impl TuiSnapshot {
             }
         }
         output
+    }
+}
+
+fn append_blockquote_text(target: &mut String, text: &str) {
+    if !target.is_empty() && !target.ends_with('\n') {
+        target.push('\n');
+    }
+    for line in text.lines() {
+        target.push_str("> ");
+        target.push_str(line);
+        target.push('\n');
     }
 }
 

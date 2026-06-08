@@ -1,21 +1,21 @@
 # Agent SDK Foundation Plan
 
-This memo is the merged Agent SDK P0/P1 foundation record. It combines the execution plan, implementation review decisions, landed evidence, focused tests, and remaining SDK-deepening work.
+This memo is the Agent SDK P0/P1 foundation evidence record. It records landed SDK foundation decisions, evidence paths, focused test targets, and how this foundation aligns with the current audited roadmap in `memos/implementation-todo.md`.
 
-## Phase Result
+## Foundation Result
 
-The Agent SDK foundation slice has landed in the current workspace. `starweaver-agent` now exposes a broader application-facing layer over runtime, model, context, tools, environment, and MCP foundations.
+The Agent SDK foundation slice is implemented in the current workspace. `starweaver-agent` exposes a broader application-facing layer over runtime, model, context, tools, environment, and MCP foundations.
 
 Landed qualities:
 
 - ergonomic agent construction through `AgentBuilder`, `AgentApp`, `AgentSession`, and run-scoped options
 - serializable app profiles through `AgentSpec`, `AgentSpecRegistry`, SDK policy presets, host adapter specs, MCP server specs, output profiles, skill config, and environment/durability policy config
-- first-party tool bundle composition for filesystem, shell, task, host operations, skills, environment helpers, process-capable shell handles, and MCP bridge seams
+- first-party tool bundle composition for filesystem, shell, task, host operations, skills, environment helpers, process-capable shell handles, and MCP adapter seams
 - subagent delegation with inherited tool policy, denied tool parsing, auto-inherit support, approval metadata propagation, lifecycle events, trace parent propagation, and nested delegation guardrails
 - fileops-loaded skill discovery over `EnvironmentProvider`, `SKILL.md` frontmatter parsing, summary toolset generation, activation, and metadata preservation
 - host-backed search, scrape, download, media URL loading, and fallback media adapter seams through injectable clients and environment-backed execution paths
 - process-capable shell provider traits, durable process snapshots, handle attachment, stdin/signal/status/wait/kill tool behavior, and deterministic virtual provider coverage
-- live MCP bridge seam through `LiveMcpClient`, `live_mcp_toolset`, discovered tool snapshots, and deterministic tests
+- live MCP adapter seam through `LiveMcpClient`, `live_mcp_toolset`, discovered tool snapshots, and deterministic tests
 - docs updates for SDK app profiles, tool bundles, subagents, and MCP foundations
 
 ## Current Evidence Checked
@@ -60,7 +60,7 @@ Specs updated:
 - `spec/sdk/04-subagents-skills.md`
 - `spec/sdk/05-sdk-integration-map.md`
 
-Recorded validation from this slice:
+Foundation validation targets for this slice:
 
 ```bash
 make check
@@ -68,9 +68,12 @@ make test
 make docs-check
 make fmt-check
 git diff --check
+cargo test -p starweaver-agent --locked
+cargo test -p starweaver-tools --locked
+cargo test -p starweaver-environment --locked
 ```
 
-Earlier focused checks also passed for `starweaver-agent`, `starweaver-tools`, `starweaver-environment`, and workspace compile.
+The current audit validation evidence lives in `memos/audit-evidence-2026-06-07.md`.
 
 ## Reference Study Map
 
@@ -108,7 +111,7 @@ Added in this slice:
 - environment and process-shell toolset helpers at the SDK boundary
 - process-capable shell provider trait and handle/snapshot APIs
 - concrete host adapter specs plus injectable search, scrape, and media fallback client handles
-- live MCP bridge helpers over discovered server snapshots
+- live MCP adapter helpers over discovered server snapshots
 
 Clarified direction:
 
@@ -127,38 +130,18 @@ Clarified direction:
 | Live MCP             | `live_mcp.rs`                      | discovered MCP tools/instructions mapped into SDK toolsets                                            |
 | Bundles and config   | `bundles.rs`, `subagent_config.rs` | tool metadata, shell process behavior, denied tool frontmatter                                        |
 
-## Current SDK Deepening Items
+## Alignment With Current Audited Roadmap
 
-These items are the practical continuation after the P0/P1 foundation slice.
+The June 2026 audit moved active SDK deepening work into `memos/implementation-todo.md` and related specs:
 
-1. **Durable service runtime:** deepen `starweaver-claw` storage adapters, run coordinator, interruption/cancellation, approval/deferred resume, SSE replay, and trace/session correlation.
-2. **CLI product workflows:** load app profiles, attach environment providers, create/list/resume/inspect sessions, stream runs, and share compact run traces using the SDK and `starweaver-claw` contracts.
-3. **Checkpoint reload:** hydrate runtime state from stored checkpoints and define safe continuation semantics per execution node.
-4. **Host tool depth:** add binary/resource download extensions, richer streaming download records, concrete first-party fallback media model clients, and more adapter fixtures.
-5. **MCP concrete transports:** implement `rmcp` stdio and streamable HTTP clients behind the `LiveMcpClient` seam.
-6. **Sandboxed environments:** align filesystem and shell path spaces, workspace mounts, process lifecycle, diagnostics, and state export.
-7. **Observability export:** add OTel/OTLP/Langfuse exporters, redaction, sampling, and conformance tests.
+| Foundation area         | Current roadmap owner                                                                        |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| Durable service runtime | `memos/implementation-todo.md` P0.2 and `spec/ops/03-durable-service-runtime.md`             |
+| CLI product workflows   | `memos/implementation-todo.md` P0.5 and `spec/ops/04-cli-product.md`                         |
+| CLI audit               | `memos/implementation-todo.md` P1 and `spec/ops/04-cli-product.md`                           |
+| Platform adapters       | `spec/README.md` and future platform specs                                                   |
+| Host tool depth         | `memos/sdk-host-tool-gap-report.md` and `spec/sdk/03-first-party-tool-bundles.md`            |
+| Pydantic AI maturity    | `spec/core/05-pydantic-ai-feature-map.md` and `spec/core/07-pydantic-ai-maturity-roadmap.md` |
+| Refactor readiness      | `spec/ops/09-refactor-readiness.md`                                                          |
 
-## Validation Gates For The Next Phase
-
-Use focused gates while deepening application surfaces:
-
-```bash
-cargo test -p starweaver-claw --locked
-cargo test -p starweaver-cli --locked
-cargo test -p starweaver-agent --locked
-cargo test -p starweaver-environment --locked
-make fmt-check
-make check
-make test
-make docs-check
-```
-
-Use replay and coverage gates before release evidence:
-
-```bash
-make replay-check
-make coverage-ci
-make scripts-check
-make ci
-```
+Use this memo for foundation evidence. Use `memos/implementation-todo.md` for current execution priority and validation gates.

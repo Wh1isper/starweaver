@@ -12,7 +12,7 @@ flowchart TD
     model[starweaver-model]
     tools[starweaver-tools]
     context[starweaver-context]
-    service[future starweaver-claw]
+    platform[future platform adapters]
 
     app --> sdk
     sdk --> runtime
@@ -20,8 +20,8 @@ flowchart TD
     runtime --> model
     runtime --> tools
     runtime --> context
-    service --> sdk
-    service --> runtime
+    platform --> sdk
+    platform --> runtime
 ```
 
 ## Current foundation

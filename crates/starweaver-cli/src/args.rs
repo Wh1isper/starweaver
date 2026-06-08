@@ -43,12 +43,24 @@ pub struct Cli {
     /// Agent profile name or YAML path.
     #[arg(long, alias = "model-profile", global = false)]
     pub profile: Option<String>,
-    /// Worker mode label for yaacli-compatible headless execution.
-    #[arg(long, global = false)]
+    /// Enable worker mode or set an optional yaacli-compatible worker label.
+    #[arg(long, global = false, num_args = 0..=1, default_missing_value = "true")]
     pub worker: Option<String>,
-    /// Git worktree name or path for yaacli-compatible workflow metadata.
-    #[arg(long, global = false)]
+    /// Explicit yaacli-compatible worker label.
+    #[arg(long = "worker-label", global = false)]
+    pub worker_label: Option<String>,
+    /// Enable a git worktree or set an optional yaacli-compatible worktree name/path.
+    #[arg(
+        short = 'w',
+        long,
+        global = false,
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
     pub worktree: Option<String>,
+    /// Explicit yaacli-compatible worktree name/path.
+    #[arg(long = "worktree-name", alias = "worktree-path", global = false)]
+    pub worktree_name: Option<String>,
     /// Git branch for yaacli-compatible worktree metadata.
     #[arg(long, global = false)]
     pub branch: Option<String>,
@@ -181,12 +193,18 @@ pub struct RunCommand {
     /// Agent profile name or YAML path.
     #[arg(long, alias = "model-profile")]
     pub profile: Option<String>,
-    /// Worker mode label for yaacli-compatible headless execution.
-    #[arg(long)]
+    /// Enable worker mode or set an optional yaacli-compatible worker label.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub worker: Option<String>,
-    /// Git worktree name or path for yaacli-compatible workflow metadata.
-    #[arg(long)]
+    /// Explicit yaacli-compatible worker label.
+    #[arg(long = "worker-label")]
+    pub worker_label: Option<String>,
+    /// Enable a git worktree or set an optional yaacli-compatible worktree name/path.
+    #[arg(short = 'w', long, num_args = 0..=1, default_missing_value = "true")]
     pub worktree: Option<String>,
+    /// Explicit yaacli-compatible worktree name/path.
+    #[arg(long = "worktree-name", alias = "worktree-path")]
+    pub worktree_name: Option<String>,
     /// Git branch for yaacli-compatible worktree metadata.
     #[arg(long)]
     pub branch: Option<String>,
@@ -562,9 +580,11 @@ pub enum ConfigCommand {
 pub enum OutputMode {
     /// Human-readable text.
     Text,
-    /// Starweaver AGUI-compatible `DisplayMessage` JSON lines.
+    /// Starweaver durable `DisplayMessage` JSON lines.
     #[default]
     DisplayJsonl,
+    /// YAACLI AG-UI compatible top-level event JSON lines.
+    AguiJsonl,
     /// Persist and print compact status.
     Silent,
 }
@@ -574,13 +594,13 @@ pub enum OutputMode {
 #[serde(rename_all = "snake_case")]
 pub enum HitlPolicy {
     /// Deny approvals.
-    #[default]
     Deny,
     /// Defer approvals.
     Defer,
     /// Fail on approvals.
     Fail,
     /// Prompt interactively.
+    #[default]
     Prompt,
 }
 

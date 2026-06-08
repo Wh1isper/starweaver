@@ -1,168 +1,194 @@
 # SDK Integration Map
 
-This spec maps application-facing agent concepts into Starweaver's first-party SDK architecture. The SDK layer should provide application-ready building blocks through capabilities, `AgentContext`, `EnvironmentProvider`, and policy presets while preserving the core runtime boundary.
+This spec maps application-facing agent concepts into Starweaver's first-party SDK architecture. It reflects current implementation status after the Pydantic AI and ya-mono parity audit.
 
 ## Integration Principles
 
-- Policy filters become capabilities with explicit hook points and context evidence.
-- Environment modules become `EnvironmentProvider` implementations and environment-backed tool bundles.
-- Context helpers become `AgentContext` state, notes, messages, tasks, and usage tools.
-- Subagent configuration becomes `SubagentSpec`, `SubagentConfig`, and unified delegation tools.
-- First-party SDK features remain extensible through traits, capabilities, toolsets, and typed dependencies.
-
-## Design Direction
-
-The Rust SDK should express application-facing agent features through Starweaver-native traits: `ModelAdapter`, `AgentContext`, `AgentCapability`, `EnvironmentProvider`, and `AgentExecutor`. Durable application flows compose those SDK traits with shared session storage contracts such as `SessionStore`, plus shared stream contracts such as replay transport, display-message projection, and stream archives. The environment abstraction should graduate one proven capability at a time, with rich operators living behind optional traits and first-party bundles.
+- Policy filters are SDK capabilities or history processors with explicit hook points and context evidence.
+- Environment modules are `EnvironmentProvider` implementations and environment-backed tool bundles.
+- Context helpers are `AgentContext` state, notes, messages, tasks, usage, and typed dependencies.
+- Subagent configuration is `SubagentSpec`, `SubagentConfig`, registry entries, and delegation tools.
+- First-party SDK features remain extensible through traits, capabilities, toolsets, typed dependencies, and host-provided handles.
 
 ## Module Map
 
-| Feature family     | Starweaver target                                  | Spec owner                                                    | Validation path                      |
-| ------------------ | -------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------ |
-| agent construction | `AgentBuilder`, `AgentApp`, `AgentSession`         | `sdk/01-agent-sdk-app.md`                                     | SDK session and builder tests        |
-| lifecycle hooks    | ordered runtime hooks and capability lifecycle     | `core/03-tools-output-capabilities.md`                        | lifecycle hook tests                 |
-| context compaction | history processors and context state               | `core/04-context-state-executor.md`                           | history processor tests              |
-| policy guards      | policy capabilities and request guards             | `core/03-tools-output-capabilities.md`                        | guard and capability tests           |
-| streaming          | runtime stream records and service stream adapters | `core/01-agent-loop.md`, `ops/03-durable-service-runtime.md`  | stream and replay tests              |
-| context stores     | `AgentContext`, notes, message bus, tasks, usage   | `core/04-context-state-executor.md`                           | context and tool bundle tests        |
-| environment        | `EnvironmentProvider` and provider families        | `sdk/02-environment-provider.md`                              | environment fake/local/sandbox tests |
-| filters            | capabilities with ordered hooks                    | `core/03-tools-output-capabilities.md`                        | capability tests per filter          |
-| toolsets           | first-party tool bundles and tool proxy            | `sdk/03-first-party-tool-bundles.md`                          | toolset tests                        |
-| subagents          | specs, factory, registry, unified delegation       | `sdk/04-subagents-skills.md`                                  | subagent tests                       |
-| media              | media/resource bundle and canonical media parts    | `sdk/03-first-party-tool-bundles.md`                          | media tests                          |
-| config             | SDK config, model presets, and policy presets      | `sdk/01-agent-sdk-app.md`, `core/02-model-provider-replay.md` | config and preset tests              |
-| MCP                | MCP toolset and live client bridge                 | `sdk/03-first-party-tool-bundles.md`                          | MCP tests                            |
+| Feature family        | Target                                                  | Status         | Spec owner                             | Validation path                |
+| --------------------- | ------------------------------------------------------- | -------------- | -------------------------------------- | ------------------------------ |
+| agent construction    | `AgentBuilder`, `AgentApp`, `AgentSession`              | landed         | `sdk/01-agent-sdk-app.md`              | SDK session and builder tests  |
+| lifecycle hooks       | runtime hooks and capability lifecycle                  | landed/partial | `core/03-tools-output-capabilities.md` | capability tests               |
+| capability middleware | ordered wrappers, IDs, per-run instances                | pending        | `core/03-tools-output-capabilities.md` | capability ordering tests      |
+| context compaction    | history processors and context state                    | partial        | `core/04-context-state-executor.md`    | history/filter tests           |
+| policy guards         | request guards, approval/deferred metadata              | partial        | `core/03-tools-output-capabilities.md` | guard/control-flow tests       |
+| streaming             | runtime stream records and service/CLI adapters         | partial        | `core/01`, `ops/03`, `ops/04`          | stream/replay tests            |
+| context stores        | notes, message bus, state, tasks, usage                 | landed/partial | `core/04-context-state-executor.md`    | context and bundle tests       |
+| environment           | provider families and policy                            | partial        | `sdk/02-environment-provider.md`       | fake/local/process tests       |
+| filters               | named parity filter processors                          | partial        | this spec and `ops/07`                 | SDK filter order tests         |
+| toolsets              | first-party bundles, MCP, proxy                         | partial        | `sdk/03-first-party-tool-bundles.md`   | toolset/proxy/MCP tests        |
+| toolset wrappers      | filtered/prepared/renamed/approval/dynamic/deferred     | pending        | `core/03-tools-output-capabilities.md` | wrapper tests                  |
+| deferred tools        | SDK requests/results and inline handlers                | partial        | `ops/03`, `core/03`                    | control-flow and service tests |
+| subagents             | specs, registry, inherited tools, lifecycle             | partial        | `sdk/04-subagents-skills.md`           | subagent tests                 |
+| skills                | fileops-loaded skills and tool summaries                | partial        | `sdk/04-subagents-skills.md`           | skill tests                    |
+| media                 | binary/resource/data-url parts and preflight            | partial        | `sdk/03-first-party-tool-bundles.md`   | media/preflight/provider tests |
+| config/specs          | AgentSpec, presets, host handles                        | partial        | `sdk/01-agent-sdk-app.md`              | spec/profile tests             |
+| UI adapters           | AG-UI/Vercel request adapters and sanitizers            | pending        | `ops/04`, future platform spec         | adapter conformance tests      |
+| model wrappers        | fallback/concurrency/instrumentation/provider lifecycle | pending        | `core/05-pydantic-ai-feature-map.md`   | model wrapper tests            |
 
 ## Filters as Capabilities
 
 ```mermaid
 flowchart TD
-    filter[Policy filter]
-    capability[Capability]
-    hooks[Runtime hooks]
+    filter[Named filter]
+    processor[HistoryProcessor]
+    capability[StaticCapabilityBundle]
+    runtime[Runtime request pipeline]
     context[AgentContext]
-    tools[ToolRegistry]
-    events[EventBus]
+    metadata[Run metadata]
 
-    filter --> capability
-    capability --> hooks
-    capability --> context
-    capability --> tools
-    hooks --> events
+    filter --> processor
+    processor --> capability
+    capability --> runtime
+    runtime --> context
+    runtime --> metadata
 ```
 
-Target filters:
+### Current Filter Status
 
-- auto-load files capability
-- background shell capability
-- bus message capability
-- cold start capability
-- environment instructions capability
-- handoff capability
-- image/media upload capability
-- model switch capability
-- reasoning normalize capability
-- runtime instructions capability
-- system prompt capability
-- tool args capability
+The first ya-agent-sdk filter parity slice is landed in `crates/starweaver-agent/src/filters.rs`:
 
-### ya-mono Filter Parity Gate
+- `DEFAULT_FILTER_ORDER`
+- `default_filter_bundle()`
+- `default_filter_processors()`
+- `NamedFilterProcessor`
+- `MediaUploader` seam
+- media preflight and upload replacement behavior
+- cold-start tool-return trimming
+- capability/media support filtering
+- compact keep-message behavior
+- handoff metadata support
+- auto-load/background/bus/environment/runtime instruction metadata injection
+- system prompt reinjection composition
+- tool-call argument repair
+- reasoning normalization
 
-The SDK parity target tracks the ya-agent-sdk filter catalog from ya-mono. Starweaver has the generic runtime substrate through `HistoryProcessor`, `AgentCapability`, and `CapabilityBundle`; the remaining work is named default bundles, deterministic ordering, and fixture coverage.
+Current order:
 
-| Filter family            | Required Starweaver behavior                                                | Owner                               |
-| ------------------------ | --------------------------------------------------------------------------- | ----------------------------------- |
-| auto-load files          | append configured file context through provider file reads                  | SDK capability bundle               |
-| background shell         | inject completed background process results and spill large output to files | environment/process bundle          |
-| bus messages             | consume pending message bus entries exactly once per request pipeline pass  | context bundle                      |
-| cold start trim          | trim stale tool returns before compact decisions                            | runtime history processor           |
-| environment instructions | inject workspace, policy, and resource state summaries                      | environment bundle                  |
-| handoff                  | rebuild restored histories with keep tags and steering parts                | runtime history processor           |
-| image/media              | validate, split, compress, drop, and upload media before provider mapping   | SDK media bundle and model profiles |
-| model switch             | update model profile evidence and normalize history after provider changes  | SDK profile capability              |
-| reasoning normalize      | keep provider-compatible thinking/reasoning parts                           | model/runtime processor             |
-| runtime instructions     | reinject runtime state after compaction or handoff                          | runtime capability                  |
-| system prompt            | preserve canonical system prompt placement                                  | runtime processor                   |
-| tool args                | repair or flag truncated tool-call arguments before replay                  | runtime processor                   |
+```text
+cold_start -> capability -> media_preflight -> media_upload -> compact -> handoff -> auto_load_files -> background_shell -> bus_message -> environment_instructions -> runtime_instructions -> system_prompt -> tool_args -> reasoning_normalize
+```
 
-Default processor order should be encoded in one SDK preset and tested with an ordered trace fixture. See `spec/ops/07-ya-mono-parity-migration.md` for the full parity and migration plan.
+Remaining filter depth:
+
+| Filter family            | Current state                          | Remaining work                                                                                    |
+| ------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| auto-load files          | metadata-driven injection slice        | provider-backed reads, truncation files, focused request parts, local/virtual tests               |
+| background shell         | process provider substrate exists      | completed process injection, output spill files, lifecycle UI evidence                            |
+| bus messages             | context message bus exists             | consume-once request pipeline behavior and retry safety tests                                     |
+| cold start               | tool-return trimming slice             | idle-window heuristics and cache-friendly compaction evidence                                     |
+| environment instructions | metadata-driven injection              | provider summary, workspace policy, resource state, sandbox evidence                              |
+| handoff                  | metadata-driven slice                  | restored-history reconstruction with keep tags and steering parts                                 |
+| media preflight          | byte sniffing and policy checks landed | compression, alpha compositing, tall splitting, GIF policy, count limits across nested structures |
+| media upload             | adapter seam landed                    | S3/resource-store adapters and failure fallback fixtures                                          |
+| model switch             | profile presets exist                  | model-switch event normalization and history evidence                                             |
+| reasoning normalize      | first normalization slice              | provider-specific reasoning/thinking reconstruction fixtures                                      |
+| runtime instructions     | dynamic/static instructions exist      | reinjection after compact/handoff with ordered trace fixture                                      |
+| system prompt            | landed                                 | preserve coverage as processors evolve                                                            |
+| tool args                | repair slice landed                    | malformed/truncated argument fixture depth                                                        |
 
 ## Environment Integration
 
-Environment concepts map to provider traits:
-
 ```mermaid
 flowchart LR
-    local[Local environment]
-    process[Process environment]
-    sandbox[Sandbox environment]
-    composite[Composite environment]
-    virtual[Virtual file operator]
+    virtual[Virtual provider]
+    local[Local provider]
+    process[Process-capable provider]
+    sandbox[Sandbox provider]
     provider[EnvironmentProvider]
+    bundles[Environment-backed bundles]
 
+    virtual --> provider
     local --> provider
     process --> provider
     sandbox --> provider
-    composite --> provider
-    virtual --> provider
+    provider --> bundles
 ```
 
-The SDK should implement virtual and local providers first, then process and sandbox providers after the state/export contract is reviewed.
+Current state:
 
-## Context Tool Integration
-
-Context-backed SDK tools should expose:
-
-- notes
-- tasks
-- message bus
-- usage snapshot
-- state get/set
-- environment state summary
-- session metadata
-
-These tools are implemented through first-party bundles and can be added to agents through capability presets.
-
-## Subagent Integration
-
-Subagent features map to:
-
-- markdown/frontmatter specs
-- builtin registry
-- factory from specs and environment policy
-- unified delegation tool
-- inherited tool policy
-- lifecycle events
-- nested delegation guardrails
-- durable polling extension
+- Virtual provider and local provider foundations are landed.
+- File read/write/list/glob/grep policies are landed.
+- Process-capable shell traits, handles, and deterministic tests are landed.
+- Sandboxed provider implementation and aligned filesystem/shell path spaces remain active work.
 
 ## Skill Integration
 
-Skills should be loaded from project, global, shared, and builtin sources through provider file operations. The SDK skill bundle scans `skills/` and `.agents/skills/` directories under configured `EnvironmentProvider` roots, parses `SKILL.md` frontmatter, injects available-skill summaries into grouped instructions, and loads full skill bodies on activation.
+Skills load from configured roots through provider file operations. Current SDK support includes:
 
-A skill may contribute:
+- `SkillPackage`, `SkillSourceScope`, `SkillRegistry`, `parse_skill_markdown`, and `skill_tools()`.
+- Virtual-provider scan tests and metadata preservation.
+- Summary toolset generation and activation metadata.
 
-- instructions
-- examples
-- references and assets stored in provider-visible paths
-- tool requirements
-- optional tool requirements
-- metadata
-- toolsets
+Remaining work:
 
-Skill loading integrates with `AgentBuilder` through capability bundles and with `EnvironmentProvider` for file/resource access. Environment, filesystem, shell, and skill bundles should share one path-space contract so skill scripts and references can be used by tools without remapping.
+- CLI startup seeding for bundled skills and subagents.
+- Shared `~/.agents` discovery/import options for YAACLI parity.
+- Exact precedence tests for shared user, tool-specific user, shared project, and tool-specific project roots.
+- Public `list_skills`, `load_skill`, and `reload_skills` tools over the active provider-visible skill cache.
+- Hot reload at request boundaries in development profiles.
+- Skill tool-requirement materialization and activation telemetry.
+- Remote skill registry sync after local/project/global behavior stabilizes.
+
+## Subagent Integration
+
+Current support includes serializable subagent configs, frontmatter parsing, inherited tools, denied tools, optional/required/auto-inherited policies, lifecycle events, trace parent propagation, and nested delegation guardrails.
+
+Remaining work:
+
+- Durable subagent polling through shared sessions/runs.
+- Cancellation/resume propagation through service runtime.
+- Worker mode behavior in CLI.
+- Subagent model/settings/config override parity with YAACLI config.
+- Unified subagent tool schema with available-subagent descriptions and `subagent_info` style inspection.
+- Self-fork behavior for current-context child agents.
+- Lifecycle stream evidence for started, streamed, completed, failed, cancelled, and resumed subagent work.
 
 ## Media Processing Parity
 
-Starweaver media handling must include binary and resource-backed request content in addition to URL media. The ya-mono media fixes provide the acceptance target: detect true media type from bytes, account for base64 expansion before provider requests, compress oversized static images, preserve animated media for GIF/upload decisions, split tall screenshots with overlap, validate corrupted images, and upload processed media to external storage when profile policy prefers URLs.
+Current landed media foundations:
 
-Provider profiles should expose limits for image count, video count, GIF support, max encoded image bytes, binary media support, URL media support, and document support. The media preflight processor should update both user messages and tool-return media content before provider mapping.
+- `ContentPart::Binary`, `ContentPart::ResourceRef`, and `ContentPart::DataUrl`.
+- Data URL parsing, content-type detection, media policy, preflight evidence, and corruption evidence.
+- Provider mapping tests for multimodal content.
+- SDK media preflight processor and upload adapter seam.
+
+Remaining media parity work:
+
+- Base64-budget-aware compression for static images.
+- Alpha compositing before JPEG conversion.
+- Tall screenshot splitting with overlap.
+- Animated GIF retention and support filtering.
+- Newest-media count limits across user messages and nested tool returns.
+- S3-compatible and provider resource-store upload adapters.
+- Binary/resource download integration with `EnvironmentProvider` resource traits.
+- Concrete fallback media understanding clients with usage accounting.
+
+## Pydantic AI Borrowing Map
+
+| Borrowed design           | Starweaver shape                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| capability middleware     | `AgentCapability` IDs, ordering, wrappers, per-run instances, deferred/on-demand loading                                                   |
+| deferred tools            | SDK request/result records layered over durable approval/deferred storage                                                                  |
+| RunContext breadth        | unified run context façade over `AgentContext`, `ToolContext`, run state, trace, usage, approval, available tools, and loaded capabilities |
+| toolset combinators       | wrapper toolsets that transform discovery and execution                                                                                    |
+| AgentSpec schema          | generated schema, templates, dependency schema, capability specs, host-policy materialization                                              |
+| UI adapter trust boundary | sanitize client history, file URLs, dangling tool calls, system prompts, and download modes                                                |
+| model wrappers            | fallback, concurrency limit, instrumentation, provider lifecycle                                                                           |
+| advanced output           | multiple outputs, native/prompted/image modes, streamed structured output helpers                                                          |
 
 ## Review Gate
 
-Before implementing the P0/P1 SDK batch:
+Before implementing the next SDK batch:
 
-1. Update the corresponding spec sections and memos with ya-mono/pydantic-ai evidence.
-2. Review `crates/starweaver-agent/src` and produce keep/rename/add/hide decisions for public APIs.
-3. Convert the P0/P1 plan into focused tests for policy presets, `AgentSpec`, inherited tools, skill loading, host adapters, environment/resource composition, process shell, and MCP.
-4. Implement the Rust-native trait, capability, preset, or tool bundle slice.
-5. Add docs examples after the API shape stabilizes and keep them passing through `make docs-check`.
+1. Update `memos/implementation-todo.md` with status, owner, and validation command.
+2. Add a focused test for the behavior before broadening public API.
+3. Keep docs examples compiling through `make docs-check` when user-facing examples change.
+4. Keep capability/toolset additions compatible with durable session and stream contracts.

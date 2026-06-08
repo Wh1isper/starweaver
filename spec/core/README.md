@@ -4,6 +4,8 @@ The core layer is the Rust-native foundation for model-driven agent execution. I
 
 The core layer is designed for library authors and runtime implementers. It defines durable contracts while application tools and product policy live in SDK and operations layers.
 
+Detailed Pydantic AI maturity work is tracked in `07-pydantic-ai-maturity-roadmap.md`; the coverage matrix remains in `05-pydantic-ai-feature-map.md`.
+
 ## Crate Ownership
 
 ```mermaid

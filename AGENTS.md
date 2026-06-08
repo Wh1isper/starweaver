@@ -12,16 +12,15 @@ Primary design references:
 Current workspace members:
 
 - `crates/starweaver-core` — shared SDK identity, IDs, metadata, and usage primitives
-- `crates/starweaver-model` — provider-neutral model messages, settings, profiles, native tool request definitions, protocol clients, injectable HTTP transport, deterministic test models, production-request guard, and replay tests
+- `crates/starweaver-model` — provider-neutral model messages, settings, profiles, native tool request definitions, protocol clients, injectable HTTP transport, deterministic test models, production-request guard, model wrappers, and replay tests
 - `crates/starweaver-context` — AgentContext, typed dependencies, resumable state, state store, event bus, message bus, and usage ledger
 - `crates/starweaver-runtime` — core agent loop, graph state machine, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage/tool-call/cost budgets, typed stream events, scoped overrides, context integration, capability hooks, capability bundles, trace recording, and durable executor checkpoints
-- `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, and execution primitives
-- `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, first-party tool bundles, spec presets, session helpers, and application-facing helpers
+- `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, toolset combinators, and execution primitives
+- `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, first-party tool bundles, spec presets, session helpers, media/filter helpers, and application-facing helpers
 - `crates/starweaver-environment` — `EnvironmentProvider`, virtual and local provider foundations, file and shell policies, resource references, and environment state snapshots
 - `crates/starweaver-session` — shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections
-- `crates/starweaver-stream` — shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes
-- `crates/starweaver-storage` — shared SQLite migrations, `SessionStore` adapter, replay event-log adapter, and migration import foundations used by CLI and Claw
-- `crates/starweaver-claw` — durable orchestration host that re-exports shared session/stream/storage contracts and provides service, coordinator, workflow, schedule, profile, workspace, bridge, and API adapters
+- `crates/starweaver-stream` — shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, UI adapters, sanitization, and protocol envelopes
+- `crates/starweaver-storage` — shared SQLite migrations, concrete `SessionStore`, replay event-log, stream archive adapters, and migration status reporting
 - `crates/starweaver-cli` — CLI-first product surface for headless stdio runs, display-message rendering, session restore, launcher dispatch, and install/update workflows
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
@@ -30,15 +29,15 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 
 ## Layering Rules
 
-- `starweaver-model`: provider-neutral model protocol, settings, profiles, transports, and provider request mapping.
-- `starweaver-tools`: tool schema, toolsets, metadata, tool context, and protocol-level tool execution primitives.
+- `starweaver-model`: provider-neutral model protocol, settings, profiles, transports, model wrappers, and provider request mapping.
+- `starweaver-tools`: tool schema, toolsets, metadata, tool context, combinators, and protocol-level tool execution primitives.
 - `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage limits, streaming events, trace spans, and executor checkpoints.
-- `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, and policy presets.
+- `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, filters, media helpers, and policy presets.
 - `starweaver-environment`: environment provider contracts, file/shell policy, resource references, and resumable environment state snapshots.
 - `starweaver-session`: shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
-- `starweaver-stream`: shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
-- `starweaver-storage`: shared SQLite migrations, concrete `SessionStore` and `ReplayEventLog` adapters, migration status, and import foundations for CLI and Claw.
-- `starweaver-claw`: durable orchestration, service execution, checkpoint storage, interruption, resume, SSE transport, trace correlation, workflow orchestration, schedules, and storage adapter selection.
+- `starweaver-stream`: shared display/replay stream contracts, UI adapters, sanitizers, realtime compaction buffers, stream archives, and protocol envelopes.
+- `starweaver-storage`: shared SQLite migrations, concrete `SessionStore`, `StreamArchive`, and `ReplayEventLog` adapters, plus migration status reporting.
+- `starweaver-cli`: command-line product surface and local automation entry point.
 - `starweaver-platform`: hosted orchestration and external protocol adapters such as A2A and AGUI.
 
 ## Documentation Workflow
@@ -73,6 +72,7 @@ Current docs:
 - `docs/mcp.md` — MCP foundations and official `rmcp` direction
 - `docs/testing.md` — deterministic testing, request guard, scripts, and coverage
 - `docs/release.md` — release, upversion, crate publishing, and binary artifact workflow
+- `docs/session-stream.md` — shared session, display stream, replay, and storage contracts
 
 ## Spec Workflow
 
@@ -88,6 +88,7 @@ Current specs:
 - `spec/core/04-context-state-executor.md` — AgentContext, StateStore, events, messages, notes, usage, checkpoints, and executor preparation
 - `spec/core/05-pydantic-ai-feature-map.md` — Pydantic AI feature coverage map across agents, providers, tools, output, streaming, and testing
 - `spec/core/06-message-request-abstractions.md` — Pydantic AI-informed message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
+- `spec/core/07-pydantic-ai-maturity-roadmap.md` — capability middleware, deferred tools, toolset combinators, AgentSpec v2, output modes, model wrappers, and UI adapter maturity roadmap
 - `spec/sdk/README.md` — SDK product boundary and application-facing contract
 - `spec/sdk/01-agent-sdk-app.md` — AgentBuilder, AgentApp, AgentSession, policy presets, app composition, and docs surface
 - `spec/sdk/02-environment-provider.md` — EnvironmentProvider, filesystem, shell, resources, environment state, policies, and sandbox mapping
@@ -96,12 +97,12 @@ Current specs:
 - `spec/sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 - `spec/ops/README.md` — operational layer scope and readiness model
 - `spec/ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
-- `spec/ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts for CLI and Claw
-- `spec/ops/03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, SSE, display-message replay, and storage contracts
-- `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, AGUI-compatible rendering, launcher dispatch, and GitHub install/update flow
+- `spec/ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts
+- `spec/ops/03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
+- `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI compatibility adapters, launcher dispatch, and GitHub install/update flow
 - `spec/ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
-- `spec/ops/06-workflow-orchestration.md` — Claw-owned workflow definitions, runs, node runs, events, toolset, schedules, and workflow console semantics
-- `spec/ops/07-ya-mono-parity-migration.md` — ya-mono parity, migration, API behavior, CLI parity, media fixes, and planned refactors
+- `spec/ops/07-ya-mono-parity-migration.md` — foundation and CLI parity reference map with CLI audit postponed
+- `spec/ops/09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
 Use `memos/` for working notes, design comparisons, implementation evidence, and release-preparation reminders. The current detailed implementation roadmap is `memos/implementation-todo.md`.
 
@@ -170,7 +171,7 @@ To ask the assistant to prepare a unified-version release, use GitHub CLI from t
 gh workflow run prepare-release.yml -f version=0.2.0 -f run_full_ci=true
 ```
 
-This creates a `release/v0.2.0` pull request. After the pull request merges, `draft-release.yml` creates a draft GitHub Release with `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, `starweaver-claw` archives containing `starweaver-claw`, and `checksums.txt`. Publishing that draft release triggers `release.yml`, which publishes crates through the `Release` environment.
+This creates a `release/v0.2.0` pull request. After the pull request merges, `draft-release.yml` creates a draft GitHub Release with `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, plus `checksums.txt`. Publishing that draft release triggers `release.yml`, which publishes crates through the `Release` environment.
 
 For repository-wide hooks, run:
 
@@ -183,9 +184,9 @@ make lint
 - Use English for code, documentation, commit messages, and file names.
 - Keep workspace metadata consistent across `Cargo.toml`, crate manifests, `Makefile`, `.pre-commit-config.yaml`, and `.github/workflows/ci.yml`.
 - Keep early abstractions minimal and add SDK concepts as concrete needs emerge.
-- Treat runtime primitives as first-class: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, executor checkpoints, trace context, `SessionStore` contracts, and environment resources.
+- Treat runtime primitives as first-class: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, executor checkpoints, trace context, `SessionStore` contracts, stream contracts, and environment resources.
 - Add crates from specs when the boundary has clear responsibilities, call sites, and validation commands.
 - Model transport must support injectable HTTP clients, custom headers, extra body fields, endpoint overrides, and audit/gateway routing requirements.
 - Model protocol must preserve typed request/response parts, prepared request snapshots, profile-driven message normalization, tool-call argument state, provider details, and structured stream part events.
 - Core runtime should prioritize prompt runs, model history, static and dynamic instructions, structured output retry, per-tool retry, capability hooks and bundles, prepare-tools hooks, settings/params forwarding, skip responses, tool execution, explicit tool-call boundaries, checkpoint emission, and OpenTelemetry GenAI span seams.
-- SDK and platform layers should deepen tool implementations, official `rmcp` MCP live transports, subagent task protocols, live model delta streams, dependency-aware hooks, durable sessions, SSE, OpenTelemetry GenAI traces, and external protocol adapters.
+- SDK and platform layers should deepen tool implementations, official `rmcp` MCP live transports, subagent task protocols, live model delta streams, dependency-aware hooks, durable sessions, service transports, OpenTelemetry GenAI traces, and external protocol adapters.

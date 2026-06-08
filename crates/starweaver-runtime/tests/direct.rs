@@ -94,7 +94,7 @@ fn model_stream_events_remain_replay_serializable() {
             part_kind: "text".to_string(),
         }),
         ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "ok")),
-        ModelResponseStreamEvent::PartEnd(PartEnd { index: 0 }),
+        ModelResponseStreamEvent::PartEnd(PartEnd::with_kind(0, "text")),
         ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse::text("ok"))),
     ];
 

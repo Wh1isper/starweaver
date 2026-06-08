@@ -54,7 +54,7 @@ impl BinaryRef {
     }
 }
 
-/// Serializable input submitted by CLI, API, bridges, schedules, and tools.
+/// Serializable input submitted by CLI, API, service hosts, schedules, and tools.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InputPart {

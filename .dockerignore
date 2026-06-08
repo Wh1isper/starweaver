@@ -9,7 +9,6 @@
 /.starweaver
 
 **/node_modules
-/crates/starweaver-claw/web/dist
 **/.pnpm-store
 **/.vite
 **/coverage

@@ -16,7 +16,8 @@ pub mod usage;
 
 pub use agent::{Agent, AgentError, AgentOverride, AgentResult, AgentRuntimePolicy};
 pub use capability::{
-    AgentCapability, CapabilityBundle, CapabilityError, CapabilityResult, RetryEventKind,
+    resolve_capability_order, AgentCapability, CapabilityBundle, CapabilityError, CapabilityId,
+    CapabilityOrderError, CapabilityOrdering, CapabilityResult, CapabilitySpec, RetryEventKind,
     StaticCapabilityBundle,
 };
 pub use direct::{model_request, model_request_stream, tool_call, DirectModelRequest};

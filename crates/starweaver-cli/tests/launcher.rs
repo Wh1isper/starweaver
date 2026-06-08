@@ -92,7 +92,7 @@ fn launcher_update_quotes_install_dir_in_dry_run() {
     let update = env_command(env!("CARGO_BIN_EXE_starweaver"), &temp)
         .env("STARWEAVER_UPDATE_DRY_RUN", "1")
         .env("STARWEAVER_INSTALL_DIR", &install_dir)
-        .args(["update", "claw"])
+        .args(["update", "cli"])
         .output()
         .unwrap();
     assert!(
@@ -101,7 +101,7 @@ fn launcher_update_quotes_install_dir_in_dry_run() {
         String::from_utf8_lossy(&update.stderr)
     );
     let stdout = String::from_utf8(update.stdout).unwrap();
-    assert!(stdout.contains("target=claw"));
+    assert!(stdout.contains("target=cli"));
     assert!(stdout.contains("'\\''"));
-    assert!(stdout.contains("STARWEAVER_COMPONENTS=claw"));
+    assert!(stdout.contains("STARWEAVER_COMPONENTS=cli"));
 }

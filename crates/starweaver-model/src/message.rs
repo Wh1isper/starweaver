@@ -488,6 +488,67 @@ pub struct ToolReturnPart {
     /// Tool return metadata for approval, deferral, and runtime orchestration.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub metadata: Metadata,
+    /// Application-facing return value when it differs from model-visible content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_value: Option<Value>,
+    /// User-facing content for UI display and host rendering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_content: Option<Value>,
+    /// Private host metadata kept separate from provider request mapping.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub private_metadata: Metadata,
+}
+
+impl ToolReturnPart {
+    /// Build a tool return part with model-visible content.
+    #[must_use]
+    pub fn new(tool_call_id: impl Into<String>, name: impl Into<String>, content: Value) -> Self {
+        Self {
+            tool_call_id: tool_call_id.into(),
+            name: name.into(),
+            content,
+            is_error: false,
+            metadata: Metadata::default(),
+            app_value: None,
+            user_content: None,
+            private_metadata: Metadata::default(),
+        }
+    }
+
+    /// Mark this tool return as an error.
+    #[must_use]
+    pub const fn with_error(mut self, is_error: bool) -> Self {
+        self.is_error = is_error;
+        self
+    }
+
+    /// Attach public runtime metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+
+    /// Attach application-facing return value.
+    #[must_use]
+    pub fn with_app_value(mut self, app_value: Value) -> Self {
+        self.app_value = Some(app_value);
+        self
+    }
+
+    /// Attach user-facing content.
+    #[must_use]
+    pub fn with_user_content(mut self, user_content: Value) -> Self {
+        self.user_content = Some(user_content);
+        self
+    }
+
+    /// Attach private host metadata.
+    #[must_use]
+    pub fn with_private_metadata(mut self, private_metadata: Metadata) -> Self {
+        self.private_metadata = private_metadata;
+        self
+    }
 }
 
 /// Provider metadata attached to canonical responses.

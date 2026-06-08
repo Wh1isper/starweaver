@@ -2,16 +2,19 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env,
     path::Path,
+    process::Command,
     time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
 
 use starweaver_core::Usage;
+use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
 
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
 const MAX_STEERING_ITEMS: usize = 5;
+const SHELL_OUTPUT_MAX_LINES: usize = 200;
 
 use super::{
     markdown::ASSISTANT_CONTENT_PREFIX,
@@ -55,19 +58,12 @@ impl RunMode {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum FooterMode {
     Context,
-    Help,
 }
 
 impl FooterMode {
-    pub(super) const fn is_help(&self) -> bool {
-        matches!(self, Self::Help)
-    }
-
-    pub(super) fn toggle_help(&mut self) {
-        *self = match self {
-            Self::Context => Self::Help,
-            Self::Help => Self::Context,
-        };
+    #[cfg(test)]
+    pub(super) const fn is_help() -> bool {
+        false
     }
 }
 
@@ -135,6 +131,7 @@ pub struct InteractiveTuiState {
     pub(super) history_draft: String,
     streaming_parts: HashMap<usize, StreamingPartKind>,
     streaming_text_seen: bool,
+    streaming_reasoning_seen: bool,
     visible_tool_calls: HashSet<String>,
     pub(super) last_ctrl_c: Option<Instant>,
     pub(super) cancel_requested: bool,
@@ -147,7 +144,6 @@ pub struct InteractiveTuiState {
     pub(super) context_window: Option<u64>,
     pub(super) steering_items: Vec<SteeringItem>,
     next_steering_id: u64,
-    custom_commands: BTreeMap<String, SlashCommandDefinition>,
 }
 
 impl InteractiveTuiState {
@@ -175,6 +171,7 @@ impl InteractiveTuiState {
             history_draft: String::new(),
             streaming_parts: HashMap::new(),
             streaming_text_seen: false,
+            streaming_reasoning_seen: false,
             visible_tool_calls: HashSet::new(),
             last_ctrl_c: None,
             cancel_requested: false,
@@ -187,7 +184,6 @@ impl InteractiveTuiState {
             context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
             steering_items: Vec::new(),
             next_steering_id: 0,
-            custom_commands: BTreeMap::new(),
         }
     }
 
@@ -220,6 +216,7 @@ impl InteractiveTuiState {
         self.phase = "queued".to_string();
         self.streaming_parts.clear();
         self.streaming_text_seen = false;
+        self.streaming_reasoning_seen = false;
         self.visible_tool_calls.clear();
         self.footer_mode = FooterMode::Context;
         self.input_status = None;
@@ -293,8 +290,11 @@ impl InteractiveTuiState {
                             self.push_text_lines(text);
                             self.streaming_text_seen = true;
                         }
-                        starweaver_model::ModelResponsePart::Thinking { text, .. } => {
-                            self.body.push(format!("Thinking: {text}"));
+                        starweaver_model::ModelResponsePart::Thinking { text, .. }
+                            if !self.streaming_reasoning_seen =>
+                        {
+                            self.push_thinking_lines(text);
+                            self.streaming_reasoning_seen = true;
                         }
                         starweaver_model::ModelResponsePart::ToolCall(call) => {
                             self.push_tool_call(call);
@@ -371,16 +371,16 @@ impl InteractiveTuiState {
                 let kind = streaming_part_kind(&part.part_kind);
                 self.streaming_parts.insert(part.index, kind);
                 self.phase = match kind {
-                    StreamingPartKind::Text => "streaming".to_string(),
+                    StreamingPartKind::Text => {
+                        self.ensure_text_stream_line();
+                        "streaming".to_string()
+                    }
                     StreamingPartKind::Thinking => "thinking".to_string(),
                     StreamingPartKind::Other => format!("streaming:{}", part.part_kind),
                 };
-                if matches!(kind, StreamingPartKind::Thinking) {
-                    self.body.push("Thinking:".to_string());
-                }
             }
             ModelResponseStreamEvent::PartDelta(delta) => {
-                match self.streaming_kind_for_delta(delta.index) {
+                match self.streaming_kind_for_delta(delta) {
                     StreamingPartKind::Text => {
                         self.phase = "streaming".to_string();
                         self.append_stream_delta(&delta.as_text());
@@ -389,6 +389,7 @@ impl InteractiveTuiState {
                     StreamingPartKind::Thinking => {
                         self.phase = "thinking".to_string();
                         self.append_thinking_delta(&delta.as_text());
+                        self.streaming_reasoning_seen = true;
                     }
                     StreamingPartKind::Other => {
                         self.phase = "streaming".to_string();
@@ -412,38 +413,72 @@ impl InteractiveTuiState {
     }
 
     fn append_stream_delta(&mut self, delta: &str) {
-        if self.body.is_empty() {
-            self.body.push(assistant_content_line(""));
-        }
+        self.ensure_text_stream_line();
         append_delta_segments(&mut self.body, delta, |line| assistant_content_line(line));
     }
 
     fn append_thinking_delta(&mut self, delta: &str) {
-        if self
-            .body
-            .last()
-            .map_or(true, |line| !line.starts_with("Thinking:"))
-        {
-            self.body.push("Thinking:".to_string());
-        }
-        if self.body.last().is_some_and(|line| line == "Thinking:") {
-            if let Some(last) = self.body.last_mut() {
-                last.push(' ');
-            }
-        }
-        append_delta_segments(&mut self.body, delta, |line| format!("Thinking: {line}"));
+        self.ensure_thinking_blockquote();
+        append_delta_segments(&mut self.body, delta, |line| {
+            assistant_content_line(format!("> {line}"))
+        });
     }
 
-    fn streaming_kind_for_delta(&self, index: usize) -> StreamingPartKind {
-        self.streaming_parts
-            .get(&index)
-            .copied()
-            .unwrap_or(StreamingPartKind::Other)
+    fn ensure_thinking_blockquote(&mut self) {
+        if !self
+            .body
+            .last()
+            .is_some_and(|line| is_thinking_quote_line(line))
+        {
+            self.body.push(assistant_content_line("> "));
+        }
+    }
+
+    fn push_thinking_lines(&mut self, text: &str) {
+        let mut lines = text.lines().peekable();
+        if lines.peek().is_none() {
+            self.ensure_thinking_blockquote();
+            return;
+        }
+        for line in lines {
+            self.body.push(assistant_content_line(format!("> {line}")));
+        }
+    }
+
+    fn streaming_kind_for_delta(&self, delta: &PartDelta) -> StreamingPartKind {
+        match &delta.delta {
+            StreamDelta::Text { .. } => StreamingPartKind::Text,
+            StreamDelta::Thinking { .. } => StreamingPartKind::Thinking,
+            StreamDelta::ToolCallName { .. }
+            | StreamDelta::ToolCallArguments { .. }
+            | StreamDelta::NativePayload { .. }
+            | StreamDelta::FileMetadata { .. } => self
+                .streaming_parts
+                .get(&delta.index)
+                .copied()
+                .unwrap_or(StreamingPartKind::Other),
+        }
     }
 
     fn push_text_lines(&mut self, text: &str) {
-        for line in text.lines() {
+        self.ensure_text_stream_line();
+        let mut lines = text.lines().peekable();
+        if lines.peek().is_none() {
+            return;
+        }
+        for line in lines {
             self.body.push(assistant_content_line(line));
+        }
+    }
+
+    fn ensure_text_stream_line(&mut self) {
+        if self.body.is_empty()
+            || self
+                .body
+                .last()
+                .is_some_and(|line| is_thinking_quote_line(line))
+        {
+            self.body.push(assistant_content_line(""));
         }
     }
 
@@ -570,18 +605,13 @@ impl InteractiveTuiState {
         self.input_status.as_deref().unwrap_or(&self.phase)
     }
 
-    pub(super) fn help_panel_visible(&self) -> bool {
-        self.footer_mode.is_help() || self.input.trim_start().starts_with("/help")
+    pub(super) const fn help_panel_visible() -> bool {
+        false
     }
 
-    pub(super) fn open_help(&mut self) {
-        self.footer_mode = FooterMode::Help;
-        self.input_status = Some("help".to_string());
-    }
-
-    /// Install config-defined slash command definitions.
-    pub fn set_custom_commands(&mut self, commands: BTreeMap<String, SlashCommandDefinition>) {
-        self.custom_commands = commands;
+    /// Config-defined slash commands are ignored by the simplified TUI command surface.
+    pub fn set_custom_commands(&mut self, _commands: BTreeMap<String, SlashCommandDefinition>) {
+        self.footer_mode = FooterMode::Context;
     }
 
     fn take_local_command(&mut self) -> LocalCommandOutcome {
@@ -589,31 +619,33 @@ impl InteractiveTuiState {
         if input == "/help" {
             self.input.clear();
             self.pasted_images.clear();
-            self.open_help();
-            return LocalCommandOutcome::Consumed;
-        }
-        if input == "/act" {
-            self.input.clear();
-            self.run_mode = RunMode::Act;
-            self.body.push("[SYS] Mode changed to ACT".to_string());
-            self.input_status = Some("mode changed".to_string());
-            return LocalCommandOutcome::Consumed;
-        }
-        if input == "/plan" {
-            self.input.clear();
-            self.run_mode = RunMode::Plan;
-            self.body.push("[SYS] Mode changed to PLAN".to_string());
-            self.input_status = Some("mode changed".to_string());
+            self.footer_mode = FooterMode::Context;
+            self.append_help_to_body();
+            self.input_status = Some("help".to_string());
             return LocalCommandOutcome::Consumed;
         }
         if input == "/clear" {
             self.input.clear();
             self.body.clear();
+            self.footer_mode = FooterMode::Context;
             self.input_status = Some("cleared".to_string());
             return LocalCommandOutcome::Consumed;
         }
-        if let Some(outcome) = self.take_custom_command(&input) {
-            return outcome;
+        if input == "/cost" {
+            self.input.clear();
+            self.pasted_images.clear();
+            self.footer_mode = FooterMode::Context;
+            self.append_cost_summary();
+            self.input_status = Some("cost".to_string());
+            return LocalCommandOutcome::Consumed;
+        }
+        if let Some(command) = input.strip_prefix('!') {
+            self.input.clear();
+            self.pasted_images.clear();
+            self.footer_mode = FooterMode::Context;
+            self.run_shell_command(command.trim());
+            self.input_status = Some("shell".to_string());
+            return LocalCommandOutcome::Consumed;
         }
         if let Some(task) = input.strip_prefix("/goal") {
             self.input.clear();
@@ -635,35 +667,70 @@ impl InteractiveTuiState {
             self.input_status = Some("goal".to_string());
             return LocalCommandOutcome::Submit(task.to_string());
         }
+        if input.starts_with('/') {
+            self.input.clear();
+            self.pasted_images.clear();
+            self.footer_mode = FooterMode::Context;
+            self.body.push(format!(
+                "[SYS] Unknown command: {input}. Available commands: /help, /clear, /cost, /goal, !<cmd>"
+            ));
+            self.input_status = Some("unknown command".to_string());
+            return LocalCommandOutcome::Consumed;
+        }
         LocalCommandOutcome::None
     }
 
-    fn take_custom_command(&mut self, input: &str) -> Option<LocalCommandOutcome> {
-        let (name, args) = input
-            .strip_prefix('/')?
-            .split_once(' ')
-            .unwrap_or_else(|| (input.strip_prefix('/').unwrap_or_default(), ""));
-        let command = self
-            .custom_commands
-            .get(&name.to_ascii_lowercase())?
-            .clone();
-        self.input.clear();
-        self.pasted_images.clear();
-        if let Some(mode) = command.mode.as_deref() {
-            match mode.to_ascii_lowercase().as_str() {
-                "act" => self.run_mode = RunMode::Act,
-                "plan" => self.run_mode = RunMode::Plan,
-                _ => {}
-            }
+    fn append_help_to_body(&mut self) {
+        self.body.extend([
+            "[SYS] Starweaver TUI help".to_string(),
+            "[SYS] /help - Print this help in the transcript".to_string(),
+            "[SYS] /clear - Clear output".to_string(),
+            "[SYS] /cost - Show usage and cost summary".to_string(),
+            "[SYS] /goal <task> - Run toward a verified goal".to_string(),
+            "[SYS] !<cmd> - Execute a shell command".to_string(),
+            "[SYS] Enter sends a message. Tab queues a draft while running. Ctrl+C interrupts or exits.".to_string(),
+        ]);
+    }
+
+    fn append_cost_summary(&mut self) {
+        self.body.push("[SYS] Cost summary".to_string());
+        match self.context_tokens {
+            Some(tokens) => self.body.push(format!("[SYS] Context tokens: {tokens}")),
+            None => self.body.push("[SYS] Context tokens: 0".to_string()),
         }
-        let prompt = if args.trim().is_empty() {
-            command.prompt
-        } else {
-            format!("{}\n\n{}", command.prompt, args.trim())
-        };
-        self.body.push(format!("[SYS] Running /{}", command.name));
-        self.input_status = Some("custom command".to_string());
-        Some(LocalCommandOutcome::Submit(prompt))
+        if let Some(window) = self.context_window {
+            self.body.push(format!("[SYS] Context window: {window}"));
+            self.body.push(format!(
+                "[SYS] Context used: {}",
+                self.context_percent_label()
+            ));
+        }
+        self.body
+            .push("[SYS] Cost data: unavailable in current run".to_string());
+    }
+
+    fn run_shell_command(&mut self, command: &str) {
+        if command.is_empty() {
+            self.body.push("[SYS] Usage: !<cmd>".to_string());
+            return;
+        }
+        self.body.push(format!("$ {command}"));
+        match Command::new("/bin/bash").arg("-lc").arg(command).output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                push_shell_output_lines(&mut self.body, "stdout", &stdout);
+                push_shell_output_lines(&mut self.body, "stderr", &stderr);
+                self.body.push(format!(
+                    "[SYS] Shell status: {}",
+                    output
+                        .status
+                        .code()
+                        .map_or_else(|| "signal".to_string(), |code| code.to_string())
+                ));
+            }
+            Err(error) => self.body.push(format!("[SYS] Shell error: {error}")),
+        }
     }
 
     pub(super) fn steering_items(&self) -> &[SteeringItem] {
@@ -864,6 +931,12 @@ fn assistant_content_line(line: impl AsRef<str>) -> String {
     format!("{ASSISTANT_CONTENT_PREFIX}{}", line.as_ref())
 }
 
+fn is_thinking_quote_line(line: &str) -> bool {
+    line.strip_prefix(ASSISTANT_CONTENT_PREFIX)
+        .unwrap_or(line)
+        .starts_with('>')
+}
+
 fn append_delta_segments(body: &mut Vec<String>, delta: &str, new_line: impl Fn(&str) -> String) {
     for segment in delta.split_inclusive('\n') {
         if segment.ends_with('\n') {
@@ -912,6 +985,20 @@ fn pasted_image_paths(text: &str) -> Vec<String> {
         })
         .map(str::to_string)
         .collect()
+}
+
+fn push_shell_output_lines(body: &mut Vec<String>, label: &str, output: &str) {
+    if output.trim().is_empty() {
+        return;
+    }
+    for line in output.lines().take(SHELL_OUTPUT_MAX_LINES) {
+        body.push(format!("[{label}] {line}"));
+    }
+    if output.lines().count() > SHELL_OUTPUT_MAX_LINES {
+        body.push(format!(
+            "[SYS] {label} truncated to {SHELL_OUTPUT_MAX_LINES} lines"
+        ));
+    }
 }
 
 fn compact_path(path: &str, max_chars: usize) -> String {

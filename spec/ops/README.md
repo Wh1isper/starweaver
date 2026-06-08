@@ -1,6 +1,6 @@
 # Operations, Durability, and Products
 
-The operations layer turns core runtime evidence and SDK contracts into validated releases, durable services, and product surfaces.
+The operations layer turns core runtime evidence and SDK contracts into validated releases, durable execution foundations, and product surfaces.
 
 ## Scope
 
@@ -8,11 +8,10 @@ The operations layer turns core runtime evidence and SDK contracts into validate
 - provider replay coverage
 - feature coverage matrix
 - shared session storage and stream protocol components
-- durable execution and service runtime
+- durable execution and service runtime contracts
 - OpenTelemetry GenAI observability
 - Langfuse-friendly OTLP export
-- CLI Product
-- workflow orchestration
+- CLI product
 - platform integration
 - release acceptance
 
@@ -26,38 +25,38 @@ flowchart TD
     sdk[SDK]
     session[Shared session contracts]
     stream[Shared stream contracts]
-    service[Durable service runtime]
-    cli[CLI Product]
+    storage[Shared SQLite storage]
+    cli[CLI product]
+    service[Future service adapters]
     observability[Observability]
-    workflow[Workflow orchestration]
     platform[Platform]
 
     specs --> ci
     replay --> ci
     sdk --> session
     sdk --> stream
+    session --> storage
+    stream --> storage
+    storage --> cli
     session --> cli
     stream --> cli
-    cli --> service
     session --> service
     stream --> service
-    service --> workflow
-    session --> workflow
-    stream --> workflow
+    storage --> service
     service --> observability
-    workflow --> observability
+    cli --> observability
     service --> platform
 ```
 
 ## Spec Map
 
 - `01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
-- `02-shared-execution-components.md` — shared session storage and stream protocol contracts for CLI and Claw
-- `03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, SSE, display-message replay, and storage contracts
-- `04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, AGUI-compatible rendering, launcher dispatch, and GitHub install/update flow
+- `02-shared-execution-components.md` — shared session storage and stream protocol contracts
+- `03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
+- `04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI compatibility adapters, launcher dispatch, and GitHub install/update flow
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
-- `06-workflow-orchestration.md` — Claw-owned workflow definitions, runs, node runs, events, toolset, schedules, and workflow console semantics
-- `07-ya-mono-parity-migration.md` — ya-mono parity, migration, API behavior, CLI parity, media fixes, and planned refactors
+- `07-ya-mono-parity-migration.md` — foundation and CLI parity reference map with CLI audit postponed
+- `09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
 ## Readiness Model
 

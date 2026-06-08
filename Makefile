@@ -4,15 +4,10 @@ AGENT_COVERAGE_MIN_LINES ?= 90
 SERVICE_COVERAGE_MIN_LINES ?= 80
 PUBLISH_RETRIES ?= 10
 PUBLISH_RETRY_DELAY_SECONDS ?= 30
-STARWEAVER_CLAW_SERVICE_VERSION ?= $(shell cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); print(next(pkg["version"] for pkg in data["packages"] if pkg["name"] == "starweaver-claw"))')
-STARWEAVER_CLAW_SERVICE_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || true)
-STARWEAVER_CLAW_SERVICE_BUILD ?= dev
-STARWEAVER_CLAW_SERVICE_IMAGE ?= starweaver-claw:dev
 CLI_MAKE_ARGS = $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 SW_MAKE_ARGS = $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 CLI_ARGS ?= $(if $(ARGS),$(ARGS),$(CLI_MAKE_ARGS))
 SW_ARGS ?= $(if $(ARGS),$(ARGS),$(SW_MAKE_ARGS))
-CLAW_WEB_DIR = crates/starweaver-claw/web
 
 ifneq ($(filter cli sw,$(firstword $(MAKECMDGOALS))),)
 %:
@@ -50,16 +45,6 @@ check: ## Run repository quality checks
 	@echo "Running clippy"
 	@cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
-.PHONY: claw-web-install
-claw-web-install: ## Install Claw web console dependencies
-	@echo "Installing Claw web console dependencies"
-	@cd $(CLAW_WEB_DIR) && pnpm install --frozen-lockfile --child-concurrency=1
-
-.PHONY: claw-web-check
-claw-web-check: claw-web-install ## Run Claw web console tests and production build
-	@echo "Checking Claw web console"
-	@cd $(CLAW_WEB_DIR) && pnpm test && pnpm build
-
 .PHONY: test
 test: ## Run workspace tests
 	@echo "Running Rust tests"
@@ -93,53 +78,6 @@ coverage-ci: coverage-core coverage-agent coverage-service ## Run grouped CI cov
 build: ## Build the workspace
 	@echo "Building Rust workspace"
 	@cargo build --workspace --all-targets --all-features --locked
-
-.PHONY: claw-db-migrate
-claw-db-migrate: ## Apply pending Starweaver Claw SQLite database migrations
-	@echo "Migrating Starweaver Claw database"
-	@cargo run --package starweaver-claw --bin starweaver-claw --locked -- migrate
-
-.PHONY: claw-dev-api
-claw-dev-api: claw-db-migrate ## Run the Starweaver Claw API locally for development
-	@echo "Starting Starweaver Claw API on http://127.0.0.1:9042"
-	@STARWEAVER_CLAW_WORKSPACE_BACKEND="$${STARWEAVER_CLAW_WORKSPACE_BACKEND:-local}" cargo run --package starweaver-claw --bin starweaver-claw --locked -- start --host 127.0.0.1 --port 9042
-
-.PHONY: claw-dev-web
-claw-dev-web: claw-web-install ## Run the Starweaver Claw web console locally for development
-	@echo "Starting Starweaver Claw web console on http://127.0.0.1:5173"
-	@cd $(CLAW_WEB_DIR) && pnpm dev
-
-.PHONY: claw-dev
-claw-dev: claw-web-install ## Run Starweaver Claw API and web console locally for development
-	@echo "Starting Starweaver Claw API and web console"
-	@set -e; \
-	api_pid=""; \
-	web_pid=""; \
-	cleanup() { \
-		[ -z "$$api_pid" ] || kill "$$api_pid" 2>/dev/null || true; \
-		[ -z "$$web_pid" ] || kill "$$web_pid" 2>/dev/null || true; \
-	}; \
-	trap cleanup INT TERM EXIT; \
-	$(MAKE) --no-print-directory claw-dev-api & \
-	api_pid=$$!; \
-	cd $(CLAW_WEB_DIR) && pnpm dev & \
-	web_pid=$$!; \
-	wait $$api_pid $$web_pid
-
-.PHONY: docker-build-claw
-docker-build-claw: ## Build the Starweaver Claw Docker image
-	@echo "Building Starweaver Claw Docker image"
-	@docker build \
-		--build-arg STARWEAVER_CLAW_SERVICE_VERSION="$(STARWEAVER_CLAW_SERVICE_VERSION)" \
-		--build-arg STARWEAVER_CLAW_SERVICE_COMMIT="$(STARWEAVER_CLAW_SERVICE_COMMIT)" \
-		--build-arg STARWEAVER_CLAW_SERVICE_BUILD="$(STARWEAVER_CLAW_SERVICE_BUILD)" \
-		--build-arg STARWEAVER_CLAW_SERVICE_IMAGE="$(STARWEAVER_CLAW_SERVICE_IMAGE)" \
-		-f Dockerfile.starweaver-claw -t "$(STARWEAVER_CLAW_SERVICE_IMAGE)" .
-
-.PHONY: docker-run-claw
-docker-run-claw: ## Run the Starweaver Claw Docker image locally
-	@echo "Running Starweaver Claw Docker image"
-	@docker run --rm -p 9042:9042 "$(STARWEAVER_CLAW_SERVICE_IMAGE)"
 
 .PHONY: replay-check
 replay-check: ## Run model replay and request-parameter compatibility tests
@@ -213,7 +151,7 @@ lint: docs-check ## Run pre-commit hooks and docs example checks across the repo
 	@pre-commit run -a
 
 .PHONY: ci
-ci: fmt-check claw-web-check check replay-check test scripts-check docs-check docs-build ## Run the same core checks as CI
+ci: fmt-check check replay-check test scripts-check docs-check docs-build ## Run the same core checks as CI
 
 .PHONY: ci-all
 ci-all: ci coverage-ci ## Run core CI plus coverage gates
@@ -223,7 +161,7 @@ cli: ## Run sw cli; no args renders TUI, pass args with `make cli -- -p "prompt"
 	@set -e; \
 	args='$(CLI_ARGS)'; \
 	case "$$args" in \
-		"") cargo run --package starweaver-cli --bin sw --locked -- cli tui ;; \
+		"") cargo run --package starweaver-cli --bin sw --locked -- cli ;; \
 		-p\ *) prompt=$${args#-p }; cargo run --package starweaver-cli --bin sw --locked -- cli -p "$$prompt" ;; \
 		--prompt\ *) prompt=$${args#--prompt }; cargo run --package starweaver-cli --bin sw --locked -- cli --prompt "$$prompt" ;; \
 		*) cargo run --package starweaver-cli --bin sw --locked -- cli $$args ;; \

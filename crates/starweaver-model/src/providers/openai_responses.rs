@@ -204,6 +204,8 @@ impl OpenAiResponsesAdapter {
 pub struct OpenAiResponsesStreamParser {
     text_started: bool,
     text: String,
+    reasoning_started: bool,
+    reasoning: String,
     final_seen: bool,
 }
 
@@ -235,29 +237,94 @@ impl OpenAiResponsesStreamParser {
                 }
             }
             Some("response.output_text.done") if self.text_started => {
-                stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
-                    index: 0,
-                }));
-                self.text_started = false;
+                self.end_text_part(&mut stream);
+            }
+            Some(
+                "response.reasoning_summary_text.delta"
+                | "response.reasoning_summary.delta"
+                | "response.reasoning.delta",
+            ) => {
+                self.push_reasoning_delta(event, &mut stream);
+            }
+            Some(
+                "response.reasoning_summary_text.done"
+                | "response.reasoning_summary.done"
+                | "response.reasoning.done",
+            ) if self.reasoning_started => {
+                self.end_reasoning_part(&mut stream);
             }
             Some("response.completed") => {
-                if self.text_started {
-                    stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
-                        index: 0,
-                    }));
-                    self.text_started = false;
-                }
+                self.end_open_parts(&mut stream);
                 let response = event
                     .get("response")
                     .map(OpenAiResponsesAdapter::parse_response)
                     .transpose()?
-                    .unwrap_or_else(|| text_response(self.text.clone()));
+                    .map_or_else(
+                        || text_response(self.text.clone()),
+                        |response| self.response_with_streamed_text_fallback(response),
+                    );
                 stream.push(ModelResponseStreamEvent::FinalResult(Box::new(response)));
                 self.final_seen = true;
             }
             _ => {}
         }
         Ok(stream)
+    }
+
+    fn push_reasoning_delta(&mut self, event: &Value, stream: &mut Vec<ModelResponseStreamEvent>) {
+        if !self.reasoning_started {
+            self.reasoning_started = true;
+            stream.push(ModelResponseStreamEvent::PartStart(crate::PartStart {
+                index: 1,
+                part_kind: "thinking".to_string(),
+            }));
+        }
+        if let Some(delta) = event
+            .get("delta")
+            .or_else(|| event.get("text"))
+            .and_then(Value::as_str)
+        {
+            self.reasoning.push_str(delta);
+            stream.push(ModelResponseStreamEvent::PartDelta(
+                crate::PartDelta::thinking(1, delta),
+            ));
+        }
+    }
+
+    fn end_text_part(&mut self, stream: &mut Vec<ModelResponseStreamEvent>) {
+        stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+            index: 0,
+            part_kind: Some("text".to_string()),
+        }));
+        self.text_started = false;
+    }
+
+    fn end_reasoning_part(&mut self, stream: &mut Vec<ModelResponseStreamEvent>) {
+        stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+            index: 1,
+            part_kind: Some("thinking".to_string()),
+        }));
+        self.reasoning_started = false;
+    }
+
+    fn end_open_parts(&mut self, stream: &mut Vec<ModelResponseStreamEvent>) {
+        if self.reasoning_started {
+            self.end_reasoning_part(stream);
+        }
+        if self.text_started {
+            self.end_text_part(stream);
+        }
+    }
+
+    fn response_with_streamed_text_fallback(&self, response: ModelResponse) -> ModelResponse {
+        if response.text_output().is_empty() && !self.text.is_empty() {
+            return text_response_with_streamed_parts_and_response_metadata(
+                self.reasoning.clone(),
+                self.text.clone(),
+                response,
+            );
+        }
+        response
     }
 
     /// Finish parsing buffered text.
@@ -275,12 +342,7 @@ impl OpenAiResponsesStreamParser {
             ));
         }
         let mut stream = Vec::new();
-        if self.text_started {
-            stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
-                index: 0,
-            }));
-            self.text_started = false;
-        }
+        self.end_open_parts(&mut stream);
         stream.push(ModelResponseStreamEvent::FinalResult(Box::new(
             text_response(self.text.clone()),
         )));
@@ -303,6 +365,43 @@ fn text_response(text: String) -> ModelResponse {
         run_id: None,
         conversation_id: None,
         metadata: serde_json::Map::new(),
+    }
+}
+
+fn text_response_with_streamed_parts_and_response_metadata(
+    reasoning: String,
+    text: String,
+    response: ModelResponse,
+) -> ModelResponse {
+    let signature = response
+        .provider
+        .as_ref()
+        .and_then(|provider| provider.response_id.clone());
+    let mut parts = response.parts;
+    if !reasoning.is_empty()
+        && !parts
+            .iter()
+            .any(|part| matches!(part, ModelResponsePart::Thinking { .. }))
+    {
+        parts.insert(
+            0,
+            ModelResponsePart::Thinking {
+                text: reasoning,
+                signature,
+            },
+        );
+    }
+    parts.push(ModelResponsePart::Text { text });
+    ModelResponse {
+        parts,
+        usage: response.usage,
+        model_name: response.model_name,
+        provider: response.provider,
+        finish_reason: response.finish_reason,
+        timestamp: response.timestamp,
+        run_id: response.run_id,
+        conversation_id: response.conversation_id,
+        metadata: response.metadata,
     }
 }
 

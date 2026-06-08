@@ -296,6 +296,140 @@ async fn protocol_client_streams_openai_responses_events() {
 }
 
 #[tokio::test]
+async fn protocol_client_uses_stream_text_when_openai_responses_completed_payload_is_empty() {
+    let http = CaptureHttpClient::with_stream_events(vec![
+        json!({"type": "response.output_text.delta", "delta": "Hello"}),
+        json!({"type": "response.output_text.delta", "delta": "!"}),
+        json!({"type": "response.output_text.done"}),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_stream_empty_output",
+                "model": "gpt-5.5",
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
+            }
+        }),
+    ]);
+
+    let mut config = HttpModelConfig::new("https://gateway.example.test/v1", "responses");
+    config.auth = Some(AuthConfig::Bearer {
+        token: "provider-token".to_string(),
+    });
+
+    let client = ProtocolModelClient::new(
+        "gateway-openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        config,
+        Arc::new(http),
+    );
+
+    let events = client
+        .request_stream(
+            history(),
+            None,
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let final_response = events
+        .iter()
+        .find_map(|event| match event {
+            starweaver_model::ModelResponseStreamEvent::FinalResult(response) => Some(response),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(final_response.text_output(), "Hello!");
+    assert_eq!(final_response.usage.total_tokens, 12);
+    assert_eq!(
+        final_response
+            .provider
+            .as_ref()
+            .unwrap()
+            .response_id
+            .as_deref(),
+        Some("resp_stream_empty_output")
+    );
+}
+
+#[tokio::test]
+async fn protocol_client_streams_openai_responses_reasoning_summary_events() {
+    let http = CaptureHttpClient::with_stream_events(vec![
+        json!({"type": "response.reasoning_summary_text.delta", "delta": "inspect"}),
+        json!({"type": "response.reasoning_summary_text.delta", "delta": " context"}),
+        json!({"type": "response.reasoning_summary_text.done"}),
+        json!({"type": "response.output_text.delta", "delta": "done"}),
+        json!({"type": "response.output_text.done"}),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_reasoning_stream",
+                "model": "gpt-5.5",
+                "status": "completed",
+                "output": [],
+                "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}
+            }
+        }),
+    ]);
+
+    let mut config = HttpModelConfig::new("https://gateway.example.test/v1", "responses");
+    config.auth = Some(AuthConfig::Bearer {
+        token: "provider-token".to_string(),
+    });
+
+    let client = ProtocolModelClient::new(
+        "gateway-openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        config,
+        Arc::new(http),
+    );
+
+    let events = client
+        .request_stream(
+            history(),
+            None,
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        starweaver_model::ModelResponseStreamEvent::PartStart(start)
+            if start.part_kind == "thinking"
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        starweaver_model::ModelResponseStreamEvent::PartDelta(delta)
+            if matches!(&delta.delta, starweaver_model::StreamDelta::Thinking { text } if text == "inspect")
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        starweaver_model::ModelResponseStreamEvent::PartEnd(end)
+            if end.part_kind.as_deref() == Some("thinking")
+    )));
+    let final_response = events
+        .iter()
+        .find_map(|event| match event {
+            starweaver_model::ModelResponseStreamEvent::FinalResult(response) => Some(response),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(final_response.text_output(), "done");
+    assert!(final_response.parts.iter().any(|part| matches!(
+        part,
+        starweaver_model::ModelResponsePart::Thinking { text, .. }
+            if text == "inspect context"
+    )));
+}
+
+#[tokio::test]
 async fn protocol_client_retries_transient_status_failures() {
     let http = SequenceHttpClient::new(vec![
         Err(ModelError::ProviderStatus {

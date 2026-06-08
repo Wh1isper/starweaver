@@ -161,10 +161,6 @@ install_component() {
       asset="starweaver-cli-$tag-$target"
       install_names="starweaver starweaver-cli sw"
       ;;
-    claw|starweaver-claw)
-      asset="starweaver-claw-$tag-$target"
-      install_names="starweaver-claw"
-      ;;
     *) fail "unknown component: $component" ;;
   esac
   ext="tar.gz"

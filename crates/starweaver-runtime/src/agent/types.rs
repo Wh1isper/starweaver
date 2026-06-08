@@ -5,6 +5,7 @@ use starweaver_model::{ModelError, ModelMessage};
 use thiserror::Error;
 
 use crate::{
+    capability::CapabilityOrderError,
     executor::{AgentExecutionNode, AgentExecutorError},
     run::{AgentRunResult, AgentRunState},
     usage::UsageLimitError,
@@ -37,6 +38,9 @@ pub enum AgentError {
     /// Capability hook failed.
     #[error("capability error: {0}")]
     Capability(String),
+    /// Capability ordering failed.
+    #[error(transparent)]
+    CapabilityOrder(#[from] CapabilityOrderError),
     /// Structured output parsing failed.
     #[error("structured output error: {0}")]
     StructuredOutput(String),

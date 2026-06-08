@@ -113,18 +113,6 @@ fn render_session_header_card(state: &InteractiveTuiState, width: usize) -> Vec<
                 text: state.model.clone(),
                 style: SegmentStyle::default(),
             },
-            StyledSegment {
-                text: "   ".to_string(),
-                style: SegmentStyle::dim(),
-            },
-            StyledSegment {
-                text: "/model".to_string(),
-                style: SegmentStyle::code(),
-            },
-            StyledSegment {
-                text: " to change".to_string(),
-                style: SegmentStyle::dim(),
-            },
         ],
         vec![
             StyledSegment {
@@ -150,8 +138,8 @@ fn render_startup_help() -> Vec<StyledLine> {
         startup_help_line("Enter", " - submit the current message"),
         startup_help_line("Tab", " - submit, or queue a draft while running"),
         startup_help_line("Ctrl-O", " - insert a newline"),
-        startup_help_line("Shift-Tab", " - switch ACT/PLAN mode"),
-        startup_help_line("?", " - show keyboard shortcuts"),
+        startup_help_line("/help", " - print available commands"),
+        startup_help_line("!<cmd>", " - execute a shell command"),
     ]
 }
 
@@ -249,7 +237,7 @@ const fn composer_placeholder(state: &InteractiveTuiState) -> &'static str {
 }
 
 pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
-    let mut lines = if state.help_panel_visible() {
+    let mut lines = if InteractiveTuiState::help_panel_visible() {
         render_help_panel(width)
     } else {
         Vec::new()
@@ -408,30 +396,20 @@ pub(super) fn render_shortcut_overlay(width: usize) -> Vec<StyledLine> {
 
 pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
     let command_rows = [
-        ("/help", "Show this help"),
-        ("/clear", "Clear output and history"),
-        ("/cost", "Show cost summary"),
-        ("/model", "Select model profile"),
-        ("/tasks", "Show background tasks and processes"),
-        ("/perf", "Show performance stats (STARWEAVER_PERF=1)"),
-        ("/session [id]", "List sessions or restore by ID"),
-        ("/paste-image", "Attach image from system clipboard"),
-        ("/dump [folder]", "Export session to folder"),
-        ("/load <folder>", "Load session from folder"),
-        ("/act", "Switch to ACT mode"),
-        ("/plan", "Switch to PLAN mode"),
+        ("/help", "Print this help in the transcript"),
+        ("/clear", "Clear output"),
+        ("/cost", "Show usage and cost summary"),
         (
             "/goal <task>",
             "Run task toward a verified goal until complete",
         ),
-        ("/exit", "Exit TUI"),
     ];
     let key_rows = [
-        ("Ctrl+C", "Cancel / double-press exit"),
+        ("Ctrl+C", "Interrupt active run or exit"),
         ("Ctrl+D", "Exit"),
-        ("Ctrl+V", "Attach image from clipboard"),
-        ("Tab", "Toggle input mode"),
-        ("Escape", "Toggle mouse mode"),
+        ("Ctrl+V", "Paste text or attach image paths"),
+        ("Tab", "Send or queue a draft while running"),
+        ("Ctrl+O", "Insert newline"),
         ("Up/Down, Ctrl+P/N", "Browse history"),
         ("PageUp/PageDown", "Scroll output"),
     ];

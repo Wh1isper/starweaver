@@ -13,7 +13,7 @@ This guide covers local development for Starweaver. Product and architecture dec
 - `crates/starweaver-environment` — environment providers, file/shell policies, resources, and environment state snapshots.
 - `crates/starweaver-session` — shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
 - `crates/starweaver-stream` — shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
-- `crates/starweaver-claw` — durable orchestration host for concrete session, stream, service, and coordinator adapters.
+- `crates/starweaver-storage` — SQLite migrations, durable session storage, replay event storage, stream archives, and migration status reporting.
 - `crates/starweaver-cli` — command-line entry point.
 - `docs/` — mdBook user documentation with runnable Rust examples.
 - `spec/` — architecture and product specs.
