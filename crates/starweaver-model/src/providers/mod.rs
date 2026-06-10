@@ -11,7 +11,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Map, Value};
 
 use crate::{
-    message::{ContentPart, FinishReason, ModelMessage, ModelRequestPart, ToolArguments},
+    message::{ContentPart, FinishReason, Metadata, ModelMessage, ModelRequestPart, ToolArguments},
     settings::ToolChoice,
     transport::MaxTokensParameter,
     ModelSettings,
@@ -187,7 +187,41 @@ fn bedrock_media_format(media_type: &str) -> &str {
         .unwrap_or(media_type)
 }
 
-fn collect_system_and_non_system(messages: &[ModelMessage]) -> (Vec<String>, Vec<&ModelMessage>) {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SystemInstructionPart {
+    pub(crate) text: String,
+    pub(crate) dynamic: bool,
+}
+
+impl SystemInstructionPart {
+    const fn request_level(text: String) -> Self {
+        Self {
+            text,
+            dynamic: false,
+        }
+    }
+
+    const fn system_prompt(text: String) -> Self {
+        Self {
+            text,
+            dynamic: false,
+        }
+    }
+
+    fn instruction(text: String, metadata: &Metadata) -> Self {
+        Self {
+            text,
+            dynamic: metadata
+                .get("starweaver_instruction_dynamic")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }
+    }
+}
+
+pub(crate) fn collect_system_parts_and_non_system(
+    messages: &[ModelMessage],
+) -> (Vec<SystemInstructionPart>, Vec<&ModelMessage>) {
     let mut system = Vec::new();
     let mut rest = Vec::new();
 
@@ -196,14 +230,20 @@ fn collect_system_and_non_system(messages: &[ModelMessage]) -> (Vec<String>, Vec
             ModelMessage::Request(request) => {
                 if let Some(request_instructions) = request.instructions.as_ref() {
                     if !request_instructions.trim().is_empty() {
-                        system.push(request_instructions.clone());
+                        system.push(SystemInstructionPart::request_level(
+                            request_instructions.clone(),
+                        ));
                     }
                 }
                 let mut has_non_system = false;
                 for part in &request.parts {
                     match part {
-                        ModelRequestPart::SystemPrompt { text, .. }
-                        | ModelRequestPart::Instruction { text, .. } => system.push(text.clone()),
+                        ModelRequestPart::SystemPrompt { text, .. } => {
+                            system.push(SystemInstructionPart::system_prompt(text.clone()));
+                        }
+                        ModelRequestPart::Instruction { text, metadata } => {
+                            system.push(SystemInstructionPart::instruction(text.clone(), metadata));
+                        }
                         _ => has_non_system = true,
                     }
                 }
@@ -216,6 +256,14 @@ fn collect_system_and_non_system(messages: &[ModelMessage]) -> (Vec<String>, Vec
     }
 
     (system, rest)
+}
+
+fn collect_system_and_non_system(messages: &[ModelMessage]) -> (Vec<String>, Vec<&ModelMessage>) {
+    let (system_parts, rest) = collect_system_parts_and_non_system(messages);
+    (
+        system_parts.into_iter().map(|part| part.text).collect(),
+        rest,
+    )
 }
 
 fn usage_from_openai(value: &Value) -> starweaver_core::Usage {
@@ -343,6 +391,15 @@ fn apply_common_settings_inner(
         if let Some(top_p) = settings.top_p {
             target.insert("top_p".to_string(), json!(top_p));
         }
+        if let Some(presence_penalty) = settings.presence_penalty {
+            target.insert("presence_penalty".to_string(), json!(presence_penalty));
+        }
+        if let Some(frequency_penalty) = settings.frequency_penalty {
+            target.insert("frequency_penalty".to_string(), json!(frequency_penalty));
+        }
+        if !settings.logit_bias.is_empty() {
+            target.insert("logit_bias".to_string(), json!(settings.logit_bias));
+        }
         if !settings.stop_sequences.is_empty() {
             target.insert("stop".to_string(), json!(settings.stop_sequences));
         }
@@ -372,9 +429,9 @@ fn apply_common_settings_inner(
 
 pub(crate) fn openai_chat_tool_choice(choice: &ToolChoice) -> Value {
     match choice {
-        ToolChoice::Auto => json!("auto"),
+        ToolChoice::Auto | ToolChoice::ToolOrOutput { .. } => json!("auto"),
         ToolChoice::None => json!("none"),
-        ToolChoice::Required => json!("required"),
+        ToolChoice::Required | ToolChoice::Tools { .. } => json!("required"),
         ToolChoice::Tool { name } => json!({
             "type": "function",
             "function": {"name": name}
@@ -387,11 +444,28 @@ pub(crate) fn openai_responses_tool_choice(choice: &ToolChoice) -> Value {
         ToolChoice::Auto => json!("auto"),
         ToolChoice::None => json!("none"),
         ToolChoice::Required => json!("required"),
+        ToolChoice::Tools { names } => json!({
+            "type": "allowed_tools",
+            "mode": "required",
+            "tools": function_tool_descriptors(names),
+        }),
+        ToolChoice::ToolOrOutput { function_tools } => json!({
+            "type": "allowed_tools",
+            "mode": "auto",
+            "tools": function_tool_descriptors(function_tools),
+        }),
         ToolChoice::Tool { name } => json!({
             "type": "function",
             "name": name,
         }),
     }
+}
+
+fn function_tool_descriptors(names: &[String]) -> Vec<Value> {
+    names
+        .iter()
+        .map(|name| json!({"type": "function", "name": name}))
+        .collect()
 }
 
 fn parse_tool_call_arguments(value: &Value) -> ToolArguments {

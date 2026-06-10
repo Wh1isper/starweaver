@@ -4,9 +4,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use starweaver_context::{ModelCapability, ModelConfig};
 use starweaver_model::{
-    get_model_config, get_model_settings, ModelAdapter, ModelPresetError, ModelSettings,
-    ProfileOverrideModel,
+    get_model_config, get_model_settings, ModelAdapter, ModelConfigPresetData, ModelError,
+    ModelPresetError, ModelSettings, ProfileOverrideModel,
 };
 use starweaver_runtime::{
     AgentRuntimePolicy, CapabilitySpec, OutputPolicy, OutputSchema, UsageLimits,
@@ -505,6 +506,21 @@ pub enum AgentSpecError {
     /// Spec content could not be parsed.
     #[error("invalid agent spec: {0}")]
     Invalid(String),
+    /// OAuth model id used an invalid `oauth@provider:model` form.
+    #[error("invalid OAuth model id {model_id:?}: expected oauth@provider:model")]
+    InvalidOAuthModel {
+        /// Invalid model id.
+        model_id: String,
+    },
+    /// OAuth-backed model construction failed.
+    #[error("failed to resolve OAuth model id {model_id:?}: {source}")]
+    OAuthModel {
+        /// Requested model id.
+        model_id: String,
+        /// Underlying model construction error.
+        #[source]
+        source: ModelError,
+    },
     /// Model settings preset could not be resolved.
     #[error(transparent)]
     ModelPreset(#[from] ModelPresetError),
@@ -657,8 +673,11 @@ impl AgentSpecRegistry {
         self
     }
 
-    fn model(&self, id: &str) -> Option<Arc<dyn ModelAdapter>> {
-        self.models.get(id).cloned()
+    fn model(&self, id: &str) -> Result<Option<Arc<dyn ModelAdapter>>, AgentSpecError> {
+        if let Some(model) = self.models.get(id).cloned() {
+            return Ok(Some(model));
+        }
+        infer_oauth_model_from_id(id)
     }
 
     fn toolset(&self, key: &str) -> Option<DynToolset> {
@@ -676,6 +695,31 @@ impl AgentSpecRegistry {
             self.toolsets_by_key.insert(id.to_string(), toolset.clone());
         }
     }
+}
+
+fn infer_oauth_model_from_id(
+    model_id: &str,
+) -> Result<Option<Arc<dyn ModelAdapter>>, AgentSpecError> {
+    let Some(rest) = model_id.strip_prefix("oauth@") else {
+        return Ok(None);
+    };
+    let Some((provider_name, model_name)) = rest.split_once(':') else {
+        return Err(AgentSpecError::InvalidOAuthModel {
+            model_id: model_id.to_string(),
+        });
+    };
+    if provider_name.is_empty() || model_name.is_empty() {
+        return Err(AgentSpecError::InvalidOAuthModel {
+            model_id: model_id.to_string(),
+        });
+    }
+    let model = starweaver_oauth_provider::infer_oauth_model(provider_name, model_name).map_err(
+        |source| AgentSpecError::OAuthModel {
+            model_id: model_id.to_string(),
+            source,
+        },
+    )?;
+    Ok(Some(Arc::new(model)))
 }
 
 impl AgentSpec {
@@ -783,7 +827,7 @@ impl AgentSpec {
             .map(|model| model.model_id.as_str())
             .ok_or_else(|| AgentSpecError::UnknownModel("<missing>".to_string()))?;
         let mut model = registry
-            .model(model_id)
+            .model(model_id)?
             .ok_or_else(|| AgentSpecError::UnknownModel(model_id.to_string()))?;
         let retry = self.resolved_retry(registry)?;
         let model_config = self.resolved_model_config()?;
@@ -801,14 +845,10 @@ impl AgentSpec {
             builder = builder.model_settings(settings);
         }
         if let Some(model_config) = model_config.as_ref() {
-            builder = builder.context_window(u64::from(model_config.context_window));
+            builder = builder.model_config(context_model_config_from_preset(model_config));
         }
         if let Some(limits) = self.preset.usage_limits.clone() {
             builder = builder.usage_limits(limits);
-        } else if let Some(model_config) = model_config.as_ref() {
-            builder = builder.usage_limits(
-                UsageLimits::new().with_total_tokens_limit(u64::from(model_config.context_window)),
-            );
         }
         if let Some(tool_retries) = retry.tool_retries {
             builder = builder.tool_retries(tool_retries);
@@ -1119,6 +1159,34 @@ const fn default_true() -> bool {
 
 fn default_skills_dir() -> String {
     "skills".to_string()
+}
+
+fn context_model_config_from_preset(preset: &ModelConfigPresetData) -> ModelConfig {
+    let mut capabilities = std::collections::BTreeSet::new();
+    if preset.profile.supports_image_input {
+        capabilities.insert(ModelCapability::Vision);
+    }
+    if preset.profile.supports_video_input {
+        capabilities.insert(ModelCapability::VideoUnderstanding);
+    }
+    if preset.profile.supports_audio_input {
+        capabilities.insert(ModelCapability::AudioUnderstanding);
+    }
+    if preset.profile.supports_document_input {
+        capabilities.insert(ModelCapability::DocumentUnderstanding);
+    }
+    ModelConfig {
+        context_window: Some(u64::from(preset.context_window)),
+        max_images: usize::try_from(preset.max_images).unwrap_or(usize::MAX),
+        max_videos: usize::try_from(preset.max_videos).unwrap_or(usize::MAX),
+        support_gif: preset.supports_gif,
+        split_large_images: preset.split_large_images,
+        image_split_max_height: usize::try_from(preset.image_split_max_height)
+            .unwrap_or(usize::MAX),
+        image_split_overlap: usize::try_from(preset.image_split_overlap).unwrap_or(usize::MAX),
+        capabilities,
+        ..ModelConfig::default()
+    }
 }
 
 /// Convenience preset for plain text output.

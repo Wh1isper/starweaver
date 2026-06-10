@@ -2,6 +2,7 @@
 //! CLI-first local product surface for Starweaver.
 
 mod args;
+mod clipboard;
 mod config;
 mod environment;
 mod error;
@@ -9,9 +10,11 @@ pub mod launcher;
 mod local_store;
 mod oauth;
 mod profiles;
+mod prompt_input;
 mod rpc;
 mod runner;
 mod service;
+mod slash_commands;
 mod tui;
 mod update_check;
 
@@ -22,6 +25,7 @@ pub use config::{CliConfig, ConfigResolver};
 pub use error::{CliError, CliResult};
 pub use local_store::{LocalStore, TrimReport};
 pub use service::CliService;
+pub use slash_commands::SlashCommandDefinition;
 
 /// Run the CLI from process arguments.
 pub fn run_from_env() -> CliResult<()> {
@@ -264,6 +268,12 @@ model_cfg = "gpt5_270k"
 base_url = "https://gateway.example/v1"
 max_tokens_parameter = "omit"
 
+[oauth_refresh]
+enabled = true
+interval_seconds = 42
+failure_retry_seconds = 7
+refresh_on_startup = false
+
 [env]
 HOMELAB_API_KEY = "test-key"
 "#,
@@ -280,6 +290,22 @@ HOMELAB_API_KEY = "test-key"
             .unwrap(),
             "omit\n"
         );
+        assert_eq!(
+            output(
+                temp.path(),
+                &["config", "get", "oauth_refresh.interval_seconds"]
+            )
+            .unwrap(),
+            "42\n"
+        );
+        assert_eq!(
+            output(
+                temp.path(),
+                &["config", "get", "oauth_refresh.refresh_on_startup"]
+            )
+            .unwrap(),
+            "false\n"
+        );
         let profiles = output(temp.path(), &["profile", "list"]).unwrap();
         assert!(profiles.contains("default_model"));
         assert!(profiles.contains("codex-subs"));
@@ -288,6 +314,64 @@ HOMELAB_API_KEY = "test-key"
         assert!(default_profile.contains("settings_preset: openai_responses_high"));
         assert!(default_profile.contains("config_preset: gpt5_270k"));
         assert!(default_profile.contains("# source: config"));
+    }
+
+    #[test]
+    fn configured_slash_commands_layer_aliases_and_redact_compatibility_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        let project = temp.path().join("project/.starweaver");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            r#"
+[commands.review]
+description = "Global review"
+aliases = ["rv", "bad alias", "model"]
+prompt = "global secret prompt"
+
+[commands.other]
+aliases = ["review"]
+prompt = "Other command"
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("config.toml"),
+            r#"
+[commands.review]
+description = "Project review"
+aliases = ["pr"]
+prompt = "Project review prompt"
+
+[commands.bad_name]
+prompt = "ignored because underscore is valid"
+
+[commands."bad name"]
+prompt = "ignored invalid name"
+"#,
+        )
+        .unwrap();
+
+        let cli = args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let review = config.slash_commands.get("review").unwrap();
+        assert_eq!(review.prompt, "Project review prompt");
+        assert_eq!(review.aliases, vec!["pr".to_string()]);
+        assert!(config.slash_commands.contains_key("pr"));
+        assert!(!config.slash_commands.contains_key("rv"));
+        assert!(!config.slash_commands.contains_key("bad alias"));
+        assert!(!config.slash_commands.contains_key("model"));
+        assert!(config.slash_commands.contains_key("bad_name"));
+        assert!(!config.slash_commands.contains_key("bad name"));
+        let compatibility =
+            output(temp.path(), &["config", "get", "metadata.compatibility"]).unwrap();
+        assert!(!compatibility.contains("global secret prompt"));
+        assert!(!compatibility.contains("Project review prompt"));
+        assert!(!compatibility.contains("commands"));
     }
 
     #[test]
@@ -350,6 +434,65 @@ You are a helper.
         )
         .unwrap();
         assert!(run.contains("status=completed"));
+    }
+
+    #[test]
+    fn headless_run_expands_configured_slash_commands() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            r#"
+[general]
+model = "local_echo"
+
+[commands.review]
+description = "Review the current changes"
+aliases = ["rv"]
+prompt = "Review carefully."
+"#,
+        )
+        .unwrap();
+
+        let run = output(
+            temp.path(),
+            &[
+                "-p",
+                "/rv staged diff",
+                "--profile",
+                "default_model",
+                "--output",
+                "text",
+            ],
+        )
+        .unwrap();
+        assert!(run.contains("local echo: Review carefully."));
+        assert!(run.contains("User instruction: staged diff"));
+
+        let sessions = output(temp.path(), &["session", "list"]).unwrap();
+        let session: serde_json::Value =
+            serde_json::from_str(sessions.lines().next().unwrap()).unwrap();
+        let session_id = session["session_id"].as_str().unwrap();
+        let cli = args::parse([
+            "starweaver-cli".to_string(),
+            "session".to_string(),
+            "list".to_string(),
+        ])
+        .unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let store = LocalStore::open(&config).unwrap();
+        let run_id = session["head_run_id"].as_str().unwrap();
+        let run_record = store.load_run(session_id, run_id).unwrap();
+        let run_value = serde_json::to_value(&run_record).unwrap();
+        assert_eq!(
+            run_value["input"][0]["text"],
+            "Review carefully.\n\nUser instruction: staged diff"
+        );
+        assert_eq!(run_value["metadata"]["cli.slash_command.name"], "review");
+        assert_eq!(run_value["metadata"]["cli.slash_command.invoked"], "rv");
     }
 
     #[test]

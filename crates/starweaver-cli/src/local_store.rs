@@ -1,6 +1,7 @@
 //! Local `SQLite` and file-store persistence for CLI sessions.
 
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -13,6 +14,9 @@ use serde_json::Value;
 use starweaver_agent::ResumableState;
 use starweaver_core::{CheckpointId, ConversationId, RunId, SessionId};
 use starweaver_environment::EnvironmentState;
+use starweaver_model::{
+    ModelMessage, ModelRequest, ModelRequestPart, ModelResponsePart, ToolReturnPart,
+};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, CheckpointRef, DeferredToolRecord,
@@ -562,7 +566,8 @@ impl LocalStore {
         let Some(run_id) = run_id else {
             return Ok(Some(self.load_session(session_id)?.state));
         };
-        self.conn
+        let mut state = self
+            .conn
             .query_row(
                 "SELECT state_json FROM context_states WHERE session_id = ?1 AND run_id = ?2",
                 params![session_id, run_id],
@@ -570,7 +575,138 @@ impl LocalStore {
             )
             .optional()?
             .map(|json| serde_json::from_str(&json).map_err(CliError::from))
-            .transpose()
+            .transpose()?;
+        if let Some(state) = state.as_mut() {
+            self.inject_resolved_hitl_tool_returns(session_id, run_id, state)?;
+        }
+        Ok(state)
+    }
+
+    fn inject_resolved_hitl_tool_returns(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        state: &mut ResumableState,
+    ) -> CliResult<()> {
+        let mut existing_returns = existing_resume_tool_return_ids(&state.message_history);
+        let tool_call_order = latest_tool_call_order(&state.message_history);
+        let latest_tool_call_ids = tool_call_order.iter().cloned().collect::<BTreeSet<_>>();
+        let approvals = self.list_approvals(Some(session_id), Some(run_id))?;
+        let deferred_tools = self.list_deferred_tools(Some(session_id), Some(run_id))?;
+        let pending_approvals = approvals
+            .iter()
+            .filter(|approval| {
+                approval.status == ApprovalStatus::Pending
+                    && !existing_returns.contains(&approval.action_id)
+            })
+            .map(|approval| approval.approval_id.clone())
+            .collect::<Vec<_>>();
+        let pending_deferred = deferred_tools
+            .iter()
+            .filter(|deferred| {
+                deferred_status_is_unresolved(deferred.status)
+                    && !existing_returns.contains(&deferred.tool_call_id)
+            })
+            .map(|deferred| deferred.deferred_id.clone())
+            .collect::<Vec<_>>();
+        if !pending_approvals.is_empty() || !pending_deferred.is_empty() {
+            return Err(pending_hitl_resume_error(
+                run_id,
+                &pending_approvals,
+                &pending_deferred,
+            ));
+        }
+
+        let mut resolved = Vec::<(String, ModelRequestPart)>::new();
+        for tool_return in self.list_run_tool_returns(session_id, run_id)? {
+            if !latest_tool_call_ids.contains(&tool_return.tool_call_id)
+                || tool_return_control_flow(&tool_return).is_some()
+                || existing_returns.contains(&tool_return.tool_call_id)
+            {
+                continue;
+            }
+            existing_returns.insert(tool_return.tool_call_id.clone());
+            resolved.push((
+                tool_return.tool_call_id.clone(),
+                ModelRequestPart::ToolReturn(tool_return),
+            ));
+        }
+        for approval in approvals {
+            if existing_returns.contains(&approval.action_id) {
+                continue;
+            }
+            if let Some(tool_return) = approval_tool_return(&approval) {
+                existing_returns.insert(approval.action_id.clone());
+                resolved.push((
+                    approval.action_id.clone(),
+                    ModelRequestPart::ToolReturn(tool_return),
+                ));
+            }
+        }
+        for deferred in deferred_tools {
+            if existing_returns.contains(&deferred.tool_call_id) {
+                continue;
+            }
+            if let Some(tool_return) = deferred_tool_return(&deferred) {
+                existing_returns.insert(deferred.tool_call_id.clone());
+                resolved.push((
+                    deferred.tool_call_id.clone(),
+                    ModelRequestPart::ToolReturn(tool_return),
+                ));
+            }
+        }
+        if resolved.is_empty() {
+            return Ok(());
+        }
+        resolved.sort_by_key(|(tool_call_id, _)| {
+            tool_call_order
+                .iter()
+                .position(|known| known == tool_call_id)
+                .unwrap_or(usize::MAX)
+        });
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "starweaver.resume.hitl_results".to_string(),
+            serde_json::json!(true),
+        );
+        metadata.insert(
+            "starweaver.resume.source_run_id".to_string(),
+            serde_json::json!(run_id),
+        );
+        state
+            .message_history
+            .push(ModelMessage::Request(ModelRequest {
+                parts: resolved.into_iter().map(|(_, part)| part).collect(),
+                timestamp: Some(Utc::now()),
+                instructions: None,
+                run_id: Some(RunId::from_string(run_id)),
+                conversation_id: state.conversation_id.clone(),
+                metadata,
+            }));
+        Ok(())
+    }
+
+    fn list_run_tool_returns(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> CliResult<Vec<ToolReturnPart>> {
+        let mut stmt = self.conn.prepare(
+            r"
+            SELECT record_json FROM raw_stream_records
+            WHERE session_id = ?1 AND run_id = ?2 AND kind = 'tool_return'
+            ORDER BY sequence_no
+            ",
+        )?;
+        let rows = stmt.query_map(params![session_id, run_id], |row| row.get::<_, String>(0))?;
+        let mut tool_returns = Vec::new();
+        for json in rows.collect::<Result<Vec<_>, _>>()? {
+            let record: AgentStreamRecord = serde_json::from_str(&json)?;
+            if let AgentStreamEvent::ToolReturn { tool_return, .. } = record.event {
+                tool_returns.push(tool_return);
+            }
+        }
+        Ok(tool_returns)
     }
 
     /// List session summaries.
@@ -963,6 +1099,205 @@ impl LocalStore {
     }
 }
 
+fn existing_resume_tool_return_ids(history: &[ModelMessage]) -> BTreeSet<String> {
+    let Some(last_tool_response_index) = history.iter().rposition(|message| match message {
+        ModelMessage::Response(response) => response
+            .parts
+            .iter()
+            .any(|part| matches!(part, ModelResponsePart::ToolCall(_))),
+        ModelMessage::Request(_) => false,
+    }) else {
+        return BTreeSet::new();
+    };
+    history
+        .iter()
+        .skip(last_tool_response_index.saturating_add(1))
+        .filter_map(|message| match message {
+            ModelMessage::Request(request) => Some(&request.parts),
+            ModelMessage::Response(_) => None,
+        })
+        .flat_map(|parts| parts.iter())
+        .filter_map(|part| match part {
+            ModelRequestPart::ToolReturn(tool_return) => Some(tool_return.tool_call_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn latest_tool_call_order(history: &[ModelMessage]) -> Vec<String> {
+    history
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            ModelMessage::Response(response) => Some(
+                response
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        ModelResponsePart::ToolCall(call) => Some(call.id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            ModelMessage::Request(_) => None,
+        })
+        .unwrap_or_default()
+}
+
+fn tool_return_control_flow(tool_return: &ToolReturnPart) -> Option<&str> {
+    tool_return
+        .metadata
+        .get("control_flow")
+        .and_then(serde_json::Value::as_str)
+}
+
+const fn deferred_status_is_unresolved(status: ExecutionStatus) -> bool {
+    matches!(
+        status,
+        ExecutionStatus::Pending | ExecutionStatus::Running | ExecutionStatus::Waiting
+    )
+}
+
+fn pending_hitl_resume_error(
+    run_id: &str,
+    pending_approvals: &[String],
+    pending_deferred: &[String],
+) -> CliError {
+    let mut details = Vec::new();
+    if !pending_approvals.is_empty() {
+        details.push(format!("approvals={}", pending_approvals.join(",")));
+    }
+    if !pending_deferred.is_empty() {
+        details.push(format!("deferred_tools={}", pending_deferred.join(",")));
+    }
+    CliError::Usage(format!(
+        "cannot resume run {run_id}: pending HITL decisions remain ({})",
+        details.join("; ")
+    ))
+}
+
+fn approval_tool_return(record: &ApprovalRecord) -> Option<ToolReturnPart> {
+    let decision = record.decision.as_ref();
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        "control_flow_resolution".to_string(),
+        serde_json::json!("approval"),
+    );
+    metadata.insert(
+        "approval_id".to_string(),
+        serde_json::json!(record.approval_id),
+    );
+    metadata.insert(
+        "approval_status".to_string(),
+        serde_json::json!(record.status),
+    );
+    if let Some(decision) = decision {
+        metadata.insert("decision".to_string(), serde_json::json!(decision));
+    }
+    match record.status {
+        ApprovalStatus::Approved => {
+            let mut content = serde_json::json!({
+                "approved": true,
+                "approval_id": record.approval_id,
+                "tool_name": record.action_name,
+                "request": record.request,
+            });
+            if let Some(reason) = decision.and_then(|decision| decision.reason.as_ref()) {
+                content["reason"] = serde_json::json!(reason);
+            }
+            Some(
+                ToolReturnPart::new(
+                    record.action_id.clone(),
+                    record.action_name.clone(),
+                    content,
+                )
+                .with_metadata(metadata),
+            )
+        }
+        ApprovalStatus::Denied | ApprovalStatus::Expired | ApprovalStatus::Cancelled => {
+            let reason = decision
+                .and_then(|decision| decision.reason.clone())
+                .unwrap_or_else(|| format!("approval {}", approval_status_name(record.status)));
+            Some(
+                ToolReturnPart::new(
+                    record.action_id.clone(),
+                    record.action_name.clone(),
+                    serde_json::json!({
+                        "approved": false,
+                        "approval_id": record.approval_id,
+                        "tool_name": record.action_name,
+                        "reason": reason,
+                    }),
+                )
+                .with_error(true)
+                .with_metadata(metadata),
+            )
+        }
+        ApprovalStatus::Pending => None,
+    }
+}
+
+fn deferred_tool_return(record: &DeferredToolRecord) -> Option<ToolReturnPart> {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        "control_flow_resolution".to_string(),
+        serde_json::json!("deferred"),
+    );
+    metadata.insert(
+        "deferred_id".to_string(),
+        serde_json::json!(record.deferred_id),
+    );
+    metadata.insert(
+        "deferred_status".to_string(),
+        serde_json::json!(record.status),
+    );
+    match record.status {
+        ExecutionStatus::Completed => Some(
+            ToolReturnPart::new(
+                record.tool_call_id.clone(),
+                record.tool_name.clone(),
+                record.response.clone(),
+            )
+            .with_metadata(metadata),
+        ),
+        ExecutionStatus::Failed | ExecutionStatus::Cancelled => Some(
+            ToolReturnPart::new(
+                record.tool_call_id.clone(),
+                record.tool_name.clone(),
+                if record.response.is_null() {
+                    serde_json::json!({"error": deferred_status_name(record.status)})
+                } else {
+                    record.response.clone()
+                },
+            )
+            .with_error(true)
+            .with_metadata(metadata),
+        ),
+        ExecutionStatus::Pending | ExecutionStatus::Running | ExecutionStatus::Waiting => None,
+    }
+}
+
+const fn approval_status_name(status: ApprovalStatus) -> &'static str {
+    match status {
+        ApprovalStatus::Pending => "pending",
+        ApprovalStatus::Approved => "approved",
+        ApprovalStatus::Denied => "denied",
+        ApprovalStatus::Expired => "expired",
+        ApprovalStatus::Cancelled => "cancelled",
+    }
+}
+
+const fn deferred_status_name(status: ExecutionStatus) -> &'static str {
+    match status {
+        ExecutionStatus::Pending => "pending",
+        ExecutionStatus::Running => "running",
+        ExecutionStatus::Waiting => "waiting",
+        ExecutionStatus::Completed => "completed",
+        ExecutionStatus::Failed => "failed",
+        ExecutionStatus::Cancelled => "cancelled",
+    }
+}
+
 fn add_column_if_missing(
     conn: &Connection,
     table: &str,
@@ -1306,6 +1641,7 @@ const fn raw_stream_kind(event: &AgentStreamEvent) -> &'static str {
         AgentStreamEvent::OutputRetry { .. } => "output_retry",
         AgentStreamEvent::SteeringGuard { .. } => "steering_guard",
         AgentStreamEvent::RunComplete { .. } => "run_complete",
+        AgentStreamEvent::RunFailed { .. } => "run_failed",
     }
 }
 

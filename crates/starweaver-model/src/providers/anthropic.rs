@@ -11,8 +11,8 @@ use crate::{
         ModelResponsePart, ProviderInfo, ToolCallPart, ToolReturnPart,
     },
     providers::{
-        collect_system_and_non_system, insert_optional_description, provider_tool_parameters,
-        usage_from_named,
+        collect_system_parts_and_non_system, insert_optional_description, provider_tool_parameters,
+        usage_from_named, SystemInstructionPart,
     },
     ModelError, ModelSettings,
 };
@@ -32,7 +32,7 @@ impl AnthropicMessagesAdapter {
         settings: Option<&ModelSettings>,
         tools: &[ToolDefinition],
     ) -> Result<Value, ModelError> {
-        let (system, rest) = collect_system_and_non_system(messages);
+        let (system, rest) = collect_system_parts_and_non_system(messages);
         let mut wire_messages = Vec::new();
 
         for message in rest {
@@ -98,11 +98,11 @@ impl AnthropicMessagesAdapter {
             "max_tokens".to_string(),
             json!(settings.and_then(|s| s.max_tokens).unwrap_or(1024)),
         );
-        if !system.is_empty() {
-            request.insert("system".to_string(), json!(system.join("\n\n")));
+        if let Some(system) = anthropic_system_value(&system, settings) {
+            request.insert("system".to_string(), system);
         }
         apply_anthropic_settings(&mut request, settings);
-        append_anthropic_tools(&mut request, tools);
+        append_anthropic_tools(&mut request, tools, settings);
         Ok(Value::Object(request))
     }
 
@@ -179,6 +179,40 @@ impl AnthropicMessagesAdapter {
             metadata: serde_json::Map::new(),
         })
     }
+}
+
+fn anthropic_system_value(
+    system: &[SystemInstructionPart],
+    settings: Option<&ModelSettings>,
+) -> Option<Value> {
+    if system.is_empty() {
+        return None;
+    }
+    let Some(ttl) = anthropic_cache_ttl(settings, "anthropic_cache_instructions") else {
+        return Some(json!(system
+            .iter()
+            .map(|part| part.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")));
+    };
+
+    let mut blocks = system
+        .iter()
+        .map(|part| json!({"type": "text", "text": part.text}))
+        .collect::<Vec<_>>();
+    if let Some(index) = instruction_cache_index(system) {
+        blocks[index]["cache_control"] = anthropic_cache_control(ttl);
+    }
+    Some(Value::Array(blocks))
+}
+
+fn instruction_cache_index(system: &[SystemInstructionPart]) -> Option<usize> {
+    if let Some(first_dynamic) = system.iter().position(|part| part.dynamic) {
+        return (0..first_dynamic)
+            .rev()
+            .find(|index| !system[*index].dynamic);
+    }
+    system.len().checked_sub(1)
 }
 
 fn anthropic_content_from_content(content: &[ContentPart]) -> Result<Vec<Value>, ModelError> {
@@ -281,6 +315,15 @@ fn apply_anthropic_settings(
                 json!(thinking.budget_tokens.unwrap_or(1024)),
             );
         }
+        if thinking_mode == "adaptive" {
+            payload.insert("display".to_string(), json!("summarized"));
+            if !thinking.effort.is_empty() {
+                request.insert(
+                    "output_config".to_string(),
+                    json!({"effort": thinking.effort}),
+                );
+            }
+        }
         request.insert("thinking".to_string(), Value::Object(payload));
     }
     if let Some(temperature) = settings.temperature {
@@ -295,28 +338,75 @@ fn apply_anthropic_settings(
     if !settings.stop_sequences.is_empty() {
         request.insert("stop_sequences".to_string(), json!(settings.stop_sequences));
     }
+    if let Some(options) = settings
+        .provider_options
+        .as_ref()
+        .and_then(Value::as_object)
+    {
+        request.extend(
+            options
+                .iter()
+                .filter(|(key, _)| !is_internal_anthropic_option(key))
+                .map(|(key, value)| (key.clone(), value.clone())),
+        );
+    }
 }
 
-fn append_anthropic_tools(request: &mut serde_json::Map<String, Value>, tools: &[ToolDefinition]) {
+fn append_anthropic_tools(
+    request: &mut serde_json::Map<String, Value>,
+    tools: &[ToolDefinition],
+    settings: Option<&ModelSettings>,
+) {
     if tools.is_empty() {
         return;
     }
-    request.insert(
-        "tools".to_string(),
-        json!(tools
-            .iter()
-            .map(|tool| {
-                let mut definition = serde_json::Map::new();
-                definition.insert("name".to_string(), json!(tool.name));
-                insert_optional_description(&mut definition, tool.description.as_ref());
-                definition.insert(
-                    "input_schema".to_string(),
-                    provider_tool_parameters(&tool.parameters),
-                );
-                Value::Object(definition)
-            })
-            .collect::<Vec<_>>()),
-    );
+    let mut definitions = tools
+        .iter()
+        .map(|tool| {
+            let mut definition = serde_json::Map::new();
+            definition.insert("name".to_string(), json!(tool.name));
+            insert_optional_description(&mut definition, tool.description.as_ref());
+            definition.insert(
+                "input_schema".to_string(),
+                provider_tool_parameters(&tool.parameters),
+            );
+            Value::Object(definition)
+        })
+        .collect::<Vec<_>>();
+    if let Some(ttl) = anthropic_cache_ttl(settings, "anthropic_cache_tool_definitions") {
+        if let Some(last) = definitions.last_mut() {
+            last["cache_control"] = anthropic_cache_control(ttl);
+        }
+    }
+    request.insert("tools".to_string(), Value::Array(definitions));
+}
+
+fn anthropic_cache_ttl(settings: Option<&ModelSettings>, key: &str) -> Option<&'static str> {
+    let value = settings
+        .and_then(|settings| settings.provider_options.as_ref())
+        .and_then(|options| options.get(key));
+    match value {
+        Some(Value::Bool(true)) => Some("5m"),
+        Some(Value::String(value)) if value == "5m" => Some("5m"),
+        Some(Value::String(value)) if value == "1h" => Some("1h"),
+        _ => None,
+    }
+}
+
+fn anthropic_cache_control(ttl: &str) -> Value {
+    json!({"type": "ephemeral", "ttl": ttl})
+}
+
+fn is_internal_anthropic_option(key: &str) -> bool {
+    matches!(
+        key,
+        "anthropic_cache"
+            | "anthropic_cache_instructions"
+            | "anthropic_cache_tool_definitions"
+            | "anthropic_cache_response"
+            | "anthropic_cache_messages"
+            | "anthropic_effort"
+    )
 }
 
 fn anthropic_tool_result(tool_return: &ToolReturnPart) -> Value {

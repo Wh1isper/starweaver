@@ -156,7 +156,9 @@ impl BedrockConverseAdapter {
                     crate::settings::ToolChoice::Auto | crate::settings::ToolChoice::None => {
                         json!({"auto": {}})
                     }
-                    crate::settings::ToolChoice::Required => json!({"any": {}}),
+                    crate::settings::ToolChoice::Required
+                    | crate::settings::ToolChoice::Tools { .. } => json!({"any": {}}),
+                    crate::settings::ToolChoice::ToolOrOutput { .. } => json!({"auto": {}}),
                     crate::settings::ToolChoice::Tool { name } => json!({"tool": {"name": name}}),
                 };
             }

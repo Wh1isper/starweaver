@@ -6,7 +6,7 @@ use serde_json::json;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_tools::{
     string_tool, tool_proxy_toolset, FunctionTool, StaticToolset, ToolContext, ToolError,
-    ToolInstruction, ToolResult,
+    ToolInstruction, ToolProxyToolset, ToolResult, Toolset,
 };
 
 fn context() -> ToolContext {
@@ -73,6 +73,99 @@ async fn proxy_searches_namespaces_and_calls_tools() {
         .await
         .unwrap();
     assert_eq!(called.content["looked_up"], "agents");
+}
+
+#[tokio::test]
+async fn proxy_supports_prefixed_visible_tools_and_instructions() {
+    let lookup = FunctionTool::new(
+        "lookup_docs",
+        Some("Look up documentation by topic".to_string()),
+        json!({"type":"object","properties":{"topic":{"type":"string"}}}),
+        |_ctx: ToolContext, args: serde_json::Value| async move {
+            Ok(ToolResult::new(json!({"looked_up": args["topic"]})))
+        },
+    );
+    let hidden_unprefixed_proxy_name = FunctionTool::new(
+        "search_tools",
+        Some("unprefixed proxy helper name remains an ordinary wrapped tool".to_string()),
+        json!({"type":"object"}),
+        |_ctx: ToolContext, _args: serde_json::Value| async move { Ok(ToolResult::new(json!(null))) },
+    );
+    let hidden_prefixed_proxy_name = FunctionTool::new(
+        "mcp_search_tool",
+        Some("prefixed proxy helper name should be skipped".to_string()),
+        json!({"type":"object"}),
+        |_ctx: ToolContext, _args: serde_json::Value| async move { Ok(ToolResult::new(json!(null))) },
+    );
+    let toolset = StaticToolset::new("docs")
+        .with_id("docs_ns")
+        .with_tool(Arc::new(lookup))
+        .with_tool(Arc::new(hidden_unprefixed_proxy_name))
+        .with_tool(Arc::new(hidden_prefixed_proxy_name));
+
+    let proxy = ToolProxyToolset::new(vec![Arc::new(toolset)])
+        .try_with_prefix("__mcp__")
+        .unwrap();
+    assert_eq!(proxy.name(), "tool_proxy");
+    assert_eq!(proxy.prefix(), Some("mcp"));
+    assert_eq!(proxy.search_tool_name(), "mcp_search_tool");
+    assert_eq!(proxy.call_tool_name(), "mcp_call_tool");
+    assert!(proxy.get_instructions().into_iter().any(|instruction| {
+        instruction.group == "mcp-tool-proxy"
+            && instruction.content.contains("mcp_search_tool")
+            && instruction.content.contains("mcp_call_tool")
+            && !instruction.content.contains("search_tools")
+    }));
+
+    let tools = proxy.get_tools();
+    assert_eq!(
+        tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
+        vec!["mcp_search_tool", "mcp_call_tool"]
+    );
+
+    let search = tools
+        .iter()
+        .find(|tool| tool.name() == "mcp_search_tool")
+        .unwrap();
+    let search_output = result_content(
+        &search
+            .call(context(), json!({"query":"docs"}))
+            .await
+            .unwrap(),
+    );
+    assert!(search_output.contains("lookup_docs"));
+    assert!(search_output.contains("search_tools"));
+    assert!(!search_output.contains("name=\"mcp_search_tool\""));
+    assert!(!search_output.contains("prefixed proxy helper name should be skipped"));
+
+    let call = tools
+        .iter()
+        .find(|tool| tool.name() == "mcp_call_tool")
+        .unwrap();
+    let called = call
+        .call(
+            context(),
+            json!({"name":"lookup_docs","arguments":{"topic":"agents"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(called.content["looked_up"], "agents");
+
+    let missing = result_content(
+        &call
+            .call(context(), json!({"name":"missing","arguments":{}}))
+            .await
+            .unwrap(),
+    );
+    assert!(missing.contains("Use mcp_search_tool to discover available tools"));
+}
+
+#[test]
+fn proxy_rejects_invalid_prefixes() {
+    let Err(error) = ToolProxyToolset::new(vec![]).try_with_prefix("mcp-server") else {
+        panic!("invalid prefix should be rejected");
+    };
+    assert_eq!(error.prefix(), "mcp-server");
 }
 
 #[tokio::test]

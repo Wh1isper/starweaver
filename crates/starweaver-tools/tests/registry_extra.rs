@@ -116,6 +116,41 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     assert!(!registry.contains("failing"));
 }
 
+#[tokio::test]
+async fn registry_maps_tool_result_layers_to_tool_return_part() {
+    let layered = FunctionTool::new(
+        "layered",
+        Some("Layered tool".to_string()),
+        json!({"type":"object"}),
+        |_ctx: ToolContext, _args: serde_json::Value| async move {
+            let mut private_metadata = serde_json::Map::new();
+            private_metadata.insert("secret".to_string(), json!("host-only"));
+            Ok(ToolResult::new(json!({"raw": "app raw"}))
+                .with_model_content(json!({"summary": "model visible"}))
+                .with_app_value(json!({"app": "application value"}))
+                .with_user_content(json!({"ui": "user visible"}))
+                .with_private_metadata(private_metadata))
+        },
+    );
+    let registry = ToolRegistry::new().with_tool(Arc::new(layered));
+    let call = ToolCallPart {
+        id: "call_layered".to_string(),
+        name: "layered".to_string(),
+        arguments: json!({}).into(),
+    };
+
+    let returned = registry.execute_call(context(), &call).await;
+
+    assert!(!returned.is_error);
+    assert_eq!(returned.content, json!({"summary": "model visible"}));
+    assert_eq!(
+        returned.app_value,
+        Some(json!({"app": "application value"}))
+    );
+    assert_eq!(returned.user_content, Some(json!({"ui": "user visible"})));
+    assert_eq!(returned.private_metadata["secret"], "host-only");
+}
+
 #[test]
 fn registry_insert_registry_carries_retry_and_instructions() {
     let tool = string_tool(

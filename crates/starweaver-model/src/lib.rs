@@ -3,6 +3,7 @@
 pub mod adapter;
 pub mod media;
 pub mod message;
+pub mod oauth;
 pub mod presets;
 pub mod profile;
 pub mod providers;
@@ -29,17 +30,26 @@ pub use message::{
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
     ModelResponsePart, ProviderInfo, ToolArguments, ToolCallPart, ToolReturnPart,
 };
+pub use oauth::{
+    build_codex_headers, build_codex_model, build_codex_model_with_profile, build_session_headers,
+    codex_model_profile, patch_codex_responses_body, CodexOAuthResponsesModel,
+    OAuthBearerHttpClient, CODEX_ORIGINATOR,
+};
 pub use presets::{
     anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
     list_model_config_presets, list_model_settings_presets, model_runtime_preset,
     openai_chat_http_config, openai_responses_http_config, ModelConfigPreset,
     ModelConfigPresetData, ModelPresetError, ModelRuntimePreset, ModelSettingsPreset,
 };
-pub use profile::{MessageNormalization, ModelProfile, ProtocolFamily, StructuredOutputMode};
+pub use profile::{
+    JsonSchemaTransformer, MessageNormalization, ModelProfile, NativeToolKind, ProtocolFamily,
+    StructuredOutputMode,
+};
 pub use providers::client::ProtocolModelClient;
 pub use registry::{ProviderAlias, ProviderAliasRegistry};
 pub use request::{
-    prepare_messages, prepare_model_request, OutputMode, PreparedInstruction, PreparedModelRequest,
+    prepare_messages, prepare_model_request, InstructionPart, OutputMode, PreparedInstruction,
+    PreparedModelRequest,
 };
 pub use settings::{ModelSettings, ServiceTier, ThinkingSettings, ToolChoice};
 pub use stream::{

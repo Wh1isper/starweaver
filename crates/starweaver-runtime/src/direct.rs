@@ -90,7 +90,7 @@ pub async fn model_request(
 ) -> Result<ModelResponse, ModelError> {
     let context = request.context();
     model
-        .request(request.messages, request.settings, request.params, context)
+        .request_stream_final(request.messages, request.settings, request.params, context)
         .await
 }
 

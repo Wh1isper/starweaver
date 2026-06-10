@@ -309,6 +309,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
+name = "encoding_rs_io"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cc3c5651fb62ab8aa3103998dade57efdd028544bd300516baa31840c252a83"
+dependencies = [
+ "encoding_rs",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -361,6 +379,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -505,6 +533,21 @@ dependencies = [
  "log",
  "regex-automata",
  "regex-syntax",
+]
+
+[[package]]
+name = "grep-searcher"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac63295322dc48ebb20a25348147905d816318888e64f531bfc2a2bc0577dc34"
+dependencies = [
+ "bstr",
+ "encoding_rs",
+ "encoding_rs_io",
+ "grep-matcher",
+ "log",
+ "memchr",
+ "memmap2",
 ]
 
 [[package]]
@@ -902,6 +945,15 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "memmap2"
+version = "0.9.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "mio"
@@ -1539,6 +1591,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "base64",
+ "chrono",
  "reqwest",
  "schemars",
  "serde",
@@ -1548,6 +1601,7 @@ dependencies = [
  "starweaver-core",
  "starweaver-environment",
  "starweaver-model",
+ "starweaver-oauth-provider",
  "starweaver-runtime",
  "starweaver-tools",
  "thiserror",
@@ -1577,6 +1631,8 @@ dependencies = [
  "starweaver-core",
  "starweaver-environment",
  "starweaver-model",
+ "starweaver-oauth",
+ "starweaver-oauth-provider",
  "starweaver-runtime",
  "starweaver-session",
  "starweaver-stream",
@@ -1617,6 +1673,7 @@ dependencies = [
  "globset",
  "grep-matcher",
  "grep-regex",
+ "grep-searcher",
  "ignore",
  "serde",
  "serde_json",
@@ -1637,6 +1694,38 @@ dependencies = [
  "serde",
  "serde_json",
  "starweaver-core",
+ "starweaver-oauth",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "starweaver-oauth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "fs2",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "starweaver-oauth-provider"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "starweaver-model",
+ "starweaver-oauth",
+ "tempfile",
  "thiserror",
  "tokio",
 ]

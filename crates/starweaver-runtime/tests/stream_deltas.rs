@@ -1,6 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 use starweaver_model::{
@@ -24,8 +24,8 @@ impl ModelAdapter for StreamingModel {
     }
 
     fn profile(&self) -> &ModelProfile {
-        static PROFILE: ModelProfile =
-            ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions);
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
         &PROFILE
     }
 

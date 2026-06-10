@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{Map, Value};
+use starweaver_context::{AgentContext, ToolConfig};
 use starweaver_environment::{
-    EnvironmentError, EnvironmentProvider, FileGlobOptions, FileGrepMatch, FileGrepOptions,
-    FileStat,
+    matches_path_pattern, EnvironmentError, EnvironmentProvider, FileGlobOptions, FileGrepMatch,
+    FileGrepOptions, FileStat,
 };
 use starweaver_tools::{
     DynToolset, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
@@ -13,8 +14,8 @@ use uuid::Uuid;
 
 use super::{
     args::{
-        DeleteArgs, EditArgs, FilePathArgs, GlobArgs, GrepArgs, ListArgs, MkdirArgs, MultiEditArgs,
-        PathPairsArgs, ViewArgs, WriteArgs,
+        default_view_line_limit, default_view_max_line_length, DeleteArgs, EditArgs, FilePathArgs,
+        GlobArgs, GrepArgs, ListArgs, MkdirArgs, MultiEditArgs, PathPairsArgs, ViewArgs, WriteArgs,
     },
     common::{limit_or_unlimited, non_negative_limit},
     handle::environment_provider,
@@ -24,15 +25,7 @@ use crate::bundles::{
     HostMediaCapabilities, HostMediaUnderstandingClientHandle, MediaUnderstandingRequest,
 };
 
-const VIEW_MAX_TEXT_FILE_SIZE: u64 = 10 * 1024 * 1024;
-const VIEW_MAX_INLINE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
-const VIEW_MAX_INLINE_VIDEO_BYTES: u64 = 50 * 1024 * 1024;
-const VIEW_MAX_INLINE_AUDIO_BYTES: u64 = 50 * 1024 * 1024;
 const BINARY_CHECK_BYTES: usize = 8192;
-const VIEW_CONTENT_TRUNCATE_LIMIT: usize = 60_000;
-const OUTPUT_TRUNCATE_LIMIT: usize = 20_000;
-const GREP_TRUNCATION_THRESHOLD: usize = 30_000;
-const GREP_TRUNCATED_LINE_MAX: usize = 300;
 
 /// Create filesystem tools backed by the `EnvironmentHandle` stored in `AgentContext`.
 #[must_use]
@@ -43,6 +36,14 @@ pub fn filesystem_tools() -> DynToolset {
             .with_instruction(ToolInstruction::new(
                 "filesystem",
                 "Filesystem tools operate inside the active AgentContext environment. Prefer glob to discover candidate paths, grep to find matching text, view for focused reads, write for intentional writes, edit or multi_edit for precise replacements, and resource_ref when a durable provider-scoped reference is enough. Large glob, grep, and shell-style outputs are saved through the provider tmp file abstraction instead of bypassing the active environment.",
+            ))
+            .with_instruction(ToolInstruction::new(
+                "edit",
+                "<edit-tool>\nPerforms exact string replacement in files.\n\n<best-practices>\n- old_string must match file content EXACTLY, including whitespace and indentation\n- Preserve exact indentation from view output and ignore line number prefixes\n- Include 3-5 lines of context to ensure unique matches\n- Use replace_all=true for renaming variables across the file\n- Use multi_edit instead of multiple edit calls when changing the same file, especially when changes could otherwise be issued concurrently\n- Empty old_string creates a new file and fails if the file exists\n</best-practices>\n</edit-tool>",
+            ))
+            .with_instruction(ToolInstruction::new(
+                "multi_edit",
+                "<multi-edit-tool>\nPerform multiple find-and-replace operations on a single file.\n\n<best-practices>\n- Prefer multi_edit over multiple single edits for the same file\n- When making multiple changes to the same file, including changes planned in parallel, do not issue concurrent edit calls; combine them into one multi_edit call\n- Each old_string must be unique or use replace_all=true\n- Edits are applied sequentially; ensure earlier edits do not affect later ones\n- All edits must succeed or none are applied as an atomic operation\n- Empty old_string in the first edit creates a new file\n</best-practices>\n</multi-edit-tool>",
             ))
             .with_tools([
                 static_tool("view", "Read a provider-scoped file. Text reads support pagination and truncation metadata; image, video, and audio files are loaded through the active environment and either attached for native model media support or analyzed by the configured fallback client.", read_text),
@@ -66,6 +67,7 @@ async fn read_text(
     arguments: ViewArgs,
 ) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&tool_context, "view")?;
+    let tool_config = tool_config_from_context(&tool_context, "view")?;
     let stat = match provider.stat(&arguments.file_path).await {
         Ok(stat) => stat,
         Err(EnvironmentError::NotFound(_)) => {
@@ -85,7 +87,14 @@ async fn read_text(
 
     match classify_view_path(&arguments.file_path) {
         ViewFileKind::Image | ViewFileKind::Video | ViewFileKind::Audio => {
-            read_media_file(&tool_context, provider.as_ref(), &arguments, stat).await
+            read_media_file(
+                &tool_context,
+                provider.as_ref(),
+                &arguments,
+                stat,
+                &tool_config,
+            )
+            .await
         }
         ViewFileKind::Pdf => Ok(ToolResult::new(serde_json::json!({
             "success": false,
@@ -102,7 +111,7 @@ async fn read_text(
             "next_tool": "office_to_markdown",
         }))),
         ViewFileKind::Text | ViewFileKind::Unknown => {
-            read_text_file(provider.as_ref(), &arguments, &stat).await
+            read_text_file(provider.as_ref(), &arguments, &stat, &tool_config).await
         }
     }
 }
@@ -202,12 +211,6 @@ async fn multi_edit_text(
         ));
     };
     let mut updated_content = if first.old_string.is_empty() {
-        if edits.len() > 0 {
-            return Err(tool_execution_error(
-                "multi_edit",
-                "create operation must be the only edit when old_string is empty",
-            ));
-        }
         ensure_file_missing(provider.as_ref(), "multi_edit", &arguments.file_path).await?;
         first.new_string
     } else {
@@ -244,6 +247,7 @@ async fn multi_edit_text(
 
 async fn glob_files(context: ToolContext, arguments: GlobArgs) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&context, "glob")?;
+    let tool_config = tool_config_from_context(&context, "glob")?;
     let matches = provider
         .glob(
             &arguments.root,
@@ -261,11 +265,12 @@ async fn glob_files(context: ToolContext, arguments: GlobArgs) -> Result<ToolRes
         "pattern": arguments.pattern,
         "matches": matches,
     });
-    guard_glob_output(provider.as_ref(), result).await
+    guard_glob_output(provider.as_ref(), &tool_config, result).await
 }
 
 async fn grep_files(context: ToolContext, arguments: GrepArgs) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&context, "grep")?;
+    let tool_config = tool_config_from_context(&context, "grep")?;
     let matches = provider
         .grep(
             &arguments.root,
@@ -292,6 +297,7 @@ async fn grep_files(context: ToolContext, arguments: GrepArgs) -> Result<ToolRes
         .map_err(|error| tool_execution_error("grep", error))?;
     guard_grep_output(
         provider.as_ref(),
+        &tool_config,
         &arguments.root,
         &arguments.pattern,
         matches,
@@ -387,21 +393,41 @@ async fn resource_ref(
     })))
 }
 
+fn tool_config_from_context(context: &ToolContext, tool: &str) -> Result<ToolConfig, ToolError> {
+    let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
+        tool_execution_error(tool, "AgentContext dependency is missing from ToolContext")
+    })?;
+    Ok(agent_context.tool_config.clone())
+}
+
+fn uses_relaxed_text_limits(
+    provider: &dyn EnvironmentProvider,
+    path: &str,
+    tool_config: &ToolConfig,
+) -> Result<bool, ToolError> {
+    let patterns = tool_config.view_relaxed_text_patterns();
+    if patterns.is_empty() {
+        return Ok(false);
+    }
+    let candidates = provider.path_match_candidates(path);
+    for pattern in patterns {
+        for candidate in &candidates {
+            let matches = matches_path_pattern(candidate, pattern)
+                .map_err(|error| tool_execution_error("view", error))?;
+            if matches {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 async fn read_text_file(
     provider: &dyn EnvironmentProvider,
     arguments: &ViewArgs,
     stat: &FileStat,
+    tool_config: &ToolConfig,
 ) -> Result<ToolResult, ToolError> {
-    if stat.size > VIEW_MAX_TEXT_FILE_SIZE {
-        return Ok(ToolResult::new(serde_json::json!({
-            "success": false,
-            "error": format!(
-                "File is too large to inspect safely ({}). Maximum supported text view size is {}. Use shell tools (e.g. head, tail, sed -n) to read portions of this file.",
-                format_size(stat.size),
-                format_size(VIEW_MAX_TEXT_FILE_SIZE),
-            ),
-        })));
-    }
     let binary_probe = provider
         .read_bytes(&arguments.file_path, 0, Some(BINARY_CHECK_BYTES))
         .await
@@ -412,6 +438,41 @@ async fn read_text_file(
             arguments.file_path
         ))));
     }
+
+    let relaxed = uses_relaxed_text_limits(provider, &arguments.file_path, tool_config)?;
+    let max_file_size = if relaxed {
+        tool_config.view_relaxed_text_file_size
+    } else {
+        tool_config.view_max_text_file_size
+    };
+    if stat.size > max_file_size {
+        return Ok(ToolResult::new(serde_json::json!({
+            "success": false,
+            "error": format!(
+                "File is too large to inspect safely ({}). Maximum supported text view size is {}. Use shell tools (e.g. head, tail, sed -n) to read portions of this file.",
+                format_size(stat.size),
+                format_size(max_file_size),
+            ),
+        })));
+    }
+
+    let line_limit = if relaxed && arguments.line_limit == default_view_line_limit() {
+        tool_config.view_relaxed_line_limit
+    } else {
+        arguments.line_limit
+    };
+    let max_line_length = if relaxed && arguments.max_line_length == default_view_max_line_length()
+    {
+        tool_config.view_relaxed_max_line_length
+    } else {
+        arguments.max_line_length
+    };
+    let max_content_chars = if relaxed {
+        tool_config.view_relaxed_max_content_chars
+    } else {
+        tool_config.view_max_content_chars
+    };
+
     let full_content = provider
         .read_text(&arguments.file_path)
         .await
@@ -421,8 +482,9 @@ async fn read_text_file(
         &full_content,
         stat.size,
         arguments.line_offset,
-        arguments.line_limit,
-        arguments.max_line_length,
+        line_limit,
+        max_line_length,
+        max_content_chars,
     );
     Ok(selection.into_tool_result())
 }
@@ -433,12 +495,13 @@ async fn read_media_file(
     provider: &dyn EnvironmentProvider,
     arguments: &ViewArgs,
     stat: FileStat,
+    tool_config: &ToolConfig,
 ) -> Result<ToolResult, ToolError> {
     let media_kind = classify_media_path(&arguments.file_path);
     let max_inline = match media_kind {
-        MediaKind::Image => VIEW_MAX_INLINE_IMAGE_BYTES,
-        MediaKind::Video => VIEW_MAX_INLINE_VIDEO_BYTES,
-        MediaKind::Audio => VIEW_MAX_INLINE_AUDIO_BYTES,
+        MediaKind::Image => tool_config.view_max_inline_image_bytes,
+        MediaKind::Video => tool_config.view_max_inline_video_bytes,
+        MediaKind::Audio => tool_config.view_max_inline_audio_bytes,
     };
     if stat.size > max_inline {
         return Ok(ToolResult::new(serde_json::json!({
@@ -540,11 +603,13 @@ async fn read_media_file(
 
 async fn guard_glob_output(
     provider: &dyn EnvironmentProvider,
+    tool_config: &ToolConfig,
     result: Value,
 ) -> Result<ToolResult, ToolError> {
     let serialized =
         serde_json::to_string(&result).map_err(|error| tool_execution_error("glob", error))?;
-    if serialized.len() <= OUTPUT_TRUNCATE_LIMIT {
+    let output_truncate_limit = tool_config.filesystem_output_truncate_limit;
+    if serialized.len() <= output_truncate_limit {
         return Ok(ToolResult::new(result));
     }
     let output_path = write_tool_output(provider, "glob", "json", &serialized).await;
@@ -572,7 +637,7 @@ async fn guard_glob_output(
         kept.push(entry);
         preview["matches"] = Value::Array(kept.clone());
         preview["showing"] = serde_json::json!(kept.len());
-        if serde_json::to_string(&preview).map_or(true, |value| value.len() > OUTPUT_TRUNCATE_LIMIT)
+        if serde_json::to_string(&preview).map_or(true, |value| value.len() > output_truncate_limit)
         {
             kept.pop();
             preview["matches"] = Value::Array(kept.clone());
@@ -585,6 +650,7 @@ async fn guard_glob_output(
 
 async fn guard_grep_output(
     provider: &dyn EnvironmentProvider,
+    tool_config: &ToolConfig,
     root: &str,
     pattern: &str,
     matches: Vec<FileGrepMatch>,
@@ -596,7 +662,7 @@ async fn guard_grep_output(
     });
     let serialized =
         serde_json::to_string(&original).map_err(|error| tool_execution_error("grep", error))?;
-    if serialized.len() <= GREP_TRUNCATION_THRESHOLD {
+    if serialized.len() <= tool_config.grep_truncation_threshold {
         return Ok(ToolResult::new(original));
     }
 
@@ -604,7 +670,7 @@ async fn guard_grep_output(
         .as_array()
         .unwrap_or(&Vec::new())
         .iter()
-        .map(simplify_grep_match)
+        .map(|value| simplify_grep_match(value, tool_config.grep_truncated_line_max))
         .collect::<Vec<_>>();
     let simplified = serde_json::json!({
         "root": root,
@@ -614,7 +680,8 @@ async fn guard_grep_output(
     });
     let simplified_serialized =
         serde_json::to_string(&simplified).map_err(|error| tool_execution_error("grep", error))?;
-    if simplified_serialized.len() <= OUTPUT_TRUNCATE_LIMIT {
+    let output_truncate_limit = tool_config.filesystem_output_truncate_limit;
+    if simplified_serialized.len() <= output_truncate_limit {
         return Ok(ToolResult::new(simplified));
     }
 
@@ -642,7 +709,7 @@ async fn guard_grep_output(
         kept.push(entry);
         preview["matches"] = Value::Array(kept.clone());
         preview["showing"] = serde_json::json!(kept.len());
-        if serde_json::to_string(&preview).map_or(true, |value| value.len() > OUTPUT_TRUNCATE_LIMIT)
+        if serde_json::to_string(&preview).map_or(true, |value| value.len() > output_truncate_limit)
         {
             kept.pop();
             preview["matches"] = Value::Array(kept.clone());
@@ -666,7 +733,7 @@ async fn write_tool_output(
         .ok()
 }
 
-fn simplify_grep_match(value: &Value) -> Value {
+fn simplify_grep_match(value: &Value, truncated_line_max: usize) -> Value {
     let matching_line = value
         .get("matching_line")
         .and_then(Value::as_str)
@@ -674,7 +741,7 @@ fn simplify_grep_match(value: &Value) -> Value {
     serde_json::json!({
         "path": value.get("path").cloned().unwrap_or(Value::Null),
         "line_number": value.get("line_number").cloned().unwrap_or(Value::Null),
-        "matching_line": truncate_chars(matching_line, GREP_TRUNCATED_LINE_MAX),
+        "matching_line": truncate_chars(matching_line, truncated_line_max),
     })
 }
 
@@ -729,6 +796,7 @@ fn select_text_lines(
     line_offset: Option<usize>,
     line_limit: usize,
     max_line_length: usize,
+    max_content_chars: usize,
 ) -> TextSelection {
     let all_lines = split_lines_keepends(content);
     let total_lines = all_lines.len();
@@ -755,10 +823,10 @@ fn select_text_lines(
         }
     }
     let mut selected_content = processed.concat();
-    let content_truncated = if selected_content.chars().count() > VIEW_CONTENT_TRUNCATE_LIMIT {
+    let content_truncated = if selected_content.chars().count() > max_content_chars {
         selected_content = selected_content
             .chars()
-            .take(VIEW_CONTENT_TRUNCATE_LIMIT)
+            .take(max_content_chars)
             .collect::<String>();
         selected_content.push_str("\n... (content truncated)");
         true

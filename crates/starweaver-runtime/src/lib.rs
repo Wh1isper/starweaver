@@ -9,6 +9,7 @@ pub mod history;
 pub mod instructions;
 pub mod iteration;
 pub mod output;
+pub mod retry_recovery;
 pub mod run;
 pub mod stream;
 pub mod trace;
@@ -42,6 +43,10 @@ pub use output::{
     parse_output, DynOutputFunction, FunctionOutputFunction, FunctionOutputValidator,
     OutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputPolicy, OutputSchema,
     OutputValidationError, OutputValidationResult, OutputValidator, OutputValue,
+};
+pub use retry_recovery::{
+    heal_context_overflow_history, heal_openai_item_reference_history,
+    recover_retry_message_history, RetryRecoveryResult, DEFAULT_MODEL_ERROR_RESUME_PROMPT,
 };
 pub use run::{AgentRunResult, AgentRunState, RunStatus};
 pub use starweaver_model::{ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};

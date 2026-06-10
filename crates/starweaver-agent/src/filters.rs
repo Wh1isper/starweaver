@@ -182,9 +182,13 @@ fn cold_start_filter(state: &AgentRunState, mut messages: Vec<ModelMessage>) -> 
         .get(COLD_START_TOOL_RETURN_LIMIT_METADATA)
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(4096);
+        .unwrap_or(500);
+    let trim_end = messages
+        .iter()
+        .rposition(|message| matches!(message, ModelMessage::Response(_)))
+        .unwrap_or(messages.len());
     let mut truncated = 0usize;
-    for message in &mut messages {
+    for message in messages.iter_mut().take(trim_end) {
         if let ModelMessage::Request(request) = message {
             for part in &mut request.parts {
                 if let ModelRequestPart::ToolReturn(tool_return) = part {
@@ -358,42 +362,222 @@ fn compact_filter(state: &AgentRunState, messages: Vec<ModelMessage>) -> Vec<Mod
     if keep == 0 || messages.len() <= keep {
         return messages;
     }
-    let mut instructions = Vec::new();
-    for message in &messages {
-        if let ModelMessage::Request(request) = message {
-            let parts = request
-                .parts
-                .iter()
-                .filter(|part| {
-                    matches!(
-                        part,
-                        ModelRequestPart::SystemPrompt { .. }
-                            | ModelRequestPart::Instruction { .. }
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if !parts.is_empty() {
-                instructions.push(ModelMessage::Request(ModelRequest {
-                    parts,
-                    timestamp: request.timestamp,
-                    instructions: None,
-                    run_id: request.run_id.clone(),
-                    conversation_id: request.conversation_id.clone(),
-                    metadata: Map::new(),
-                }));
-            }
+
+    let mut compacted = Vec::new();
+    for message in messages.iter().take(messages.len().saturating_sub(keep)) {
+        if has_keep_tag(message) {
+            compacted.push(message.clone());
         }
     }
-    let mut compacted = messages.into_iter().rev().take(keep).collect::<Vec<_>>();
-    compacted.reverse();
-    for instruction in instructions.into_iter().rev() {
-        if !compacted.contains(&instruction) {
-            compacted.insert(0, instruction);
-        }
+    compacted.extend(
+        messages
+            .iter()
+            .skip(messages.len().saturating_sub(keep))
+            .filter_map(|message| trim_message_for_compact(message.clone())),
+    );
+
+    if !has_context_restored_marker(&compacted) {
+        compacted.push(context_restored_request(state));
     }
     request_metadata_mut(&mut compacted).insert("starweaver_compacted".to_string(), json!(true));
     compacted
+}
+
+fn trim_message_for_compact(message: ModelMessage) -> Option<ModelMessage> {
+    match message {
+        ModelMessage::Response(_) => Some(message),
+        ModelMessage::Request(mut request) => {
+            let mut parts = Vec::new();
+            for part in request.parts {
+                match part {
+                    ModelRequestPart::ToolReturn(mut tool_return) => {
+                        trim_tool_return_for_compact(&mut tool_return);
+                        parts.push(ModelRequestPart::ToolReturn(tool_return));
+                    }
+                    ModelRequestPart::UserPrompt {
+                        content,
+                        name,
+                        metadata,
+                    } => {
+                        let content = content
+                            .into_iter()
+                            .filter_map(trim_content_for_compact)
+                            .collect::<Vec<_>>();
+                        if !content.is_empty() {
+                            parts.push(ModelRequestPart::UserPrompt {
+                                content,
+                                name,
+                                metadata,
+                            });
+                        }
+                    }
+                    other => parts.push(other),
+                }
+            }
+            if parts.is_empty() {
+                return None;
+            }
+            request.parts = parts;
+            Some(ModelMessage::Request(request))
+        }
+    }
+}
+
+fn trim_content_for_compact(content: ContentPart) -> Option<ContentPart> {
+    match content {
+        ContentPart::Text { text } => {
+            strip_injected_context_text(&text).map(|text| ContentPart::Text { text })
+        }
+        ContentPart::ImageUrl { url } => Some(ContentPart::Text {
+            text: format!("[image: {url}]"),
+        }),
+        ContentPart::FileUrl { url, media_type } => Some(ContentPart::Text {
+            text: format!("[{media_type}: {url}]"),
+        }),
+        ContentPart::Binary { media_type, .. }
+        | ContentPart::DataUrl { media_type, .. }
+        | ContentPart::ResourceRef { media_type, .. } => Some(ContentPart::Text {
+            text: format!("[{media_type} content removed]"),
+        }),
+    }
+}
+
+fn strip_injected_context_text(text: &str) -> Option<String> {
+    let mut cleaned = text.to_string();
+    for tag in ["runtime-context", "environment-context"] {
+        cleaned = strip_xml_tag_blocks(&cleaned, tag);
+    }
+    let cleaned = cleaned.trim().to_string();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+fn strip_xml_tag_blocks(text: &str, tag: &str) -> String {
+    let mut remaining = text;
+    let mut output = String::new();
+    let open_prefix = format!("<{tag}");
+    let close_tag = format!("</{tag}>");
+    while let Some(start) = remaining.find(&open_prefix) {
+        output.push_str(&remaining[..start]);
+        let after_start = &remaining[start..];
+        let Some(open_end) = after_start.find('>') else {
+            output.push_str(after_start);
+            return output;
+        };
+        let after_open = &after_start[open_end + 1..];
+        if let Some(close_start) = after_open.find(&close_tag) {
+            remaining = &after_open[close_start + close_tag.len()..];
+        } else {
+            remaining = after_open;
+            break;
+        }
+    }
+    output.push_str(remaining);
+    output
+}
+
+fn trim_tool_return_for_compact(tool_return: &mut ToolReturnPart) {
+    if let Some(text) = truncate_compact_text(&tool_return.content.to_string()) {
+        tool_return.content = json!(text);
+        tool_return
+            .metadata
+            .insert("starweaver_compact_trimmed".to_string(), json!(true));
+    }
+    if let Some(user_content) = &mut tool_return.user_content {
+        if let Some(text) = truncate_compact_text(&user_content.to_string()) {
+            *user_content = json!(text);
+        }
+    }
+}
+
+fn truncate_compact_text(text: &str) -> Option<String> {
+    const MAX: usize = 500;
+    const HEAD: usize = 200;
+    const TAIL: usize = 200;
+    if text.chars().count() <= MAX {
+        return None;
+    }
+    let head = text.chars().take(HEAD).collect::<String>();
+    let tail = text
+        .chars()
+        .rev()
+        .take(TAIL)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    let truncated = text.chars().count().saturating_sub(HEAD + TAIL);
+    Some(format!(
+        "{head}\n[... {truncated} chars truncated ...]\n{tail}"
+    ))
+}
+
+fn has_keep_tag(message: &ModelMessage) -> bool {
+    match message {
+        ModelMessage::Request(request) => keep_tag_value(&request.metadata).is_some(),
+        ModelMessage::Response(response) => keep_tag_value(&response.metadata).is_some(),
+    }
+}
+
+fn keep_tag_value(metadata: &Map<String, Value>) -> Option<&str> {
+    metadata
+        .get("keep")
+        .or_else(|| metadata.get("ya_keep"))
+        .and_then(Value::as_str)
+}
+
+fn has_context_restored_marker(messages: &[ModelMessage]) -> bool {
+    messages.iter().any(|message| match message {
+        ModelMessage::Request(request) => request.parts.iter().any(|part| match part {
+            ModelRequestPart::UserPrompt { content, .. } => content.iter().any(|item| match item {
+                ContentPart::Text { text } => text.contains("<context-restored>"),
+                _ => false,
+            }),
+            _ => false,
+        }),
+        ModelMessage::Response(_) => false,
+    })
+}
+
+fn context_restored_request(state: &AgentRunState) -> ModelMessage {
+    let mut parts = Vec::new();
+    if let Some(original) = metadata_text(&state.metadata, "starweaver_original_request") {
+        parts.push(ModelRequestPart::UserPrompt {
+            content: vec![ContentPart::Text {
+                text: "<original-request>Below is the user's original request from the start of the conversation:</original-request>".to_string(),
+            }],
+            name: None,
+            metadata: Map::new(),
+        });
+        parts.push(ModelRequestPart::UserPrompt {
+            content: vec![ContentPart::Text { text: original }],
+            name: None,
+            metadata: Map::new(),
+        });
+    }
+    if let Some(steering) = metadata_text(&state.metadata, "starweaver_user_steering") {
+        parts.push(ModelRequestPart::UserPrompt {
+            content: vec![ContentPart::Text {
+                text: format!("<user-steering>Below are messages the user sent during your previous work session:</user-steering>\n{steering}"),
+            }],
+            name: None,
+            metadata: Map::new(),
+        });
+    }
+    parts.push(ModelRequestPart::UserPrompt {
+        content: vec![ContentPart::Text {
+            text: "<context-restored>Context was compacted from a long conversation. The summary above is the most authoritative source for current state. Synthesize the summary, original request, and any user steering messages to resume work. Do NOT repeat questions, confirmations, or actions documented in the summary. If the summary records a user decision, respect it without re-asking.</context-restored>".to_string(),
+        }],
+        name: None,
+        metadata: Map::new(),
+    });
+    ModelMessage::Request(ModelRequest {
+        parts,
+        timestamp: None,
+        instructions: None,
+        run_id: Some(state.run_id.clone()),
+        conversation_id: Some(state.conversation_id.clone()),
+        metadata: Map::from_iter([("keep".to_string(), json!("compact"))]),
+    })
 }
 
 fn inject_instruction_from_metadata(
@@ -548,33 +732,52 @@ fn reasoning_normalize_filter(mut messages: Vec<ModelMessage>) -> Vec<ModelMessa
 }
 
 fn truncate_tool_return(tool_return: &mut ToolReturnPart, limit: usize) -> bool {
-    let Ok(serialized) = serde_json::to_string(&tool_return.content) else {
-        return false;
-    };
-    if serialized.len() <= limit {
+    let content_text = value_model_response_text(&tool_return.content);
+    if content_text.chars().count() <= limit {
         return false;
     }
-    tool_return.content = json!({
-        "starweaver_truncated": true,
-        "original_bytes": serialized.len(),
-        "preview": serialized.chars().take(limit).collect::<String>(),
-    });
+    let original_chars = content_text.chars().count();
+    tool_return.content = json!(truncate_head_tail(&content_text, limit));
     if let Some(user_content) = &mut tool_return.user_content {
-        let Ok(user_serialized) = serde_json::to_string(user_content) else {
-            return true;
-        };
-        if user_serialized.len() > limit {
-            *user_content = json!({
-                "starweaver_truncated": true,
-                "original_bytes": user_serialized.len(),
-                "preview": user_serialized.chars().take(limit).collect::<String>(),
-            });
+        let user_text = value_model_response_text(user_content);
+        if user_text.chars().count() > limit {
+            *user_content = json!(truncate_head_tail(&user_text, limit));
         }
     }
     tool_return
         .metadata
         .insert("starweaver_truncated".to_string(), json!(true));
+    tool_return.metadata.insert(
+        "starweaver_original_chars".to_string(),
+        json!(original_chars),
+    );
     true
+}
+
+fn value_model_response_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_string)
+}
+
+fn truncate_head_tail(text: &str, limit: usize) -> String {
+    let total = text.chars().count();
+    if total <= limit {
+        return text.to_string();
+    }
+    let head_len = 200.min(limit / 2);
+    let tail_len = 200.min(limit.saturating_sub(head_len));
+    let head = text.chars().take(head_len).collect::<String>();
+    let tail = text
+        .chars()
+        .rev()
+        .take(tail_len)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    let truncated = total.saturating_sub(head_len + tail_len);
+    format!("{head}\n[... {truncated} chars truncated ...]\n{tail}")
 }
 
 fn preflight_content_part(item: &mut ContentPart, policy: &MediaPolicy) -> PreflightOutcome {

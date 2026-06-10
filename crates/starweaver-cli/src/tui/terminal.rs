@@ -13,14 +13,14 @@ use crossterm::{
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
-use crate::CliResult;
+use crate::{prompt_input::PromptInput, CliResult};
 
 use super::{
     render::{
         composer_cursor_column, input_tail_lines, queue_styled_line_at, render_composer_lines,
         render_footer_lines, render_live_history_lines, terminal_error,
     },
-    state::{InteractiveTuiState, RunMode, SteeringSubmission},
+    state::{InteractiveTuiState, PendingSessionCommand, RunMode, SteeringSubmission},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,11 +28,17 @@ pub enum InteractiveTuiEvent {
     /// Redraw after a handled key changed or may have changed local UI state.
     Redraw,
     /// Submit a prompt.
-    Submit(String),
+    Submit(PromptInput),
     /// Queue a prompt while a run is active.
-    Queue(String),
+    Queue(PromptInput),
     /// Send steering to the active run UI pane.
     Steer(SteeringSubmission),
+    /// Reload or list sessions from the service-owned local store.
+    Session(Option<String>),
+    /// Clear visible transcript and detach the active session context.
+    Clear,
+    /// Attach an image from the system clipboard.
+    PasteImage,
     /// Interrupt the active run.
     Cancel,
     /// Quit the TUI.
@@ -43,6 +49,7 @@ pub enum InteractiveTuiEvent {
 pub struct InteractiveTui {
     stdout: io::Stdout,
     active: bool,
+    mouse_capture_enabled: bool,
 }
 
 impl InteractiveTui {
@@ -63,11 +70,13 @@ impl InteractiveTui {
         Ok(Self {
             stdout,
             active: true,
+            mouse_capture_enabled: true,
         })
     }
 
     /// Render the current state.
     pub fn render(&mut self, state: &InteractiveTuiState) -> CliResult<()> {
+        self.sync_mouse_capture(should_capture_mouse(state))?;
         let (width, height) = terminal::size().unwrap_or((80, 24));
         let width = if width == 0 { 80 } else { width };
         let height = if height == 0 { 24 } else { height };
@@ -125,7 +134,6 @@ impl InteractiveTui {
         let input_tail = input_tail_lines(&state.input, 3);
         let cursor_row = composer_start
             .saturating_add(1)
-            .saturating_add(state.pasted_image_count())
             .saturating_add(input_tail.len().saturating_sub(1));
         let cursor_col = composer_cursor_column(&input_tail);
         queue!(
@@ -138,6 +146,19 @@ impl InteractiveTui {
         )
         .map_err(terminal_error)?;
         self.stdout.flush().map_err(terminal_error)
+    }
+
+    fn sync_mouse_capture(&mut self, should_enable: bool) -> CliResult<()> {
+        if self.mouse_capture_enabled == should_enable {
+            return Ok(());
+        }
+        if should_enable {
+            execute!(self.stdout, EnableMouseCapture).map_err(terminal_error)?;
+        } else {
+            execute!(self.stdout, DisableMouseCapture).map_err(terminal_error)?;
+        }
+        self.mouse_capture_enabled = should_enable;
+        Ok(())
     }
 
     /// Poll for one UI event while keeping the caller-owned event loop responsive.
@@ -216,6 +237,17 @@ pub(super) fn handle_mouse_event(
     }
 }
 
+fn session_command_event(command: PendingSessionCommand) -> InteractiveTuiEvent {
+    match command {
+        PendingSessionCommand::Current => InteractiveTuiEvent::Session(None),
+        PendingSessionCommand::Select(session_id) => InteractiveTuiEvent::Session(Some(session_id)),
+    }
+}
+
+pub(super) const fn should_capture_mouse(state: &InteractiveTuiState) -> bool {
+    !state.selection_mode_visible()
+}
+
 pub(super) fn visible_body_bounds(
     state: &InteractiveTuiState,
     rendered_body_len: usize,
@@ -238,6 +270,32 @@ pub(super) fn handle_key_event(
     state: &mut InteractiveTuiState,
     key: KeyEvent,
 ) -> Option<InteractiveTuiEvent> {
+    if state.session_picker_visible() {
+        match key.code {
+            KeyCode::Esc => state.close_session_picker(),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.close_session_picker();
+            }
+            KeyCode::Enter => {
+                state.select_session_picker_choice();
+                return state
+                    .take_pending_session_command()
+                    .map(session_command_event);
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll_viewport(state, 1, ScrollDirection::Up);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll_viewport(state, 1, ScrollDirection::Down);
+            }
+            KeyCode::PageUp => scroll_viewport(state, 10, ScrollDirection::Up),
+            KeyCode::PageDown => scroll_viewport(state, 10, ScrollDirection::Down),
+            KeyCode::Up => state.move_session_picker_selection(-1),
+            KeyCode::Down => state.move_session_picker_selection(1),
+            _ => {}
+        }
+        return None;
+    }
     if state.model_picker_visible() {
         match key.code {
             KeyCode::Esc => state.close_model_picker(),
@@ -255,6 +313,32 @@ pub(super) fn handle_key_event(
             KeyCode::PageDown => scroll_viewport(state, 10, ScrollDirection::Down),
             KeyCode::Up => state.move_model_picker_selection(-1),
             KeyCode::Down => state.move_model_picker_selection(1),
+            _ => {}
+        }
+        return None;
+    }
+    if state.selection_mode_visible() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => state.close_selection_mode(),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                state.close_selection_mode();
+            }
+            KeyCode::PageUp => {
+                state.move_selection(-10);
+                scroll_viewport(state, 10, ScrollDirection::Up);
+            }
+            KeyCode::PageDown => {
+                state.move_selection(10);
+                scroll_viewport(state, 10, ScrollDirection::Down);
+            }
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll_viewport(state, 1, ScrollDirection::Up);
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                scroll_viewport(state, 1, ScrollDirection::Down);
+            }
+            KeyCode::Up => state.move_selection(-1),
+            KeyCode::Down => state.move_selection(1),
             _ => {}
         }
         return None;
@@ -288,6 +372,9 @@ pub(super) fn handle_key_event(
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.clear_composer();
         }
+        KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return Some(InteractiveTuiEvent::PasteImage);
+        }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.input.push('\n');
         }
@@ -298,11 +385,7 @@ pub(super) fn handle_key_event(
             state.next_history();
         }
         KeyCode::Esc => {
-            if state.running {
-                state.show_run_active_hint();
-            } else {
-                return Some(InteractiveTuiEvent::Quit);
-            }
+            state.open_selection_mode();
         }
         KeyCode::Char('q') if state.composer_is_empty() => {
             if state.running {
@@ -318,21 +401,36 @@ pub(super) fn handle_key_event(
             };
         }
         KeyCode::Tab if state.running => {
+            if state.take_paste_image_command() {
+                return Some(InteractiveTuiEvent::PasteImage);
+            }
             if let Some(prompt) = state.take_queued_prompt() {
-                state.push_history(prompt.clone());
+                state.push_history(prompt.display_text());
                 return Some(InteractiveTuiEvent::Queue(prompt));
             }
         }
         KeyCode::Enter if state.running => {
+            if state.take_paste_image_command() {
+                return Some(InteractiveTuiEvent::PasteImage);
+            }
             if let Some(steering) = state.take_steering_prompt() {
                 state.push_history(steering.text.clone());
                 return Some(InteractiveTuiEvent::Steer(steering));
             }
         }
         KeyCode::Tab | KeyCode::Enter => {
+            if state.take_paste_image_command() {
+                return Some(InteractiveTuiEvent::PasteImage);
+            }
             if let Some(prompt) = state.take_submission_prompt() {
-                state.push_history(prompt.clone());
+                state.push_history(prompt.display_text());
                 return Some(InteractiveTuiEvent::Submit(prompt));
+            }
+            if state.take_pending_clear_context() {
+                return Some(InteractiveTuiEvent::Clear);
+            }
+            if let Some(session) = state.take_pending_session_command() {
+                return Some(session_command_event(session));
             }
         }
         KeyCode::Backspace => {

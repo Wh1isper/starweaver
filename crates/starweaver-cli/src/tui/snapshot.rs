@@ -121,21 +121,29 @@ impl TuiSnapshot {
                 }
             }
             DisplayMessageKind::ToolResult => {
+                let is_error = message
+                    .payload
+                    .get("is_error")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let preview = message
                     .payload
-                    .get("content")
-                    .map(value_preview)
+                    .get("user_content")
+                    .or_else(|| message.payload.get("content"))
+                    .map(|value| value_preview_for_status(value, is_error))
                     .or_else(|| message.preview.clone());
                 if let Some(preview) = preview {
-                    if message
+                    let display = message
                         .payload
-                        .get("is_error")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                    {
-                        self.tool_calls.push(format!("result:error:{preview}"));
+                        .get("tool_name")
+                        .or_else(|| message.payload.get("name"))
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.trim().is_empty())
+                        .map_or_else(|| preview.clone(), |name| format!("{name} {preview}"));
+                    if is_error {
+                        self.tool_calls.push(format!("result:error:{display}"));
                     } else {
-                        self.tool_calls.push(format!("result:{preview}"));
+                        self.tool_calls.push(format!("result:{display}"));
                     }
                 }
             }
@@ -193,9 +201,18 @@ fn append_blockquote_text(target: &mut String, text: &str) {
 }
 
 fn value_preview(value: &Value) -> String {
+    value_preview_for_status(value, false)
+}
+
+fn value_preview_for_status(value: &Value, is_error: bool) -> String {
     let text = match value {
         Value::String(value) => value.clone(),
         other => other.to_string(),
     };
-    text.replace('\n', " ").chars().take(80).collect()
+    let compact = text.replace('\n', " ");
+    if is_error {
+        compact
+    } else {
+        compact.chars().take(80).collect()
+    }
 }

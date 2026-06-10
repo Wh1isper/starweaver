@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use starweaver_context::{ModelConfig, ToolConfig};
 use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
 use starweaver_tools::ToolRegistry;
 
@@ -45,7 +46,8 @@ pub struct Agent {
     executor: DynAgentExecutor,
     trace_recorder: DynTraceRecorder,
     policy: AgentRuntimePolicy,
-    context_window: Option<u64>,
+    model_config: Option<ModelConfig>,
+    tool_config: Option<ToolConfig>,
 }
 
 impl Agent {
@@ -69,7 +71,8 @@ impl Agent {
             executor: Arc::new(DirectAgentExecutor),
             trace_recorder: Arc::new(NoopTraceRecorder),
             policy: AgentRuntimePolicy::default(),
-            context_window: None,
+            model_config: None,
+            tool_config: None,
         }
     }
 
@@ -171,10 +174,26 @@ impl Agent {
         self
     }
 
+    /// Set the full model config exposed to `AgentContext`.
+    #[must_use]
+    pub fn with_model_config(mut self, model_config: ModelConfig) -> Self {
+        self.model_config = Some(model_config);
+        self
+    }
+
+    /// Set tool-level configuration exposed to runtime tools.
+    #[must_use]
+    pub fn with_tool_config(mut self, tool_config: ToolConfig) -> Self {
+        self.tool_config = Some(tool_config);
+        self
+    }
+
     /// Set the model context window exposed to `AgentContext` runtime instructions.
     #[must_use]
-    pub const fn with_context_window(mut self, context_window: u64) -> Self {
-        self.context_window = Some(context_window);
+    pub fn with_context_window(mut self, context_window: u64) -> Self {
+        let mut model_config = self.model_config.unwrap_or_default();
+        model_config.context_window = Some(context_window);
+        self.model_config = Some(model_config);
         self
     }
 

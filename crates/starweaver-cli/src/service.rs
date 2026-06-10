@@ -16,8 +16,12 @@ use clap_complete::Shell;
 use ring::digest;
 use serde_json::{json, Value};
 use starweaver_core::sdk_name;
+use starweaver_oauth::{redact_record, CodexOAuthClient, OAuthStore};
+use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
 use starweaver_runtime::AgentStreamRecord;
-use starweaver_session::{ApprovalRecord, ApprovalStatus, DeferredToolRecord, RunRecord};
+use starweaver_session::{
+    ApprovalRecord, ApprovalStatus, DeferredToolRecord, RunRecord, RunStatus,
+};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
 use crate::{
@@ -29,21 +33,24 @@ use crate::{
         UpdateCommand,
     },
     config::{
-        get_config_value, init_config_file, mcp_servers, read_current_session, tool_need_approval,
-        write_current_session, write_default_subagent_presets, CliConfig, ConfigScope,
-        DEFAULT_GLOBAL_GITIGNORE_TEMPLATE, DEFAULT_MCP_TEMPLATE,
-        DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
+        clear_current_session, get_config_value, init_config_file, mcp_servers,
+        read_current_session, tool_need_approval, write_current_session,
+        write_default_subagent_presets, CliConfig, ConfigScope, DEFAULT_GLOBAL_GITIGNORE_TEMPLATE,
+        DEFAULT_MCP_TEMPLATE, DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
     },
     environment::resolve_environment,
     local_store::{LocalStore, RunSummary, SessionSummary, TrimReport},
     profiles::{
-        doctor_mcp_servers, list_default_tools, list_mcp_servers, list_profiles, list_skills,
-        list_subagents, resolve_profile, show_mcp_server, show_profile, show_skill, show_subagent,
+        doctor_mcp_servers, list_config_model_profiles, list_default_tools, list_mcp_servers,
+        list_profiles, list_skills, list_subagents, resolve_profile, show_mcp_server, show_profile,
+        show_skill, show_subagent, ProfileSummary,
     },
+    prompt_input::PromptInput,
     runner::{
         execute_agent_session, execute_agent_session_with_channels, failed_display_message,
         CliRunPolicy, CliSteeringMessage,
     },
+    slash_commands::{expand_slash_command, ExpandedSlashCommand},
     CliError, CliResult,
 };
 
@@ -73,6 +80,21 @@ enum TuiRunMessage {
     Stream(AgentStreamRecord),
     Completed(CompletedPromptRun),
     Failed(String),
+}
+
+#[allow(dead_code)]
+struct OAuthRefreshGuard {
+    stop_sender: mpsc::Sender<()>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for OAuthRefreshGuard {
+    fn drop(&mut self) {
+        let _ = self.stop_sender.send(());
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 /// CLI service.
@@ -175,12 +197,14 @@ impl CliService {
     fn run_prompt_streaming_with_steering(
         &mut self,
         command: &RunCommand,
+        prompt_input: Option<PromptInput>,
         stream_sender: mpsc::Sender<AgentStreamRecord>,
         steering_receiver: mpsc::Receiver<CliSteeringMessage>,
         cancel_receiver: mpsc::Receiver<()>,
     ) -> CliResult<CompletedPromptRun> {
         let execution = self.execute_prompt_run_with_steering(
             command,
+            prompt_input,
             stream_sender,
             steering_receiver,
             cancel_receiver,
@@ -199,32 +223,46 @@ impl CliService {
         command: &RunCommand,
         stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
     ) -> CliResult<PromptRunExecution> {
-        self.execute_prompt_run_with_channels(command, stream_sender, None, None)
+        self.execute_prompt_run_with_channels(command, None, stream_sender, None, None)
     }
 
     fn execute_prompt_run_with_steering(
         &mut self,
         command: &RunCommand,
+        prompt_input: Option<PromptInput>,
         stream_sender: mpsc::Sender<AgentStreamRecord>,
         steering_receiver: mpsc::Receiver<CliSteeringMessage>,
         cancel_receiver: mpsc::Receiver<()>,
     ) -> CliResult<PromptRunExecution> {
         self.execute_prompt_run_with_channels(
             command,
+            prompt_input,
             Some(stream_sender),
             Some(steering_receiver),
             Some(cancel_receiver),
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_prompt_run_with_channels(
         &mut self,
         command: &RunCommand,
+        prompt_input: Option<PromptInput>,
         stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
         steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<PromptRunExecution> {
-        let prompt = command.prompt_text()?;
+        let input =
+            prompt_input.map_or_else(|| command.prompt_text().map(PromptInput::text), Ok)?;
+        let raw_prompt = input.text.clone();
+        let slash_expansion = expand_slash_command(&self.config.slash_commands, &raw_prompt);
+        let prompt = slash_expansion
+            .as_ref()
+            .map_or(raw_prompt, |expanded| expanded.prompt.clone());
+        let run_input = PromptInput {
+            text: prompt.clone(),
+            attachments: input.attachments,
+        };
         let worktree = self.resolve_worktree(command)?;
         let selected_profile = command
             .profile
@@ -245,28 +283,32 @@ impl CliService {
                 .ok()
                 .and_then(|session| {
                     session
-                        .head_success_run_id
+                        .active_run_id
+                        .or(session.head_run_id)
+                        .or(session.head_success_run_id)
                         .map(|run| run.as_str().to_string())
                 });
         }
-        let mut run = self.store()?.append_run(
-            &session_id,
-            prompt.clone(),
-            restore_from.clone(),
-            &resolved_profile.name,
-        )?;
-        apply_yaacli_run_metadata(&mut run, command, worktree.as_ref());
-        write_current_session(&self.config, &session_id)?;
         let restore_state = self
             .store()?
             .load_restore_state(&session_id, restore_from.as_deref())?;
+        let mut run =
+            self.store()?
+                .append_run(&session_id, prompt, restore_from, &resolved_profile.name)?;
+        apply_yaacli_run_metadata(
+            &mut run,
+            command,
+            worktree.as_ref(),
+            slash_expansion.as_ref(),
+        );
+        write_current_session(&self.config, &session_id)?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
         let result = if stream_sender.is_some()
             || steering_receiver.is_some()
             || cancel_receiver.is_some()
         {
             execute_agent_session_with_channels(
-                prompt,
+                run_input,
                 &run,
                 &resolved_profile,
                 &environment.provider,
@@ -278,7 +320,7 @@ impl CliService {
             )
         } else {
             execute_agent_session(
-                prompt,
+                run_input,
                 &run,
                 &resolved_profile,
                 &environment.provider,
@@ -295,9 +337,14 @@ impl CliService {
                 return Err(error);
             }
         };
-        let messages =
-            self.store()?
-                .complete_run(&mut run, execution.output, execution.artifacts)?;
+        let execution_failed = execution.artifacts.status == RunStatus::Failed;
+        let output = execution.output;
+        let messages = self
+            .store()?
+            .complete_run(&mut run, output.clone(), execution.artifacts)?;
+        if execution_failed {
+            return Err(CliError::Run(output));
+        }
         if self.config.auto_trim {
             let keep_runs = self.config.current_session_keep_recent_runs;
             let _report = self
@@ -469,22 +516,12 @@ impl CliService {
     }
 
     fn auth(command: AuthCommand) -> CliResult<String> {
-        let store = crate::oauth::OAuthStore::new(crate::oauth::OAuthStore::default_path());
         match command {
-            AuthCommand::Status { provider } => {
-                let record = store.load_provider(&provider)?;
-                let value = json!({
-                    "provider": provider,
-                    "logged_in": record.is_some(),
-                    "auth_path": store.path(),
-                    "record": record.map(|record| record.status_value()),
-                });
-                Ok(format!("{}\n", serde_json::to_string(&value)?))
-            }
-            AuthCommand::Logout { provider } => {
-                let removed = store.remove_provider(&provider)?;
-                Ok(format!("provider={provider}\nremoved={removed}\n"))
-            }
+            AuthCommand::Login(command) => auth_login(command),
+            AuthCommand::Status(command) => auth_status(command),
+            AuthCommand::Refresh(command) => auth_refresh(command),
+            AuthCommand::Logout(command) => auth_logout(command),
+            AuthCommand::Doctor(command) => auth_doctor(command),
         }
     }
 
@@ -585,18 +622,60 @@ impl CliService {
             return Ok(None);
         };
         let session_id = self.resolve_session_id(Some(requested_session))?;
-        let messages =
-            self.store()?
-                .replay_display(&session_id, command.run.as_deref(), command.after)?;
-        let approvals = self
-            .store()?
-            .list_approvals(Some(&session_id), command.run.as_deref())?;
+        self.tui_snapshot_for_session(&session_id, command.run.as_deref(), command.after)
+            .map(Some)
+    }
+
+    fn tui_snapshot_for_session(
+        &mut self,
+        session_id: &str,
+        run_id: Option<&str>,
+        after: Option<usize>,
+    ) -> CliResult<crate::tui::TuiSnapshot> {
+        let messages = self.store()?.replay_display(session_id, run_id, after)?;
+        let approvals = self.store()?.list_approvals(Some(session_id), run_id)?;
         let deferred = self
             .store()?
-            .list_deferred_tools(Some(&session_id), command.run.as_deref())?;
-        Ok(Some(crate::tui::TuiSnapshot::from_parts(
-            session_id, messages, &approvals, &deferred,
-        )))
+            .list_deferred_tools(Some(session_id), run_id)?;
+        Ok(crate::tui::TuiSnapshot::from_parts(
+            session_id.to_string(),
+            messages,
+            &approvals,
+            &deferred,
+        ))
+    }
+
+    fn reload_tui_session(
+        &mut self,
+        state: &mut crate::tui::InteractiveTuiState,
+        session_id_or_prefix: &str,
+    ) -> CliResult<()> {
+        let session_id = self.store()?.resolve_session_prefix(session_id_or_prefix)?;
+        let session = self.store()?.load_session(&session_id)?;
+        let snapshot = self.tui_snapshot_for_session(&session_id, None, None)?;
+        state.set_snapshot(&snapshot);
+        apply_tui_session_profile(&self.config, state, session.profile.as_deref());
+        write_current_session(&self.config, &session_id)?;
+        state.set_session_choices(self.tui_session_choices(50)?);
+        state.body.push(format!(
+            "[SYS] Loaded session {session_id}. Next message will continue from loaded history."
+        ));
+        Ok(())
+    }
+
+    fn open_tui_session_picker(
+        &mut self,
+        state: &mut crate::tui::InteractiveTuiState,
+    ) -> CliResult<()> {
+        state.set_session_choices(self.tui_session_choices(50)?);
+        state.open_session_picker();
+        Ok(())
+    }
+
+    fn tui_session_choices(&mut self, limit: usize) -> CliResult<Vec<crate::tui::SessionChoice>> {
+        self.store()?
+            .list_sessions(limit)
+            .map(session_choices_from_summaries)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -604,6 +683,7 @@ impl CliService {
         let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.tui_state_dir);
         state.set_custom_commands(self.config.slash_commands.clone());
         state.set_model_choices(model_choices(&self.config));
+        state.set_session_choices(self.tui_session_choices(50)?);
         let choices = state.model_choices().to_vec();
         let selected_profile = read_tui_selected_profile(&self.config)?
             .filter(|profile| {
@@ -631,7 +711,7 @@ impl CliService {
         }
         let mut tui = crate::tui::InteractiveTui::enter()?;
         let mut active_run: Option<ActiveTuiRun> = None;
-        let mut queued_prompt: Option<String> = None;
+        let mut queued_prompt: Option<(PromptInput, String)> = None;
         let mut persisted_profile = state.profile.clone();
         let mut dirty = true;
         loop {
@@ -663,15 +743,15 @@ impl CliService {
                                         &self.config,
                                         command,
                                         state.session_id.clone(),
-                                        prompt,
+                                        PromptInput::text(prompt),
                                         Some(state.profile.clone()),
                                     ));
                                 }
                                 crate::tui::GoalIterationOutcome::Inactive
                                 | crate::tui::GoalIterationOutcome::Complete
                                 | crate::tui::GoalIterationOutcome::MaxIterations => {
-                                    if let Some(prompt) = queued_prompt.take() {
-                                        state.begin_run(&prompt);
+                                    if let Some((prompt, display_prompt)) = queued_prompt.take() {
+                                        state.begin_run(&display_prompt);
                                         active_run = Some(spawn_tui_run(
                                             &self.config,
                                             command,
@@ -744,16 +824,72 @@ impl CliService {
                     dirty = true;
                 }
                 Some(crate::tui::InteractiveTuiEvent::Queue(prompt)) => {
-                    queued_prompt = Some(prompt);
+                    let display_prompt = state
+                        .take_pending_submission_display_prompt()
+                        .unwrap_or_else(|| prompt.display_text());
+                    queued_prompt = Some((prompt, display_prompt));
+                    dirty = true;
+                }
+                Some(crate::tui::InteractiveTuiEvent::Session(requested)) => {
+                    if active_run.is_some() {
+                        state.body.push(
+                            "[SYS] Session selection is available after the current run finishes."
+                                .to_string(),
+                        );
+                    } else if let Some(session_id) = requested {
+                        if let Err(error) = self.reload_tui_session(&mut state, &session_id) {
+                            state.body.push(format!("[SYS] {error}"));
+                        }
+                    } else if let Err(error) = self.open_tui_session_picker(&mut state) {
+                        state.body.push(format!("[SYS] {error}"));
+                    }
+                    dirty = true;
+                }
+                Some(crate::tui::InteractiveTuiEvent::Clear) => {
+                    if active_run.is_some() {
+                        state.body.push(
+                            "[SYS] Clear is available after the current run finishes.".to_string(),
+                        );
+                    } else if let Err(error) = clear_current_session(&self.config) {
+                        state.body.push(format!("[SYS] {error}"));
+                    } else {
+                        queued_prompt = None;
+                        state.set_session_choices(self.tui_session_choices(50)?);
+                    }
+                    dirty = true;
+                }
+                Some(crate::tui::InteractiveTuiEvent::PasteImage) => {
+                    match crate::clipboard::read_clipboard_image(state.pasted_image_count() + 1) {
+                        Ok(result) => {
+                            if let Some(image) = result.image {
+                                let description = image.description();
+                                state.attach_image(image);
+                                state
+                                    .body
+                                    .push(format!("[SYS] Attached {description} from clipboard"));
+                            } else {
+                                state.body.push(format!(
+                                    "[SYS] {}",
+                                    result.error.unwrap_or_else(|| {
+                                        "No clipboard image available.".to_string()
+                                    })
+                                ));
+                            }
+                        }
+                        Err(error) => state.body.push(format!("[SYS] {error}")),
+                    }
                     dirty = true;
                 }
                 Some(crate::tui::InteractiveTuiEvent::Submit(prompt)) => {
+                    let display_prompt = state
+                        .take_pending_submission_display_prompt()
+                        .unwrap_or_else(|| prompt.display_text());
                     if active_run.is_some() {
-                        queued_prompt = Some(prompt);
+                        queued_prompt = Some((prompt, display_prompt));
                         dirty = true;
                         continue;
                     }
-                    state.begin_run(&prompt);
+                    state.begin_run(&display_prompt);
                     active_run = Some(spawn_tui_run(
                         &self.config,
                         command,
@@ -980,7 +1116,7 @@ impl CliService {
 
     fn diagnostics(&self) -> CliResult<String> {
         Ok(format!(
-            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nskills={}\nsubagents={}\nmcp_servers={}\ntools={}\ntools.need_approval={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.codex.logged_in={}\nprovider.codex.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nwal=true\n",
+            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\noauth_refresh.enabled={}\noauth_refresh.interval_seconds={}\noauth_refresh.failure_retry_seconds={}\noauth_refresh.refresh_on_startup={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nskills={}\nsubagents={}\nmcp_servers={}\ntools={}\ntools.need_approval={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.codex.logged_in={}\nprovider.codex.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nwal=true\n",
             sdk_name(),
             env!("CARGO_PKG_VERSION"),
             self.config.database_path.display(),
@@ -992,6 +1128,10 @@ impl CliService {
                 .map(|profile| profile.model_id.as_str())
                 .unwrap_or_default(),
             self.config.model_profiles.len(),
+            self.config.oauth_refresh.enabled,
+            self.config.oauth_refresh.interval_seconds,
+            self.config.oauth_refresh.failure_retry_seconds,
+            self.config.oauth_refresh.refresh_on_startup,
             self.config.workspace_root.display(),
             self.config.environment_provider,
             self.config.files_policy,
@@ -1005,7 +1145,8 @@ impl CliService {
             self.config.providers.openai.api_key_env.as_deref().unwrap_or_default(),
             self.config.providers.openai.base_url.as_deref().unwrap_or_default(),
             crate::oauth::OAuthStore::new(crate::oauth::OAuthStore::default_path())
-                .load_provider("codex")?
+                .load_provider("codex")
+                .map_err(oauth_cli_error)?
                 .is_some(),
             self.config.providers.codex.base_url.as_deref().unwrap_or_default(),
             provider_ready(&self.config.providers.anthropic),
@@ -1018,14 +1159,67 @@ impl CliService {
     }
 }
 
+#[allow(dead_code)]
+fn start_oauth_refresh_guard(config: &CliConfig) -> CliResult<Option<OAuthRefreshGuard>> {
+    if !config.oauth_refresh.enabled {
+        return Ok(None);
+    }
+    let models = list_profiles(config)
+        .into_iter()
+        .map(|profile| profile.model_id)
+        .collect::<Vec<_>>();
+    if config.oauth_refresh.interval_seconds == 0 {
+        return Err(CliError::Usage(
+            "invalid oauth_refresh.interval_seconds: value must be positive".to_string(),
+        ));
+    }
+    if config.oauth_refresh.failure_retry_seconds == 0 {
+        return Err(CliError::Usage(
+            "invalid oauth_refresh.failure_retry_seconds: value must be positive".to_string(),
+        ));
+    }
+    let mut supervisor = create_oauth_refresh_supervisor_for_models_with_options(
+        models.iter().map(String::as_str),
+        Duration::from_secs(config.oauth_refresh.interval_seconds),
+        Duration::from_secs(config.oauth_refresh.failure_retry_seconds),
+        config.oauth_refresh.refresh_on_startup,
+    )
+    .map_err(oauth_cli_error)?;
+    let Some(mut supervisor) = supervisor.take() else {
+        return Ok(None);
+    };
+    let (stop_sender, stop_receiver) = mpsc::channel::<()>();
+    let handle = thread::Builder::new()
+        .name("starweaver-oauth-refresh".to_string())
+        .spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            runtime.block_on(async move {
+                supervisor.start().await;
+                let _ = tokio::task::spawn_blocking(move || stop_receiver.recv()).await;
+                supervisor.shutdown().await;
+            });
+        })
+        .map_err(|error| CliError::Run(error.to_string()))?;
+    Ok(Some(OAuthRefreshGuard {
+        stop_sender,
+        handle: Some(handle),
+    }))
+}
+
 fn spawn_tui_run(
     config: &CliConfig,
     command: &TuiCommand,
     session_id: Option<String>,
-    prompt: String,
+    prompt_input: PromptInput,
     profile: Option<String>,
 ) -> ActiveTuiRun {
-    let config = config.clone();
+    let mut config = config.clone();
+    config.oauth_refresh.enabled = false;
     let command = command.clone();
     let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
     let (stream_sender, stream_receiver) = mpsc::channel::<AgentStreamRecord>();
@@ -1045,7 +1239,7 @@ fn spawn_tui_run(
     thread::spawn(move || {
         let result = CliService::open(config).and_then(|mut service| {
             let run_command = RunCommand {
-                prompt: Some(prompt),
+                prompt: Some(prompt_input.text.clone()),
                 prompt_parts: Vec::new(),
                 session: session_id.or(command.session),
                 continue_session: false,
@@ -1063,6 +1257,7 @@ fn spawn_tui_run(
             };
             service.run_prompt_streaming_with_steering(
                 &run_command,
+                Some(prompt_input),
                 stream_sender,
                 steering_receiver,
                 cancel_receiver,
@@ -1084,23 +1279,58 @@ fn spawn_tui_run(
 }
 
 fn model_choices(config: &CliConfig) -> Vec<crate::tui::ModelChoice> {
-    list_profiles(config)
+    list_config_model_profiles(config)
         .into_iter()
-        .filter(|profile| is_user_selectable_model_profile(&profile.name))
-        .map(|profile| crate::tui::ModelChoice {
-            profile: profile.name,
-            label: profile.label,
-            model_id: profile.model_id,
-            model_settings: profile.model_settings,
-            model_cfg: profile.model_cfg,
-            context_window: profile.context_window,
-            source: profile.source,
+        .map(model_choice_from_profile)
+        .collect()
+}
+
+fn model_choice_from_profile(profile: ProfileSummary) -> crate::tui::ModelChoice {
+    crate::tui::ModelChoice {
+        profile: profile.name,
+        label: profile.label,
+        model_id: profile.model_id,
+        model_settings: profile.model_settings,
+        model_cfg: profile.model_cfg,
+        context_window: profile.context_window,
+        source: profile.source,
+    }
+}
+
+fn session_choices_from_summaries(sessions: Vec<SessionSummary>) -> Vec<crate::tui::SessionChoice> {
+    sessions
+        .into_iter()
+        .map(|session| crate::tui::SessionChoice {
+            session_id: session.session_id,
+            title: session.title,
+            profile: session.profile,
+            status: session.status,
+            run_count: session.run_count,
+            last_output_preview: session.last_output_preview,
+            updated_at: session.updated_at,
         })
         .collect()
 }
 
-fn is_user_selectable_model_profile(profile: &str) -> bool {
-    !matches!(profile, "approval_model" | "deferred_model")
+fn apply_tui_session_profile(
+    config: &CliConfig,
+    state: &mut crate::tui::InteractiveTuiState,
+    profile: Option<&str>,
+) {
+    let Some(profile) = profile else {
+        return;
+    };
+    if let Some(choice) = list_profiles(config)
+        .into_iter()
+        .find(|summary| summary.name == profile)
+        .map(model_choice_from_profile)
+    {
+        state.set_profile(choice.profile.clone(), model_choice_label(&choice));
+        state.set_context_window(choice.context_window);
+    } else {
+        state.set_profile(profile.to_string(), profile.to_string());
+        state.set_context_window(None);
+    }
 }
 
 fn selectable_profile(choices: &[crate::tui::ModelChoice], profile: &str) -> Option<String> {
@@ -1156,6 +1386,170 @@ fn should_run_interactive_tui(command: &TuiCommand) -> bool {
         return false;
     }
     command.interactive || (std::io::stdout().is_terminal() && std::io::stdin().is_terminal())
+}
+
+fn oauth_store(auth_file: Option<String>) -> OAuthStore {
+    auth_file.map_or_else(OAuthStore::default_store, OAuthStore::new)
+}
+
+fn oauth_cli_error(error: impl std::fmt::Display) -> CliError {
+    CliError::Config(error.to_string())
+}
+
+fn auth_login(command: crate::args::AuthProviderCommand) -> CliResult<String> {
+    let store = oauth_store(command.auth_file);
+    let provider = command.provider;
+    if provider != "codex" {
+        return Err(CliError::Config(format!(
+            "unknown OAuth provider: {provider}"
+        )));
+    }
+    let client = CodexOAuthClient::with_store(store.clone()).map_err(oauth_cli_error)?;
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?;
+    let (device_code, record) = runtime
+        .block_on(async {
+            let device_code = client.request_device_code().await?;
+            eprintln!("Open this URL in your browser and sign in to ChatGPT:");
+            eprintln!("{}", device_code.verification_url);
+            eprintln!();
+            eprintln!("Enter this one-time code:");
+            eprintln!("{}", device_code.user_code);
+            eprintln!();
+            eprintln!("Waiting for browser authorization...");
+            let token_code = client
+                .poll_device_token(&device_code, command.timeout_seconds)
+                .await?;
+            let record = client.exchange_device_code(&token_code).await?;
+            Ok::<_, starweaver_oauth::OAuthError>((device_code, record))
+        })
+        .map_err(oauth_cli_error)?;
+    store
+        .set_provider("codex", record.clone())
+        .map_err(oauth_cli_error)?;
+    let identity = record
+        .account
+        .email
+        .clone()
+        .or_else(|| record.account.chatgpt_user_id.clone())
+        .unwrap_or_else(|| "unknown account".to_string());
+    let value = json!({
+        "provider": "codex",
+        "logged_in": true,
+        "identity": identity,
+        "auth_path": store.path(),
+        "verification_url": device_code.verification_url,
+    });
+    Ok(format!("{}\n", serde_json::to_string(&value)?))
+}
+
+fn auth_status(command: crate::args::AuthStatusCommand) -> CliResult<String> {
+    let store = oauth_store(command.auth_file);
+    let auth = store.load().map_err(oauth_cli_error)?;
+    let provider_names = command.provider.map_or_else(
+        || auth.providers.keys().cloned().collect::<Vec<_>>(),
+        |provider| vec![provider],
+    );
+    if provider_names.is_empty() {
+        let value = json!({
+            "auth_path": store.path(),
+            "providers": [],
+        });
+        return Ok(format!("{}\n", serde_json::to_string(&value)?));
+    }
+    let rows = provider_names
+        .into_iter()
+        .map(|provider| {
+            let record = auth.providers.get(&provider).cloned();
+            json!({
+                "provider": provider,
+                "logged_in": record.is_some(),
+                "auth_path": store.path(),
+                "record": record.map(|record| record.status_value()),
+            })
+        })
+        .collect::<Vec<_>>();
+    render_json_lines(&rows)
+}
+
+fn auth_refresh(command: crate::args::AuthProviderCommand) -> CliResult<String> {
+    let store = oauth_store(command.auth_file);
+    let provider = command.provider;
+    if provider != "codex" {
+        return Err(CliError::Config(format!(
+            "unknown OAuth provider: {provider}"
+        )));
+    }
+    let client = CodexOAuthClient::with_store(store.clone()).map_err(oauth_cli_error)?;
+    let record = store
+        .get_provider("codex")
+        .map_err(oauth_cli_error)?
+        .ok_or_else(|| CliError::Config("OAuth provider is not logged in: codex".to_string()))?;
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?;
+    let refreshed = runtime
+        .block_on(client.refresh_record(&record))
+        .map_err(oauth_cli_error)?;
+    store
+        .set_provider("codex", refreshed.clone())
+        .map_err(oauth_cli_error)?;
+    let value = json!({
+        "provider": "codex",
+        "refreshed": true,
+        "auth_path": store.path(),
+        "record": refreshed.status_value(),
+    });
+    Ok(format!("{}\n", serde_json::to_string(&value)?))
+}
+
+fn auth_logout(command: crate::args::AuthLogoutCommand) -> CliResult<String> {
+    let store = oauth_store(command.auth_file);
+    let provider = command.provider;
+    if provider != "codex" {
+        return Err(CliError::Config(format!(
+            "unknown OAuth provider: {provider}"
+        )));
+    }
+    let record = store.get_provider("codex").map_err(oauth_cli_error)?;
+    if let Some(record) = record.as_ref().filter(|_| command.revoke) {
+        let client = CodexOAuthClient::with_store(store.clone()).map_err(oauth_cli_error)?;
+        let runtime =
+            tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?;
+        runtime
+            .block_on(client.revoke_record(record))
+            .map_err(oauth_cli_error)?;
+    }
+    let removed = store.remove_provider("codex").map_err(oauth_cli_error)?;
+    Ok(format!(
+        "provider=codex\nremoved={removed}\nrevoked={}\nauth_path={}\n",
+        command.revoke && record.is_some(),
+        store.path().display()
+    ))
+}
+
+fn auth_doctor(command: crate::args::AuthDoctorCommand) -> CliResult<String> {
+    let store = oauth_store(command.auth_file);
+    let auth = store.load().map_err(oauth_cli_error)?;
+    let rows = auth
+        .providers
+        .iter()
+        .map(|(provider, record)| {
+            json!({
+                "provider": provider,
+                "auth_path": store.path(),
+                "record": redact_record(record),
+            })
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        let value = json!({
+            "auth_path": store.path(),
+            "providers": [],
+        });
+        Ok(format!("{}\n", serde_json::to_string(&value)?))
+    } else {
+        render_json_lines(&rows)
+    }
 }
 
 fn tui_empty_state(config: &CliConfig) -> String {
@@ -1386,7 +1780,22 @@ fn apply_yaacli_run_metadata(
     run: &mut RunRecord,
     command: &RunCommand,
     worktree: Option<&WorktreeResolution>,
+    slash_expansion: Option<&ExpandedSlashCommand>,
 ) {
+    if let Some(expanded) = slash_expansion {
+        run.metadata.insert(
+            "cli.slash_command.name".to_string(),
+            json!(expanded.command_name),
+        );
+        run.metadata.insert(
+            "cli.slash_command.invoked".to_string(),
+            json!(expanded.invoked_name),
+        );
+        if !expanded.args.is_empty() {
+            run.metadata
+                .insert("cli.slash_command.args".to_string(), json!(expanded.args));
+        }
+    }
     if command.worker.is_some() || command.worker_label.is_some() {
         run.metadata
             .insert("cli.yaacli.worker_enabled".to_string(), json!(true));
@@ -2222,33 +2631,230 @@ mod tests {
     }
 
     #[test]
-    fn tui_model_choices_filter_internal_profiles_and_keep_config_details() {
+    fn failed_run_complete_persists_restore_state_for_continuation() {
         let temp = tempfile::tempdir().unwrap();
+        let cli = crate::args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = crate::ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let mut store = LocalStore::open(&config).unwrap();
+        let session = store
+            .create_session("general", Some("Failed run".to_string()))
+            .unwrap();
+        let session_id = session.session_id.as_str().to_string();
+        let mut run = store
+            .append_run(
+                &session_id,
+                "fail after progress".to_string(),
+                None,
+                "general",
+            )
+            .unwrap();
+        let mut state = starweaver_context::ResumableState::default();
+        state
+            .message_history
+            .push(starweaver_model::ModelMessage::Request(
+                starweaver_model::ModelRequest {
+                    parts: vec![starweaver_model::ModelRequestPart::UserPrompt {
+                        content: vec![starweaver_model::ContentPart::Text {
+                            text: "fail after progress".to_string(),
+                        }],
+                        name: None,
+                        metadata: serde_json::Map::default(),
+                    }],
+                    timestamp: None,
+                    instructions: None,
+                    run_id: Some(run.run_id.clone()),
+                    conversation_id: Some(run.conversation_id.clone()),
+                    metadata: serde_json::Map::default(),
+                },
+            ));
+        let run_session_id = run.session_id.clone();
+        let run_id = run.run_id.clone();
+        store
+            .complete_run(
+                &mut run,
+                "step limit exceeded after 1 steps".to_string(),
+                crate::local_store::RunArtifacts {
+                    state,
+                    environment_state: None,
+                    raw_records: Vec::new(),
+                    display_messages: vec![DisplayMessage::new(
+                        0,
+                        run_session_id,
+                        run_id,
+                        DisplayMessageKind::RunFailed,
+                    )],
+                    display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                    approvals: Vec::new(),
+                    deferred_tools: Vec::new(),
+                    status: RunStatus::Failed,
+                },
+            )
+            .unwrap();
+
+        let saved_run = store.load_run(&session_id, run.run_id.as_str()).unwrap();
+        assert_eq!(saved_run.status, RunStatus::Failed);
+        let saved_session = store.load_session(&session_id).unwrap();
+        assert_eq!(saved_session.head_run_id.as_ref(), Some(&run.run_id));
+        assert_eq!(saved_session.active_run_id, None);
+        let restored = store
+            .load_restore_state(&session_id, Some(run.run_id.as_str()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.message_history.len(), 1);
+    }
+
+    #[test]
+    fn tui_model_choices_only_include_configured_models_and_keep_config_details() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            r#"
+[general]
+model = "openai-responses:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+
+[model_profiles.codex]
+label = "Codex OAuth"
+model = "oauth@codex:gpt-5"
+model_settings = "openai_responses_high"
+model_cfg = "gpt5_270k"
+"#,
+        )
+        .unwrap();
         let cli = crate::args::parse(["starweaver-cli".to_string()]).unwrap();
         let config = crate::ConfigResolver::for_tests(temp.path())
             .resolve(&cli)
             .unwrap();
         let choices = model_choices(&config);
 
-        assert!(choices.iter().any(|choice| choice.profile == "coding"));
-        assert!(!choices
-            .iter()
-            .any(|choice| choice.profile == "approval_model"));
-        assert!(!choices
-            .iter()
-            .any(|choice| choice.profile == "deferred_model"));
-
-        let coding = choices
-            .iter()
-            .find(|choice| choice.profile == "coding")
-            .unwrap();
-        assert_eq!(coding.model_id, "openai:gpt-5");
         assert_eq!(
-            coding.model_settings.as_deref(),
-            Some("openai_responses_medium")
+            choices
+                .iter()
+                .map(|choice| choice.profile.as_str())
+                .collect::<Vec<_>>(),
+            vec!["default_model", "codex"]
         );
-        assert_eq!(coding.model_cfg.as_deref(), Some("gpt5_270k"));
-        assert_eq!(coding.context_window, Some(270_000));
+        assert!(!choices.iter().any(|choice| choice.model_id == "local_echo"));
+        assert!(!choices.iter().any(|choice| choice.source == "built-in"));
+
+        let default_model = choices
+            .iter()
+            .find(|choice| choice.profile == "default_model")
+            .unwrap();
+        assert_eq!(default_model.model_id, "openai-responses:gpt-5");
+        assert_eq!(
+            default_model.model_settings.as_deref(),
+            Some("openai_responses_high")
+        );
+        assert_eq!(default_model.model_cfg.as_deref(), Some("gpt5_270k"));
+        assert_eq!(default_model.context_window, Some(270_000));
+
+        let codex = choices
+            .iter()
+            .find(|choice| choice.profile == "codex")
+            .unwrap();
+        assert_eq!(codex.label.as_deref(), Some("Codex OAuth"));
+        assert_eq!(codex.model_id, "oauth@codex:gpt-5");
+    }
+
+    #[test]
+    fn tui_model_choices_are_empty_without_configured_models() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = crate::args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = crate::ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        assert!(model_choices(&config).is_empty());
+    }
+
+    #[test]
+    fn tui_session_reload_resolves_prefix_restores_snapshot_and_current_pointer() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = crate::args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = crate::ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let mut service = CliService::open(config.clone()).unwrap();
+        let session_id = {
+            let store = service.store().unwrap();
+            let session = store
+                .create_session("coding", Some("Reload session".to_string()))
+                .unwrap();
+            let session_id = session.session_id.as_str().to_string();
+            let mut run = store
+                .append_run(&session_id, "remember this".to_string(), None, "coding")
+                .unwrap();
+            let messages = vec![
+                DisplayMessage::new(
+                    0,
+                    run.session_id.clone(),
+                    run.run_id.clone(),
+                    DisplayMessageKind::AssistantTextDelta,
+                )
+                .with_payload(json!({"delta":"hello from reload"})),
+                DisplayMessage::new(
+                    1,
+                    run.session_id.clone(),
+                    run.run_id.clone(),
+                    DisplayMessageKind::RunCompleted,
+                ),
+            ];
+            store
+                .complete_run(
+                    &mut run,
+                    "hello from reload".to_string(),
+                    crate::local_store::RunArtifacts {
+                        state: starweaver_context::ResumableState::default(),
+                        environment_state: None,
+                        raw_records: Vec::new(),
+                        display_messages: messages,
+                        display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                        approvals: Vec::new(),
+                        deferred_tools: Vec::new(),
+                        status: RunStatus::Completed,
+                    },
+                )
+                .unwrap();
+            session_id
+        };
+
+        let choices = service.tui_session_choices(10).unwrap();
+        let choice = choices
+            .iter()
+            .find(|choice| choice.session_id == session_id)
+            .unwrap();
+        assert_eq!(choice.title.as_deref(), Some("Reload session"));
+        assert_eq!(choice.profile.as_deref(), Some("coding"));
+        assert_eq!(choice.run_count, 1);
+        assert_eq!(
+            choice.last_output_preview.as_deref(),
+            Some("hello from reload")
+        );
+
+        let mut state = crate::tui::InteractiveTuiState::welcome(Path::new("/tmp/config"));
+        service
+            .reload_tui_session(&mut state, &session_id[..16])
+            .unwrap();
+        assert_eq!(state.session_id.as_deref(), Some(session_id.as_str()));
+        assert_eq!(state.profile, "coding");
+        assert!(state.model.contains("openai:gpt-5"));
+        assert!(state
+            .body
+            .iter()
+            .any(|line| line.contains("hello from reload")));
+        assert!(state
+            .body
+            .iter()
+            .any(|line| line.contains("Loaded session")));
+        assert_eq!(
+            read_current_session(&config).unwrap().as_deref(),
+            Some(session_id.as_str())
+        );
     }
 
     #[test]

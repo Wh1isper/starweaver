@@ -15,7 +15,10 @@ use crate::{CliError, CliResult};
 use super::{
     markdown::{render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
     snapshot::TuiSnapshot,
-    state::{InteractiveTuiState, ModelChoice, SteeringStatus},
+    state::{
+        HitlPanelState, InteractiveTuiState, ModelChoice, SessionChoice, SteeringStatus,
+        TaskPanelItem,
+    },
 };
 
 const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56;
@@ -140,6 +143,7 @@ fn render_startup_help() -> Vec<StyledLine> {
         startup_help_line("Ctrl-O", " - insert a newline"),
         startup_help_line("/help", " - print available commands"),
         startup_help_line("/model", " - open the model profile selector"),
+        startup_help_line("/session", " - open the session selector"),
         startup_help_line("!<command>", " - run a shell command inline"),
     ]
 }
@@ -186,20 +190,8 @@ fn with_codex_border(rows: Vec<Vec<StyledSegment>>, inner_width: usize) -> Vec<S
 
 pub(super) fn render_composer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
     let input_lines = input_tail_lines(&state.input, 3);
-    let image_labels = state.pasted_image_labels();
-    let mut lines = Vec::with_capacity(
-        input_lines
-            .len()
-            .saturating_add(image_labels.len())
-            .saturating_add(2),
-    );
+    let mut lines = Vec::with_capacity(input_lines.len().saturating_add(2));
     lines.push(StyledLine::plain(""));
-    for image in image_labels {
-        let mut line =
-            StyledLine::styled("  image ", SegmentStyle::dim().merge(SegmentStyle::code()));
-        line.push(image, SegmentStyle::dim());
-        lines.push(pad_styled_line(line, width));
-    }
     for (offset, input) in input_lines.iter().enumerate() {
         let mut line = StyledLine::styled(
             if offset == 0 {
@@ -243,12 +235,215 @@ pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> 
     } else {
         Vec::new()
     };
-    if state.model_picker_visible() {
+    if state.session_picker_visible() {
+        lines.extend(render_session_picker_panel(state, width));
+    } else if state.model_picker_visible() {
         lines.extend(render_model_picker_panel(state, width));
+    } else if state.selection_mode_visible() {
+        lines.extend(render_selection_panel(state, width));
+    }
+    if let Some(hitl) = state.pending_hitl() {
+        lines.extend(render_hitl_panel(hitl, width));
+    }
+    if !state.task_panel_items().is_empty() {
+        lines.extend(render_task_panel(state.task_panel_items(), width));
     }
     lines.extend(render_steering_lines(state, width));
     lines.extend(render_status_bar_lines(state, width));
     lines
+}
+
+fn render_session_picker_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    if width < 4 {
+        return Vec::new();
+    }
+    let inner_width = width.saturating_sub(4);
+    let mut rows = Vec::<Vec<StyledSegment>>::new();
+    rows.push(vec![
+        StyledSegment {
+            text: "Sessions".to_string(),
+            style: SegmentStyle::code().merge(SegmentStyle::bold()),
+        },
+        StyledSegment {
+            text: "  Enter: reload | Esc: close | Up/Down: navigate".to_string(),
+            style: SegmentStyle::dim(),
+        },
+    ]);
+    if state.session_choices().is_empty() {
+        rows.push(vec![StyledSegment {
+            text: "No sessions found.".to_string(),
+            style: SegmentStyle::dim(),
+        }]);
+    } else {
+        let max_visible = 8usize;
+        let total = state.session_choices().len();
+        let selected_index = state.session_picker_index().min(total.saturating_sub(1));
+        let start = selected_index
+            .saturating_sub(max_visible / 2)
+            .min(total.saturating_sub(max_visible));
+        let end = total.min(start.saturating_add(max_visible));
+        if start > 0 {
+            rows.push(vec![StyledSegment {
+                text: "    ...".to_string(),
+                style: SegmentStyle::dim(),
+            }]);
+        }
+        for (index, choice) in state
+            .session_choices()
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(end.saturating_sub(start))
+        {
+            let selected = index == selected_index;
+            let current = state.session_id.as_deref() == Some(choice.session_id.as_str());
+            rows.push(render_session_picker_choice_row(
+                choice,
+                selected,
+                current,
+                inner_width,
+            ));
+        }
+        if end < total {
+            rows.push(vec![StyledSegment {
+                text: "    ...".to_string(),
+                style: SegmentStyle::dim(),
+            }]);
+        }
+        if let Some(choice) = state.session_choices().get(selected_index) {
+            rows.extend(render_session_choice_detail_rows(
+                choice,
+                state.session_id.as_deref() == Some(choice.session_id.as_str()),
+                inner_width,
+            ));
+        }
+    }
+    let mut lines = vec![StyledLine::plain("")];
+    lines.extend(with_codex_border(rows, inner_width));
+    lines
+}
+
+fn render_session_picker_choice_row(
+    choice: &SessionChoice,
+    selected: bool,
+    current: bool,
+    inner_width: usize,
+) -> Vec<StyledSegment> {
+    let id_width = 24usize.min(inner_width.saturating_sub(18).max(12));
+    let short_id = take_prefix_width(&choice.session_id, id_width);
+    let meta = format!(
+        "  {} runs={} status={} updated={}",
+        choice.profile.as_deref().unwrap_or("-"),
+        choice.run_count,
+        choice.status,
+        compact_timestamp(&choice.updated_at)
+    );
+    vec![
+        StyledSegment {
+            text: if selected { "> " } else { "  " }.to_string(),
+            style: if selected {
+                SegmentStyle::warning().merge(SegmentStyle::bold())
+            } else {
+                SegmentStyle::dim()
+            },
+        },
+        StyledSegment {
+            text: if current { "* " } else { "  " }.to_string(),
+            style: if current {
+                SegmentStyle::blockquote().merge(SegmentStyle::bold())
+            } else {
+                SegmentStyle::dim()
+            },
+        },
+        StyledSegment {
+            text: format!("{short_id:<id_width$}"),
+            style: if selected {
+                SegmentStyle::bold()
+            } else {
+                SegmentStyle::default()
+            },
+        },
+        StyledSegment {
+            text: format!("  {}", choice.display_title()),
+            style: SegmentStyle::default(),
+        },
+        StyledSegment {
+            text: meta,
+            style: SegmentStyle::dim(),
+        },
+    ]
+}
+
+fn render_session_choice_detail_rows(
+    choice: &SessionChoice,
+    current: bool,
+    inner_width: usize,
+) -> Vec<Vec<StyledSegment>> {
+    let mut rows = vec![
+        Vec::new(),
+        vec![StyledSegment {
+            text: "Highlighted session".to_string(),
+            style: SegmentStyle::code().merge(SegmentStyle::bold()),
+        }],
+    ];
+    let session_id = if current {
+        format!("{} (current)", choice.session_id)
+    } else {
+        choice.session_id.clone()
+    };
+    push_detail_row(
+        &mut rows,
+        "session:",
+        &session_id,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    push_detail_row(
+        &mut rows,
+        "title:",
+        choice.display_title(),
+        inner_width,
+        SegmentStyle::default(),
+    );
+    push_detail_row(
+        &mut rows,
+        "profile:",
+        choice.profile.as_deref().unwrap_or("unknown"),
+        inner_width,
+        SegmentStyle::default(),
+    );
+    push_detail_row(
+        &mut rows,
+        "status:",
+        &choice.status,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    let runs = choice.run_count.to_string();
+    push_detail_row(
+        &mut rows,
+        "runs:",
+        &runs,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    push_detail_row(
+        &mut rows,
+        "updated:",
+        &choice.updated_at,
+        inner_width,
+        SegmentStyle::dim(),
+    );
+    if let Some(preview) = choice.last_output_preview.as_deref() {
+        push_detail_row(
+            &mut rows,
+            "preview:",
+            preview,
+            inner_width,
+            SegmentStyle::dim(),
+        );
+    }
+    rows
 }
 
 fn render_model_picker_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
@@ -465,6 +660,191 @@ fn push_detail_row(
     }
 }
 
+fn render_selection_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
+    let style = SegmentStyle::status_warning().merge(SegmentStyle::bold());
+    let position = state
+        .selection_position_label()
+        .unwrap_or_else(|| "0/0".to_string());
+    let preview = state
+        .selected_line_preview()
+        .unwrap_or_else(|| "No transcript lines available".to_string());
+    let mut line = StyledLine::styled(
+        " SELECT ",
+        SegmentStyle::mode_badge().merge(SegmentStyle::bold()),
+    );
+    line.push(" ", SegmentStyle::status_bar());
+    line.push(position, style);
+    line.push(" | ", SegmentStyle::status_bar());
+    line.push(preview, SegmentStyle::status_bar());
+    line.push(
+        " | Mouse drag: copy text | Up/Down: Move | Enter/Esc: Close",
+        SegmentStyle::status_bar(),
+    );
+    vec![pad_styled_line_with_style(
+        line,
+        width,
+        SegmentStyle::status_bar(),
+    )]
+}
+
+fn render_hitl_panel(hitl: &HitlPanelState, width: usize) -> Vec<StyledLine> {
+    if width < 4 {
+        return Vec::new();
+    }
+    let inner_width = width.saturating_sub(4);
+    let mut rows = Vec::<Vec<StyledSegment>>::new();
+    rows.push(vec![
+        StyledSegment {
+            text: "Tool Approval Required".to_string(),
+            style: SegmentStyle::warning().merge(SegmentStyle::bold()),
+        },
+        StyledSegment {
+            text: "  Review the pending shell/tool action before continuing".to_string(),
+            style: SegmentStyle::dim(),
+        },
+    ]);
+    push_detail_row(
+        &mut rows,
+        "tool:",
+        &hitl.tool_name,
+        inner_width,
+        SegmentStyle::default(),
+    );
+    push_detail_row(
+        &mut rows,
+        "tool_call:",
+        &hitl.tool_call_id,
+        inner_width,
+        SegmentStyle::dim(),
+    );
+    if let Some(command) = hitl.command.as_deref() {
+        push_detail_row(
+            &mut rows,
+            "command:",
+            command,
+            inner_width,
+            SegmentStyle::warning(),
+        );
+    }
+    if let Some(risk) = hitl.risk_level.as_deref() {
+        push_detail_row(&mut rows, "risk:", risk, inner_width, hitl_risk_style(risk));
+    }
+    if let Some(reason) = hitl.reason.as_deref() {
+        push_detail_row(
+            &mut rows,
+            "reason:",
+            reason,
+            inner_width,
+            SegmentStyle::default(),
+        );
+    }
+    rows.push(Vec::new());
+    rows.push(vec![StyledSegment {
+        text: "Use `starweaver-cli approval list`, then approve or reject the pending approval id."
+            .to_string(),
+        style: SegmentStyle::dim(),
+    }]);
+    let mut lines = vec![StyledLine::plain("")];
+    lines.extend(with_codex_border(rows, inner_width));
+    lines
+}
+
+fn hitl_risk_style(risk: &str) -> SegmentStyle {
+    match risk {
+        "high" | "extra_high" | "extra-high" => SegmentStyle::error().merge(SegmentStyle::bold()),
+        "medium" => SegmentStyle::warning().merge(SegmentStyle::bold()),
+        _ => SegmentStyle::default(),
+    }
+}
+
+fn render_task_panel(items: &[TaskPanelItem], width: usize) -> Vec<StyledLine> {
+    if width < 4 {
+        return Vec::new();
+    }
+    let inner_width = width.saturating_sub(4);
+    let completed = items
+        .iter()
+        .filter(|item| item.status == "completed")
+        .count();
+    let in_progress = items
+        .iter()
+        .filter(|item| item.status.starts_with("in_progress"))
+        .count();
+    let mut rows = Vec::<Vec<StyledSegment>>::new();
+    rows.push(vec![
+        StyledSegment {
+            text: "Tasks".to_string(),
+            style: SegmentStyle::code().merge(SegmentStyle::bold()),
+        },
+        StyledSegment {
+            text: format!(
+                "  Progress: {completed}/{}{}",
+                items.len(),
+                if in_progress > 0 {
+                    format!(" ({in_progress} in progress)")
+                } else {
+                    String::new()
+                }
+            ),
+            style: SegmentStyle::dim(),
+        },
+    ]);
+    for item in items.iter().take(12) {
+        rows.push(render_task_row(item, inner_width));
+    }
+    if items.len() > 12 {
+        rows.push(vec![StyledSegment {
+            text: format!("  ... {} more task(s)", items.len() - 12),
+            style: SegmentStyle::dim(),
+        }]);
+    }
+    let mut lines = vec![StyledLine::plain("")];
+    lines.extend(with_codex_border(rows, inner_width));
+    lines
+}
+
+fn render_task_row(item: &TaskPanelItem, inner_width: usize) -> Vec<StyledSegment> {
+    let id_width = 8usize.min(inner_width.saturating_sub(18).max(4));
+    let subject_width = inner_width
+        .saturating_sub(id_width)
+        .saturating_sub(visible_width(&item.status))
+        .saturating_sub(8)
+        .max(1);
+    let status_style = task_status_style(&item.status);
+    vec![
+        StyledSegment {
+            text: "  #".to_string(),
+            style: SegmentStyle::dim(),
+        },
+        StyledSegment {
+            text: format!("{:<id_width$}", take_prefix_width(&item.id, id_width)),
+            style: SegmentStyle::dim(),
+        },
+        StyledSegment {
+            text: format!(" [{:<11}] ", item.status),
+            style: status_style,
+        },
+        StyledSegment {
+            text: truncate_line(&item.subject, subject_width),
+            style: if item.status == "completed" {
+                SegmentStyle::dim()
+            } else {
+                SegmentStyle::default()
+            },
+        },
+    ]
+}
+
+fn task_status_style(status: &str) -> SegmentStyle {
+    match status {
+        "completed" => SegmentStyle::blockquote().merge(SegmentStyle::bold()),
+        status if status.starts_with("in_progress") => {
+            SegmentStyle::code().merge(SegmentStyle::bold())
+        }
+        _ => SegmentStyle::default(),
+    }
+}
+
 fn render_steering_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
     let style = SegmentStyle::steering_bar();
     if state.steering_items().is_empty() {
@@ -597,15 +977,27 @@ fn status_style(state: &InteractiveTuiState) -> SegmentStyle {
     }
 }
 
-fn secondary_status_text(state: &InteractiveTuiState) -> &'static str {
-    if state.model_picker_visible() {
+fn secondary_status_text(state: &InteractiveTuiState) -> String {
+    if state.pending_hitl().is_some() {
+        return "Approval required: run `starweaver-cli approval list`, then approve or reject the pending approval | PageUp/PageDown/Mouse: Scroll".to_string();
+    }
+    if state.selection_mode_visible() {
+        return "Mouse drag: Select terminal text to copy | Up/Down: Move marker | Enter/Esc: Close selection".to_string();
+    }
+    if state.session_picker_visible() {
+        "Up/Down: Select session | Enter: Reload | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
+            .to_string()
+    } else if state.model_picker_visible() {
         "Up/Down: Select model | Enter: Use | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
+            .to_string()
     } else if state.running {
-        "Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll"
+        "Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll".to_string()
     } else if state.input.trim().is_empty() && state.pasted_image_count() == 0 {
-        "Enter: Send | Up/Down: History | PageUp/PageDown/Mouse: Scroll | Ctrl+C: Exit"
+        "Enter: Send | Ctrl+V: Attach clipboard image | Up/Down: History | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit"
+            .to_string()
     } else {
-        "Enter: Send | Tab: Multiline | Up/Down: History | Ctrl+U: Clear | Ctrl+C: Exit"
+        "Enter: Send | Tab: Multiline | Ctrl+V: Attach clipboard image | Up/Down: History | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit"
+            .to_string()
     }
 }
 
@@ -617,18 +1009,20 @@ pub(super) fn render_shortcut_overlay(width: usize) -> Vec<StyledLine> {
 pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
     let command_rows = [
         ("/help", "Print this help in the transcript"),
-        ("/clear", "Clear output"),
+        ("/clear", "Clear output and start a fresh context"),
         ("/cost", "Show usage and cost summary"),
         ("/model [profile]", "Open selector or select model profile"),
+        ("/session [id]", "Open selector or reload session"),
         (
             "/goal <task>",
             "Run task toward a verified goal until complete",
         ),
+        ("/paste-image", "Attach image from system clipboard"),
     ];
     let key_rows = [
         ("Ctrl+C", "Interrupt active run or exit"),
         ("Ctrl+D", "Exit"),
-        ("Ctrl+V", "Paste text or attach image paths"),
+        ("Ctrl+V", "Attach image from system clipboard"),
         ("Tab", "Send or queue a draft while running"),
         ("Ctrl+O", "Insert newline"),
         ("Up/Down, Ctrl+P/N", "Browse prompt history"),
@@ -708,6 +1102,14 @@ fn pad_styled_line_with_style(
         line.push(" ".repeat(width - line_width), style);
     }
     line
+}
+
+fn compact_timestamp(timestamp: &str) -> String {
+    timestamp
+        .chars()
+        .take(19)
+        .collect::<String>()
+        .replace('T', " ")
 }
 
 fn truncate_center_path(path: &str, width: usize) -> String {
@@ -1037,11 +1439,29 @@ pub(super) fn value_preview(value: &Value) -> String {
         other => other.to_string(),
     };
     let compact = text.replace('\n', " ");
-    truncate_line(&compact, 80)
+    truncate_line_center(&compact, 80)
 }
 
 pub(super) fn truncate_line(line: &str, width: usize) -> String {
     take_prefix_width(line, width)
+}
+
+pub(super) fn truncate_line_center(line: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if visible_width(line) <= width {
+        return line.to_string();
+    }
+    if width <= 1 {
+        return "…".to_string();
+    }
+    let ellipsis_width = visible_width("…");
+    let left_width = width.saturating_sub(ellipsis_width) / 2;
+    let right_width = width.saturating_sub(ellipsis_width + left_width);
+    let left = take_prefix_width(line, left_width);
+    let right = take_suffix_width(line, right_width);
+    format!("{left}…{right}")
 }
 
 pub(super) fn terminal_error(error: impl std::fmt::Display) -> CliError {

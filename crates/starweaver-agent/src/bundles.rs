@@ -14,9 +14,12 @@ use std::sync::Arc;
 use starweaver_tools::{DynToolset, PrefixedToolset};
 
 pub use environment::{
-    attach_environment, attach_process_shell, environment_toolsets, filesystem_tools,
-    process_shell_toolsets, shell_tools, EnvironmentContextCapability, EnvironmentHandle,
-    ProcessShellHandle,
+    attach_environment, attach_process_shell, attach_shell_review, attach_shell_review_handle,
+    environment_toolsets, filesystem_tools, process_shell_toolsets, shell_tools,
+    EnvironmentContextCapability, EnvironmentHandle, ProcessShellHandle, ShellReviewAction,
+    ShellReviewConfig, ShellReviewContextSnapshot, ShellReviewDecision, ShellReviewHandle,
+    ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
+    DEFAULT_SHELL_REVIEW_PROMPT,
 };
 pub use external::host_operation_tools;
 pub use media::{
@@ -27,7 +30,7 @@ pub use skills::{
     parse_skill_markdown, skill_tools, SkillError, SkillPackage, SkillRegistry, SkillSourceScope,
 };
 pub use task::task_tools;
-pub use tool_proxy::{tool_proxy_toolset, ToolProxyToolset};
+pub use tool_proxy::{tool_proxy_toolset, ToolProxyPrefixError, ToolProxyToolset};
 pub use web::{
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
     ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem,

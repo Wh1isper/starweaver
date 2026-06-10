@@ -11,6 +11,7 @@ use crate::{
 
 const K_TOKENS: u32 = 1024;
 const ANTHROPIC_1M_BETA: &str = "context-1m-2025-08-07";
+const ANTHROPIC_INTERLEAVED_BETA: &str = "interleaved-thinking-2025-05-14";
 const ANTHROPIC_CONTEXT_MANAGEMENT_BETA: &str = "context-management-2025-06-27";
 
 /// Preset lookup failure.
@@ -36,92 +37,359 @@ pub enum ModelPresetError {
 
 /// Built-in model settings preset names.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ModelSettingsPreset {
-    /// Anthropic default adaptive thinking.
+    /// `anthropic_default` model settings preset.
+    #[serde(rename = "anthropic_default")]
     AnthropicDefault,
-    /// Anthropic xhigh adaptive thinking.
-    AnthropicAdaptiveXhigh,
-    /// Anthropic high adaptive thinking.
+    /// `anthropic_high` model settings preset.
+    #[serde(rename = "anthropic_high")]
     AnthropicHigh,
-    /// Anthropic medium adaptive thinking.
+    /// `anthropic_medium` model settings preset.
+    #[serde(rename = "anthropic_medium")]
     AnthropicMedium,
-    /// Anthropic low adaptive thinking.
+    /// `anthropic_low` model settings preset.
+    #[serde(rename = "anthropic_low")]
     AnthropicLow,
-    /// Anthropic thinking disabled.
+    /// `anthropic_off` model settings preset.
+    #[serde(rename = "anthropic_off")]
     AnthropicOff,
-    /// Anthropic default adaptive thinking with 1M context beta.
+    /// `anthropic_adaptive_default` model settings preset.
+    #[serde(rename = "anthropic_adaptive_default")]
+    AnthropicAdaptiveDefault,
+    /// `anthropic_adaptive_xhigh` model settings preset.
+    #[serde(rename = "anthropic_adaptive_xhigh")]
+    AnthropicAdaptiveXhigh,
+    /// `anthropic_adaptive_high` model settings preset.
+    #[serde(rename = "anthropic_adaptive_high")]
+    AnthropicAdaptiveHigh,
+    /// `anthropic_adaptive_medium` model settings preset.
+    #[serde(rename = "anthropic_adaptive_medium")]
+    AnthropicAdaptiveMedium,
+    /// `anthropic_adaptive_low` model settings preset.
+    #[serde(rename = "anthropic_adaptive_low")]
+    AnthropicAdaptiveLow,
+    /// `anthropic_adaptive_1m_default` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_default")]
+    AnthropicAdaptive1mDefault,
+    /// `anthropic_adaptive_1m_xhigh` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_xhigh")]
+    AnthropicAdaptive1mXhigh,
+    /// `anthropic_adaptive_1m_high` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_high")]
+    AnthropicAdaptive1mHigh,
+    /// `anthropic_adaptive_1m_medium` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_medium")]
+    AnthropicAdaptive1mMedium,
+    /// `anthropic_adaptive_1m_low` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_low")]
+    AnthropicAdaptive1mLow,
+    /// `anthropic_adaptive_cm_default` model settings preset.
+    #[serde(rename = "anthropic_adaptive_cm_default")]
+    AnthropicAdaptiveCmDefault,
+    /// `anthropic_adaptive_cm_xhigh` model settings preset.
+    #[serde(rename = "anthropic_adaptive_cm_xhigh")]
+    AnthropicAdaptiveCmXhigh,
+    /// `anthropic_adaptive_cm_high` model settings preset.
+    #[serde(rename = "anthropic_adaptive_cm_high")]
+    AnthropicAdaptiveCmHigh,
+    /// `anthropic_adaptive_cm_medium` model settings preset.
+    #[serde(rename = "anthropic_adaptive_cm_medium")]
+    AnthropicAdaptiveCmMedium,
+    /// `anthropic_adaptive_cm_low` model settings preset.
+    #[serde(rename = "anthropic_adaptive_cm_low")]
+    AnthropicAdaptiveCmLow,
+    /// `anthropic_adaptive_1m_cm_default` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_cm_default")]
+    AnthropicAdaptive1mCmDefault,
+    /// `anthropic_adaptive_1m_cm_xhigh` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_cm_xhigh")]
+    AnthropicAdaptive1mCmXhigh,
+    /// `anthropic_adaptive_1m_cm_high` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_cm_high")]
+    AnthropicAdaptive1mCmHigh,
+    /// `anthropic_adaptive_1m_cm_medium` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_cm_medium")]
+    AnthropicAdaptive1mCmMedium,
+    /// `anthropic_adaptive_1m_cm_low` model settings preset.
+    #[serde(rename = "anthropic_adaptive_1m_cm_low")]
+    AnthropicAdaptive1mCmLow,
+    /// `anthropic_default_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_default_interleaved_thinking")]
+    AnthropicDefaultInterleavedThinking,
+    /// `anthropic_high_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_high_interleaved_thinking")]
+    AnthropicHighInterleavedThinking,
+    /// `anthropic_medium_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_medium_interleaved_thinking")]
+    AnthropicMediumInterleavedThinking,
+    /// `anthropic_low_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_low_interleaved_thinking")]
+    AnthropicLowInterleavedThinking,
+    /// `anthropic_off_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_off_interleaved_thinking")]
+    AnthropicOffInterleavedThinking,
+    /// `anthropic_1m_default` model settings preset.
+    #[serde(rename = "anthropic_1m_default")]
     Anthropic1mDefault,
-    /// Anthropic high adaptive thinking with context management beta.
+    /// `anthropic_1m_high` model settings preset.
+    #[serde(rename = "anthropic_1m_high")]
+    Anthropic1mHigh,
+    /// `anthropic_1m_medium` model settings preset.
+    #[serde(rename = "anthropic_1m_medium")]
+    Anthropic1mMedium,
+    /// `anthropic_1m_low` model settings preset.
+    #[serde(rename = "anthropic_1m_low")]
+    Anthropic1mLow,
+    /// `anthropic_1m_off` model settings preset.
+    #[serde(rename = "anthropic_1m_off")]
+    Anthropic1mOff,
+    /// `anthropic_1m_default_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_default_interleaved_thinking")]
+    Anthropic1mDefaultInterleavedThinking,
+    /// `anthropic_1m_high_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_high_interleaved_thinking")]
+    Anthropic1mHighInterleavedThinking,
+    /// `anthropic_1m_medium_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_medium_interleaved_thinking")]
+    Anthropic1mMediumInterleavedThinking,
+    /// `anthropic_1m_low_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_low_interleaved_thinking")]
+    Anthropic1mLowInterleavedThinking,
+    /// `anthropic_1m_off_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_off_interleaved_thinking")]
+    Anthropic1mOffInterleavedThinking,
+    /// `anthropic_cm_default` model settings preset.
+    #[serde(rename = "anthropic_cm_default")]
+    AnthropicCmDefault,
+    /// `anthropic_cm_high` model settings preset.
+    #[serde(rename = "anthropic_cm_high")]
     AnthropicCmHigh,
-    /// Anthropic high adaptive thinking with 1M context and context management betas.
+    /// `anthropic_cm_medium` model settings preset.
+    #[serde(rename = "anthropic_cm_medium")]
+    AnthropicCmMedium,
+    /// `anthropic_cm_low` model settings preset.
+    #[serde(rename = "anthropic_cm_low")]
+    AnthropicCmLow,
+    /// `anthropic_cm_off` model settings preset.
+    #[serde(rename = "anthropic_cm_off")]
+    AnthropicCmOff,
+    /// `anthropic_1m_cm_default` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_default")]
+    Anthropic1mCmDefault,
+    /// `anthropic_1m_cm_high` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_high")]
     Anthropic1mCmHigh,
-    /// `OpenAI` Chat default reasoning.
+    /// `anthropic_1m_cm_medium` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_medium")]
+    Anthropic1mCmMedium,
+    /// `anthropic_1m_cm_low` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_low")]
+    Anthropic1mCmLow,
+    /// `anthropic_1m_cm_off` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_off")]
+    Anthropic1mCmOff,
+    /// `anthropic_cm_default_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_cm_default_interleaved_thinking")]
+    AnthropicCmDefaultInterleavedThinking,
+    /// `anthropic_cm_high_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_cm_high_interleaved_thinking")]
+    AnthropicCmHighInterleavedThinking,
+    /// `anthropic_cm_medium_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_cm_medium_interleaved_thinking")]
+    AnthropicCmMediumInterleavedThinking,
+    /// `anthropic_cm_low_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_cm_low_interleaved_thinking")]
+    AnthropicCmLowInterleavedThinking,
+    /// `anthropic_cm_off_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_cm_off_interleaved_thinking")]
+    AnthropicCmOffInterleavedThinking,
+    /// `anthropic_1m_cm_default_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_default_interleaved_thinking")]
+    Anthropic1mCmDefaultInterleavedThinking,
+    /// `anthropic_1m_cm_high_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_high_interleaved_thinking")]
+    Anthropic1mCmHighInterleavedThinking,
+    /// `anthropic_1m_cm_medium_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_medium_interleaved_thinking")]
+    Anthropic1mCmMediumInterleavedThinking,
+    /// `anthropic_1m_cm_low_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_low_interleaved_thinking")]
+    Anthropic1mCmLowInterleavedThinking,
+    /// `anthropic_1m_cm_off_interleaved_thinking` model settings preset.
+    #[serde(rename = "anthropic_1m_cm_off_interleaved_thinking")]
+    Anthropic1mCmOffInterleavedThinking,
+    /// `openai_default` model settings preset.
+    #[serde(rename = "openai_default")]
     OpenAiDefault,
-    /// `OpenAI` Chat xhigh reasoning.
+    /// `openai_xhigh` model settings preset.
+    #[serde(rename = "openai_xhigh")]
     OpenAiXhigh,
-    /// `OpenAI` Chat high reasoning.
+    /// `openai_high` model settings preset.
+    #[serde(rename = "openai_high")]
     OpenAiHigh,
-    /// `OpenAI` Chat medium reasoning.
+    /// `openai_medium` model settings preset.
+    #[serde(rename = "openai_medium")]
     OpenAiMedium,
-    /// `OpenAI` Chat low reasoning.
+    /// `openai_low` model settings preset.
+    #[serde(rename = "openai_low")]
     OpenAiLow,
-    /// `OpenAI` Responses default reasoning.
+    /// `openai_responses_default` model settings preset.
+    #[serde(rename = "openai_responses_default")]
     OpenAiResponsesDefault,
-    /// `OpenAI` Responses xhigh reasoning.
+    /// `openai_responses_xhigh` model settings preset.
+    #[serde(rename = "openai_responses_xhigh")]
     OpenAiResponsesXhigh,
-    /// `OpenAI` Responses high reasoning.
+    /// `openai_responses_high` model settings preset.
+    #[serde(rename = "openai_responses_high")]
     OpenAiResponsesHigh,
-    /// `OpenAI` Responses medium reasoning.
+    /// `openai_responses_medium` model settings preset.
+    #[serde(rename = "openai_responses_medium")]
     OpenAiResponsesMedium,
-    /// `OpenAI` Responses low reasoning.
+    /// `openai_responses_low` model settings preset.
+    #[serde(rename = "openai_responses_low")]
     OpenAiResponsesLow,
-    /// `OpenAI` Responses high reasoning on the priority tier.
+    /// `openai_responses_default_fast` model settings preset.
+    #[serde(rename = "openai_responses_default_fast")]
+    OpenAiResponsesDefaultFast,
+    /// `openai_responses_xhigh_fast` model settings preset.
+    #[serde(rename = "openai_responses_xhigh_fast")]
+    OpenAiResponsesXhighFast,
+    /// `openai_responses_high_fast` model settings preset.
+    #[serde(rename = "openai_responses_high_fast")]
     OpenAiResponsesHighFast,
-    /// `DeepSeek` V4 high thinking.
+    /// `openai_responses_medium_fast` model settings preset.
+    #[serde(rename = "openai_responses_medium_fast")]
+    OpenAiResponsesMediumFast,
+    /// `openai_responses_low_fast` model settings preset.
+    #[serde(rename = "openai_responses_low_fast")]
+    OpenAiResponsesLowFast,
+    /// `deepseek_v4_default` model settings preset.
+    #[serde(rename = "deepseek_v4_default")]
+    DeepSeekV4Default,
+    /// `deepseek_v4_high` model settings preset.
+    #[serde(rename = "deepseek_v4_high")]
     DeepSeekV4High,
-    /// `DeepSeek` V4 maximum thinking.
+    /// `deepseek_v4_max` model settings preset.
+    #[serde(rename = "deepseek_v4_max")]
     DeepSeekV4Max,
-    /// `DeepSeek` V4 thinking disabled.
+    /// `deepseek_v4_off` model settings preset.
+    #[serde(rename = "deepseek_v4_off")]
     DeepSeekV4Off,
-    /// `MiMo` V2.5 thinking enabled.
+    /// `mimo_v2_5` model settings preset.
+    #[serde(rename = "mimo_v2_5")]
     MimoV25,
-    /// `MiMo` V2.5 Pro thinking enabled.
+    /// `mimo_v2_5_pro` model settings preset.
+    #[serde(rename = "mimo_v2_5_pro")]
     MimoV25Pro,
-    /// Gemini 2.5 default thinking budget.
+    /// `gemini_thinking_budget_default` model settings preset.
+    #[serde(rename = "gemini_thinking_budget_default")]
     GeminiThinkingBudgetDefault,
-    /// Gemini 2.5 high thinking budget.
+    /// `gemini_thinking_budget_high` model settings preset.
+    #[serde(rename = "gemini_thinking_budget_high")]
     GeminiThinkingBudgetHigh,
-    /// Gemini 2.5 medium thinking budget.
+    /// `gemini_thinking_budget_medium` model settings preset.
+    #[serde(rename = "gemini_thinking_budget_medium")]
     GeminiThinkingBudgetMedium,
-    /// Gemini 2.5 low thinking budget.
+    /// `gemini_thinking_budget_low` model settings preset.
+    #[serde(rename = "gemini_thinking_budget_low")]
     GeminiThinkingBudgetLow,
-    /// Gemini 3 default thinking level.
+    /// `gemini_thinking_level_default` model settings preset.
+    #[serde(rename = "gemini_thinking_level_default")]
     GeminiThinkingLevelDefault,
-    /// Gemini 3 high thinking level.
+    /// `gemini_thinking_level_high` model settings preset.
+    #[serde(rename = "gemini_thinking_level_high")]
     GeminiThinkingLevelHigh,
-    /// Gemini 3 medium thinking level.
+    /// `gemini_thinking_level_medium` model settings preset.
+    #[serde(rename = "gemini_thinking_level_medium")]
     GeminiThinkingLevelMedium,
-    /// Gemini 3 low thinking level.
+    /// `gemini_thinking_level_low` model settings preset.
+    #[serde(rename = "gemini_thinking_level_low")]
     GeminiThinkingLevelLow,
-    /// Gemini 3 minimal thinking level.
+    /// `gemini_thinking_level_minimal` model settings preset.
+    #[serde(rename = "gemini_thinking_level_minimal")]
     GeminiThinkingLevelMinimal,
 }
 
 impl ModelSettingsPreset {
     /// Return the canonical preset name.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AnthropicDefault => "anthropic_default",
-            Self::AnthropicAdaptiveXhigh => "anthropic_adaptive_xhigh",
             Self::AnthropicHigh => "anthropic_high",
             Self::AnthropicMedium => "anthropic_medium",
             Self::AnthropicLow => "anthropic_low",
             Self::AnthropicOff => "anthropic_off",
+            Self::AnthropicAdaptiveDefault => "anthropic_adaptive_default",
+            Self::AnthropicAdaptiveXhigh => "anthropic_adaptive_xhigh",
+            Self::AnthropicAdaptiveHigh => "anthropic_adaptive_high",
+            Self::AnthropicAdaptiveMedium => "anthropic_adaptive_medium",
+            Self::AnthropicAdaptiveLow => "anthropic_adaptive_low",
+            Self::AnthropicAdaptive1mDefault => "anthropic_adaptive_1m_default",
+            Self::AnthropicAdaptive1mXhigh => "anthropic_adaptive_1m_xhigh",
+            Self::AnthropicAdaptive1mHigh => "anthropic_adaptive_1m_high",
+            Self::AnthropicAdaptive1mMedium => "anthropic_adaptive_1m_medium",
+            Self::AnthropicAdaptive1mLow => "anthropic_adaptive_1m_low",
+            Self::AnthropicAdaptiveCmDefault => "anthropic_adaptive_cm_default",
+            Self::AnthropicAdaptiveCmXhigh => "anthropic_adaptive_cm_xhigh",
+            Self::AnthropicAdaptiveCmHigh => "anthropic_adaptive_cm_high",
+            Self::AnthropicAdaptiveCmMedium => "anthropic_adaptive_cm_medium",
+            Self::AnthropicAdaptiveCmLow => "anthropic_adaptive_cm_low",
+            Self::AnthropicAdaptive1mCmDefault => "anthropic_adaptive_1m_cm_default",
+            Self::AnthropicAdaptive1mCmXhigh => "anthropic_adaptive_1m_cm_xhigh",
+            Self::AnthropicAdaptive1mCmHigh => "anthropic_adaptive_1m_cm_high",
+            Self::AnthropicAdaptive1mCmMedium => "anthropic_adaptive_1m_cm_medium",
+            Self::AnthropicAdaptive1mCmLow => "anthropic_adaptive_1m_cm_low",
+            Self::AnthropicDefaultInterleavedThinking => "anthropic_default_interleaved_thinking",
+            Self::AnthropicHighInterleavedThinking => "anthropic_high_interleaved_thinking",
+            Self::AnthropicMediumInterleavedThinking => "anthropic_medium_interleaved_thinking",
+            Self::AnthropicLowInterleavedThinking => "anthropic_low_interleaved_thinking",
+            Self::AnthropicOffInterleavedThinking => "anthropic_off_interleaved_thinking",
             Self::Anthropic1mDefault => "anthropic_1m_default",
+            Self::Anthropic1mHigh => "anthropic_1m_high",
+            Self::Anthropic1mMedium => "anthropic_1m_medium",
+            Self::Anthropic1mLow => "anthropic_1m_low",
+            Self::Anthropic1mOff => "anthropic_1m_off",
+            Self::Anthropic1mDefaultInterleavedThinking => {
+                "anthropic_1m_default_interleaved_thinking"
+            }
+            Self::Anthropic1mHighInterleavedThinking => "anthropic_1m_high_interleaved_thinking",
+            Self::Anthropic1mMediumInterleavedThinking => {
+                "anthropic_1m_medium_interleaved_thinking"
+            }
+            Self::Anthropic1mLowInterleavedThinking => "anthropic_1m_low_interleaved_thinking",
+            Self::Anthropic1mOffInterleavedThinking => "anthropic_1m_off_interleaved_thinking",
+            Self::AnthropicCmDefault => "anthropic_cm_default",
             Self::AnthropicCmHigh => "anthropic_cm_high",
+            Self::AnthropicCmMedium => "anthropic_cm_medium",
+            Self::AnthropicCmLow => "anthropic_cm_low",
+            Self::AnthropicCmOff => "anthropic_cm_off",
+            Self::Anthropic1mCmDefault => "anthropic_1m_cm_default",
             Self::Anthropic1mCmHigh => "anthropic_1m_cm_high",
+            Self::Anthropic1mCmMedium => "anthropic_1m_cm_medium",
+            Self::Anthropic1mCmLow => "anthropic_1m_cm_low",
+            Self::Anthropic1mCmOff => "anthropic_1m_cm_off",
+            Self::AnthropicCmDefaultInterleavedThinking => {
+                "anthropic_cm_default_interleaved_thinking"
+            }
+            Self::AnthropicCmHighInterleavedThinking => "anthropic_cm_high_interleaved_thinking",
+            Self::AnthropicCmMediumInterleavedThinking => {
+                "anthropic_cm_medium_interleaved_thinking"
+            }
+            Self::AnthropicCmLowInterleavedThinking => "anthropic_cm_low_interleaved_thinking",
+            Self::AnthropicCmOffInterleavedThinking => "anthropic_cm_off_interleaved_thinking",
+            Self::Anthropic1mCmDefaultInterleavedThinking => {
+                "anthropic_1m_cm_default_interleaved_thinking"
+            }
+            Self::Anthropic1mCmHighInterleavedThinking => {
+                "anthropic_1m_cm_high_interleaved_thinking"
+            }
+            Self::Anthropic1mCmMediumInterleavedThinking => {
+                "anthropic_1m_cm_medium_interleaved_thinking"
+            }
+            Self::Anthropic1mCmLowInterleavedThinking => "anthropic_1m_cm_low_interleaved_thinking",
+            Self::Anthropic1mCmOffInterleavedThinking => "anthropic_1m_cm_off_interleaved_thinking",
             Self::OpenAiDefault => "openai_default",
             Self::OpenAiXhigh => "openai_xhigh",
             Self::OpenAiHigh => "openai_high",
@@ -132,7 +400,12 @@ impl ModelSettingsPreset {
             Self::OpenAiResponsesHigh => "openai_responses_high",
             Self::OpenAiResponsesMedium => "openai_responses_medium",
             Self::OpenAiResponsesLow => "openai_responses_low",
+            Self::OpenAiResponsesDefaultFast => "openai_responses_default_fast",
+            Self::OpenAiResponsesXhighFast => "openai_responses_xhigh_fast",
             Self::OpenAiResponsesHighFast => "openai_responses_high_fast",
+            Self::OpenAiResponsesMediumFast => "openai_responses_medium_fast",
+            Self::OpenAiResponsesLowFast => "openai_responses_low_fast",
+            Self::DeepSeekV4Default => "deepseek_v4_default",
             Self::DeepSeekV4High => "deepseek_v4_high",
             Self::DeepSeekV4Max => "deepseek_v4_max",
             Self::DeepSeekV4Off => "deepseek_v4_off",
@@ -153,29 +426,39 @@ impl ModelSettingsPreset {
 
 /// Built-in model capability/config preset names.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ModelConfigPreset {
     /// Claude 200K context profile.
+    #[serde(rename = "claude_200k")]
     Claude200k,
     /// Claude 400K context profile.
+    #[serde(rename = "claude_400k")]
     Claude400k,
     /// Claude 1M context profile.
+    #[serde(rename = "claude_1m")]
     Claude1m,
     /// GPT-5 270K context profile.
+    #[serde(rename = "gpt5_270k")]
     Gpt5_270k,
     /// GPT-5 1M class context profile.
+    #[serde(rename = "gpt5_1m")]
     Gpt5_1m,
     /// `DeepSeek` V4 400K context profile.
+    #[serde(rename = "deepseek_v4_400k")]
     DeepSeekV4_400k,
     /// `DeepSeek` V4 1M context profile.
+    #[serde(rename = "deepseek_v4_1m")]
     DeepSeekV4_1m,
     /// `MiMo` V2.5 1M context profile.
+    #[serde(rename = "mimo_v2_5_1m")]
     MimoV25_1m,
     /// `MiMo` V2.5 Pro 1M context profile.
+    #[serde(rename = "mimo_v2_5_pro_1m")]
     MimoV25Pro1m,
     /// Gemini 200K context profile.
+    #[serde(rename = "gemini_200k")]
     Gemini200k,
     /// Gemini 1M context profile.
+    #[serde(rename = "gemini_1m")]
     Gemini1m,
 }
 
@@ -388,32 +671,25 @@ pub fn gemini_http_config(
 
 #[allow(clippy::match_same_arms)]
 fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
+    if let Some(spec) = parse_anthropic_preset(name)
+        .or_else(|| parse_anthropic_preset(anthropic_legacy_alias(name)))
+    {
+        return Some(match spec.kind {
+            AnthropicPresetKind::Adaptive { effort, max_tokens } => anthropic_adaptive(
+                effort,
+                max_tokens,
+                spec.use_1m,
+                spec.use_interleaved,
+                spec.use_context_management,
+            ),
+            AnthropicPresetKind::Off => anthropic_off(
+                spec.use_1m,
+                spec.use_interleaved,
+                spec.use_context_management,
+            ),
+        });
+    }
     match name {
-        "anthropic_default" | "anthropic_adaptive_default" => {
-            Some(anthropic_adaptive("high", 32 * K_TOKENS, false, false))
-        }
-        "anthropic_adaptive_xhigh" => {
-            Some(anthropic_adaptive("xhigh", 64 * K_TOKENS, false, false))
-        }
-        "anthropic_high" | "anthropic_adaptive_high" => {
-            Some(anthropic_adaptive("high", 32 * K_TOKENS, false, false))
-        }
-        "anthropic_medium" | "anthropic_adaptive_medium" => {
-            Some(anthropic_adaptive("medium", 21 * K_TOKENS, false, false))
-        }
-        "anthropic_low" | "anthropic_adaptive_low" => {
-            Some(anthropic_adaptive("low", 16 * K_TOKENS, false, false))
-        }
-        "anthropic_off" => Some(anthropic_off(false, false)),
-        "anthropic_1m_default" | "anthropic_adaptive_1m_default" => {
-            Some(anthropic_adaptive("high", 32 * K_TOKENS, true, false))
-        }
-        "anthropic_cm_high" | "anthropic_adaptive_cm_high" => {
-            Some(anthropic_adaptive("high", 32 * K_TOKENS, false, true))
-        }
-        "anthropic_1m_cm_high" | "anthropic_adaptive_1m_cm_high" => {
-            Some(anthropic_adaptive("high", 32 * K_TOKENS, true, true))
-        }
         "openai_default" => Some(openai_chat("medium", 8 * K_TOKENS)),
         "openai_xhigh" => Some(openai_chat("xhigh", 32 * K_TOKENS)),
         "openai_high" => Some(openai_chat("high", 16 * K_TOKENS)),
@@ -426,10 +702,34 @@ fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
         "openai_responses_high" => Some(openai_responses("high", "detailed", 32 * K_TOKENS, None)),
         "openai_responses_medium" => Some(openai_responses("medium", "auto", 16 * K_TOKENS, None)),
         "openai_responses_low" => Some(openai_responses("low", "concise", 8 * K_TOKENS, None)),
+        "openai_responses_default_fast" => Some(openai_responses(
+            "medium",
+            "auto",
+            16 * K_TOKENS,
+            Some(ServiceTier::Priority),
+        )),
+        "openai_responses_xhigh_fast" => Some(openai_responses(
+            "xhigh",
+            "detailed",
+            64 * K_TOKENS,
+            Some(ServiceTier::Priority),
+        )),
         "openai_responses_high_fast" => Some(openai_responses(
             "high",
             "detailed",
             32 * K_TOKENS,
+            Some(ServiceTier::Priority),
+        )),
+        "openai_responses_medium_fast" => Some(openai_responses(
+            "medium",
+            "auto",
+            16 * K_TOKENS,
+            Some(ServiceTier::Priority),
+        )),
+        "openai_responses_low_fast" => Some(openai_responses(
+            "low",
+            "concise",
+            8 * K_TOKENS,
             Some(ServiceTier::Priority),
         )),
         "deepseek_v4_default" | "deepseek_v4_high" => Some(openai_compatible_thinking(
@@ -447,20 +747,129 @@ fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
             Some(128 * K_TOKENS),
             false,
         )),
-        "mimo_v2_5" | "mimo_v2_5_pro" => Some(openai_compatible_thinking("high", None, true)),
+        "mimo_v2_5" | "mimo_v2_5_pro" => Some(mimo_v2_5()),
         "gemini_thinking_budget_default" | "gemini_thinking_budget_medium" => {
             Some(gemini_budget(16 * K_TOKENS, 16 * K_TOKENS))
         }
         "gemini_thinking_budget_high" => Some(gemini_budget(32 * K_TOKENS, 21 * K_TOKENS)),
         "gemini_thinking_budget_low" => Some(gemini_budget(4 * K_TOKENS, 8 * K_TOKENS)),
-        "gemini_thinking_level_default" | "gemini_thinking_level_low" => {
-            Some(gemini_level("LOW", 8 * K_TOKENS))
-        }
+        "gemini_thinking_level_default" => Some(gemini_level("LOW", 16 * K_TOKENS)),
+        "gemini_thinking_level_low" => Some(gemini_level("LOW", 8 * K_TOKENS)),
         "gemini_thinking_level_high" => Some(gemini_level("HIGH", 21 * K_TOKENS)),
         "gemini_thinking_level_medium" => Some(gemini_level("MEDIUM", 16 * K_TOKENS)),
         "gemini_thinking_level_minimal" => Some(gemini_level("MINIMAL", 4 * K_TOKENS)),
         _ => None,
     }
+}
+
+#[derive(Clone, Copy)]
+struct AnthropicPresetSpec {
+    kind: AnthropicPresetKind,
+    use_1m: bool,
+    use_interleaved: bool,
+    use_context_management: bool,
+}
+
+#[derive(Clone, Copy)]
+enum AnthropicPresetKind {
+    Adaptive {
+        effort: &'static str,
+        max_tokens: u32,
+    },
+    Off,
+}
+
+fn anthropic_legacy_alias(name: &str) -> &str {
+    match name {
+        "anthropic_default" | "anthropic_default_interleaved_thinking" => {
+            "anthropic_adaptive_default"
+        }
+        "anthropic_high" | "anthropic_high_interleaved_thinking" => "anthropic_adaptive_high",
+        "anthropic_medium" | "anthropic_medium_interleaved_thinking" => "anthropic_adaptive_medium",
+        "anthropic_low" | "anthropic_low_interleaved_thinking" => "anthropic_adaptive_low",
+        "anthropic_off_interleaved_thinking" => "anthropic_off",
+        "anthropic_1m_default" | "anthropic_1m_default_interleaved_thinking" => {
+            "anthropic_adaptive_1m_default"
+        }
+        "anthropic_1m_high" | "anthropic_1m_high_interleaved_thinking" => {
+            "anthropic_adaptive_1m_high"
+        }
+        "anthropic_1m_medium" | "anthropic_1m_medium_interleaved_thinking" => {
+            "anthropic_adaptive_1m_medium"
+        }
+        "anthropic_1m_low" | "anthropic_1m_low_interleaved_thinking" => "anthropic_adaptive_1m_low",
+        "anthropic_1m_off_interleaved_thinking" => "anthropic_1m_off",
+        "anthropic_cm_default" | "anthropic_cm_default_interleaved_thinking" => {
+            "anthropic_adaptive_cm_default"
+        }
+        "anthropic_cm_high" | "anthropic_cm_high_interleaved_thinking" => {
+            "anthropic_adaptive_cm_high"
+        }
+        "anthropic_cm_medium" | "anthropic_cm_medium_interleaved_thinking" => {
+            "anthropic_adaptive_cm_medium"
+        }
+        "anthropic_cm_low" | "anthropic_cm_low_interleaved_thinking" => "anthropic_adaptive_cm_low",
+        "anthropic_cm_off_interleaved_thinking" => "anthropic_cm_off",
+        "anthropic_1m_cm_default" | "anthropic_1m_cm_default_interleaved_thinking" => {
+            "anthropic_adaptive_1m_cm_default"
+        }
+        "anthropic_1m_cm_high" | "anthropic_1m_cm_high_interleaved_thinking" => {
+            "anthropic_adaptive_1m_cm_high"
+        }
+        "anthropic_1m_cm_medium" | "anthropic_1m_cm_medium_interleaved_thinking" => {
+            "anthropic_adaptive_1m_cm_medium"
+        }
+        "anthropic_1m_cm_low" | "anthropic_1m_cm_low_interleaved_thinking" => {
+            "anthropic_adaptive_1m_cm_low"
+        }
+        "anthropic_1m_cm_off_interleaved_thinking" => "anthropic_1m_cm_off",
+        other => other,
+    }
+}
+
+fn parse_anthropic_preset(name: &str) -> Option<AnthropicPresetSpec> {
+    let (name, use_interleaved) = name
+        .strip_suffix("_interleaved_thinking")
+        .map_or((name, false), |name| (name, true));
+    let without_prefix = name.strip_prefix("anthropic_")?;
+    let (use_1m, rest) = without_prefix.strip_prefix("adaptive_1m_").map_or_else(
+        || {
+            without_prefix
+                .strip_prefix("1m_")
+                .map_or((false, without_prefix), |rest| (true, rest))
+        },
+        |rest| (true, rest),
+    );
+    let rest = rest.strip_prefix("adaptive_").unwrap_or(rest);
+    let (use_context_management, rest) = rest
+        .strip_prefix("cm_")
+        .map_or((false, rest), |rest| (true, rest));
+    let kind = match rest {
+        "default" | "high" => AnthropicPresetKind::Adaptive {
+            effort: "high",
+            max_tokens: 32 * K_TOKENS,
+        },
+        "xhigh" => AnthropicPresetKind::Adaptive {
+            effort: "xhigh",
+            max_tokens: 64 * K_TOKENS,
+        },
+        "medium" => AnthropicPresetKind::Adaptive {
+            effort: "medium",
+            max_tokens: 21 * K_TOKENS,
+        },
+        "low" => AnthropicPresetKind::Adaptive {
+            effort: "low",
+            max_tokens: 16 * K_TOKENS,
+        },
+        "off" => AnthropicPresetKind::Off,
+        _ => return None,
+    };
+    Some(AnthropicPresetSpec {
+        kind,
+        use_1m,
+        use_interleaved,
+        use_context_management,
+    })
 }
 
 #[allow(clippy::match_same_arms, clippy::too_many_lines)]
@@ -573,6 +982,7 @@ fn anthropic_adaptive(
     effort: &str,
     max_tokens: u32,
     use_1m: bool,
+    use_interleaved: bool,
     use_context_management: bool,
 ) -> ModelSettings {
     let mut settings = ModelSettings {
@@ -587,12 +997,18 @@ fn anthropic_adaptive(
         provider_options: Some(json!({
             "anthropic_effort": effort,
             "anthropic_cache_instructions": true,
+            "anthropic_cache_tool_definitions": true,
             "anthropic_cache_response": true,
             "anthropic_cache_messages": true,
         })),
         ..ModelSettings::default()
     };
-    apply_anthropic_betas(&mut settings, use_1m, use_context_management);
+    apply_anthropic_betas(
+        &mut settings,
+        use_1m,
+        use_interleaved,
+        use_context_management,
+    );
     if use_context_management {
         settings.extra_body.insert(
             "context_management".to_string(),
@@ -602,7 +1018,11 @@ fn anthropic_adaptive(
     settings
 }
 
-fn anthropic_off(use_1m: bool, use_context_management: bool) -> ModelSettings {
+fn anthropic_off(
+    use_1m: bool,
+    use_interleaved: bool,
+    use_context_management: bool,
+) -> ModelSettings {
     let mut settings = ModelSettings {
         thinking: Some(ThinkingSettings {
             effort: "off".to_string(),
@@ -613,12 +1033,18 @@ fn anthropic_off(use_1m: bool, use_context_management: bool) -> ModelSettings {
         }),
         provider_options: Some(json!({
             "anthropic_cache_instructions": true,
+            "anthropic_cache_tool_definitions": true,
             "anthropic_cache_response": true,
             "anthropic_cache_messages": true,
         })),
         ..ModelSettings::default()
     };
-    apply_anthropic_betas(&mut settings, use_1m, use_context_management);
+    apply_anthropic_betas(
+        &mut settings,
+        use_1m,
+        use_interleaved,
+        use_context_management,
+    );
     if use_context_management {
         settings.extra_body.insert(
             "context_management".to_string(),
@@ -628,10 +1054,18 @@ fn anthropic_off(use_1m: bool, use_context_management: bool) -> ModelSettings {
     settings
 }
 
-fn apply_anthropic_betas(settings: &mut ModelSettings, use_1m: bool, use_context_management: bool) {
+fn apply_anthropic_betas(
+    settings: &mut ModelSettings,
+    use_1m: bool,
+    use_interleaved: bool,
+    use_context_management: bool,
+) {
     let mut betas = Vec::new();
     if use_1m {
         betas.push(ANTHROPIC_1M_BETA);
+    }
+    if use_interleaved {
+        betas.push(ANTHROPIC_INTERLEAVED_BETA);
     }
     if use_context_management {
         betas.push(ANTHROPIC_CONTEXT_MANAGEMENT_BETA);
@@ -703,6 +1137,15 @@ fn openai_compatible_thinking(
             include_thoughts: None,
             summary: None,
         }),
+        extra_body,
+        ..ModelSettings::default()
+    }
+}
+
+fn mimo_v2_5() -> ModelSettings {
+    let mut extra_body = Map::new();
+    extra_body.insert("thinking".to_string(), json!({"type": "enabled"}));
+    ModelSettings {
         extra_body,
         ..ModelSettings::default()
     }
@@ -783,14 +1226,65 @@ fn model_config_alias(name: &str) -> &str {
 
 const MODEL_SETTINGS_PRESETS: &[&str] = &[
     "anthropic_default",
-    "anthropic_adaptive_xhigh",
     "anthropic_high",
     "anthropic_medium",
     "anthropic_low",
     "anthropic_off",
+    "anthropic_adaptive_default",
+    "anthropic_adaptive_xhigh",
+    "anthropic_adaptive_high",
+    "anthropic_adaptive_medium",
+    "anthropic_adaptive_low",
+    "anthropic_adaptive_1m_default",
+    "anthropic_adaptive_1m_xhigh",
+    "anthropic_adaptive_1m_high",
+    "anthropic_adaptive_1m_medium",
+    "anthropic_adaptive_1m_low",
+    "anthropic_adaptive_cm_default",
+    "anthropic_adaptive_cm_xhigh",
+    "anthropic_adaptive_cm_high",
+    "anthropic_adaptive_cm_medium",
+    "anthropic_adaptive_cm_low",
+    "anthropic_adaptive_1m_cm_default",
+    "anthropic_adaptive_1m_cm_xhigh",
+    "anthropic_adaptive_1m_cm_high",
+    "anthropic_adaptive_1m_cm_medium",
+    "anthropic_adaptive_1m_cm_low",
+    "anthropic_default_interleaved_thinking",
+    "anthropic_high_interleaved_thinking",
+    "anthropic_medium_interleaved_thinking",
+    "anthropic_low_interleaved_thinking",
+    "anthropic_off_interleaved_thinking",
     "anthropic_1m_default",
+    "anthropic_1m_high",
+    "anthropic_1m_medium",
+    "anthropic_1m_low",
+    "anthropic_1m_off",
+    "anthropic_1m_default_interleaved_thinking",
+    "anthropic_1m_high_interleaved_thinking",
+    "anthropic_1m_medium_interleaved_thinking",
+    "anthropic_1m_low_interleaved_thinking",
+    "anthropic_1m_off_interleaved_thinking",
+    "anthropic_cm_default",
     "anthropic_cm_high",
+    "anthropic_cm_medium",
+    "anthropic_cm_low",
+    "anthropic_cm_off",
+    "anthropic_1m_cm_default",
     "anthropic_1m_cm_high",
+    "anthropic_1m_cm_medium",
+    "anthropic_1m_cm_low",
+    "anthropic_1m_cm_off",
+    "anthropic_cm_default_interleaved_thinking",
+    "anthropic_cm_high_interleaved_thinking",
+    "anthropic_cm_medium_interleaved_thinking",
+    "anthropic_cm_low_interleaved_thinking",
+    "anthropic_cm_off_interleaved_thinking",
+    "anthropic_1m_cm_default_interleaved_thinking",
+    "anthropic_1m_cm_high_interleaved_thinking",
+    "anthropic_1m_cm_medium_interleaved_thinking",
+    "anthropic_1m_cm_low_interleaved_thinking",
+    "anthropic_1m_cm_off_interleaved_thinking",
     "openai_default",
     "openai_xhigh",
     "openai_high",
@@ -801,7 +1295,12 @@ const MODEL_SETTINGS_PRESETS: &[&str] = &[
     "openai_responses_high",
     "openai_responses_medium",
     "openai_responses_low",
+    "openai_responses_default_fast",
+    "openai_responses_xhigh_fast",
     "openai_responses_high_fast",
+    "openai_responses_medium_fast",
+    "openai_responses_low_fast",
+    "deepseek_v4_default",
     "deepseek_v4_high",
     "deepseek_v4_max",
     "deepseek_v4_off",
@@ -820,13 +1319,36 @@ const MODEL_SETTINGS_PRESETS: &[&str] = &[
 
 const MODEL_SETTINGS_ALIASES: &[(&str, &str)] = &[
     ("anthropic", "anthropic_default"),
-    ("anthropic_adaptive", "anthropic_default"),
+    ("anthropic_adaptive", "anthropic_adaptive_default"),
+    ("anthropic_adaptive_1m", "anthropic_adaptive_1m_default"),
+    ("anthropic_adaptive_cm", "anthropic_adaptive_cm_default"),
+    (
+        "anthropic_adaptive_1m_cm",
+        "anthropic_adaptive_1m_cm_default",
+    ),
+    (
+        "anthropic_interleaved",
+        "anthropic_default_interleaved_thinking",
+    ),
     ("anthropic_1m", "anthropic_1m_default"),
-    ("anthropic_cm", "anthropic_cm_high"),
+    (
+        "anthropic_1m_interleaved",
+        "anthropic_1m_default_interleaved_thinking",
+    ),
+    ("anthropic_cm", "anthropic_cm_default"),
+    ("anthropic_1m_cm", "anthropic_1m_cm_default"),
+    (
+        "anthropic_cm_interleaved",
+        "anthropic_cm_default_interleaved_thinking",
+    ),
+    (
+        "anthropic_1m_cm_interleaved",
+        "anthropic_1m_cm_default_interleaved_thinking",
+    ),
     ("openai", "openai_default"),
     ("openai_responses", "openai_responses_default"),
-    ("deepseek", "deepseek_v4_high"),
-    ("deepseek_v4", "deepseek_v4_high"),
+    ("deepseek", "deepseek_v4_default"),
+    ("deepseek_v4", "deepseek_v4_default"),
     ("mimo", "mimo_v2_5_pro"),
     ("mimo_v2.5", "mimo_v2_5"),
     ("mimo_v2.5_pro", "mimo_v2_5_pro"),
@@ -874,6 +1396,144 @@ const MODEL_CONFIG_ALIASES: &[(&str, &str)] = &[
 mod tests {
     use super::*;
 
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn preset_enums_match_registries_and_serde_names() {
+        let settings_presets = [
+            ModelSettingsPreset::AnthropicDefault,
+            ModelSettingsPreset::AnthropicHigh,
+            ModelSettingsPreset::AnthropicMedium,
+            ModelSettingsPreset::AnthropicLow,
+            ModelSettingsPreset::AnthropicOff,
+            ModelSettingsPreset::AnthropicAdaptiveDefault,
+            ModelSettingsPreset::AnthropicAdaptiveXhigh,
+            ModelSettingsPreset::AnthropicAdaptiveHigh,
+            ModelSettingsPreset::AnthropicAdaptiveMedium,
+            ModelSettingsPreset::AnthropicAdaptiveLow,
+            ModelSettingsPreset::AnthropicAdaptive1mDefault,
+            ModelSettingsPreset::AnthropicAdaptive1mXhigh,
+            ModelSettingsPreset::AnthropicAdaptive1mHigh,
+            ModelSettingsPreset::AnthropicAdaptive1mMedium,
+            ModelSettingsPreset::AnthropicAdaptive1mLow,
+            ModelSettingsPreset::AnthropicAdaptiveCmDefault,
+            ModelSettingsPreset::AnthropicAdaptiveCmXhigh,
+            ModelSettingsPreset::AnthropicAdaptiveCmHigh,
+            ModelSettingsPreset::AnthropicAdaptiveCmMedium,
+            ModelSettingsPreset::AnthropicAdaptiveCmLow,
+            ModelSettingsPreset::AnthropicAdaptive1mCmDefault,
+            ModelSettingsPreset::AnthropicAdaptive1mCmXhigh,
+            ModelSettingsPreset::AnthropicAdaptive1mCmHigh,
+            ModelSettingsPreset::AnthropicAdaptive1mCmMedium,
+            ModelSettingsPreset::AnthropicAdaptive1mCmLow,
+            ModelSettingsPreset::AnthropicDefaultInterleavedThinking,
+            ModelSettingsPreset::AnthropicHighInterleavedThinking,
+            ModelSettingsPreset::AnthropicMediumInterleavedThinking,
+            ModelSettingsPreset::AnthropicLowInterleavedThinking,
+            ModelSettingsPreset::AnthropicOffInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mDefault,
+            ModelSettingsPreset::Anthropic1mHigh,
+            ModelSettingsPreset::Anthropic1mMedium,
+            ModelSettingsPreset::Anthropic1mLow,
+            ModelSettingsPreset::Anthropic1mOff,
+            ModelSettingsPreset::Anthropic1mDefaultInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mHighInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mMediumInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mLowInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mOffInterleavedThinking,
+            ModelSettingsPreset::AnthropicCmDefault,
+            ModelSettingsPreset::AnthropicCmHigh,
+            ModelSettingsPreset::AnthropicCmMedium,
+            ModelSettingsPreset::AnthropicCmLow,
+            ModelSettingsPreset::AnthropicCmOff,
+            ModelSettingsPreset::Anthropic1mCmDefault,
+            ModelSettingsPreset::Anthropic1mCmHigh,
+            ModelSettingsPreset::Anthropic1mCmMedium,
+            ModelSettingsPreset::Anthropic1mCmLow,
+            ModelSettingsPreset::Anthropic1mCmOff,
+            ModelSettingsPreset::AnthropicCmDefaultInterleavedThinking,
+            ModelSettingsPreset::AnthropicCmHighInterleavedThinking,
+            ModelSettingsPreset::AnthropicCmMediumInterleavedThinking,
+            ModelSettingsPreset::AnthropicCmLowInterleavedThinking,
+            ModelSettingsPreset::AnthropicCmOffInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mCmDefaultInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mCmHighInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mCmMediumInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mCmLowInterleavedThinking,
+            ModelSettingsPreset::Anthropic1mCmOffInterleavedThinking,
+            ModelSettingsPreset::OpenAiDefault,
+            ModelSettingsPreset::OpenAiXhigh,
+            ModelSettingsPreset::OpenAiHigh,
+            ModelSettingsPreset::OpenAiMedium,
+            ModelSettingsPreset::OpenAiLow,
+            ModelSettingsPreset::OpenAiResponsesDefault,
+            ModelSettingsPreset::OpenAiResponsesXhigh,
+            ModelSettingsPreset::OpenAiResponsesHigh,
+            ModelSettingsPreset::OpenAiResponsesMedium,
+            ModelSettingsPreset::OpenAiResponsesLow,
+            ModelSettingsPreset::OpenAiResponsesDefaultFast,
+            ModelSettingsPreset::OpenAiResponsesXhighFast,
+            ModelSettingsPreset::OpenAiResponsesHighFast,
+            ModelSettingsPreset::OpenAiResponsesMediumFast,
+            ModelSettingsPreset::OpenAiResponsesLowFast,
+            ModelSettingsPreset::DeepSeekV4Default,
+            ModelSettingsPreset::DeepSeekV4High,
+            ModelSettingsPreset::DeepSeekV4Max,
+            ModelSettingsPreset::DeepSeekV4Off,
+            ModelSettingsPreset::MimoV25,
+            ModelSettingsPreset::MimoV25Pro,
+            ModelSettingsPreset::GeminiThinkingBudgetDefault,
+            ModelSettingsPreset::GeminiThinkingBudgetHigh,
+            ModelSettingsPreset::GeminiThinkingBudgetMedium,
+            ModelSettingsPreset::GeminiThinkingBudgetLow,
+            ModelSettingsPreset::GeminiThinkingLevelDefault,
+            ModelSettingsPreset::GeminiThinkingLevelHigh,
+            ModelSettingsPreset::GeminiThinkingLevelMedium,
+            ModelSettingsPreset::GeminiThinkingLevelLow,
+            ModelSettingsPreset::GeminiThinkingLevelMinimal,
+        ];
+        let settings_names = settings_presets
+            .iter()
+            .map(|preset| preset.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(settings_names, MODEL_SETTINGS_PRESETS);
+        for preset in settings_presets {
+            let value = serde_json::to_value(preset).unwrap();
+            assert_eq!(
+                value,
+                serde_json::Value::String(preset.as_str().to_string())
+            );
+            let parsed: ModelSettingsPreset = serde_json::from_value(value).unwrap();
+            assert_eq!(parsed, preset);
+        }
+
+        let config_presets = [
+            ModelConfigPreset::Claude200k,
+            ModelConfigPreset::Claude400k,
+            ModelConfigPreset::Claude1m,
+            ModelConfigPreset::Gpt5_270k,
+            ModelConfigPreset::Gpt5_1m,
+            ModelConfigPreset::DeepSeekV4_400k,
+            ModelConfigPreset::DeepSeekV4_1m,
+            ModelConfigPreset::MimoV25_1m,
+            ModelConfigPreset::MimoV25Pro1m,
+            ModelConfigPreset::Gemini200k,
+            ModelConfigPreset::Gemini1m,
+        ];
+        let config_names = config_presets
+            .iter()
+            .map(|preset| preset.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(config_names, MODEL_CONFIG_PRESETS);
+        for preset in config_presets {
+            let value = serde_json::to_value(preset).unwrap();
+            assert_eq!(
+                value,
+                serde_json::Value::String(preset.as_str().to_string())
+            );
+            let parsed: ModelConfigPreset = serde_json::from_value(value).unwrap();
+            assert_eq!(parsed, preset);
+        }
+    }
     #[test]
     fn resolves_model_settings_presets_and_aliases() {
         let anthropic = get_model_settings("anthropic").unwrap();

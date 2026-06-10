@@ -6,6 +6,7 @@ use starweaver_agent::{
     get_model_config, get_model_settings, model_runtime_preset, AgentSpec, AgentSpecRegistry,
     FunctionModel, FunctionModelInfo, ModelSettings, TestModel,
 };
+use starweaver_core::Usage;
 use starweaver_model::{ModelMessage, ModelResponse};
 
 #[tokio::test]
@@ -83,6 +84,66 @@ model:
     assert_eq!(result.output, "preset");
 }
 
+#[test]
+fn agent_spec_infers_oauth_model_ids_like_ya_agent_sdk() {
+    let spec = AgentSpec::from_yaml(
+        r"
+name: oauth-helper
+model:
+  model_id: oauth@codex:gpt-5.5
+",
+    )
+    .unwrap();
+    let _agent = spec.builder(&AgentSpecRegistry::new()).unwrap().build();
+}
+
+#[test]
+fn agent_spec_rejects_invalid_oauth_model_ids() {
+    let spec = AgentSpec::from_yaml(
+        r"
+name: invalid-oauth-helper
+model:
+  model_id: oauth@codex
+",
+    )
+    .unwrap();
+    let Err(error) = spec.builder(&AgentSpecRegistry::new()) else {
+        panic!("invalid oauth model id should fail");
+    };
+
+    assert!(matches!(
+        error,
+        starweaver_agent::AgentSpecError::InvalidOAuthModel { model_id }
+            if model_id == "oauth@codex"
+    ));
+}
+
+#[tokio::test]
+async fn agent_spec_registered_model_takes_precedence_over_oauth_inference() {
+    let spec = AgentSpec::from_yaml(
+        r"
+name: registered-oauth-helper
+model:
+  model_id: oauth@codex:gpt-5.5
+",
+    )
+    .unwrap();
+    let registry = AgentSpecRegistry::new().with_model(
+        "oauth@codex:gpt-5.5",
+        Arc::new(TestModel::with_text("registered")),
+    );
+
+    let result = spec
+        .builder(&registry)
+        .unwrap()
+        .build()
+        .run("hello")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "registered");
+}
+
 #[tokio::test]
 async fn agent_spec_model_settings_preset_reaches_runtime_requests() {
     let spec = AgentSpec::from_yaml(
@@ -122,4 +183,39 @@ model:
         .unwrap();
 
     assert_eq!(result.output, "settings ok");
+}
+
+#[tokio::test]
+async fn agent_spec_context_window_does_not_default_to_accumulated_usage_limit() {
+    let spec = AgentSpec::from_yaml(
+        r"
+name: context-window-helper
+model:
+  model_id: usage-model
+  config_preset: gpt5_270k
+",
+    )
+    .unwrap();
+    let model = TestModel::with_responses(vec![ModelResponse {
+        usage: Usage {
+            requests: 1,
+            input_tokens: 200_000,
+            output_tokens: 100_001,
+            total_tokens: 300_001,
+            tool_calls: 0,
+        },
+        ..ModelResponse::text("usage ok")
+    }]);
+    let registry = AgentSpecRegistry::new().with_model("usage-model", Arc::new(model));
+
+    let result = spec
+        .builder(&registry)
+        .unwrap()
+        .build()
+        .run("hello")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "usage ok");
+    assert_eq!(result.state.usage.total_tokens, 300_001);
 }

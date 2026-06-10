@@ -4,7 +4,7 @@
 [general]
 default_profile = "default_model"
 default_output = "agui-jsonl"
-default_hitl = "prompt"
+default_hitl = "defer"
 model = "openai-responses:gpt-5"
 model_settings = "openai_responses_high"
 model_cfg = "gpt5_270k"
@@ -44,6 +44,17 @@ additional_dirs = []
 disabled = []
 disabled_builtins = []
 
+[commands.review]
+description = "Review the current changes"
+aliases = ["rv"]
+prompt = """
+Review the working tree changes for correctness, safety, and missing tests.
+"""
+
+[commands.test]
+description = "Run targeted tests"
+prompt = "Run tests for {{instruction}} and report failures with fixes."
+
 [providers.openai]
 enabled = true
 api_key_env = "OPENAI_API_KEY"
@@ -52,6 +63,12 @@ base_url = "https://api.openai.com/v1"
 [providers.codex]
 base_url = "https://chatgpt.com/backend-api/codex"
 max_tokens_parameter = "omit"
+
+[oauth_refresh]
+enabled = true
+interval_seconds = 1800
+failure_retry_seconds = 60
+refresh_on_startup = true
 
 [providers.homelab]
 base_url = "https://gateway.example/v1"

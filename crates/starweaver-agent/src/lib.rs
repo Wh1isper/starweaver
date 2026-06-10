@@ -14,15 +14,18 @@ use starweaver_model::ModelAdapter;
 use starweaver_runtime::Agent as RuntimeAgent;
 
 pub use bundles::{
-    attach_environment, attach_process_shell, core_toolsets, environment_toolsets,
-    filesystem_tools, host_operation_tools, namespaced_toolset, parse_skill_markdown,
-    process_shell_toolsets, shell_tools, skill_tools, task_tools, tool_proxy_toolset,
-    EnvironmentContextCapability, EnvironmentHandle, HostMediaCapabilities,
-    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
-    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
-    MediaUnderstandingResponse, ProcessShellHandle, ScrapeRequest, ScrapeResponse, SearchRequest,
-    SearchResponse, SearchResultItem, SkillError, SkillPackage, SkillRegistry, SkillSourceScope,
-    ToolProxyToolset,
+    attach_environment, attach_process_shell, attach_shell_review, attach_shell_review_handle,
+    core_toolsets, environment_toolsets, filesystem_tools, host_operation_tools,
+    namespaced_toolset, parse_skill_markdown, process_shell_toolsets, shell_tools, skill_tools,
+    task_tools, tool_proxy_toolset, EnvironmentContextCapability, EnvironmentHandle,
+    HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
+    HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
+    MediaUnderstandingRequest, MediaUnderstandingResponse, ProcessShellHandle, ScrapeRequest,
+    ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem, ShellReviewAction,
+    ShellReviewConfig, ShellReviewContextSnapshot, ShellReviewDecision, ShellReviewHandle,
+    ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
+    SkillError, SkillPackage, SkillRegistry, SkillSourceScope, ToolProxyPrefixError,
+    ToolProxyToolset, DEFAULT_SHELL_REVIEW_PROMPT,
 };
 pub use filters::{
     default_filter_bundle, default_filter_processors, MediaUploadRequest, MediaUploader,
@@ -39,7 +42,10 @@ pub use presets::{
     ToolsetWrapperSpec, WorkspacePolicySpec,
 };
 pub use session::{AgentRunOptions, AgentSession};
-pub use starweaver_context::{AgentContext, AgentContextHandle, ResumableState};
+pub use starweaver_context::{
+    AgentContext, AgentContextHandle, ModelCapability, ModelConfig, Ratio, ResumableState,
+    SecurityConfig, ToolConfig,
+};
 pub use starweaver_core::{
     AgentId, CheckpointId, ConversationId, RunId, SubagentLifecycleEvent, SubagentLifecycleKind,
     SubagentSpec, TaskId, TraceContext, Usage,
@@ -101,6 +107,8 @@ pub struct AgentBuilder {
     output_functions: Vec<Arc<dyn OutputFunction>>,
     dynamic_instructions: Vec<Arc<dyn DynamicInstruction>>,
     usage_limits: Option<UsageLimits>,
+    model_config: Option<ModelConfig>,
+    tool_config: Option<ToolConfig>,
     context_window: Option<u64>,
     history_processors: Vec<Arc<dyn HistoryProcessor>>,
     tools: ToolRegistry,
@@ -126,6 +134,8 @@ impl AgentBuilder {
             output_functions: Vec::new(),
             dynamic_instructions: Vec::new(),
             usage_limits: None,
+            model_config: None,
+            tool_config: None,
             context_window: None,
             history_processors: Vec::new(),
             tools: ToolRegistry::new(),
@@ -197,6 +207,20 @@ impl AgentBuilder {
     #[must_use]
     pub const fn usage_limits(mut self, limits: UsageLimits) -> Self {
         self.usage_limits = Some(limits);
+        self
+    }
+
+    /// Set the full model config stored on `AgentContext` at run time.
+    #[must_use]
+    pub fn model_config(mut self, model_config: ModelConfig) -> Self {
+        self.model_config = Some(model_config);
+        self
+    }
+
+    /// Set the tool config stored on `AgentContext` at run time.
+    #[must_use]
+    pub fn tool_config(mut self, tool_config: ToolConfig) -> Self {
+        self.tool_config = Some(tool_config);
         self
     }
 
@@ -352,8 +376,17 @@ impl AgentBuilder {
         if let Some(limits) = self.usage_limits {
             agent = agent.with_usage_limits(limits);
         }
+        if let Some(model_config) = self.model_config {
+            agent = agent.with_model_config(model_config);
+        }
+        if let Some(tool_config) = self.tool_config {
+            agent = agent.with_tool_config(tool_config);
+        }
         if let Some(context_window) = self.context_window {
             agent = agent.with_context_window(context_window);
+        }
+        for processor in crate::filters::default_filter_processors() {
+            agent = agent.with_history_processor(processor);
         }
         for processor in self.history_processors {
             agent = agent.with_history_processor(processor);

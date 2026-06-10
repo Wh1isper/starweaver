@@ -23,7 +23,7 @@ pub struct AgentRuntimePolicy {
 impl Default for AgentRuntimePolicy {
     fn default() -> Self {
         Self {
-            max_steps: 16,
+            max_steps: 10_000,
             output_retries: 1,
         }
     }

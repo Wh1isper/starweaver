@@ -109,6 +109,15 @@ pub enum AgentStreamEvent {
         /// Final output text.
         output: String,
     },
+    /// A run failed after preserving recoverable context state.
+    RunFailed {
+        /// Run identifier.
+        run_id: RunId,
+        /// Failure kind.
+        error_kind: String,
+        /// Human-readable error message.
+        message: String,
+    },
 }
 
 /// Sequenced stream event record.

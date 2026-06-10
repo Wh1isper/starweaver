@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
+use starweaver_context::AgentContext;
 use starweaver_core::Metadata;
 use starweaver_environment::{DynEnvironmentProvider, EnvironmentError, FileGlobOptions};
 use starweaver_tools::{DynToolset, StaticToolset, ToolInstruction};
@@ -65,6 +66,32 @@ impl SkillRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Register discovered skill markdown files as relaxed view paths on an agent context.
+    pub fn register_relaxed_view_patterns(&self, context: &mut AgentContext) {
+        let patterns = self.relaxed_markdown_patterns();
+        if patterns.is_empty() {
+            context
+                .tool_config
+                .unregister_view_relaxed_text_patterns(SKILL_RELAXED_VIEW_SOURCE);
+        } else {
+            context
+                .tool_config
+                .register_view_relaxed_text_patterns(SKILL_RELAXED_VIEW_SOURCE, patterns);
+        }
+    }
+
+    /// Return relaxed view regex patterns for all markdown files inside skill directories.
+    #[must_use]
+    pub fn relaxed_markdown_patterns(&self) -> Vec<String> {
+        self.packages
+            .values()
+            .filter_map(|package| parent_path(&normalize_skill_path(&package.path)))
+            .map(|directory| format!("re:^{}/.*\\.md$", regex_escape(&directory)))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     /// Insert or replace a skill package.
@@ -230,13 +257,46 @@ pub fn parse_skill_markdown(path: &str, content: &str) -> Result<SkillPackage, S
     })
 }
 
+const SKILL_RELAXED_VIEW_SOURCE: &str = "skills:markdown";
+
+fn normalize_skill_path(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/");
+    if let Some(stripped) = normalized.strip_prefix("./") {
+        normalized = stripped.to_string();
+    }
+    normalized.trim_end_matches('/').to_string()
+}
+
+fn parent_path(path: &str) -> Option<String> {
+    path.rsplit_once('/').map(|(parent, _)| parent.to_string())
+}
+
+fn regex_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(
+            ch,
+            '.' | '+' | '*' | '?' | '^' | '$' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+        ) {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
 fn join_path(root: &str, path: &str) -> String {
-    let root = root.trim_matches('/');
+    let root = if root == "/" {
+        "/"
+    } else {
+        root.trim_end_matches('/')
+    };
     let path = path.trim_matches('/');
     match (root.is_empty(), path.is_empty()) {
         (true, true) => String::new(),
         (true, false) => path.to_string(),
         (false, true) => root.to_string(),
+        (false, false) if root == "/" => format!("/{path}"),
         (false, false) => format!("{root}/{path}"),
     }
 }

@@ -112,7 +112,7 @@ impl TestModel {
 
     /// Set model profile.
     #[must_use]
-    pub const fn with_profile(mut self, profile: ModelProfile) -> Self {
+    pub fn with_profile(mut self, profile: ModelProfile) -> Self {
         self.profile = profile;
         self
     }
@@ -322,7 +322,7 @@ impl FunctionModel {
 
     /// Set model profile.
     #[must_use]
-    pub const fn with_profile(mut self, profile: ModelProfile) -> Self {
+    pub fn with_profile(mut self, profile: ModelProfile) -> Self {
         self.profile = profile;
         self
     }

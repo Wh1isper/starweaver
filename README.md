@@ -4,7 +4,9 @@ Starweaver is a Rust agent SDK for building provider-neutral AI agents with a so
 
 The project focuses on these workspace layers:
 
-- `starweaver-model`: provider-neutral model messages, settings, profiles, transport, and replay-tested provider mappings.
+- `starweaver-model`: provider-neutral model messages, settings, profiles, transport, replay-tested provider mappings, and OAuth-backed provider model adapters.
+- `starweaver-oauth`: OAuth credential storage under `~/.starweaver`, Codex device login, token refresh, JWT metadata extraction, and store-backed token sources.
+- `starweaver-oauth-provider`: OAuth-backed provider helpers, Codex model construction helpers, and refresh supervisor utilities.
 - `starweaver-tools`: function tools, toolsets, MCP foundations, tool metadata, approval/deferred markers, and execution primitives.
 - `starweaver-runtime`: deterministic agent loop, tool loop, output validation, retries, stream records, capability hooks, trace recording, and executor checkpoints.
 - `starweaver-agent`: public SDK facade with `AgentBuilder`, `AgentApp`, SDK sessions, spec presets, first-party tool bundles, subagents, and application-facing helpers.

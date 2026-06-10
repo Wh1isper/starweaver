@@ -590,7 +590,7 @@ fn cli_global_config_set_and_env_hitl_override_work() {
     let prompt_run = cli(&temp)
         .args([
             "run",
-            "needs default prompt approval",
+            "needs default deferred approval",
             "--profile",
             "approval_model",
             "--output",
@@ -615,7 +615,7 @@ fn cli_global_config_set_and_env_hitl_override_work() {
     assert!(prompt_types.contains(&"APPROVAL_REQUESTED"));
     assert!(!prompt_types.contains(&"APPROVAL_RESOLVED"));
     assert!(prompt_messages.iter().all(|message| {
-        message["metadata"]["cli_run_policy"]["hitl"].as_str() == Some("prompt")
+        message["metadata"]["cli_run_policy"]["hitl"].as_str() == Some("defer")
     }));
     let prompt_session_id = prompt_messages[0]["session_id"].as_str().unwrap();
     let prompt_run_id = prompt_messages[0]["run_id"].as_str().unwrap();

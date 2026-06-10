@@ -10,10 +10,7 @@ pub(super) fn record_tool_control_flow(
     state: &mut AgentRunState,
     tool_return: &starweaver_model::ToolReturnPart,
 ) {
-    let control_flow = tool_return
-        .metadata
-        .get("control_flow")
-        .and_then(serde_json::Value::as_str);
+    let control_flow = tool_return_control_flow(tool_return);
     match control_flow {
         Some("approval_required") => state
             .pending_approval_tool_returns
@@ -21,6 +18,19 @@ pub(super) fn record_tool_control_flow(
         Some("call_deferred") => state.deferred_tool_returns.push(tool_return.clone()),
         _ => {}
     }
+}
+
+pub(super) fn tool_return_control_flow(
+    tool_return: &starweaver_model::ToolReturnPart,
+) -> Option<&str> {
+    tool_return
+        .metadata
+        .get("control_flow")
+        .and_then(serde_json::Value::as_str)
+}
+
+pub(super) fn has_pending_tool_control_flow(state: &AgentRunState) -> bool {
+    !state.pending_approval_tool_returns.is_empty() || !state.deferred_tool_returns.is_empty()
 }
 
 pub(super) fn is_tool_retry_return(tool_return: &starweaver_model::ToolReturnPart) -> bool {

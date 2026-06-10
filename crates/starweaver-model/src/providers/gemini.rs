@@ -194,6 +194,12 @@ fn append_gemini_generation_config(
     if let Some(top_k) = settings.top_k {
         generation_config.insert("topK".to_string(), json!(top_k));
     }
+    if let Some(presence_penalty) = settings.presence_penalty {
+        generation_config.insert("presencePenalty".to_string(), json!(presence_penalty));
+    }
+    if let Some(frequency_penalty) = settings.frequency_penalty {
+        generation_config.insert("frequencyPenalty".to_string(), json!(frequency_penalty));
+    }
     if !settings.stop_sequences.is_empty() {
         generation_config.insert("stopSequences".to_string(), json!(settings.stop_sequences));
     }
@@ -205,10 +211,23 @@ fn append_gemini_generation_config(
         if !thinking.effort.is_empty() {
             thinking_config.insert("thinkingLevel".to_string(), json!(thinking.effort));
         }
+        if let Some(mode) = &thinking.mode {
+            thinking_config.insert("mode".to_string(), json!(mode));
+        }
         if let Some(include_thoughts) = thinking.include_thoughts {
             thinking_config.insert("includeThoughts".to_string(), json!(include_thoughts));
         }
         generation_config.insert("thinkingConfig".to_string(), Value::Object(thinking_config));
+    }
+    if let Some(options) = settings
+        .provider_options
+        .as_ref()
+        .and_then(Value::as_object)
+    {
+        generation_config.extend(options.iter().filter_map(|(key, value)| {
+            key.strip_prefix("google_generation_config.")
+                .map(|target| (target.to_string(), value.clone()))
+        }));
     }
     if !generation_config.is_empty() {
         request.insert(
@@ -257,6 +276,12 @@ fn gemini_tool_choice(choice: &crate::settings::ToolChoice) -> Value {
         crate::settings::ToolChoice::Auto => json!({"mode": "AUTO"}),
         crate::settings::ToolChoice::None => json!({"mode": "NONE"}),
         crate::settings::ToolChoice::Required => json!({"mode": "ANY"}),
+        crate::settings::ToolChoice::Tools { names } => {
+            json!({"mode": "ANY", "allowedFunctionNames": names})
+        }
+        crate::settings::ToolChoice::ToolOrOutput { function_tools } => {
+            json!({"mode": "AUTO", "allowedFunctionNames": function_tools})
+        }
         crate::settings::ToolChoice::Tool { name } => {
             json!({"mode": "ANY", "allowedFunctionNames": [name]})
         }

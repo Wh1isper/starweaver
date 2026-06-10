@@ -37,10 +37,11 @@ export HOMELAB_API_KEY=...
 starweaver-cli run -p "hello" --profile gateway
 ```
 
-OAuth-backed Codex models use `oauth@codex:<model>` and read credentials from `~/.starweaver/auth.json` or `STARWEAVER_OAUTH_AUTH_FILE`:
+OAuth-backed Codex models use `oauth@codex:<model>` and read credentials from `~/.starweaver/auth.json` or `STARWEAVER_OAUTH_AUTH_FILE`. The `[oauth_refresh]` section enables proactive background refresh for configured OAuth profiles during CLI, TUI, and RPC runs.
 
 ```bash
 starweaver-cli auth status codex
+starweaver-cli config get oauth_refresh.enabled
 starweaver-cli run -p "hello" --profile codex
 ```
 
@@ -52,11 +53,11 @@ starweaver-cli tools list
 starweaver-cli mcp list
 ```
 
-Skills and subagents are loaded from configured directories:
+Skills and subagents are loaded from configured directories. Default skill discovery includes `~/.starweaver/skills`, shared Agent Skills in `~/.agents/skills`, and project `.starweaver/skills`:
 
 ```toml
 [skills]
-dirs = ["~/.starweaver/skills"]
+additional_dirs = ["./custom-skills"]
 
 [subagents]
 additional_dirs = ["~/.starweaver/subagents"]

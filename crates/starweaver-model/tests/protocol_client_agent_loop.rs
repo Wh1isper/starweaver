@@ -70,6 +70,101 @@ async fn protocol_clients_preserve_full_agent_tool_loop_history() {
 }
 
 #[tokio::test]
+async fn protocol_clients_send_only_model_visible_tool_return_content() {
+    for scenario in protocol_scenarios() {
+        let http = CaptureHttpClient::new(scenario.response);
+        let client = protocol_client(scenario.protocol, http.clone());
+
+        client
+            .request(
+                layered_tool_return_history(),
+                None,
+                ModelRequestParameters {
+                    tools: vec![lookup_tool()],
+                    ..ModelRequestParameters::default()
+                },
+                context(),
+            )
+            .await
+            .unwrap();
+
+        let body = http.last_body();
+        let serialized = body.to_string();
+        assert!(
+            serialized.contains("model visible"),
+            "{protocol:?} request should contain model-visible tool content: {body}",
+            protocol = scenario.protocol,
+        );
+        assert!(
+            !serialized.contains("application-only"),
+            "{protocol:?} request leaked app_value: {body}",
+            protocol = scenario.protocol,
+        );
+        assert!(
+            !serialized.contains("user-only"),
+            "{protocol:?} request leaked user_content: {body}",
+            protocol = scenario.protocol,
+        );
+        assert!(
+            !serialized.contains("host-secret"),
+            "{protocol:?} request leaked private metadata: {body}",
+            protocol = scenario.protocol,
+        );
+        assert_layered_tool_return_wire(scenario.protocol, &body);
+    }
+}
+
+#[tokio::test]
+async fn protocol_clients_map_hitl_resume_tool_returns_across_protocols() {
+    for scenario in protocol_scenarios() {
+        let http = CaptureHttpClient::new(scenario.response);
+        let client = protocol_client(scenario.protocol, http.clone());
+
+        client
+            .request(
+                hitl_resume_tool_return_history(),
+                None,
+                ModelRequestParameters {
+                    tools: vec![probe_tool("approval_probe"), probe_tool("deferred_probe")],
+                    ..ModelRequestParameters::default()
+                },
+                context(),
+            )
+            .await
+            .unwrap();
+
+        let body = http.last_body();
+        let serialized = body.to_string();
+        assert!(
+            serialized.contains("approval accepted"),
+            "{protocol:?} request should contain approved HITL result: {body}",
+            protocol = scenario.protocol,
+        );
+        assert!(
+            serialized.contains("worker complete"),
+            "{protocol:?} request should contain completed deferred result: {body}",
+            protocol = scenario.protocol,
+        );
+        assert!(
+            !serialized.contains("approval_secret"),
+            "{protocol:?} request leaked approval metadata: {body}",
+            protocol = scenario.protocol,
+        );
+        assert!(
+            !serialized.contains("deferred_secret"),
+            "{protocol:?} request leaked deferred metadata: {body}",
+            protocol = scenario.protocol,
+        );
+        assert!(
+            !serialized.contains("control_flow_resolution"),
+            "{protocol:?} request leaked HITL control-flow metadata: {body}",
+            protocol = scenario.protocol,
+        );
+        assert_hitl_resume_wire(scenario.protocol, &body);
+    }
+}
+
+#[tokio::test]
 async fn anthropic_client_preserves_multimodal_image_and_document_parts() {
     let http = CaptureHttpClient::new(HttpResponse::ok(json!({
         "id": "msg_1",
@@ -294,6 +389,194 @@ fn assert_gemini_wire(body: &Value) {
     );
 }
 
+fn assert_layered_tool_return_wire(protocol: ProtocolFamily, body: &Value) {
+    match protocol {
+        ProtocolFamily::OpenAiChatCompletions => {
+            let tool = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "tool")
+                .unwrap();
+            let content: Value = serde_json::from_str(tool["content"].as_str().unwrap()).unwrap();
+            assert_eq!(content, json!({"summary": "model visible"}));
+        }
+        ProtocolFamily::OpenAiResponses => {
+            let tool = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["type"] == "function_call_output")
+                .unwrap();
+            let content: Value = serde_json::from_str(tool["output"].as_str().unwrap()).unwrap();
+            assert_eq!(content, json!({"summary": "model visible"}));
+        }
+        ProtocolFamily::AnthropicMessages => {
+            let tool = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "user")
+                .and_then(|message| {
+                    message["content"].as_array().unwrap().iter().find(|part| {
+                        part["type"] == "tool_result" && part["tool_use_id"] == "call_layered"
+                    })
+                })
+                .unwrap();
+            let content: Value = serde_json::from_str(tool["content"].as_str().unwrap()).unwrap();
+            assert_eq!(content, json!({"summary": "model visible"}));
+        }
+        ProtocolFamily::GeminiGenerateContent => {
+            let function_response = body["contents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|content| {
+                    content["parts"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find_map(|part| {
+                            part.get("functionResponse").filter(|response| {
+                                response["name"] == "lookup"
+                                    && response["response"]["content"]["summary"] == "model visible"
+                            })
+                        })
+                })
+                .unwrap();
+            assert_eq!(
+                function_response["response"]["content"],
+                json!({"summary": "model visible"})
+            );
+        }
+        ProtocolFamily::BedrockConverse => {
+            let tool_result = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find_map(|message| {
+                    message["content"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find_map(|part| {
+                            part.get("toolResult").filter(|tool| {
+                                tool["toolUseId"] == "call_layered"
+                                    && tool["content"][0]["json"]["summary"] == "model visible"
+                            })
+                        })
+                })
+                .unwrap();
+            assert_eq!(
+                tool_result["content"][0]["json"],
+                json!({"summary": "model visible"})
+            );
+        }
+    }
+}
+
+fn assert_hitl_resume_wire(protocol: ProtocolFamily, body: &Value) {
+    match protocol {
+        ProtocolFamily::OpenAiChatCompletions => {
+            let tool_outputs = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .map(|message| {
+                    (
+                        message["tool_call_id"].as_str().unwrap().to_string(),
+                        serde_json::from_str::<Value>(message["content"].as_str().unwrap())
+                            .unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert!(tool_outputs.iter().any(|(id, content)| {
+                id == "approval_call" && content["result"] == "approval accepted"
+            }));
+            assert!(tool_outputs.iter().any(|(id, content)| {
+                id == "deferred_call" && content["result"] == "worker complete"
+            }));
+        }
+        ProtocolFamily::OpenAiResponses => {
+            let tool_outputs = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|item| item["type"] == "function_call_output")
+                .map(|item| {
+                    (
+                        item["call_id"].as_str().unwrap().to_string(),
+                        serde_json::from_str::<Value>(item["output"].as_str().unwrap()).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert!(tool_outputs.iter().any(|(id, content)| {
+                id == "approval_call" && content["result"] == "approval accepted"
+            }));
+            assert!(tool_outputs.iter().any(|(id, content)| {
+                id == "deferred_call" && content["result"] == "worker complete"
+            }));
+        }
+        ProtocolFamily::AnthropicMessages => {
+            let tool_outputs = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "user")
+                .flat_map(|message| message["content"].as_array().unwrap().iter())
+                .filter(|part| part["type"] == "tool_result")
+                .map(|part| {
+                    (
+                        part["tool_use_id"].as_str().unwrap().to_string(),
+                        serde_json::from_str::<Value>(part["content"].as_str().unwrap()).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert!(tool_outputs.iter().any(|(id, content)| {
+                id == "approval_call" && content["result"] == "approval accepted"
+            }));
+            assert!(tool_outputs.iter().any(|(id, content)| {
+                id == "deferred_call" && content["result"] == "worker complete"
+            }));
+        }
+        ProtocolFamily::GeminiGenerateContent => {
+            let function_responses = body["contents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|content| content["parts"].as_array().unwrap().iter())
+                .filter_map(|part| part.get("functionResponse"))
+                .collect::<Vec<_>>();
+            assert!(function_responses.iter().any(|response| {
+                response["name"] == "approval_probe"
+                    && response["response"]["content"]["result"] == "approval accepted"
+            }));
+            assert!(function_responses.iter().any(|response| {
+                response["name"] == "deferred_probe"
+                    && response["response"]["content"]["result"] == "worker complete"
+            }));
+        }
+        ProtocolFamily::BedrockConverse => {
+            let tool_results = body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|message| message["content"].as_array().unwrap().iter())
+                .filter_map(|part| part.get("toolResult"))
+                .collect::<Vec<_>>();
+            assert!(tool_results.iter().any(|tool| {
+                tool["toolUseId"] == "approval_call"
+                    && tool["content"][0]["json"]["result"] == "approval accepted"
+            }));
+            assert!(tool_results.iter().any(|tool| {
+                tool["toolUseId"] == "deferred_call"
+                    && tool["content"][0]["json"]["result"] == "worker complete"
+            }));
+        }
+    }
+}
+
 fn assert_bedrock_wire(body: &Value) {
     assert!(body["system"][0]["text"]
         .as_str()
@@ -328,9 +611,13 @@ fn protocol_client(protocol: ProtocolFamily, http: CaptureHttpClient) -> Protoco
 }
 
 fn lookup_tool() -> ToolDefinition {
+    probe_tool("lookup")
+}
+
+fn probe_tool(name: &str) -> ToolDefinition {
     ToolDefinition {
-        name: "lookup".to_string(),
-        description: Some("Look up a city fact".to_string()),
+        name: name.to_string(),
+        description: Some(format!("{name} test tool")),
         parameters: json!({
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -338,6 +625,99 @@ fn lookup_tool() -> ToolDefinition {
         }),
         metadata: Map::new(),
     }
+}
+
+fn layered_tool_return_history() -> Vec<ModelMessage> {
+    let mut private_metadata = Map::new();
+    private_metadata.insert("secret".to_string(), json!("host-secret"));
+    let mut tool_return = ToolReturnPart::new(
+        "call_layered",
+        "lookup",
+        json!({"summary": "model visible"}),
+    );
+    tool_return.app_value = Some(json!({"raw": "application-only"}));
+    tool_return.user_content = Some(json!({"ui": "user-only"}));
+    tool_return.private_metadata = private_metadata;
+
+    tool_return_history(
+        vec![ToolCallPart {
+            id: "call_layered".to_string(),
+            name: "lookup".to_string(),
+            arguments: ToolArguments::parsed(json!({"query": "Paris"})),
+        }],
+        vec![tool_return],
+    )
+}
+
+fn hitl_resume_tool_return_history() -> Vec<ModelMessage> {
+    let mut approval_metadata = Map::new();
+    approval_metadata.insert("control_flow_resolution".to_string(), json!("approval"));
+    approval_metadata.insert("approval_id".to_string(), json!("approval_secret"));
+    let approval_return = ToolReturnPart::new(
+        "approval_call",
+        "approval_probe",
+        json!({"approved": true, "result": "approval accepted"}),
+    )
+    .with_metadata(approval_metadata);
+
+    let mut deferred_metadata = Map::new();
+    deferred_metadata.insert("control_flow_resolution".to_string(), json!("deferred"));
+    deferred_metadata.insert("deferred_id".to_string(), json!("deferred_secret"));
+    let deferred_return = ToolReturnPart::new(
+        "deferred_call",
+        "deferred_probe",
+        json!({"result": "worker complete"}),
+    )
+    .with_metadata(deferred_metadata);
+
+    tool_return_history(
+        vec![
+            ToolCallPart {
+                id: "approval_call".to_string(),
+                name: "approval_probe".to_string(),
+                arguments: ToolArguments::parsed(json!({"action": "approval_probe"})),
+            },
+            ToolCallPart {
+                id: "deferred_call".to_string(),
+                name: "deferred_probe".to_string(),
+                arguments: ToolArguments::parsed(json!({"action": "deferred_probe"})),
+            },
+        ],
+        vec![approval_return, deferred_return],
+    )
+}
+
+fn tool_return_history(
+    tool_calls: Vec<ToolCallPart>,
+    tool_returns: Vec<ToolReturnPart>,
+) -> Vec<ModelMessage> {
+    vec![
+        ModelMessage::Response(ModelResponse {
+            parts: tool_calls
+                .into_iter()
+                .map(ModelResponsePart::ToolCall)
+                .collect(),
+            usage: Usage::default(),
+            model_name: None,
+            provider: None,
+            finish_reason: Some(FinishReason::ToolCalls),
+            timestamp: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        }),
+        ModelMessage::Request(ModelRequest {
+            parts: tool_returns
+                .into_iter()
+                .map(ModelRequestPart::ToolReturn)
+                .collect(),
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        }),
+    ]
 }
 
 fn agent_loop_history() -> Vec<ModelMessage> {

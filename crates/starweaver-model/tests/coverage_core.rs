@@ -66,6 +66,24 @@ impl ModelSleeper for RecordingSleeper {
 
 #[test]
 fn presets_cover_all_builtin_settings_configs_and_errors() {
+    let required_settings = [
+        "anthropic_adaptive_1m_cm_xhigh",
+        "anthropic_1m_cm_low_interleaved_thinking",
+        "anthropic_cm_off_interleaved_thinking",
+        "openai_responses_default_fast",
+        "openai_responses_xhigh_fast",
+        "openai_responses_medium_fast",
+        "openai_responses_low_fast",
+        "deepseek_v4_default",
+    ];
+    let available_settings = list_model_settings_presets();
+    for name in required_settings {
+        assert!(
+            available_settings.contains(&name.to_string()),
+            "missing settings preset {name}"
+        );
+    }
+
     for name in list_model_settings_presets() {
         let settings = get_model_settings(&name).unwrap();
         match name.as_str() {

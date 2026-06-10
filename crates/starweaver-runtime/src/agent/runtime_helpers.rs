@@ -29,7 +29,7 @@ struct SteeringMessage {
     text: String,
 }
 
-fn tool_return_media_prompt(
+pub(super) fn tool_return_media_prompt(
     tool_return: &starweaver_model::ToolReturnPart,
 ) -> Option<ModelRequestPart> {
     let value = tool_return
@@ -119,9 +119,14 @@ impl Agent {
                 }
             }));
             parts.extend(dynamic_instructions.into_iter().map(|instruction| {
+                let mut metadata = serde_json::Map::new();
+                metadata.insert(
+                    "starweaver_instruction_dynamic".to_string(),
+                    serde_json::json!(true),
+                );
                 ModelRequestPart::Instruction {
                     text: instruction,
-                    metadata: serde_json::Map::new(),
+                    metadata,
                 }
             }));
         }
@@ -146,6 +151,10 @@ impl Agent {
                 metadata.insert(
                     "starweaver.kind".to_string(),
                     serde_json::json!("steering_guard"),
+                );
+                metadata.insert(
+                    "starweaver_instruction_dynamic".to_string(),
+                    serde_json::json!(true),
                 );
                 parts.push(ModelRequestPart::Instruction {
                     text: prompt.to_string(),
@@ -495,6 +504,7 @@ impl Agent {
             );
             params.instructions.push(PreparedInstruction {
                 text: instruction.render_xml(),
+                dynamic: false,
                 metadata,
             });
         }

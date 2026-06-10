@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use starweaver_context::AgentContext;
-use starweaver_environment::{DynProcessShellProvider, ShellCommand, ShellProcessSnapshot};
+use starweaver_context::{AgentContext, ToolConfig};
+use starweaver_environment::{
+    DynProcessShellProvider, ShellCommand, ShellProcessSnapshot, ShellReviewEnvironmentContext,
+};
 use starweaver_tools::{
     DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
 };
@@ -10,12 +12,11 @@ use uuid::Uuid;
 use super::{
     args::{ProcessIdArgs, ShellExecArgs, ShellInputArgs, ShellSignalArgs, ShellWaitArgs},
     handle::{environment_provider, maybe_environment_provider},
+    shell_review::{review_shell_command_or_block, ShellReviewContextSnapshot},
 };
 use crate::bundles::helpers::{
     static_tool, static_tool_with_metadata, tool_execution_error, tool_metadata,
 };
-
-const OUTPUT_TRUNCATE_LIMIT: usize = 20_000;
 
 /// `AgentContext` dependency for process-capable shell providers.
 #[derive(Clone)]
@@ -76,6 +77,18 @@ async fn shell_exec(
     context: ToolContext,
     arguments: ShellExecArgs,
 ) -> Result<ToolResult, ToolError> {
+    if arguments.command.trim().is_empty() {
+        return Ok(ToolResult::new(serde_json::json!({
+            "command": arguments.command,
+            "timeout_seconds": arguments.timeout_seconds,
+            "environment": arguments.environment.clone().unwrap_or_default(),
+            "cwd": arguments.cwd,
+            "return_code": 1,
+            "stdout": "",
+            "stderr": "",
+            "error": "Shell command must not be empty",
+        })));
+    }
     let environment = arguments.environment.clone().unwrap_or_default();
     let shell_command = ShellCommand {
         command: arguments.command.clone(),
@@ -85,6 +98,19 @@ async fn shell_exec(
     };
     if arguments.background {
         let provider = process_provider(&context, "shell_exec")?;
+        if let Some(blocked) = review_shell_command_or_block(
+            &context,
+            &arguments.command,
+            arguments.cwd.as_deref(),
+            arguments.background,
+            environment.keys().cloned().collect(),
+            arguments.timeout_seconds,
+            shell_review_context(provider.shell_review_context(), arguments.timeout_seconds),
+        )
+        .await?
+        {
+            return Ok(blocked);
+        }
         let snapshot = provider
             .start_process(shell_command)
             .await
@@ -92,12 +118,28 @@ async fn shell_exec(
         return process_result(&context, &snapshot).await;
     }
     let provider = environment_provider(&context, "shell_exec")?;
+    if let Some(blocked) = review_shell_command_or_block(
+        &context,
+        &arguments.command,
+        arguments.cwd.as_deref(),
+        arguments.background,
+        environment.keys().cloned().collect(),
+        arguments.timeout_seconds,
+        shell_review_context(provider.shell_review_context(), arguments.timeout_seconds),
+    )
+    .await?
+    {
+        return Ok(blocked);
+    }
     let output = provider
         .run_shell(shell_command)
         .await
         .map_err(|error| tool_execution_error("shell_exec", error))?;
-    let stdout = truncate_shell_output(provider.as_ref(), "stdout", &output.stdout).await;
-    let stderr = truncate_shell_output(provider.as_ref(), "stderr", &output.stderr).await;
+    let truncate_limit = shell_output_truncate_limit(&context);
+    let stdout =
+        truncate_shell_output(provider.as_ref(), "stdout", &output.stdout, truncate_limit).await;
+    let stderr =
+        truncate_shell_output(provider.as_ref(), "stderr", &output.stderr, truncate_limit).await;
     let mut result = serde_json::json!({
         "command": arguments.command,
         "timeout_seconds": arguments.timeout_seconds,
@@ -182,6 +224,21 @@ async fn shell_kill(
     process_result(&context, &snapshot).await
 }
 
+fn shell_review_context(
+    environment: ShellReviewEnvironmentContext,
+    timeout_seconds: u64,
+) -> ShellReviewContextSnapshot {
+    ShellReviewContextSnapshot {
+        timeout_seconds: Some(timeout_seconds),
+        tool_call_id: None,
+        tool_call_approved: false,
+        default_cwd: environment.default_cwd,
+        allowed_paths: environment.allowed_paths,
+        shell_platform: environment.shell_platform,
+        shell_executable: environment.shell_executable,
+    }
+}
+
 fn process_provider(
     context: &ToolContext,
     tool: &str,
@@ -203,15 +260,28 @@ async fn process_result(
     snapshot: &ShellProcessSnapshot,
 ) -> Result<ToolResult, ToolError> {
     let environment = maybe_environment_provider(context);
+    let truncate_limit = shell_output_truncate_limit(context);
     let stdout = if let Some(provider) = environment.as_ref() {
-        truncate_shell_output(provider.as_ref(), "stdout", &snapshot.stdout).await
+        truncate_shell_output(
+            provider.as_ref(),
+            "stdout",
+            &snapshot.stdout,
+            truncate_limit,
+        )
+        .await
     } else {
-        truncate_shell_output_without_file(&snapshot.stdout)
+        truncate_shell_output_without_file(&snapshot.stdout, truncate_limit)
     };
     let stderr = if let Some(provider) = environment.as_ref() {
-        truncate_shell_output(provider.as_ref(), "stderr", &snapshot.stderr).await
+        truncate_shell_output(
+            provider.as_ref(),
+            "stderr",
+            &snapshot.stderr,
+            truncate_limit,
+        )
+        .await
     } else {
-        truncate_shell_output_without_file(&snapshot.stderr)
+        truncate_shell_output_without_file(&snapshot.stderr, truncate_limit)
     };
     let mut result = serde_json::json!({
         "process_id": snapshot.process_id,
@@ -236,12 +306,20 @@ struct TruncatedOutput {
     file_path: Option<String>,
 }
 
+fn shell_output_truncate_limit(context: &ToolContext) -> usize {
+    context.dependency::<AgentContext>().map_or_else(
+        || ToolConfig::default().shell_output_truncate_limit,
+        |context| context.tool_config.shell_output_truncate_limit,
+    )
+}
+
 async fn truncate_shell_output(
     provider: &dyn starweaver_environment::EnvironmentProvider,
     stream_name: &str,
     content: &str,
+    truncate_limit: usize,
 ) -> TruncatedOutput {
-    if content.len() <= OUTPUT_TRUNCATE_LIMIT {
+    if content.len() <= truncate_limit {
         return TruncatedOutput {
             content: content.to_string(),
             file_path: None,
@@ -252,22 +330,19 @@ async fn truncate_shell_output(
         .write_tmp_file(&filename, content.as_bytes())
         .await
         .map_or_else(
-            |_| truncate_shell_output_without_file(content),
+            |_| truncate_shell_output_without_file(content, truncate_limit),
             |path| TruncatedOutput {
                 content: format!(
                     "{}\n...(truncated, full output at `{stream_name}_file_path`)",
-                    content
-                        .chars()
-                        .take(OUTPUT_TRUNCATE_LIMIT)
-                        .collect::<String>()
+                    content.chars().take(truncate_limit).collect::<String>()
                 ),
                 file_path: Some(path),
             },
         )
 }
 
-fn truncate_shell_output_without_file(content: &str) -> TruncatedOutput {
-    if content.len() <= OUTPUT_TRUNCATE_LIMIT {
+fn truncate_shell_output_without_file(content: &str, truncate_limit: usize) -> TruncatedOutput {
+    if content.len() <= truncate_limit {
         return TruncatedOutput {
             content: content.to_string(),
             file_path: None,
@@ -276,10 +351,7 @@ fn truncate_shell_output_without_file(content: &str) -> TruncatedOutput {
     TruncatedOutput {
         content: format!(
             "{}\n...(truncated)",
-            content
-                .chars()
-                .take(OUTPUT_TRUNCATE_LIMIT)
-                .collect::<String>()
+            content.chars().take(truncate_limit).collect::<String>()
         ),
         file_path: None,
     }

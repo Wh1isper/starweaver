@@ -355,18 +355,63 @@ pub struct SetupCommand {
 /// Auth commands.
 #[derive(Clone, Debug, Subcommand)]
 pub enum AuthCommand {
+    /// Log in to an OAuth provider.
+    Login(AuthProviderCommand),
     /// Print provider auth status.
-    Status {
-        /// Provider name.
-        #[arg(default_value = "codex")]
-        provider: String,
-    },
+    Status(AuthStatusCommand),
+    /// Refresh provider credentials.
+    Refresh(AuthProviderCommand),
     /// Remove provider credentials from the local auth store.
-    Logout {
-        /// Provider name.
-        #[arg(default_value = "codex")]
-        provider: String,
-    },
+    Logout(AuthLogoutCommand),
+    /// Inspect OAuth store health without printing tokens.
+    Doctor(AuthDoctorCommand),
+}
+
+/// Provider-scoped auth command.
+#[derive(Clone, Debug, Args)]
+pub struct AuthProviderCommand {
+    /// Provider name.
+    #[arg(default_value = "codex", value_parser = ["codex"])]
+    pub provider: String,
+    /// Auth file path. Defaults to ~/.starweaver/auth.json.
+    #[arg(long = "auth-file")]
+    pub auth_file: Option<String>,
+    /// Device authorization timeout in seconds.
+    #[arg(long, default_value_t = 15 * 60)]
+    pub timeout_seconds: u64,
+}
+
+/// Auth status command.
+#[derive(Clone, Debug, Args)]
+pub struct AuthStatusCommand {
+    /// Provider name.
+    #[arg(default_value = "codex", value_parser = ["codex"])]
+    pub provider: Option<String>,
+    /// Auth file path. Defaults to ~/.starweaver/auth.json.
+    #[arg(long = "auth-file")]
+    pub auth_file: Option<String>,
+}
+
+/// Auth logout command.
+#[derive(Clone, Debug, Args)]
+pub struct AuthLogoutCommand {
+    /// Provider name.
+    #[arg(default_value = "codex", value_parser = ["codex"])]
+    pub provider: String,
+    /// Auth file path. Defaults to ~/.starweaver/auth.json.
+    #[arg(long = "auth-file")]
+    pub auth_file: Option<String>,
+    /// Revoke provider tokens before deleting local credentials.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub revoke: bool,
+}
+
+/// Auth doctor command.
+#[derive(Clone, Debug, Args)]
+pub struct AuthDoctorCommand {
+    /// Auth file path. Defaults to ~/.starweaver/auth.json.
+    #[arg(long = "auth-file")]
+    pub auth_file: Option<String>,
 }
 
 /// Catalog inspection commands.

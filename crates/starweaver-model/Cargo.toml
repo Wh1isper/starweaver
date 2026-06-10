@@ -12,6 +12,9 @@ readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
+[dev-dependencies]
+starweaver-core.workspace = true
+
 [dependencies]
 base64.workspace = true
 async-trait.workspace = true
@@ -21,6 +24,7 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 starweaver-core.workspace = true
+starweaver-oauth.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 

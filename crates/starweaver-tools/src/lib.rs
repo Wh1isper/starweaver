@@ -27,5 +27,5 @@ pub use tool::{
     string_tool, typed_tool, DynTool, EmptyToolArgs, FunctionTool, Tool, ToolResult,
     TypedFunctionTool,
 };
-pub use tool_proxy::{tool_proxy_toolset, ToolProxyToolset};
+pub use tool_proxy::{tool_proxy_toolset, ToolProxyPrefixError, ToolProxyToolset};
 pub use toolset::{DynToolset, StaticToolset, Toolset};

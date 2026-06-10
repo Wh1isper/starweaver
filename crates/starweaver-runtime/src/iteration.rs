@@ -40,6 +40,8 @@ pub enum AgentIterationKind {
     SteeringGuard,
     /// The run completed.
     RunComplete,
+    /// The run failed after preserving recoverable context state.
+    RunFailed,
 }
 
 /// One inspected runtime iteration step.
@@ -96,6 +98,7 @@ impl AgentIterationStep {
                 (AgentIterationKind::SteeringGuard, Some(*step), None)
             }
             AgentStreamEvent::RunComplete { .. } => (AgentIterationKind::RunComplete, None, None),
+            AgentStreamEvent::RunFailed { .. } => (AgentIterationKind::RunFailed, None, None),
         };
         Self {
             index,

@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 
 use crate::{
     typed_tool, DynTool, DynToolset, ToolContext, ToolError, ToolInstruction, ToolResult, Toolset,
@@ -12,8 +13,27 @@ use crate::{
 
 const SEARCH_TOOLS_NAME: &str = "search_tools";
 const CALL_TOOL_NAME: &str = "call_tool";
+const PREFIXED_SEARCH_TOOL_SUFFIX: &str = "search_tool";
+const PREFIXED_CALL_TOOL_SUFFIX: &str = "call_tool";
 const TOOL_PROXY_NAME: &str = "tool_proxy";
 const TOOL_PROXY_INSTRUCTION_GROUP: &str = "tool-proxy";
+
+/// Error returned when a proxy tool prefix is invalid.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error(
+    "ToolProxyToolset prefix must start with a letter and contain only letters, numbers, and underscores"
+)]
+pub struct ToolProxyPrefixError {
+    prefix: String,
+}
+
+impl ToolProxyPrefixError {
+    /// Return the rejected prefix text.
+    #[must_use]
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+}
 
 /// Create a fixed two-tool proxy over many underlying toolsets.
 #[must_use]
@@ -23,10 +43,11 @@ pub fn tool_proxy_toolset(toolsets: Vec<DynToolset>) -> DynToolset {
 
 /// Fixed two-tool proxy for dynamic tool discovery and invocation.
 ///
-/// The proxy exposes `search_tools` and `call_tool` while keeping all wrapped
-/// tool definitions out of the model-visible tool list until the model searches
-/// for them. This keeps the model-facing tool surface stable for prompt-cache
-/// reuse while keeping execution in the normal `Toolset` contract.
+/// The proxy exposes `search_tools` and `call_tool` by default while keeping all
+/// wrapped tool definitions out of the model-visible tool list until the model
+/// searches for them. Use [`ToolProxyToolset::try_with_prefix`] to expose
+/// `{prefix}_search_tool` and `{prefix}_call_tool` instead when multiple proxy
+/// surfaces need stable, non-conflicting names.
 #[derive(Clone)]
 pub struct ToolProxyToolset {
     inner: Arc<ToolProxyInner>,
@@ -39,11 +60,67 @@ impl ToolProxyToolset {
         Self {
             inner: Arc::new(ToolProxyInner {
                 name: TOOL_PROXY_NAME.to_string(),
+                prefix: None,
+                search_tool_name: SEARCH_TOOLS_NAME.to_string(),
+                call_tool_name: CALL_TOOL_NAME.to_string(),
+                instruction_group: TOOL_PROXY_INSTRUCTION_GROUP.to_string(),
                 toolsets,
                 namespace_descriptions: BTreeMap::new(),
                 max_results: 5,
             }),
         }
+    }
+
+    /// Set a stable prefix for the visible proxy tool names.
+    ///
+    /// A prefix is trimmed and surrounding underscores are removed. Empty prefixes
+    /// restore the default unprefixed names. Non-empty prefixes must start with an
+    /// ASCII letter and contain only ASCII letters, ASCII digits, and underscores.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ToolProxyPrefixError`] when the normalized prefix is not a valid
+    /// model-facing tool-name prefix.
+    pub fn try_with_prefix(
+        mut self,
+        prefix: impl Into<String>,
+    ) -> Result<Self, ToolProxyPrefixError> {
+        let prefix = normalize_prefix(prefix.into())?;
+        Arc::make_mut(&mut self.inner).set_prefix(prefix);
+        Ok(self)
+    }
+
+    /// Set a stable prefix for the visible proxy tool names.
+    ///
+    /// Prefer [`Self::try_with_prefix`] when the prefix comes from user input.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the prefix is not a valid model-facing tool-name prefix.
+    #[must_use]
+    pub fn with_prefix(self, prefix: impl Into<String>) -> Self {
+        match self.try_with_prefix(prefix) {
+            Ok(proxy) => proxy,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    /// Return the optional visible proxy tool prefix.
+    #[must_use]
+    pub fn prefix(&self) -> Option<&str> {
+        self.inner.prefix.as_deref()
+    }
+
+    /// Return the visible search proxy tool name.
+    #[must_use]
+    pub fn search_tool_name(&self) -> &str {
+        &self.inner.search_tool_name
+    }
+
+    /// Return the visible call proxy tool name.
+    #[must_use]
+    pub fn call_tool_name(&self) -> &str {
+        &self.inner.call_tool_name
     }
 
     /// Set namespace descriptions by toolset id.
@@ -84,7 +161,7 @@ impl Toolset for ToolProxyToolset {
         let call_inner = self.inner.clone();
         vec![
             Arc::new(typed_tool::<SearchToolsArgs, _, _>(
-                SEARCH_TOOLS_NAME,
+                self.inner.search_tool_name.clone(),
                 Some("Search for available tools by keyword, description, namespace, or parameter schema. Returns XML with full parameter schemas.".to_string()),
                 move |_context, arguments| {
                     let inner = search_inner.clone();
@@ -92,7 +169,7 @@ impl Toolset for ToolProxyToolset {
                 },
             )),
             Arc::new(typed_tool::<CallToolArgs, _, _>(
-                CALL_TOOL_NAME,
+                self.inner.call_tool_name.clone(),
                 Some("Invoke an available tool by name with arguments matching the tool's parameter schema.".to_string()),
                 move |context, arguments| {
                     let inner = call_inner.clone();
@@ -108,7 +185,7 @@ impl Toolset for ToolProxyToolset {
 
     fn get_instructions(&self) -> Vec<ToolInstruction> {
         vec![ToolInstruction::new(
-            TOOL_PROXY_INSTRUCTION_GROUP,
+            self.inner.instruction_group.clone(),
             self.inner.proxy_instruction(),
         )]
     }
@@ -117,12 +194,30 @@ impl Toolset for ToolProxyToolset {
 #[derive(Clone)]
 struct ToolProxyInner {
     name: String,
+    prefix: Option<String>,
+    search_tool_name: String,
+    call_tool_name: String,
+    instruction_group: String,
     toolsets: Vec<DynToolset>,
     namespace_descriptions: BTreeMap<String, String>,
     max_results: usize,
 }
 
 impl ToolProxyInner {
+    fn set_prefix(&mut self, prefix: Option<String>) {
+        self.prefix = prefix;
+        self.name = TOOL_PROXY_NAME.to_string();
+        if let Some(prefix) = self.prefix.as_deref() {
+            self.search_tool_name = format!("{prefix}_{PREFIXED_SEARCH_TOOL_SUFFIX}");
+            self.call_tool_name = format!("{prefix}_{PREFIXED_CALL_TOOL_SUFFIX}");
+            self.instruction_group = format!("{prefix}-{TOOL_PROXY_INSTRUCTION_GROUP}");
+        } else {
+            self.search_tool_name = SEARCH_TOOLS_NAME.to_string();
+            self.call_tool_name = CALL_TOOL_NAME.to_string();
+            self.instruction_group = TOOL_PROXY_INSTRUCTION_GROUP.to_string();
+        }
+    }
+
     fn search_tools(&self, arguments: &SearchToolsArgs) -> ToolResult {
         if arguments.query.trim().is_empty() {
             return xml_result("<error>Parameter 'query' is required.</error>");
@@ -171,8 +266,9 @@ impl ToolProxyInner {
         let index = self.index_tools();
         let Some(tool) = index.tools.get(&arguments.name) else {
             return Ok(xml_result(format!(
-                "<error>Tool \"{}\" not found. Use search_tools to discover available tools.</error>",
-                xml_escape(&arguments.name)
+                "<error>Tool \"{}\" not found. Use {} to discover available tools.</error>",
+                xml_escape(&arguments.name),
+                self.search_tool_name
             )));
         };
 
@@ -193,7 +289,7 @@ impl ToolProxyInner {
         for toolset in &self.toolsets {
             let namespace = toolset.id().map(str::to_string);
             for tool in toolset.get_tools() {
-                if matches!(tool.name(), SEARCH_TOOLS_NAME | CALL_TOOL_NAME) {
+                if self.is_visible_proxy_tool_name(tool.name()) {
                     continue;
                 }
                 let name = tool.name().to_string();
@@ -225,6 +321,10 @@ impl ToolProxyInner {
         }
     }
 
+    fn is_visible_proxy_tool_name(&self, name: &str) -> bool {
+        name == self.search_tool_name || name == self.call_tool_name
+    }
+
     fn namespace_description(&self, toolset: &dyn Toolset, namespace: &str) -> String {
         self.namespace_descriptions
             .get(namespace)
@@ -242,10 +342,22 @@ impl ToolProxyInner {
     fn proxy_instruction(&self) -> String {
         let index = self.index_tools();
         let mut lines = vec![
-            "Use search_tools to discover available tools by keyword, action, namespace, or parameter name.".to_string(),
-            "Use call_tool with a discovered tool name and a JSON arguments object matching the returned schema.".to_string(),
-            "search_tools returns XML with tool names, descriptions, namespaces, and full JSON parameter schemas.".to_string(),
-            "call_tool can be used directly when the tool name and schema are already known.".to_string(),
+            format!(
+                "Use {} to discover available tools by keyword, action, namespace, or parameter name.",
+                self.search_tool_name
+            ),
+            format!(
+                "Use {} with a discovered tool name and a JSON arguments object matching the returned schema.",
+                self.call_tool_name
+            ),
+            format!(
+                "{} returns XML with tool names, descriptions, namespaces, and full JSON parameter schemas.",
+                self.search_tool_name
+            ),
+            format!(
+                "{} can be used directly when the tool name and schema are already known.",
+                self.call_tool_name
+            ),
             "Search uses keyword matching over tool names, descriptions, namespaces, and parameter schemas.".to_string(),
         ];
 
@@ -356,6 +468,22 @@ struct CallToolArgs {
     /// Arguments to pass to the tool, matching its parameter schema.
     #[serde(default)]
     arguments: Value,
+}
+
+fn normalize_prefix(prefix: String) -> Result<Option<String>, ToolProxyPrefixError> {
+    let normalized = prefix.trim().trim_matches('_').to_string();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+
+    let mut chars = normalized.chars();
+    let Some(first) = chars.next() else {
+        return Ok(None);
+    };
+    if !first.is_ascii_alphabetic() || !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err(ToolProxyPrefixError { prefix });
+    }
+    Ok(Some(normalized))
 }
 
 fn score_entry(query: &str, entry: &SearchEntry) -> Option<usize> {

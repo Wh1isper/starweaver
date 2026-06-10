@@ -1,6 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_model::{
@@ -29,8 +29,8 @@ impl ModelAdapter for CaptureModel {
     }
 
     fn profile(&self) -> &ModelProfile {
-        static PROFILE: ModelProfile =
-            ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions);
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
         &PROFILE
     }
 
@@ -79,5 +79,8 @@ async fn toolset_instructions_are_injected_on_first_request() {
     assert!(captured_params
         .instructions
         .iter()
-        .any(|instruction| instruction.text.contains("Use echo for mirroring")));
+        .any(
+            |instruction| instruction.text.contains("Use echo for mirroring")
+                && !instruction.dynamic
+        ));
 }

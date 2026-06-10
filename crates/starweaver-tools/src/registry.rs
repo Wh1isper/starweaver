@@ -121,7 +121,19 @@ impl ToolRegistry {
     }
 
     /// Execute one tool call and return a model tool return part.
-    pub async fn execute_call(&self, context: ToolContext, call: &ToolCallPart) -> ToolReturnPart {
+    pub async fn execute_call(
+        &self,
+        mut context: ToolContext,
+        call: &ToolCallPart,
+    ) -> ToolReturnPart {
+        context
+            .metadata
+            .entry("tool_call_id".to_string())
+            .or_insert_with(|| serde_json::json!(call.id.clone()));
+        context
+            .metadata
+            .entry("tool_name".to_string())
+            .or_insert_with(|| serde_json::json!(call.name.clone()));
         match self.tools.get(&call.name) {
             Some(tool) => match tool.call(context, call.arguments.execution_value()).await {
                 Ok(result) => {

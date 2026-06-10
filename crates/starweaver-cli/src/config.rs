@@ -1,7 +1,7 @@
 //! CLI configuration resolution.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     path::{Path, PathBuf},
     process, thread,
@@ -15,7 +15,7 @@ use crate::{
     args::{Cli, CliCommand, ConfigCommand, HitlPolicy, OutputMode, SetupCommand},
     error::io_error,
     oauth::CODEX_BASE_URL,
-    tui::SlashCommandDefinition,
+    slash_commands::{normalize_command_name, valid_command_name, SlashCommandDefinition},
     CliError, CliResult,
 };
 
@@ -50,12 +50,16 @@ pub struct CliConfig {
     pub files_policy: String,
     /// Whether shell execution is enabled for environment tools.
     pub shell_enabled: bool,
+    /// Shell command review configuration.
+    pub shell_review: CliShellReviewConfig,
     /// Default output mode.
     pub default_output: OutputMode,
     /// Default headless human-in-the-loop policy.
     pub default_hitl: HitlPolicy,
     /// Update channel metadata.
     pub update_channel: String,
+    /// OAuth token refresh supervisor configuration.
+    pub oauth_refresh: OAuthRefreshConfig,
     /// Default model from `[general] model` fields.
     pub default_model: Option<CliModelProfile>,
     /// Named model profiles from `[model_profiles.*]` fields.
@@ -81,10 +85,13 @@ pub struct CliConfig {
 }
 
 /// Config resolver.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Debug)]
 pub struct ConfigResolver {
     global_dir: Option<PathBuf>,
     project_dir: Option<PathBuf>,
+    shared_agents_dir: Option<PathBuf>,
+    current_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -92,8 +99,10 @@ struct FileConfig {
     general: Option<GeneralConfig>,
     storage: Option<StorageConfig>,
     environment: Option<EnvironmentConfig>,
+    security: Option<FileSecurityConfig>,
     update: Option<UpdateConfig>,
     providers: Option<FileProviderConfigs>,
+    oauth_refresh: Option<FileOAuthRefreshConfig>,
     model_profiles: Option<BTreeMap<String, FileModelProfile>>,
     env: Option<BTreeMap<String, String>>,
     skills: Option<SkillsConfig>,
@@ -114,6 +123,38 @@ struct GeneralConfig {
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
+struct FileOAuthRefreshConfig {
+    enabled: Option<bool>,
+    interval_seconds: Option<u64>,
+    failure_retry_seconds: Option<u64>,
+    refresh_on_startup: Option<bool>,
+}
+
+/// OAuth token refresh supervisor configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OAuthRefreshConfig {
+    /// Whether OAuth refresh supervisor should be started for OAuth-backed models.
+    pub enabled: bool,
+    /// Successful-refresh interval in seconds.
+    pub interval_seconds: u64,
+    /// Retry interval in seconds after the last refresh attempt failed.
+    pub failure_retry_seconds: u64,
+    /// Refresh immediately when the supervisor starts.
+    pub refresh_on_startup: bool,
+}
+
+impl Default for OAuthRefreshConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_seconds: 30 * 60,
+            failure_retry_seconds: 60,
+            refresh_on_startup: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
 struct FileModelProfile {
     label: Option<String>,
     model: Option<String>,
@@ -124,7 +165,6 @@ struct FileModelProfile {
 #[derive(Clone, Debug, Default, Deserialize)]
 struct FileCommandDefinition {
     prompt: Option<String>,
-    mode: Option<String>,
     description: Option<String>,
     aliases: Option<Vec<String>>,
 }
@@ -155,6 +195,72 @@ struct EnvironmentConfig {
     provider: Option<String>,
     files_policy: Option<String>,
     shell_enabled: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FileSecurityConfig {
+    shell_review: Option<FileShellReviewConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FileShellReviewConfig {
+    enabled: Option<bool>,
+    model: Option<String>,
+    model_settings: Option<String>,
+    on_needs_approval: Option<String>,
+    risk_threshold: Option<String>,
+    system_prompt: Option<String>,
+}
+
+/// CLI shell command review configuration.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CliShellReviewConfig {
+    /// Whether shell review is enabled.
+    pub enabled: bool,
+    /// Review model id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Review model settings preset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_settings: Option<String>,
+    /// Action when review reaches threshold: defer or deny.
+    pub on_needs_approval: String,
+    /// Risk threshold: low, medium, high, or `extra_high`.
+    pub risk_threshold: String,
+    /// Optional prompt override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+}
+
+impl Default for CliShellReviewConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: None,
+            model_settings: None,
+            on_needs_approval: "defer".to_string(),
+            risk_threshold: "high".to_string(),
+            system_prompt: None,
+        }
+    }
+}
+
+impl CliShellReviewConfig {
+    fn validate(&self) -> CliResult<()> {
+        if self.enabled
+            && self
+                .model
+                .as_deref()
+                .map_or(true, |model| model.trim().is_empty())
+        {
+            return Err(CliError::Config(
+                "security.shell_review.model is required when shell review is enabled".to_string(),
+            ));
+        }
+        validate_shell_review_action(&self.on_needs_approval)?;
+        validate_shell_review_risk(&self.risk_threshold)?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -252,6 +358,8 @@ impl Default for ConfigResolver {
         Self {
             global_dir: env::var_os("STARWEAVER_CONFIG_DIR").map(PathBuf::from),
             project_dir: env::var_os("STARWEAVER_PROJECT_DIR").map(PathBuf::from),
+            shared_agents_dir: None,
+            current_dir: None,
         }
     }
 }
@@ -263,16 +371,23 @@ impl ConfigResolver {
         Self {
             global_dir: Some(root.join("global")),
             project_dir: Some(root.join("project/.starweaver")),
+            shared_agents_dir: Some(root.join("shared-agents")),
+            current_dir: Some(root.join("project")),
         }
     }
 
     /// Resolve final config.
     pub fn resolve(&self, cli: &Cli) -> CliResult<CliConfig> {
+        let current_dir = self.current_dir.clone().unwrap_or_else(default_current_dir);
         let global_dir = self.global_dir.clone().unwrap_or_else(default_global_dir);
         let project_dir = self
             .project_dir
             .clone()
-            .unwrap_or_else(|| default_project_dir(cli, &global_dir));
+            .unwrap_or_else(|| default_project_dir(cli, &global_dir, &current_dir));
+        let shared_agents_dir = self
+            .shared_agents_dir
+            .clone()
+            .unwrap_or_else(default_shared_agents_dir);
         let mut config = CliConfig {
             global_dir: global_dir.clone(),
             project_dir: project_dir.clone(),
@@ -281,18 +396,18 @@ impl ConfigResolver {
             database_path: project_dir.join("starweaver.sqlite"),
             file_store_path: project_dir.join("store"),
             default_profile: "general".to_string(),
-            skill_dirs: vec![global_dir.join("skills"), project_dir.join("skills")],
+            skill_dirs: default_skill_dirs(&global_dir, &shared_agents_dir, &project_dir),
             subagent_dirs: vec![global_dir.join("subagents"), project_dir.join("subagents")],
             disabled_subagents: Vec::new(),
-            workspace_root: project_dir
-                .parent()
-                .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf),
+            workspace_root: default_workspace_root(&project_dir, &global_dir, &current_dir),
             environment_provider: "local".to_string(),
             files_policy: "read_write".to_string(),
             shell_enabled: true,
+            shell_review: CliShellReviewConfig::default(),
             default_output: OutputMode::AguiJsonl,
-            default_hitl: HitlPolicy::Prompt,
+            default_hitl: HitlPolicy::Defer,
             update_channel: "stable".to_string(),
+            oauth_refresh: OAuthRefreshConfig::default(),
             default_model: None,
             model_profiles: BTreeMap::new(),
             env_vars: BTreeMap::new(),
@@ -312,6 +427,7 @@ impl ConfigResolver {
         config.mcp_config = read_mcp_config(&global_dir, &project_dir)?;
         apply_env(&mut config);
         apply_cli_overrides(&mut config, cli, &project_dir);
+        config.shell_review.validate()?;
         Ok(config)
     }
 }
@@ -322,11 +438,43 @@ fn default_global_dir() -> PathBuf {
         .join(".starweaver")
 }
 
-fn default_project_dir(cli: &Cli, global_dir: &Path) -> PathBuf {
+fn default_shared_agents_dir() -> PathBuf {
+    env::var_os("HOME")
+        .map_or_else(|| PathBuf::from("."), PathBuf::from)
+        .join(".agents")
+}
+
+fn default_current_dir() -> PathBuf {
+    env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn default_skill_dirs(
+    global_dir: &std::path::Path,
+    shared_agents_dir: &std::path::Path,
+    project_dir: &std::path::Path,
+) -> Vec<PathBuf> {
+    vec![
+        global_dir.join("skills"),
+        shared_agents_dir.join("skills"),
+        project_dir.join("skills"),
+    ]
+}
+
+fn default_project_dir(cli: &Cli, global_dir: &Path, current_dir: &Path) -> PathBuf {
     if wants_project_config(cli) {
-        return PathBuf::from(".starweaver");
+        return current_dir.join(".starweaver");
     }
-    find_project_dir().unwrap_or_else(|| global_dir.to_path_buf())
+    find_project_dir(current_dir, global_dir).unwrap_or_else(|| global_dir.to_path_buf())
+}
+
+fn default_workspace_root(project_dir: &Path, global_dir: &Path, current_dir: &Path) -> PathBuf {
+    if paths_equivalent(project_dir, global_dir) {
+        return current_dir.to_path_buf();
+    }
+    project_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or_else(|| current_dir.to_path_buf(), std::path::Path::to_path_buf)
 }
 
 const fn wants_project_config(cli: &Cli) -> bool {
@@ -352,17 +500,33 @@ const fn wants_project_config(cli: &Cli) -> bool {
     )
 }
 
-fn find_project_dir() -> Option<PathBuf> {
-    let mut current = env::current_dir().ok()?;
+fn find_project_dir(start: &Path, global_dir: &Path) -> Option<PathBuf> {
+    let home_project_dir = env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".starweaver"));
+    let mut current = start.to_path_buf();
     loop {
         let candidate = current.join(".starweaver");
-        if candidate.join("config.toml").exists() {
+        let is_global_dir = paths_equivalent(&candidate, global_dir);
+        let is_home_global_dir = home_project_dir
+            .as_ref()
+            .is_some_and(|home| paths_equivalent(&candidate, home));
+        if candidate.join("config.toml").exists() && !is_global_dir && !is_home_global_dir {
             return Some(candidate);
         }
         if !current.pop() {
             return None;
         }
     }
+}
+
+fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    let normalized_left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let normalized_right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    normalized_left == normalized_right
 }
 
 fn bootstrap_global_config_dir(global_dir: &Path) -> CliResult<()> {
@@ -501,6 +665,11 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
             config.shell_enabled = shell_enabled;
         }
     }
+    if let Some(security) = parsed.security {
+        if let Some(shell_review) = security.shell_review {
+            merge_shell_review_config(&mut config.shell_review, shell_review)?;
+        }
+    }
     if let Some(update) = parsed.update {
         if let Some(channel) = update.channel {
             config.update_channel = channel;
@@ -508,6 +677,9 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
     }
     if let Some(providers) = parsed.providers {
         merge_provider_configs(&mut config.providers, providers);
+    }
+    if let Some(oauth_refresh) = parsed.oauth_refresh {
+        merge_oauth_refresh_config(&mut config.oauth_refresh, &oauth_refresh)?;
     }
     if let Some(env_vars) = parsed.env {
         config.env_vars.extend(env_vars);
@@ -587,36 +759,64 @@ fn merge_subagent_config(
 fn merge_slash_commands(config: &mut CliConfig, commands: BTreeMap<String, FileCommandDefinition>) {
     for (name, command) in commands {
         let normalized = normalize_command_name(&name);
-        if normalized.is_empty() || reserved_slash_command(&normalized) {
+        if !valid_command_name(&normalized) || reserved_slash_command(&normalized) {
             continue;
         }
         let Some(prompt) = command.prompt.filter(|prompt| !prompt.trim().is_empty()) else {
             continue;
         };
+        let aliases = command
+            .aliases
+            .unwrap_or_default()
+            .into_iter()
+            .map(|alias| normalize_command_name(&alias))
+            .filter(|alias| valid_command_name(alias) && !reserved_slash_command(alias))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|alias| alias != &normalized)
+            .collect::<Vec<_>>();
         let definition = SlashCommandDefinition {
-            name: normalized.clone(),
+            name: normalized,
             prompt,
-            mode: command.mode,
             description: command.description,
-            aliases: command
-                .aliases
-                .unwrap_or_default()
-                .into_iter()
-                .map(|alias| normalize_command_name(&alias))
-                .filter(|alias| !alias.is_empty() && !reserved_slash_command(alias))
-                .collect(),
+            aliases,
         };
-        config.slash_commands.insert(normalized, definition.clone());
-        for alias in &definition.aliases {
-            config
-                .slash_commands
-                .insert(alias.clone(), definition.clone());
-        }
+        upsert_slash_command(config, definition);
     }
 }
 
-fn normalize_command_name(name: &str) -> String {
-    name.trim().trim_start_matches('/').to_ascii_lowercase()
+fn upsert_slash_command(config: &mut CliConfig, mut definition: SlashCommandDefinition) {
+    let canonical = definition.name.clone();
+    let stale_aliases = config
+        .slash_commands
+        .iter()
+        .filter(|(lookup, existing)| existing.name == canonical && *lookup != &canonical)
+        .map(|(lookup, _)| lookup.clone())
+        .collect::<Vec<_>>();
+    for alias in stale_aliases {
+        config.slash_commands.remove(&alias);
+    }
+    for existing in config.slash_commands.values_mut() {
+        if existing.name != canonical {
+            existing.aliases.retain(|alias| alias != &canonical);
+        }
+    }
+
+    let requested_aliases = std::mem::take(&mut definition.aliases);
+    let active_aliases = requested_aliases
+        .into_iter()
+        .filter(|alias| {
+            !config
+                .slash_commands
+                .get(alias)
+                .is_some_and(|existing| existing.name != canonical)
+        })
+        .collect::<Vec<_>>();
+    definition.aliases.clone_from(&active_aliases);
+    config.slash_commands.insert(canonical, definition.clone());
+    for alias in active_aliases {
+        config.slash_commands.insert(alias, definition.clone());
+    }
 }
 
 fn reserved_slash_command(name: &str) -> bool {
@@ -646,7 +846,7 @@ fn merge_compatibility_metadata(config: &mut CliConfig, raw: &Value) {
         return;
     };
     let mut metadata = serde_json::Map::new();
-    for key in ["display", "subagents", "commands", "security"] {
+    for key in ["display", "subagents", "security"] {
         if let Some(value) = root.get(key).cloned() {
             if let Ok(json) = serde_json::to_value(value) {
                 metadata.insert(key.to_string(), json);
@@ -697,6 +897,83 @@ fn merge_provider_config(target: &mut ProviderConfig, overlay: FileProviderConfi
     }
 }
 
+fn merge_shell_review_config(
+    target: &mut CliShellReviewConfig,
+    overlay: FileShellReviewConfig,
+) -> CliResult<()> {
+    if let Some(enabled) = overlay.enabled {
+        target.enabled = enabled;
+    }
+    if overlay.model.is_some() {
+        target.model = overlay.model;
+    }
+    if overlay.model_settings.is_some() {
+        target.model_settings = overlay.model_settings;
+    }
+    if let Some(action) = overlay.on_needs_approval {
+        target.on_needs_approval = validate_shell_review_action(&action)?.to_string();
+    }
+    if let Some(threshold) = overlay.risk_threshold {
+        target.risk_threshold = validate_shell_review_risk(&threshold)?.to_string();
+    }
+    if overlay.system_prompt.is_some() {
+        target.system_prompt = overlay.system_prompt;
+    }
+    Ok(())
+}
+
+fn validate_shell_review_action(value: &str) -> CliResult<&'static str> {
+    match value.trim() {
+        "defer" => Ok("defer"),
+        "deny" => Ok("deny"),
+        other => Err(CliError::Usage(format!(
+            "invalid security.shell_review.on_needs_approval: {other}; expected defer or deny"
+        ))),
+    }
+}
+
+fn validate_shell_review_risk(value: &str) -> CliResult<&'static str> {
+    match value.trim() {
+        "low" => Ok("low"),
+        "medium" => Ok("medium"),
+        "high" => Ok("high"),
+        "extra_high" | "extra-high" => Ok("extra_high"),
+        other => Err(CliError::Usage(format!(
+            "invalid security.shell_review.risk_threshold: {other}; expected low, medium, high, or extra_high"
+        ))),
+    }
+}
+
+fn merge_oauth_refresh_config(
+    target: &mut OAuthRefreshConfig,
+    overlay: &FileOAuthRefreshConfig,
+) -> CliResult<()> {
+    if let Some(enabled) = overlay.enabled {
+        target.enabled = enabled;
+    }
+    if let Some(interval_seconds) = overlay.interval_seconds {
+        if interval_seconds == 0 {
+            return Err(CliError::Usage(
+                "invalid oauth_refresh.interval_seconds: value must be positive".to_string(),
+            ));
+        }
+        target.interval_seconds = interval_seconds;
+    }
+    if let Some(failure_retry_seconds) = overlay.failure_retry_seconds {
+        if failure_retry_seconds == 0 {
+            return Err(CliError::Usage(
+                "invalid oauth_refresh.failure_retry_seconds: value must be positive".to_string(),
+            ));
+        }
+        target.failure_retry_seconds = failure_retry_seconds;
+    }
+    if let Some(refresh_on_startup) = overlay.refresh_on_startup {
+        target.refresh_on_startup = refresh_on_startup;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 fn apply_env(config: &mut CliConfig) {
     for (key, value) in &config.env_vars {
         if env::var_os(key).is_none() {
@@ -739,6 +1016,27 @@ fn apply_env(config: &mut CliConfig) {
     if let Some(value) = env::var_os("STARWEAVER_SHELL_ENABLED") {
         config.shell_enabled = env_bool(&value.to_string_lossy());
     }
+    if let Some(value) = env::var_os("STARWEAVER_SHELL_REVIEW_ENABLED") {
+        config.shell_review.enabled = env_bool(&value.to_string_lossy());
+    }
+    if let Some(value) = env::var_os("STARWEAVER_SHELL_REVIEW_MODEL") {
+        config.shell_review.model = Some(value.to_string_lossy().to_string());
+    }
+    if let Some(value) = env::var_os("STARWEAVER_SHELL_REVIEW_MODEL_SETTINGS") {
+        config.shell_review.model_settings = Some(value.to_string_lossy().to_string());
+    }
+    if let Some(value) = env::var_os("STARWEAVER_SHELL_REVIEW_ACTION") {
+        let value = value.to_string_lossy().to_string();
+        if let Ok(action) = validate_shell_review_action(&value) {
+            config.shell_review.on_needs_approval = action.to_string();
+        }
+    }
+    if let Some(value) = env::var_os("STARWEAVER_SHELL_REVIEW_RISK_THRESHOLD") {
+        let value = value.to_string_lossy().replace('-', "_");
+        if let Ok(risk) = validate_shell_review_risk(&value) {
+            config.shell_review.risk_threshold = risk.to_string();
+        }
+    }
     if let Some(value) = env::var_os("STARWEAVER_OUTPUT") {
         if let Some(output) = parse_output_mode(&value.to_string_lossy()) {
             config.default_output = output;
@@ -751,6 +1049,26 @@ fn apply_env(config: &mut CliConfig) {
     }
     if let Some(value) = env::var_os("STARWEAVER_UPDATE_CHANNEL") {
         config.update_channel = value.to_string_lossy().to_string();
+    }
+    if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_ENABLED") {
+        config.oauth_refresh.enabled = env_bool(&value.to_string_lossy());
+    }
+    if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_INTERVAL_SECONDS") {
+        if let Ok(seconds) = value.to_string_lossy().parse::<u64>() {
+            if seconds > 0 {
+                config.oauth_refresh.interval_seconds = seconds;
+            }
+        }
+    }
+    if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_FAILURE_RETRY_SECONDS") {
+        if let Ok(seconds) = value.to_string_lossy().parse::<u64>() {
+            if seconds > 0 {
+                config.oauth_refresh.failure_retry_seconds = seconds;
+            }
+        }
+    }
+    if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_ON_STARTUP") {
+        config.oauth_refresh.refresh_on_startup = env_bool(&value.to_string_lossy());
     }
     if let Some(value) = env::var_os("STARWEAVER_OPENAI_BASE_URL") {
         config.providers.openai.base_url = Some(value.to_string_lossy().to_string());
@@ -888,11 +1206,7 @@ pub fn write_current_session(config: &CliConfig, session_id: &str) -> CliResult<
     fs::create_dir_all(&config.project_dir)
         .map_err(|error| io_error(&config.project_dir, error))?;
     let path = config.project_dir.join("state.json");
-    let temp = config.project_dir.join(format!(
-        "state.{}.{}.json.tmp",
-        process::id(),
-        format_thread_id(thread::current().id())
-    ));
+    let temp = state_temp_path(config);
     let value = serde_json::json!({
         "current_session_id": session_id,
         "database_path": config.database_path,
@@ -901,6 +1215,49 @@ pub fn write_current_session(config: &CliConfig, session_id: &str) -> CliResult<
     fs::write(&temp, serde_json::to_vec_pretty(&value)?).map_err(|error| io_error(&temp, error))?;
     fs::rename(&temp, &path).map_err(|error| io_error(&path, error))?;
     Ok(())
+}
+
+/// Clear the current session pointer without deleting other project state fields.
+pub fn clear_current_session(config: &CliConfig) -> CliResult<()> {
+    fs::create_dir_all(&config.project_dir)
+        .map_err(|error| io_error(&config.project_dir, error))?;
+    let path = config.project_dir.join("state.json");
+    let mut value = if path.exists() {
+        let content = fs::read_to_string(&path).map_err(|error| io_error(&path, error))?;
+        serde_json::from_str::<serde_json::Value>(&content)?
+    } else {
+        serde_json::json!({})
+    };
+    if !value.is_object() {
+        value = serde_json::json!({});
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.remove("current_session_id");
+        object.insert(
+            "database_path".to_string(),
+            serde_json::json!(config.database_path),
+        );
+        object.insert(
+            "profile".to_string(),
+            serde_json::json!(config.default_profile),
+        );
+        object.insert(
+            "cleared_at".to_string(),
+            serde_json::json!(chrono::Utc::now()),
+        );
+    }
+    let temp = state_temp_path(config);
+    fs::write(&temp, serde_json::to_vec_pretty(&value)?).map_err(|error| io_error(&temp, error))?;
+    fs::rename(&temp, &path).map_err(|error| io_error(&path, error))?;
+    Ok(())
+}
+
+fn state_temp_path(config: &CliConfig) -> PathBuf {
+    config.project_dir.join(format!(
+        "state.{}.{}.json.tmp",
+        process::id(),
+        format_thread_id(thread::current().id())
+    ))
 }
 
 fn format_thread_id(id: thread::ThreadId) -> String {
@@ -944,7 +1301,21 @@ pub fn set_config_value(
     } else {
         toml::map::Map::new()
     };
-    if let Some((provider, field)) = split_provider_config_key(key) {
+    if let Some(field) = key.strip_prefix("security.shell_review.") {
+        let security_root = root
+            .entry("security".to_string())
+            .or_insert_with(|| Value::Table(toml::map::Map::new()));
+        let security_root_table = security_root
+            .as_table_mut()
+            .ok_or_else(|| CliError::Usage("config section security is not a table".to_string()))?;
+        let shell_review = security_root_table
+            .entry("shell_review".to_string())
+            .or_insert_with(|| Value::Table(toml::map::Map::new()));
+        let shell_review_table = shell_review.as_table_mut().ok_or_else(|| {
+            CliError::Usage("config section security.shell_review is not a table".to_string())
+        })?;
+        shell_review_table.insert(field.to_string(), parsed_value);
+    } else if let Some((provider, field)) = split_provider_config_key(key) {
         let provider_root = root
             .entry("providers".to_string())
             .or_insert_with(|| Value::Table(toml::map::Map::new()));
@@ -996,7 +1367,9 @@ pub fn init_config_file(config: &CliConfig, scope: ConfigScope, force: bool) -> 
 }
 
 pub const DEFAULT_TOOLS_TEMPLATE: &str = r#"[tools]
-need_approval = ["shell", "write", "edit", "multi_edit", "delete", "move"]
+# CLI tools execute without approval by default. Add explicit tool names,
+# toolset ids, or "*" here to opt back into approval gating.
+need_approval = []
 
 "#;
 
@@ -1571,7 +1944,7 @@ const fn default_config_template(scope: ConfigScope) -> &'static str {
             r#"[general]
 default_profile = "general"
 default_output = "agui-jsonl"
-default_hitl = "prompt"
+default_hitl = "defer"
 
 [providers.openai]
 enabled = true
@@ -1581,6 +1954,12 @@ base_url = "https://api.openai.com/v1"
 [providers.codex]
 base_url = "https://chatgpt.com/backend-api/codex"
 max_tokens_parameter = "omit"
+
+[oauth_refresh]
+enabled = true
+interval_seconds = 1800
+failure_retry_seconds = 60
+refresh_on_startup = true
 
 [providers.anthropic]
 enabled = true
@@ -1592,6 +1971,11 @@ enabled = true
 api_key_env = "GEMINI_API_KEY"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 
+[security.shell_review]
+enabled = false
+on_needs_approval = "defer"
+risk_threshold = "high"
+
 [update]
 channel = "stable"
 "#
@@ -1600,13 +1984,18 @@ channel = "stable"
             r#"[general]
 default_profile = "general"
 default_output = "agui-jsonl"
-default_hitl = "prompt"
+default_hitl = "defer"
 
 [environment]
 provider = "local"
 files_policy = "read_write"
 shell_enabled = true
 workspace_root = ".."
+
+[security.shell_review]
+enabled = false
+on_needs_approval = "defer"
+risk_threshold = "high"
 
 [trim]
 auto_after_run = true
@@ -1643,7 +2032,27 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "environment.provider" => config.environment_provider.clone(),
         "environment.files_policy" => config.files_policy.clone(),
         "environment.shell_enabled" => config.shell_enabled.to_string(),
+        "security.shell_review.enabled" => config.shell_review.enabled.to_string(),
+        "security.shell_review.model" => config.shell_review.model.clone().unwrap_or_default(),
+        "security.shell_review.model_settings" => config
+            .shell_review
+            .model_settings
+            .clone()
+            .unwrap_or_default(),
+        "security.shell_review.on_needs_approval" => config.shell_review.on_needs_approval.clone(),
+        "security.shell_review.risk_threshold" => config.shell_review.risk_threshold.clone(),
+        "security.shell_review.system_prompt" => config
+            .shell_review
+            .system_prompt
+            .clone()
+            .unwrap_or_default(),
         "update.channel" => config.update_channel.clone(),
+        "oauth_refresh.enabled" => config.oauth_refresh.enabled.to_string(),
+        "oauth_refresh.interval_seconds" => config.oauth_refresh.interval_seconds.to_string(),
+        "oauth_refresh.failure_retry_seconds" => {
+            config.oauth_refresh.failure_retry_seconds.to_string()
+        }
+        "oauth_refresh.refresh_on_startup" => config.oauth_refresh.refresh_on_startup.to_string(),
         "general.model" | "model.default.model" => config
             .default_model
             .as_ref()
@@ -1811,10 +2220,7 @@ pub fn tool_need_approval(config: &CliConfig) -> Vec<String> {
 }
 
 fn default_need_approval() -> Vec<String> {
-    ["shell", "write", "edit", "multi_edit", "delete", "move"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    Vec::new()
 }
 
 /// Return merged configured MCP server map.
@@ -1962,7 +2368,20 @@ fn split_config_key(key: &str) -> CliResult<(&str, &str)> {
             | ("subagents", "dirs" | "additional_dirs" | "disabled" | "disabled_builtins")
             | ("storage", "database_path" | "file_store_path")
             | ("environment", "workspace_root" | "provider" | "files_policy" | "shell_enabled")
+            | (
+                "security",
+                "shell_review.enabled"
+                | "shell_review.model"
+                | "shell_review.model_settings"
+                | "shell_review.on_needs_approval"
+                | "shell_review.risk_threshold"
+                | "shell_review.system_prompt",
+            )
             | ("update", "channel")
+            | (
+                "oauth_refresh",
+                "enabled" | "interval_seconds" | "failure_retry_seconds" | "refresh_on_startup",
+            )
             | (
                 "trim",
                 "auto_after_run" | "current_session_keep_recent_runs" | "all_sessions_keep_days",
@@ -2029,6 +2448,19 @@ fn validated_non_empty<'a>(key: &str, value: &'a str) -> CliResult<&'a str> {
     Ok(trimmed)
 }
 
+fn validated_positive_u64(key: &str, value: &str) -> CliResult<u64> {
+    let parsed = value
+        .trim()
+        .parse::<u64>()
+        .map_err(|error| CliError::Usage(format!("invalid {key}: {error}")))?;
+    if parsed == 0 {
+        return Err(CliError::Usage(format!(
+            "invalid {key}: value must be positive"
+        )));
+    }
+    Ok(parsed)
+}
+
 fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
     if let Some((_provider, field)) = split_provider_config_key(key) {
         return parse_provider_config_value(key, field, value);
@@ -2049,11 +2481,20 @@ fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
         | "providers.anthropic.endpoint_path"
         | "providers.gemini.base_url"
         | "providers.gemini.endpoint_path"
+        | "security.shell_review.model"
+        | "security.shell_review.model_settings"
+        | "security.shell_review.system_prompt"
         | "update.channel" => Value::String(value.to_string()),
         "general.default_output" => Value::String(validated_output_mode(value)?.to_string()),
         "general.default_hitl" => Value::String(validated_hitl_policy(value)?.to_string()),
         "environment.provider" => Value::String(validated_environment_provider(value)?.to_string()),
         "environment.files_policy" => Value::String(validated_files_policy(value)?.to_string()),
+        "security.shell_review.on_needs_approval" => {
+            Value::String(validate_shell_review_action(value)?.to_string())
+        }
+        "security.shell_review.risk_threshold" => {
+            Value::String(validate_shell_review_risk(value)?.to_string())
+        }
         "skills.dirs"
         | "skills.additional_dirs"
         | "subagents.dirs"
@@ -2071,10 +2512,19 @@ fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
                 .map(|name| Value::String(name.trim().to_string()))
                 .collect(),
         ),
-        "trim.auto_after_run" | "environment.shell_enabled" => value
+        "trim.auto_after_run"
+        | "environment.shell_enabled"
+        | "security.shell_review.enabled"
+        | "oauth_refresh.enabled"
+        | "oauth_refresh.refresh_on_startup" => value
             .parse::<bool>()
             .map(Value::Boolean)
             .map_err(|error| CliError::Usage(error.to_string()))?,
+        "oauth_refresh.interval_seconds" | "oauth_refresh.failure_retry_seconds" => Value::Integer(
+            validated_positive_u64(key, value)?
+                .try_into()
+                .map_err(|error: std::num::TryFromIntError| CliError::Usage(error.to_string()))?,
+        ),
         "trim.current_session_keep_recent_runs" => Value::Integer(
             value
                 .parse::<usize>()
@@ -2113,4 +2563,194 @@ fn parse_provider_config_value(key: &str, field: &str, value: &str) -> CliResult
         other => return Err(CliError::NotFound(other.to_string())),
     };
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    fn resolver_with_current_dir(root: &Path, current_dir: &Path) -> ConfigResolver {
+        ConfigResolver {
+            global_dir: Some(root.join("global")),
+            project_dir: None,
+            shared_agents_dir: Some(root.join("shared-agents")),
+            current_dir: Some(current_dir.to_path_buf()),
+        }
+    }
+
+    #[test]
+    fn default_workspace_root_uses_invocation_cwd_without_project_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let cli =
+            crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+
+        let config = resolver_with_current_dir(temp.path(), &workspace)
+            .resolve(&cli)
+            .unwrap();
+
+        assert_eq!(config.project_dir, temp.path().join("global"));
+        assert_eq!(config.workspace_root, workspace);
+    }
+
+    #[test]
+    fn default_workspace_root_uses_discovered_project_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        let nested = workspace.join("crates/example");
+        fs::create_dir_all(workspace.join(".starweaver")).unwrap();
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(workspace.join(".starweaver/config.toml"), "").unwrap();
+        let cli =
+            crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+
+        let config = resolver_with_current_dir(temp.path(), &nested)
+            .resolve(&cli)
+            .unwrap();
+
+        assert_eq!(config.project_dir, workspace.join(".starweaver"));
+        assert_eq!(config.workspace_root, workspace);
+    }
+
+    #[test]
+    fn default_project_discovery_ignores_home_global_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let workspace = home.join("workspace");
+        fs::create_dir_all(home.join(".starweaver")).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(home.join(".starweaver/config.toml"), "").unwrap();
+        let cli =
+            crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+        let resolver = ConfigResolver {
+            global_dir: Some(home.join(".starweaver")),
+            project_dir: None,
+            shared_agents_dir: Some(temp.path().join("shared-agents")),
+            current_dir: Some(workspace.clone()),
+        };
+
+        let config = resolver.resolve(&cli).unwrap();
+
+        assert_eq!(config.project_dir, home.join(".starweaver"));
+        assert_eq!(config.workspace_root, workspace);
+    }
+
+    #[test]
+    fn project_setup_targets_invocation_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let cli = crate::args::parse([
+            "starweaver-cli".to_string(),
+            "setup".to_string(),
+            "--project".to_string(),
+        ])
+        .unwrap();
+
+        let config = resolver_with_current_dir(temp.path(), &workspace)
+            .resolve(&cli)
+            .unwrap();
+
+        assert_eq!(config.project_dir, workspace.join(".starweaver"));
+        assert_eq!(config.workspace_root, workspace);
+    }
+
+    #[test]
+    fn shell_review_config_parses_security_table_and_getters() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("project");
+        let project_config = workspace.join(".starweaver");
+        fs::create_dir_all(&project_config).unwrap();
+        fs::write(
+            project_config.join("config.toml"),
+            r#"
+[security.shell_review]
+enabled = true
+model = "local_echo"
+model_settings = "openai_responses_medium"
+on_needs_approval = "deny"
+risk_threshold = "extra-high"
+system_prompt = "Review safely."
+"#,
+        )
+        .unwrap();
+        let cli =
+            crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+        let resolver = ConfigResolver {
+            global_dir: Some(temp.path().join("global")),
+            project_dir: Some(project_config),
+            shared_agents_dir: Some(temp.path().join("shared-agents")),
+            current_dir: Some(workspace),
+        };
+
+        let config = resolver.resolve(&cli).unwrap();
+
+        assert!(config.shell_review.enabled);
+        assert_eq!(config.shell_review.model.as_deref(), Some("local_echo"));
+        assert_eq!(
+            config.shell_review.model_settings.as_deref(),
+            Some("openai_responses_medium")
+        );
+        assert_eq!(config.shell_review.on_needs_approval, "deny");
+        assert_eq!(config.shell_review.risk_threshold, "extra_high");
+        assert_eq!(
+            config.shell_review.system_prompt.as_deref(),
+            Some("Review safely.")
+        );
+        assert_eq!(
+            get_config_value(&config, "security.shell_review.risk_threshold").unwrap(),
+            "extra_high\n"
+        );
+    }
+
+    #[test]
+    fn shell_review_validation_requires_model_when_enabled() {
+        let missing_model = CliShellReviewConfig {
+            enabled: true,
+            model: None,
+            ..CliShellReviewConfig::default()
+        };
+        assert!(matches!(missing_model.validate(), Err(CliError::Config(_))));
+        assert!(validate_shell_review_action("approve").is_err());
+        assert!(validate_shell_review_risk("critical").is_err());
+    }
+
+    #[test]
+    fn set_config_value_writes_nested_shell_review_table() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli =
+            crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+
+        set_config_value(
+            &config,
+            ConfigScope::Project,
+            "security.shell_review.enabled",
+            "true",
+        )
+        .unwrap();
+        set_config_value(
+            &config,
+            ConfigScope::Project,
+            "security.shell_review.risk_threshold",
+            "extra-high",
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(config.project_dir.join("config.toml")).unwrap();
+        let parsed = content.parse::<Value>().unwrap();
+        assert_eq!(
+            parsed["security"]["shell_review"]["enabled"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            parsed["security"]["shell_review"]["risk_threshold"].as_str(),
+            Some("extra_high")
+        );
+    }
 }

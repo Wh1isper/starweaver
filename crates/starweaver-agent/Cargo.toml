@@ -15,6 +15,7 @@ categories.workspace = true
 [dependencies]
 base64.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
@@ -26,6 +27,7 @@ starweaver-context.workspace = true
 starweaver-core.workspace = true
 starweaver-environment.workspace = true
 starweaver-model.workspace = true
+starweaver-oauth-provider.workspace = true
 starweaver-runtime.workspace = true
 starweaver-tools.workspace = true
 tokio.workspace = true

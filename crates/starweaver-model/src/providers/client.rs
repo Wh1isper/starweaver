@@ -12,7 +12,7 @@ use crate::{
         gemini::GeminiGenerateContentAdapter, openai_chat::OpenAiChatAdapter,
         openai_responses::OpenAiResponsesAdapter,
     },
-    request::prepare_model_request,
+    request::{prepare_model_request, OutputMode},
     settings::ModelSettings,
     transport::{
         build_http_request, send_with_retries, DynHttpClient, DynSleeper, HttpModelConfig,
@@ -62,7 +62,7 @@ impl ProtocolModelClient {
 
     /// Override the model capability profile.
     #[must_use]
-    pub const fn with_profile(mut self, profile: ModelProfile) -> Self {
+    pub fn with_profile(mut self, profile: ModelProfile) -> Self {
         self.profile = profile;
         self
     }
@@ -228,13 +228,13 @@ impl ProtocolModelClient {
                 &params.tools,
             ),
         }?;
-        apply_output_schema(&mut body, &self.profile, params.output_schema.as_ref());
+        apply_output_schema(&mut body, &self.profile, params);
         Ok(body)
     }
 
     const fn openai_responses_max_tokens_parameter(&self) -> MaxTokensParameter {
         match self.http_config.max_tokens_parameter {
-            MaxTokensParameter::Default => MaxTokensParameter::MaxTokens,
+            MaxTokensParameter::Default => MaxTokensParameter::MaxOutputTokens,
             value => value,
         }
     }
@@ -260,6 +260,7 @@ impl ProtocolModelClient {
         if let Some(settings) = settings {
             options.headers.extend(settings.extra_headers.clone());
             options.extra_body.extend(settings.extra_body.clone());
+            options.timeout_ms = options.timeout_ms.or(settings.timeout_ms);
         }
         options.extra_body.extend(params.extra_body.clone());
         options.metadata.extend(context.llm_trace_metadata.clone());
@@ -275,8 +276,11 @@ impl ProtocolModelClient {
     }
 }
 
-fn apply_output_schema(body: &mut Value, profile: &ModelProfile, schema: Option<&Value>) {
-    let Some(schema) = schema else {
+fn apply_output_schema(body: &mut Value, profile: &ModelProfile, params: &ModelRequestParameters) {
+    if !matches!(params.output_mode, Some(OutputMode::NativeJsonSchema)) {
+        return;
+    }
+    let Some(schema) = params.output_schema.as_ref() else {
         return;
     };
     let Some(object) = body.as_object_mut() else {

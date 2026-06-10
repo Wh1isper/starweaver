@@ -129,6 +129,20 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             },
         )
         .await;
+    let multi_edit_create_then_replace = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "multi-edit-create-then-replace".to_string(),
+                name: "multi_edit".to_string(),
+                arguments: serde_json::json!({"file_path": "created.txt", "edits": [
+                    {"old_string": "", "new_string": "Hello World"},
+                    {"old_string": "World", "new_string": "Universe"}
+                ]})
+                .into(),
+            },
+        )
+        .await;
     let multi_edit_empty_later = registry
         .execute_call(
             context.clone(),
@@ -150,6 +164,16 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
                 id: "shell".to_string(),
                 name: "shell_exec".to_string(),
                 arguments: serde_json::json!({"command": "echo ok"}).into(),
+            },
+        )
+        .await;
+    let empty_shell = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "empty-shell".to_string(),
+                name: "shell_exec".to_string(),
+                arguments: serde_json::json!({"command": "   "}).into(),
             },
         )
         .await;
@@ -190,12 +214,24 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
         .as_str()
         .unwrap()
         .contains("file already exists"));
+    assert!(!multi_edit_create_then_replace.is_error);
+    assert_eq!(
+        provider.read_text("created.txt").await.unwrap(),
+        "Hello Universe"
+    );
     assert!(multi_edit_empty_later.is_error);
     assert!(multi_edit_empty_later.content["error"]
         .as_str()
         .unwrap()
         .contains("old_string must be non-empty"));
     assert_eq!(shell.content["stdout"], "ok\n");
+    assert_eq!(empty_shell.content["return_code"], 1);
+    assert_eq!(empty_shell.content["stdout"], "");
+    assert_eq!(empty_shell.content["stderr"], "");
+    assert!(empty_shell.content["error"]
+        .as_str()
+        .unwrap()
+        .contains("must not be empty"));
 
     let mut process_agent_context = AgentContext::default();
     attach_environment(&mut process_agent_context, provider.clone());
@@ -419,6 +455,147 @@ async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
         .as_str()
         .unwrap()
         .starts_with("data:image/png;base64,"));
+}
+
+#[tokio::test]
+async fn filesystem_view_uses_relaxed_text_limits_for_configured_paths() {
+    let mut many_lines = String::new();
+    for line in 1..=350 {
+        many_lines.push_str("line ");
+        many_lines.push_str(&line.to_string());
+        many_lines.push('\n');
+    }
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_file("AGENTS.md", many_lines.clone())
+            .with_file("nested/AGENTS.md", many_lines.clone())
+            .with_bytes("binary.md", vec![b'a', 0, b'b']),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&filesystem_tools());
+    let mut agent_context = AgentContext::default();
+    agent_context.tool_config.view_relaxed_text_patterns =
+        vec!["/AGENTS.md".to_string(), "re:^binary\\.md$".to_string()];
+    attach_environment(&mut agent_context, provider);
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let relaxed = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "relaxed".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "AGENTS.md"}).into(),
+            },
+        )
+        .await;
+    assert!(
+        !relaxed.is_error,
+        "relaxed read failed: {:?}",
+        relaxed.content
+    );
+    assert!(relaxed.content.as_str().unwrap().contains("line 350"));
+
+    let explicit_limit = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "explicit".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "AGENTS.md", "line_limit": 10}).into(),
+            },
+        )
+        .await;
+    assert_eq!(
+        explicit_limit.content["metadata"]["reading_parameters"]["line_limit"],
+        10
+    );
+    assert_eq!(
+        explicit_limit.content["metadata"]["current_segment"]["end_line"],
+        10
+    );
+
+    let nested_normal = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "nested".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "nested/AGENTS.md"}).into(),
+            },
+        )
+        .await;
+    assert_eq!(
+        nested_normal.content["metadata"]["current_segment"]["end_line"],
+        300
+    );
+
+    let binary = registry
+        .execute_call(
+            context,
+            &starweaver_model::ToolCallPart {
+                id: "binary".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "binary.md"}).into(),
+            },
+        )
+        .await;
+    assert!(binary
+        .content
+        .as_str()
+        .unwrap()
+        .contains("appears to be a binary file"));
+}
+
+#[tokio::test]
+async fn skill_registry_registers_markdown_relaxed_view_patterns() {
+    let mut skill_readme = String::new();
+    for line in 1..=350 {
+        skill_readme.push_str("readme ");
+        skill_readme.push_str(&line.to_string());
+        skill_readme.push('\n');
+    }
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_file(
+                "skills/research/SKILL.md",
+                "---\nname: research\ndescription: Research workflow\n---\nbody",
+            )
+            .with_file("skills/research/README.md", skill_readme),
+    );
+    let mut skills = starweaver_agent::SkillRegistry::new();
+    skills.insert(starweaver_agent::SkillPackage {
+        name: "research".to_string(),
+        description: "Research workflow".to_string(),
+        path: "skills/research/SKILL.md".to_string(),
+        body: None,
+        metadata: Metadata::default(),
+    });
+    let mut agent_context = AgentContext::default();
+    skills.register_relaxed_view_patterns(&mut agent_context);
+    attach_environment(&mut agent_context, provider);
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context.clone());
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&filesystem_tools());
+
+    let view = registry
+        .execute_call(
+            context,
+            &starweaver_model::ToolCallPart {
+                id: "skill-readme".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "skills/research/README.md"}).into(),
+            },
+        )
+        .await;
+    assert!(view.content.as_str().unwrap().contains("readme 350"));
 }
 
 #[tokio::test]
@@ -735,6 +912,7 @@ async fn first_party_bundles_can_be_registered_on_agent_builder() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     let filesystem = filesystem_tools();
     let shell = shell_tools();
@@ -825,7 +1003,20 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert_eq!(note_metadata["bundle"], "host_operations");
     assert_eq!(note_metadata["auto_inherit"], true);
 
-    assert_eq!(filesystem.get_instructions().len(), 1);
+    let filesystem_instructions = filesystem.get_instructions();
+    assert_eq!(filesystem_instructions.len(), 3);
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "edit"
+            && instruction
+                .content
+                .contains("Use multi_edit instead of multiple edit calls")));
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "multi_edit"
+            && instruction
+                .content
+                .contains("do not issue concurrent edit calls")));
     assert_eq!(shell.get_instructions().len(), 1);
     assert_eq!(task.get_instructions().len(), 1);
     assert_eq!(host.get_instructions().len(), 1);

@@ -45,6 +45,20 @@ async fn direct_model_request_returns_response() {
 }
 
 #[tokio::test]
+async fn direct_model_request_uses_stream_final_events() {
+    let model = TestModel::with_stream_events(vec![vec![ModelResponseStreamEvent::FinalResult(
+        Box::new(ModelResponse::text("direct streamed")),
+    )]]);
+
+    let response = model_request(&model, DirectModelRequest::new(vec![user_message("hello")]))
+        .await
+        .unwrap();
+
+    assert_eq!(response.text_output(), "direct streamed");
+    assert_eq!(model.captured_messages().len(), 1);
+}
+
+#[tokio::test]
 async fn direct_model_stream_falls_back_to_final_result() {
     let model = TestModel::with_text("stream");
     let events = model_request_stream(&model, DirectModelRequest::new(vec![user_message("hello")]))

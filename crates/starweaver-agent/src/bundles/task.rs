@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt::Write, sync::Arc};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -148,8 +148,100 @@ async fn task_list(
 }
 
 fn operation(name: &str, payload: Value) -> ToolResult {
+    let user_content = task_user_content(name, &payload);
     let mut content = serde_json::Map::new();
     content.insert("operation".to_string(), Value::String(name.to_string()));
     content.insert("payload".to_string(), payload);
-    ToolResult::new(Value::Object(content))
+    ToolResult::new(Value::Object(content)).with_user_content(Value::String(user_content))
+}
+
+fn task_user_content(name: &str, payload: &Value) -> String {
+    match name {
+        "task_create" => payload
+            .get("subject")
+            .and_then(Value::as_str)
+            .filter(|subject| !subject.trim().is_empty())
+            .map_or_else(
+                || "Task created".to_string(),
+                |subject| format!("Task created: {subject}"),
+            ),
+        "task_get" => payload
+            .get("task_id")
+            .and_then(Value::as_str)
+            .filter(|task_id| !task_id.trim().is_empty())
+            .map_or_else(
+                || "Task not found".to_string(),
+                |task_id| format!("Task #{task_id}"),
+            ),
+        "task_update" => {
+            let task_id = payload
+                .get("task_id")
+                .and_then(Value::as_str)
+                .filter(|task_id| !task_id.trim().is_empty());
+            let mut text = task_id.map_or_else(
+                || "Task updated".to_string(),
+                |task_id| format!("Task updated: #{task_id}"),
+            );
+            if let Some(status) = payload
+                .get("status")
+                .and_then(Value::as_str)
+                .filter(|status| !status.trim().is_empty())
+            {
+                let _ = write!(text, " [{status}]");
+            }
+            if let Some(subject) = payload
+                .get("subject")
+                .and_then(Value::as_str)
+                .filter(|subject| !subject.trim().is_empty())
+            {
+                text.push(' ');
+                text.push_str(subject);
+            }
+            text
+        }
+        "task_list" => "Task list requested".to_string(),
+        _ => "No task data".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{operation, task_user_content};
+
+    #[test]
+    fn task_operation_preserves_machine_content_and_adds_user_content() {
+        let result = operation(
+            "task_update",
+            json!({
+                "task_id": "6",
+                "status": "completed",
+                "subject": "Align task display"
+            }),
+        );
+
+        assert_eq!(result.content["operation"], "task_update");
+        assert_eq!(result.content["payload"]["task_id"], "6");
+        assert_eq!(
+            result.user_content,
+            Some(json!("Task updated: #6 [completed] Align task display"))
+        );
+    }
+
+    #[test]
+    fn task_user_content_matches_concise_cli_display() {
+        assert_eq!(
+            task_user_content("task_create", &json!({"subject": "Run tests"})),
+            "Task created: Run tests"
+        );
+        assert_eq!(
+            task_user_content("task_get", &json!({"task_id": "8"})),
+            "Task #8"
+        );
+        assert_eq!(
+            task_user_content("task_list", &json!({})),
+            "Task list requested"
+        );
+    }
 }

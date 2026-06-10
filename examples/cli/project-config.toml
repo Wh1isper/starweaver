@@ -4,7 +4,7 @@
 [general]
 default_profile = "workspace"
 default_output = "agui-jsonl"
-default_hitl = "prompt"
+default_hitl = "defer"
 
 [storage]
 database_path = "starweaver.sqlite"

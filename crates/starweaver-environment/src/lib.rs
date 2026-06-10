@@ -14,6 +14,9 @@ use async_trait::async_trait;
 use globset::{GlobBuilder, GlobMatcher};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
+use grep_searcher::{
+    BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_core::{Metadata, XmlWriter};
@@ -255,6 +258,23 @@ pub struct ShellCommand {
     pub environment: BTreeMap<String, String>,
 }
 
+/// Shell review workspace context exposed by environment providers.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ShellReviewEnvironmentContext {
+    /// Default shell working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_cwd: Option<String>,
+    /// Provider-visible allowed paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_paths: Vec<String>,
+    /// Shell platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_platform: Option<String>,
+    /// Shell executable when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_executable: Option<String>,
+}
+
 /// Shell execution output.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ShellOutput {
@@ -409,6 +429,14 @@ pub trait EnvironmentProvider: Send + Sync {
     /// List logical entries under a path.
     async fn list(&self, path: &str) -> EnvironmentResult<Vec<String>>;
 
+    /// Return path candidates used for provider-scoped path pattern matching.
+    ///
+    /// Providers may include both caller-supplied and normalized agent-facing
+    /// paths so relaxed view policies can match relative and absolute paths.
+    fn path_match_candidates(&self, path: &str) -> Vec<String> {
+        path_match_candidates(path)
+    }
+
     /// Match provider-scoped paths with ripgrep-style glob semantics.
     async fn glob(
         &self,
@@ -481,6 +509,11 @@ pub trait EnvironmentProvider: Send + Sync {
 
     /// Execute a foreground shell command through the provider boundary.
     async fn run_shell(&self, command: ShellCommand) -> EnvironmentResult<ShellOutput>;
+
+    /// Return compact workspace context for shell command review.
+    fn shell_review_context(&self) -> ShellReviewEnvironmentContext {
+        ShellReviewEnvironmentContext::default()
+    }
 
     /// Render model-facing context instructions for this environment.
     async fn get_context_instructions(&self) -> EnvironmentResult<Option<String>> {
@@ -809,6 +842,15 @@ impl ProcessShellProvider for VirtualEnvironmentProvider {
 impl EnvironmentProvider for VirtualEnvironmentProvider {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn shell_review_context(&self) -> ShellReviewEnvironmentContext {
+        ShellReviewEnvironmentContext {
+            default_cwd: Some(".".to_string()),
+            allowed_paths: vec![".".to_string()],
+            shell_platform: Some("virtual".to_string()),
+            shell_executable: None,
+        }
     }
 
     async fn read_text(&self, path: &str) -> EnvironmentResult<String> {
@@ -1258,6 +1300,7 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
 pub struct LocalEnvironmentProvider {
     id: String,
     root: PathBuf,
+    allowed_paths: Vec<PathBuf>,
     policy: EnvironmentPolicy,
 }
 
@@ -1265,10 +1308,10 @@ impl LocalEnvironmentProvider {
     /// Create a local provider rooted at a directory.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        let root = root.into();
-        let root = root.canonicalize().unwrap_or(root);
+        let root = normalize_local_config_path(root.into());
         Self {
             id: "local".to_string(),
+            allowed_paths: vec![root.clone()],
             root,
             policy: EnvironmentPolicy {
                 files: FilePolicy::read_only(),
@@ -1291,18 +1334,84 @@ impl LocalEnvironmentProvider {
         self
     }
 
+    /// Set absolute filesystem roots that this provider may access.
+    ///
+    /// The provider root remains the default directory for relative paths and is
+    /// always included even when omitted from `paths`.
+    #[must_use]
+    pub fn with_allowed_paths<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        let mut allowed_paths = Vec::new();
+        for path in paths {
+            push_unique_path(&mut allowed_paths, normalize_local_config_path(path.into()));
+        }
+        push_unique_path(&mut allowed_paths, self.root.clone());
+        self.allowed_paths = allowed_paths;
+        self
+    }
+
+    /// Return configured local filesystem roots.
+    #[must_use]
+    pub fn allowed_paths(&self) -> &[PathBuf] {
+        &self.allowed_paths
+    }
+
     fn resolve(&self, path: &str, write: bool) -> EnvironmentResult<PathBuf> {
-        let logical_path = normalize_requested_path(path)?;
-        if !is_tmp_path(&logical_path) && !self.policy.files.permits(&logical_path, write) {
+        let (visible_path, filesystem_path) = self.resolve_with_visible_path(path)?;
+        if !is_tmp_path(&visible_path) && !self.policy.files.permits(&visible_path, write) {
             return Err(EnvironmentError::AccessDenied(path.to_string()));
         }
-        Ok(self.root.join(logical_path))
+        Ok(filesystem_path)
+    }
+
+    fn resolve_with_visible_path(&self, path: &str) -> EnvironmentResult<(String, PathBuf)> {
+        let requested = Path::new(path);
+        if requested.is_absolute() {
+            let filesystem_path = normalize_absolute_request_path(requested)?;
+            if !self.path_is_allowed(&filesystem_path) {
+                return Err(EnvironmentError::AccessDenied(path.to_string()));
+            }
+            let visible_path = self.logical_path(&filesystem_path)?;
+            return Ok((visible_path, filesystem_path));
+        }
+
+        let mut logical_path = normalize_requested_path(path)?;
+        if logical_path == "." {
+            logical_path.clear();
+        }
+        Ok((logical_path.clone(), self.root.join(&logical_path)))
+    }
+
+    fn path_is_allowed(&self, path: &Path) -> bool {
+        self.allowed_paths
+            .iter()
+            .any(|allowed_path| path == allowed_path || path.starts_with(allowed_path))
+    }
+
+    fn path_is_allowed_root(&self, path: &Path) -> bool {
+        self.allowed_paths
+            .iter()
+            .any(|allowed_path| path == allowed_path)
     }
 
     fn logical_path(&self, path: &Path) -> EnvironmentResult<String> {
+        let path = normalize_local_config_path(path.to_path_buf());
+        if let Ok(relative) = path.strip_prefix(&self.root) {
+            return Ok(normalize_path(relative));
+        }
+        if self.path_is_allowed(&path) {
+            return Ok(display_local_path(&path));
+        }
+        Err(EnvironmentError::AccessDenied(path.display().to_string()))
+    }
+
+    fn visible_root_for_allowed_path(&self, path: &Path) -> String {
+        let path = normalize_local_config_path(path.to_path_buf());
         path.strip_prefix(&self.root)
-            .map_err(|error| EnvironmentError::Provider(error.to_string()))
-            .map(normalize_path)
+            .map_or_else(|_| display_local_path(&path), normalize_path)
     }
 }
 
@@ -1310,6 +1419,29 @@ impl LocalEnvironmentProvider {
 impl EnvironmentProvider for LocalEnvironmentProvider {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn shell_review_context(&self) -> ShellReviewEnvironmentContext {
+        ShellReviewEnvironmentContext {
+            default_cwd: Some(display_local_path(&self.root)),
+            allowed_paths: self
+                .allowed_paths
+                .iter()
+                .map(|path| display_local_path(path))
+                .collect(),
+            shell_platform: Some(std::env::consts::OS.to_string()),
+            shell_executable: std::env::var("SHELL").ok(),
+        }
+    }
+
+    fn path_match_candidates(&self, path: &str) -> Vec<String> {
+        let mut candidates = path_match_candidates(path);
+        if let Ok((visible_path, filesystem_path)) = self.resolve_with_visible_path(path) {
+            push_unique_candidate(&mut candidates, visible_path.clone());
+            push_unique_candidate(&mut candidates, normalize_match_path(&visible_path));
+            push_unique_candidate(&mut candidates, display_local_path(&filesystem_path));
+        }
+        candidates
     }
 
     async fn read_text(&self, path: &str) -> EnvironmentResult<String> {
@@ -1346,11 +1478,10 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
     }
 
     async fn create_dir(&self, path: &str, parents: bool) -> EnvironmentResult<()> {
-        let logical = normalize_requested_path(path)?;
-        if logical.is_empty() || logical == "." {
+        let path = self.resolve(path, true)?;
+        if self.path_is_allowed_root(&path) && path.exists() {
             return Ok(());
         }
-        let path = self.resolve(&logical, true)?;
         let result = if parents {
             std::fs::create_dir_all(&path)
         } else {
@@ -1360,13 +1491,12 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
     }
 
     async fn delete_path(&self, path: &str, recursive: bool) -> EnvironmentResult<()> {
-        let logical = normalize_requested_path(path)?;
-        if logical.is_empty() || logical == "." {
+        let path = self.resolve(path, true)?;
+        if self.path_is_allowed_root(&path) {
             return Err(EnvironmentError::InvalidRequest(
-                "refusing to delete the environment root".to_string(),
+                "refusing to delete an allowed environment root".to_string(),
             ));
         }
-        let path = self.resolve(&logical, true)?;
         let metadata = std::fs::metadata(&path).map_err(|error| map_io_error(&path, &error))?;
         if metadata.is_dir() {
             if recursive {
@@ -1381,20 +1511,18 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
     }
 
     async fn move_path(&self, src: &str, dst: &str, overwrite: bool) -> EnvironmentResult<()> {
-        let src_logical = normalize_requested_path(src)?;
-        let dst_logical = normalize_requested_path(dst)?;
-        if src_logical.is_empty() || src_logical == "." {
+        let src = self.resolve(src, true)?;
+        let dst = self.resolve(dst, true)?;
+        if self.path_is_allowed_root(&src) {
             return Err(EnvironmentError::InvalidRequest(
-                "refusing to move the environment root".to_string(),
+                "refusing to move an allowed environment root".to_string(),
             ));
         }
-        if dst_logical.is_empty() || dst_logical == "." {
+        if self.path_is_allowed_root(&dst) {
             return Err(EnvironmentError::InvalidRequest(
-                "destination must not be the environment root".to_string(),
+                "destination must not be an allowed environment root".to_string(),
             ));
         }
-        let src = self.resolve(&src_logical, true)?;
-        let dst = self.resolve(&dst_logical, true)?;
         if src == dst {
             return Err(EnvironmentError::InvalidRequest(
                 "source and destination must differ".to_string(),
@@ -1405,20 +1533,18 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
     }
 
     async fn copy_path(&self, src: &str, dst: &str, overwrite: bool) -> EnvironmentResult<()> {
-        let src_logical = normalize_requested_path(src)?;
-        let dst_logical = normalize_requested_path(dst)?;
-        if src_logical.is_empty() || src_logical == "." {
+        let src = self.resolve(src, false)?;
+        let dst = self.resolve(dst, true)?;
+        if self.path_is_allowed_root(&src) {
             return Err(EnvironmentError::InvalidRequest(
-                "refusing to copy the environment root".to_string(),
+                "refusing to copy an allowed environment root".to_string(),
             ));
         }
-        if dst_logical.is_empty() || dst_logical == "." {
+        if self.path_is_allowed_root(&dst) {
             return Err(EnvironmentError::InvalidRequest(
-                "destination must not be the environment root".to_string(),
+                "destination must not be an allowed environment root".to_string(),
             ));
         }
-        let src = self.resolve(&src_logical, false)?;
-        let dst = self.resolve(&dst_logical, true)?;
         if src == dst {
             return Err(EnvironmentError::InvalidRequest(
                 "source and destination must differ".to_string(),
@@ -1484,17 +1610,13 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         pattern: &str,
         options: FileGlobOptions,
     ) -> EnvironmentResult<Vec<FileGlobMatch>> {
-        self.resolve(path, false)?;
         let path_glob = PathGlob::new(pattern)?;
         let search_root = self.resolve(path, false)?;
-        let mut builder = ignore::WalkBuilder::new(search_root);
-        builder.hidden(!options.include_hidden);
-        builder.ignore(!options.include_ignored);
-        builder.git_ignore(!options.include_ignored);
-        builder.git_global(!options.include_ignored);
-        builder.git_exclude(!options.include_ignored);
-        builder.require_git(false);
-        let prefix = path.trim_matches('/');
+        let builder = local_search_walk_builder(
+            &search_root,
+            options.include_hidden,
+            options.include_ignored,
+        );
         let mut glob_matches = Vec::new();
         for entry in builder.build() {
             let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
@@ -1508,8 +1630,12 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
             if !self.policy.files.permits(&logical, false) {
                 continue;
             }
-            let candidate = strip_path_prefix(prefix, &logical);
-            if path_glob.is_match(candidate) {
+            let candidate = entry
+                .path()
+                .strip_prefix(&search_root)
+                .map(normalize_path)
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            if path_glob.is_match(&candidate) {
                 glob_matches.push(FileGlobMatch { path: logical });
                 if options.max_results > 0 && glob_matches.len() >= options.max_results {
                     break;
@@ -1517,6 +1643,69 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
             }
         }
         Ok(glob_matches)
+    }
+
+    async fn grep(
+        &self,
+        path: &str,
+        pattern: &str,
+        options: FileGrepOptions,
+    ) -> EnvironmentResult<Vec<FileGrepMatch>> {
+        let matcher = RegexMatcher::new_line_matcher(pattern)
+            .map_err(|error| EnvironmentError::InvalidRequest(error.to_string()))?;
+        let include = options
+            .include
+            .clone()
+            .unwrap_or_else(|| "**/*".to_string());
+        let path_glob = PathGlob::new(&include)?;
+        let search_root = self.resolve(path, false)?;
+        let builder = local_search_walk_builder(
+            &search_root,
+            options.include_hidden,
+            options.include_ignored,
+        );
+        let mut grep_matches = Vec::new();
+        let mut searched_files = 0;
+        for entry in builder.build() {
+            if options.max_results > 0 && grep_matches.len() >= options.max_results {
+                break;
+            }
+            if options.max_files > 0 && searched_files >= options.max_files {
+                break;
+            }
+            let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            if !entry
+                .file_type()
+                .is_some_and(|file_type| file_type.is_file())
+            {
+                continue;
+            }
+            let logical = self.logical_path(entry.path())?;
+            if !self.policy.files.permits(&logical, false) {
+                continue;
+            }
+            let candidate = entry
+                .path()
+                .strip_prefix(&search_root)
+                .map(normalize_path)
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            if !path_glob.is_match(&candidate) {
+                continue;
+            }
+
+            searched_files += 1;
+            let max_matches = local_grep_file_match_limit(&options, grep_matches.len());
+            let mut searcher = SearcherBuilder::new()
+                .line_number(true)
+                .before_context(options.context_lines)
+                .after_context(options.context_lines)
+                .binary_detection(BinaryDetection::quit(b'\x00'))
+                .max_matches(max_matches)
+                .build();
+            let mut sink = LocalGrepSink::new(&logical, &mut grep_matches, options.max_results);
+            let _ = searcher.search_path(&matcher, entry.path(), &mut sink);
+        }
+        Ok(grep_matches)
     }
 
     async fn run_shell(&self, command: ShellCommand) -> EnvironmentResult<ShellOutput> {
@@ -1542,15 +1731,26 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
     }
 
     async fn get_context_instructions(&self) -> EnvironmentResult<Option<String>> {
-        let tree =
-            generate_local_file_tree(&self.root, &self.policy, DEFAULT_INSTRUCTIONS_MAX_DEPTH)?;
+        let mut file_trees = Vec::new();
+        for allowed_path in &self.allowed_paths {
+            let visible_root = self.visible_root_for_allowed_path(allowed_path);
+            let tree = generate_local_file_tree(
+                allowed_path,
+                &visible_root,
+                &self.policy,
+                DEFAULT_INSTRUCTIONS_MAX_DEPTH,
+            )?;
+            if !tree.is_empty() && !tree.starts_with("Directory not found") {
+                file_trees.push(FileTreeBlock {
+                    path: display_local_path(allowed_path),
+                    tree,
+                });
+            }
+        }
         Ok(Some(render_environment_context(
             self.id(),
-            &self.root.display().to_string(),
-            &[FileTreeBlock {
-                path: self.root.display().to_string(),
-                tree,
-            }],
+            &display_local_path(&self.root),
+            &file_trees,
             self.policy.shell.allow_execute,
             Some(local_shell_metadata()),
         )))
@@ -1559,6 +1759,10 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
     async fn export_state(&self) -> EnvironmentResult<EnvironmentState> {
         let mut metadata = Metadata::default();
         metadata.insert("root".to_string(), serde_json::json!(self.root));
+        metadata.insert(
+            "allowed_paths".to_string(),
+            serde_json::json!(self.allowed_paths),
+        );
         Ok(EnvironmentState {
             provider_id: self.id.clone(),
             files: BTreeMap::new(),
@@ -1627,6 +1831,7 @@ fn generate_virtual_file_tree(
 
 fn generate_local_file_tree(
     root: &Path,
+    visible_root: &str,
     policy: &EnvironmentPolicy,
     max_depth: usize,
 ) -> EnvironmentResult<String> {
@@ -1640,6 +1845,7 @@ fn generate_local_file_tree(
     collect_local_rendered_file_tree(
         root,
         root,
+        visible_root,
         policy,
         gitignore.as_ref(),
         1,
@@ -1701,9 +1907,11 @@ fn collect_virtual_file_tree_entries(
     entries
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_local_rendered_file_tree(
     root: &Path,
     current: &Path,
+    visible_root: &str,
     policy: &EnvironmentPolicy,
     gitignore: Option<&ignore::gitignore::Gitignore>,
     depth: usize,
@@ -1717,20 +1925,25 @@ fn collect_local_rendered_file_tree(
     {
         let child = child.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
         let path = child.path();
-        let logical = normalize_path(
+        let relative = normalize_path(
             path.strip_prefix(root)
                 .map_err(|error| EnvironmentError::Provider(error.to_string()))?,
         );
-        if !policy.files.permits(&logical, false) {
+        let policy_path = if visible_root.is_empty() {
+            relative.clone()
+        } else {
+            join_logical_path(visible_root, &relative)
+        };
+        if !policy.files.permits(&policy_path, false) {
             continue;
         }
         let file_type = child
             .file_type()
             .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
         if file_type.is_dir() {
-            directories.push((logical, path));
+            directories.push((relative, path));
         } else if file_type.is_file() {
-            files.push(logical);
+            files.push(relative);
         }
     }
     directories.sort_by(|left, right| left.0.cmp(&right.0));
@@ -1755,6 +1968,7 @@ fn collect_local_rendered_file_tree(
             collect_local_rendered_file_tree(
                 root,
                 &path,
+                visible_root,
                 policy,
                 gitignore,
                 depth + 1,
@@ -2149,6 +2363,48 @@ fn compile_glob(pattern: &str) -> EnvironmentResult<GlobMatcher> {
         .map(|glob| glob.compile_matcher())
 }
 
+/// Normalize a provider path for glob-style matching.
+#[must_use]
+pub fn normalize_match_path(path: &str) -> String {
+    normalize_str_path(path)
+}
+
+/// Return default path candidates for provider-scoped policy matching.
+#[must_use]
+pub fn path_match_candidates(path: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    push_unique_candidate(&mut candidates, path.replace('\\', "/"));
+    push_unique_candidate(&mut candidates, normalize_match_path(path));
+    candidates
+}
+
+/// Match one path candidate against a relaxed-view pattern.
+///
+/// Patterns prefixed with `re:` are interpreted as regular expressions;
+/// all other patterns use the same ripgrep-style glob semantics as provider
+/// glob searches.
+///
+/// # Errors
+///
+/// Returns an error when the glob or regular expression pattern is invalid.
+pub fn matches_path_pattern(path: &str, pattern: &str) -> EnvironmentResult<bool> {
+    let pattern = pattern.trim();
+    if let Some(regex) = pattern.strip_prefix("re:") {
+        let matcher = RegexMatcher::new(regex)
+            .map_err(|error| EnvironmentError::InvalidRequest(error.to_string()))?;
+        return matcher
+            .is_match(path.as_bytes())
+            .map_err(|error| EnvironmentError::Provider(error.to_string()));
+    }
+    PathGlob::new(pattern).map(|path_glob| path_glob.is_match(path))
+}
+
+fn push_unique_candidate(candidates: &mut Vec<String>, candidate: String) {
+    if !candidate.is_empty() && !candidates.iter().any(|existing| existing == &candidate) {
+        candidates.push(candidate);
+    }
+}
+
 fn search_text(
     path: &str,
     content: &str,
@@ -2186,8 +2442,176 @@ fn search_text(
     Ok(())
 }
 
+fn local_search_walk_builder(
+    search_root: &Path,
+    include_hidden: bool,
+    include_ignored: bool,
+) -> ignore::WalkBuilder {
+    let mut builder = ignore::WalkBuilder::new(search_root);
+    builder.hidden(!include_hidden);
+    builder.ignore(!include_ignored);
+    builder.git_ignore(!include_ignored);
+    builder.git_global(!include_ignored);
+    builder.git_exclude(!include_ignored);
+    builder.require_git(false);
+    builder.follow_links(false);
+    builder
+}
+
+fn local_grep_file_match_limit(options: &FileGrepOptions, current_matches: usize) -> Option<u64> {
+    let remaining_total = options
+        .max_results
+        .checked_sub(current_matches)
+        .filter(|_| options.max_results > 0);
+    match (options.max_matches_per_file, remaining_total) {
+        (0, None) => None,
+        (0, Some(remaining)) => Some(remaining as u64),
+        (per_file, None) => Some(per_file as u64),
+        (per_file, Some(remaining)) => Some(per_file.min(remaining) as u64),
+    }
+}
+
+struct LocalGrepSink<'a> {
+    path: &'a str,
+    grep_matches: &'a mut Vec<FileGrepMatch>,
+    max_results: usize,
+    pending_before_context: Vec<(usize, String)>,
+    active_match_index: Option<usize>,
+}
+
+impl<'a> LocalGrepSink<'a> {
+    fn new(path: &'a str, grep_matches: &'a mut Vec<FileGrepMatch>, max_results: usize) -> Self {
+        Self {
+            path,
+            grep_matches,
+            max_results,
+            pending_before_context: Vec::new(),
+            active_match_index: None,
+        }
+    }
+
+    fn line_string(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    fn line_number(line_number: Option<u64>) -> usize {
+        line_number
+            .and_then(|line_number| usize::try_from(line_number).ok())
+            .unwrap_or(1)
+    }
+
+    fn should_accept_match(&self) -> bool {
+        self.max_results == 0 || self.grep_matches.len() < self.max_results
+    }
+}
+
+impl Sink for LocalGrepSink<'_> {
+    type Error = io::Error;
+
+    fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
+        if !self.should_accept_match() {
+            return Ok(false);
+        }
+        let line_number = Self::line_number(mat.line_number());
+        let matching_line = Self::line_string(mat.bytes());
+        let context_start_line = self
+            .pending_before_context
+            .first()
+            .map_or(line_number, |(line_number, _)| *line_number);
+        let mut context = String::new();
+        for (_, line) in self.pending_before_context.drain(..) {
+            context.push_str(&line);
+        }
+        context.push_str(&matching_line);
+        self.grep_matches.push(FileGrepMatch {
+            path: self.path.to_string(),
+            line_number,
+            matching_line: matching_line.trim_end_matches('\n').to_string(),
+            context,
+            context_start_line,
+        });
+        self.active_match_index = Some(self.grep_matches.len() - 1);
+        Ok(true)
+    }
+
+    fn context(
+        &mut self,
+        _searcher: &Searcher,
+        context: &SinkContext<'_>,
+    ) -> Result<bool, Self::Error> {
+        let line = Self::line_string(context.bytes());
+        match context.kind() {
+            grep_searcher::SinkContextKind::Before => {
+                self.pending_before_context
+                    .push((Self::line_number(context.line_number()), line));
+            }
+            grep_searcher::SinkContextKind::After | grep_searcher::SinkContextKind::Other => {
+                if let Some(index) = self.active_match_index {
+                    if let Some(grep_match) = self.grep_matches.get_mut(index) {
+                        grep_match.context.push_str(&line);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
+    fn context_break(&mut self, _searcher: &Searcher) -> Result<bool, Self::Error> {
+        self.pending_before_context.clear();
+        self.active_match_index = None;
+        Ok(true)
+    }
+
+    fn binary_data(
+        &mut self,
+        _searcher: &Searcher,
+        _binary_byte_offset: u64,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    fn finish(&mut self, _searcher: &Searcher, _finish: &SinkFinish) -> Result<(), Self::Error> {
+        self.pending_before_context.clear();
+        self.active_match_index = None;
+        Ok(())
+    }
+}
+
 fn normalize_path(path: &Path) -> String {
     normalize_str_path(&path.to_string_lossy())
+}
+
+fn normalize_local_config_path(path: PathBuf) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir().map_or_else(|_| path.clone(), |current_dir| current_dir.join(&path))
+    };
+    absolute.canonicalize().unwrap_or(absolute)
+}
+
+fn normalize_absolute_request_path(path: &Path) -> EnvironmentResult<PathBuf> {
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::Prefix(_) | Component::ParentDir | Component::CurDir
+            )
+        })
+    {
+        return Err(EnvironmentError::InvalidRequest(path.display().to_string()));
+    }
+    Ok(normalize_local_config_path(path.to_path_buf()))
+}
+
+fn display_local_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
 }
 
 fn normalize_requested_path(path: &str) -> EnvironmentResult<String> {
@@ -2531,6 +2955,166 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_provider_grep_streams_context_limits_and_binary_detection() {
+        let root = unique_test_dir();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.txt"), "before\nneedle one\nafter\n").unwrap();
+        std::fs::write(root.join("src/b.txt"), "needle two\nneedle three\n").unwrap();
+        std::fs::write(root.join("src/binary.bin"), b"needle\0binary\n").unwrap();
+
+        let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+
+        let context_matches = provider
+            .grep(
+                "",
+                "needle one",
+                FileGrepOptions {
+                    include: Some("**/*.txt".to_string()),
+                    include_hidden: false,
+                    include_ignored: false,
+                    max_results: 10,
+                    max_matches_per_file: 10,
+                    max_files: 10,
+                    context_lines: 1,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(context_matches.len(), 1);
+        assert_eq!(context_matches[0].path, "src/a.txt");
+        assert_eq!(context_matches[0].line_number, 2);
+        assert_eq!(context_matches[0].matching_line, "needle one");
+        assert_eq!(context_matches[0].context_start_line, 1);
+        assert_eq!(context_matches[0].context, "before\nneedle one\nafter\n");
+
+        let limited_matches = provider
+            .grep(
+                "",
+                "needle",
+                FileGrepOptions {
+                    include: Some("**/*.txt".to_string()),
+                    include_hidden: false,
+                    include_ignored: false,
+                    max_results: 10,
+                    max_matches_per_file: 1,
+                    max_files: 10,
+                    context_lines: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            limited_matches
+                .iter()
+                .filter(|entry| entry.path == "src/b.txt")
+                .count(),
+            1
+        );
+
+        let binary_skipped = provider
+            .grep(
+                "",
+                "binary",
+                FileGrepOptions {
+                    include: Some("**/*".to_string()),
+                    include_hidden: true,
+                    include_ignored: true,
+                    max_results: 10,
+                    max_matches_per_file: 10,
+                    max_files: 10,
+                    context_lines: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(binary_skipped.is_empty());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_provider_search_preserves_gitignore_negations() {
+        let root = unique_test_dir();
+        std::fs::create_dir_all(root.join("ignored")).unwrap();
+        std::fs::create_dir_all(root.join("other_ignored")).unwrap();
+        std::fs::write(root.join("ignored/keep.txt"), "needle keep\n").unwrap();
+        std::fs::write(root.join("ignored/drop.txt"), "needle drop\n").unwrap();
+        std::fs::write(root.join("other_ignored/drop.txt"), "needle other\n").unwrap();
+        std::fs::write(
+            root.join(".gitignore"),
+            "ignored/*\nother_ignored/\n!ignored/keep.txt\n",
+        )
+        .unwrap();
+
+        let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+
+        let glob_matches = provider
+            .glob(
+                "",
+                "**/*.txt",
+                FileGlobOptions {
+                    max_results: 0,
+                    ..FileGlobOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let glob_paths = glob_matches
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(glob_paths.contains(&"ignored/keep.txt"));
+        assert!(!glob_paths.contains(&"ignored/drop.txt"));
+        assert!(!glob_paths.contains(&"other_ignored/drop.txt"));
+
+        let grep_matches = provider
+            .grep(
+                "",
+                "needle",
+                FileGrepOptions {
+                    include: Some("**/*.txt".to_string()),
+                    include_hidden: false,
+                    include_ignored: false,
+                    max_results: 0,
+                    max_matches_per_file: 0,
+                    max_files: 0,
+                    context_lines: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(grep_matches.len(), 1);
+        assert_eq!(grep_matches[0].path, "ignored/keep.txt");
+
+        let include_ignored = provider
+            .glob(
+                "",
+                "**/*.txt",
+                FileGlobOptions {
+                    include_hidden: false,
+                    include_ignored: true,
+                    max_results: 0,
+                },
+            )
+            .await
+            .unwrap();
+        let include_ignored_paths = include_ignored
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>();
+        assert!(include_ignored_paths.contains(&"ignored/drop.txt"));
+        assert!(include_ignored_paths.contains(&"other_ignored/drop.txt"));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn virtual_context_file_tree_matches_ya_agent_sdk_semantics() {
         let provider = VirtualEnvironmentProvider::new("test")
             .with_file(".git/config", "git")
@@ -2614,28 +3198,100 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_provider_rejects_absolute_and_parent_paths() {
+    async fn local_provider_accepts_allowed_absolute_paths_and_rejects_unsafe_paths() {
         let root = unique_test_dir();
+        let external = unique_test_dir();
+        std::fs::create_dir_all(external.join("research")).unwrap();
         std::fs::write(root.join("safe..name.txt"), "ok").unwrap();
-        let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
-            files: FilePolicy::read_only(),
-            shell: ShellPolicy::default(),
-        });
+        std::fs::write(external.join("research/SKILL.md"), "skill").unwrap();
+        let provider = LocalEnvironmentProvider::new(&root)
+            .with_allowed_paths([external.clone()])
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::default(),
+            });
 
         assert_eq!(
             provider.read_text("safe..name.txt").await.unwrap(),
             "ok".to_string()
         );
+        assert_eq!(
+            provider
+                .read_text(&external.join("research/SKILL.md").display().to_string())
+                .await
+                .unwrap(),
+            "skill".to_string()
+        );
+        assert_eq!(
+            provider
+                .list(&external.display().to_string())
+                .await
+                .unwrap(),
+            vec!["research"]
+        );
+        let matches = provider
+            .glob(
+                &external.display().to_string(),
+                "*/SKILL.md",
+                FileGlobOptions {
+                    include_hidden: true,
+                    include_ignored: true,
+                    max_results: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            matches,
+            vec![FileGlobMatch {
+                path: display_local_path(&external.join("research/SKILL.md")),
+            }]
+        );
         assert!(matches!(
             provider.read_text("/etc/passwd").await,
-            Err(EnvironmentError::InvalidRequest(_))
+            Err(EnvironmentError::AccessDenied(_))
         ));
         assert!(matches!(
             provider.read_text("../outside.txt").await,
             Err(EnvironmentError::InvalidRequest(_))
         ));
+        assert!(matches!(
+            provider
+                .read_text(&format!("{}/../outside.txt", external.display()))
+                .await,
+            Err(EnvironmentError::InvalidRequest(_))
+        ));
 
         std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(external).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_context_file_tree_includes_allowed_external_roots() {
+        let root = unique_test_dir();
+        let external = unique_test_dir();
+        std::fs::create_dir_all(external.join("skills/research")).unwrap();
+        std::fs::write(root.join("README.md"), "readme").unwrap();
+        std::fs::write(external.join("skills/research/SKILL.md"), "skill").unwrap();
+        let provider = LocalEnvironmentProvider::new(&root)
+            .with_allowed_paths([external.clone()])
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::default(),
+            });
+        let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+
+        assert!(instructions.contains(&format!(
+            "<default-directory>{}</default-directory>",
+            root.display()
+        )));
+        assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
+        assert!(instructions.contains(&format!("<directory path=\"{}\">", external.display())));
+        assert!(instructions.contains("README.md"));
+        assert!(instructions.contains("skills/research/SKILL.md"));
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(external).unwrap();
     }
 
     #[tokio::test]

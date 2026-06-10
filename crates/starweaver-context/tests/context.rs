@@ -1,8 +1,10 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use starweaver_context::{AgentContext, AgentEvent, AgentId, BusMessage, ResumableState};
+use starweaver_context::{
+    AgentContext, AgentEvent, AgentId, BusMessage, ModelConfig, Ratio, ResumableState,
+};
 use starweaver_core::{TraceContext, Usage};
-use starweaver_model::{ModelMessage, ModelRequest};
+use starweaver_model::{ModelMessage, ModelRequest, ModelResponse};
 
 #[test]
 fn context_exports_and_restores_state() {
@@ -147,6 +149,85 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
     assert!(child.message_history.is_empty());
     assert!(child.messages.is_empty());
     assert!(child.events.events().is_empty());
+}
+
+#[test]
+fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
+    let mut context = AgentContext::default();
+    context.usage = Usage {
+        requests: 2,
+        input_tokens: 120,
+        output_tokens: 80,
+        total_tokens: 200,
+        tool_calls: 0,
+    };
+    let mut first = ModelResponse::text("first");
+    first.usage = Usage {
+        requests: 1,
+        input_tokens: 20,
+        output_tokens: 5,
+        total_tokens: 25,
+        tool_calls: 0,
+    };
+    let mut second = ModelResponse::text("second");
+    second.usage = Usage {
+        requests: 1,
+        input_tokens: 40,
+        output_tokens: 10,
+        total_tokens: 50,
+        tool_calls: 0,
+    };
+    context.push_message(ModelMessage::Response(first));
+    context.push_message(ModelMessage::Response(second));
+
+    let injected = context.inject_runtime_context(true).unwrap();
+
+    assert_eq!(context.latest_request_total_tokens(), Some(50));
+    assert!(injected.contains("<total-tokens>50</total-tokens>"));
+    assert!(!injected.contains("<total-tokens>200</total-tokens>"));
+}
+
+#[test]
+fn runtime_context_adds_proactive_context_pressure_reminder_from_latest_request_tokens() {
+    let mut context = AgentContext::default();
+    context.model_config = ModelConfig {
+        context_window: Some(100),
+        proactive_context_management_threshold: Some(Ratio::from_parts_per_thousand(500)),
+        compact_threshold: Ratio::from_parts_per_thousand(900),
+        ..ModelConfig::default()
+    };
+    context.usage = Usage {
+        requests: 2,
+        input_tokens: 90,
+        output_tokens: 20,
+        total_tokens: 110,
+        tool_calls: 0,
+    };
+    let mut first = ModelResponse::text("first");
+    first.usage = Usage {
+        requests: 1,
+        input_tokens: 40,
+        output_tokens: 10,
+        total_tokens: 50,
+        tool_calls: 0,
+    };
+    let mut second = ModelResponse::text("second");
+    second.usage = Usage {
+        requests: 1,
+        input_tokens: 50,
+        output_tokens: 10,
+        total_tokens: 60,
+        tool_calls: 0,
+    };
+    context.push_message(ModelMessage::Response(first));
+    context.push_message(ModelMessage::Response(second));
+
+    let injected = context.inject_runtime_context(true).unwrap();
+
+    assert!(injected.contains("<system-reminder>"));
+    assert!(injected.contains("Context usage is at 60% (60 / 100 tokens)"));
+    assert!(injected.contains("Configured compact threshold is 90%"));
+    assert!(!injected.contains("110 / 100 tokens"));
 }
 
 #[test]

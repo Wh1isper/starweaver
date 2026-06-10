@@ -6,7 +6,8 @@ use serde_json::{json, Map};
 use starweaver_model::{
     prepare_messages, prepare_model_request, ContentPart, MessageNormalization, ModelMessage,
     ModelProfile, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings,
-    NativeToolDefinition, OutputMode, ProtocolFamily, StructuredOutputMode, ThinkingSettings,
+    NativeToolDefinition, OutputMode, PreparedInstruction, ProtocolFamily, StructuredOutputMode,
+    ThinkingSettings,
 };
 
 fn request(parts: Vec<ModelRequestPart>) -> ModelMessage {
@@ -99,6 +100,41 @@ fn prompted_output_mode_attaches_instruction_with_origin_metadata() {
         prepared.params.instructions[0].metadata["starweaver_instruction_origin"],
         "prompted_output"
     );
+}
+
+#[test]
+fn prepared_instructions_are_sorted_and_attached_as_structured_parts() {
+    let params = ModelRequestParameters {
+        instructions: vec![
+            PreparedInstruction::dynamic_text("dynamic instruction"),
+            PreparedInstruction::static_text("static instruction"),
+        ],
+        ..ModelRequestParameters::default()
+    };
+
+    let prepared = prepare_model_request(
+        vec![ModelMessage::Request(ModelRequest::user_text("answer"))],
+        None,
+        None,
+        params,
+        &ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+    );
+
+    let ModelMessage::Request(request) = &prepared.canonical_messages[0] else {
+        panic!("expected request")
+    };
+    assert!(matches!(
+        &request.parts[0],
+        ModelRequestPart::Instruction { text, metadata }
+            if text == "static instruction"
+                && metadata["starweaver_instruction_dynamic"] == false
+    ));
+    assert!(matches!(
+        &request.parts[1],
+        ModelRequestPart::Instruction { text, metadata }
+            if text == "dynamic instruction"
+                && metadata["starweaver_instruction_dynamic"] == true
+    ));
 }
 
 #[test]

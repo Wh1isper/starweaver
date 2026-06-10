@@ -9,7 +9,7 @@ use crate::{
     args::{Cli, CliCommand, HitlPolicy, OutputMode, RunCommand},
     config::{get_config_value, read_current_session, write_current_session, CliConfig},
     local_store::LocalStore,
-    profiles::{list_profiles, show_profile},
+    profiles::{list_config_model_profiles, list_profiles, show_profile},
     CliError, CliResult, CliService,
 };
 
@@ -103,9 +103,13 @@ fn dispatch(config: &CliConfig, method: &str, params: &Value) -> Result<Value, R
     match method {
         "initialize" => Ok(initialize_result(config)),
         "shutdown" => Ok(json!({"status": "shutdown"})),
-        "profile.list" | "model.list" => Ok(json!({
+        "profile.list" => Ok(json!({
             "profiles": list_profiles(config),
             "current": selected_profile_result(config, params.get("client").and_then(Value::as_str))?,
+        })),
+        "model.list" => Ok(json!({
+            "profiles": list_config_model_profiles(config),
+            "current": selected_model_profile_result(config, params.get("client").and_then(Value::as_str))?,
         })),
         "profile.get" => {
             let name = required_string(params, "name")?;
@@ -113,11 +117,11 @@ fn dispatch(config: &CliConfig, method: &str, params: &Value) -> Result<Value, R
             Ok(json!({"name": name, "profile": yaml}))
         }
         "model.current" => {
-            selected_profile_result(config, params.get("client").and_then(Value::as_str))
+            selected_model_profile_result(config, params.get("client").and_then(Value::as_str))
         }
         "model.select" => {
             let profile = required_string(params, "profile")?;
-            ensure_profile(config, &profile)?;
+            ensure_client_model_profile(config, &profile)?;
             let client = params
                 .get("client")
                 .and_then(Value::as_str)
@@ -358,6 +362,47 @@ fn selected_profile_result(config: &CliConfig, client: Option<&str>) -> Result<V
     }))
 }
 
+fn selected_model_profile_result(
+    config: &CliConfig,
+    client: Option<&str>,
+) -> Result<Value, RpcError> {
+    let configured_profiles = list_config_model_profiles(config);
+    let persisted = client
+        .map(|client| read_client_selected_profile(config, client).map_err(RpcError::from))
+        .transpose()?
+        .flatten();
+    let selected = persisted
+        .filter(|profile| {
+            configured_profiles
+                .iter()
+                .any(|summary| summary.name == *profile)
+        })
+        .or_else(|| {
+            configured_profiles
+                .iter()
+                .find(|summary| summary.name == config.default_profile)
+                .map(|summary| summary.name.clone())
+        })
+        .or_else(|| {
+            configured_profiles
+                .first()
+                .map(|summary| summary.name.clone())
+        });
+    let model_id = selected
+        .as_deref()
+        .and_then(|selected| {
+            configured_profiles
+                .iter()
+                .find(|summary| summary.name == selected)
+        })
+        .map(|summary| summary.model_id.clone());
+    Ok(json!({
+        "client": client,
+        "selectedProfile": selected,
+        "modelId": model_id,
+    }))
+}
+
 fn ensure_profile(config: &CliConfig, profile: &str) -> Result<(), RpcError> {
     if list_profiles(config)
         .iter()
@@ -368,6 +413,20 @@ fn ensure_profile(config: &CliConfig, profile: &str) -> Result<(), RpcError> {
         Err(RpcError::new(
             -32_602,
             format!("unknown profile: {profile}"),
+        ))
+    }
+}
+
+fn ensure_client_model_profile(config: &CliConfig, profile: &str) -> Result<(), RpcError> {
+    if list_config_model_profiles(config)
+        .iter()
+        .any(|summary| summary.name == profile)
+    {
+        Ok(())
+    } else {
+        Err(RpcError::new(
+            -32_602,
+            format!("unknown model profile: {profile}"),
         ))
     }
 }
@@ -484,6 +543,20 @@ mod tests {
     #[test]
     fn initialize_and_model_selection_use_client_state_dirs() {
         let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            r#"
+[general]
+model = "test:default"
+
+[model_profiles.coding]
+label = "Coding"
+model = "test:coding"
+"#,
+        )
+        .unwrap();
         let config = test_config(temp.path());
 
         let initialized = request(
@@ -505,11 +578,15 @@ mod tests {
         );
 
         let listed = request(&config, 2, "model.list", json!({"client":"tui"}));
-        assert!(listed["profiles"]
-            .as_array()
-            .unwrap()
+        let listed_profiles = listed["profiles"].as_array().unwrap();
+        assert_eq!(listed_profiles.len(), 2);
+        assert_eq!(listed_profiles[0]["name"], "default_model");
+        assert_eq!(listed_profiles[0]["model_id"], "test:default");
+        assert_eq!(listed_profiles[1]["name"], "coding");
+        assert_eq!(listed_profiles[1]["model_id"], "test:coding");
+        assert!(!listed_profiles
             .iter()
-            .any(|profile| profile["name"] == "coding"));
+            .any(|profile| profile["source"] == "built-in" || profile["model_id"] == "local_echo"));
         assert_eq!(listed["current"]["selectedProfile"], config.default_profile);
 
         let selected = request(
@@ -520,18 +597,47 @@ mod tests {
         );
         assert_eq!(selected["client"], "tui");
         assert_eq!(selected["selectedProfile"], "coding");
-        assert_eq!(selected["modelId"], "openai:gpt-5");
+        assert_eq!(selected["modelId"], "test:coding");
         assert!(config.tui_state_dir.join("state.json").exists());
         assert!(!config.desktop_state_dir.join("state.json").exists());
 
         let current = request(&config, 4, "model.current", json!({"client":"tui"}));
         assert_eq!(current["selectedProfile"], "coding");
         let desktop_current = request(&config, 5, "model.current", json!({"client":"desktop"}));
-        assert_eq!(desktop_current["selectedProfile"], config.default_profile);
+        assert_eq!(desktop_current["selectedProfile"], "default_model");
+        assert_eq!(desktop_current["modelId"], "test:default");
     }
 
     #[test]
-    fn config_profile_overrides_builtin_for_client_model_selection() {
+    fn client_model_selection_is_empty_without_configured_profiles() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+
+        let listed = request(&config, 1, "model.list", json!({"client":"tui"}));
+        assert!(listed["profiles"].as_array().unwrap().is_empty());
+        assert!(listed["current"]["selectedProfile"].is_null());
+        assert!(listed["current"]["modelId"].is_null());
+
+        let line = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "model.select",
+            "params": {"client":"tui", "profile":"general"},
+        })
+        .to_string();
+        let (response, shutdown) = handle_line(&config, &line);
+        assert!(!shutdown);
+        let response = response.unwrap();
+        assert_eq!(response["id"], 2);
+        assert_eq!(response["error"]["code"], -32_602);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown model profile: general"));
+    }
+
+    #[test]
+    fn client_model_selection_only_uses_configured_profiles() {
         let temp = tempfile::tempdir().unwrap();
         let global = temp.path().join("global");
         std::fs::create_dir_all(&global).unwrap();
@@ -546,15 +652,14 @@ model = "test:coding"
         let config = test_config(temp.path());
 
         let listed = request(&config, 1, "model.list", json!({"client":"tui"}));
-        let coding_profiles = listed["profiles"]
-            .as_array()
-            .unwrap()
+        let listed_profiles = listed["profiles"].as_array().unwrap();
+        assert_eq!(listed_profiles.len(), 1);
+        assert_eq!(listed_profiles[0]["name"], "coding");
+        assert_eq!(listed_profiles[0]["source"], "config");
+        assert_eq!(listed_profiles[0]["model_id"], "test:coding");
+        assert!(!listed_profiles
             .iter()
-            .filter(|profile| profile["name"] == "coding")
-            .collect::<Vec<_>>();
-        assert_eq!(coding_profiles.len(), 1);
-        assert_eq!(coding_profiles[0]["source"], "config");
-        assert_eq!(coding_profiles[0]["model_id"], "test:coding");
+            .any(|profile| profile["model_id"] == "local_echo"));
 
         let selected = request(
             &config,
@@ -608,5 +713,53 @@ model = "test:coding"
             json!({"sessionId": run["sessionId"].as_str().unwrap()}),
         );
         assert!(replay["messages"].as_array().unwrap().len() > 1);
+    }
+
+    #[test]
+    fn rpc_run_prompt_expands_configured_slash_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            r#"
+[general]
+model = "local_echo"
+
+[commands.review]
+description = "Review changes"
+aliases = ["rv"]
+prompt = "Review via RPC."
+"#,
+        )
+        .unwrap();
+        let config = test_config(temp.path());
+
+        let run = request(
+            &config,
+            1,
+            "run.prompt",
+            json!({
+                "prompt":"/rv staged diff",
+                "newSession": true,
+                "profile":"default_model",
+            }),
+        );
+        assert_eq!(run["status"], "completed");
+
+        let store = crate::LocalStore::open(&config).unwrap();
+        let run_record = store
+            .load_run(
+                run["sessionId"].as_str().unwrap(),
+                run["runId"].as_str().unwrap(),
+            )
+            .unwrap();
+        let value = serde_json::to_value(run_record).unwrap();
+        assert_eq!(
+            value["input"][0]["text"],
+            "Review via RPC.\n\nUser instruction: staged diff"
+        );
+        assert_eq!(value["metadata"]["cli.slash_command.name"], "review");
+        assert_eq!(value["metadata"]["cli.slash_command.invoked"], "rv");
     }
 }

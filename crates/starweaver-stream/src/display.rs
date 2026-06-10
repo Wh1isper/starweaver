@@ -321,6 +321,17 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
                     output,
                 )]
             }
+            AgentStreamEvent::RunFailed {
+                error_kind,
+                message,
+                ..
+            } => vec![project_run_failed(
+                context,
+                record.sequence,
+                run_id,
+                error_kind,
+                message,
+            )],
             AgentStreamEvent::Suspended { reason, node } => {
                 vec![project_run_cancelled(
                     context,
@@ -333,6 +344,23 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
             _ => Vec::new(),
         }
     }
+}
+
+fn project_run_failed(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    error_kind: &str,
+    message: &str,
+) -> DisplayMessage {
+    DisplayMessage::new(
+        sequence,
+        context.session_id.clone(),
+        run_id,
+        DisplayMessageKind::RunFailed,
+    )
+    .with_payload(json!({"error_kind": error_kind, "error": message}))
+    .with_preview(message.to_string())
 }
 
 fn project_run_started(
@@ -358,40 +386,28 @@ fn project_model_stream(
     event: &ModelResponseStreamEvent,
 ) -> Vec<DisplayMessage> {
     match event {
-        ModelResponseStreamEvent::PartStart(part) => vec![DisplayMessage::new(
-            sequence,
-            context.session_id.clone(),
-            run_id,
-            DisplayMessageKind::AssistantTextStart,
-        )
-        .with_payload(json!({
-            "message_id": format!("message-{}", part.index),
-            "role": "assistant",
-            "part_index": part.index,
-            "part_kind": part.part_kind,
-        }))],
+        ModelResponseStreamEvent::PartStart(part) => {
+            if is_tool_stream_part_kind(&part.part_kind) {
+                return Vec::new();
+            }
+            vec![DisplayMessage::new(
+                sequence,
+                context.session_id.clone(),
+                run_id,
+                DisplayMessageKind::AssistantTextStart,
+            )
+            .with_payload(json!({
+                "message_id": format!("message-{}", part.index),
+                "role": "assistant",
+                "part_index": part.index,
+                "part_kind": part.part_kind,
+            }))]
+        }
         ModelResponseStreamEvent::PartDelta(delta) => {
             let (kind, payload) = match &delta.delta {
-                StreamDelta::ToolCallArguments { arguments_delta } => (
-                    DisplayMessageKind::ToolCallDelta,
-                    json!({
-                        "tool_call_id": format!("tool-call-{}", delta.index),
-                        "part_index": delta.index,
-                        "part_kind": "tool_call",
-                        "delta": arguments_delta,
-                    }),
-                ),
-                StreamDelta::ToolCallName { name } => (
-                    DisplayMessageKind::ToolCallDelta,
-                    json!({
-                        "tool_call_id": format!("tool-call-{}", delta.index),
-                        "tool_name": name,
-                        "name": name,
-                        "part_index": delta.index,
-                        "part_kind": "tool_call",
-                        "delta": "",
-                    }),
-                ),
+                StreamDelta::ToolCallArguments { .. } | StreamDelta::ToolCallName { .. } => {
+                    return Vec::new();
+                }
                 StreamDelta::Thinking { text } => (
                     DisplayMessageKind::AssistantTextDelta,
                     json!({
@@ -440,21 +456,35 @@ fn project_model_stream(
             }
             vec![message]
         }
-        ModelResponseStreamEvent::PartEnd(part) => vec![DisplayMessage::new(
-            sequence,
-            context.session_id.clone(),
-            run_id,
-            DisplayMessageKind::AssistantTextEnd,
-        )
-        .with_payload(json!({
-            "message_id": format!("message-{}", part.index),
-            "part_index": part.index,
-            "part_kind": part.part_kind,
-        }))],
+        ModelResponseStreamEvent::PartEnd(part) => {
+            if part
+                .part_kind
+                .as_deref()
+                .is_some_and(is_tool_stream_part_kind)
+            {
+                return Vec::new();
+            }
+            vec![DisplayMessage::new(
+                sequence,
+                context.session_id.clone(),
+                run_id,
+                DisplayMessageKind::AssistantTextEnd,
+            )
+            .with_payload(json!({
+                "message_id": format!("message-{}", part.index),
+                "part_index": part.index,
+                "part_kind": part.part_kind,
+            }))]
+        }
         ModelResponseStreamEvent::FinalResult(response) => {
             project_model_response(context, sequence, &run_id, response)
         }
     }
+}
+
+fn is_tool_stream_part_kind(part_kind: &str) -> bool {
+    let normalized = part_kind.to_ascii_lowercase();
+    normalized.contains("tool") || normalized.contains("function_call")
 }
 
 fn project_model_response(

@@ -56,7 +56,7 @@ impl ProviderAlias {
 
     /// Set profile override.
     #[must_use]
-    pub const fn with_profile(mut self, profile: ModelProfile) -> Self {
+    pub fn with_profile(mut self, profile: ModelProfile) -> Self {
         self.profile = Some(profile);
         self
     }

@@ -174,6 +174,91 @@ async fn media_preflight_traverses_nested_tool_returns(
 }
 
 #[tokio::test]
+async fn compact_filter_trims_history_like_compactor_builder(
+) -> starweaver_agent::HistoryProcessorResult<()> {
+    let mut state = AgentRunState::new(RunId::from_string("run_compact"), ConversationId::new());
+    state.metadata.insert(
+        "starweaver_compact_keep_messages".to_string(),
+        serde_json::json!(2),
+    );
+    state.metadata.insert(
+        "starweaver_original_request".to_string(),
+        serde_json::json!("Original user goal"),
+    );
+    state.metadata.insert(
+        "starweaver_user_steering".to_string(),
+        serde_json::json!(["Keep the current approach"]),
+    );
+    let kept_summary = ModelMessage::Response(ModelResponse {
+        parts: vec![ModelResponsePart::Text {
+            text: "previous compact summary".to_string(),
+        }],
+        usage: starweaver_agent::Usage::default(),
+        model_name: None,
+        provider: None,
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::from_iter([("keep".to_string(), serde_json::json!("compact"))]),
+    });
+    let old_context = user_request(vec![ContentPart::Text {
+        text: "before <runtime-context>stale</runtime-context> after".to_string(),
+    }]);
+    let media_request = user_request(vec![ContentPart::ImageUrl {
+        url: "https://example.test/image.png".to_string(),
+    }]);
+    let tool_return = ModelRequest {
+        parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+            "call_big",
+            "big_tool",
+            serde_json::json!({"value": "x".repeat(700)}),
+        ))],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+
+    let output = NamedFilterProcessor::new("compact")
+        .process(
+            &state,
+            vec![
+                kept_summary,
+                ModelMessage::Request(old_context),
+                ModelMessage::Request(media_request),
+                ModelMessage::Request(tool_return),
+            ],
+        )
+        .await?;
+
+    assert!(output.iter().any(|message| match message {
+        ModelMessage::Response(response) =>
+            response.text_output().contains("previous compact summary"),
+        ModelMessage::Request(_) => false,
+    }));
+    let all_text = output
+        .iter()
+        .flat_map(request_text_parts)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!all_text.contains("runtime-context"));
+    assert!(all_text.contains("[image: https://example.test/image.png]"));
+    assert!(all_text.contains("chars truncated"));
+    assert!(all_text.contains("<original-request>"));
+    assert!(all_text.contains("Original user goal"));
+    assert!(all_text.contains("<user-steering>"));
+    assert!(all_text.contains("<context-restored>"));
+    assert_eq!(latest_request_metadata(&output)["keep"], "compact");
+    assert_eq!(
+        latest_request_metadata(&output)["starweaver_compacted"],
+        true
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn media_upload_replaces_oversized_binary_with_resource_ref(
 ) -> starweaver_agent::HistoryProcessorResult<()> {
     let request = user_request(vec![ContentPart::Binary {
@@ -208,6 +293,7 @@ async fn media_upload_replaces_oversized_binary_with_resource_ref(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
 ) -> starweaver_agent::HistoryProcessorResult<()> {
     let mut state = AgentRunState::new(RunId::from_string("run_context"), ConversationId::new());
@@ -224,12 +310,13 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
         serde_json::json!(16),
     );
 
+    let old_tool_content = "abcdefghijklmnopqrstuvwxyz";
     let messages = vec![
         ModelMessage::Request(ModelRequest {
             parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
                 "call_1",
                 "big_tool",
-                serde_json::json!({ "data": "abcdefghijklmnopqrstuvwxyz" }),
+                serde_json::json!(old_tool_content),
             ))],
             timestamp: None,
             instructions: None,
@@ -293,6 +380,20 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
         }),
         ModelMessage::Response(_) => false,
     }));
+    let old_tool_return = output
+        .iter()
+        .find_map(|message| match message {
+            ModelMessage::Request(request) => request.parts.iter().find_map(|part| match part {
+                ModelRequestPart::ToolReturn(tool_return) => tool_return.content.as_str(),
+                _ => None,
+            }),
+            ModelMessage::Response(_) => None,
+        })
+        .expect("tool return");
+    assert!(old_tool_return.contains("chars truncated"));
+    assert!(old_tool_return.starts_with(&old_tool_content[..8]));
+    assert!(old_tool_return.ends_with(&old_tool_content[old_tool_content.len() - 8..]));
+
     let response = output
         .iter()
         .find_map(|message| match message {
@@ -337,6 +438,38 @@ fn user_request(content: Vec<ContentPart>) -> ModelRequest {
         run_id: None,
         conversation_id: None,
         metadata: serde_json::Map::new(),
+    }
+}
+
+fn request_text_parts(message: &ModelMessage) -> Vec<String> {
+    match message {
+        ModelMessage::Request(request) => request
+            .parts
+            .iter()
+            .flat_map(|part| match part {
+                ModelRequestPart::UserPrompt { content, .. } => content
+                    .iter()
+                    .filter_map(|content| match content {
+                        ContentPart::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                ModelRequestPart::ToolReturn(tool_return) => vec![tool_return.content.to_string()],
+                ModelRequestPart::SystemPrompt { text, .. }
+                | ModelRequestPart::RetryPrompt { text, .. }
+                | ModelRequestPart::Instruction { text, .. } => vec![text.clone()],
+            })
+            .collect(),
+        ModelMessage::Response(response) => response
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                ModelResponsePart::Text { text } | ModelResponsePart::Thinking { text, .. } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            })
+            .collect(),
     }
 }
 

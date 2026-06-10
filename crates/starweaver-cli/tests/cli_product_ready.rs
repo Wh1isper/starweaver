@@ -1,6 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::process::Command;
+use std::process::{Command, Output};
 
 fn cli(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_starweaver-cli"));
@@ -15,6 +15,13 @@ fn silent_value(stdout: &[u8], key: &str) -> String {
         .find_map(|line| line.strip_prefix(&format!("{key}=")))
         .unwrap()
         .to_string()
+}
+
+fn assert_pending_hitl_blocks_resume(output: &Output, expected_id: &str) {
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot resume run"));
+    assert!(stderr.contains(expected_id));
 }
 
 #[test]
@@ -134,6 +141,7 @@ fn approval_commands_list_show_and_decide_records() {
         .unwrap();
     assert!(run.status.success());
     assert!(String::from_utf8_lossy(&run.stdout).contains("status=waiting"));
+    let session_id = silent_value(&run.stdout, "session_id");
 
     let list = cli(&temp).args(["approval", "list"]).output().unwrap();
     assert!(list.status.success());
@@ -157,6 +165,35 @@ fn approval_commands_list_show_and_decide_records() {
         .unwrap()
         .contains(&approval_id));
 
+    assert_pending_hitl_blocks_resume(
+        &cli(&temp)
+            .args([
+                "resume",
+                "--session",
+                &session_id,
+                "--prompt",
+                "continue before approval",
+                "--output",
+                "text",
+            ])
+            .output()
+            .unwrap(),
+        &approval_id,
+    );
+
+    let implicit_continue = cli(&temp)
+        .args([
+            "run",
+            "implicit continue before approval",
+            "--session",
+            &session_id,
+            "--output",
+            "text",
+        ])
+        .output()
+        .unwrap();
+    assert_pending_hitl_blocks_resume(&implicit_continue, &approval_id);
+
     let approve = cli(&temp)
         .args([
             "approval",
@@ -173,6 +210,26 @@ fn approval_commands_list_show_and_decide_records() {
     assert!(String::from_utf8(approve.stdout)
         .unwrap()
         .contains("status=approved"));
+
+    let resume = cli(&temp)
+        .args([
+            "resume",
+            "--session",
+            &session_id,
+            "--prompt",
+            "continue after approval",
+            "--output",
+            "text",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        resume.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+    let resume_stdout = String::from_utf8(resume.stdout).unwrap();
+    assert!(resume_stdout.contains("approval_probe handled"));
 }
 
 #[test]
@@ -208,6 +265,22 @@ fn deferred_commands_complete_and_resume_waiting_session() {
     let deferred_id = first["deferred_id"].as_str().unwrap().to_string();
     assert_eq!(first["status"], "waiting");
 
+    assert_pending_hitl_blocks_resume(
+        &cli(&temp)
+            .args([
+                "resume",
+                "--session",
+                &session_id,
+                "--prompt",
+                "continue before deferred completion",
+                "--output",
+                "text",
+            ])
+            .output()
+            .unwrap(),
+        &deferred_id,
+    );
+
     let complete = cli(&temp)
         .args([
             "deferred",
@@ -237,7 +310,7 @@ fn deferred_commands_complete_and_resume_waiting_session() {
             "--prompt",
             "continue after deferred",
             "--output",
-            "silent",
+            "text",
         ])
         .output()
         .unwrap();
@@ -247,6 +320,5 @@ fn deferred_commands_complete_and_resume_waiting_session() {
         String::from_utf8_lossy(&resume.stderr)
     );
     let resume_stdout = String::from_utf8(resume.stdout).unwrap();
-    assert!(resume_stdout.contains(&format!("session_id={session_id}")));
-    assert!(resume_stdout.contains("run_id="));
+    assert!(resume_stdout.contains("deferred_probe handled"));
 }

@@ -167,7 +167,10 @@ need_approval = ["shell", "write"]
     assert!(tools_stdout.contains("\"name\":\"shell_exec\""));
     assert!(tools_stdout.contains("\"approval_configured\":true"));
     assert!(tools_stdout.contains("\"name\":\"note\""));
-    assert!(tools_stdout.contains("\"toolset\":\"mcp_docs\""));
+    assert!(tools_stdout.contains("\"name\":\"mcp_search_tool\""));
+    assert!(tools_stdout.contains("\"name\":\"mcp_call_tool\""));
+    assert!(tools_stdout.contains("\"toolset\":\"tool_proxy\""));
+    assert!(!tools_stdout.contains("\"toolset\":\"mcp_docs\""));
 
     let diagnostics = cli(&temp).arg("diagnostics").output().unwrap();
     assert!(diagnostics.status.success());

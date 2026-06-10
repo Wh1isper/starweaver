@@ -2,4 +2,6 @@
 # Copy to ~/.starweaver/tools.toml or .starweaver/tools.toml.
 
 [tools]
-need_approval = ["shell", "write", "edit"]
+# CLI tools execute without approval by default. Add explicit tool names,
+# toolset ids, or "*" here to opt back into approval gating.
+need_approval = []

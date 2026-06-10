@@ -1,22 +1,74 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
     AgentBuilder, AgentRunState, FunctionDynamicInstruction, FunctionHistoryProcessor,
-    FunctionOutputFunction, FunctionOutputValidator, FunctionTool, OutputFunctionDefinition,
-    OutputSchema, OutputValue, StaticCapabilityBundle, StaticToolset, TestModel, ToolContext,
-    ToolRegistry, ToolResult, UsageLimits,
+    FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
+    FunctionTool, OutputFunctionDefinition, OutputSchema, OutputValue, StaticCapabilityBundle,
+    StaticToolset, TestModel, ToolContext, ToolRegistry, ToolResult, UsageLimits,
+    DEFAULT_FILTER_ORDER,
 };
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
-    ModelRequestParameters, ModelResponse, ModelSettings, ProtocolFamily,
+    ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily,
+    ToolCallPart,
 };
 
 #[derive(Clone)]
 struct CaptureModel {
     captured_params: Arc<Mutex<Vec<ModelRequestParameters>>>,
+}
+
+#[derive(Clone)]
+struct LoopingToolModel {
+    calls: Arc<Mutex<usize>>,
+    loop_until: usize,
+}
+
+#[async_trait]
+impl ModelAdapter for LoopingToolModel {
+    fn model_name(&self) -> &'static str {
+        "looping-tool"
+    }
+
+    fn provider_name(&self) -> Option<&'static str> {
+        Some("test")
+    }
+
+    fn profile(&self) -> &ModelProfile {
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
+        &PROFILE
+    }
+
+    fn default_settings(&self) -> Option<&ModelSettings> {
+        None
+    }
+
+    async fn request(
+        &self,
+        _messages: Vec<ModelMessage>,
+        _settings: Option<ModelSettings>,
+        _params: ModelRequestParameters,
+        _context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        let mut calls = self.calls.lock().unwrap();
+        *calls += 1;
+        if *calls <= self.loop_until {
+            Ok(ModelResponse {
+                parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                    id: format!("call_{}", *calls),
+                    name: "continue_loop".to_string(),
+                    arguments: serde_json::json!({"iteration": *calls}).into(),
+                })],
+                ..ModelResponse::text("")
+            })
+        } else {
+            Ok(ModelResponse::text("done"))
+        }
+    }
 }
 
 #[async_trait]
@@ -30,8 +82,8 @@ impl ModelAdapter for CaptureModel {
     }
 
     fn profile(&self) -> &ModelProfile {
-        static PROFILE: ModelProfile =
-            ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions);
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
         &PROFILE
     }
 
@@ -49,6 +101,31 @@ impl ModelAdapter for CaptureModel {
         self.captured_params.lock().unwrap().push(params);
         Ok(ModelResponse::text(r#"{"answer":"ok"}"#))
     }
+}
+
+#[tokio::test]
+async fn builder_default_policy_allows_more_than_sixteen_model_steps() {
+    let calls = Arc::new(Mutex::new(0));
+    let model = Arc::new(LoopingToolModel {
+        calls: Arc::clone(&calls),
+        loop_until: 17,
+    });
+    let tool = FunctionTool::new(
+        "continue_loop",
+        Some("Continue the loop".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    );
+
+    let result = AgentBuilder::new(model)
+        .tool(Arc::new(tool))
+        .build()
+        .run("loop past old default")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(*calls.lock().unwrap(), 18);
 }
 
 #[tokio::test]
@@ -85,6 +162,51 @@ async fn builder_creates_reusable_agent_with_tools() {
     assert_eq!(params.tools.len(), 1);
     assert_eq!(params.tools[0].name, "echo");
     assert_eq!(params.output_schema.unwrap()["name"], "answer");
+}
+
+#[tokio::test]
+async fn builder_installs_default_filter_processors_before_custom_processors() {
+    let model = FunctionModel::new(
+        |messages: Vec<ModelMessage>,
+         _settings: Option<ModelSettings>,
+         _info: FunctionModelInfo| {
+            let Some(ModelMessage::Request(request)) = messages.last() else {
+                panic!("last processed message should be a request");
+            };
+            let order = request
+                .metadata
+                .get("starweaver_filter_order")
+                .and_then(serde_json::Value::as_array)
+                .expect("default filters should record their order");
+            let observed = order
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(observed, DEFAULT_FILTER_ORDER);
+            assert_eq!(request.metadata["custom_history_processor"], true);
+            Ok(ModelResponse::text("filters ok"))
+        },
+    );
+    let custom_processor =
+        FunctionHistoryProcessor::new(|mut messages: Vec<ModelMessage>| async move {
+            let Some(ModelMessage::Request(request)) = messages.last_mut() else {
+                panic!("last message should be a request");
+            };
+            request.metadata.insert(
+                "custom_history_processor".to_string(),
+                serde_json::json!(true),
+            );
+            Ok(messages)
+        });
+
+    let result = AgentBuilder::new(Arc::new(model))
+        .history_processor(Arc::new(custom_processor))
+        .build()
+        .run("hello")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "filters ok");
 }
 
 #[tokio::test]

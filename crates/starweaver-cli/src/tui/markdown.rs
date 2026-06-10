@@ -1,6 +1,7 @@
 use pulldown_cmark::{CodeBlockKind, Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
+use unicode_width::UnicodeWidthChar;
 
-use super::render::{visible_width, SegmentStyle, StyledLine};
+use super::render::{truncate_line_center, visible_width, SegmentStyle, StyledLine};
 
 pub(super) const ASSISTANT_CONTENT_PREFIX: &str = "\u{200b}";
 
@@ -28,13 +29,13 @@ pub(super) fn render_transcript_lines(lines: &[String], width: usize) -> Vec<Sty
         if is_transcript_boundary(line) {
             flush_assistant_markdown(&mut rendered, &mut assistant_markdown, width);
             in_assistant = false;
-            rendered.push(render_transcript_status_line(line));
+            rendered.extend(render_transcript_status_lines(line, width));
             continue;
         }
         if in_assistant {
             assistant_markdown.push(line.clone());
         } else {
-            rendered.push(render_transcript_status_line(line));
+            rendered.extend(render_transcript_status_lines(line, width));
         }
     }
     flush_assistant_markdown(&mut rendered, &mut assistant_markdown, width);
@@ -69,20 +70,20 @@ fn is_transcript_boundary(line: &str) -> bool {
         || line.starts_with("Run completed:")
 }
 
-fn render_transcript_status_line(line: &str) -> StyledLine {
+fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
     if let Some(prompt) = line.strip_prefix("User:") {
         let mut rendered = StyledLine::styled("› ", SegmentStyle::bold());
         rendered.push(prompt.trim_start(), SegmentStyle::bold());
-        return rendered;
+        return vec![rendered];
     }
     if let Some(tool) = line.strip_prefix("Tool call:") {
-        return render_tool_line(tool.trim_start(), ToolLineKind::Call);
+        return render_tool_lines(tool.trim_start(), ToolLineKind::Call, width);
     }
     if let Some(tool) = line.strip_prefix("Tool result:") {
-        return render_tool_line(tool.trim_start(), ToolLineKind::Result);
+        return render_tool_lines(tool.trim_start(), ToolLineKind::Result, width);
     }
     if let Some(tool) = line.strip_prefix("Tool error:") {
-        return render_tool_line(tool.trim_start(), ToolLineKind::Error);
+        return render_tool_lines(tool.trim_start(), ToolLineKind::Error, width);
     }
     if let Some(thinking) = line.strip_prefix("Thinking:") {
         let mut rendered = StyledLine::styled("  ◌ thinking", SegmentStyle::warning());
@@ -91,7 +92,7 @@ fn render_transcript_status_line(line: &str) -> StyledLine {
             rendered.push(" ", SegmentStyle::dim());
             rendered.push(detail, SegmentStyle::dim());
         }
-        return rendered;
+        return vec![rendered];
     }
     if let Some(error) = line.strip_prefix("Error:") {
         let mut rendered = StyledLine::styled(
@@ -103,7 +104,7 @@ fn render_transcript_status_line(line: &str) -> StyledLine {
             rendered.push(" ", SegmentStyle::dim());
             rendered.push(detail, SegmentStyle::dim());
         }
-        return rendered;
+        return vec![rendered];
     }
     if let Some(status) = line.strip_prefix("Suspended:") {
         let mut rendered = StyledLine::styled(
@@ -115,7 +116,7 @@ fn render_transcript_status_line(line: &str) -> StyledLine {
             rendered.push(" ", SegmentStyle::dim());
             rendered.push(detail, SegmentStyle::dim());
         }
-        return rendered;
+        return vec![rendered];
     }
     if let Some(retry) = line.strip_prefix("Output retry:") {
         let mut rendered = StyledLine::styled("  ↻ retry", SegmentStyle::warning());
@@ -124,15 +125,114 @@ fn render_transcript_status_line(line: &str) -> StyledLine {
             rendered.push(" ", SegmentStyle::dim());
             rendered.push(detail, SegmentStyle::dim());
         }
-        return rendered;
+        return vec![rendered];
     }
     if let Some(status) = line.strip_prefix("Run completed:") {
         let mut rendered = StyledLine::styled("  ✓ completed", SegmentStyle::blockquote());
         rendered.push(" ", SegmentStyle::dim());
         rendered.push(status.trim_start(), SegmentStyle::dim());
-        return rendered;
+        return vec![rendered];
     }
-    StyledLine::plain(line)
+    if let Some(rendered) = render_file_tool_detail_line(line) {
+        return vec![rendered];
+    }
+    vec![StyledLine::plain(line)]
+}
+
+fn render_file_tool_detail_line(line: &str) -> Option<StyledLine> {
+    render_file_header_line(line)
+        .or_else(|| render_file_metadata_line(line))
+        .or_else(|| render_file_content_line(line))
+}
+
+fn render_file_header_line(line: &str) -> Option<StyledLine> {
+    for prefix in ["  Editing file: ", "  Writing file: ", "  Viewing file: "] {
+        if let Some(path) = line.strip_prefix(prefix) {
+            let mut rendered = StyledLine::styled(prefix, SegmentStyle::dim());
+            rendered.push(path, SegmentStyle::code().merge(SegmentStyle::bold()));
+            return Some(rendered);
+        }
+    }
+    None
+}
+
+fn render_file_metadata_line(line: &str) -> Option<StyledLine> {
+    for (prefix, value_style) in [
+        ("  Summary: ", SegmentStyle::blockquote()),
+        ("  Status: ", SegmentStyle::blockquote()),
+        ("  Result: ", SegmentStyle::dim()),
+        ("  Duration: ", SegmentStyle::dim()),
+        ("  Mode: ", SegmentStyle::warning()),
+        ("  Lines: ", SegmentStyle::list_marker()),
+        ("  Truncation: ", SegmentStyle::warning()),
+    ] {
+        if let Some(value) = line.strip_prefix(prefix) {
+            let mut rendered = StyledLine::styled(prefix, SegmentStyle::dim());
+            rendered.push(value, value_style);
+            return Some(rendered);
+        }
+    }
+    if let Some(detail) = line.strip_prefix("  Edit #") {
+        let mut rendered = StyledLine::styled("  Edit #", SegmentStyle::list_marker());
+        rendered.push(
+            detail,
+            SegmentStyle::list_marker().merge(SegmentStyle::bold()),
+        );
+        return Some(rendered);
+    }
+    if matches!(
+        line,
+        "    Empty file" | "    Empty match string" | "    No changes detected"
+    ) || line.starts_with("    ...")
+    {
+        return Some(StyledLine::styled(line, SegmentStyle::dim()));
+    }
+    None
+}
+
+fn render_file_content_line(line: &str) -> Option<StyledLine> {
+    if line.starts_with("    @@") {
+        return Some(StyledLine::styled(
+            line,
+            SegmentStyle::warning().merge(SegmentStyle::bold()),
+        ));
+    }
+    if let Some(content) = line.strip_prefix("    +") {
+        let mut rendered = StyledLine::styled(
+            "    +",
+            SegmentStyle::blockquote().merge(SegmentStyle::bold()),
+        );
+        rendered.push(content, SegmentStyle::blockquote());
+        return Some(rendered);
+    }
+    if let Some(content) = line.strip_prefix("    -") {
+        let mut rendered =
+            StyledLine::styled("    -", SegmentStyle::error().merge(SegmentStyle::bold()));
+        rendered.push(content, SegmentStyle::error());
+        return Some(rendered);
+    }
+    if let Some(rest) = line.strip_prefix("    ") {
+        if let Some((line_number, content)) = rest.split_once(" │ ") {
+            if line_number.trim().chars().all(|ch| ch.is_ascii_digit()) {
+                let mut rendered = StyledLine::styled("    ", SegmentStyle::dim());
+                rendered.push(line_number, SegmentStyle::list_marker());
+                rendered.push(" │ ", SegmentStyle::dim());
+                rendered.push(content, SegmentStyle::code_block());
+                return Some(rendered);
+            }
+        }
+        if let Some(content) = rest.strip_prefix("│ ") {
+            let mut rendered = StyledLine::styled("    │ ", SegmentStyle::dim());
+            rendered.push(content, SegmentStyle::code_block());
+            return Some(rendered);
+        }
+    }
+    if let Some(content) = line.strip_prefix("     ") {
+        let mut rendered = StyledLine::styled("     ", SegmentStyle::dim());
+        rendered.push(content, SegmentStyle::dim());
+        return Some(rendered);
+    }
+    None
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,7 +242,7 @@ enum ToolLineKind {
     Error,
 }
 
-fn render_tool_line(detail: &str, kind: ToolLineKind) -> StyledLine {
+fn render_tool_lines(detail: &str, kind: ToolLineKind, width: usize) -> Vec<StyledLine> {
     let (prefix, name_style, label_style) = match kind {
         ToolLineKind::Call => (
             "Calling: ",
@@ -164,25 +264,82 @@ fn render_tool_line(detail: &str, kind: ToolLineKind) -> StyledLine {
     let mut rendered = StyledLine::plain("  ");
     rendered.push(prefix, label_style);
     rendered.push(name, name_style);
-    if !rest.is_empty() {
-        let result_label = if matches!(kind, ToolLineKind::Error) {
-            " | Error: "
-        } else if matches!(kind, ToolLineKind::Result) {
-            " | Output: "
-        } else {
-            " | Args: "
-        };
-        rendered.push(
-            result_label,
-            label_style.merge(if matches!(kind, ToolLineKind::Error) {
-                SegmentStyle::error()
-            } else {
-                SegmentStyle::warning()
-            }),
-        );
-        rendered.push(rest, SegmentStyle::dim());
+    if rest.is_empty() {
+        return vec![rendered];
     }
-    rendered
+
+    let result_label = if matches!(kind, ToolLineKind::Error) {
+        " | Error: "
+    } else if matches!(kind, ToolLineKind::Result) {
+        " | Output: "
+    } else {
+        " | Args: "
+    };
+    let label_style = label_style.merge(if matches!(kind, ToolLineKind::Error) {
+        SegmentStyle::error()
+    } else {
+        SegmentStyle::warning()
+    });
+    rendered.push(result_label, label_style);
+
+    let available = tool_detail_available_width(width, prefix, name, result_label);
+    if matches!(kind, ToolLineKind::Error) {
+        let mut chunks = wrap_status_text(rest, available.max(1));
+        if let Some(first) = chunks.first() {
+            rendered.push(first, SegmentStyle::dim());
+        }
+        let mut lines = vec![rendered];
+        for chunk in chunks.drain(1..) {
+            let mut continuation = StyledLine::plain("    ");
+            continuation.push(chunk, SegmentStyle::dim());
+            lines.push(continuation);
+        }
+        lines
+    } else {
+        rendered.push(
+            truncate_line_center(rest, available.max(1)),
+            SegmentStyle::dim(),
+        );
+        vec![rendered]
+    }
+}
+
+fn tool_detail_available_width(
+    width: usize,
+    prefix: &str,
+    name: &str,
+    result_label: &str,
+) -> usize {
+    let fixed_width = visible_width("  ")
+        .saturating_add(visible_width(prefix))
+        .saturating_add(visible_width(name))
+        .saturating_add(visible_width(result_label));
+    width.max(40).saturating_sub(fixed_width).max(1)
+}
+
+fn wrap_status_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let compact = text.replace('\n', " ");
+    if compact.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut used = 0usize;
+    for ch in compact.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used > 0 && used.saturating_add(ch_width) > width {
+            lines.push(current);
+            current = String::new();
+            used = 0;
+        }
+        current.push(ch);
+        used = used.saturating_add(ch_width);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 fn split_tool_detail(detail: &str) -> (&str, &str) {

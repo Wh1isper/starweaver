@@ -5,6 +5,8 @@ members = [
     "crates/starweaver-context",
     "crates/starweaver-core",
     "crates/starweaver-model",
+    "crates/starweaver-oauth",
+    "crates/starweaver-oauth-provider",
     "crates/starweaver-runtime",
     "crates/starweaver-tools",
     "crates/starweaver-environment",
@@ -33,6 +35,8 @@ starweaver-agent = { path = "crates/starweaver-agent", version = "0.1.0" }
 starweaver-context = { path = "crates/starweaver-context", version = "0.1.0" }
 starweaver-core = { path = "crates/starweaver-core", version = "0.1.0" }
 starweaver-model = { path = "crates/starweaver-model", version = "0.1.0" }
+starweaver-oauth = { path = "crates/starweaver-oauth", version = "0.1.0" }
+starweaver-oauth-provider = { path = "crates/starweaver-oauth-provider", version = "0.1.0" }
 starweaver-runtime = { path = "crates/starweaver-runtime", version = "0.1.0" }
 starweaver-tools = { path = "crates/starweaver-tools", version = "0.1.0" }
 starweaver-environment = { path = "crates/starweaver-environment", version = "0.1.0" }
@@ -49,6 +53,7 @@ schemars = { version = "1.2.1", features = ["derive"] }
 globset = "0.4.16"
 grep-matcher = "0.1.8"
 grep-regex = "0.1.14"
+grep-searcher = "0.1.16"
 ignore = "0.4.24"
 serde_yaml = "0.9.34"
 thiserror = "2.0.17"
@@ -65,6 +70,7 @@ tempfile = "3.23.0"
 unicode-width = "0.2.0"
 base64 = "0.22.1"
 futures-util = "0.3.31"
+fs2 = "0.4.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

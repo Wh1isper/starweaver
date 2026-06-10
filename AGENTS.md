@@ -12,7 +12,9 @@ Primary design references:
 Current workspace members:
 
 - `crates/starweaver-core` — shared SDK identity, IDs, metadata, and usage primitives
-- `crates/starweaver-model` — provider-neutral model messages, settings, profiles, native tool request definitions, protocol clients, injectable HTTP transport, deterministic test models, production-request guard, model wrappers, and replay tests
+- `crates/starweaver-model` — provider-neutral model messages, settings, profiles, native tool request definitions, protocol clients, injectable HTTP transport, deterministic test models, production-request guard, model wrappers, OAuth-backed provider model adapters, and replay tests
+- `crates/starweaver-oauth` — OAuth credential storage under `~/.starweaver`, Codex device login, token refresh, JWT metadata extraction, and store-backed token sources
+- `crates/starweaver-oauth-provider` — OAuth-backed provider helpers, Codex model construction helpers, and refresh supervisor utilities
 - `crates/starweaver-context` — AgentContext, typed dependencies, resumable state, state store, event bus, message bus, and usage ledger
 - `crates/starweaver-runtime` — core agent loop, graph state machine, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage/tool-call/cost budgets, typed stream events, scoped overrides, context integration, capability hooks, capability bundles, trace recording, and durable executor checkpoints
 - `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, toolset combinators, and execution primitives
@@ -29,7 +31,9 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 
 ## Layering Rules
 
-- `starweaver-model`: provider-neutral model protocol, settings, profiles, transports, model wrappers, and provider request mapping.
+- `starweaver-model`: provider-neutral model protocol, settings, profiles, transports, model wrappers, provider request mapping, and OAuth-backed provider adapters.
+- `starweaver-oauth`: OAuth auth file storage, Codex device-code login, token refresh, and store-backed token sources. Default auth path is `~/.starweaver/auth.json`.
+- `starweaver-oauth-provider`: OAuth provider construction helpers and proactive refresh supervision.
 - `starweaver-tools`: tool schema, toolsets, metadata, tool context, combinators, and protocol-level tool execution primitives.
 - `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage limits, streaming events, trace spans, and executor checkpoints.
 - `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, filters, media helpers, and policy presets.

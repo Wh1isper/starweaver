@@ -11,20 +11,21 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{json, Map};
 use starweaver_agent::{
-    core_toolsets, load_subagents_from_dir, parse_skill_markdown, skill_tools, string_tool,
-    AgentBuilder, AgentCapability, AgentRunState, AgentSpec, AgentSpecRegistry,
-    ApprovalRequiredToolset, CapabilityResult, DynToolset, FunctionModel,
-    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, McpServerSpec, McpToolSpec,
-    McpToolset, McpToolsetConfig, McpTransport, MediaUnderstandingRequest,
-    MediaUnderstandingResponse, SkillPackage, StaticToolset, SubagentConfig,
-    SubagentToolInheritancePolicy, ToolContext, ToolError, ToolResult,
+    core_toolsets, load_subagents_from_dir, parse_skill_markdown, string_tool, AgentBuilder,
+    AgentCapability, AgentRunState, AgentSpec, AgentSpecRegistry, ApprovalRequiredToolset,
+    CapabilityResult, DynToolset, FunctionModel, HostMediaUnderstandingClient,
+    HostMediaUnderstandingClientHandle, McpServerSpec, McpToolSpec, McpToolset, McpToolsetConfig,
+    McpTransport, MediaUnderstandingRequest, MediaUnderstandingResponse, ShellReviewAction,
+    ShellReviewConfig, ShellReviewHandle, ShellReviewRiskLevel, SkillPackage, SkillRegistry,
+    StaticToolset, SubagentConfig, SubagentToolInheritancePolicy, ToolContext, ToolError,
+    ToolProxyToolset, ToolResult,
 };
 use starweaver_model::{
-    anthropic_http_config, gemini_http_config, get_model_config, openai_chat_http_config,
-    openai_responses_http_config, ContentPart, HttpModelConfig, ModelAdapter, ModelMessage,
-    ModelProfile, ModelRequest, ModelRequestContext, ModelRequestParameters, ModelRequestPart,
-    ModelResponse, ModelResponsePart, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient,
-    ToolCallPart,
+    anthropic_http_config, build_codex_model_with_profile, codex_model_profile, gemini_http_config,
+    get_model_config, get_model_settings, openai_chat_http_config, openai_responses_http_config,
+    ContentPart, HttpModelConfig, ModelAdapter, ModelMessage, ModelProfile, ModelRequest,
+    ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelResponse,
+    ModelResponsePart, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient, ToolCallPart,
 };
 
 use starweaver_context::AgentContext;
@@ -33,7 +34,7 @@ use starweaver_core::{ConversationId, RunId};
 use crate::{
     config::{mcp_servers, tool_need_approval, CliConfig, CliModelProfile, ProviderConfig},
     error::io_error,
-    oauth::{CodexOAuthHttpClient, CODEX_BASE_URL},
+    oauth::{create_codex_token_source, OAuthStore, CODEX_BASE_URL},
     CliError, CliResult,
 };
 
@@ -49,6 +50,10 @@ pub struct ResolvedProfile {
     pub registry: AgentSpecRegistry,
     /// Optional CLI media-understanding fallback client.
     pub media_client: Option<Arc<dyn HostMediaUnderstandingClient>>,
+    /// Optional shell command review handle.
+    pub shell_review: Option<ShellReviewHandle>,
+    /// Skill registry loaded from CLI skill directories.
+    pub skills: SkillRegistry,
 }
 
 /// Source of a resolved profile.
@@ -106,6 +111,11 @@ impl ResolvedProfile {
             }));
         }
         Ok(builder.build())
+    }
+
+    /// Apply profile-owned runtime context defaults to a session context.
+    pub fn configure_context(&self, context: &mut AgentContext) {
+        self.skills.register_relaxed_view_patterns(context);
     }
 }
 
@@ -211,13 +221,17 @@ pub fn resolve_profile(config: &CliConfig, requested: Option<&str>) -> CliResult
     let (spec, source) = load_profile_spec(config, requested)?;
     let name = spec.name.clone();
     let registry = default_registry(config, &spec)?;
+    let skills = configured_skill_registry(config);
     let media_client = configured_media_client(config)?;
+    let shell_review = configured_shell_review(config)?;
     Ok(ResolvedProfile {
         name,
         source,
         spec,
         registry,
         media_client,
+        shell_review,
+        skills,
     })
 }
 
@@ -239,37 +253,47 @@ pub fn list_profiles(config: &CliConfig) -> Vec<ProfileSummary> {
             },
         );
     }
-    if let Some(profile) = config.default_model.as_ref() {
-        profiles.insert(
-            "default_model".to_string(),
-            ProfileSummary {
-                name: "default_model".to_string(),
-                label: profile.label.clone(),
-                source: ProfileSource::Config.kind().to_string(),
-                model_id: profile.model_id.clone(),
-                model_settings: profile.model_settings.clone(),
-                model_cfg: profile.model_cfg.clone(),
-                context_window: profile.model_cfg.as_deref().and_then(model_context_window),
-                path: None,
-            },
-        );
-    }
-    for (name, profile) in &config.model_profiles {
-        profiles.insert(
-            name.clone(),
-            ProfileSummary {
-                name: name.clone(),
-                label: profile.label.clone(),
-                source: ProfileSource::Config.kind().to_string(),
-                model_id: profile.model_id.clone(),
-                model_settings: profile.model_settings.clone(),
-                model_cfg: profile.model_cfg.clone(),
-                context_window: profile.model_cfg.as_deref().and_then(model_context_window),
-                path: None,
-            },
-        );
+    for profile in list_config_model_profiles(config) {
+        profiles.insert(profile.name.clone(), profile);
     }
     profiles.into_values().collect()
+}
+
+/// List model profiles explicitly configured in config.toml.
+///
+/// This is the source used by client model selectors such as the TUI `/model`
+/// picker. Built-in SDK profiles are intentionally omitted so local/test models
+/// only appear when the user explicitly adds them to config.
+pub fn list_config_model_profiles(config: &CliConfig) -> Vec<ProfileSummary> {
+    let mut profiles = Vec::new();
+    let default_profile = config
+        .model_profiles
+        .get("default_model")
+        .or(config.default_model.as_ref());
+    if let Some(profile) = default_profile {
+        profiles.push(config_model_profile_summary("default_model", profile));
+    }
+    profiles.extend(
+        config
+            .model_profiles
+            .iter()
+            .filter(|(name, _)| name.as_str() != "default_model")
+            .map(|(name, profile)| config_model_profile_summary(name, profile)),
+    );
+    profiles
+}
+
+fn config_model_profile_summary(name: &str, profile: &CliModelProfile) -> ProfileSummary {
+    ProfileSummary {
+        name: name.to_string(),
+        label: profile.label.clone(),
+        source: ProfileSource::Config.kind().to_string(),
+        model_id: profile.model_id.clone(),
+        model_settings: profile.model_settings.clone(),
+        model_cfg: profile.model_cfg.clone(),
+        context_window: profile.model_cfg.as_deref().and_then(model_context_window),
+        path: None,
+    }
 }
 
 /// Render a built-in or file-backed profile as YAML.
@@ -703,6 +727,7 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
 
 fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
     let approval = tool_need_approval(config);
+    let shell_review_approval = shell_review_adjusted_approval(config, &approval);
     let mut toolsets = vec![Arc::new(control_flow_toolset()) as DynToolset];
     let mut filesystem = None;
     let mut shell = None;
@@ -712,20 +737,23 @@ fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
             "shell" => shell = Some(toolset.clone()),
             _ => {}
         }
-        toolsets.push(policy_toolset(toolset, &approval));
+        let selected_approval = if toolset.name() == "shell" {
+            &shell_review_approval
+        } else {
+            &approval
+        };
+        toolsets.push(policy_toolset(toolset, selected_approval));
     }
     if let (Some(filesystem), Some(shell)) = (filesystem, shell) {
         toolsets.push(policy_toolset(
             environment_toolset(&filesystem, &shell),
-            &approval,
+            &shell_review_approval,
         ));
     }
     toolsets.push(policy_toolset(configured_skill_toolset(config), &approval));
-    toolsets.extend(
-        configured_mcp_toolsets(config)
-            .into_iter()
-            .map(|toolset| policy_toolset(toolset, &approval)),
-    );
+    if let Some(mcp_proxy) = configured_mcp_proxy_toolset(config) {
+        toolsets.push(policy_toolset(mcp_proxy, &approval));
+    }
     toolsets
 }
 
@@ -781,7 +809,7 @@ impl HostMediaUnderstandingClient for CliMediaUnderstandingClient {
         })?;
         let response = selected
             .model
-            .request(
+            .request_stream_final(
                 vec![ModelMessage::Request(media_understanding_request(&request))],
                 None,
                 ModelRequestParameters::default(),
@@ -802,6 +830,56 @@ impl HostMediaUnderstandingClient for CliMediaUnderstandingClient {
             truncated: false,
             metadata: Map::new(),
         })
+    }
+}
+
+fn configured_shell_review(config: &CliConfig) -> CliResult<Option<ShellReviewHandle>> {
+    if !config.shell_review.enabled {
+        return Ok(None);
+    }
+    let model_id = config.shell_review.model.as_deref().ok_or_else(|| {
+        CliError::Config(
+            "security.shell_review.model is required when shell review is enabled".to_string(),
+        )
+    })?;
+    let model = match model_id {
+        "local_echo" => Arc::new(local_echo_model()) as Arc<dyn ModelAdapter>,
+        other => provider_model(config, other, None)?
+            .ok_or_else(|| CliError::Config(format!("unknown shell review model id {other}")))?,
+    };
+    let mut review_config = ShellReviewConfig::enabled(model)
+        .with_action(shell_review_action(&config.shell_review.on_needs_approval)?)
+        .with_risk_threshold(shell_review_risk(&config.shell_review.risk_threshold)?);
+    if let Some(settings) = config.shell_review.model_settings.as_deref() {
+        review_config = review_config.with_model_settings(
+            get_model_settings(settings).map_err(|error| CliError::Config(error.to_string()))?,
+        );
+    }
+    if let Some(prompt) = config.shell_review.system_prompt.as_ref() {
+        review_config = review_config.with_system_prompt(prompt.clone());
+    }
+    Ok(Some(ShellReviewHandle::new(review_config)))
+}
+
+fn shell_review_action(value: &str) -> CliResult<ShellReviewAction> {
+    match value {
+        "defer" => Ok(ShellReviewAction::Defer),
+        "deny" => Ok(ShellReviewAction::Deny),
+        other => Err(CliError::Config(format!(
+            "invalid security.shell_review.on_needs_approval: {other}"
+        ))),
+    }
+}
+
+fn shell_review_risk(value: &str) -> CliResult<ShellReviewRiskLevel> {
+    match value {
+        "low" => Ok(ShellReviewRiskLevel::Low),
+        "medium" => Ok(ShellReviewRiskLevel::Medium),
+        "high" => Ok(ShellReviewRiskLevel::High),
+        "extra_high" => Ok(ShellReviewRiskLevel::ExtraHigh),
+        other => Err(CliError::Config(format!(
+            "invalid security.shell_review.risk_threshold: {other}"
+        ))),
     }
 }
 
@@ -907,14 +985,29 @@ fn environment_toolset(filesystem: &DynToolset, shell: &DynToolset) -> DynToolse
     )
 }
 
-fn configured_skill_toolset(config: &CliConfig) -> DynToolset {
-    let mut packages = BTreeMap::new();
+fn configured_skill_registry(config: &CliConfig) -> SkillRegistry {
+    let mut registry = SkillRegistry::new();
     for dir in &config.skill_dirs {
         for package in load_skill_packages_from_dir(dir) {
-            packages.insert(package.name.clone(), package);
+            registry.insert(package);
         }
     }
-    skill_tools(packages.into_values())
+    registry
+}
+
+fn configured_skill_toolset(config: &CliConfig) -> DynToolset {
+    configured_skill_registry(config).toolset()
+}
+
+fn shell_review_adjusted_approval(config: &CliConfig, approval: &[String]) -> Vec<String> {
+    if !config.shell_review.enabled {
+        return approval.to_vec();
+    }
+    approval
+        .iter()
+        .filter(|entry| entry.as_str() != "shell" && entry.as_str() != "shell_exec")
+        .cloned()
+        .collect()
 }
 
 fn policy_toolset(inner: DynToolset, approval: &[String]) -> DynToolset {
@@ -942,12 +1035,29 @@ fn configured_mcp_server_specs(config: &CliConfig) -> Vec<McpServerSpec> {
         .collect()
 }
 
-fn configured_mcp_toolsets(config: &CliConfig) -> Vec<DynToolset> {
+fn configured_mcp_proxy_toolset(config: &CliConfig) -> Option<DynToolset> {
+    let mut descriptions = BTreeMap::new();
+    let toolsets = configured_mcp_toolsets(config, &mut descriptions);
+    if toolsets.is_empty() {
+        return None;
+    }
+    let proxy = ToolProxyToolset::new(toolsets)
+        .try_with_prefix("mcp")
+        .ok()?
+        .with_namespace_descriptions(descriptions);
+    Some(Arc::new(proxy))
+}
+
+fn configured_mcp_toolsets(
+    config: &CliConfig,
+    descriptions: &mut BTreeMap<String, String>,
+) -> Vec<DynToolset> {
     mcp_servers(config)
         .into_iter()
         .filter_map(|(name, value)| {
             let transport = parse_mcp_transport(&value)?;
-            let mut toolset_config = McpToolsetConfig::new(format!("mcp_{name}"), transport);
+            let toolset_id = format!("mcp_{name}");
+            let mut toolset_config = McpToolsetConfig::new(toolset_id.clone(), transport);
             if let Some(prefix) = value.get("tool_prefix").and_then(serde_json::Value::as_str) {
                 toolset_config = toolset_config.with_tool_prefix(prefix);
             }
@@ -964,12 +1074,30 @@ fn configured_mcp_toolsets(config: &CliConfig) -> Vec<DynToolset> {
             {
                 toolset_config = toolset_config.with_instructions(instructions);
             }
+            let description = mcp_namespace_description(&value);
             for tool in parse_mcp_tools(&value) {
                 toolset_config = toolset_config.with_tool(tool);
+            }
+            if let Some(description) = description {
+                descriptions.insert(toolset_id, description);
             }
             Some(Arc::new(McpToolset::new(toolset_config)) as DynToolset)
         })
         .collect()
+}
+
+fn mcp_namespace_description(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            value
+                .get("instructions")
+                .and_then(serde_json::Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .map(str::to_string)
 }
 
 fn mcp_transport_error(value: &serde_json::Value) -> Option<String> {
@@ -1095,7 +1223,8 @@ fn load_skill_packages_from_dir(dir: &std::path::Path) -> Vec<SkillPackage> {
 
 fn load_skill_package(path: &std::path::Path) -> Option<SkillPackage> {
     let content = fs::read_to_string(path).ok()?;
-    parse_skill_markdown(&path.display().to_string(), &content).ok()
+    let provider_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    parse_skill_markdown(&provider_path.display().to_string(), &content).ok()
 }
 
 fn register_configured_subagents(
@@ -1182,16 +1311,23 @@ fn provider_model(
         http_config
             .metadata
             .insert("oauth_provider".to_string(), json!("codex"));
-        let profile = provider_model_profile(model_config_preset, ProtocolFamily::OpenAiResponses)?;
-        let client = ProtocolModelClient::new(
-            "codex",
+        let token_source =
+            create_codex_token_source(Some(OAuthStore::default_store())).map_err(|error| {
+                CliError::Config(format!("failed to build Codex OAuth token source: {error}"))
+            })?;
+        let mut profile =
+            provider_model_profile(model_config_preset, ProtocolFamily::OpenAiResponses)?;
+        let codex_profile = codex_model_profile();
+        profile.supports_thinking = codex_profile.supports_thinking;
+        profile.thinking_always_enabled = codex_profile.thinking_always_enabled;
+        let client = build_codex_model_with_profile(
             parsed.model_name,
-            profile,
+            Arc::new(token_source),
             http_config,
-            Arc::new(CodexOAuthHttpClient::new().map_err(|error| {
-                CliError::Config(format!("failed to build Codex OAuth client: {error}"))
-            })?),
-        );
+            BTreeMap::new(),
+            profile,
+        )
+        .map_err(|error| CliError::Config(format!("failed to build Codex OAuth model: {error}")))?;
         return Ok(Some(Arc::new(client)));
     }
     let provider_config = parsed.provider_config(config);
@@ -1470,4 +1606,64 @@ fn control_flow_toolset() -> StaticToolset {
 #[allow(dead_code)]
 fn ok_tool_result(value: serde_json::Value) -> ToolResult {
     ToolResult::new(value)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::config::ConfigResolver;
+
+    fn test_config() -> CliConfig {
+        let temp = tempfile::tempdir().unwrap();
+        let cli =
+            crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+        ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap()
+    }
+
+    #[test]
+    fn shell_review_adjusted_approval_removes_shell_entries_only_when_enabled() {
+        let mut config = test_config();
+        let approval = vec![
+            "shell".to_string(),
+            "shell_exec".to_string(),
+            "write".to_string(),
+            "*".to_string(),
+        ];
+
+        assert_eq!(shell_review_adjusted_approval(&config, &approval), approval);
+
+        config.shell_review.enabled = true;
+        assert_eq!(
+            shell_review_adjusted_approval(&config, &approval),
+            vec!["write".to_string(), "*".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_profile_builds_configured_shell_review_handle() {
+        let mut config = test_config();
+        config.shell_review.enabled = true;
+        config.shell_review.model = Some("local_echo".to_string());
+        config.shell_review.on_needs_approval = "deny".to_string();
+        config.shell_review.risk_threshold = "medium".to_string();
+        config.shell_review.system_prompt = Some("Custom shell review prompt".to_string());
+
+        let profile = resolve_profile(&config, Some("general")).unwrap();
+        let Some(handle) = profile.shell_review else {
+            panic!("shell review handle");
+        };
+
+        assert!(handle.config().enabled);
+        assert_eq!(handle.config().on_needs_approval, ShellReviewAction::Deny);
+        assert_eq!(handle.config().risk_threshold, ShellReviewRiskLevel::Medium);
+        assert_eq!(
+            handle.config().system_prompt.as_deref(),
+            Some("Custom shell review prompt")
+        );
+        assert!(handle.config().model.is_some());
+    }
 }

@@ -84,6 +84,19 @@ replay-check: ## Run model replay and request-parameter compatibility tests
 	@echo "Checking model replay fixtures"
 	@cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
 
+.PHONY: oauth-check
+oauth-check: ## Check OAuth crates and CLI/model integration
+	@echo "Checking OAuth crates and integrations"
+	@cargo check -p starweaver-oauth -p starweaver-oauth-provider -p starweaver-model -p starweaver-cli --all-targets --locked
+
+.PHONY: oauth-test
+oauth-test: ## Run focused OAuth tests
+	@echo "Running OAuth tests"
+	@cargo test -p starweaver-oauth --test oauth -p starweaver-model --test oauth_provider -p starweaver-oauth-provider --test refresh --locked
+
+.PHONY: oauth-ci
+oauth-ci: oauth-check oauth-test ## Run OAuth focused check and tests
+
 .PHONY: replay-summary
 replay-summary: ## Print deterministic model replay fixture coverage summary
 	@$(XTASK) summarize-model-fixtures $(ARGS)

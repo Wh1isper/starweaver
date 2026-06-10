@@ -106,6 +106,16 @@ model_settings = "openai_responses_high"
 model_cfg = "gpt5_270k"
 ```
 
+OAuth-backed Codex profiles use the `oauth@codex:<model>` model id and read credentials from `~/.starweaver/auth.json` by default. Use `STARWEAVER_OAUTH_AUTH_FILE` or `--auth-file` on auth commands for an alternate file.
+
+```bash
+starweaver-cli auth login codex
+starweaver-cli auth status codex
+starweaver-cli auth refresh codex
+starweaver-cli auth doctor
+starweaver-cli auth logout codex
+```
+
 Provider-backed model ids use these prefixes:
 
 | Model id pattern                     | Protocol                          |
@@ -156,7 +166,15 @@ base_url = "https://generativelanguage.googleapis.com/v1beta"
 [providers.codex]
 base_url = "https://chatgpt.com/backend-api/codex"
 max_tokens_parameter = "omit"
+
+[oauth_refresh]
+enabled = true
+interval_seconds = 1800
+failure_retry_seconds = 60
+refresh_on_startup = true
 ```
+
+`[oauth_refresh]` controls the background refresh supervisor used by CLI, TUI, and RPC runs whenever configured model profiles include `oauth@provider:<model>` ids.
 
 Gateway model ids use the gateway name as a provider config key. `homelab@openai-responses:gpt-5` reads `[providers.homelab]`, falls back to `HOMELAB_API_KEY` for credentials, and can explicitly select gateway-specific request mappings:
 
@@ -179,6 +197,8 @@ starweaver-cli config get model.profiles
 starweaver-cli config get providers.openai.ready
 starweaver-cli config get providers.openai.base_url
 starweaver-cli config get providers.homelab.max_tokens_parameter
+starweaver-cli config get oauth_refresh.enabled
+starweaver-cli config get oauth_refresh.interval_seconds
 starweaver-cli config set --global providers.homelab.base_url https://gateway.example/v1
 starweaver-cli config set --global providers.homelab.max_tokens_parameter omit
 starweaver-cli diagnostics
@@ -222,6 +242,8 @@ model_cfg = "gpt5_270k"
 
 The OAuth transport attaches Codex request headers, adds session and thread metadata, sets Responses `store=false`, and refreshes the access token once after a `401` response when a refresh token is present. `[providers.codex]` controls the Codex base URL, endpoint path, and max-token parameter mapping.
 
+CLI, TUI, and RPC runs also start a proactive refresh supervisor when `[oauth_refresh].enabled = true` and configured model profiles reference OAuth-backed models. The supervisor refreshes on startup by default, repeats every `interval_seconds`, and uses `failure_retry_seconds` after the latest attempt fails.
+
 Auth inspection commands read and update the local auth store without printing secrets:
 
 ```bash
@@ -232,11 +254,12 @@ starweaver-cli auth logout codex
 
 ## Tools, MCP, skills, and subagents
 
-Built-in and config-backed profiles attach the default first-party CLI tool catalog: filesystem, shell, host operations, task operations, skills, and CLI control-flow probes. The tool policy file marks approval-gated tools and toolsets:
+Built-in and config-backed profiles attach the default first-party CLI tool catalog: filesystem, shell, host operations, task operations, skills, and CLI control-flow probes. CLI tools execute without approval by default; add explicit tool names, toolset ids, or `"*"` to opt back into approval gating:
 
 ```toml
 [tools]
-need_approval = ["shell", "write", "edit", "multi_edit", "delete", "move"]
+need_approval = []
+# need_approval = ["shell", "write", "edit", "multi_edit", "delete", "move"]
 ```
 
 Filesystem and shell execution policy is resolved from `[environment]` in `config.toml`; `tools.toml` controls tool-level approval gates.
@@ -277,11 +300,13 @@ starweaver-cli mcp show docs
 starweaver-cli mcp doctor
 ```
 
-Skills are loaded from `SKILL.md` packages in configured directories and exposed through the `skills` toolset. Subagent markdown files are loaded from configured directories and registered in the CLI AgentSpec registry.
+Skills are loaded from `SKILL.md` packages in configured directories and exposed through the `skills` toolset. By default, the CLI checks `~/.starweaver/skills`, shared Agent Skills packages in `~/.agents/skills`, and project `.starweaver/skills`. These directories are also added to the local environment's allowed paths so model-facing skill paths can be opened with filesystem tools. Subagent markdown files are loaded from configured directories and registered in the CLI AgentSpec registry.
 
 ```toml
 [skills]
-dirs = ["~/.starweaver/skills"]
+# Overrides the default skill directories.
+dirs = ["~/.starweaver/skills", "~/.agents/skills"]
+# Adds extra skill directories while keeping defaults.
 additional_dirs = [".starweaver/skills"]
 
 [subagents]
@@ -386,10 +411,37 @@ Interactive slash commands:
 | `/cost`            | Show usage/context summary                          |
 | `/model`           | Open the in-TUI model profile selector              |
 | `/model <profile>` | Select a model profile directly for future TUI runs |
+| `/session`         | Open the in-TUI session selector                    |
+| `/session <id>`    | Reload an exact session id or unique id prefix      |
 | `/goal <task>`     | Run toward a verified goal                          |
+| `/paste-image`     | Attach image data from the system clipboard         |
 | `!<command>`       | Run a shell command and show output inline          |
 
+Use `Ctrl+V` or `/paste-image` to attach an image currently stored in the system clipboard. The TUI inserts a visible placeholder such as `[Attached image 1: image/png 24KB]` into the composer, but submission strips that generated placeholder and sends the image as inline binary `ContentPart::Binary` content with the first model request. Clipboard image paste currently supports Linux clipboard providers through `wl-paste` on Wayland or `xclip` on X11.
+
 The `/model` selector is embedded in the TUI. Use `Up` / `Down` to move, `Enter` to select, and `Esc` to cancel. The selector shows only user-facing profiles and expands the highlighted profile with its model id, settings preset, config preset, context window, and source so long model ids are easier to inspect. The TUI selected model is client state stored in `~/.starweaver/tui/state.json`. It does not mutate `~/.starweaver/config.toml`; shared config still owns the profile definitions and provider settings. Model selection is only allowed while no run is active.
+
+The `/session` selector uses the same embedded picker style. Use `/session` to view recent local sessions, move with `Up` / `Down`, press `Enter` to reload the highlighted session, or `Esc` to cancel. Use `/session <id>` to reload directly; exact ids and unique id prefixes are supported. Reloading replaces the TUI transcript with persisted display replay, updates the current session pointer, restores the session profile when available, and the next message continues from the loaded history. Session selection is only allowed while no run is active.
+
+Config-backed slash commands are declared in global or project `config.toml` under `[commands.<name>]`. They work in the TUI, headless `run`/`-p`, and JSON-RPC prompt runs. Invoking `/name optional instruction` expands the configured prompt before submission. In the TUI, the transcript shows the expanded prompt directly as the user message, matching the actual prompt sent to the agent. If instruction text is provided and the prompt has no `{instruction}`, `{{instruction}}`, `{args}`, or `{{args}}` placeholder, Starweaver appends `User instruction: <instruction>`. Built-in slash commands such as `/help`, `/model`, `/session`, `/goal`, `/paste-image`, `/clear`, and `/cost` remain reserved and cannot be overridden.
+
+```toml
+[commands.review]
+description = "Review the current changes"
+aliases = ["rv"]
+prompt = """
+Review the working tree changes for correctness, safety, and missing tests.
+"""
+
+[commands.test]
+description = "Run targeted tests"
+prompt = "Run tests for {{instruction}} and report failures with fixes."
+```
+
+```bash
+starweaver-cli -p "/review staged diff" --output text
+starweaver-cli run "/rv src/service.rs"
+```
 
 Interactive keys:
 
@@ -406,6 +458,7 @@ Interactive keys:
 | Mouse wheel             | Scroll transcript                                  |
 | `Ctrl-Up` / `Ctrl-Down` | Scroll transcript one line                         |
 | `Ctrl-L`                | Jump to the live bottom                            |
+| `Esc`                   | Enter transcript selection mode while idle         |
 | `Ctrl-C`                | Request interruption during a run; exit while idle |
 | `Ctrl-D`                | Exit                                               |
 | `q`                     | Exit from an empty idle prompt                     |
@@ -523,7 +576,7 @@ sw cli reset --yes
 
 ## Config
 
-Global Starweaver configuration lives under `~/.starweaver`. `~/.starweaver/config.toml` stores shared defaults, provider settings, and model profile definitions. `~/.starweaver/tools.toml`, `~/.starweaver/mcp.json`, `~/.starweaver/skills`, and `~/.starweaver/subagents` are shared by CLI, TUI, Desktop, and RPC hosts. Frontend state is separate: TUI uses `~/.starweaver/tui/state.json`, Desktop uses `~/.starweaver/desktop/state.json`, and project runtime state keeps the current session pointer in `.starweaver/state.json`.
+Global Starweaver configuration lives under `~/.starweaver`. `~/.starweaver/config.toml` stores shared defaults, provider settings, and model profile definitions. `~/.starweaver/tools.toml`, `~/.starweaver/mcp.json`, `~/.starweaver/skills`, and `~/.starweaver/subagents` are shared by CLI, TUI, Desktop, and RPC hosts. The CLI also discovers shared Agent Skills from `~/.agents/skills` by default. Frontend state is separate: TUI uses `~/.starweaver/tui/state.json`, Desktop uses `~/.starweaver/desktop/state.json`, and project runtime state keeps the current session pointer in `.starweaver/state.json`.
 
 Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_CONFIG_DIR`, `STARWEAVER_PROJECT_DIR`, `STARWEAVER_PROFILE`, `STARWEAVER_SKILL_DIRS`, `STARWEAVER_SUBAGENT_DIRS`, `STARWEAVER_DISABLED_SUBAGENTS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_IMAGE_UNDERSTANDING_MODEL`, `STARWEAVER_VIDEO_UNDERSTANDING_MODEL`, `STARWEAVER_AUDIO_UNDERSTANDING_MODEL`, `STARWEAVER_UPDATE_CHANNEL`, `STARWEAVER_UPDATE_CHECK`, `STARWEAVER_OAUTH_AUTH_FILE`, and `STARWEAVER_NO_AUTO_TRIM`.
 

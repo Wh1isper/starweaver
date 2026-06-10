@@ -319,6 +319,32 @@ pub trait ModelAdapter: Send + Sync {
         ))])
     }
 
+    /// Stream a model request and return the assembled final response.
+    async fn request_stream_final(
+        &self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        let events = self
+            .request_stream(messages, settings, params, context)
+            .await?;
+        events
+            .into_iter()
+            .find_map(|event| match event {
+                ModelResponseStreamEvent::FinalResult(response) => Some(*response),
+                ModelResponseStreamEvent::PartStart(_)
+                | ModelResponseStreamEvent::PartDelta(_)
+                | ModelResponseStreamEvent::PartEnd(_) => None,
+            })
+            .ok_or_else(|| {
+                ModelError::UnsupportedResponse(
+                    "model stream did not produce a final result".to_string(),
+                )
+            })
+    }
+
     /// Stream a model request and yield canonical events as they arrive.
     async fn request_stream_incremental(
         &self,

@@ -9,7 +9,7 @@ use starweaver_model::{
         openai_responses::OpenAiResponsesAdapter,
     },
     FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart,
-    ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
+    ModelSettings, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
 };
 
 fn lookup_tool() -> ToolDefinition {
@@ -275,6 +275,60 @@ fn anthropic_preserves_agent_loop_boundaries() {
     }));
     assert_eq!(request["tools"][0]["name"], "lookup");
     assert_eq!(request["tools"][0]["input_schema"]["type"], "object");
+}
+
+#[test]
+fn anthropic_caches_static_instruction_boundary_and_tool_definitions() {
+    let mut dynamic_metadata = Map::new();
+    dynamic_metadata.insert("starweaver_instruction_dynamic".to_string(), json!(true));
+    let messages = vec![ModelMessage::Request(ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "static system".to_string(),
+                metadata: Map::new(),
+            },
+            ModelRequestPart::Instruction {
+                text: "dynamic instruction".to_string(),
+                metadata: dynamic_metadata,
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![starweaver_model::ContentPart::Text {
+                    text: "hello".to_string(),
+                }],
+                name: None,
+                metadata: Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    })];
+    let settings = ModelSettings {
+        provider_options: Some(json!({
+            "anthropic_cache_instructions": true,
+            "anthropic_cache_tool_definitions": true,
+        })),
+        ..ModelSettings::default()
+    };
+
+    let request = AnthropicMessagesAdapter::build_request(
+        "claude-test",
+        &messages,
+        Some(&settings),
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    let system = request["system"].as_array().unwrap();
+    assert_eq!(system[0]["text"], "static system");
+    assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
+    assert_eq!(system[1]["text"], "dynamic instruction");
+    assert!(system[1].get("cache_control").is_none());
+    assert_eq!(request["tools"][0]["cache_control"]["type"], "ephemeral");
+    assert!(request.get("anthropic_cache_instructions").is_none());
+    assert!(request.get("anthropic_cache_tool_definitions").is_none());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
@@ -40,8 +40,8 @@ impl ModelAdapter for ScriptedModel {
     }
 
     fn profile(&self) -> &ModelProfile {
-        static PROFILE: ModelProfile =
-            ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions);
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
         &PROFILE
     }
 
@@ -380,6 +380,7 @@ impl AgentCapability for StreamObserverRecorder {
                 AgentStreamEvent::OutputRetry { .. } => "output_retry",
                 AgentStreamEvent::SteeringGuard { .. } => "steering_guard",
                 AgentStreamEvent::RunComplete { .. } => "run_complete",
+                AgentStreamEvent::RunFailed { .. } => "run_failed",
             }
             .to_string(),
         );

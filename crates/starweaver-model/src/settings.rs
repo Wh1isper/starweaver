@@ -21,6 +21,9 @@ pub struct ModelSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<u32>,
     /// Request timeout in milliseconds.
+    ///
+    /// This is the Rust transport-friendly representation of Pydantic AI's
+    /// cross-provider `timeout` model setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     /// Allow multiple tool calls in one response.
@@ -41,6 +44,9 @@ pub struct ModelSettings {
     /// Frequency penalty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f64>,
+    /// Token-level logit bias.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub logit_bias: BTreeMap<String, i32>,
     /// Reasoning or thinking controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSettings>,
@@ -81,6 +87,13 @@ impl ModelSettings {
             },
             presence_penalty: overlay.presence_penalty.or(self.presence_penalty),
             frequency_penalty: overlay.frequency_penalty.or(self.frequency_penalty),
+            logit_bias: if overlay.logit_bias.is_empty() {
+                self.logit_bias.clone()
+            } else {
+                let mut logit_bias = self.logit_bias.clone();
+                logit_bias.extend(overlay.logit_bias.clone());
+                logit_bias
+            },
             thinking: overlay.thinking.clone().or_else(|| self.thinking.clone()),
             service_tier: overlay
                 .service_tier
@@ -118,6 +131,16 @@ pub enum ToolChoice {
     None,
     /// Require any tool call.
     Required,
+    /// Restrict the model to one or more named function tools.
+    Tools {
+        /// Function tool names.
+        names: Vec<String>,
+    },
+    /// Restrict function tools while keeping structured output, text, and image output available.
+    ToolOrOutput {
+        /// Function tool names.
+        function_tools: Vec<String>,
+    },
     /// Force a named tool.
     Tool {
         /// Tool name.
@@ -148,8 +171,10 @@ pub struct ThinkingSettings {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceTier {
-    /// Default provider tier.
+    /// Let the provider decide, when it has an explicit auto tier.
     Auto,
+    /// Explicit standard/default provider tier.
+    Default,
     /// Low-latency tier.
     Flex,
     /// Priority tier.

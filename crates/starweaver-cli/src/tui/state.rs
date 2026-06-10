@@ -1,13 +1,13 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env,
+    fmt::Write as _,
     path::Path,
     process::Command,
     time::Instant,
 };
 
-use serde::{Deserialize, Serialize};
-
+use serde_json::Value;
 use starweaver_core::Usage;
 use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
@@ -15,30 +15,18 @@ use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStrea
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
 const MAX_STEERING_ITEMS: usize = 5;
 const SHELL_OUTPUT_MAX_LINES: usize = 200;
+const TOOL_PREVIEW_MAX_CHARS: usize = 240;
+
+use crate::{
+    prompt_input::{format_size_bytes, PromptAttachment, PromptInput},
+    slash_commands::{expand_slash_command, SlashCommandDefinition},
+};
 
 use super::{
     markdown::ASSISTANT_CONTENT_PREFIX,
-    render::{snapshot_interactive_lines, value_preview},
+    render::{snapshot_interactive_lines, truncate_line_center, value_preview},
     snapshot::TuiSnapshot,
 };
-
-/// Config-defined slash command prompt.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct SlashCommandDefinition {
-    /// Canonical command name without a leading slash.
-    pub name: String,
-    /// Prompt submitted when the command is invoked.
-    pub prompt: String,
-    /// Optional mode hint such as `act` or `plan`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
-    /// Human-readable description.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Additional aliases without a leading slash.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub aliases: Vec<String>,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum RunMode {
@@ -65,6 +53,12 @@ impl FooterMode {
     pub(super) const fn is_help() -> bool {
         false
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum PendingSessionCommand {
+    Current,
+    Select(String),
 }
 
 #[allow(dead_code)]
@@ -120,10 +114,51 @@ impl ModelChoice {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SessionChoice {
+    /// Durable session id.
+    pub session_id: String,
+    /// Optional user-facing title.
+    pub title: Option<String>,
+    /// Profile recorded on the session.
+    pub profile: Option<String>,
+    /// Session status.
+    pub status: String,
+    /// Number of runs in the session.
+    pub run_count: usize,
+    /// Last output preview, when available.
+    pub last_output_preview: Option<String>,
+    /// Last update time as persisted by the local store.
+    pub updated_at: String,
+}
+
+impl SessionChoice {
+    pub(super) fn display_title(&self) -> &str {
+        self.title.as_deref().unwrap_or("untitled")
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct StreamingToolCallState {
     name: Option<String>,
     arguments: String,
     line_index: Option<usize>,
+    linked_call_key: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct HitlPanelState {
+    pub(super) tool_call_id: String,
+    pub(super) tool_name: String,
+    pub(super) command: Option<String>,
+    pub(super) risk_level: Option<String>,
+    pub(super) reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct TaskPanelItem {
+    pub(super) id: String,
+    pub(super) subject: String,
+    pub(super) status: String,
 }
 
 /// Interactive terminal UI state.
@@ -155,8 +190,8 @@ pub struct InteractiveTuiState {
     pub scroll_offset: usize,
     /// Short-lived composer status for paste, media attach, and steering actions.
     pub(super) input_status: Option<String>,
-    /// Image paths pasted into the fixed composer.
-    pub(super) pasted_images: Vec<String>,
+    /// Image attachments queued into the fixed composer.
+    pub(super) pending_attachments: Vec<PromptAttachment>,
     pub(super) run_mode: RunMode,
     pub(super) history: Vec<String>,
     pub(super) history_index: Option<usize>,
@@ -164,11 +199,24 @@ pub struct InteractiveTuiState {
     streaming_parts: HashMap<usize, StreamingPartKind>,
     streaming_text_seen: bool,
     streaming_reasoning_seen: bool,
+    visible_text_seen: bool,
     streaming_tool_calls: HashMap<usize, StreamingToolCallState>,
     visible_tool_calls: HashSet<String>,
+    tool_call_arguments: HashMap<String, Value>,
+    pending_hitl: Option<HitlPanelState>,
+    task_panel_items: Vec<TaskPanelItem>,
+    pending_clear_context: bool,
+    selection_mode: bool,
+    selection_index: Option<usize>,
+    pending_submission_display_prompt: Option<String>,
+    custom_commands: BTreeMap<String, SlashCommandDefinition>,
     model_choices: Vec<ModelChoice>,
     model_picker_open: bool,
     model_picker_index: usize,
+    session_choices: Vec<SessionChoice>,
+    session_picker_open: bool,
+    session_picker_index: usize,
+    pending_session_command: Option<String>,
     pub(super) last_ctrl_c: Option<Instant>,
     pub(super) cancel_requested: bool,
     pub(super) footer_mode: FooterMode,
@@ -200,7 +248,7 @@ impl InteractiveTuiState {
             running: false,
             scroll_offset: usize::MAX,
             input_status: None,
-            pasted_images: Vec::new(),
+            pending_attachments: Vec::new(),
             run_mode: RunMode::Act,
             history: Vec::new(),
             history_index: None,
@@ -208,11 +256,24 @@ impl InteractiveTuiState {
             streaming_parts: HashMap::new(),
             streaming_text_seen: false,
             streaming_reasoning_seen: false,
+            visible_text_seen: false,
             streaming_tool_calls: HashMap::new(),
             visible_tool_calls: HashSet::new(),
+            tool_call_arguments: HashMap::new(),
+            pending_hitl: None,
+            task_panel_items: Vec::new(),
+            pending_clear_context: false,
+            selection_mode: false,
+            selection_index: None,
+            pending_submission_display_prompt: None,
+            custom_commands: BTreeMap::new(),
             model_choices: Vec::new(),
             model_picker_open: false,
             model_picker_index: 0,
+            session_choices: Vec::new(),
+            session_picker_open: false,
+            session_picker_index: 0,
+            pending_session_command: None,
             last_ctrl_c: None,
             cancel_requested: false,
             footer_mode: FooterMode::Context,
@@ -249,6 +310,108 @@ impl InteractiveTuiState {
         &self.model_choices
     }
 
+    /// Set session choices shown by `/session`.
+    pub fn set_session_choices(&mut self, choices: Vec<SessionChoice>) {
+        self.session_choices = choices;
+        self.sync_session_picker_index_to_current();
+    }
+
+    /// Return recent session choices.
+    pub fn session_choices(&self) -> &[SessionChoice] {
+        &self.session_choices
+    }
+
+    pub(super) const fn session_picker_visible(&self) -> bool {
+        self.session_picker_open
+    }
+
+    pub(super) const fn session_picker_index(&self) -> usize {
+        self.session_picker_index
+    }
+
+    pub(crate) fn open_session_picker(&mut self) {
+        if self.running {
+            self.body.push(
+                "[SYS] Session selection is available after the current run finishes.".to_string(),
+            );
+            self.input_status = Some("session blocked".to_string());
+            return;
+        }
+        self.input.clear();
+        self.pending_attachments.clear();
+        self.footer_mode = FooterMode::Context;
+        if self.session_choices.is_empty() {
+            self.session_picker_open = false;
+            self.body.push("[SYS] No sessions found.".to_string());
+            self.input_status = Some("no sessions".to_string());
+            return;
+        }
+        self.model_picker_open = false;
+        self.session_picker_open = true;
+        self.sync_session_picker_index_to_current();
+        self.input_status = Some("session picker".to_string());
+    }
+
+    pub(super) fn close_session_picker(&mut self) {
+        self.session_picker_open = false;
+        self.input_status = Some("session picker closed".to_string());
+    }
+
+    pub(super) fn move_session_picker_selection(&mut self, delta: isize) {
+        let len = self.session_choices.len();
+        if len == 0 {
+            self.session_picker_index = 0;
+            return;
+        }
+        let current = self.session_picker_index.min(len.saturating_sub(1));
+        let steps = delta.unsigned_abs() % len;
+        self.session_picker_index = if delta.is_negative() {
+            (current + len - steps) % len
+        } else {
+            (current + steps) % len
+        };
+        self.input_status = Some("session picker".to_string());
+    }
+
+    pub(super) fn select_session_picker_choice(&mut self) {
+        let Some(session_id) = self.selected_session_picker_id() else {
+            self.close_session_picker();
+            return;
+        };
+        self.pending_session_command = Some(session_id);
+        self.session_picker_open = false;
+        self.input_status = Some("session selected".to_string());
+    }
+
+    fn selected_session_picker_id(&self) -> Option<String> {
+        self.session_choices
+            .get(self.session_picker_index)
+            .map(|choice| choice.session_id.clone())
+    }
+
+    fn sync_session_picker_index_to_current(&mut self) {
+        self.session_picker_index = self
+            .session_id
+            .as_deref()
+            .and_then(|session_id| {
+                self.session_choices
+                    .iter()
+                    .position(|choice| choice.session_id == session_id)
+            })
+            .unwrap_or(0)
+            .min(self.session_choices.len().saturating_sub(1));
+    }
+
+    pub(super) fn take_pending_session_command(&mut self) -> Option<PendingSessionCommand> {
+        self.pending_session_command.take().map(|requested| {
+            if requested.is_empty() {
+                PendingSessionCommand::Current
+            } else {
+                PendingSessionCommand::Select(requested)
+            }
+        })
+    }
+
     pub(super) const fn model_picker_visible(&self) -> bool {
         self.model_picker_open
     }
@@ -266,8 +429,9 @@ impl InteractiveTuiState {
             return;
         }
         self.input.clear();
-        self.pasted_images.clear();
+        self.pending_attachments.clear();
         self.footer_mode = FooterMode::Context;
+        self.session_picker_open = false;
         self.model_picker_open = true;
         self.sync_model_picker_index_to_current();
         self.input_status = Some("model picker".to_string());
@@ -319,13 +483,18 @@ impl InteractiveTuiState {
         self.body = snapshot_interactive_lines(snapshot);
         self.footer_mode = FooterMode::Context;
         self.input_status = None;
-        self.pasted_images.clear();
+        self.pending_attachments.clear();
         self.status = snapshot
             .terminal_status
             .clone()
             .unwrap_or_else(|| "IDLE".to_string())
             .to_ascii_uppercase();
         self.model_picker_open = false;
+        self.session_picker_open = false;
+        self.selection_mode = false;
+        self.selection_index = None;
+        self.pending_submission_display_prompt = None;
+        self.sync_session_picker_index_to_current();
         self.phase = "replay".to_string();
     }
 
@@ -338,15 +507,23 @@ impl InteractiveTuiState {
         self.streaming_parts.clear();
         self.streaming_text_seen = false;
         self.streaming_reasoning_seen = false;
+        self.visible_text_seen = false;
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_call_arguments.clear();
+        self.pending_hitl = None;
+        self.task_panel_items.clear();
+        self.selection_mode = false;
+        self.selection_index = None;
+        self.pending_submission_display_prompt = None;
         self.footer_mode = FooterMode::Context;
         self.model_picker_open = false;
+        self.session_picker_open = false;
         self.input_status = None;
-        self.pasted_images.clear();
+        self.pending_attachments.clear();
         self.scroll_to_bottom();
         self.body.push(String::new());
-        self.body.push(format!("User: {prompt}"));
+        push_user_prompt_lines(&mut self.body, prompt);
         self.body.push(String::new());
         self.body.push("Assistant:".to_string());
         self.body.push(assistant_content_line(""));
@@ -364,7 +541,11 @@ impl InteractiveTuiState {
         self.streaming_parts.clear();
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_call_arguments.clear();
+        self.pending_hitl = None;
+        self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
+        self.session_picker_open = false;
     }
 
     /// Mark a run failed.
@@ -376,7 +557,11 @@ impl InteractiveTuiState {
         self.streaming_parts.clear();
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_call_arguments.clear();
+        self.pending_hitl = None;
+        self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
+        self.session_picker_open = false;
         self.body.push(format!("Error: {error}"));
     }
 
@@ -389,13 +574,17 @@ impl InteractiveTuiState {
         self.streaming_parts.clear();
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_call_arguments.clear();
+        self.pending_hitl = None;
+        self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
+        self.session_picker_open = false;
         self.body.push(format!("Run cancelled: {reason}"));
     }
 
     /// Apply a live runtime stream event to the view state.
     pub fn apply_stream_record(&mut self, record: &AgentStreamRecord) {
-        let was_at_bottom = self.is_at_bottom();
+        let should_auto_scroll = !self.selection_mode;
         match &record.event {
             AgentStreamEvent::RunStart { .. } => {
                 self.status = "RUNNING".to_string();
@@ -406,11 +595,16 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::ModelRequest { .. } => {
                 self.phase = "thinking".to_string();
+                self.streaming_parts.clear();
+                self.streaming_tool_calls.clear();
+                self.tool_call_arguments.clear();
+                self.streaming_text_seen = false;
+                self.streaming_reasoning_seen = false;
             }
             AgentStreamEvent::ModelStream { event, .. } => self.apply_model_stream_event(event),
             AgentStreamEvent::ModelResponse { response, .. } => {
                 self.phase = "response".to_string();
-                self.add_context_usage(&response.usage);
+                self.update_context_usage(&response.usage);
                 self.apply_model_response_parts(&response.parts);
             }
             AgentStreamEvent::ToolCall { call, .. } => {
@@ -418,16 +612,11 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::ToolReturn { tool_return, .. } => {
                 self.phase = "tools".to_string();
-                let prefix = if tool_return.is_error {
-                    "Tool error"
-                } else {
-                    "Tool result"
-                };
-                self.body.push(format!(
-                    "{prefix}: {} {}",
-                    tool_return.name,
-                    value_preview(&tool_return.content)
-                ));
+                let arguments = self.tool_call_arguments.remove(&tool_return.tool_call_id);
+                self.update_hitl_panel(tool_return);
+                self.update_task_panel(tool_return);
+                self.body
+                    .extend(format_tool_return_lines(tool_return, arguments.as_ref()));
             }
             AgentStreamEvent::OutputRetry { retries, .. } => {
                 self.phase = "retry".to_string();
@@ -448,7 +637,12 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::Custom { event } => {
                 self.phase.clone_from(&event.kind);
-                if event.kind == "steering_received" {
+                if let Some(lines) = format_custom_context_event_lines(&event.kind, &event.payload)
+                {
+                    self.body.extend(lines);
+                } else if event.kind == "task_panel" {
+                    self.apply_task_panel_payload(&event.payload);
+                } else if event.kind == "steering_received" {
                     let steering_id = event
                         .payload
                         .get("id")
@@ -463,14 +657,19 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::RunComplete { output, .. } => {
                 self.phase = "completed".to_string();
-                if !self.streaming_text_seen && !output.trim().is_empty() {
+                if !self.visible_text_seen && !output.trim().is_empty() {
                     self.push_text_lines(output);
-                    self.streaming_text_seen = true;
+                    self.visible_text_seen = true;
                 }
+            }
+            AgentStreamEvent::RunFailed { message, .. } => {
+                self.status = "FAILED".to_string();
+                self.phase = "failed".to_string();
+                self.body.push(format!("Run failed: {message}"));
             }
             AgentStreamEvent::NodeComplete { .. } => {}
         }
-        if was_at_bottom {
+        if should_auto_scroll {
             self.scroll_to_bottom();
         }
     }
@@ -487,7 +686,7 @@ impl InteractiveTuiState {
                     }
                     StreamingPartKind::Thinking => "thinking".to_string(),
                     StreamingPartKind::ToolCall => {
-                        self.ensure_streaming_tool_call_line(part.index);
+                        self.begin_streaming_tool_call_line(part.index);
                         "tools".to_string()
                     }
                     StreamingPartKind::Other => format!("streaming:{}", part.part_kind),
@@ -499,6 +698,7 @@ impl InteractiveTuiState {
                         self.phase = "streaming".to_string();
                         self.append_stream_delta(&delta.as_text());
                         self.streaming_text_seen = true;
+                        self.visible_text_seen = true;
                     }
                     StreamingPartKind::Thinking => {
                         self.phase = "thinking".to_string();
@@ -524,6 +724,7 @@ impl InteractiveTuiState {
                     if !text.trim().is_empty() {
                         self.push_text_lines(&text);
                         self.streaming_text_seen = true;
+                        self.visible_text_seen = true;
                     }
                 }
                 self.apply_model_response_parts(&response.parts);
@@ -606,6 +807,7 @@ impl InteractiveTuiState {
                 starweaver_model::ModelResponsePart::Text { text } if !self.streaming_text_seen => {
                     self.push_text_lines(text);
                     self.streaming_text_seen = true;
+                    self.visible_text_seen = true;
                 }
                 starweaver_model::ModelResponsePart::Thinking { text, .. }
                     if !self.streaming_reasoning_seen =>
@@ -634,6 +836,27 @@ impl InteractiveTuiState {
             _ => {}
         }
         self.update_streaming_tool_call_line(delta.index);
+    }
+
+    fn begin_streaming_tool_call_line(&mut self, index: usize) {
+        if self
+            .streaming_tool_calls
+            .get(&index)
+            .is_some_and(|state| state.line_index.is_some() && state.linked_call_key.is_none())
+        {
+            return;
+        }
+        let line_index = self.body.len();
+        self.streaming_tool_calls.insert(
+            index,
+            StreamingToolCallState {
+                line_index: Some(line_index),
+                ..StreamingToolCallState::default()
+            },
+        );
+        self.body.push(format_streaming_tool_call_line(
+            self.streaming_tool_calls.get(&index),
+        ));
     }
 
     fn ensure_streaming_tool_call_line(&mut self, index: usize) {
@@ -672,11 +895,15 @@ impl InteractiveTuiState {
     fn push_tool_call(&mut self, call: &starweaver_model::ToolCallPart) {
         self.phase = "tools".to_string();
         let key = tool_call_visibility_key(call);
-        if !self.visible_tool_calls.insert(key) {
+        if !call.id.is_empty() {
+            self.tool_call_arguments
+                .insert(call.id.clone(), call.arguments.replay_value());
+        }
+        if !self.visible_tool_calls.insert(key.clone()) {
             return;
         }
         let line = format_tool_call_line(call);
-        if let Some(line_index) = self.matching_streamed_tool_line(call) {
+        if let Some(line_index) = self.matching_streamed_tool_line(call, &key) {
             if let Some(existing) = self.body.get_mut(line_index) {
                 *existing = line;
                 return;
@@ -685,72 +912,227 @@ impl InteractiveTuiState {
         self.body.push(line);
     }
 
-    fn matching_streamed_tool_line(&self, call: &starweaver_model::ToolCallPart) -> Option<usize> {
-        self.streaming_tool_calls
-            .values()
-            .find(|state| state.name.as_deref() == Some(call.name.as_str()))
-            .and_then(|state| state.line_index)
+    fn matching_streamed_tool_line(
+        &mut self,
+        call: &starweaver_model::ToolCallPart,
+        key: &str,
+    ) -> Option<usize> {
+        let linked_index = self
+            .streaming_tool_calls
+            .iter()
+            .filter(|(_, state)| state.linked_call_key.as_deref() == Some(key))
+            .map(|(index, _)| *index)
+            .min();
+        let matching_arguments_index = linked_index.or_else(|| {
+            self.streaming_tool_calls
+                .iter()
+                .filter(|(_, state)| streaming_tool_state_is_available(state, key))
+                .filter(|(_, state)| state.name.as_deref() == Some(call.name.as_str()))
+                .filter(|(_, state)| streaming_tool_arguments_match(state.arguments.trim(), call))
+                .map(|(index, _)| *index)
+                .min()
+        });
+        let fallback_index = matching_arguments_index.or_else(|| {
+            self.streaming_tool_calls
+                .iter()
+                .filter(|(_, state)| streaming_tool_state_is_available(state, key))
+                .filter(|(_, state)| state.name.as_deref() == Some(call.name.as_str()))
+                .map(|(index, _)| *index)
+                .min()
+        })?;
+        let state = self.streaming_tool_calls.get_mut(&fallback_index)?;
+        state.linked_call_key = Some(key.to_string());
+        state.line_index
+    }
+
+    fn update_hitl_panel(&mut self, tool_return: &starweaver_model::ToolReturnPart) {
+        if tool_return
+            .metadata
+            .get("control_flow")
+            .and_then(Value::as_str)
+            != Some("approval_required")
+        {
+            return;
+        }
+        let approval = tool_return.metadata.get("approval");
+        self.status = "WAITING".to_string();
+        self.phase = "hitl approval".to_string();
+        self.pending_hitl = Some(HitlPanelState {
+            tool_call_id: tool_return.tool_call_id.clone(),
+            tool_name: tool_return.name.clone(),
+            command: approval
+                .and_then(|value| value.get("command"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            risk_level: approval
+                .and_then(|value| value.get("risk_level"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            reason: approval
+                .and_then(|value| value.get("reason"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        });
+    }
+
+    fn update_task_panel(&mut self, tool_return: &starweaver_model::ToolReturnPart) {
+        if !matches!(
+            tool_return.name.as_str(),
+            "task_create" | "task_get" | "task_update" | "task_list"
+        ) {
+            return;
+        }
+        let display_value = tool_return
+            .user_content
+            .as_ref()
+            .unwrap_or(&tool_return.content);
+        if tool_return.name == "task_list" {
+            self.task_panel_items = value_text(display_value)
+                .lines()
+                .filter_map(parse_task_panel_line)
+                .collect();
+        } else if let Some(item) =
+            task_panel_item_from_tool_return(&tool_return.name, &tool_return.content, display_value)
+        {
+            upsert_task_panel_item(&mut self.task_panel_items, item);
+        }
+    }
+
+    fn apply_task_panel_payload(&mut self, payload: &Value) {
+        if let Some(items) = payload.get("tasks").and_then(Value::as_array) {
+            self.task_panel_items = items
+                .iter()
+                .filter_map(task_panel_item_from_value)
+                .collect();
+        }
     }
 
     pub(super) fn apply_paste(&mut self, text: &str) {
         self.footer_mode = FooterMode::Context;
-        let images = pasted_image_paths(text);
-        if images.is_empty() {
+        let image_paths = pasted_image_paths(text);
+        if image_paths.is_empty() {
             self.input.push_str(text);
             self.input_status = Some(format!("pasted {} chars", text.chars().count()));
             return;
         }
 
-        self.pasted_images.extend(images);
-        let count = self.pasted_images.len();
+        if !self.input.is_empty() && !self.input.ends_with([' ', '\n']) {
+            self.input.push(' ');
+        }
+        for path in image_paths {
+            if !self.input.is_empty() && !self.input.ends_with([' ', '\n']) {
+                self.input.push(' ');
+            }
+            self.input.push_str(&path);
+        }
+        self.input_status = Some("image path pasted".to_string());
+    }
+
+    pub(crate) fn attach_image(&mut self, attachment: PromptAttachment) {
+        let placeholder = attachment.placeholder.clone();
+        if !self.input.is_empty() && !self.input.ends_with([' ', '\n']) {
+            self.input.push(' ');
+        }
+        self.input.push_str(&placeholder);
+        self.input.push(' ');
+        self.pending_attachments.push(attachment);
+        let count = self.pending_attachments.len();
         self.input_status = Some(if count == 1 {
             format!(
                 "image attached: {}",
-                compact_path(&self.pasted_images[0], 42)
+                self.pending_attachments[0].description()
             )
         } else {
-            format!("images attached: {count}")
+            let total_size = self
+                .pending_attachments
+                .iter()
+                .map(|attachment| attachment.size_bytes)
+                .sum::<usize>();
+            format!(
+                "images attached: {count} ({})",
+                format_size_bytes(total_size)
+            )
         });
     }
 
-    pub(super) fn take_submission_prompt(&mut self) -> Option<String> {
+    pub(super) fn take_submission_prompt(&mut self) -> Option<PromptInput> {
         self.take_prompt(SubmissionKind::Message)
     }
 
-    pub(super) fn take_queued_prompt(&mut self) -> Option<String> {
+    pub(super) fn take_queued_prompt(&mut self) -> Option<PromptInput> {
         self.take_prompt(SubmissionKind::Queued)
     }
 
     pub(super) fn take_steering_prompt(&mut self) -> Option<SteeringSubmission> {
+        self.retain_visible_attachments();
+        if !self.pending_attachments.is_empty() {
+            self.input_status = Some("image steering unsupported; press Tab to queue".to_string());
+            return None;
+        }
         self.take_prompt(SubmissionKind::Steering)
-            .map(|text| self.record_steering_message(text))
+            .map(|input| self.record_steering_message(input.display_text()))
     }
 
-    fn take_prompt(&mut self, kind: SubmissionKind) -> Option<String> {
+    pub(crate) fn take_pending_submission_display_prompt(&mut self) -> Option<String> {
+        self.pending_submission_display_prompt.take()
+    }
+
+    pub(super) fn take_pending_clear_context(&mut self) -> bool {
+        std::mem::take(&mut self.pending_clear_context)
+    }
+
+    pub(crate) fn clear_context_view(&mut self) {
+        self.session_id = None;
+        self.body.clear();
+        self.context_tokens = None;
+        self.streaming_parts.clear();
+        self.streaming_text_seen = false;
+        self.streaming_reasoning_seen = false;
+        self.visible_text_seen = false;
+        self.streaming_tool_calls.clear();
+        self.visible_tool_calls.clear();
+        self.tool_call_arguments.clear();
+        self.pending_hitl = None;
+        self.task_panel_items.clear();
+        self.steering_items.clear();
+        self.goal_task = None;
+        self.goal_active = false;
+        self.phase = "cleared".to_string();
+        self.status = "IDLE".to_string();
+        self.scroll_to_bottom();
+    }
+
+    pub(super) fn take_paste_image_command(&mut self) -> bool {
+        if self.input.trim() != "/paste-image" {
+            return false;
+        }
+        self.input.clear();
+        self.footer_mode = FooterMode::Context;
+        true
+    }
+
+    fn take_prompt(&mut self, kind: SubmissionKind) -> Option<PromptInput> {
+        self.retain_visible_attachments();
         let command = self.take_local_command();
-        if matches!(command, LocalCommandOutcome::Consumed) {
+        if matches!(
+            command,
+            LocalCommandOutcome::Consumed | LocalCommandOutcome::PasteImage
+        ) {
             return None;
         }
         let prompt = match command {
             LocalCommandOutcome::Submit(prompt) => prompt,
-            LocalCommandOutcome::Consumed => unreachable!("handled above"),
+            LocalCommandOutcome::Consumed | LocalCommandOutcome::PasteImage => {
+                unreachable!("handled above")
+            }
             LocalCommandOutcome::None => self.input.trim().to_string(),
         };
-        if prompt.is_empty() && self.pasted_images.is_empty() {
+        if prompt.is_empty() && self.pending_attachments.is_empty() {
             self.input.clear();
             return None;
         }
-        let mut output = prompt;
-        for image in &self.pasted_images {
-            if !output.is_empty() {
-                output.push('\n');
-            }
-            output.push_str("[image: ");
-            output.push_str(image);
-            output.push(']');
-        }
+        let attachments = std::mem::take(&mut self.pending_attachments);
         self.input.clear();
-        self.pasted_images.clear();
         match kind {
             SubmissionKind::Message => self.input_status = Some("message sent".to_string()),
             SubmissionKind::Queued => self.input_status = Some("queued".to_string()),
@@ -758,43 +1140,71 @@ impl InteractiveTuiState {
                 self.input_status = Some("steer sent".to_string());
             }
         }
-        Some(output)
+        Some(PromptInput {
+            text: prompt,
+            attachments,
+        })
     }
 
     pub(super) fn clear_composer(&mut self) {
         self.input.clear();
-        self.pasted_images.clear();
+        self.pending_attachments.clear();
         self.input_status = None;
         self.history_index = None;
         self.footer_mode = FooterMode::Context;
     }
 
     pub(super) fn backspace_composer(&mut self) {
+        if self.remove_trailing_attachment_placeholder() {
+            return;
+        }
         if self.input.pop().is_none() {
             self.remove_last_pasted_image();
         }
     }
 
+    fn retain_visible_attachments(&mut self) {
+        self.pending_attachments
+            .retain(|attachment| self.input.contains(&attachment.placeholder));
+    }
+
+    fn remove_trailing_attachment_placeholder(&mut self) -> bool {
+        let Some(attachment) = self.pending_attachments.last() else {
+            return false;
+        };
+        let trimmed_input = self.input.trim_end_matches([' ', '\n']);
+        let Some(prefix) = trimmed_input.strip_suffix(&attachment.placeholder) else {
+            return false;
+        };
+        self.input.truncate(prefix.len());
+        self.remove_last_pasted_image();
+        true
+    }
+
     fn remove_last_pasted_image(&mut self) {
-        if self.pasted_images.pop().is_some() {
-            self.input_status = Some(if self.pasted_images.is_empty() {
+        if self.pending_attachments.pop().is_some() {
+            self.input_status = Some(if self.pending_attachments.is_empty() {
                 "image detached".to_string()
             } else {
-                format!("images attached: {}", self.pasted_images.len())
+                format!("images attached: {}", self.pending_attachments.len())
             });
         }
     }
 
     pub(super) fn composer_is_empty(&self) -> bool {
-        self.input.is_empty() && self.pasted_images.is_empty()
+        self.input.is_empty() && self.pending_attachments.is_empty()
     }
 
     pub(super) fn composer_has_draft(&self) -> bool {
-        !self.input.trim().is_empty() || !self.pasted_images.is_empty()
+        !self.input.trim().is_empty() || !self.pending_attachments.is_empty()
     }
 
     pub(super) fn input_mode_label(&self) -> &'static str {
-        if self.model_picker_open {
+        if self.selection_mode {
+            "SELECT"
+        } else if self.session_picker_open {
+            "SESSION"
+        } else if self.model_picker_open {
             "MODEL"
         } else if self.running && self.composer_has_draft() {
             "STEER"
@@ -803,6 +1213,79 @@ impl InteractiveTuiState {
         } else {
             self.run_mode.label()
         }
+    }
+
+    pub(super) const fn selection_mode_visible(&self) -> bool {
+        self.selection_mode
+    }
+
+    pub(super) fn open_selection_mode(&mut self) {
+        self.model_picker_open = false;
+        self.session_picker_open = false;
+        self.footer_mode = FooterMode::Context;
+        self.selection_mode = true;
+        if self
+            .selection_index
+            .map_or(true, |index| index >= self.body.len())
+        {
+            self.selection_index = self.last_selectable_body_index();
+        }
+        self.input_status = Some("selection mode".to_string());
+    }
+
+    pub(super) fn close_selection_mode(&mut self) {
+        self.selection_mode = false;
+        self.input_status = Some("selection closed".to_string());
+    }
+
+    pub(super) fn move_selection(&mut self, delta: isize) {
+        let selectable = self.selectable_body_indices();
+        if selectable.is_empty() {
+            self.selection_index = None;
+            self.input_status = Some("selection empty".to_string());
+            return;
+        }
+        let current_index = self
+            .selection_index
+            .and_then(|index| selectable.iter().position(|candidate| *candidate == index))
+            .unwrap_or_else(|| selectable.len().saturating_sub(1));
+        let len = selectable.len();
+        let steps = delta.unsigned_abs() % len;
+        let next_index = if delta.is_negative() {
+            (current_index + len - steps) % len
+        } else {
+            (current_index + steps) % len
+        };
+        self.selection_index = selectable.get(next_index).copied();
+        self.input_status = Some("selection mode".to_string());
+    }
+
+    pub(super) fn selected_line_preview(&self) -> Option<String> {
+        self.selection_index
+            .and_then(|index| self.body.get(index))
+            .map(|line| compact_status_text(body_line_display_text(line), 96))
+    }
+
+    pub(super) fn selection_position_label(&self) -> Option<String> {
+        let selectable = self.selectable_body_indices();
+        let selected = self.selection_index?;
+        let position = selectable
+            .iter()
+            .position(|candidate| *candidate == selected)?
+            .saturating_add(1);
+        Some(format!("{position}/{}", selectable.len()))
+    }
+
+    fn selectable_body_indices(&self) -> Vec<usize> {
+        self.body
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| (!line.trim().is_empty()).then_some(index))
+            .collect()
+    }
+
+    fn last_selectable_body_index(&self) -> Option<usize> {
+        self.body.iter().rposition(|line| !line.trim().is_empty())
     }
 
     #[cfg(test)]
@@ -814,16 +1297,18 @@ impl InteractiveTuiState {
         false
     }
 
-    /// Config-defined slash commands are ignored by the simplified TUI command surface.
-    pub fn set_custom_commands(&mut self, _commands: BTreeMap<String, SlashCommandDefinition>) {
+    /// Set config-defined slash commands shown by `/help` and expanded before submit.
+    pub fn set_custom_commands(&mut self, commands: BTreeMap<String, SlashCommandDefinition>) {
+        self.custom_commands = commands;
         self.footer_mode = FooterMode::Context;
     }
 
+    #[allow(clippy::too_many_lines)]
     fn take_local_command(&mut self) -> LocalCommandOutcome {
         let input = self.input.trim().to_string();
         if input == "/help" {
             self.input.clear();
-            self.pasted_images.clear();
+            self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.append_help_to_body();
             self.input_status = Some("help".to_string());
@@ -831,14 +1316,15 @@ impl InteractiveTuiState {
         }
         if input == "/clear" {
             self.input.clear();
-            self.body.clear();
+            self.clear_context_view();
+            self.pending_clear_context = true;
             self.footer_mode = FooterMode::Context;
-            self.input_status = Some("cleared".to_string());
+            self.input_status = Some("context cleared".to_string());
             return LocalCommandOutcome::Consumed;
         }
         if input == "/cost" {
             self.input.clear();
-            self.pasted_images.clear();
+            self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.append_cost_summary();
             self.input_status = Some("cost".to_string());
@@ -846,7 +1332,7 @@ impl InteractiveTuiState {
         }
         if input == "/model" || input.starts_with("/model ") {
             self.input.clear();
-            self.pasted_images.clear();
+            self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.handle_model_command(input.strip_prefix("/model").unwrap_or_default().trim());
             if !self.model_picker_open {
@@ -854,17 +1340,29 @@ impl InteractiveTuiState {
             }
             return LocalCommandOutcome::Consumed;
         }
+        if input == "/session" || input.starts_with("/session ") {
+            self.input.clear();
+            self.pending_attachments.clear();
+            self.footer_mode = FooterMode::Context;
+            self.handle_session_command(input.strip_prefix("/session").unwrap_or_default().trim());
+            return LocalCommandOutcome::Consumed;
+        }
+        if input == "/paste-image" {
+            self.input.clear();
+            self.footer_mode = FooterMode::Context;
+            return LocalCommandOutcome::PasteImage;
+        }
         if let Some(command) = input.strip_prefix('!') {
             self.input.clear();
-            self.pasted_images.clear();
+            self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.run_shell_command(command.trim());
             self.input_status = Some("shell".to_string());
             return LocalCommandOutcome::Consumed;
         }
-        if let Some(task) = input.strip_prefix("/goal") {
+        if input == "/goal" || input.starts_with("/goal ") {
             self.input.clear();
-            let task = task.trim();
+            let task = input.strip_prefix("/goal").unwrap_or_default().trim();
             if task.is_empty() {
                 self.body
                     .push("[SYS] Usage: /goal <task description>".to_string());
@@ -882,12 +1380,33 @@ impl InteractiveTuiState {
             self.input_status = Some("goal".to_string());
             return LocalCommandOutcome::Submit(task.to_string());
         }
+        if let Some(expanded) = expand_slash_command(&self.custom_commands, &input) {
+            self.input.clear();
+            self.footer_mode = FooterMode::Context;
+            let mut message = format!("[SYS] Expanded /{} custom command", expanded.command_name);
+            if expanded.invoked_name != expanded.command_name {
+                let _ = write!(message, " (alias /{})", expanded.invoked_name);
+            }
+            if let Some(description) = expanded
+                .description
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                message.push_str(": ");
+                message.push_str(description.trim());
+            }
+            self.body.push(message);
+            self.input_status = Some(format!("command /{}", expanded.command_name));
+            self.pending_submission_display_prompt = Some(expanded.prompt);
+            return LocalCommandOutcome::Submit(input);
+        }
         if input.starts_with('/') {
             self.input.clear();
-            self.pasted_images.clear();
+            self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.body.push(format!(
-                "[SYS] Unknown command: {input}. Available commands: /help, /clear, /cost, /model, /goal, !<command>"
+                "[SYS] Unknown command: {input}. Available commands: {}",
+                self.available_command_summary()
             ));
             self.input_status = Some("unknown command".to_string());
             return LocalCommandOutcome::Consumed;
@@ -901,20 +1420,85 @@ impl InteractiveTuiState {
             String::new(),
             "Commands".to_string(),
             "  /help             Show this help".to_string(),
-            "  /clear            Clear the transcript".to_string(),
+            "  /clear            Clear transcript and start a fresh context".to_string(),
             "  /cost             Show usage and context".to_string(),
             "  /model [profile]  Open or select a model profile".to_string(),
+            "  /session [id]     Open session selector or reload a session".to_string(),
             "  /goal <task>      Run toward a verified goal".to_string(),
+            "  /paste-image      Attach image from system clipboard".to_string(),
             "  !<command>        Run a shell command inline".to_string(),
+        ]);
+        let custom_commands = self.custom_command_definitions();
+        if !custom_commands.is_empty() {
+            self.body.push(String::new());
+            self.body.push("Custom commands".to_string());
+            for command in custom_commands {
+                let description = command
+                    .description
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("Run configured prompt");
+                let aliases = if command.aliases.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " (aliases: {})",
+                        command
+                            .aliases
+                            .iter()
+                            .map(|alias| format!("/{alias}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                self.body.push(format!(
+                    "  /{:<16} {}{}",
+                    format!("{} [instruction]", command.name),
+                    description,
+                    aliases
+                ));
+            }
+        }
+        self.body.extend([
             String::new(),
             "Shortcuts".to_string(),
             "  Up/Down           Browse prompt history".to_string(),
             "  PageUp/PageDown   Scroll transcript".to_string(),
             "  Mouse wheel       Scroll transcript".to_string(),
-            "  Enter             Send message or select model".to_string(),
+            "  Enter             Send message or select model/session".to_string(),
             "  Tab               Queue a draft while running".to_string(),
             "  Ctrl+C            Interrupt or exit".to_string(),
         ]);
+    }
+
+    fn available_command_summary(&self) -> String {
+        let mut commands = vec![
+            "/help".to_string(),
+            "/clear".to_string(),
+            "/cost".to_string(),
+            "/model".to_string(),
+            "/session".to_string(),
+            "/goal".to_string(),
+            "/paste-image".to_string(),
+            "!<command>".to_string(),
+        ];
+        commands.extend(
+            self.custom_command_definitions()
+                .into_iter()
+                .map(|command| format!("/{}", command.name)),
+        );
+        commands.join(", ")
+    }
+
+    fn custom_command_definitions(&self) -> Vec<SlashCommandDefinition> {
+        let mut definitions = self
+            .custom_commands
+            .values()
+            .cloned()
+            .collect::<Vec<SlashCommandDefinition>>();
+        definitions.sort_by(|left, right| left.name.cmp(&right.name));
+        definitions.dedup_by(|left, right| left.name == right.name);
+        definitions
     }
 
     fn handle_model_command(&mut self, requested: &str) {
@@ -940,6 +1524,24 @@ impl InteractiveTuiState {
             return;
         };
         self.apply_model_choice(&choice);
+    }
+
+    fn handle_session_command(&mut self, requested: &str) {
+        if self.running {
+            self.body.push(
+                "[SYS] Session selection is available after the current run finishes.".to_string(),
+            );
+            self.input_status = Some("session blocked".to_string());
+            return;
+        }
+        self.model_picker_open = false;
+        self.session_picker_open = false;
+        self.pending_session_command = Some(requested.to_string());
+        self.input_status = Some(if requested.is_empty() {
+            "session".to_string()
+        } else {
+            "session reload".to_string()
+        });
     }
 
     fn apply_model_choice(&mut self, choice: &ModelChoice) {
@@ -982,8 +1584,12 @@ impl InteractiveTuiState {
     fn append_cost_summary(&mut self) {
         self.body.push("[SYS] Cost summary".to_string());
         match self.context_tokens {
-            Some(tokens) => self.body.push(format!("[SYS] Context tokens: {tokens}")),
-            None => self.body.push("[SYS] Context tokens: 0".to_string()),
+            Some(tokens) => self
+                .body
+                .push(format!("[SYS] Latest request context tokens: {tokens}")),
+            None => self
+                .body
+                .push("[SYS] Latest request context tokens: 0".to_string()),
         }
         if let Some(window) = self.context_window {
             self.body.push(format!("[SYS] Context window: {window}"));
@@ -1028,6 +1634,14 @@ impl InteractiveTuiState {
         &self.steering_items
     }
 
+    pub(super) fn pending_hitl(&self) -> Option<&HitlPanelState> {
+        self.pending_hitl.as_ref()
+    }
+
+    pub(super) fn task_panel_items(&self) -> &[TaskPanelItem] {
+        &self.task_panel_items
+    }
+
     pub(crate) fn ack_steering_event(&mut self, id: Option<&str>, text: Option<&str>) {
         let index = if let Some(id) = id {
             self.steering_items
@@ -1068,25 +1682,14 @@ impl InteractiveTuiState {
         self.scroll_offset == usize::MAX
     }
 
-    fn add_context_usage(&mut self, usage: &Usage) {
+    fn update_context_usage(&mut self, usage: &Usage) {
         if usage.total_tokens > 0 {
-            self.context_tokens = Some(
-                self.context_tokens
-                    .unwrap_or_default()
-                    .saturating_add(usage.total_tokens),
-            );
+            self.context_tokens = Some(usage.total_tokens);
         }
     }
 
-    pub(super) fn pasted_image_count(&self) -> usize {
-        self.pasted_images.len()
-    }
-
-    pub(super) fn pasted_image_labels(&self) -> Vec<String> {
-        self.pasted_images
-            .iter()
-            .map(|path| compact_path(path, 54))
-            .collect()
+    pub(crate) fn pasted_image_count(&self) -> usize {
+        self.pending_attachments.len()
     }
 
     pub(super) fn push_history(&mut self, prompt: String) {
@@ -1208,6 +1811,7 @@ fn goal_continuation_prompt(task: &str, iteration: usize, max_iterations: usize)
 enum LocalCommandOutcome {
     None,
     Consumed,
+    PasteImage,
     Submit(String),
 }
 
@@ -1216,6 +1820,16 @@ enum SubmissionKind {
     Message,
     Queued,
     Steering,
+}
+
+fn push_user_prompt_lines(body: &mut Vec<String>, prompt: &str) {
+    let mut lines = prompt.lines();
+    if let Some(first) = lines.next() {
+        body.push(format!("User: {first}"));
+        body.extend(lines.map(|line| format!("  {line}")));
+    } else {
+        body.push("User:".to_string());
+    }
 }
 
 fn assistant_content_line(line: impl AsRef<str>) -> String {
@@ -1280,7 +1894,7 @@ fn format_streaming_tool_call_line(state: Option<&StreamingToolCallState>) -> St
     if arguments.is_empty() || arguments == "{}" || arguments == "null" {
         format!("Tool call: {name}")
     } else {
-        format!("Tool call: {name} {arguments}")
+        format!("Tool call: {name} {}", truncate_line_center(arguments, 80))
     }
 }
 
@@ -1331,6 +1945,714 @@ fn format_tool_call_line(call: &starweaver_model::ToolCallPart) -> String {
     }
 }
 
+fn format_tool_return_lines(
+    tool_return: &starweaver_model::ToolReturnPart,
+    arguments: Option<&Value>,
+) -> Vec<String> {
+    let display_value = tool_return
+        .user_content
+        .as_ref()
+        .unwrap_or(&tool_return.content);
+    let mut lines = if tool_return.is_error {
+        vec![format!(
+            "Tool error: {} {}",
+            tool_return.name,
+            full_value_text(display_value)
+        )]
+    } else {
+        match tool_return.name.as_str() {
+            "edit" | "multi_edit" => {
+                format_edit_tool_lines(&tool_return.name, arguments, display_value)
+            }
+            "write" => format_write_tool_lines(display_value, arguments),
+            "view" => format_view_tool_lines(display_value, arguments),
+            "summarize" => format_summarize_tool_lines(display_value, arguments),
+            "task_create" | "task_get" | "task_update" | "task_list" => {
+                format_task_tool_lines(&tool_return.name, display_value)
+            }
+            _ => vec![format!(
+                "Tool result: {} {}",
+                tool_return.name,
+                value_preview(display_value)
+            )],
+        }
+    };
+    if let Some(duration) = tool_duration_label(&tool_return.metadata) {
+        lines.push(format!("  Duration: {duration}"));
+    }
+    lines
+}
+
+fn format_edit_tool_lines(name: &str, arguments: Option<&Value>, result: &Value) -> Vec<String> {
+    let mut lines = vec![format!("Tool result: {name}")];
+    let Some(args) = arguments else {
+        if let Some(file_path) = result_path(result) {
+            lines.push(format!("  Editing file: {file_path}"));
+        }
+        if let Some(status) = edit_result_status(result) {
+            lines.push(format!("  Status: {status}"));
+        }
+        if !is_empty_result(result) {
+            lines.push(format!("  Result: {}", value_preview(result)));
+        }
+        return lines;
+    };
+    let file_path = file_path_arg(args).unwrap_or("unknown");
+    lines.push(format!("  Editing file: {file_path}"));
+    let edits = edit_operations(args);
+    if edits.is_empty() {
+        let old_string = string_field(args, "old_string");
+        let new_string = string_field(args, "new_string");
+        let is_new_file = old_string.is_empty();
+        lines.extend(format_one_edit(
+            1,
+            old_string,
+            new_string,
+            false,
+            is_new_file,
+        ));
+    } else {
+        let new_files = edits
+            .iter()
+            .enumerate()
+            .filter(|(index, edit)| *index == 0 && edit.old_string.is_empty())
+            .count();
+        let modifications = edits.len().saturating_sub(new_files);
+        let replace_all = edits.iter().filter(|edit| edit.replace_all).count();
+        lines.push(format!(
+            "  Summary: {} edit{} ({} new file{}, {} modification{}, {} replace-all operation{})",
+            edits.len(),
+            plural_suffix(edits.len()),
+            new_files,
+            plural_suffix(new_files),
+            modifications,
+            plural_suffix(modifications),
+            replace_all,
+            plural_suffix(replace_all)
+        ));
+        for (index, edit) in edits.iter().enumerate() {
+            lines.extend(format_one_edit(
+                index + 1,
+                &edit.old_string,
+                &edit.new_string,
+                edit.replace_all,
+                index == 0 && edit.old_string.is_empty(),
+            ));
+        }
+    }
+    if !is_empty_result(result) {
+        lines.push(format!("  Result: {}", full_value_text(result)));
+    }
+    lines
+}
+
+fn format_write_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec<String> {
+    let mut lines = vec!["Tool result: write".to_string()];
+    let path = result_path(result)
+        .or_else(|| arguments.and_then(file_path_arg))
+        .unwrap_or("unknown");
+    lines.push(format!("  Writing file: {path}"));
+
+    if let Some(args) = arguments {
+        let mode = args
+            .get("mode")
+            .and_then(Value::as_str)
+            .map(write_mode_label)
+            .unwrap_or("overwrite");
+        lines.push(format!("  Mode: {mode}"));
+        let content = string_field(args, "content");
+        if content.is_empty() {
+            lines.push("  Edit #1: Empty file write".to_string());
+            lines.push("    Empty file".to_string());
+        } else {
+            let operation = if args.get("mode").and_then(Value::as_str) == Some("a") {
+                "Append content"
+            } else {
+                "File content"
+            };
+            lines.push(format!("  Edit #1: {operation}"));
+            for line in preview_lines(content, 20) {
+                lines.push(format!("    +{line}"));
+            }
+        }
+    }
+
+    if result.get("written").and_then(Value::as_bool) == Some(true) {
+        lines.push("  Status: written".to_string());
+    } else if !is_empty_result(result) {
+        lines.push(format!("  Result: {}", value_preview(result)));
+    }
+    lines
+}
+
+fn write_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "a" => "append",
+        "w" => "overwrite",
+        _ => "overwrite",
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EditOperation {
+    old_string: String,
+    new_string: String,
+    replace_all: bool,
+}
+
+fn edit_operations(args: &Value) -> Vec<EditOperation> {
+    args.get("edits")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    item.as_object().map(|object| EditOperation {
+                        old_string: object
+                            .get("old_string")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        new_string: object
+                            .get("new_string")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        replace_all: object
+                            .get("replace_all")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn format_one_edit(
+    index: usize,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+    is_new_file: bool,
+) -> Vec<String> {
+    let operation_type = if is_new_file {
+        "New file creation"
+    } else {
+        "Content modification"
+    };
+    let replace_suffix = if replace_all { " (replace all)" } else { "" };
+    let mut lines = vec![format!("  Edit #{index}: {operation_type}{replace_suffix}")];
+    if old_string.is_empty() {
+        if is_new_file {
+            if new_string.is_empty() {
+                lines.push("    Empty file".to_string());
+            } else {
+                for line in preview_lines(new_string, 15) {
+                    lines.push(format!("    +{line}"));
+                }
+            }
+        } else {
+            lines.push("    Empty match string".to_string());
+            for line in preview_lines(new_string, 15) {
+                lines.push(format!("    +{line}"));
+            }
+        }
+    } else {
+        lines.extend(unified_diff_lines(old_string, new_string, 18));
+    }
+    lines
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DiffLine<'a> {
+    Text(&'a str),
+    EofNewline,
+}
+
+fn unified_diff_lines(old_string: &str, new_string: &str, max_lines: usize) -> Vec<String> {
+    if old_string == new_string {
+        return vec!["    No changes detected".to_string()];
+    }
+    let old_lines = split_diff_lines(old_string);
+    let new_lines = split_diff_lines(new_string);
+    let old_len = old_lines.len();
+    let new_len = new_lines.len();
+    let mut prefix = 0usize;
+    while prefix < old_len && prefix < new_len && old_lines[prefix] == new_lines[prefix] {
+        prefix += 1;
+    }
+
+    let mut suffix = 0usize;
+    while suffix < old_len.saturating_sub(prefix)
+        && suffix < new_len.saturating_sub(prefix)
+        && old_lines[old_len - suffix - 1] == new_lines[new_len - suffix - 1]
+    {
+        suffix += 1;
+    }
+
+    let old_change_end = old_len.saturating_sub(suffix);
+    let new_change_end = new_len.saturating_sub(suffix);
+    let context = 2usize;
+    let old_context_start = prefix.saturating_sub(context);
+    let new_context_start = prefix.saturating_sub(context);
+    let old_after_end = (old_change_end + context).min(old_len);
+    let new_after_end = (new_change_end + context).min(new_len);
+    let old_start = old_context_start + 1;
+    let new_start = new_context_start + 1;
+    let old_span = old_after_end.saturating_sub(old_context_start);
+    let new_span = new_after_end.saturating_sub(new_context_start);
+
+    let mut lines = vec![format!(
+        "    @@ -{old_start},{old_span} +{new_start},{new_span} @@"
+    )];
+    let mut truncated = false;
+    if old_context_start > 0 || new_context_start > 0 {
+        let omitted = old_context_start.max(new_context_start);
+        push_diff_preview_line(
+            &mut lines,
+            &mut truncated,
+            max_lines,
+            format!("     ... ({omitted} unchanged lines before)"),
+        );
+    }
+    for line in &old_lines[old_context_start..prefix] {
+        push_diff_preview_line(
+            &mut lines,
+            &mut truncated,
+            max_lines,
+            format!("     {}", preview_diff_line(*line)),
+        );
+    }
+    for line in &old_lines[prefix..old_change_end] {
+        push_diff_preview_line(
+            &mut lines,
+            &mut truncated,
+            max_lines,
+            format!("    -{}", preview_diff_line(*line)),
+        );
+    }
+    for line in &new_lines[prefix..new_change_end] {
+        push_diff_preview_line(
+            &mut lines,
+            &mut truncated,
+            max_lines,
+            format!("    +{}", preview_diff_line(*line)),
+        );
+    }
+    for line in &old_lines[old_change_end..old_after_end] {
+        push_diff_preview_line(
+            &mut lines,
+            &mut truncated,
+            max_lines,
+            format!("     {}", preview_diff_line(*line)),
+        );
+    }
+    if old_after_end < old_len || new_after_end < new_len {
+        let omitted = old_len
+            .saturating_sub(old_after_end)
+            .max(new_len.saturating_sub(new_after_end));
+        push_diff_preview_line(
+            &mut lines,
+            &mut truncated,
+            max_lines,
+            format!("     ... ({omitted} unchanged lines after)"),
+        );
+    }
+    if truncated {
+        if lines.len() >= max_lines.max(2) {
+            lines.pop();
+        }
+        lines.push("    ... (diff truncated)".to_string());
+    }
+    lines
+}
+
+fn split_diff_lines(content: &str) -> Vec<DiffLine<'_>> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+    let mut parts = content.split('\n').collect::<Vec<_>>();
+    let has_eof_newline = content.ends_with('\n');
+    if has_eof_newline {
+        parts.pop();
+    }
+    let mut lines = parts.into_iter().map(DiffLine::Text).collect::<Vec<_>>();
+    if has_eof_newline {
+        lines.push(DiffLine::EofNewline);
+    }
+    lines
+}
+
+fn preview_diff_line(line: DiffLine<'_>) -> String {
+    match line {
+        DiffLine::Text("") => "<blank line>".to_string(),
+        DiffLine::Text(line) => preview_line(line),
+        DiffLine::EofNewline => "<EOF newline>".to_string(),
+    }
+}
+
+fn push_diff_preview_line(
+    lines: &mut Vec<String>,
+    truncated: &mut bool,
+    max_lines: usize,
+    line: String,
+) {
+    if lines.len() < max_lines.max(2) {
+        lines.push(line);
+    } else {
+        *truncated = true;
+    }
+}
+
+fn format_view_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec<String> {
+    let mut lines = vec!["Tool result: view".to_string()];
+    let path = result
+        .get("file_path")
+        .or_else(|| result.get("path"))
+        .or_else(|| result.pointer("/metadata/file_path"))
+        .or_else(|| arguments.and_then(|args| args.get("file_path")))
+        .or_else(|| arguments.and_then(|args| args.get("path")))
+        .and_then(Value::as_str);
+    if let Some(path) = path {
+        lines.push(format!("  Viewing file: {path}"));
+    }
+
+    let start_line = result
+        .pointer("/metadata/current_segment/start_line")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok());
+    let end_line = result
+        .pointer("/metadata/current_segment/end_line")
+        .and_then(Value::as_u64);
+    let total_lines = result
+        .pointer("/metadata/total_lines")
+        .and_then(Value::as_u64);
+    if let (Some(start), Some(end), Some(total)) = (start_line, end_line, total_lines) {
+        lines.push(format!("  Lines: {start}-{end} of {total}"));
+    }
+
+    if let Some(content) = result
+        .get("content")
+        .and_then(Value::as_str)
+        .or_else(|| result.as_str())
+    {
+        lines.extend(format_view_content_lines(content, start_line));
+    } else if let Some(message) = result
+        .get("message")
+        .or_else(|| result.get("error"))
+        .and_then(Value::as_str)
+    {
+        lines.push(format!("  {message}"));
+    } else {
+        lines.push(format!("  {}", value_preview(result)));
+    }
+    if let Some(metadata) = result.get("metadata") {
+        if let Some(truncation) = metadata.get("truncation_info") {
+            lines.push(format!("  Truncation: {}", value_preview(truncation)));
+        }
+    }
+    lines
+}
+
+fn format_view_content_lines(content: &str, start_line: Option<usize>) -> Vec<String> {
+    if content.is_empty() {
+        return vec!["    Empty file".to_string()];
+    }
+    let preview = preview_lines(content, 20);
+    let line_number_width = start_line
+        .map(|start| start.saturating_add(preview.len()).to_string().len().max(4))
+        .unwrap_or(0);
+    preview
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if line.starts_with("... (") {
+                return format!("    {line}");
+            }
+            if let Some(start) = start_line {
+                format!(
+                    "    {:>line_number_width$} │ {line}",
+                    start.saturating_add(index)
+                )
+            } else {
+                format!("    │ {line}")
+            }
+        })
+        .collect()
+}
+
+fn format_summarize_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec<String> {
+    let payload = result.get("payload").unwrap_or(result);
+    let content = payload_string(payload, &["content", "handoff_content", "summary_markdown", "summary"])
+        .or_else(|| arguments.and_then(|args| payload_string(args, &["content", "summary"])))
+        .unwrap_or_default();
+    let auto_load_files = payload_string_array(payload, "auto_load_files")
+        .or_else(|| arguments.and_then(|args| payload_string_array(args, "auto_load_files")))
+        .unwrap_or_default();
+
+    let mut lines = vec!["Tool result: summarize".to_string()];
+    lines.push("  Summary: Progress summarized, continuing with fresh context".to_string());
+    if !content.trim().is_empty() {
+        for line in preview_lines(&content, 12) {
+            lines.push(format!("    │ {line}"));
+        }
+    }
+    if !auto_load_files.is_empty() {
+        lines.push(format!(
+            "  Auto-load files: {}",
+            auto_load_files
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    lines
+}
+
+fn format_task_tool_lines(name: &str, result: &Value) -> Vec<String> {
+    let content = value_text(result);
+    let mut lines = vec![format!("Tool result: {name}")];
+    if name == "task_list" {
+        let task_lines = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        if task_lines.is_empty() {
+            lines.push("  No tasks found".to_string());
+        } else {
+            let task_entries = task_lines
+                .iter()
+                .filter(|line| is_task_status_line(line))
+                .collect::<Vec<_>>();
+            let completed = task_entries
+                .iter()
+                .filter(|line| line.contains("[completed]"))
+                .count();
+            let in_progress = task_entries
+                .iter()
+                .filter(|line| line.contains("[in_progress"))
+                .count();
+            for line in &task_lines {
+                lines.push(format!("  {}", preview_line(line)));
+            }
+            if !task_entries.is_empty() {
+                lines.push(format!(
+                    "  Progress: {}/{}{}",
+                    completed,
+                    task_entries.len(),
+                    if in_progress > 0 {
+                        format!(" ({in_progress} in progress)")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+        }
+    } else {
+        for line in content.lines().take(20) {
+            lines.push(format!("  {}", preview_line(line)));
+        }
+    }
+    lines
+}
+
+fn is_task_status_line(line: &str) -> bool {
+    ["[pending]", "[in_progress", "[completed]"]
+        .iter()
+        .any(|status| line.contains(status))
+}
+
+fn parse_task_panel_line(line: &str) -> Option<TaskPanelItem> {
+    let trimmed = line.trim();
+    let id_start = trimmed.strip_prefix('#')?;
+    let (id, rest) = id_start.split_once(' ')?;
+    let status_start = rest.strip_prefix('[')?;
+    let (status, subject) = status_start.split_once("] ")?;
+    Some(TaskPanelItem {
+        id: id.to_string(),
+        status: status.to_string(),
+        subject: subject.to_string(),
+    })
+}
+
+fn task_panel_item_from_tool_return(
+    name: &str,
+    structured: &Value,
+    display: &Value,
+) -> Option<TaskPanelItem> {
+    let structured_item = structured
+        .get("payload")
+        .or_else(|| structured.get("task"))
+        .or_else(|| structured.as_object().map(|_| structured))
+        .and_then(task_panel_item_from_value);
+    if structured_item.is_some() {
+        return structured_item;
+    }
+    let text = value_text(display);
+    match name {
+        "task_get" | "task_update" => text.lines().find_map(parse_task_panel_line),
+        _ => None,
+    }
+}
+
+fn task_panel_item_from_value(value: &Value) -> Option<TaskPanelItem> {
+    Some(TaskPanelItem {
+        id: value
+            .get("id")
+            .or_else(|| value.get("task_id"))
+            .and_then(Value::as_str)?
+            .trim_start_matches('#')
+            .to_string(),
+        subject: value
+            .get("subject")
+            .and_then(Value::as_str)
+            .unwrap_or("untitled")
+            .to_string(),
+        status: value
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+            .to_string(),
+    })
+}
+
+fn upsert_task_panel_item(items: &mut Vec<TaskPanelItem>, item: TaskPanelItem) {
+    if let Some(existing) = items.iter_mut().find(|existing| existing.id == item.id) {
+        *existing = item;
+    } else {
+        items.push(item);
+    }
+}
+
+fn tool_duration_label(metadata: &serde_json::Map<String, Value>) -> Option<String> {
+    let millis = metadata.get("duration_ms").and_then(Value::as_u64)?;
+    if millis < 1_000 {
+        Some(format!("{millis}ms"))
+    } else {
+        Some(format!("{:.2}s", millis as f64 / 1_000.0))
+    }
+}
+
+fn result_path(value: &Value) -> Option<&str> {
+    file_path_arg(value)
+}
+
+fn file_path_arg(value: &Value) -> Option<&str> {
+    value
+        .get("file_path")
+        .or_else(|| value.get("path"))
+        .and_then(Value::as_str)
+}
+
+fn edit_result_status(value: &Value) -> Option<&'static str> {
+    if value.get("created").and_then(Value::as_bool) == Some(true) {
+        Some("created")
+    } else if value.get("edited").and_then(Value::as_bool) == Some(true) {
+        Some("edited")
+    } else {
+        None
+    }
+}
+
+fn string_field<'a>(value: &'a Value, key: &str) -> &'a str {
+    value.get(key).and_then(Value::as_str).unwrap_or_default()
+}
+
+fn preview_lines(content: &str, max_lines: usize) -> Vec<String> {
+    let lines = content.lines().collect::<Vec<_>>();
+    let mut preview = lines
+        .iter()
+        .take(max_lines)
+        .map(|line| preview_line(line))
+        .collect::<Vec<_>>();
+    if lines.len() > max_lines {
+        preview.push(format!("... ({} more lines)", lines.len() - max_lines));
+    }
+    preview
+}
+
+fn preview_line(line: &str) -> String {
+    truncate_line_center(line, TOOL_PREVIEW_MAX_CHARS)
+}
+
+const fn plural_suffix(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+fn is_empty_result(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(value) => value.trim().is_empty(),
+        other => other == &Value::Bool(true) || other == &Value::Object(serde_json::Map::new()),
+    }
+}
+
+fn value_text(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn full_value_text(value: &Value) -> String {
+    value_text(value).replace('\n', " ")
+}
+
+fn streaming_tool_state_is_available(state: &StreamingToolCallState, key: &str) -> bool {
+    state.line_index.is_some()
+        && state
+            .linked_call_key
+            .as_deref()
+            .map_or(true, |linked| linked == key)
+}
+
+fn streaming_tool_arguments_match(
+    streamed_arguments: &str,
+    call: &starweaver_model::ToolCallPart,
+) -> bool {
+    let streamed_arguments = streamed_arguments.trim();
+    let final_wire = call.arguments.wire_json_string();
+    if streamed_arguments == final_wire
+        || streamed_arguments == value_preview(&call.arguments.replay_value())
+    {
+        return true;
+    }
+    if streamed_arguments.is_empty() {
+        return matches!(final_wire.trim(), "" | "{}" | "null");
+    }
+    serde_json::from_str::<serde_json::Value>(streamed_arguments).is_ok_and(|streamed| {
+        streamed == call.arguments.execution_value() || streamed == call.arguments.replay_value()
+    })
+}
+
+fn body_line_display_text(line: &str) -> &str {
+    line.strip_prefix(ASSISTANT_CONTENT_PREFIX)
+        .unwrap_or(line)
+        .trim()
+}
+
+fn compact_status_text(text: &str, max_chars: usize) -> String {
+    let compact = text.replace('\n', " ");
+    let char_count = compact.chars().count();
+    if char_count <= max_chars {
+        return compact;
+    }
+    let keep = max_chars.saturating_sub(1);
+    let suffix = compact
+        .chars()
+        .take(keep)
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    format!("{suffix}…")
+}
+
 fn pasted_image_paths(text: &str) -> Vec<String> {
     text.split_whitespace()
         .map(|part| part.trim_matches(['\'', '"']))
@@ -1358,21 +2680,4 @@ fn push_shell_output_lines(body: &mut Vec<String>, label: &str, output: &str) {
             "[SYS] {label} truncated to {SHELL_OUTPUT_MAX_LINES} lines"
         ));
     }
-}
-
-fn compact_path(path: &str, max_chars: usize) -> String {
-    let char_count = path.chars().count();
-    if char_count <= max_chars {
-        return path.to_string();
-    }
-    let keep = max_chars.saturating_sub(1);
-    let suffix = path
-        .chars()
-        .rev()
-        .take(keep)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<String>();
-    format!("…{suffix}")
 }

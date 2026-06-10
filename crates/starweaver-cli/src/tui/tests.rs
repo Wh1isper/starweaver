@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent, MouseEventKind,
@@ -16,6 +16,8 @@ use starweaver_runtime::{AgentExecutionNode, AgentStreamEvent, AgentStreamRecord
 use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
+use crate::{prompt_input::PromptAttachment, slash_commands::SlashCommandDefinition};
+
 use super::{
     markdown::{render_markdown_lines, render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
     render::{
@@ -23,8 +25,11 @@ use super::{
         render_live_history_lines, render_shortcut_overlay, visible_width, SegmentStyle,
         StyledLine,
     },
-    state::{FooterMode, InteractiveTuiState, ModelChoice, RunMode},
-    terminal::{handle_key_event, handle_mouse_event, visible_body_bounds, InteractiveTuiEvent},
+    state::{FooterMode, InteractiveTuiState, ModelChoice, RunMode, SessionChoice},
+    terminal::{
+        handle_key_event, handle_mouse_event, should_capture_mouse, visible_body_bounds,
+        InteractiveTuiEvent,
+    },
 };
 
 #[test]
@@ -110,8 +115,11 @@ fn codex_style_shortcut_overlay_matches_footer_model() {
     assert!(text.contains("/help"));
     assert!(text.contains("Print this help in the transcript"));
     assert!(text.contains("/model [profile]"));
+    assert!(text.contains("/session [id]"));
     assert!(text.contains("/goal <task>"));
     assert!(text.contains("Run task toward a verified goal until complete"));
+    assert!(text.contains("/paste-image"));
+    assert!(text.contains("Attach image from system clipboard"));
     assert!(text.contains("Key Bindings"));
     assert!(text.contains("Ctrl+C"));
     assert!(text.contains("Scroll transcript"));
@@ -126,8 +134,8 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     assert_eq!(handle_key_event(&mut state, key_char('i')), None);
     assert_eq!(state.input, "hi");
     assert_eq!(
-        handle_key_event(&mut state, key_code(KeyCode::Enter)),
-        Some(InteractiveTuiEvent::Submit("hi".to_string()))
+        submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
+        Some("hi".to_string())
     );
     assert!(state.input.is_empty());
 
@@ -160,7 +168,7 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         .iter()
         .any(|line| line == "[SYS] Usage: /goal <task description>"));
 
-    state.set_custom_commands(std::collections::BTreeMap::new());
+    state.set_custom_commands(BTreeMap::new());
     state.input = "/COMMIT staged files".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
     assert!(state.input.is_empty());
@@ -169,10 +177,64 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         .iter()
         .any(|line| line.contains("Unknown command: /COMMIT staged files")));
 
-    state.input = "/goal migrate tui".to_string();
+    let mut custom_commands = BTreeMap::new();
+    let command = SlashCommandDefinition {
+        name: "commit".to_string(),
+        prompt: "Write a clear git commit.".to_string(),
+        description: Some("Create a commit".to_string()),
+        aliases: vec!["ci".to_string()],
+    };
+    custom_commands.insert("commit".to_string(), command.clone());
+    custom_commands.insert("ci".to_string(), command);
+    state.set_custom_commands(custom_commands);
+    state.input = "/CI staged files".to_string();
+    assert_eq!(
+        submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
+        Some("/CI staged files".to_string())
+    );
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line.contains("Expanded /commit custom command (alias /ci)")));
+    assert_eq!(
+        state.take_pending_submission_display_prompt(),
+        Some("Write a clear git commit.\n\nUser instruction: staged files".to_string())
+    );
+
+    state.input = "/help".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line.contains("Custom commands")));
+    assert!(state.body.iter().any(|line| {
+        line.contains("/commit [instruction]") && line.contains("Create a commit")
+    }));
+
+    state.input = "/session session_test".to_string();
     assert_eq!(
         handle_key_event(&mut state, key_code(KeyCode::Enter)),
-        Some(InteractiveTuiEvent::Submit("migrate tui".to_string()))
+        Some(InteractiveTuiEvent::Session(Some(
+            "session_test".to_string()
+        )))
+    );
+    assert!(state.input.is_empty());
+
+    assert_eq!(
+        handle_key_event(&mut state, key_modified('v', KeyModifiers::CONTROL)),
+        Some(InteractiveTuiEvent::PasteImage)
+    );
+    state.input = "/paste-image".to_string();
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::PasteImage)
+    );
+    assert!(state.input.is_empty());
+
+    state.input = "/goal migrate tui".to_string();
+    assert_eq!(
+        submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
+        Some("migrate tui".to_string())
     );
     assert!(state.goal_active);
     assert!(state
@@ -253,14 +315,23 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         .join("\n")
         .contains(">>> steer now"));
 
+    state.input = "/paste-image".to_string();
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::PasteImage)
+    );
+
     state.input = "queued".to_string();
     assert_eq!(
-        handle_key_event(&mut state, key_code(KeyCode::Tab)),
-        Some(InteractiveTuiEvent::Queue("queued".to_string()))
+        queue_text(handle_key_event(&mut state, key_code(KeyCode::Tab))),
+        Some("queued".to_string())
     );
     assert!(state.input.is_empty());
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
-    assert!(state.phase.contains("run active"));
+    assert!(state.selection_mode_visible());
+    assert!(!should_capture_mouse(&state));
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+    assert!(!state.selection_mode_visible());
     assert_eq!(
         handle_key_event(&mut state, key_modified('c', KeyModifiers::CONTROL)),
         Some(InteractiveTuiEvent::Cancel)
@@ -289,6 +360,49 @@ fn scroll_bounds_move_visible_viewport_and_preserve_bottom_sentinel() {
     state.scroll_to_bottom();
     assert!(state.is_at_bottom());
     assert_eq!(visible_body_bounds(&state, 50, 10), (40, 50));
+}
+
+#[test]
+fn streaming_events_preserve_scroll_while_selection_mode_is_active() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("stream while selecting");
+    state
+        .body
+        .extend((0..20).map(|line| format!("line {line}")));
+    state.scroll_offset = 3;
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+    assert!(state.selection_mode_visible());
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "text".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "live delta")),
+        },
+    ));
+    assert_eq!(state.scroll_offset, 3);
+    assert!(!state.is_at_bottom());
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+    assert!(!state.selection_mode_visible());
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, " next")),
+        },
+    ));
+    assert!(state.is_at_bottom());
 }
 
 #[test]
@@ -453,6 +567,488 @@ fn interactive_state_covers_runtime_event_branches() {
         },
     ));
     assert!(state.is_at_bottom());
+}
+
+#[test]
+fn edit_tool_return_renders_structured_diff() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let edit_call = ToolCallPart {
+        id: "edit_1".to_string(),
+        name: "edit".to_string(),
+        arguments: json!({
+            "file_path": "src/lib.rs",
+            "old_string": "fn old() {}",
+            "new_string": "fn new() {}"
+        })
+        .into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: edit_call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(edit_call.id, "edit", json!("updated")),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Tool result: edit"));
+    assert!(body_has_line(&state, "  Editing file: src/lib.rs"));
+    assert!(body_has_line(&state, "    @@ -1,1 +1,1 @@"));
+    assert!(body_has_line(&state, "    -fn old() {}"));
+    assert!(body_has_line(&state, "    +fn new() {}"));
+
+    let rendered = render_transcript_lines(&state.body, 80);
+    assert!(has_segment(&rendered, "src/lib.rs", SegmentStyle::CYAN));
+    assert!(has_segment(&rendered, "    -", SegmentStyle::RED));
+    assert!(has_segment(&rendered, "    +", SegmentStyle::GREEN));
+}
+
+#[test]
+fn edit_tool_diff_focuses_changed_hunk_and_preserves_eof_newline() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let old_lines = (0..30)
+        .map(|index| format!("line {index}"))
+        .chain(["old".to_string(), "tail".to_string()])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let new_lines = (0..30)
+        .map(|index| format!("line {index}"))
+        .chain(["new".to_string(), "tail".to_string()])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let call = ToolCallPart {
+        id: "edit_hunk".to_string(),
+        name: "edit".to_string(),
+        arguments: json!({
+            "file_path": "src/lib.rs",
+            "old_string": old_lines,
+            "new_string": new_lines
+        })
+        .into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(call.id, "edit", json!("updated")),
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        "     ... (28 unchanged lines before)"
+    ));
+    assert!(body_has_line(&state, "    -old"));
+    assert!(body_has_line(&state, "    +new"));
+    assert!(!body_has_line(&state, "     line 0"));
+
+    let mut newline_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let newline_call = ToolCallPart {
+        id: "edit_newline".to_string(),
+        name: "edit".to_string(),
+        arguments: json!({
+            "file_path": "src/lib.rs",
+            "old_string": "fn main() {}",
+            "new_string": "fn main() {}\n"
+        })
+        .into(),
+    };
+    newline_state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: newline_call.clone(),
+        },
+    ));
+    newline_state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(newline_call.id, "edit", json!("updated")),
+        },
+    ));
+
+    assert!(body_has_line(&newline_state, "    +<EOF newline>"));
+}
+
+#[test]
+fn edit_tool_return_falls_back_to_result_metadata_without_cached_arguments() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "edit_missing",
+                "edit",
+                json!({"file_path": "src/lib.rs", "edited": true}),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Tool result: edit"));
+    assert!(body_has_line(&state, "  Editing file: src/lib.rs"));
+    assert!(body_has_line(&state, "  Status: edited"));
+}
+
+#[test]
+fn multi_edit_summary_counts_only_first_empty_old_string_as_new_file() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let call = ToolCallPart {
+        id: "multi_edit_1".to_string(),
+        name: "multi_edit".to_string(),
+        arguments: json!({
+            "file_path": "src/lib.rs",
+            "edits": [
+                {"old_string": "", "new_string": "created"},
+                {"old_string": "", "new_string": "invalid follow-up"}
+            ]
+        })
+        .into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(call.id, "multi_edit", json!({"edited": true})),
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        "  Summary: 2 edits (1 new file, 1 modification, 0 replace-all operations)"
+    ));
+    assert!(body_has_line(&state, "  Edit #2: Content modification"));
+    assert!(body_has_line(&state, "    Empty match string"));
+}
+
+#[test]
+fn view_tool_return_renders_file_preview() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "view_1",
+                "view",
+                json!({
+                    "file_path": "README.md",
+                    "content": "line 1\nline 2",
+                    "metadata": {"truncation_info": {"content_truncated": false}}
+                }),
+            ),
+        },
+    ));
+    assert!(body_has_line(&state, "Tool result: view"));
+    assert!(body_has_line(&state, "  Viewing file: README.md"));
+    assert!(body_has_line(&state, "    │ line 1"));
+
+    let rendered = render_transcript_lines(&state.body, 80);
+    assert!(has_segment(&rendered, "README.md", SegmentStyle::CYAN));
+    assert!(has_segment(&rendered, "line 1", SegmentStyle::CYAN));
+
+    let view_call = ToolCallPart {
+        id: "view_2".to_string(),
+        name: "view".to_string(),
+        arguments: json!({"file_path": "plain.txt"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: view_call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(view_call.id, "view", json!("plain content")),
+        },
+    ));
+    assert!(body_has_line(&state, "  Viewing file: plain.txt"));
+    assert!(body_has_line(&state, "    │ plain content"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        4,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "view_3",
+                "view",
+                json!({
+                    "content": "page content",
+                    "metadata": {
+                        "file_path": "paged.txt",
+                        "truncation_info": {"lines_truncated": true}
+                    }
+                }),
+            ),
+        },
+    ));
+    assert!(body_has_line(&state, "  Viewing file: paged.txt"));
+    assert!(body_has_line(&state, "    │ page content"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        5,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "view_4",
+                "view",
+                json!({"file_path": "empty.txt", "content": ""}),
+            ),
+        },
+    ));
+    assert!(body_has_line(&state, "  Viewing file: empty.txt"));
+    assert!(body_has_line(&state, "    Empty file"));
+}
+
+#[test]
+fn write_tool_return_renders_preview_and_styles() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let call = ToolCallPart {
+        id: "write_1".to_string(),
+        name: "write".to_string(),
+        arguments: json!({
+            "file_path": "src/generated.rs",
+            "content": "pub fn generated() {}\n",
+            "mode": "w"
+        })
+        .into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(call.id, "write", json!({"written": true})),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Tool result: write"));
+    assert!(body_has_line(&state, "  Writing file: src/generated.rs"));
+    assert!(body_has_line(&state, "  Mode: overwrite"));
+    assert!(body_has_line(&state, "  Edit #1: File content"));
+    assert!(body_has_line(&state, "    +pub fn generated() {}"));
+    assert!(body_has_line(&state, "  Status: written"));
+
+    let rendered = render_transcript_lines(&state.body, 80);
+    assert!(has_segment(
+        &rendered,
+        "src/generated.rs",
+        SegmentStyle::CYAN
+    ));
+    assert!(has_segment(&rendered, "    +", SegmentStyle::GREEN));
+    assert!(has_segment(&rendered, "written", SegmentStyle::GREEN));
+}
+
+#[test]
+fn special_tool_rendering_truncates_lines_and_releases_arguments() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let long_line = "a".repeat(400);
+    let edit_call = ToolCallPart {
+        id: "edit_long".to_string(),
+        name: "edit".to_string(),
+        arguments: json!({
+            "file_path": "long.txt",
+            "old_string": "old",
+            "new_string": long_line
+        })
+        .into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: edit_call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(edit_call.id.clone(), "edit", json!("updated")),
+        },
+    ));
+    let Some(added_line) = state.body.iter().find(|line| line.starts_with("    +")) else {
+        panic!("rendered added line");
+    };
+    assert!(added_line.contains('…'));
+    assert!(visible_width(added_line) <= 245);
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(edit_call.id, "edit", json!("duplicate")),
+        },
+    ));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line.starts_with("  Result:") && line.contains("duplicate")));
+    assert_eq!(
+        state
+            .body
+            .iter()
+            .filter(|line| line.as_str() == "  Editing file: long.txt")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn task_list_tool_return_renders_progress_when_statuses_are_present() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "task_1",
+                "task_list",
+                json!("#1 [completed] Done\n#2 [in_progress: Working] Work"),
+            ),
+        },
+    ));
+    assert!(body_has_line(&state, "Tool result: task_list"));
+    assert!(body_has_line(&state, "  #1 [completed] Done"));
+    assert!(body_has_line(&state, "  Progress: 1/2 (1 in progress)"));
+
+    let progress_count_before_placeholder = state
+        .body
+        .iter()
+        .filter(|line| line.starts_with("  Progress:"))
+        .count();
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "task_2",
+                "task_list",
+                json!({"operation": "task_list", "payload": {}}),
+            )
+            .with_user_content(json!("Task list requested")),
+        },
+    ));
+    assert!(body_has_line(&state, "  Task list requested"));
+    assert_eq!(
+        state
+            .body
+            .iter()
+            .filter(|line| line.starts_with("  Progress:"))
+            .count(),
+        progress_count_before_placeholder
+    );
+}
+
+#[test]
+fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let mut duration_metadata = Metadata::default();
+    duration_metadata.insert("duration_ms".to_string(), json!(1_500));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new("call_duration", "lookup", json!("ok"))
+                .with_metadata(duration_metadata),
+        },
+    ));
+    assert!(body_has_line(&state, "  Duration: 1.50s"));
+
+    let mut approval_metadata = Metadata::default();
+    approval_metadata.insert("control_flow".to_string(), json!("approval_required"));
+    approval_metadata.insert(
+        "approval".to_string(),
+        json!({
+            "command": "rm -rf target/tmp",
+            "risk_level": "high",
+            "reason": "destructive command needs review"
+        }),
+    );
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new("shell_call", "shell", json!("approval required"))
+                .with_metadata(approval_metadata),
+        },
+    ));
+    assert_eq!(state.status, "WAITING");
+    assert!(state.pending_hitl().is_some());
+    let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(footer.contains("Tool Approval Required"));
+    assert!(footer.contains("rm -rf target/tmp"));
+    assert!(footer.contains("Approval required"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "task_panel",
+                json!({
+                    "tasks": [
+                        {"id": "1", "subject": "Done", "status": "completed"},
+                        {"id": "2", "subject": "Work", "status": "in_progress"}
+                    ]
+                }),
+            ),
+        },
+    ));
+    let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(footer.contains("Tasks"));
+    assert!(footer.contains("Progress: 1/2 (1 in progress)"));
+    assert!(footer.contains("Done"));
+    assert!(footer.contains("Work"));
+}
+
+#[test]
+fn clear_command_clears_transcript_and_emits_context_event() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.session_id = Some("session_clear".to_string());
+    state.context_tokens = Some(42);
+    state.body.push("old transcript".to_string());
+    state.input = "/clear".to_string();
+
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::Clear)
+    );
+    assert!(state.session_id.is_none());
+    assert!(state.body.is_empty());
+    assert_eq!(state.context_tokens, None);
+    assert_eq!(state.phase, "cleared");
+    assert_eq!(state.input_status_text(), "context cleared");
 }
 
 #[test]
@@ -677,6 +1273,107 @@ fn streaming_tool_call_delta_is_visible_and_deduped_by_final_call() {
 }
 
 #[test]
+fn consecutive_streamed_tool_calls_with_same_name_do_not_reuse_first_line() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("use tools");
+    for (sequence, index, query) in [(0, 2, "first"), (3, 3, "second")] {
+        state.apply_stream_record(&AgentStreamRecord::new(
+            sequence,
+            AgentStreamEvent::ModelStream {
+                step: 0,
+                event: ModelResponseStreamEvent::PartStart(PartStart {
+                    index,
+                    part_kind: "tool_call".to_string(),
+                }),
+            },
+        ));
+        state.apply_stream_record(&AgentStreamRecord::new(
+            sequence + 1,
+            AgentStreamEvent::ModelStream {
+                step: 0,
+                event: ModelResponseStreamEvent::PartDelta(PartDelta {
+                    index,
+                    delta: StreamDelta::ToolCallName {
+                        name: "lookup".to_string(),
+                    },
+                }),
+            },
+        ));
+        state.apply_stream_record(&AgentStreamRecord::new(
+            sequence + 2,
+            AgentStreamEvent::ModelStream {
+                step: 0,
+                event: ModelResponseStreamEvent::PartDelta(PartDelta {
+                    index,
+                    delta: StreamDelta::ToolCallArguments {
+                        arguments_delta: format!("{{\"query\":\"{query}\"}}"),
+                    },
+                }),
+            },
+        ));
+    }
+
+    let first_call = ToolCallPart {
+        id: "call_first".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"query":"first"}).into(),
+    };
+    let second_call = ToolCallPart {
+        id: "call_second".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"query":"second"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        6,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse {
+                parts: vec![
+                    ModelResponsePart::ToolCall(first_call.clone()),
+                    ModelResponsePart::ToolCall(second_call.clone()),
+                ],
+                usage: starweaver_core::Usage::default(),
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            })),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        7,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: first_call,
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        8,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: second_call,
+        },
+    ));
+
+    let tool_call_lines = state
+        .body
+        .iter()
+        .filter(|line| line.starts_with("Tool call: lookup"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(tool_call_lines.len(), 2);
+    assert!(tool_call_lines
+        .iter()
+        .any(|line| line == "Tool call: lookup {\"query\":\"first\"}"));
+    assert!(tool_call_lines
+        .iter()
+        .any(|line| line == "Tool call: lookup {\"query\":\"second\"}"));
+}
+
+#[test]
 fn streamed_text_after_tool_return_starts_new_assistant_line() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("use tool");
@@ -820,6 +1517,86 @@ fn model_command_opens_picker_selects_directly_and_blocks_while_running() {
 }
 
 #[test]
+fn session_command_opens_picker_selects_directly_and_blocks_while_running() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_session_choices(vec![
+        SessionChoice {
+            session_id: "session_alpha".to_string(),
+            title: Some("Alpha".to_string()),
+            profile: Some("general".to_string()),
+            status: "active".to_string(),
+            run_count: 1,
+            last_output_preview: Some("hello".to_string()),
+            updated_at: "2026-06-08T09:00:00Z".to_string(),
+        },
+        SessionChoice {
+            session_id: "session_beta".to_string(),
+            title: Some("Beta".to_string()),
+            profile: Some("coding".to_string()),
+            status: "active".to_string(),
+            run_count: 2,
+            last_output_preview: Some("long output preview".to_string()),
+            updated_at: "2026-06-08T10:00:00Z".to_string(),
+        },
+    ]);
+
+    state.input = "/session".to_string();
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::Session(None))
+    );
+    assert!(!state.session_picker_visible());
+
+    state.open_session_picker();
+    assert!(state.session_picker_visible());
+    assert_eq!(state.input_mode_label(), "SESSION");
+    assert_eq!(state.session_picker_index(), 0);
+    let picker_text = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(picker_text.contains("Sessions"));
+    assert!(picker_text.contains("Enter: reload"));
+    assert!(picker_text.contains("session_alpha"));
+    assert!(picker_text.contains("session_beta"));
+    assert!(picker_text.contains("Highlighted session"));
+    assert!(picker_text.contains("preview:"));
+    assert!(picker_text.contains("hello"));
+
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Up)), None);
+    assert_eq!(state.session_picker_index(), 1);
+    let beta_picker_text = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(beta_picker_text.contains("session_beta"));
+    assert!(beta_picker_text.contains("coding"));
+    assert!(beta_picker_text.contains("long output preview"));
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::Session(Some(
+            "session_beta".to_string()
+        )))
+    );
+    assert!(!state.session_picker_visible());
+
+    state.open_session_picker();
+    assert!(state.session_picker_visible());
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
+    assert!(!state.session_picker_visible());
+
+    state.input = "/session session_alpha".to_string();
+    assert_eq!(
+        handle_key_event(&mut state, key_code(KeyCode::Enter)),
+        Some(InteractiveTuiEvent::Session(Some(
+            "session_alpha".to_string()
+        )))
+    );
+
+    state.running = true;
+    state.input = "/session session_beta".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(!state.session_picker_visible());
+    assert!(state.body.iter().any(|line| {
+        line == "[SYS] Session selection is available after the current run finishes."
+    }));
+}
+
+#[test]
 fn interactive_state_covers_model_response_finish_and_failure() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("respond");
@@ -887,7 +1664,7 @@ fn interactive_state_covers_model_response_finish_and_failure() {
             },
         },
     ));
-    assert_eq!(state.context_percent_label(), "4%");
+    assert_eq!(state.context_percent_label(), "3%");
 
     state.apply_stream_record(&AgentStreamRecord::new(
         2,
@@ -1012,7 +1789,7 @@ fn transcript_renderer_covers_status_styles_and_plain_lines() {
         "Output retry: 1".to_string(),
         String::new(),
     ];
-    let rendered = render_transcript_lines(&lines, 1);
+    let rendered = render_transcript_lines(&lines, 80);
     let text = line_texts(&rendered).join("\n");
     assert!(text.contains("plain setup"));
     assert!(text.contains("hello"));
@@ -1020,6 +1797,14 @@ fn transcript_renderer_covers_status_styles_and_plain_lines() {
     assert!(text.contains("Calling: lookup"));
     assert!(text.contains("Complete: ok"));
     assert!(text.contains("x Error: lookup | Error: permission denied"));
+    let long_error =
+        "Tool error: shell_exec provider status 400: this error should keep its tail marker";
+    let long_error_text =
+        line_texts(&render_transcript_lines(&[long_error.to_string()], 120)).join("\n");
+    assert!(long_error_text.contains("provider status 400"));
+    assert!(long_error_text.contains("tail"));
+    assert!(long_error_text.contains("marker"));
+    assert!(!long_error_text.contains('…'));
     assert!(text.contains("✕ error boom"));
     assert!(text.contains("◌ thinking hidden"));
     assert!(text.contains("◷ waiting wait"));
@@ -1092,6 +1877,10 @@ fn help_command_prints_help_to_body_without_submitting() {
         .body
         .iter()
         .any(|line| line == "  !<command>        Run a shell command inline"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| { line == "  /paste-image      Attach image from system clipboard" }));
     assert!(state.body.iter().any(|line| line == "Shortcuts"));
     assert!(!state
         .body
@@ -1131,8 +1920,8 @@ fn goal_mode_tracks_iterations_completion_and_max_iterations() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.input = "/goal migrate tui".to_string();
     assert_eq!(
-        handle_key_event(&mut state, key_code(KeyCode::Enter)),
-        Some(InteractiveTuiEvent::Submit("migrate tui".to_string()))
+        submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
+        Some("migrate tui".to_string())
     );
     let first = state.complete_goal_iteration("needs more work");
     match first {
@@ -1161,8 +1950,8 @@ fn goal_mode_tracks_iterations_completion_and_max_iterations() {
     let mut max_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     max_state.input = "/goal hard task".to_string();
     assert_eq!(
-        handle_key_event(&mut max_state, key_code(KeyCode::Enter)),
-        Some(InteractiveTuiEvent::Submit("hard task".to_string()))
+        submit_text(handle_key_event(&mut max_state, key_code(KeyCode::Enter))),
+        Some("hard task".to_string())
     );
     max_state.goal_max_iterations = 1;
     assert_eq!(
@@ -1179,19 +1968,36 @@ fn goal_mode_tracks_iterations_completion_and_max_iterations() {
 #[test]
 fn fullscreen_composer_tracks_paste_images_and_steering_status() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
-    state.apply_paste("/tmp/screenshot.png");
+    state.attach_image(PromptAttachment::image(
+        1,
+        b"image-bytes".to_vec(),
+        "image/png",
+    ));
     assert_eq!(state.pasted_image_count(), 1);
     assert!(state.input_status_text().contains("image attached"));
     let composer_text = line_texts(&render_composer_lines(&state, 80)).join("\n");
-    assert!(composer_text.contains("image"));
-    assert!(composer_text.contains("screenshot.png"));
+    assert!(composer_text.contains("Attached image 1"));
+    assert!(composer_text.contains("image/png"));
     let footer_text = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(footer_text.contains("images:1"));
     assert!(footer_text.contains("Ctrl+U: Clear"));
 
     let submitted = state.take_submission_prompt().unwrap();
-    assert_eq!(submitted, "[image: /tmp/screenshot.png]");
+    assert!(submitted.text.contains("Attached image 1"));
+    assert_eq!(submitted.attachments.len(), 1);
+    assert_eq!(submitted.attachments[0].media_type, "image/png");
     assert_eq!(state.pasted_image_count(), 0);
+
+    state.attach_image(PromptAttachment::image(1, vec![1, 2, 3], "image/png"));
+    state.backspace_composer();
+    assert_eq!(state.pasted_image_count(), 0);
+    assert!(!state.input.contains("Attached image 1"));
+
+    state.attach_image(PromptAttachment::image(1, vec![1, 2, 3], "image/png"));
+    state.input = "text only".to_string();
+    let text_only = state.take_submission_prompt().unwrap();
+    assert_eq!(text_only.text, "text only");
+    assert!(text_only.attachments.is_empty());
 
     state.running = true;
     state.apply_paste("tighten this section");
@@ -1510,10 +2316,37 @@ fn key_handler_covers_quit_and_history_edges() {
     );
 
     let mut escape_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    escape_state
+        .body
+        .extend(["first".to_string(), "second".to_string()]);
     assert_eq!(
         handle_key_event(&mut escape_state, key_code(KeyCode::Esc)),
-        Some(InteractiveTuiEvent::Quit)
+        None
     );
+    assert!(escape_state.selection_mode_visible());
+    assert_eq!(escape_state.input_mode_label(), "SELECT");
+    assert_eq!(
+        escape_state.selected_line_preview().as_deref(),
+        Some("second")
+    );
+    let select_footer = line_texts(&render_footer_lines(&escape_state, 120)).join("\n");
+    assert!(select_footer.contains("SELECT"));
+    assert!(select_footer.contains("Mouse drag: Select terminal text to copy"));
+    assert!(!should_capture_mouse(&escape_state));
+    assert_eq!(
+        handle_key_event(&mut escape_state, key_code(KeyCode::Up)),
+        None
+    );
+    assert_eq!(
+        escape_state.selected_line_preview().as_deref(),
+        Some("first")
+    );
+    assert_eq!(
+        handle_key_event(&mut escape_state, key_code(KeyCode::Esc)),
+        None
+    );
+    assert!(!escape_state.selection_mode_visible());
+    assert!(should_capture_mouse(&escape_state));
     let mut ctrl_c_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     ctrl_c_state.input = "clear me".to_string();
     assert_eq!(
@@ -1546,6 +2379,20 @@ fn terminal_width_helpers_handle_wide_characters() {
     let rendered = render_markdown_lines(&["中文中文 hello".to_string()], 8);
     assert!(rendered.len() > 1);
     assert!(rendered.iter().all(|line| line.visible_width() <= 8));
+}
+
+fn submit_text(event: Option<InteractiveTuiEvent>) -> Option<String> {
+    match event {
+        Some(InteractiveTuiEvent::Submit(input)) => Some(input.display_text()),
+        _ => None,
+    }
+}
+
+fn queue_text(event: Option<InteractiveTuiEvent>) -> Option<String> {
+    match event {
+        Some(InteractiveTuiEvent::Queue(input)) => Some(input.display_text()),
+        _ => None,
+    }
 }
 
 fn body_has_line(state: &InteractiveTuiState, expected: &str) -> bool {
