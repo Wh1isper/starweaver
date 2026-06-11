@@ -16,6 +16,7 @@ categories.workspace = true
 base64.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true

@@ -20,9 +20,12 @@ use super::{
     common::{limit_or_unlimited, non_negative_limit},
     handle::environment_provider,
 };
-use crate::bundles::{
-    helpers::{static_tool, tool_execution_error},
-    HostMediaCapabilities, HostMediaUnderstandingClientHandle, MediaUnderstandingRequest,
+use crate::{
+    bundles::{
+        helpers::{static_tool, tool_execution_error},
+        HostMediaCapabilities, HostMediaUnderstandingClientHandle, MediaUnderstandingRequest,
+    },
+    media_compression::{compress_image_to_model_limit, raw_budget_for_encoded_limit},
 };
 
 const BINARY_CHECK_BYTES: usize = 8192;
@@ -720,25 +723,65 @@ async fn read_media_file(
             ),
         })));
     }
-    let data = provider
+    let mut data = provider
         .read_bytes(&arguments.file_path, 0, None)
         .await
         .map_err(|error| tool_execution_error("view", error))?;
-    let media_type = match media_kind {
+    let mut media_type = match media_kind {
         MediaKind::Image => detect_image_media_type(&data)
             .or_else(|| image_media_type(&arguments.file_path))
-            .unwrap_or("application/octet-stream"),
-        MediaKind::Video => video_media_type(&arguments.file_path),
-        MediaKind::Audio => audio_media_type(&arguments.file_path),
+            .unwrap_or("application/octet-stream")
+            .to_string(),
+        MediaKind::Video => video_media_type(&arguments.file_path).to_string(),
+        MediaKind::Audio => audio_media_type(&arguments.file_path).to_string(),
     };
-    if media_kind == MediaKind::Image && !is_supported_inline_image(media_type) {
+    if media_kind == MediaKind::Image && !is_supported_inline_image(&media_type) {
         return Ok(ToolResult::new(Value::String(format!(
             "Error: unsupported image format '{media_type}' for {}. Supported formats: image/gif, image/jpeg, image/png, image/webp.",
             arguments.file_path
         ))));
     }
 
-    let data_url = data_url(media_type, &data);
+    let original_bytes = data.len();
+    let mut compressed_for_model = false;
+    if media_kind == MediaKind::Image {
+        if let Some(agent_context) = context.dependency::<AgentContext>() {
+            let max_image_bytes = agent_context.model_config.max_image_bytes;
+            if max_image_bytes > 0 {
+                match compress_image_to_model_limit(&data, max_image_bytes, &media_type) {
+                    Ok(compressed) => {
+                        if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
+                            return Ok(ToolResult::new(serde_json::json!({
+                                "success": false,
+                                "file_path": arguments.file_path,
+                                "media_kind": media_kind.as_str(),
+                                "media_type": media_type,
+                                "error": format!(
+                                    "Image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding."
+                                ),
+                                "message": "Try resizing or converting it to a smaller format first.",
+                            })));
+                        }
+                        data = compressed.data;
+                        media_type = compressed.media_type;
+                        compressed_for_model = compressed.compressed;
+                    }
+                    Err(error) => {
+                        return Ok(ToolResult::new(serde_json::json!({
+                            "success": false,
+                            "file_path": arguments.file_path,
+                            "media_kind": media_kind.as_str(),
+                            "media_type": media_type,
+                            "error": format!("Image could not be compressed for inline model input: {error}"),
+                            "message": "Try resizing or converting it to a smaller format first.",
+                        })));
+                    }
+                }
+            }
+        }
+    }
+
+    let data_url = data_url(&media_type, &data);
     let capabilities = context.dependency::<HostMediaCapabilities>();
     let native_supported = capabilities
         .as_ref()
@@ -774,6 +817,9 @@ async fn read_media_file(
             "model_id": capabilities.and_then(|capabilities| capabilities.model_id.clone()),
             "message": message,
             "instructions": arguments.instructions,
+            "compressed": compressed_for_model,
+            "original_bytes": original_bytes,
+            "inline_bytes": data.len(),
         }))
         .with_private_metadata(private_metadata));
     }

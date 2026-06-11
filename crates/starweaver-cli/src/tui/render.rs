@@ -1270,9 +1270,21 @@ pub(super) fn wrap_text_width(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+#[cfg(test)]
 pub(super) fn composer_cursor_column(input_tail: &[String]) -> usize {
     let current = input_tail.last().map_or("", String::as_str);
     "> ".len().saturating_add(visible_width(current))
+}
+
+pub(super) fn composer_cursor_position(input: &str, cursor_byte: usize) -> (usize, usize) {
+    let cursor_byte = cursor_byte.min(input.len());
+    let before_cursor = &input[..cursor_byte];
+    let line_index = before_cursor.bytes().filter(|byte| *byte == b'\n').count();
+    let line_start = before_cursor.rfind('\n').map_or(0, |index| index + 1);
+    let column = "> "
+        .len()
+        .saturating_add(visible_width(&before_cursor[line_start..]));
+    (line_index, column)
 }
 
 #[cfg(test)]

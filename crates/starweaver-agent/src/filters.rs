@@ -15,11 +15,17 @@ use starweaver_runtime::{
     CapabilitySpec, StaticCapabilityBundle,
 };
 
+use crate::media_compression::{
+    compress_data_url_object, compress_image_data, compression_failed_message, data_url,
+    oversized_after_compression_message, raw_budget_for_encoded_limit,
+};
+
 /// Ordered default filter names for ya-agent-sdk behavioral parity.
 pub const DEFAULT_FILTER_ORDER: &[&str] = &[
     "cold_start",
     "capability",
     "media_preflight",
+    "media_compress",
     "media_upload",
     "compact",
     "handoff",
@@ -89,6 +95,8 @@ Use this exact Markdown structure:
 ";
 const CACHE_FRIENDLY_COMPACT_PROMPT: &str = "Compact the conversation history into the requested continuation summary format. Focus on details needed to continue the user's work accurately after older messages are removed. Return only the summary text.";
 const COMPACT_LIMIT_PROMPT: &str = "You have exceeded the maximum token limit for this conversation. Please provide a summary of the conversation so far and what you should work on next and I'll resume the conversation.";
+const MAX_COMPACT_INSTRUCTION_CHARS: usize = 12_000;
+const MAX_COMPACT_REPLAY_INSTRUCTION_CHARS: usize = 20_000;
 const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
 const USER_RULES_TAG: &str = "user-rules";
 
@@ -323,7 +331,7 @@ impl CacheFriendlyCompactCapability {
         context.metadata.remove(COMPACT_DEPTH_METADATA);
         context.add_usage(&response.usage);
         let summary = response.text_output();
-        let compacted = build_cache_friendly_compacted_messages(state, messages, summary);
+        let compacted = build_cache_friendly_compacted_messages(state, messages, &summary);
         context.publish_event(AgentEvent::new(
             "compact_complete",
             json!({
@@ -346,14 +354,17 @@ impl AgentCapability for NamedFilterCapability {
     async fn prepare_model_messages_with_context(
         &self,
         state: &mut AgentRunState,
-        _context: &mut AgentContext,
+        context: &mut AgentContext,
         messages: Vec<ModelMessage>,
     ) -> CapabilityResult<Vec<ModelMessage>> {
         let mut messages = match self.name {
             "cold_start" => cold_start_filter(state, messages),
-            "capability" => capability_filter(state, messages),
-            "media_preflight" => media_preflight_filter(state, messages),
-            "media_upload" => media_upload_filter(state, messages, self.uploader.as_ref()).await,
+            "capability" => capability_filter(state, context, messages),
+            "media_preflight" => media_preflight_filter(state, context, messages),
+            "media_compress" => media_compress_filter(state, context, messages),
+            "media_upload" => {
+                media_upload_filter(state, context, messages, self.uploader.as_ref()).await
+            }
             "handoff" => {
                 inject_instruction_from_metadata(state, messages, HANDOFF_METADATA, "handoff")
             }
@@ -446,8 +457,12 @@ fn cold_start_filter(state: &AgentRunState, mut messages: Vec<ModelMessage>) -> 
     messages
 }
 
-fn capability_filter(state: &AgentRunState, mut messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
-    let policy = media_policy_from_state(state);
+fn capability_filter(
+    state: &AgentRunState,
+    context: &AgentContext,
+    mut messages: Vec<ModelMessage>,
+) -> Vec<ModelMessage> {
+    let policy = media_policy_from_state_and_context(state, context);
     let mut replaced = 0usize;
     for message in &mut messages {
         if let ModelMessage::Request(request) = message {
@@ -478,9 +493,10 @@ fn capability_filter(state: &AgentRunState, mut messages: Vec<ModelMessage>) -> 
 
 fn media_preflight_filter(
     state: &AgentRunState,
+    context: &AgentContext,
     mut messages: Vec<ModelMessage>,
 ) -> Vec<ModelMessage> {
-    let policy = media_policy_from_state(state);
+    let policy = media_policy_from_state_and_context(state, context);
     let mut reports = Vec::new();
     let mut replacements = 0usize;
     for message in &mut messages {
@@ -527,15 +543,81 @@ fn media_preflight_filter(
     messages
 }
 
+fn media_compress_filter(
+    state: &AgentRunState,
+    context: &AgentContext,
+    mut messages: Vec<ModelMessage>,
+) -> Vec<ModelMessage> {
+    let policy = media_policy_from_state_and_context(state, context);
+    let Some(max_image_bytes) = policy.max_inline_base64_bytes else {
+        return messages;
+    };
+    if max_image_bytes == 0 {
+        return messages;
+    }
+    let mut outcome = CompressionOutcome::default();
+    for message in &mut messages {
+        if let ModelMessage::Request(request) = message {
+            for part in &mut request.parts {
+                match part {
+                    ModelRequestPart::UserPrompt { content, .. } => {
+                        for item in content {
+                            outcome.merge(compress_content_part(item, max_image_bytes));
+                        }
+                    }
+                    ModelRequestPart::ToolReturn(tool_return) => {
+                        outcome.merge(compress_tool_value(
+                            &mut tool_return.content,
+                            max_image_bytes,
+                        ));
+                        if let Some(user_content) = &mut tool_return.user_content {
+                            outcome.merge(compress_tool_value(user_content, max_image_bytes));
+                        }
+                        if let Some(content_parts) = tool_return
+                            .private_metadata
+                            .get_mut("starweaver_tool_return_content_parts")
+                        {
+                            outcome.merge(compress_tool_value(content_parts, max_image_bytes));
+                        }
+                    }
+                    ModelRequestPart::SystemPrompt { .. }
+                    | ModelRequestPart::RetryPrompt { .. }
+                    | ModelRequestPart::Instruction { .. } => {}
+                }
+            }
+        }
+    }
+    if outcome.compressed > 0 {
+        request_metadata_mut(&mut messages).insert(
+            "starweaver_media_compressed".to_string(),
+            json!(outcome.compressed),
+        );
+    }
+    if outcome.replaced > 0 {
+        request_metadata_mut(&mut messages).insert(
+            "starweaver_media_compression_replacements".to_string(),
+            json!(outcome.replaced),
+        );
+    }
+    if !outcome.failures.is_empty() {
+        request_metadata_mut(&mut messages).insert(
+            "starweaver_media_compression_failures".to_string(),
+            Value::Array(outcome.failures),
+        );
+    }
+    messages
+}
+
 async fn media_upload_filter(
     state: &AgentRunState,
+    context: &AgentContext,
     mut messages: Vec<ModelMessage>,
     uploader: Option<&Arc<dyn MediaUploader>>,
 ) -> Vec<ModelMessage> {
     let Some(media_uploader) = uploader else {
         return messages;
     };
-    let policy = media_policy_from_state(state);
+    let policy = media_policy_from_state_and_context(state, context);
     let mut upload_count = 0usize;
     let mut failures = Vec::new();
     for message in &mut messages {
@@ -646,6 +728,7 @@ fn compact_model_settings(
 }
 
 fn strip_compact_model_settings(settings: &mut ModelSettings) {
+    settings.max_tokens = Some(settings.max_tokens.unwrap_or(4096).min(4096));
     settings.thinking = None;
     strip_compact_incompatible_body(&mut settings.extra_body);
     strip_incompatible_beta_header(&mut settings.extra_headers);
@@ -721,13 +804,16 @@ fn strip_clear_thinking_edits(body: &mut Map<String, Value>) {
 fn build_cache_friendly_compacted_messages(
     state: &AgentRunState,
     messages: &[ModelMessage],
-    summary: String,
+    summary: &str,
 ) -> Vec<ModelMessage> {
-    let mut summary_response = ModelResponse::text(summary);
+    let mut summary_response = ModelResponse::text(truncate_compact_chars(
+        summary,
+        MAX_COMPACT_REPLAY_INSTRUCTION_CHARS,
+    ));
     summary_response
         .metadata
         .insert("keep".to_string(), json!("compact"));
-    let mut request_parts = instruction_parts(messages);
+    let mut request_parts = compact_replay_instruction_parts(messages);
     if request_parts.is_empty() {
         request_parts.push(ModelRequestPart::SystemPrompt {
             text: "Placeholder system prompt".to_string(),
@@ -751,7 +837,7 @@ fn build_cache_friendly_compacted_messages(
             metadata: Map::new(),
         }),
         ModelMessage::Response(summary_response),
-        context_restored_request(state),
+        context_restored_request(state, messages),
     ]
 }
 
@@ -803,6 +889,59 @@ fn instruction_parts(messages: &[ModelMessage]) -> Vec<ModelRequestPart> {
         .collect()
 }
 
+fn compact_replay_instruction_parts(messages: &[ModelMessage]) -> Vec<ModelRequestPart> {
+    dedupe_instruction_parts(
+        instruction_parts(messages)
+            .into_iter()
+            .filter_map(trim_instruction_part_for_replay)
+            .collect(),
+    )
+}
+
+fn trim_instruction_part_for_replay(part: ModelRequestPart) -> Option<ModelRequestPart> {
+    match part {
+        ModelRequestPart::SystemPrompt { text, metadata } => {
+            trim_instruction_text_for_replay(&text)
+                .map(|text| ModelRequestPart::SystemPrompt { text, metadata })
+        }
+        ModelRequestPart::Instruction { text, metadata } => trim_instruction_text_for_replay(&text)
+            .map(|text| ModelRequestPart::Instruction { text, metadata }),
+        _ => None,
+    }
+}
+
+fn dedupe_instruction_parts(parts: Vec<ModelRequestPart>) -> Vec<ModelRequestPart> {
+    let mut output = Vec::new();
+    for part in parts {
+        if !output.contains(&part) {
+            output.push(part);
+        }
+    }
+    output
+}
+
+fn trim_instruction_text_for_replay(text: &str) -> Option<String> {
+    trim_instruction_text(text, MAX_COMPACT_REPLAY_INSTRUCTION_CHARS)
+}
+
+fn trim_instruction_text_for_compact(text: &str) -> Option<String> {
+    trim_instruction_text(text, MAX_COMPACT_INSTRUCTION_CHARS)
+}
+
+fn trim_instruction_text(text: &str, max_chars: usize) -> Option<String> {
+    strip_injected_context_text(text).map(|text| truncate_compact_chars(&text, max_chars))
+}
+
+fn truncate_compact_chars(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let keep = max_chars.saturating_sub(80);
+    let head = text.chars().take(keep).collect::<String>();
+    let omitted = text.chars().count().saturating_sub(keep);
+    format!("{head}\n[... {omitted} chars truncated for compact replay ...]")
+}
+
 fn manual_compact_keep(state: &AgentRunState) -> Option<usize> {
     state
         .metadata
@@ -834,7 +973,7 @@ fn build_trimmed_compact_messages(
     );
 
     if !has_context_restored_marker(&compacted) {
-        compacted.push(context_restored_request(state));
+        compacted.push(context_restored_request(state, messages));
     }
     request_metadata_mut(&mut compacted).insert("starweaver_compacted".to_string(), json!(true));
     compacted
@@ -868,7 +1007,17 @@ fn trim_message_for_compact(message: ModelMessage) -> Option<ModelMessage> {
                             });
                         }
                     }
-                    other => parts.push(other),
+                    ModelRequestPart::SystemPrompt { text, metadata } => {
+                        if let Some(text) = trim_instruction_text_for_compact(&text) {
+                            parts.push(ModelRequestPart::SystemPrompt { text, metadata });
+                        }
+                    }
+                    ModelRequestPart::Instruction { text, metadata } => {
+                        if let Some(text) = trim_instruction_text_for_compact(&text) {
+                            parts.push(ModelRequestPart::Instruction { text, metadata });
+                        }
+                    }
+                    other @ ModelRequestPart::RetryPrompt { .. } => parts.push(other),
                 }
             }
             if parts.is_empty() {
@@ -1000,7 +1149,35 @@ fn has_context_restored_marker(messages: &[ModelMessage]) -> bool {
     })
 }
 
-fn context_restored_request(state: &AgentRunState) -> ModelMessage {
+fn latest_user_prompt_replay_part(messages: &[ModelMessage]) -> Option<ModelRequestPart> {
+    messages.iter().rev().find_map(|message| {
+        let ModelMessage::Request(request) = message else {
+            return None;
+        };
+        request.parts.iter().rev().find_map(|part| {
+            let ModelRequestPart::UserPrompt {
+                content,
+                name,
+                metadata,
+            } = part
+            else {
+                return None;
+            };
+            let content = content
+                .iter()
+                .cloned()
+                .filter_map(trim_content_for_compact)
+                .collect::<Vec<_>>();
+            (!content.is_empty()).then(|| ModelRequestPart::UserPrompt {
+                content,
+                name: name.clone(),
+                metadata: metadata.clone(),
+            })
+        })
+    })
+}
+
+fn context_restored_request(state: &AgentRunState, messages: &[ModelMessage]) -> ModelMessage {
     let mut parts = Vec::new();
     if let Some(original) = metadata_text(&state.metadata, "starweaver_original_request") {
         parts.push(ModelRequestPart::UserPrompt {
@@ -1015,6 +1192,16 @@ fn context_restored_request(state: &AgentRunState) -> ModelMessage {
             name: None,
             metadata: Map::new(),
         });
+    }
+    if let Some(current_request) = latest_user_prompt_replay_part(messages) {
+        parts.push(ModelRequestPart::UserPrompt {
+            content: vec![ContentPart::Text {
+                text: "<current-request>Below is the user's latest request that triggered compaction:</current-request>".to_string(),
+            }],
+            name: None,
+            metadata: Map::new(),
+        });
+        parts.push(current_request);
     }
     if let Some(steering) = metadata_text(&state.metadata, "starweaver_user_steering") {
         parts.push(ModelRequestPart::UserPrompt {
@@ -1341,6 +1528,196 @@ fn preflight_tool_value(value: &mut Value, policy: &MediaPolicy) -> PreflightOut
     outcome
 }
 
+fn compress_content_part(item: &mut ContentPart, max_image_bytes: usize) -> CompressionOutcome {
+    let max_raw_bytes = raw_budget_for_encoded_limit(max_image_bytes);
+    match item {
+        ContentPart::Binary { data, media_type } if media_type.starts_with("image/") => {
+            if data.len() <= max_raw_bytes {
+                return CompressionOutcome::default();
+            }
+            let original_size = data.len();
+            match compress_image_data(data, max_raw_bytes, media_type) {
+                Ok(compressed) if compressed.data.len() <= max_raw_bytes => {
+                    *data = compressed.data;
+                    *media_type = compressed.media_type;
+                    CompressionOutcome::compressed(usize::from(compressed.compressed))
+                }
+                Ok(_) => {
+                    *item = ContentPart::Text {
+                        text: oversized_after_compression_message(original_size, max_image_bytes),
+                    };
+                    CompressionOutcome::replaced(json!({
+                        "reason": "compressed_image_exceeded_model_limit",
+                        "original_size": original_size,
+                        "max_image_bytes": max_image_bytes,
+                    }))
+                }
+                Err(error) => {
+                    *item = ContentPart::Text {
+                        text: compression_failed_message(),
+                    };
+                    CompressionOutcome::replaced(json!({
+                        "reason": "compression_failed",
+                        "error": error,
+                    }))
+                }
+            }
+        }
+        ContentPart::DataUrl {
+            data_url: content_data_url,
+            media_type,
+        } if media_type.starts_with("image/") => match parse_data_url(content_data_url) {
+            Ok(parsed) => {
+                if parsed.data.len() <= max_raw_bytes {
+                    return CompressionOutcome::default();
+                }
+                let original_size = parsed.data.len();
+                match compress_image_data(&parsed.data, max_raw_bytes, &parsed.media_type) {
+                    Ok(compressed) if compressed.data.len() <= max_raw_bytes => {
+                        *content_data_url = data_url(&compressed.media_type, &compressed.data);
+                        *media_type = compressed.media_type;
+                        CompressionOutcome::compressed(usize::from(compressed.compressed))
+                    }
+                    Ok(_) => {
+                        *item = ContentPart::Text {
+                            text: oversized_after_compression_message(
+                                original_size,
+                                max_image_bytes,
+                            ),
+                        };
+                        CompressionOutcome::replaced(json!({
+                            "reason": "compressed_data_url_exceeded_model_limit",
+                            "original_size": original_size,
+                            "max_image_bytes": max_image_bytes,
+                        }))
+                    }
+                    Err(error) => {
+                        *item = ContentPart::Text {
+                            text: compression_failed_message(),
+                        };
+                        CompressionOutcome::replaced(json!({
+                            "reason": "data_url_compression_failed",
+                            "error": error,
+                        }))
+                    }
+                }
+            }
+            Err(error) => CompressionOutcome::failure(json!({
+                "reason": "invalid_data_url",
+                "error": error,
+            })),
+        },
+        ContentPart::Text { .. }
+        | ContentPart::ImageUrl { .. }
+        | ContentPart::FileUrl { .. }
+        | ContentPart::ResourceRef { .. }
+        | ContentPart::Binary { .. }
+        | ContentPart::DataUrl { .. } => CompressionOutcome::default(),
+    }
+}
+
+fn compress_tool_value(value: &mut Value, max_image_bytes: usize) -> CompressionOutcome {
+    let mut outcome = CompressionOutcome::default();
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                outcome.merge(compress_tool_value(item, max_image_bytes));
+            }
+        }
+        Value::Object(object) => {
+            if object.get("data_url").and_then(Value::as_str).is_some() {
+                match compress_data_url_object(object, max_image_bytes) {
+                    Ok(true) => outcome.compressed += 1,
+                    Ok(false) => {}
+                    Err(message) if message.starts_with("<system-reminder>") => {
+                        *value = json!({ "type": "system_reminder", "text": message });
+                        outcome.replaced += 1;
+                    }
+                    Err(error) => {
+                        *value = json!({ "type": "system_reminder", "text": compression_failed_message() });
+                        outcome.replaced += 1;
+                        outcome.failures.push(json!({
+                            "reason": "tool_data_url_compression_failed",
+                            "error": error,
+                        }));
+                    }
+                }
+                return outcome;
+            }
+            if let Some(child_outcome) =
+                compress_json_binary_content_object(object, max_image_bytes)
+            {
+                outcome.merge(child_outcome);
+                return outcome;
+            }
+            for item in object.values_mut() {
+                outcome.merge(compress_tool_value(item, max_image_bytes));
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+    outcome
+}
+
+fn compress_json_binary_content_object(
+    object: &mut Map<String, Value>,
+    max_image_bytes: usize,
+) -> Option<CompressionOutcome> {
+    let media_type = object.get("media_type")?.as_str()?.to_string();
+    if !media_type.starts_with("image/") {
+        return None;
+    }
+    let data = json_byte_array(object.get("data")?)?;
+    let max_raw_bytes = raw_budget_for_encoded_limit(max_image_bytes);
+    if data.len() <= max_raw_bytes {
+        return Some(CompressionOutcome::default());
+    }
+    let original_size = data.len();
+    match compress_image_data(&data, max_raw_bytes, &media_type) {
+        Ok(compressed) if compressed.data.len() <= max_raw_bytes => {
+            object.insert("data".to_string(), json!(compressed.data));
+            object.insert("media_type".to_string(), json!(compressed.media_type));
+            Some(CompressionOutcome::compressed(usize::from(
+                compressed.compressed,
+            )))
+        }
+        Ok(_) => {
+            object.clear();
+            object.insert("type".to_string(), json!("system_reminder"));
+            object.insert(
+                "text".to_string(),
+                json!(oversized_after_compression_message(
+                    original_size,
+                    max_image_bytes,
+                )),
+            );
+            Some(CompressionOutcome::replaced(json!({
+                "reason": "json_binary_image_exceeded_model_limit",
+                "original_size": original_size,
+                "max_image_bytes": max_image_bytes,
+            })))
+        }
+        Err(error) => {
+            object.clear();
+            object.insert("type".to_string(), json!("system_reminder"));
+            object.insert("text".to_string(), json!(compression_failed_message()));
+            Some(CompressionOutcome::replaced(json!({
+                "reason": "json_binary_image_compression_failed",
+                "error": error,
+            })))
+        }
+    }
+}
+
+fn json_byte_array(value: &Value) -> Option<Vec<u8>> {
+    value.as_array().map(|items| {
+        items
+            .iter()
+            .map(|item| item.as_u64().and_then(|value| u8::try_from(value).ok()))
+            .collect::<Option<Vec<_>>>()
+    })?
+}
+
 async fn upload_content_part(
     item: &ContentPart,
     policy: &MediaPolicy,
@@ -1577,13 +1954,27 @@ fn normalize_reasoning_text(text: &str) -> String {
         .to_string()
 }
 
-fn media_policy_from_state(state: &AgentRunState) -> MediaPolicy {
-    state
+fn media_policy_from_state_and_context(
+    state: &AgentRunState,
+    context: &AgentContext,
+) -> MediaPolicy {
+    let mut policy: MediaPolicy = state
         .metadata
         .get(MEDIA_POLICY_METADATA)
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if policy.max_inline_base64_bytes.is_none() && context.model_config.max_image_bytes > 0 {
+        policy.max_inline_base64_bytes = Some(context.model_config.max_image_bytes);
+    }
+    if policy.max_images.is_none() {
+        policy.max_images = Some(context.model_config.max_images);
+    }
+    if policy.max_videos.is_none() {
+        policy.max_videos = Some(context.model_config.max_videos);
+    }
+    policy.allow_gif &= context.model_config.support_gif;
+    policy
 }
 
 fn metadata_text(metadata: &Map<String, Value>, key: &str) -> Option<String> {
@@ -1712,6 +2103,45 @@ impl PreflightOutcome {
     fn merge(&mut self, other: Self) {
         self.reports.extend(other.reports);
         self.replaced |= other.replaced;
+    }
+}
+
+#[derive(Default)]
+struct CompressionOutcome {
+    compressed: usize,
+    replaced: usize,
+    failures: Vec<Value>,
+}
+
+impl CompressionOutcome {
+    const fn compressed(compressed: usize) -> Self {
+        Self {
+            compressed,
+            replaced: 0,
+            failures: Vec::new(),
+        }
+    }
+
+    fn replaced(failure: Value) -> Self {
+        Self {
+            compressed: 0,
+            replaced: 1,
+            failures: vec![failure],
+        }
+    }
+
+    fn failure(failure: Value) -> Self {
+        Self {
+            compressed: 0,
+            replaced: 0,
+            failures: vec![failure],
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.compressed += other.compressed;
+        self.replaced += other.replaced;
+        self.failures.extend(other.failures);
     }
 }
 

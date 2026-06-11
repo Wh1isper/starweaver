@@ -354,6 +354,44 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
     assert_eq!(state.status, "INTERRUPT");
     assert!(state.cancel_requested);
+
+    let mut running_overlay_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    running_overlay_state.begin_run("long running prompt");
+    running_overlay_state.open_selection_mode();
+    assert!(running_overlay_state.selection_mode_visible());
+    assert_eq!(
+        handle_key_event(
+            &mut running_overlay_state,
+            key_modified('c', KeyModifiers::CONTROL),
+        ),
+        Some(InteractiveTuiEvent::Cancel)
+    );
+    assert!(running_overlay_state.cancel_requested);
+    assert_eq!(running_overlay_state.status, "INTERRUPT");
+    assert!(running_overlay_state.selection_mode_visible());
+    assert_eq!(
+        running_overlay_state
+            .body
+            .iter()
+            .filter(|line| line.as_str() == "Interrupt requested. Cancelling active run.")
+            .count(),
+        1
+    );
+    assert_eq!(
+        handle_key_event(
+            &mut running_overlay_state,
+            key_modified('c', KeyModifiers::CONTROL),
+        ),
+        Some(InteractiveTuiEvent::Cancel)
+    );
+    assert_eq!(
+        running_overlay_state
+            .body
+            .iter()
+            .filter(|line| line.as_str() == "Interrupt requested. Cancelling active run.")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -1134,6 +1172,11 @@ fn view_tool_return_renders_file_preview() {
     assert!(body_has_line(&state, "Tool result: view"));
     assert!(body_has_line(&state, "  Viewing file: README.md"));
     assert!(body_has_line(&state, "    │ line 1"));
+    assert!(body_has_line(&state, "    │ line 2"));
+    assert!(body_has_line(
+        &state,
+        "  Truncation: {\"content_truncated\":false}"
+    ));
 
     let rendered = render_transcript_lines(&state.body, 80);
     assert!(has_segment(&rendered, "README.md", SegmentStyle::CYAN));
@@ -1180,6 +1223,10 @@ fn view_tool_return_renders_file_preview() {
     ));
     assert!(body_has_line(&state, "  Viewing file: paged.txt"));
     assert!(body_has_line(&state, "    │ page content"));
+    assert!(body_has_line(
+        &state,
+        "  Truncation: {\"lines_truncated\":true}"
+    ));
 
     state.apply_stream_record(&AgentStreamRecord::new(
         5,
@@ -1269,11 +1316,17 @@ fn special_tool_rendering_truncates_lines_and_releases_arguments() {
             tool_return: ToolReturnPart::new(edit_call.id.clone(), "edit", json!("updated")),
         },
     ));
-    let Some(added_line) = state.body.iter().find(|line| line.starts_with("    +")) else {
-        panic!("rendered added line");
-    };
-    assert!(added_line.contains('…'));
-    assert!(visible_width(added_line) <= 245);
+    assert!(body_has_line(&state, "Tool result: edit"));
+    assert!(body_has_line(&state, "  Editing file: long.txt"));
+    assert!(body_has_line(&state, "    -old"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line.starts_with("    +") && line.contains('…')));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| line.starts_with("    +") && line.len() > 280));
 
     state.apply_stream_record(&AgentStreamRecord::new(
         3,
@@ -1282,18 +1335,88 @@ fn special_tool_rendering_truncates_lines_and_releases_arguments() {
             tool_return: ToolReturnPart::new(edit_call.id, "edit", json!("duplicate")),
         },
     ));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.starts_with("  Result:") && line.contains("duplicate")));
     assert_eq!(
         state
             .body
             .iter()
-            .filter(|line| line.as_str() == "  Editing file: long.txt")
+            .filter(|line| line.as_str() == "Tool result: edit")
             .count(),
-        1
+        2
     );
+    assert!(body_has_line(&state, "  Result: duplicate"));
+}
+
+#[test]
+fn task_create_tool_renders_dedicated_full_output_without_generic_noise() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let call = ToolCallPart {
+        id: "task_create_1".to_string(),
+        name: "task_create".to_string(),
+        arguments: json!({
+            "subject": "Review CLI structure before release",
+            "description": "Review every CLI command, configuration path, and release note before cutting the release.",
+            "active_form": "Reviewing CLI structure before release"
+        })
+        .into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+
+    let mut duration_metadata = Metadata::default();
+    duration_metadata.insert("duration_ms".to_string(), json!(1));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                call.id,
+                "task_create",
+                json!({
+                    "operation": "task_create",
+                    "payload": {
+                        "id": "42",
+                        "subject": "Review CLI structure before release",
+                        "description": "Review every CLI command, configuration path, and release note before cutting the release.",
+                        "active_form": "Reviewing CLI structure before release"
+                    }
+                }),
+            )
+            .with_user_content(json!("Task created: Review CLI structure before release"))
+            .with_metadata(duration_metadata),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Task request: task_create"));
+    assert!(body_has_line(&state, "Task result: task_create"));
+    assert!(body_has_line(&state, "  Summary: Task created"));
+    assert!(body_has_line(&state, "  Task ID: 42"));
+    assert!(body_has_line(
+        &state,
+        "  Subject: Review CLI structure before release"
+    ));
+    assert!(body_has_line(
+        &state,
+        "  Description: Review every CLI command, configuration path, and release note before cutting the release."
+    ));
+    assert!(body_has_line(
+        &state,
+        "  Active form: Reviewing CLI structure before release"
+    ));
+    let body = state.body.join("\n");
+    assert!(!body.contains("Tool call: task_create"));
+    assert!(!body.contains("Tool result: task_create"));
+    assert!(!body.contains("Duration: 1ms"));
+
+    let rendered_text = line_texts(&render_transcript_lines(&state.body, 100)).join("\n");
+    assert!(rendered_text.contains("Task request: task_create"));
+    assert!(rendered_text.contains("Task result: task_create"));
+    assert!(!rendered_text.contains("Calling: task_create"));
+    assert!(!rendered_text.contains("Complete: task_create"));
 }
 
 #[test]
@@ -1310,8 +1433,9 @@ fn task_list_tool_return_renders_progress_when_statuses_are_present() {
             ),
         },
     ));
-    assert!(body_has_line(&state, "Tool result: task_list"));
-    assert!(body_has_line(&state, "  #1 [completed] Done"));
+    assert!(body_has_line(&state, "Task result: task_list"));
+    assert!(body_has_line(&state, "  Output:"));
+    assert!(body_has_line(&state, "    │ #1 [completed] Done"));
     assert!(body_has_line(&state, "  Progress: 1/2 (1 in progress)"));
 
     let progress_count_before_placeholder = state
@@ -1331,7 +1455,7 @@ fn task_list_tool_return_renders_progress_when_statuses_are_present() {
             .with_user_content(json!("Task list requested")),
         },
     ));
-    assert!(body_has_line(&state, "  Task list requested"));
+    assert!(body_has_line(&state, "  Summary: Task list requested"));
     assert_eq!(
         state
             .body
@@ -2754,6 +2878,22 @@ fn key_handler_covers_quit_and_history_edges() {
     );
     assert_eq!(state.input, "A");
     state.input.clear();
+    assert_eq!(handle_key_event(&mut state, key_char('a')), None);
+    assert_eq!(handle_key_event(&mut state, key_char('b')), None);
+    assert_eq!(handle_key_event(&mut state, key_char('c')), None);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Left)), None);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Left)), None);
+    assert_eq!(handle_key_event(&mut state, key_char('X')), None);
+    assert_eq!(state.input, "aXbc");
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Right)), None);
+    assert_eq!(handle_key_event(&mut state, key_char('Y')), None);
+    assert_eq!(state.input, "aXbYc");
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Home)), None);
+    assert_eq!(handle_key_event(&mut state, key_char('^')), None);
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::End)), None);
+    assert_eq!(handle_key_event(&mut state, key_char('!')), None);
+    assert_eq!(state.input, "^aXbYc!");
+    state.input.clear();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Left)), None);
     assert!(state.input.is_empty());
     assert_eq!(
@@ -2828,7 +2968,7 @@ fn key_handler_covers_quit_and_history_edges() {
     );
     let select_footer = line_texts(&render_footer_lines(&escape_state, 120)).join("\n");
     assert!(select_footer.contains("SELECT"));
-    assert!(select_footer.contains("Mouse drag: Select terminal text to copy"));
+    assert!(select_footer.contains("Enter/Esc: Close selection"));
     assert!(!should_capture_mouse(&escape_state));
     assert_eq!(
         handle_key_event(&mut escape_state, key_code(KeyCode::Up)),

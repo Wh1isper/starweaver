@@ -17,8 +17,8 @@ use crate::{prompt_input::PromptInput, CliResult};
 
 use super::{
     render::{
-        composer_cursor_column, input_viewport_lines, queue_styled_line_at, render_composer_lines,
-        render_footer_lines, render_live_history_lines, terminal_error,
+        composer_cursor_position, input_viewport_lines, queue_styled_line_at,
+        render_composer_lines, render_footer_lines, render_live_history_lines, terminal_error,
     },
     state::{
         BodyScrollDirection, InteractiveTuiState, PendingSessionCommand, RunMode,
@@ -138,14 +138,16 @@ impl InteractiveTui {
             COMPOSER_VISIBLE_LINES,
             state.composer_scroll_offset(),
         );
-        let cursor_row = composer_start
-            .saturating_add(1)
-            .saturating_add(input_tail.len().saturating_sub(1));
-        let cursor_col = if state.composer_scroll_offset() == 0 {
-            composer_cursor_column(&input_tail)
-        } else {
-            "> ".len()
-        };
+        let total_input_lines = input_line_count(&state.input);
+        let max_start = total_input_lines.saturating_sub(COMPOSER_VISIBLE_LINES);
+        let visible_start = max_start.saturating_sub(state.composer_scroll_offset().min(max_start));
+        let (cursor_line, cursor_col) =
+            composer_cursor_position(&state.input, state.composer_cursor_byte());
+        let cursor_row = composer_start.saturating_add(1).saturating_add(
+            cursor_line
+                .saturating_sub(visible_start)
+                .min(input_tail.len().saturating_sub(1)),
+        );
         queue!(
             self.stdout,
             MoveTo(
@@ -224,6 +226,15 @@ fn session_command_event(command: PendingSessionCommand) -> InteractiveTuiEvent 
     }
 }
 
+fn input_line_count(input: &str) -> usize {
+    let count = input.lines().count();
+    if input.ends_with('\n') || count == 0 {
+        count.saturating_add(1)
+    } else {
+        count
+    }
+}
+
 pub(super) const fn should_capture_mouse(state: &InteractiveTuiState) -> bool {
     !state.selection_mode_visible()
 }
@@ -250,6 +261,13 @@ pub(super) fn handle_key_event(
     state: &mut InteractiveTuiState,
     key: KeyEvent,
 ) -> Option<InteractiveTuiEvent> {
+    if key.code == KeyCode::Char('c')
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && state.running
+    {
+        state.request_cancel();
+        return Some(InteractiveTuiEvent::Cancel);
+    }
     if state.session_picker_visible() {
         match key.code {
             KeyCode::Esc => state.close_session_picker(),
@@ -333,10 +351,6 @@ pub(super) fn handle_key_event(
     }
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if state.running {
-                state.request_cancel();
-                return Some(InteractiveTuiEvent::Cancel);
-            }
             let now = Instant::now();
             let should_exit = state
                 .last_ctrl_c
@@ -426,6 +440,18 @@ pub(super) fn handle_key_event(
         }
         KeyCode::Backspace => {
             state.backspace_composer();
+        }
+        KeyCode::Left => {
+            state.move_composer_cursor_left();
+        }
+        KeyCode::Right => {
+            state.move_composer_cursor_right();
+        }
+        KeyCode::Home => {
+            state.move_composer_cursor_to_line_start();
+        }
+        KeyCode::End => {
+            state.move_composer_cursor_to_line_end();
         }
         KeyCode::PageUp => {
             scroll_viewport(state, 10, BodyScrollDirection::Up);

@@ -3,6 +3,7 @@
 pub mod bundles;
 pub mod filters;
 pub mod mcp_live;
+pub(crate) mod media_compression;
 pub mod presets;
 pub mod session;
 pub mod subagent;

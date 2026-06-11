@@ -66,7 +66,7 @@ Parameters:
 - cwd: Working directory (relative or absolute path).
 - background (default false): Run command in background and return process_id immediately.
 
-Large outputs are saved to temporary files with paths in stdout_file_path/stderr_file_path.
+Large outputs are saved to temporary files with paths in stdout_file_path/stderr_file_path. When a shell command needs to create temporary files itself, write them under `$TMPDIR` rather than hard-coded `/tmp/...`; local providers map `$TMPDIR` to a provider-managed, session-scoped directory that file tools can read.
 
 <background-mode>
 Set background=true for long-running commands such as builds, servers, and test suites. Manage background processes with:

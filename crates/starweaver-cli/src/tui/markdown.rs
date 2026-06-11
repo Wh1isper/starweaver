@@ -58,6 +58,8 @@ fn is_transcript_boundary(line: &str) -> bool {
         || line.starts_with("Tool call:")
         || line.starts_with("Tool result:")
         || line.starts_with("Tool error:")
+        || line.starts_with("Task request:")
+        || line.starts_with("Task result:")
         || line.starts_with("Steering:")
         || line.starts_with("Steering received")
         || line.starts_with("Thinking:")
@@ -88,6 +90,20 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
     }
     if let Some(tool) = line.strip_prefix("Tool error:") {
         return render_tool_lines(tool.trim_start(), ToolLineKind::Error, width);
+    }
+    if let Some(task) = line.strip_prefix("Task request:") {
+        return vec![render_task_tool_header_line(
+            "Task request: ",
+            task.trim_start(),
+            SegmentStyle::code().merge(SegmentStyle::bold()),
+        )];
+    }
+    if let Some(task) = line.strip_prefix("Task result:") {
+        return vec![render_task_tool_header_line(
+            "Task result: ",
+            task.trim_start(),
+            SegmentStyle::blockquote().merge(SegmentStyle::bold()),
+        )];
     }
     if let Some(text) = line.strip_prefix("Steering received:") {
         let mut rendered = StyledLine::styled("  ✓ steer received", SegmentStyle::blockquote());
@@ -202,6 +218,13 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
         .collect()
 }
 
+fn render_task_tool_header_line(label: &str, name: &str, name_style: SegmentStyle) -> StyledLine {
+    let mut rendered = StyledLine::plain("  ");
+    rendered.push(label, SegmentStyle::dim());
+    rendered.push(name, name_style);
+    rendered
+}
+
 fn render_file_tool_detail_line(line: &str) -> Option<StyledLine> {
     render_file_header_line(line)
         .or_else(|| render_file_metadata_line(line))
@@ -226,6 +249,16 @@ fn render_file_metadata_line(line: &str) -> Option<StyledLine> {
         ("  Result: ", SegmentStyle::dim()),
         ("  Duration: ", SegmentStyle::dim()),
         ("  Auto-load files: ", SegmentStyle::code()),
+        ("  Task ID: ", SegmentStyle::code()),
+        ("  Subject: ", SegmentStyle::default()),
+        ("  Description: ", SegmentStyle::default()),
+        ("  Active form: ", SegmentStyle::default()),
+        ("  Owner: ", SegmentStyle::default()),
+        ("  Blocks: ", SegmentStyle::code()),
+        ("  Blocked by: ", SegmentStyle::code()),
+        ("  Metadata: ", SegmentStyle::code()),
+        ("  Output: ", SegmentStyle::dim()),
+        ("  Progress: ", SegmentStyle::blockquote()),
         ("  Mode: ", SegmentStyle::warning()),
         ("  Lines: ", SegmentStyle::list_marker()),
         ("  Truncation: ", SegmentStyle::warning()),

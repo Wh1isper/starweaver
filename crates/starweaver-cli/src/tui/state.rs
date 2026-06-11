@@ -205,6 +205,10 @@ pub struct InteractiveTuiState {
     pub status: String,
     /// Editable prompt input.
     pub input: String,
+    /// Byte index of the editable prompt cursor.
+    pub(super) input_cursor: usize,
+    /// Input length last observed after an internal cursor-aware mutation.
+    input_cursor_input_len: usize,
     /// Active profile label.
     pub profile: String,
     /// Active model label.
@@ -277,6 +281,8 @@ impl InteractiveTuiState {
             body: Vec::new(),
             status: "IDLE".to_string(),
             input: String::new(),
+            input_cursor: 0,
+            input_cursor_input_len: 0,
             profile: "general".to_string(),
             model: "local_echo".to_string(),
             phase: "ready".to_string(),
@@ -376,7 +382,7 @@ impl InteractiveTuiState {
             self.input_status = Some("session blocked".to_string());
             return;
         }
-        self.input.clear();
+        self.clear_composer_input();
         self.reset_composer_scroll();
         self.pending_attachments.clear();
         self.footer_mode = FooterMode::Context;
@@ -468,7 +474,7 @@ impl InteractiveTuiState {
             self.input_status = Some("model blocked".to_string());
             return;
         }
-        self.input.clear();
+        self.clear_composer_input();
         self.reset_composer_scroll();
         self.pending_attachments.clear();
         self.footer_mode = FooterMode::Context;
@@ -1058,32 +1064,32 @@ impl InteractiveTuiState {
         self.footer_mode = FooterMode::Context;
         let image_paths = pasted_image_paths(text);
         if image_paths.is_empty() {
-            self.input.push_str(text);
-            self.reset_composer_scroll();
+            self.insert_composer_str(text);
             self.input_status = Some(format!("pasted {} chars", text.chars().count()));
             return;
         }
 
+        self.move_composer_cursor_to_end();
         if !self.input.is_empty() && !self.input.ends_with([' ', '\n']) {
-            self.input.push(' ');
+            self.insert_composer_str(" ");
         }
         for path in image_paths {
             if !self.input.is_empty() && !self.input.ends_with([' ', '\n']) {
-                self.input.push(' ');
+                self.insert_composer_str(" ");
             }
-            self.input.push_str(&path);
+            self.insert_composer_str(&path);
         }
-        self.reset_composer_scroll();
         self.input_status = Some("image path pasted".to_string());
     }
 
     pub(crate) fn attach_image(&mut self, attachment: PromptAttachment) {
         let placeholder = attachment.placeholder.clone();
+        self.move_composer_cursor_to_end();
         if !self.input.is_empty() && !self.input.ends_with([' ', '\n']) {
-            self.input.push(' ');
+            self.insert_composer_str(" ");
         }
-        self.input.push_str(&placeholder);
-        self.input.push(' ');
+        self.insert_composer_str(&placeholder);
+        self.insert_composer_str(" ");
         self.pending_attachments.push(attachment);
         self.reset_composer_scroll();
         let count = self.pending_attachments.len();
@@ -1175,12 +1181,12 @@ impl InteractiveTuiState {
             LocalCommandOutcome::None => self.input.trim().to_string(),
         };
         if prompt.is_empty() && self.pending_attachments.is_empty() {
-            self.input.clear();
+            self.clear_composer_input();
             self.reset_composer_scroll();
             return None;
         }
         let attachments = std::mem::take(&mut self.pending_attachments);
-        self.input.clear();
+        self.clear_composer_input();
         self.reset_composer_scroll();
         match kind {
             SubmissionKind::Message => self.input_status = Some("message sent".to_string()),
@@ -1196,7 +1202,7 @@ impl InteractiveTuiState {
     }
 
     pub(super) fn clear_composer(&mut self) {
-        self.input.clear();
+        self.clear_composer_input();
         self.reset_composer_scroll();
         self.pending_attachments.clear();
         self.input_status = None;
@@ -1208,9 +1214,18 @@ impl InteractiveTuiState {
         if self.remove_trailing_attachment_placeholder() {
             return;
         }
-        if self.input.pop().is_none() {
+        let cursor = self.composer_cursor_byte();
+        let Some(previous) = self.input[..cursor]
+            .char_indices()
+            .last()
+            .map(|(index, _)| index)
+        else {
             self.remove_last_pasted_image();
-        }
+            return;
+        };
+        self.input.replace_range(previous..cursor, "");
+        self.input_cursor = previous;
+        self.input_cursor_input_len = self.input.len();
         self.reset_composer_scroll();
     }
 
@@ -1228,6 +1243,8 @@ impl InteractiveTuiState {
             return false;
         };
         self.input.truncate(prefix.len());
+        self.input_cursor = self.input.len();
+        self.input_cursor_input_len = self.input.len();
         self.reset_composer_scroll();
         self.remove_last_pasted_image();
         true
@@ -1387,7 +1404,7 @@ impl InteractiveTuiState {
     fn take_local_command(&mut self) -> LocalCommandOutcome {
         let input = self.input.trim().to_string();
         if input == "/help" {
-            self.input.clear();
+            self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.append_help_to_body();
@@ -1395,7 +1412,7 @@ impl InteractiveTuiState {
             return LocalCommandOutcome::Consumed;
         }
         if input == "/clear" {
-            self.input.clear();
+            self.clear_composer_input();
             self.clear_context_view();
             self.pending_clear_context = true;
             self.footer_mode = FooterMode::Context;
@@ -1403,7 +1420,7 @@ impl InteractiveTuiState {
             return LocalCommandOutcome::Consumed;
         }
         if input == "/cost" {
-            self.input.clear();
+            self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.append_cost_summary();
@@ -1411,7 +1428,7 @@ impl InteractiveTuiState {
             return LocalCommandOutcome::Consumed;
         }
         if input == "/model" || input.starts_with("/model ") {
-            self.input.clear();
+            self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.handle_model_command(input.strip_prefix("/model").unwrap_or_default().trim());
@@ -1421,19 +1438,19 @@ impl InteractiveTuiState {
             return LocalCommandOutcome::Consumed;
         }
         if input == "/session" || input.starts_with("/session ") {
-            self.input.clear();
+            self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.handle_session_command(input.strip_prefix("/session").unwrap_or_default().trim());
             return LocalCommandOutcome::Consumed;
         }
         if input == "/paste-image" {
-            self.input.clear();
+            self.clear_composer_input();
             self.footer_mode = FooterMode::Context;
             return LocalCommandOutcome::PasteImage;
         }
         if let Some(command) = input.strip_prefix('!') {
-            self.input.clear();
+            self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.run_shell_command(command.trim());
@@ -1441,7 +1458,7 @@ impl InteractiveTuiState {
             return LocalCommandOutcome::Consumed;
         }
         if input == "/goal" || input.starts_with("/goal ") {
-            self.input.clear();
+            self.clear_composer_input();
             let task = input.strip_prefix("/goal").unwrap_or_default().trim();
             if task.is_empty() {
                 self.body
@@ -1461,7 +1478,7 @@ impl InteractiveTuiState {
             return LocalCommandOutcome::Submit(task.to_string());
         }
         if let Some(expanded) = expand_slash_command(&self.custom_commands, &input) {
-            self.input.clear();
+            self.clear_composer_input();
             self.footer_mode = FooterMode::Context;
             let mut message = format!("[SYS] Expanded /{} custom command", expanded.command_name);
             if expanded.invoked_name != expanded.command_name {
@@ -1481,7 +1498,7 @@ impl InteractiveTuiState {
             return LocalCommandOutcome::Submit(input);
         }
         if input.starts_with('/') {
-            self.input.clear();
+            self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
             self.body.push(format!(
@@ -1813,16 +1830,87 @@ impl InteractiveTuiState {
         self.input_scroll_offset = self.input_scroll_offset.saturating_sub(amount);
     }
 
-    pub(super) fn push_composer_char(&mut self, ch: char) {
-        self.input.push(ch);
+    fn clear_composer_input(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+        self.input_cursor_input_len = 0;
+    }
+
+    pub(super) fn composer_cursor_byte(&self) -> usize {
+        if self.input_cursor_input_len != self.input.len() {
+            return self.input.len();
+        }
+        previous_char_boundary(&self.input, self.input_cursor.min(self.input.len()))
+    }
+
+    pub(super) fn move_composer_cursor_left(&mut self) {
+        let cursor = self.composer_cursor_byte();
+        if let Some(previous) = self.input[..cursor]
+            .char_indices()
+            .last()
+            .map(|(index, _)| index)
+        {
+            self.input_cursor = previous;
+            self.input_cursor_input_len = self.input.len();
+            self.reset_composer_scroll();
+        }
+    }
+
+    pub(super) fn move_composer_cursor_right(&mut self) {
+        let cursor = self.composer_cursor_byte();
+        if cursor >= self.input.len() {
+            self.move_composer_cursor_to_end();
+            return;
+        }
+        let next = self.input[cursor..]
+            .chars()
+            .next()
+            .map_or(self.input.len(), |ch| cursor + ch.len_utf8());
+        self.input_cursor = next;
+        self.input_cursor_input_len = self.input.len();
         self.reset_composer_scroll();
-        self.input_status = None;
+    }
+
+    pub(super) fn move_composer_cursor_to_line_start(&mut self) {
+        let cursor = self.composer_cursor_byte();
+        self.input_cursor = self.input[..cursor]
+            .rfind('\n')
+            .map_or(0, |index| index + 1);
+        self.input_cursor_input_len = self.input.len();
+        self.reset_composer_scroll();
+    }
+
+    pub(super) fn move_composer_cursor_to_line_end(&mut self) {
+        let cursor = self.composer_cursor_byte();
+        self.input_cursor = self.input[cursor..]
+            .find('\n')
+            .map_or(self.input.len(), |offset| cursor + offset);
+        self.input_cursor_input_len = self.input.len();
+        self.reset_composer_scroll();
+    }
+
+    pub(super) fn move_composer_cursor_to_end(&mut self) {
+        self.input_cursor = self.input.len();
+        self.input_cursor_input_len = self.input.len();
+    }
+
+    pub(super) fn insert_composer_str(&mut self, text: &str) {
+        let cursor = self.composer_cursor_byte();
+        self.input.insert_str(cursor, text);
+        self.input_cursor = cursor + text.len();
+        self.input_cursor_input_len = self.input.len();
+        self.reset_composer_scroll();
         self.history_index = None;
     }
 
+    pub(super) fn push_composer_char(&mut self, ch: char) {
+        let mut buffer = [0; 4];
+        self.insert_composer_str(ch.encode_utf8(&mut buffer));
+        self.input_status = None;
+    }
+
     pub(super) fn insert_composer_newline(&mut self) {
-        self.input.push('\n');
-        self.reset_composer_scroll();
+        self.insert_composer_str("\n");
     }
 
     fn max_composer_scroll(&self) -> usize {
@@ -1859,6 +1947,7 @@ impl InteractiveTuiState {
         }
         if let Some(index) = self.history_index {
             self.input = self.history[index].clone();
+            self.move_composer_cursor_to_end();
             self.reset_composer_scroll();
         }
     }
@@ -1876,15 +1965,19 @@ impl InteractiveTuiState {
             self.history_index = Some(next);
             self.input = self.history[next].clone();
         }
+        self.move_composer_cursor_to_end();
         self.reset_composer_scroll();
     }
 
     pub(super) fn request_cancel(&mut self) {
+        let already_requested = self.cancel_requested;
         self.cancel_requested = true;
         self.status = "INTERRUPT".to_string();
         self.phase = "cancel requested".to_string();
-        self.body
-            .push("Interrupt requested. Cancelling active run.".to_string());
+        if !already_requested {
+            self.body
+                .push("Interrupt requested. Cancelling active run.".to_string());
+        }
     }
 
     pub(super) fn show_run_active_hint(&mut self) {
@@ -2120,6 +2213,9 @@ pub(super) fn display_lines_for_stream_record(record: &AgentStreamRecord) -> Vec
 }
 
 fn format_tool_call_line(call: &starweaver_model::ToolCallPart) -> String {
+    if is_task_tool_name(&call.name) {
+        return format!("Task request: {}", call.name);
+    }
     let arguments = tool_call_arguments_text(call);
     if arguments == "{}" || arguments == "null" || arguments.is_empty() {
         format!("Tool call: {}", call.name)
@@ -2162,13 +2258,15 @@ fn format_tool_return_lines(
             "shell_exec" | "shell_wait" | "shell_status" | "shell_input" | "shell_signal"
             | "shell_kill" => format_shell_tool_lines(&tool_return.name, display_value, arguments),
             "task_create" | "task_get" | "task_update" | "task_list" => {
-                format_task_tool_lines(&tool_return.name, display_value)
+                format_task_tool_lines(&tool_return.name, &tool_return.content, display_value)
             }
             _ => format_generic_tool_lines(&tool_return.name, display_value),
         }
     };
-    if let Some(duration) = tool_duration_label(&tool_return.metadata) {
-        lines.push(format!("  Duration: {duration}"));
+    if !is_task_tool_name(&tool_return.name) {
+        if let Some(duration) = tool_duration_label(&tool_return.metadata) {
+            lines.push(format!("  Duration: {duration}"));
+        }
     }
     lines
 }
@@ -2953,51 +3051,182 @@ fn payload_string_array(value: &Value, key: &str) -> Option<Vec<String>> {
     (!values.is_empty()).then_some(values)
 }
 
-fn format_task_tool_lines(name: &str, result: &Value) -> Vec<String> {
-    let content = value_text(result);
-    let mut lines = vec![format!("Tool result: {name}")];
-    if name == "task_list" {
-        let task_lines = content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect::<Vec<_>>();
-        if task_lines.is_empty() {
-            lines.push("  No tasks found".to_string());
-        } else {
-            let task_entries = task_lines
-                .iter()
-                .filter(|line| is_task_status_line(line))
-                .collect::<Vec<_>>();
-            let completed = task_entries
-                .iter()
-                .filter(|line| line.contains("[completed]"))
-                .count();
-            let in_progress = task_entries
-                .iter()
-                .filter(|line| line.contains("[in_progress"))
-                .count();
-            for line in &task_lines {
-                lines.push(format!("  {}", preview_line(line)));
-            }
-            if !task_entries.is_empty() {
-                lines.push(format!(
-                    "  Progress: {}/{}{}",
-                    completed,
-                    task_entries.len(),
-                    if in_progress > 0 {
-                        format!(" ({in_progress} in progress)")
-                    } else {
-                        String::new()
-                    }
-                ));
+fn is_task_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "task_create" | "task_get" | "task_update" | "task_list"
+    )
+}
+
+fn format_task_tool_lines(name: &str, structured: &Value, display_value: &Value) -> Vec<String> {
+    let payload = structured.get("payload").unwrap_or(structured);
+    let content = value_text(display_value);
+    let mut lines = vec![format!("Task result: {name}")];
+    match name {
+        "task_create" => {
+            lines.push("  Summary: Task created".to_string());
+            let pushed = push_task_payload_fields(
+                &mut lines,
+                payload,
+                &[
+                    ("Task ID", &["id", "task_id"]),
+                    ("Subject", &["subject"]),
+                    ("Description", &["description"]),
+                    ("Active form", &["active_form"]),
+                    ("Owner", &["owner"]),
+                    ("Metadata", &["metadata"]),
+                ],
+            );
+            if !pushed {
+                push_task_display_output(&mut lines, &content);
             }
         }
-    } else {
-        for line in content.lines().take(20) {
-            lines.push(format!("  {}", preview_line(line)));
+        "task_update" => {
+            lines.push("  Summary: Task updated".to_string());
+            let pushed = push_task_payload_fields(
+                &mut lines,
+                payload,
+                &[
+                    ("Task ID", &["task_id", "id"]),
+                    ("Status", &["status"]),
+                    ("Subject", &["subject"]),
+                    ("Description", &["description"]),
+                    ("Active form", &["active_form"]),
+                    ("Owner", &["owner"]),
+                    ("Blocks", &["add_blocks", "blocks"]),
+                    ("Blocked by", &["add_blocked_by", "blocked_by"]),
+                    ("Metadata", &["metadata"]),
+                ],
+            );
+            if !pushed {
+                push_task_display_output(&mut lines, &content);
+            }
         }
+        "task_get" => {
+            lines.push("  Summary: Task details requested".to_string());
+            let pushed = push_task_payload_fields(
+                &mut lines,
+                payload,
+                &[("Task ID", &["task_id", "id"]), ("Metadata", &["metadata"])],
+            );
+            if !pushed || !content.trim_start().starts_with("Task #") {
+                push_task_display_output(&mut lines, &content);
+            }
+        }
+        "task_list" => format_task_list_lines(&mut lines, &content),
+        _ => push_task_display_output(&mut lines, &content),
     }
     lines
+}
+
+fn format_task_list_lines(lines: &mut Vec<String>, content: &str) {
+    let task_lines = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    if task_lines.is_empty() {
+        lines.push("  Summary: No tasks found".to_string());
+        return;
+    }
+    let task_entries = task_lines
+        .iter()
+        .filter(|line| is_task_status_line(line))
+        .collect::<Vec<_>>();
+    if task_entries.is_empty() && task_lines.len() == 1 && task_lines[0] == "Task list requested" {
+        lines.push("  Summary: Task list requested".to_string());
+        return;
+    }
+    lines.push("  Output:".to_string());
+    for line in &task_lines {
+        lines.push(format!("    │ {}", sanitize_control_chars(line)));
+    }
+    if !task_entries.is_empty() {
+        let completed = task_entries
+            .iter()
+            .filter(|line| line.contains("[completed]"))
+            .count();
+        let in_progress = task_entries
+            .iter()
+            .filter(|line| line.contains("[in_progress"))
+            .count();
+        lines.push(format!(
+            "  Progress: {}/{}{}",
+            completed,
+            task_entries.len(),
+            if in_progress > 0 {
+                format!(" ({in_progress} in progress)")
+            } else {
+                String::new()
+            }
+        ));
+    }
+}
+
+fn push_task_payload_fields(
+    lines: &mut Vec<String>,
+    payload: &Value,
+    fields: &[(&str, &[&str])],
+) -> bool {
+    let mut pushed = false;
+    for (label, keys) in fields {
+        if let Some(value) = keys.iter().find_map(|key| payload.get(*key)) {
+            pushed |= push_task_field(lines, label, value);
+        }
+    }
+    pushed
+}
+
+fn push_task_field(lines: &mut Vec<String>, label: &str, value: &Value) -> bool {
+    if task_field_is_empty(value) {
+        return false;
+    }
+    match value {
+        Value::String(text) if text.contains('\n') => {
+            lines.push(format!("  {label}:"));
+            for line in text.lines() {
+                lines.push(format!("    │ {}", sanitize_control_chars(line)));
+            }
+        }
+        Value::String(text) => {
+            lines.push(format!("  {label}: {}", sanitize_control_chars(text)));
+        }
+        Value::Array(items) if items.iter().all(Value::is_string) => {
+            let values = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(sanitize_control_chars)
+                .collect::<Vec<_>>();
+            lines.push(format!("  {label}: {}", values.join(", ")));
+        }
+        other => {
+            lines.push(format!("  {label}:"));
+            let text = serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string());
+            for line in text.lines() {
+                lines.push(format!("    │ {}", sanitize_control_chars(line)));
+            }
+        }
+    }
+    true
+}
+
+fn task_field_is_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(text) => text.trim().is_empty(),
+        Value::Array(items) => items.is_empty(),
+        Value::Object(items) => items.is_empty(),
+        _ => false,
+    }
+}
+
+fn push_task_display_output(lines: &mut Vec<String>, content: &str) {
+    if content.trim().is_empty() {
+        return;
+    }
+    lines.push("  Output:".to_string());
+    for line in content.lines() {
+        lines.push(format!("    │ {}", sanitize_control_chars(line)));
+    }
 }
 
 fn is_task_status_line(line: &str) -> bool {
@@ -3101,6 +3330,14 @@ fn edit_result_status(value: &Value) -> Option<&'static str> {
 
 fn string_field<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
+}
+
+fn previous_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while index > 0 && !text.is_char_boundary(index) {
+        index = index.saturating_sub(1);
+    }
+    index
 }
 
 fn composer_input_line_count(input: &str) -> usize {

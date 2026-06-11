@@ -2,9 +2,10 @@
 
 #![allow(clippy::expect_used)]
 
-use std::sync::Arc;
+use std::{io::Cursor, sync::Arc};
 
 use async_trait::async_trait;
+use image::{ImageBuffer, ImageFormat, Rgba};
 use starweaver_agent::{
     default_filter_capabilities, default_filter_capabilities_with_config, AgentCapability,
     AgentContext, AgentRunState, CacheFriendlyCompactCapability, ConversationId, FunctionModel,
@@ -126,6 +127,108 @@ async fn media_preflight_limits_newest_images() -> starweaver_agent::CapabilityR
         matches!(&content[0], ContentPart::Text { text } if text.contains("image count limit"))
     );
     assert!(matches!(&content[1], ContentPart::ImageUrl { url } if url.ends_with("new.png")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn media_compress_reduces_oversized_binary_image() -> starweaver_agent::CapabilityResult<()> {
+    let image = valid_noisy_png(240, 240);
+    let mut agent_context = AgentContext::default();
+    agent_context.model_config.max_image_bytes = 24_000;
+    let max_raw =
+        starweaver_model::raw_budget_from_base64_limit(agent_context.model_config.max_image_bytes);
+    assert!(image.len() > max_raw);
+    let request = user_request(vec![ContentPart::Binary {
+        data: image,
+        media_type: "image/png".to_string(),
+    }]);
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_media_compress"),
+        ConversationId::new(),
+    );
+
+    let messages = NamedFilterCapability::new("media_compress")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut agent_context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+    let compressed_content = latest_user_content(&messages);
+    assert!(matches!(
+        &compressed_content[0],
+        ContentPart::Binary { data, media_type } if media_type == "image/jpeg" && data.len() <= max_raw
+    ));
+    assert_eq!(
+        latest_request_metadata(&messages)["starweaver_media_compressed"],
+        serde_json::json!(1)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn media_compress_updates_nested_tool_data_url() -> starweaver_agent::CapabilityResult<()> {
+    let image = valid_noisy_png(220, 220);
+    let mut agent_context = AgentContext::default();
+    agent_context.model_config.max_image_bytes = 22_000;
+    let max_raw =
+        starweaver_model::raw_budget_from_base64_limit(agent_context.model_config.max_image_bytes);
+    assert!(image.len() > max_raw);
+    let data_url = format!(
+        "data:image/png;base64,{}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image)
+    );
+    let request = ModelRequest {
+        parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+            "call_media_compress",
+            "browser_capture",
+            serde_json::json!({
+                "items": [{
+                    "media": {
+                        "data_url": data_url,
+                        "media_type": "image/png"
+                    }
+                }]
+            }),
+        ))],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_tool_media_compress"),
+        ConversationId::new(),
+    );
+
+    let messages = NamedFilterCapability::new("media_compress")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut agent_context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+    let tool_content = messages
+        .iter()
+        .find_map(|message| match message {
+            ModelMessage::Request(request) => request.parts.iter().find_map(|part| match part {
+                ModelRequestPart::ToolReturn(tool_return) => Some(&tool_return.content),
+                _ => None,
+            }),
+            ModelMessage::Response(_) => None,
+        })
+        .expect("tool content");
+    let media = &tool_content["items"][0]["media"];
+    assert_eq!(media["media_type"], serde_json::json!("image/jpeg"));
+    let parsed =
+        starweaver_model::parse_data_url(media["data_url"].as_str().expect("compressed data URL"))
+            .expect("parse compressed data URL");
+    assert!(parsed.data.len() <= max_raw);
+    assert_eq!(
+        latest_request_metadata(&messages)["starweaver_media_compressed"],
+        serde_json::json!(1)
+    );
     Ok(())
 }
 
@@ -271,6 +374,8 @@ async fn compact_filter_trims_history_like_compactor_builder(
     assert!(all_text.contains("chars truncated"));
     assert!(all_text.contains("<original-request>"));
     assert!(all_text.contains("Original user goal"));
+    assert!(all_text.contains("<current-request>"));
+    assert!(all_text.contains("[image: https://example.test/image.png]"));
     assert!(all_text.contains("<user-steering>"));
     assert!(all_text.contains("<context-restored>"));
     assert_eq!(latest_request_metadata(&output)["keep"], "compact");
@@ -752,6 +857,22 @@ fn latest_request_metadata(
             ModelMessage::Response(_) => None,
         })
         .expect("request metadata")
+}
+
+fn valid_noisy_png(width: u32, height: u32) -> Vec<u8> {
+    let image = ImageBuffer::from_fn(width, height, |x, y| {
+        Rgba([
+            u8::try_from((x * 37 + y * 17) % 256).expect("red channel"),
+            u8::try_from((x * 11 + y * 53) % 256).expect("green channel"),
+            u8::try_from((x * 97 + y * 7) % 256).expect("blue channel"),
+            if (x + y) % 5 == 0 { 128 } else { 255 },
+        ])
+    });
+    let mut bytes = Cursor::new(Vec::new());
+    image
+        .write_to(&mut bytes, ImageFormat::Png)
+        .expect("encode png");
+    bytes.into_inner()
 }
 
 fn png_bytes(width: u32, height: u32) -> Vec<u8> {

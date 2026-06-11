@@ -1545,6 +1545,34 @@ impl LocalEnvironmentProvider {
         ))
     }
 
+    fn shell_tmp_dir_path(&self) -> EnvironmentResult<Option<PathBuf>> {
+        let Some(tmp_dir) = self.tmp_dir_path() else {
+            return Ok(None);
+        };
+        let path = self.tmp_namespace.as_deref().map_or_else(
+            || tmp_dir.to_path_buf(),
+            |namespace| tmp_dir.join(namespace),
+        );
+        std::fs::create_dir_all(&path).map_err(|error| map_io_error(&path, &error))?;
+        Ok(Some(path))
+    }
+
+    fn shell_environment(
+        &self,
+        environment: &BTreeMap<String, String>,
+    ) -> EnvironmentResult<BTreeMap<String, String>> {
+        let mut environment = environment.clone();
+        if let Some(tmp_dir) = self.shell_tmp_dir_path()? {
+            let tmp_dir = display_local_path(&tmp_dir);
+            for key in ["TMPDIR", "TMP", "TEMP"] {
+                environment
+                    .entry(key.to_string())
+                    .or_insert_with(|| tmp_dir.clone());
+            }
+        }
+        Ok(environment)
+    }
+
     fn managed_tmp_path(&self, logical_path: &str) -> EnvironmentResult<Option<PathBuf>> {
         if !is_tmp_path(logical_path) {
             return Ok(None);
@@ -1593,11 +1621,12 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
             return Err(EnvironmentError::AccessDenied(command.command));
         }
         let cwd = self.resolve_shell_cwd(command.cwd.as_deref())?;
+        let environment = self.shell_environment(&command.environment)?;
         let mut child = Command::new("/bin/sh")
             .arg("-lc")
             .arg(&command.command)
             .current_dir(cwd)
-            .envs(&command.environment)
+            .envs(&environment)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -2078,10 +2107,11 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
                 cwd.display()
             )));
         }
+        let environment = self.shell_environment(&command.environment)?;
         run_local_shell_command(
             &command.command,
             &cwd,
-            &command.environment,
+            &environment,
             command.timeout_seconds,
         )
     }
@@ -3942,6 +3972,65 @@ mod tests {
                 .await,
             Err(EnvironmentError::AccessDenied(_))
         ));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_provider_shell_tmpdir_uses_managed_namespace() {
+        let root = unique_test_dir();
+        let provider = LocalEnvironmentProvider::new(&root)
+            .with_tmp_namespace("session_123")
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::allow_all(),
+            });
+
+        let output = provider
+            .run_shell(ShellCommand {
+                command: "printf managed > \"$TMPDIR/clippy-sdk-filter.txt\"; printf '%s' \"$TMPDIR/clippy-sdk-filter.txt\"".to_string(),
+                ..ShellCommand::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(output.status, 0);
+        let path = output.stdout;
+        assert!(path.contains("session_123"));
+        assert!(Path::new(&path).is_absolute());
+        assert_eq!(provider.read_text(&path).await.unwrap(), "managed");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_provider_background_shell_tmpdir_uses_managed_namespace() {
+        let root = unique_test_dir();
+        let provider = Arc::new(
+            LocalEnvironmentProvider::new(&root)
+                .with_tmp_namespace("session_123")
+                .with_policy(EnvironmentPolicy {
+                    files: FilePolicy::read_only(),
+                    shell: ShellPolicy::allow_all(),
+                }),
+        );
+        let process_provider = provider.clone().process_shell_provider().unwrap();
+
+        let started = process_provider
+            .start_process(ShellCommand {
+                command: "printf managed > \"$TMPDIR/background.txt\"; printf '%s' \"$TMPDIR/background.txt\"".to_string(),
+                ..ShellCommand::default()
+            })
+            .await
+            .unwrap();
+        let completed = process_provider
+            .wait_process(&started.process_id, 5)
+            .await
+            .unwrap();
+        assert_eq!(completed.status, ShellProcessStatus::Completed);
+        let path = completed.stdout;
+        assert!(path.contains("session_123"));
+        assert!(Path::new(&path).is_absolute());
+        assert_eq!(provider.read_text(&path).await.unwrap(), "managed");
 
         std::fs::remove_dir_all(root).unwrap();
     }
