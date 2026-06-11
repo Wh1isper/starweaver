@@ -11,7 +11,6 @@ use crate::{
     capability::{resolve_capability_order, AgentCapability, CapabilityBundle},
     executor::{DirectAgentExecutor, DynAgentExecutor},
     graph::{inspect_graph, AgentGraphTrace, AgentNode, GraphError},
-    history::HistoryProcessor,
     instructions::DynDynamicInstruction,
     output::{DynOutputFunction, OutputPolicy, OutputSchema, OutputValidator},
     trace::{DynTraceRecorder, NoopTraceRecorder},
@@ -39,7 +38,6 @@ pub struct Agent {
     output_validators: Vec<Arc<dyn OutputValidator>>,
     output_functions: Vec<DynOutputFunction>,
     usage_limits: Option<UsageLimits>,
-    history_processors: Vec<Arc<dyn HistoryProcessor>>,
     tools: ToolRegistry,
     capabilities: Vec<Arc<dyn AgentCapability>>,
     stream_observers: Vec<Arc<dyn AgentCapability>>,
@@ -64,7 +62,6 @@ impl Agent {
             output_validators: Vec::new(),
             output_functions: Vec::new(),
             usage_limits: None,
-            history_processors: Vec::new(),
             tools: ToolRegistry::new(),
             capabilities: Vec::new(),
             stream_observers: Vec::new(),
@@ -197,13 +194,6 @@ impl Agent {
         self
     }
 
-    /// Add a history processor.
-    #[must_use]
-    pub fn with_history_processor(mut self, processor: Arc<dyn HistoryProcessor>) -> Self {
-        self.history_processors.push(processor);
-        self
-    }
-
     /// Add a capability hook.
     #[must_use]
     pub fn with_capability(mut self, capability: Arc<dyn AgentCapability>) -> Self {
@@ -307,7 +297,6 @@ impl Agent {
         }
         self.output_functions.extend(bundle.output_functions());
         self.output_validators.extend(bundle.output_validators());
-        self.history_processors.extend(bundle.history_processors());
         if let Some(limits) = bundle.usage_limits() {
             self.usage_limits = Some(limits);
         }

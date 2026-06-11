@@ -8,7 +8,7 @@ use std::{
     process::Command,
     sync::mpsc,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use chrono::Utc;
@@ -38,7 +38,7 @@ use crate::{
         write_default_subagent_presets, CliConfig, ConfigScope, DEFAULT_GLOBAL_GITIGNORE_TEMPLATE,
         DEFAULT_MCP_TEMPLATE, DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
     },
-    environment::resolve_environment,
+    environment::{resolve_environment_for_session, validate_environment_config},
     local_store::{LocalStore, RunSummary, SessionSummary, TrimReport},
     profiles::{
         doctor_mcp_servers, list_config_model_profiles, list_default_tools, list_mcp_servers,
@@ -76,11 +76,57 @@ struct ActiveTuiRun {
     cancelling: bool,
 }
 
+const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
+const USER_RULES_TAG: &str = "user-rules";
+
+fn append_guidance_files(input: &mut PromptInput, config: &CliConfig) {
+    if let Some(project_guidance) = load_project_guidance(&config.workspace_root) {
+        input.push_extra_text_part(project_guidance);
+    }
+    if let Some(user_rules) = load_user_rules(&config.global_dir) {
+        input.push_extra_text_part(user_rules);
+    }
+}
+
+fn load_project_guidance(workspace_root: &Path) -> Option<String> {
+    let path = workspace_root.join("AGENTS.md");
+    let content = read_non_empty_utf8_file(&path)?;
+    Some(format!(
+        "<{PROJECT_GUIDANCE_TAG} name=AGENTS.md>\n{content}\n</{PROJECT_GUIDANCE_TAG}>"
+    ))
+}
+
+fn load_user_rules(global_dir: &Path) -> Option<String> {
+    let path = global_dir.join("RULES.md");
+    let content = read_non_empty_utf8_file(&path)?;
+    Some(format!(
+        "<{USER_RULES_TAG} location={}>\n{content}\n</{USER_RULES_TAG}>",
+        path_absolute_posix(&path)
+    ))
+}
+
+fn read_non_empty_utf8_file(path: &Path) -> Option<String> {
+    let content = fs::read_to_string(path).ok()?;
+    (!content.trim().is_empty()).then_some(content)
+}
+
+fn path_absolute_posix(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+        .replace('\\', "/")
+}
+
 enum TuiRunMessage {
     Stream(AgentStreamRecord),
     Completed(CompletedPromptRun),
     Failed(String),
 }
+
+const TUI_FRAME_INTERVAL: Duration = Duration::from_millis(33);
+const TUI_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(33);
+const TUI_MIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 #[allow(dead_code)]
 struct OAuthRefreshGuard {
@@ -259,9 +305,10 @@ impl CliService {
         let prompt = slash_expansion
             .as_ref()
             .map_or(raw_prompt, |expanded| expanded.prompt.clone());
-        let run_input = PromptInput {
+        let mut run_input = PromptInput {
             text: prompt.clone(),
             attachments: input.attachments,
+            extra_text_parts: input.extra_text_parts,
         };
         let worktree = self.resolve_worktree(command)?;
         let selected_profile = command
@@ -273,8 +320,10 @@ impl CliService {
         if let Some(worktree) = worktree.as_ref() {
             run_config.workspace_root.clone_from(&worktree.path);
         }
-        let environment = resolve_environment(&run_config)?;
+        validate_environment_config(&run_config)?;
+        append_guidance_files(&mut run_input, &run_config);
         let (session_id, created) = self.resolve_session(command, &resolved_profile.name)?;
+        let environment = resolve_environment_for_session(&run_config, &session_id)?;
         let mut restore_from = command.run.clone().or_else(|| command.branch_from.clone());
         if restore_from.is_none() && !created {
             restore_from = self
@@ -295,7 +344,7 @@ impl CliService {
         let mut run =
             self.store()?
                 .append_run(&session_id, prompt, restore_from, &resolved_profile.name)?;
-        apply_yaacli_run_metadata(
+        apply_starweaver_run_metadata(
             &mut run,
             command,
             worktree.as_ref(),
@@ -303,6 +352,7 @@ impl CliService {
         );
         write_current_session(&self.config, &session_id)?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
+        let output_mode = command.output.unwrap_or(self.config.default_output);
         let result = if stream_sender.is_some()
             || steering_receiver.is_some()
             || cancel_receiver.is_some()
@@ -312,6 +362,7 @@ impl CliService {
                 &run,
                 &resolved_profile,
                 &environment.provider,
+                environment.process_provider.as_ref(),
                 restore_state,
                 CliRunPolicy { hitl },
                 stream_sender,
@@ -324,6 +375,7 @@ impl CliService {
                 &run,
                 &resolved_profile,
                 &environment.provider,
+                environment.process_provider.as_ref(),
                 restore_state,
                 CliRunPolicy { hitl },
             )
@@ -342,7 +394,7 @@ impl CliService {
         let messages = self
             .store()?
             .complete_run(&mut run, output.clone(), execution.artifacts)?;
-        if execution_failed {
+        if execution_failed && matches!(output_mode, OutputMode::Text | OutputMode::Silent) {
             return Err(CliError::Run(output));
         }
         if self.config.auto_trim {
@@ -355,7 +407,7 @@ impl CliService {
             session_id,
             run_id: run.run_id.as_str().to_string(),
             status: run_status_name(run.status).to_string(),
-            output_mode: command.output.unwrap_or(self.config.default_output),
+            output_mode,
             messages,
         })
     }
@@ -714,6 +766,8 @@ impl CliService {
         let mut queued_prompt: Option<(PromptInput, String)> = None;
         let mut persisted_profile = state.profile.clone();
         let mut dirty = true;
+        let now = Instant::now();
+        let mut last_render = now.checked_sub(TUI_FRAME_INTERVAL).unwrap_or(now);
         loop {
             while let Some(run) = active_run.as_mut() {
                 match run.receiver.try_recv() {
@@ -781,12 +835,19 @@ impl CliService {
                 }
             }
 
-            if dirty {
-                tui.render(&state)?;
+            if dirty && last_render.elapsed() >= TUI_FRAME_INTERVAL {
+                tui.render(&mut state)?;
+                last_render = Instant::now();
                 dirty = false;
             }
-            let event =
-                crate::tui::InteractiveTui::poll_event(&mut state, Duration::from_millis(33))?;
+            let poll_timeout = if dirty {
+                TUI_FRAME_INTERVAL
+                    .saturating_sub(last_render.elapsed())
+                    .max(TUI_MIN_POLL_INTERVAL)
+            } else {
+                TUI_IDLE_POLL_INTERVAL
+            };
+            let event = crate::tui::InteractiveTui::poll_event(&mut state, poll_timeout)?;
             match event {
                 Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
                     return Ok(())
@@ -821,13 +882,6 @@ impl CliService {
                             active_run = None;
                         }
                     }
-                    dirty = true;
-                }
-                Some(crate::tui::InteractiveTuiEvent::Queue(prompt)) => {
-                    let display_prompt = state
-                        .take_pending_submission_display_prompt()
-                        .unwrap_or_else(|| prompt.display_text());
-                    queued_prompt = Some((prompt, display_prompt));
                     dirty = true;
                 }
                 Some(crate::tui::InteractiveTuiEvent::Session(requested)) => {
@@ -1725,7 +1779,7 @@ fn git_root(workspace_root: &Path) -> CliResult<PathBuf> {
 }
 
 fn default_worktree_branch() -> String {
-    format!("yaacli/{}", Utc::now().format("%Y%m%d-%H%M%S"))
+    format!("starweaver/{}", Utc::now().format("%Y%m%d-%H%M%S"))
 }
 
 fn worktree_path(global_dir: &Path, git_root: &Path, name: &str) -> PathBuf {
@@ -1776,7 +1830,7 @@ fn explicit_flag_value(value: &String) -> Option<String> {
     (value != "true").then(|| value.clone())
 }
 
-fn apply_yaacli_run_metadata(
+fn apply_starweaver_run_metadata(
     run: &mut RunRecord,
     command: &RunCommand,
     worktree: Option<&WorktreeResolution>,
@@ -1798,7 +1852,7 @@ fn apply_yaacli_run_metadata(
     }
     if command.worker.is_some() || command.worker_label.is_some() {
         run.metadata
-            .insert("cli.yaacli.worker_enabled".to_string(), json!(true));
+            .insert("cli.starweaver.worker_enabled".to_string(), json!(true));
     }
     let worker_label = command
         .worker_label
@@ -1807,23 +1861,23 @@ fn apply_yaacli_run_metadata(
         .or_else(|| command.worker.as_ref().and_then(explicit_flag_value));
     if let Some(worker) = worker_label {
         run.metadata
-            .insert("cli.yaacli.worker".to_string(), json!(worker));
+            .insert("cli.starweaver.worker".to_string(), json!(worker));
     }
     if let Some(worktree) = worktree {
         run.metadata.insert(
-            "cli.yaacli.worktree".to_string(),
+            "cli.starweaver.worktree".to_string(),
             json!(worktree.path.display().to_string()),
         );
         run.metadata.insert(
-            "cli.yaacli.worktree_git_root".to_string(),
+            "cli.starweaver.worktree_git_root".to_string(),
             json!(worktree.git_root.display().to_string()),
         );
         run.metadata.insert(
-            "cli.yaacli.worktree_resumed".to_string(),
+            "cli.starweaver.worktree_resumed".to_string(),
             json!(worktree.resumed),
         );
         run.metadata
-            .insert("cli.yaacli.branch".to_string(), json!(worktree.branch));
+            .insert("cli.starweaver.branch".to_string(), json!(worktree.branch));
     } else {
         let worktree_label = command
             .worktree_name
@@ -1832,15 +1886,15 @@ fn apply_yaacli_run_metadata(
             .or_else(|| command.worktree.as_ref().and_then(explicit_flag_value));
         if command.worktree.is_some() || command.worktree_name.is_some() {
             run.metadata
-                .insert("cli.yaacli.worktree_enabled".to_string(), json!(true));
+                .insert("cli.starweaver.worktree_enabled".to_string(), json!(true));
         }
         if let Some(worktree) = worktree_label {
             run.metadata
-                .insert("cli.yaacli.worktree".to_string(), json!(worktree));
+                .insert("cli.starweaver.worktree".to_string(), json!(worktree));
         }
         if let Some(branch) = command.branch.as_ref() {
             run.metadata
-                .insert("cli.yaacli.branch".to_string(), json!(branch));
+                .insert("cli.starweaver.branch".to_string(), json!(branch));
         }
     }
 }
@@ -2007,7 +2061,7 @@ fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
     let mut event = match message.kind {
         DisplayMessageKind::RunQueued => {
             let value = json!({"sequence_no": message.payload.get("sequence_no").cloned()});
-            custom_agui_event("yaacli.run_queued", message, &value)
+            custom_agui_event("starweaver.run_queued", message, &value)
         }
         DisplayMessageKind::RunStarted => json!({
             "type": "RUN_STARTED",
@@ -2104,7 +2158,7 @@ fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
             "code": message.payload.get("code").and_then(Value::as_str),
         }),
         DisplayMessageKind::RunCancelled => {
-            custom_agui_event("yaacli.run_cancelled", message, &message.payload)
+            custom_agui_event("starweaver.run_cancelled", message, &message.payload)
         }
         DisplayMessageKind::ApprovalRequested
         | DisplayMessageKind::ApprovalResolved
@@ -2112,7 +2166,13 @@ fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
         | DisplayMessageKind::SubagentStarted
         | DisplayMessageKind::SubagentCompleted
         | DisplayMessageKind::CompactionStarted
-        | DisplayMessageKind::CompactionCompleted => custom_agui_event(
+        | DisplayMessageKind::CompactionCompleted
+        | DisplayMessageKind::CompactionFailed
+        | DisplayMessageKind::HandoffStarted
+        | DisplayMessageKind::HandoffCompleted
+        | DisplayMessageKind::HandoffFailed
+        | DisplayMessageKind::SteeringSubmitted
+        | DisplayMessageKind::SteeringReceived => custom_agui_event(
             display_extension_name(message.kind),
             message,
             &message.payload,
@@ -2144,14 +2204,20 @@ fn custom_agui_event(name: &str, message: &DisplayMessage, value: &Value) -> Val
 
 const fn display_extension_name(kind: DisplayMessageKind) -> &'static str {
     match kind {
-        DisplayMessageKind::ApprovalRequested => "yaacli.approval_requested",
-        DisplayMessageKind::ApprovalResolved => "yaacli.approval_resolved",
-        DisplayMessageKind::Checkpoint => "ya_agent.checkpoint",
-        DisplayMessageKind::SubagentStarted => "ya_agent.subagent_started",
-        DisplayMessageKind::SubagentCompleted => "ya_agent.subagent_completed",
-        DisplayMessageKind::CompactionStarted => "ya_agent.compaction_started",
-        DisplayMessageKind::CompactionCompleted => "ya_agent.compaction_completed",
-        _ => "ya_agent.display_message",
+        DisplayMessageKind::ApprovalRequested => "starweaver.approval_requested",
+        DisplayMessageKind::ApprovalResolved => "starweaver.approval_resolved",
+        DisplayMessageKind::Checkpoint => "starweaver.checkpoint",
+        DisplayMessageKind::SubagentStarted => "starweaver.subagent_started",
+        DisplayMessageKind::SubagentCompleted => "starweaver.subagent_completed",
+        DisplayMessageKind::CompactionStarted => "starweaver.compaction_started",
+        DisplayMessageKind::CompactionCompleted => "starweaver.compaction_completed",
+        DisplayMessageKind::CompactionFailed => "starweaver.compaction_failed",
+        DisplayMessageKind::HandoffStarted => "starweaver.handoff_started",
+        DisplayMessageKind::HandoffCompleted => "starweaver.handoff_completed",
+        DisplayMessageKind::HandoffFailed => "starweaver.handoff_failed",
+        DisplayMessageKind::SteeringSubmitted => "starweaver.steering_submitted",
+        DisplayMessageKind::SteeringReceived => "starweaver.steering_received",
+        _ => "starweaver.display_message",
     }
 }
 
@@ -2628,6 +2694,68 @@ mod tests {
                     .contains("deferred_test")
             );
         }
+    }
+
+    #[test]
+    fn guidance_files_append_project_guidance_and_user_rules_parts() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "# Project\nUse cargo test.\n").unwrap();
+        std::fs::write(
+            global.join("RULES.md"),
+            "# Rules\nPrefer Chinese replies.\n",
+        )
+        .unwrap();
+
+        let mut input = PromptInput::text("implement feature");
+        let config = CliConfig {
+            global_dir: global.clone(),
+            workspace_root: project,
+            ..test_config(temp.path())
+        };
+
+        append_guidance_files(&mut input, &config);
+        assert_eq!(input.extra_text_parts.len(), 2);
+        assert_eq!(
+            input.extra_text_parts[0],
+            "<project-guidance name=AGENTS.md>\n# Project\nUse cargo test.\n\n</project-guidance>"
+        );
+        assert!(input.extra_text_parts[1].starts_with(&format!(
+            "<user-rules location={}>",
+            global.join("RULES.md").display()
+        )));
+        assert!(input.extra_text_parts[1].contains("Prefer Chinese replies."));
+        assert!(input.extra_text_parts[1].ends_with("</user-rules>"));
+    }
+
+    #[test]
+    fn guidance_files_skip_missing_or_blank_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("AGENTS.md"), "  \n").unwrap();
+
+        let mut input = PromptInput::text("hello");
+        let config = CliConfig {
+            global_dir: global,
+            workspace_root: project,
+            ..test_config(temp.path())
+        };
+
+        append_guidance_files(&mut input, &config);
+        assert!(input.extra_text_parts.is_empty());
+    }
+
+    fn test_config(root: &Path) -> CliConfig {
+        let cli = crate::args::parse(["starweaver-cli".to_string()]).unwrap();
+        crate::ConfigResolver::for_tests(root)
+            .resolve(&cli)
+            .unwrap()
     }
 
     #[test]

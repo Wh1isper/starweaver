@@ -11,10 +11,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use starweaver_agent::{
-    attach_shell_review_handle, AgentSession, AgentStreamRecord, ResumableState,
+    attach_process_shell, attach_shell_review_handle, AgentSession, AgentStreamRecord,
+    ResumableState,
 };
 use starweaver_context::{AgentContext, BusMessage};
-use starweaver_environment::DynEnvironmentProvider;
+use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
 use starweaver_model::{
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
     ModelResponsePart, ModelSettings, StreamDelta,
@@ -66,6 +67,7 @@ pub fn execute_agent_session(
     run: &RunRecord,
     profile: &ResolvedProfile,
     environment: &DynEnvironmentProvider,
+    process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
     policy: CliRunPolicy,
 ) -> CliResult<CliRunExecution> {
@@ -74,6 +76,7 @@ pub fn execute_agent_session(
         run,
         profile,
         environment,
+        process_environment,
         restore_state,
         policy,
         None,
@@ -81,11 +84,13 @@ pub fn execute_agent_session(
 }
 
 /// Execute a resolved profile and forward live stream records to a caller-owned channel.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_agent_session_with_stream_sender(
     input: PromptInput,
     run: &RunRecord,
     profile: &ResolvedProfile,
     environment: &DynEnvironmentProvider,
+    process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
     policy: CliRunPolicy,
     stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
@@ -95,6 +100,7 @@ pub fn execute_agent_session_with_stream_sender(
         run,
         profile,
         environment,
+        process_environment,
         restore_state,
         policy,
         stream_sender,
@@ -104,12 +110,13 @@ pub fn execute_agent_session_with_stream_sender(
 }
 
 /// Execute a resolved profile, forward live stream records, and poll caller-owned steering messages.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn execute_agent_session_with_channels(
     input: PromptInput,
     run: &RunRecord,
     profile: &ResolvedProfile,
     environment: &DynEnvironmentProvider,
+    process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
     policy: CliRunPolicy,
     stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
@@ -124,8 +131,8 @@ pub fn execute_agent_session_with_channels(
         records: Arc::clone(&observed_records),
     }));
     let prompt_text = input.text.clone();
-    if !input.attachments.is_empty() {
-        agent = agent.with_capability(Arc::new(CliPromptAttachmentAdapter {
+    if input.has_content_parts() {
+        agent = agent.with_capability(Arc::new(CliPromptContentAdapter {
             content_parts: input.into_content_parts(),
         }));
     }
@@ -137,6 +144,9 @@ pub fn execute_agent_session_with_channels(
         |state| AgentSession::from_state(agent.clone(), state),
     );
     session.set_environment(environment.clone());
+    if let Some(process_environment) = process_environment {
+        attach_process_shell(session.context_mut(), process_environment.clone());
+    }
     profile.configure_context(session.context_mut());
     if let Some(shell_review) = profile.shell_review.as_ref() {
         attach_shell_review_handle(session.context_mut(), shell_review.clone());
@@ -323,12 +333,12 @@ impl AgentCapability for CliStreamObserver {
     }
 }
 
-struct CliPromptAttachmentAdapter {
+struct CliPromptContentAdapter {
     content_parts: Vec<ContentPart>,
 }
 
 #[async_trait]
-impl AgentCapability for CliPromptAttachmentAdapter {
+impl AgentCapability for CliPromptContentAdapter {
     async fn before_model_request(
         &self,
         state: &mut AgentRunState,
@@ -896,14 +906,14 @@ fn interrupted_partial_response(
     }
     let mut response = ModelResponse {
         parts: response_parts,
-        usage: Default::default(),
+        usage: starweaver_core::Usage::default(),
         model_name: None,
         provider: None,
         finish_reason: Some(FinishReason::Unknown),
         timestamp: Some(Utc::now()),
         run_id: context.run_id.clone(),
         conversation_id: Some(context.conversation_id.clone()),
-        metadata: Default::default(),
+        metadata: serde_json::Map::default(),
     };
     response
         .metadata
@@ -926,6 +936,21 @@ fn interrupted_part_kind(part_kind: &str) -> InterruptedPartKind {
     }
 }
 
+fn is_internal_display_compaction_marker(message: &DisplayMessage) -> bool {
+    matches!(
+        message.kind,
+        DisplayMessageKind::CompactionStarted | DisplayMessageKind::CompactionCompleted
+    ) && (message
+        .payload
+        .get("scope")
+        .and_then(Value::as_str)
+        .is_some_and(|scope| scope.starts_with("run:"))
+        || message
+            .preview
+            .as_deref()
+            .is_some_and(|preview| preview.starts_with("display compaction ")))
+}
+
 fn failed_display_projection(
     run: &RunRecord,
     raw_records: &[AgentStreamRecord],
@@ -934,12 +959,9 @@ fn failed_display_projection(
     runtime: &tokio::runtime::Runtime,
 ) -> DisplayProjection {
     let mut projection = project_display_messages(run, raw_records, policy, runtime);
-    projection.messages.retain(|message| {
-        !matches!(
-            message.kind,
-            DisplayMessageKind::CompactionStarted | DisplayMessageKind::CompactionCompleted
-        )
-    });
+    projection
+        .messages
+        .retain(|message| !is_internal_display_compaction_marker(message));
     if !projection
         .messages
         .iter()
@@ -997,12 +1019,9 @@ fn cancelled_display_projection(
     runtime: &tokio::runtime::Runtime,
 ) -> DisplayProjection {
     let mut projection = project_display_messages(run, raw_records, policy, runtime);
-    projection.messages.retain(|message| {
-        !matches!(
-            message.kind,
-            DisplayMessageKind::CompactionStarted | DisplayMessageKind::CompactionCompleted
-        )
-    });
+    projection
+        .messages
+        .retain(|message| !is_internal_display_compaction_marker(message));
     projection.messages.push(
         DisplayMessage::new(
             projection.messages.len(),
@@ -1049,7 +1068,7 @@ fn cancelled_display_projection(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
     use std::{sync::mpsc, thread, time::Duration};
 
     use starweaver_context::AgentContext;
@@ -1064,18 +1083,22 @@ mod tests {
 
     use super::{
         cancelled_display_projection, interrupted_partial_response, start_steering_collector,
-        CliPromptAttachmentAdapter, CliRunPolicy, CliSteeringMessage,
+        CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
 
     #[test]
-    fn prompt_attachment_adapter_replaces_initial_user_prompt_with_multimodal_parts() {
+    fn prompt_content_adapter_replaces_initial_user_prompt_with_multimodal_parts() {
         let attachment = PromptAttachment::image(1, b"image-bytes".to_vec(), "image/png");
         let placeholder = attachment.placeholder.clone();
-        let adapter = CliPromptAttachmentAdapter {
+        let adapter = CliPromptContentAdapter {
             content_parts: crate::prompt_input::PromptInput {
                 text: format!("inspect this {placeholder} now"),
                 attachments: vec![attachment],
+                extra_text_parts: vec![
+                    "<project-guidance name=AGENTS.md>\nUse tests.\n</project-guidance>"
+                        .to_string(),
+                ],
             }
             .into_content_parts(),
         };
@@ -1107,14 +1130,69 @@ mod tests {
                     data: b"image-bytes".to_vec(),
                     media_type: "image/png".to_string(),
                 },
+                ContentPart::Text {
+                    text: "<project-guidance name=AGENTS.md>\nUse tests.\n</project-guidance>"
+                        .to_string(),
+                },
             ]
         );
         assert_eq!(metadata["starweaver.cli.attachments"], 1);
     }
 
     #[test]
-    fn prompt_attachment_adapter_only_updates_first_model_step() {
-        let adapter = CliPromptAttachmentAdapter {
+    fn prompt_content_adapter_appends_loaded_guidance_parts_to_initial_request() {
+        let adapter = CliPromptContentAdapter {
+            content_parts: crate::prompt_input::PromptInput {
+                text: "implement feature".to_string(),
+                attachments: Vec::new(),
+                extra_text_parts: vec![
+                    "<project-guidance name=AGENTS.md>\nUse cargo test.\n</project-guidance>"
+                        .to_string(),
+                    "<user-rules location=/home/user/.starweaver/RULES.md>\nPrefer Chinese replies.\n</user-rules>"
+                        .to_string(),
+                ],
+            }
+            .into_content_parts(),
+        };
+        let mut state = AgentRunState::new(
+            RunId::from_string("run_guidance"),
+            ConversationId::from_string("conversation_guidance"),
+        );
+        let mut request = ModelRequest::user_text("implement feature");
+        let mut settings = None::<ModelSettings>;
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime should start")
+            .block_on(adapter.before_model_request(&mut state, &mut request, &mut settings))
+            .expect("adapter should update request");
+
+        let ModelRequestPart::UserPrompt {
+            content, metadata, ..
+        } = &request.parts[0]
+        else {
+            panic!("expected user prompt");
+        };
+        assert_eq!(metadata["starweaver.cli.attachments"], 0);
+        assert_eq!(content.len(), 3);
+        assert!(matches!(
+            &content[0],
+            ContentPart::Text { text } if text == "implement feature"
+        ));
+        assert!(matches!(
+            &content[1],
+            ContentPart::Text { text } if text.contains("<project-guidance name=AGENTS.md>")
+                && text.contains("Use cargo test.")
+        ));
+        assert!(matches!(
+            &content[2],
+            ContentPart::Text { text } if text.contains("<user-rules location=/home/user/.starweaver/RULES.md>")
+                && text.contains("Prefer Chinese replies.")
+        ));
+    }
+
+    #[test]
+    fn prompt_content_adapter_only_updates_first_model_step() {
+        let adapter = CliPromptContentAdapter {
             content_parts: vec![ContentPart::Binary {
                 data: vec![1, 2, 3],
                 media_type: "image/png".to_string(),

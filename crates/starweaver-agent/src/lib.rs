@@ -10,7 +10,7 @@ pub mod subagent_config;
 
 use std::sync::Arc;
 
-use starweaver_model::ModelAdapter;
+use starweaver_model::{ModelAdapter, ToolDefinition};
 use starweaver_runtime::Agent as RuntimeAgent;
 
 pub use bundles::{
@@ -28,8 +28,9 @@ pub use bundles::{
     ToolProxyToolset, DEFAULT_SHELL_REVIEW_PROMPT,
 };
 pub use filters::{
-    default_filter_bundle, default_filter_processors, MediaUploadRequest, MediaUploader,
-    NamedFilterProcessor, DEFAULT_FILTER_ORDER,
+    default_filter_bundle, default_filter_capabilities, default_filter_capabilities_with_config,
+    CacheFriendlyCompactCapability, MediaUploadRequest, MediaUploader, NamedFilterCapability,
+    DEFAULT_FILTER_ORDER,
 };
 pub use mcp_live::{
     live_mcp_toolset, DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot,
@@ -72,13 +73,11 @@ pub use starweaver_runtime::{
     AgentStreamEvent, AgentStreamRecord, AgentStreamResult, CapabilityBundle, CapabilityId,
     CapabilityOrderError, CapabilityOrdering, CapabilityResult, CapabilitySpec, CostBudget,
     DirectModelRequest, DynamicInstruction, DynamicInstructionError, DynamicInstructionResult,
-    FunctionDynamicInstruction, FunctionHistoryProcessor, FunctionOutputFunction,
-    FunctionOutputValidator, GraphError, HistoryProcessor, HistoryProcessorError,
-    HistoryProcessorResult, OutputFunction, OutputFunctionContext, OutputFunctionDefinition,
-    OutputPolicy, OutputSchema, OutputValidationError, OutputValidationResult, OutputValidator,
-    OutputValue, RecordedSpan, ReinjectSystemPromptProcessor, RetryEventKind, SpanEvent,
-    SpanHandle, SpanKind, SpanSpec, SpanStatus, StaticCapabilityBundle, TraceLevel, TraceRecorder,
-    UsageLimitError, UsageLimits,
+    FunctionDynamicInstruction, FunctionOutputFunction, FunctionOutputValidator, GraphError,
+    OutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputPolicy, OutputSchema,
+    OutputValidationError, OutputValidationResult, OutputValidator, OutputValue, RecordedSpan,
+    RetryEventKind, SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus, StaticCapabilityBundle,
+    TraceLevel, TraceRecorder, UsageLimitError, UsageLimits,
 };
 pub use starweaver_tools::{
     mcp_tool_definition, string_tool, typed_tool, ApprovalRequiredToolset, DeferredLoadingToolset,
@@ -110,7 +109,6 @@ pub struct AgentBuilder {
     model_config: Option<ModelConfig>,
     tool_config: Option<ToolConfig>,
     context_window: Option<u64>,
-    history_processors: Vec<Arc<dyn HistoryProcessor>>,
     tools: ToolRegistry,
     capabilities: Vec<Arc<dyn AgentCapability>>,
     capability_bundles: Vec<Arc<dyn CapabilityBundle>>,
@@ -137,7 +135,6 @@ impl AgentBuilder {
             model_config: None,
             tool_config: None,
             context_window: None,
-            history_processors: Vec::new(),
             tools: ToolRegistry::new(),
             capabilities: Vec::new(),
             capability_bundles: Vec::new(),
@@ -228,13 +225,6 @@ impl AgentBuilder {
     #[must_use]
     pub const fn context_window(mut self, context_window: u64) -> Self {
         self.context_window = Some(context_window);
-        self
-    }
-
-    /// Add a history processor.
-    #[must_use]
-    pub fn history_processor(mut self, processor: Arc<dyn HistoryProcessor>) -> Self {
-        self.history_processors.push(processor);
         self
     }
 
@@ -352,8 +342,12 @@ impl AgentBuilder {
             tools.insert(subagents.subagent_info_tool());
         }
         let parent_tools = tools.clone();
+        let mut compact_request_params = self.request_params.clone();
+        compact_request_params.tools = tools.definitions();
+        let compact_model_settings = self.model_settings.clone();
         let parent_tools_hook = Arc::new(ParentToolsCapabilityHook { parent_tools });
         let environment_context_hook = Arc::new(EnvironmentContextCapability);
+        let model = self.model.clone();
         let mut agent = RuntimeAgent::new(self.model)
             .with_request_params(self.request_params)
             .with_tools(tools)
@@ -385,11 +379,12 @@ impl AgentBuilder {
         if let Some(context_window) = self.context_window {
             agent = agent.with_context_window(context_window);
         }
-        for processor in crate::filters::default_filter_processors() {
-            agent = agent.with_history_processor(processor);
-        }
-        for processor in self.history_processors {
-            agent = agent.with_history_processor(processor);
+        for capability in crate::filters::default_filter_capabilities_with_config(
+            Some(&model),
+            compact_model_settings.as_ref(),
+            Some(&compact_request_params),
+        ) {
+            agent = agent.with_capability(capability);
         }
         for function in self.output_functions {
             agent = agent.with_output_function(function);
@@ -447,6 +442,26 @@ impl AgentCapability for ParentToolsCapabilityHook {
 
 #[async_trait::async_trait]
 impl AgentCapability for HostMediaCapabilityHook {
+    async fn prepare_tools_with_context(
+        &self,
+        state: &AgentRunState,
+        _context: &AgentContext,
+        tools: Vec<ToolDefinition>,
+    ) -> CapabilityResult<Vec<ToolDefinition>> {
+        self.prepare_tools(state, tools).await
+    }
+
+    async fn prepare_tools(
+        &self,
+        _state: &AgentRunState,
+        tools: Vec<ToolDefinition>,
+    ) -> CapabilityResult<Vec<ToolDefinition>> {
+        Ok(tools
+            .into_iter()
+            .filter(|tool| self.is_media_tool_available(tool.name.as_str()))
+            .collect())
+    }
+
     async fn before_tool_execution_with_context(
         &self,
         _state: &mut AgentRunState,
@@ -458,5 +473,22 @@ impl AgentCapability for HostMediaCapabilityHook {
             .dependencies
             .insert(self.media_capabilities.clone());
         Ok(())
+    }
+}
+
+impl HostMediaCapabilityHook {
+    fn is_media_tool_available(&self, tool_name: &str) -> bool {
+        match tool_name {
+            "read_image" => !self.media_capabilities.supports_image_url,
+            "read_video" => !self.media_capabilities.supports_video_url,
+            "read_audio" => !self.media_capabilities.supports_audio_url,
+            "load_media_url" => {
+                self.media_capabilities.supports_image_url
+                    || self.media_capabilities.supports_video_url
+                    || self.media_capabilities.supports_audio_url
+                    || self.media_capabilities.supports_document_url
+            }
+            _ => true,
+        }
     }
 }

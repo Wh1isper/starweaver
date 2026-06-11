@@ -1,14 +1,19 @@
-#![allow(missing_docs, clippy::unwrap_used)]
+#![allow(
+    missing_docs,
+    clippy::expect_used,
+    clippy::significant_drop_tightening,
+    clippy::unwrap_used
+)]
 
 use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    AgentBuilder, AgentRunState, FunctionDynamicInstruction, FunctionHistoryProcessor,
-    FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
-    FunctionTool, OutputFunctionDefinition, OutputSchema, OutputValue, StaticCapabilityBundle,
-    StaticToolset, TestModel, ToolContext, ToolRegistry, ToolResult, UsageLimits,
-    DEFAULT_FILTER_ORDER,
+    AgentBuilder, AgentCapability, AgentContext, AgentRunState, CapabilityOrdering,
+    CapabilityResult, CapabilitySpec, FunctionDynamicInstruction, FunctionModel, FunctionModelInfo,
+    FunctionOutputFunction, FunctionOutputValidator, FunctionTool, OutputFunctionDefinition,
+    OutputSchema, OutputValue, StaticCapabilityBundle, StaticToolset, TestModel, ToolContext,
+    ToolRegistry, ToolResult, UsageLimits, DEFAULT_FILTER_ORDER,
 };
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
@@ -19,6 +24,33 @@ use starweaver_model::{
 #[derive(Clone)]
 struct CaptureModel {
     captured_params: Arc<Mutex<Vec<ModelRequestParameters>>>,
+}
+
+struct CustomFilterCapability;
+
+#[async_trait]
+impl AgentCapability for CustomFilterCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new("test.custom_filter_capability").with_ordering(
+            CapabilityOrdering::default().after("starweaver.filter.reasoning_normalize"),
+        )
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        mut messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        let Some(ModelMessage::Request(request)) = messages.last_mut() else {
+            panic!("last message should be a request");
+        };
+        request.metadata.insert(
+            "custom_filter_capability".to_string(),
+            serde_json::json!(true),
+        );
+        Ok(messages)
+    }
 }
 
 #[derive(Clone)]
@@ -148,9 +180,6 @@ async fn builder_creates_reusable_agent_with_tools() {
             serde_json::json!({"type": "object", "required": ["answer"]}),
         ))
         .usage_limits(UsageLimits::new().with_request_limit(1))
-        .history_processor(Arc::new(FunctionHistoryProcessor::new(
-            |messages| async move { Ok(messages) },
-        )))
         .tool_registry(tools)
         .build();
 
@@ -165,7 +194,7 @@ async fn builder_creates_reusable_agent_with_tools() {
 }
 
 #[tokio::test]
-async fn builder_installs_default_filter_processors_before_custom_processors() {
+async fn builder_installs_default_filter_capabilities_before_custom_capabilities() {
     let model = FunctionModel::new(
         |messages: Vec<ModelMessage>,
          _settings: Option<ModelSettings>,
@@ -183,24 +212,12 @@ async fn builder_installs_default_filter_processors_before_custom_processors() {
                 .filter_map(serde_json::Value::as_str)
                 .collect::<Vec<_>>();
             assert_eq!(observed, DEFAULT_FILTER_ORDER);
-            assert_eq!(request.metadata["custom_history_processor"], true);
+            assert_eq!(request.metadata["custom_filter_capability"], true);
             Ok(ModelResponse::text("filters ok"))
         },
     );
-    let custom_processor =
-        FunctionHistoryProcessor::new(|mut messages: Vec<ModelMessage>| async move {
-            let Some(ModelMessage::Request(request)) = messages.last_mut() else {
-                panic!("last message should be a request");
-            };
-            request.metadata.insert(
-                "custom_history_processor".to_string(),
-                serde_json::json!(true),
-            );
-            Ok(messages)
-        });
-
     let result = AgentBuilder::new(Arc::new(model))
-        .history_processor(Arc::new(custom_processor))
+        .capability(Arc::new(CustomFilterCapability))
         .build()
         .run("hello")
         .await

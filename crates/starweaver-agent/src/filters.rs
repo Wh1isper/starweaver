@@ -4,13 +4,15 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
+use starweaver_context::{AgentContext, AgentEvent};
 use starweaver_model::{
-    parse_data_url, ContentPart, MediaPolicy, MediaPreflight, ModelMessage, ModelRequest,
-    ModelRequestPart, ModelResponsePart, ToolArguments, ToolReturnPart,
+    parse_data_url, ContentPart, MediaPolicy, MediaPreflight, ModelAdapter, ModelMessage,
+    ModelRequest, ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelResponse,
+    ModelResponsePart, ModelSettings, ToolArguments, ToolReturnPart,
 };
 use starweaver_runtime::{
-    AgentRunState, HistoryProcessor, HistoryProcessorError, HistoryProcessorResult,
-    ReinjectSystemPromptProcessor, StaticCapabilityBundle,
+    AgentCapability, AgentRunState, CapabilityError, CapabilityOrdering, CapabilityResult,
+    CapabilitySpec, StaticCapabilityBundle,
 };
 
 /// Ordered default filter names for ya-agent-sdk behavioral parity.
@@ -40,24 +42,97 @@ const ENVIRONMENT_INSTRUCTIONS_METADATA: &str = "starweaver_environment_instruct
 const RUNTIME_INSTRUCTIONS_METADATA: &str = "starweaver_runtime_instructions";
 const HANDOFF_METADATA: &str = "starweaver_handoff";
 const COMPACT_KEEP_MESSAGES_METADATA: &str = "starweaver_compact_keep_messages";
+const COMPACT_DEPTH_METADATA: &str = "starweaver_compact_depth";
+const DEFAULT_AUTO_COMPACT_KEEP_MESSAGES: usize = 12;
 const COLD_START_TOOL_RETURN_LIMIT_METADATA: &str = "starweaver_cold_start_tool_return_limit";
+const CACHE_FRIENDLY_COMPACT_INSTRUCTION: &str = "Generate a compact continuation summary for the conversation history.
+Return only the summary text. Do not call tools.
+Use this exact Markdown structure:
+
+## Condensed conversation summary
+
+### Analysis
+
+[Brief analysis of the conversation and what matters for continuation.]
+
+### Context
+
+1. Primary Request and Intent:
+   [User's explicit requests and intent]
+
+2. Key Technical Concepts:
+   - [Concepts, technologies, APIs, and architecture points]
+
+3. Files and Code Sections:
+   - [Files examined, edited, or created, with important details]
+
+4. Problem Solving:
+   [Problems solved and ongoing troubleshooting]
+
+5. Pending Tasks:
+   - [Explicit pending tasks]
+
+6. Current Work:
+   [Precise current work immediately before compaction]
+
+7. Optional Next Step:
+   [Direct next step aligned with the current work]
+
+8. Past Interactions:
+   - [Key interactions already completed, including actions and outcomes]
+
+9. Skills Documentation:
+   [If any /skills/ documentation was accessed, list the relevant skill files and remind the next agent to re-read them]
+
+10. Auto-load Files:
+   [List only file paths that should be auto-loaded when resuming]
+";
+const CACHE_FRIENDLY_COMPACT_PROMPT: &str = "Compact the conversation history into the requested continuation summary format. Focus on details needed to continue the user's work accurately after older messages are removed. Return only the summary text.";
+const COMPACT_LIMIT_PROMPT: &str = "You have exceeded the maximum token limit for this conversation. Please provide a summary of the conversation so far and what you should work on next and I'll resume the conversation.";
+const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
+const USER_RULES_TAG: &str = "user-rules";
 
 /// Build the default named filter bundle.
 #[must_use]
 pub fn default_filter_bundle() -> StaticCapabilityBundle {
     let mut bundle = StaticCapabilityBundle::new("ya-agent-sdk-filter-parity");
-    for name in DEFAULT_FILTER_ORDER {
-        bundle = bundle.with_history_processor(Arc::new(NamedFilterProcessor::new(name)));
+    for capability in default_filter_capabilities(None) {
+        bundle = bundle.with_hook(capability);
     }
     bundle
 }
 
-/// Build named filter processors in default parity order.
+/// Build named filter capabilities in default parity order.
 #[must_use]
-pub fn default_filter_processors() -> Vec<Arc<dyn HistoryProcessor>> {
+pub fn default_filter_capabilities(
+    compact_model: Option<&Arc<dyn ModelAdapter>>,
+) -> Vec<Arc<dyn AgentCapability>> {
+    default_filter_capabilities_with_config(compact_model, None, None)
+}
+
+/// Build named filter capabilities with inherited compactor configuration.
+#[must_use]
+pub fn default_filter_capabilities_with_config(
+    compact_model: Option<&Arc<dyn ModelAdapter>>,
+    compact_model_settings: Option<&ModelSettings>,
+    compact_request_params: Option<&ModelRequestParameters>,
+) -> Vec<Arc<dyn AgentCapability>> {
     DEFAULT_FILTER_ORDER
         .iter()
-        .map(|name| Arc::new(NamedFilterProcessor::new(name)) as Arc<dyn HistoryProcessor>)
+        .map(|name| {
+            if *name == "compact" {
+                let mut capability = CacheFriendlyCompactCapability::new(compact_model.cloned());
+                if let Some(settings) = compact_model_settings.cloned() {
+                    capability = capability.with_model_settings(settings);
+                }
+                if let Some(params) = compact_request_params.cloned() {
+                    capability = capability.with_request_params(params);
+                }
+                Arc::new(capability) as Arc<dyn AgentCapability>
+            } else {
+                Arc::new(NamedFilterCapability::new(name)) as Arc<dyn AgentCapability>
+            }
+        })
         .collect()
 }
 
@@ -84,25 +159,25 @@ pub trait MediaUploader: Send + Sync {
     async fn upload(&self, request: MediaUploadRequest) -> Result<ContentPart, String>;
 }
 
-/// Named SDK filter processor with concrete parity behavior.
+/// Named SDK filter capability with concrete parity behavior.
 #[derive(Clone)]
-pub struct NamedFilterProcessor {
+pub struct NamedFilterCapability {
     name: &'static str,
     uploader: Option<Arc<dyn MediaUploader>>,
 }
 
-impl std::fmt::Debug for NamedFilterProcessor {
+impl std::fmt::Debug for NamedFilterCapability {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("NamedFilterProcessor")
+            .debug_struct("NamedFilterCapability")
             .field("name", &self.name)
             .field("has_uploader", &self.uploader.is_some())
             .finish()
     }
 }
 
-impl NamedFilterProcessor {
-    /// Create a named filter processor.
+impl NamedFilterCapability {
+    /// Create a named filter capability.
     #[must_use]
     pub const fn new(name: &'static str) -> Self {
         Self {
@@ -127,19 +202,158 @@ impl NamedFilterProcessor {
     }
 }
 
+/// Cache-friendly compaction capability that mirrors ya-mono automatic compaction.
+#[derive(Clone)]
+pub struct CacheFriendlyCompactCapability {
+    model: Option<Arc<dyn ModelAdapter>>,
+    model_settings: Option<ModelSettings>,
+    request_params: ModelRequestParameters,
+}
+
+impl CacheFriendlyCompactCapability {
+    /// Create a compaction capability using the current agent model when available.
+    #[must_use]
+    pub fn new(model: Option<Arc<dyn ModelAdapter>>) -> Self {
+        Self {
+            model,
+            model_settings: None,
+            request_params: ModelRequestParameters::default(),
+        }
+    }
+
+    /// Inherit model settings from the parent agent.
+    #[must_use]
+    pub fn with_model_settings(mut self, settings: ModelSettings) -> Self {
+        self.model_settings = Some(settings);
+        self
+    }
+
+    /// Inherit request parameters from the parent agent.
+    #[must_use]
+    pub fn with_request_params(mut self, params: ModelRequestParameters) -> Self {
+        self.request_params = params;
+        self
+    }
+}
+
 #[async_trait]
-impl HistoryProcessor for NamedFilterProcessor {
-    async fn process(
+impl AgentCapability for CacheFriendlyCompactCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new(filter_capability_id("compact"))
+            .with_ordering(filter_capability_ordering("compact"))
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        let mut compacted = if let Some(keep) = manual_compact_keep(state) {
+            build_trimmed_compact_messages(state, &messages, keep)
+        } else if need_auto_compact(context, &messages) {
+            self.compact_with_model(state, context, &messages).await?
+        } else {
+            messages
+        };
+        record_filter_order(&mut compacted, "compact");
+        let changed = compacted != state.message_history;
+        if changed {
+            state.message_history.clone_from(&compacted);
+            context.message_history.clone_from(&compacted);
+        }
+        Ok(compacted)
+    }
+}
+
+impl CacheFriendlyCompactCapability {
+    async fn compact_with_model(
         &self,
         state: &AgentRunState,
+        context: &mut AgentContext,
+        messages: &[ModelMessage],
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        if context
+            .metadata
+            .get(COMPACT_DEPTH_METADATA)
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            > 0
+        {
+            return Ok(messages.to_vec());
+        }
+        let Some(model) = &self.model else {
+            return Ok(build_trimmed_compact_messages(
+                state,
+                messages,
+                DEFAULT_AUTO_COMPACT_KEEP_MESSAGES,
+            ));
+        };
+        context
+            .metadata
+            .insert(COMPACT_DEPTH_METADATA.to_string(), json!(1));
+        let event_id = format!("{}-{}", state.run_id.as_str(), state.run_step);
+        context.publish_event(AgentEvent::new(
+            "compact_start",
+            json!({"event_id": event_id, "message_count": messages.len()}),
+        ));
+        let compact_messages = build_compact_summary_request(messages);
+        let request_context =
+            ModelRequestContext::new(state.run_id.clone(), state.conversation_id.clone())
+                .with_trace_context(context.trace_context.clone());
+        let response = match model
+            .request_stream_final(
+                compact_messages,
+                compact_model_settings(model.default_settings(), self.model_settings.as_ref()),
+                compact_request_params(&self.request_params),
+                request_context,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                context.metadata.remove(COMPACT_DEPTH_METADATA);
+                context.publish_event(AgentEvent::new(
+                    "compact_failed",
+                    json!({"event_id": event_id, "message": error.to_string()}),
+                ));
+                return Ok(messages.to_vec());
+            }
+        };
+        context.metadata.remove(COMPACT_DEPTH_METADATA);
+        context.add_usage(&response.usage);
+        let summary = response.text_output();
+        let compacted = build_cache_friendly_compacted_messages(state, messages, summary);
+        context.publish_event(AgentEvent::new(
+            "compact_complete",
+            json!({
+                "event_id": event_id,
+                "message_count_before": messages.len(),
+                "message_count_after": compacted.len(),
+            }),
+        ));
+        Ok(compacted)
+    }
+}
+
+#[async_trait]
+impl AgentCapability for NamedFilterCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new(filter_capability_id(self.name))
+            .with_ordering(filter_capability_ordering(self.name))
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
         messages: Vec<ModelMessage>,
-    ) -> HistoryProcessorResult<Vec<ModelMessage>> {
+    ) -> CapabilityResult<Vec<ModelMessage>> {
         let mut messages = match self.name {
             "cold_start" => cold_start_filter(state, messages),
             "capability" => capability_filter(state, messages),
             "media_preflight" => media_preflight_filter(state, messages),
             "media_upload" => media_upload_filter(state, messages, self.uploader.as_ref()).await,
-            "compact" => compact_filter(state, messages),
             "handoff" => {
                 inject_instruction_from_metadata(state, messages, HANDOFF_METADATA, "handoff")
             }
@@ -158,15 +372,11 @@ impl HistoryProcessor for NamedFilterProcessor {
                 RUNTIME_INSTRUCTIONS_METADATA,
                 "runtime",
             ),
-            "system_prompt" => {
-                ReinjectSystemPromptProcessor::new()
-                    .process(state, messages)
-                    .await?
-            }
+            "system_prompt" => system_prompt_filter(state, messages),
             "tool_args" => tool_args_filter(messages),
             "reasoning_normalize" => reasoning_normalize_filter(messages),
             other => {
-                return Err(HistoryProcessorError::failed(format!(
+                return Err(CapabilityError::Failed(format!(
                     "unknown SDK filter '{other}'"
                 )));
             }
@@ -174,6 +384,27 @@ impl HistoryProcessor for NamedFilterProcessor {
         record_filter_order(&mut messages, self.name);
         Ok(messages)
     }
+}
+
+fn filter_capability_id(name: &str) -> String {
+    format!("starweaver.filter.{name}")
+}
+
+fn filter_capability_ordering(name: &str) -> CapabilityOrdering {
+    let Some(index) = DEFAULT_FILTER_ORDER
+        .iter()
+        .position(|candidate| *candidate == name)
+    else {
+        return CapabilityOrdering::default();
+    };
+    let mut ordering = CapabilityOrdering::default();
+    if let Some(previous) = index
+        .checked_sub(1)
+        .and_then(|idx| DEFAULT_FILTER_ORDER.get(idx))
+    {
+        ordering = ordering.after(filter_capability_id(previous));
+    }
+    ordering
 }
 
 fn cold_start_filter(state: &AgentRunState, mut messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
@@ -350,17 +581,243 @@ async fn media_upload_filter(
     messages
 }
 
-fn compact_filter(state: &AgentRunState, messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
-    let Some(keep) = state
+fn need_auto_compact(context: &AgentContext, messages: &[ModelMessage]) -> bool {
+    let Some(context_window) = context.model_config.context_window else {
+        return false;
+    };
+    let Some(current_tokens) = latest_request_total_tokens(messages) else {
+        return false;
+    };
+    let threshold = context_window.saturating_mul(u64::from(
+        context.model_config.compact_threshold.parts_per_thousand(),
+    )) / 1000;
+    current_tokens >= threshold
+}
+
+fn latest_request_total_tokens(messages: &[ModelMessage]) -> Option<u64> {
+    messages.iter().rev().find_map(|message| {
+        let ModelMessage::Response(response) = message else {
+            return None;
+        };
+        (response.usage.total_tokens > 0).then_some(response.usage.total_tokens)
+    })
+}
+
+fn build_compact_summary_request(messages: &[ModelMessage]) -> Vec<ModelMessage> {
+    let mut compact_messages = messages
+        .iter()
+        .filter_map(|message| trim_message_for_compact(message.clone()))
+        .collect::<Vec<_>>();
+    compact_messages.push(ModelMessage::Request(ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: CACHE_FRIENDLY_COMPACT_INSTRUCTION.to_string(),
+                metadata: Map::new(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: CACHE_FRIENDLY_COMPACT_PROMPT.to_string(),
+                }],
+                name: None,
+                metadata: Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    }));
+    compact_messages
+}
+
+fn compact_model_settings(
+    defaults: Option<&ModelSettings>,
+    inherited: Option<&ModelSettings>,
+) -> Option<ModelSettings> {
+    let mut settings = match (defaults, inherited) {
+        (Some(defaults), Some(inherited)) => defaults.merge(inherited),
+        (Some(defaults), None) => defaults.clone(),
+        (None, Some(inherited)) => inherited.clone(),
+        (None, None) => return None,
+    };
+    strip_compact_model_settings(&mut settings);
+    Some(settings)
+}
+
+fn strip_compact_model_settings(settings: &mut ModelSettings) {
+    settings.thinking = None;
+    strip_compact_incompatible_body(&mut settings.extra_body);
+    strip_incompatible_beta_header(&mut settings.extra_headers);
+    if let Some(Value::Object(provider_options)) = &mut settings.provider_options {
+        strip_compact_incompatible_body(provider_options);
+    }
+}
+
+fn compact_request_params(inherited: &ModelRequestParameters) -> ModelRequestParameters {
+    let mut params = inherited.clone();
+    params.output_schema = None;
+    params.output_mode = None;
+    params.thinking = None;
+    params.allow_text_output = Some(true);
+    strip_compact_incompatible_body(&mut params.extra_body);
+    strip_compact_incompatible_body(&mut params.http.extra_body);
+    strip_incompatible_beta_header(&mut params.http.headers);
+    params
+}
+
+fn strip_compact_incompatible_body(body: &mut Map<String, Value>) {
+    for key in [
+        "anthropic_cache_tool_definitions",
+        "anthropic_cache_instructions",
+        "anthropic_cache_messages",
+        "anthropic_cache",
+        "thinking",
+        "anthropic_thinking",
+        "anthropic_effort",
+    ] {
+        body.remove(key);
+    }
+    strip_clear_thinking_edits(body);
+}
+
+fn strip_incompatible_beta_header(headers: &mut std::collections::BTreeMap<String, String>) {
+    let Some(beta_header) = headers.get("anthropic-beta").cloned() else {
+        return;
+    };
+    let filtered = beta_header
+        .split(',')
+        .map(str::trim)
+        .filter(|beta| !beta.is_empty() && *beta != "interleaved-thinking-2025-05-14")
+        .collect::<Vec<_>>();
+    if filtered.is_empty() {
+        headers.remove("anthropic-beta");
+    } else {
+        headers.insert("anthropic-beta".to_string(), filtered.join(","));
+    }
+}
+
+fn strip_clear_thinking_edits(body: &mut Map<String, Value>) {
+    let Some(Value::Object(context_management)) = body.get_mut("context_management") else {
+        return;
+    };
+    let Some(Value::Array(edits)) = context_management.get_mut("edits") else {
+        return;
+    };
+    edits.retain(|edit| {
+        !edit
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.contains("clear_thinking"))
+    });
+    if edits.is_empty() {
+        context_management.remove("edits");
+    }
+    if context_management.is_empty() {
+        body.remove("context_management");
+    }
+}
+
+fn build_cache_friendly_compacted_messages(
+    state: &AgentRunState,
+    messages: &[ModelMessage],
+    summary: String,
+) -> Vec<ModelMessage> {
+    let mut summary_response = ModelResponse::text(summary);
+    summary_response
+        .metadata
+        .insert("keep".to_string(), json!("compact"));
+    let mut request_parts = instruction_parts(messages);
+    if request_parts.is_empty() {
+        request_parts.push(ModelRequestPart::SystemPrompt {
+            text: "Placeholder system prompt".to_string(),
+            metadata: Map::new(),
+        });
+    }
+    request_parts.push(ModelRequestPart::UserPrompt {
+        content: vec![ContentPart::Text {
+            text: COMPACT_LIMIT_PROMPT.to_string(),
+        }],
+        name: None,
+        metadata: Map::new(),
+    });
+    vec![
+        ModelMessage::Request(ModelRequest {
+            parts: request_parts,
+            timestamp: None,
+            instructions: None,
+            run_id: Some(state.run_id.clone()),
+            conversation_id: Some(state.conversation_id.clone()),
+            metadata: Map::new(),
+        }),
+        ModelMessage::Response(summary_response),
+        context_restored_request(state),
+    ]
+}
+
+fn system_prompt_filter(
+    state: &AgentRunState,
+    mut messages: Vec<ModelMessage>,
+) -> Vec<ModelMessage> {
+    let source_parts = instruction_parts(&state.message_history);
+    if source_parts.is_empty() {
+        return messages;
+    }
+    let existing = instruction_parts(&messages);
+    let has_all = source_parts.iter().all(|part| existing.contains(part));
+    if has_all {
+        return messages;
+    }
+    messages.insert(
+        0,
+        ModelMessage::Request(ModelRequest {
+            parts: source_parts,
+            timestamp: None,
+            instructions: None,
+            run_id: Some(state.run_id.clone()),
+            conversation_id: Some(state.conversation_id.clone()),
+            metadata: Map::new(),
+        }),
+    );
+    messages
+}
+
+fn instruction_parts(messages: &[ModelMessage]) -> Vec<ModelRequestPart> {
+    messages
+        .iter()
+        .flat_map(|message| match message {
+            ModelMessage::Request(request) => request
+                .parts
+                .iter()
+                .filter(|part| {
+                    matches!(
+                        part,
+                        ModelRequestPart::SystemPrompt { .. }
+                            | ModelRequestPart::Instruction { .. }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+            ModelMessage::Response(_) => Vec::new(),
+        })
+        .collect()
+}
+
+fn manual_compact_keep(state: &AgentRunState) -> Option<usize> {
+    state
         .metadata
         .get(COMPACT_KEEP_MESSAGES_METADATA)
         .and_then(Value::as_u64)
         .and_then(|value| usize::try_from(value).ok())
-    else {
-        return messages;
-    };
+}
+
+fn build_trimmed_compact_messages(
+    state: &AgentRunState,
+    messages: &[ModelMessage],
+    keep: usize,
+) -> Vec<ModelMessage> {
     if keep == 0 || messages.len() <= keep {
-        return messages;
+        return messages.to_vec();
     }
 
     let mut compacted = Vec::new();
@@ -444,7 +901,12 @@ fn trim_content_for_compact(content: ContentPart) -> Option<ContentPart> {
 
 fn strip_injected_context_text(text: &str) -> Option<String> {
     let mut cleaned = text.to_string();
-    for tag in ["runtime-context", "environment-context"] {
+    for tag in [
+        "runtime-context",
+        "environment-context",
+        PROJECT_GUIDANCE_TAG,
+        USER_RULES_TAG,
+    ] {
         cleaned = strip_xml_tag_blocks(&cleaned, tag);
     }
     let cleaned = cleaned.trim().to_string();

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use starweaver_agent::{
-    attach_environment, attach_process_shell, AgentContext, ConversationId, RunId,
+    attach_environment, AgentContext, ConversationId, ProcessShellHandle, RunId,
     ShellProcessSnapshot, ShellProcessStatus, ToolContext, ToolRegistry,
 };
 use starweaver_core::Metadata;
@@ -23,8 +23,11 @@ async fn process_shell_tools_use_process_capable_provider() {
         ),
     );
     let mut agent_context = AgentContext::default();
-    attach_environment(&mut agent_context, provider.clone());
-    attach_process_shell(&mut agent_context, provider);
+    attach_environment(&mut agent_context, provider);
+    assert!(agent_context
+        .dependencies
+        .get::<ProcessShellHandle>()
+        .is_some());
     let mut dependencies = agent_context.dependencies.clone();
     dependencies.insert(agent_context);
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)

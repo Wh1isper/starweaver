@@ -13,7 +13,6 @@ use crate::{
     agent::{Agent, AgentError},
     capability::{CapabilityError, RetryEventKind},
     executor::{AgentCheckpoint, AgentExecutionDecision, AgentExecutionNode},
-    history::HistoryProcessorError,
     instructions::DynamicInstructionError,
     output::{
         parse_output, OutputFunctionContext, OutputSchema, OutputValidationError, OutputValue,
@@ -358,25 +357,25 @@ impl Agent {
         Ok(())
     }
 
-    pub(super) async fn process_history(
+    pub(super) async fn prepare_model_messages(
         &self,
-        state: &AgentRunState,
-        context: &AgentContext,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
     ) -> Result<Vec<ModelMessage>, AgentError> {
         let mut messages = state.message_history.clone();
-        for processor in &self.history_processors {
+        for capability in &self.ordered_capabilities()? {
             let before_count = messages.len();
-            messages = processor
-                .process(state, messages)
+            messages = capability
+                .prepare_model_messages_with_context(state, context, messages)
                 .await
-                .map_err(Self::history_processor_error)?;
+                .map_err(Self::capability_error)?;
             let after_count = messages.len();
             if before_count != after_count {
                 let span = self.trace_recorder.start_span(
                     SpanSpec::new("starweaver.history.compaction")
                         .with_attribute(
                             "starweaver.capability.name",
-                            serde_json::json!("history_processor"),
+                            serde_json::json!(capability.spec().id.as_str()),
                         )
                         .with_attribute(
                             "starweaver.history.messages.before",
@@ -760,12 +759,6 @@ impl Agent {
                 .map_err(Self::capability_error)?;
         }
         Ok(())
-    }
-
-    pub(super) fn history_processor_error(error: HistoryProcessorError) -> AgentError {
-        match error {
-            HistoryProcessorError::Failed(message) => AgentError::Capability(message),
-        }
     }
 
     pub(super) fn dynamic_instruction_error(error: DynamicInstructionError) -> AgentError {

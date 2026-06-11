@@ -211,7 +211,7 @@ Add or maintain focused tests for:
 cargo test -p starweaver-model --test message_ast --locked
 cargo test -p starweaver-model --test request_preparation --locked
 cargo test -p starweaver-model --test stream_replay --locked
-cargo test -p starweaver-runtime --test history_processors --locked
+cargo test -p starweaver-runtime --test usage_history --locked
 make replay-check
 ```
 

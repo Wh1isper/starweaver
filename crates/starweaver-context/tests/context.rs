@@ -153,13 +153,15 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
 
 #[test]
 fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
-    let mut context = AgentContext::default();
-    context.usage = Usage {
-        requests: 2,
-        input_tokens: 120,
-        output_tokens: 80,
-        total_tokens: 200,
-        tool_calls: 0,
+    let mut context = AgentContext {
+        usage: Usage {
+            requests: 2,
+            input_tokens: 120,
+            output_tokens: 80,
+            total_tokens: 200,
+            tool_calls: 0,
+        },
+        ..AgentContext::default()
     };
     let mut first = ModelResponse::text("first");
     first.usage = Usage {
@@ -189,19 +191,21 @@ fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
 
 #[test]
 fn runtime_context_adds_proactive_context_pressure_reminder_from_latest_request_tokens() {
-    let mut context = AgentContext::default();
-    context.model_config = ModelConfig {
-        context_window: Some(100),
-        proactive_context_management_threshold: Some(Ratio::from_parts_per_thousand(500)),
-        compact_threshold: Ratio::from_parts_per_thousand(900),
-        ..ModelConfig::default()
-    };
-    context.usage = Usage {
-        requests: 2,
-        input_tokens: 90,
-        output_tokens: 20,
-        total_tokens: 110,
-        tool_calls: 0,
+    let mut context = AgentContext {
+        model_config: ModelConfig {
+            context_window: Some(100),
+            proactive_context_management_threshold: Some(Ratio::from_parts_per_thousand(500)),
+            compact_threshold: Ratio::from_parts_per_thousand(900),
+            ..ModelConfig::default()
+        },
+        usage: Usage {
+            requests: 2,
+            input_tokens: 90,
+            output_tokens: 20,
+            total_tokens: 110,
+            tool_calls: 0,
+        },
+        ..AgentContext::default()
     };
     let mut first = ModelResponse::text("first");
     first.usage = Usage {

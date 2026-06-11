@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -21,9 +21,9 @@ use crate::{prompt_input::PromptAttachment, slash_commands::SlashCommandDefiniti
 use super::{
     markdown::{render_markdown_lines, render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
     render::{
-        composer_cursor_column, input_tail_lines, render_composer_lines, render_footer_lines,
-        render_live_history_lines, render_shortcut_overlay, visible_width, SegmentStyle,
-        StyledLine,
+        composer_cursor_column, input_tail_lines, input_viewport_lines, render_composer_lines,
+        render_footer_lines, render_live_history_lines, render_shortcut_overlay, visible_width,
+        SegmentStyle, StyledLine,
     },
     state::{FooterMode, InteractiveTuiState, ModelChoice, RunMode, SessionChoice},
     terminal::{
@@ -89,7 +89,7 @@ fn codex_style_opening_renders_header_composer_and_footer() {
 
     let composer = render_composer_lines(&state, 80);
     let composer_text = line_texts(&composer).join("\n");
-    assert!(composer_text.contains("[scroll] > Ask Starweaver to do anything"));
+    assert!(composer_text.contains("> Ask Starweaver to do anything"));
 
     let footer_lines = render_footer_lines(&state, 120);
     let footer_text = line_texts(&footer_lines).join("\n");
@@ -124,6 +124,17 @@ fn codex_style_shortcut_overlay_matches_footer_model() {
     assert!(text.contains("Ctrl+C"));
     assert!(text.contains("Scroll transcript"));
     assert!(text.contains("Mouse wheel"));
+}
+
+#[test]
+fn shortcut_overlay_wraps_narrow_command_rows_without_truncating_content() {
+    let overlay = render_shortcut_overlay(18);
+    let texts = line_texts(&overlay);
+    assert!(texts.iter().all(|line| visible_width(line) <= 18));
+
+    let compact_text = texts.join("").replace(' ', "");
+    assert!(compact_text.contains("/model[profile]Openselectororselectmodelprofile"));
+    assert!(compact_text.contains("Ctrl+VAttachimagefromsystemclipboard"));
 }
 
 #[test]
@@ -252,6 +263,7 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         .body
         .extend((0..30).map(|line| format!("line {line}")));
     let rendered_len = render_live_history_lines(&state, 80).len();
+    state.update_render_metrics(rendered_len, 10);
     assert_eq!(
         visible_body_bounds(&state, rendered_len, 10),
         (rendered_len - 10, rendered_len)
@@ -322,11 +334,15 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
 
     state.input = "queued".to_string();
-    assert_eq!(
-        queue_text(handle_key_event(&mut state, key_code(KeyCode::Tab))),
-        Some("queued".to_string())
-    );
-    assert!(state.input.is_empty());
+    assert!(state.enter_sends());
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
+    assert!(!state.enter_sends());
+    assert_eq!(state.input, "queued");
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.input, "queued\n");
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
+    assert!(state.enter_sends());
+    state.input.clear();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Esc)), None);
     assert!(state.selection_mode_visible());
     assert!(!should_capture_mouse(&state));
@@ -740,6 +756,361 @@ fn multi_edit_summary_counts_only_first_empty_old_string_as_new_file() {
     ));
     assert!(body_has_line(&state, "  Edit #2: Content modification"));
     assert!(body_has_line(&state, "    Empty match string"));
+}
+
+#[test]
+fn summarize_tool_return_renders_summary_handoff() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "summarize_1",
+                "summarize",
+                json!({
+                    "operation": "summarize",
+                    "payload": {
+                        "content": "Implemented compact rendering parity.\nNext: run tests.",
+                        "auto_load_files": ["AGENTS.md", "crates/starweaver-cli/src/tui/state.rs"]
+                    }
+                }),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Tool result: summarize"));
+    assert!(body_has_line(
+        &state,
+        "  Summary: Progress summarized, continuing with fresh context"
+    ));
+    assert!(body_has_line(
+        &state,
+        "    │ Implemented compact rendering parity."
+    ));
+    assert!(body_has_line(
+        &state,
+        "  Auto-load files: AGENTS.md, crates/starweaver-cli/src/tui/state.rs"
+    ));
+
+    let rendered = render_transcript_lines(&state.body, 100);
+    assert!(has_segment(
+        &rendered,
+        "Progress summarized, continuing with fresh context",
+        SegmentStyle::GREEN
+    ));
+    assert!(has_segment(
+        &rendered,
+        "AGENTS.md, crates/starweaver-cli/src/tui/state.rs",
+        SegmentStyle::CYAN
+    ));
+}
+
+#[test]
+fn compact_custom_events_render_status_lines() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new("compaction_started", json!({"message_count": 50})),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "starweaver.compaction_completed",
+                json!({
+                    "payload": {
+                        "original_message_count": 50,
+                        "compacted_message_count": 12,
+                        "summary": "Kept implementation notes."
+                    }
+                }),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Context compacting 50 messages..."));
+    assert!(body_has_line(&state, "Context compacted"));
+    assert!(body_has_line(
+        &state,
+        "  Summary: 50 -> 12 messages (76% reduction)"
+    ));
+    assert!(body_has_line(&state, "    │ Kept implementation notes."));
+
+    let long_error = r#"provider status 400: {"error":{"message":"[openai-subs-workspace] invalid request: request body contained unsupported cache setting","type":"invalid_request_error","param":"cache_control","code":"bad_request_tail_marker"}}"#;
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new("compact_failed", json!({"message": long_error})),
+        },
+    ));
+
+    let rendered_error = render_transcript_lines(&state.body, 72);
+    let rendered_error_text = line_texts(&rendered_error).join("\n");
+    assert!(rendered_error_text.contains("provider status 400"));
+    assert!(rendered_error_text.contains("bad_request_tail_marker"));
+    assert!(!rendered_error_text.contains('…'));
+
+    let rendered = render_transcript_lines(&state.body, 100);
+    assert!(has_segment(
+        &rendered,
+        "  Context compacting 50 messages...",
+        SegmentStyle::YELLOW
+    ));
+}
+
+#[test]
+fn handoff_custom_events_render_summary_lines() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new("handoff_start", json!({"messages": 42})),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "summary_complete",
+                json!({"content": "Current state preserved.\nContinue from tests."}),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        "Summarizing progress (42 messages)..."
+    ));
+    assert!(body_has_line(&state, "Summary complete"));
+    assert!(body_has_line(
+        &state,
+        "  Summary: Progress summarized, continuing with fresh context"
+    ));
+    assert!(body_has_line(&state, "    │ Current state preserved."));
+}
+
+#[test]
+fn shell_tool_return_renders_full_command_card_and_output_preview() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let command_tail = "0123456789".repeat(32);
+    let long_command = format!(
+        "printf 'alpha\\nbeta' && cargo test -p starweaver-cli tui::tests:: -- --nocapture && echo {command_tail}"
+    );
+    let call = ToolCallPart {
+        id: "shell_1".to_string(),
+        name: "shell_exec".to_string(),
+        arguments: json!({
+            "command": long_command,
+            "cwd": "crates/starweaver-cli",
+            "timeout_seconds": 120
+        })
+        .into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                call.id,
+                "shell_exec",
+                json!({
+                    "return_code": 0,
+                    "stdout": "alpha\nbeta\ngamma",
+                    "stderr": "warning: none"
+                }),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Tool result: shell_exec"));
+    assert!(body_has_line(&state, "  Command:"));
+    let command_start = state
+        .body
+        .iter()
+        .position(|line| line == "  Command:")
+        .expect("command section should render");
+    let command_end = state
+        .body
+        .iter()
+        .skip(command_start + 1)
+        .position(|line| !line.starts_with("    │ "))
+        .map_or(state.body.len(), |offset| command_start + 1 + offset);
+    let rendered_command = state.body[command_start + 1..command_end]
+        .iter()
+        .map(|line| line.trim_start_matches("    │ "))
+        .collect::<String>();
+    assert_eq!(rendered_command, long_command);
+    assert!(body_has_line(&state, "  Cwd: crates/starweaver-cli"));
+    assert!(body_has_line(&state, "  Status: exit 0"));
+    assert!(body_has_line(&state, "  stdout:"));
+    assert!(body_has_line(&state, "    │ alpha"));
+    assert!(body_has_line(&state, "    │ beta"));
+    assert!(body_has_line(&state, "  stderr:"));
+    assert!(body_has_line(&state, "    │ warning: none"));
+
+    let rendered = render_transcript_lines(&state.body, 120);
+    let rendered_text = line_texts(&rendered).join("\n");
+    assert!(rendered_text.contains("Complete: shell_exec"));
+    assert!(rendered_text.contains("0123456789"));
+}
+
+#[test]
+fn shell_tool_return_truncates_long_stdout_and_stderr_previews() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let stdout = (0..10)
+        .map(|index| format!("stdout {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stderr = (0..8)
+        .map(|index| format!("stderr {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "shell_long",
+                "shell_exec",
+                json!({
+                    "command": "for i in $(seq 1 10); do echo $i; done",
+                    "return_code": 0,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "stdout_file_path": "/tmp/stdout.log",
+                    "stderr_file_path": "/tmp/stderr.log"
+                }),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(&state, "    │ stdout 0"));
+    assert!(body_has_line(&state, "    │ stdout 5"));
+    assert!(body_has_line(&state, "    │ ... (4 more lines)"));
+    assert!(!body_has_line(&state, "    │ stdout 6"));
+    assert!(body_has_line(&state, "    │ stderr 5"));
+    assert!(body_has_line(&state, "    │ ... (2 more lines)"));
+    assert!(!body_has_line(&state, "    │ stderr 6"));
+    assert!(body_has_line(&state, "  stdout_file_path: /tmp/stdout.log"));
+    assert!(body_has_line(&state, "  stderr_file_path: /tmp/stderr.log"));
+}
+
+#[test]
+fn shell_tool_call_and_error_render_background_args_duration_and_context_errors() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let call = ToolCallPart {
+        id: "shell_bg".to_string(),
+        name: "shell_exec".to_string(),
+        arguments: json!({
+            "background": true,
+            "command": "cargo test -p starweaver-cli --lib",
+            "environment": null,
+            "timeout_seconds": 0
+        })
+        .into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+    let mut metadata = Metadata::default();
+    metadata.insert("duration_ms".to_string(), json!(0));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                call.id,
+                "shell_exec",
+                json!({
+                    "error": "tool shell_exec failed: ProcessShellHandle is missing from AgentContext",
+                    "kind": "execution"
+                }),
+            )
+            .with_error(true)
+            .with_metadata(metadata),
+        },
+    ));
+
+    assert!(body_has_line(&state, "  Duration: 0ms"));
+    let body_text = state.body.join("\n");
+    assert!(body_text.contains("background"));
+    assert!(body_text.contains("environment"));
+    assert!(body_text.contains("timeout_seconds"));
+    assert!(body_text.contains("cargo test -p starweaver-cli --lib"));
+    let rendered_text = line_texts(&render_transcript_lines(&state.body, 200)).join("\n");
+    assert!(rendered_text.contains("Calling: shell_exec"));
+    assert!(rendered_text.contains("cargo test -p starweaver-cli --lib"));
+    assert!(rendered_text.contains("x Error: shell_exec"));
+    assert!(rendered_text.contains("ProcessShellHandle"));
+    assert!(rendered_text.contains("AgentContext"));
+    assert!(rendered_text.contains("Duration: 0ms"));
+}
+
+#[test]
+fn tool_result_previews_escape_control_characters() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "shell_escape",
+                "shell_exec",
+                json!({
+                    "command": "printf '\u{1b}[31mred'",
+                    "return_code": 0,
+                    "stdout": "\u{1b}[31mred\u{7}"
+                }),
+            ),
+        },
+    ));
+
+    let text = state.body.join("\n");
+    assert!(text.contains("\\x1b[31mred"));
+    assert!(text.contains("\\x07"));
+    assert!(!text.contains('\u{1b}'));
+    assert!(!text.contains('\u{7}'));
+}
+
+#[test]
+fn generic_tool_return_uses_multiline_content_preview() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "lookup_1",
+                "lookup",
+                json!("first useful line\nsecond useful line\nthird useful line"),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Tool result: lookup"));
+    assert!(body_has_line(&state, "    │ first useful line"));
+    assert!(body_has_line(&state, "    │ second useful line"));
+    assert!(body_has_line(&state, "    │ third useful line"));
+
+    let rendered_text = line_texts(&render_transcript_lines(&state.body, 42)).join("\n");
+    assert!(rendered_text.contains("Complete: lookup"));
+    assert!(rendered_text.contains("first useful line"));
+    assert!(rendered_text.contains("second useful line"));
 }
 
 #[test]
@@ -1773,6 +2144,33 @@ fn markdown_renderer_covers_extended_codex_blocks() {
 }
 
 #[test]
+fn transcript_renderer_batches_live_assistant_markdown_fences() {
+    let lines = vec![
+        format!("{ASSISTANT_CONTENT_PREFIX}Created commit:"),
+        format!("{ASSISTANT_CONTENT_PREFIX}"),
+        format!("{ASSISTANT_CONTENT_PREFIX}```text"),
+        format!("{ASSISTANT_CONTENT_PREFIX}b238274 feat: add OAuth refresh and interactive CLI flows"),
+        format!("{ASSISTANT_CONTENT_PREFIX}```"),
+        format!("{ASSISTANT_CONTENT_PREFIX}"),
+        format!("{ASSISTANT_CONTENT_PREFIX}Commit body:"),
+        format!("{ASSISTANT_CONTENT_PREFIX}"),
+        format!("{ASSISTANT_CONTENT_PREFIX}```markdown"),
+        format!("{ASSISTANT_CONTENT_PREFIX}• Add OAuth token stores, refresh supervisors, and provider hooks."),
+        format!("{ASSISTANT_CONTENT_PREFIX}```"),
+        "Run completed: run_test status=completed".to_string(),
+    ];
+
+    let rendered = render_transcript_lines(&lines, 100);
+    let text = line_texts(&rendered).join("\n");
+    assert!(text.contains("Created commit:"));
+    assert!(text.contains("╭─ text"));
+    assert!(text.contains("│ b238274 feat: add OAuth refresh and interactive CLI flows"));
+    assert!(text.contains("╭─ markdown"));
+    assert!(text.contains("│ • Add OAuth token stores, refresh supervisors, and provider hooks."));
+    assert!(!text.contains("╭─ code\n╰────"));
+}
+
+#[test]
 fn transcript_renderer_covers_status_styles_and_plain_lines() {
     let lines = vec![
         "plain setup".to_string(),
@@ -1787,6 +2185,12 @@ fn transcript_renderer_covers_status_styles_and_plain_lines() {
         "Error: boom".to_string(),
         "Suspended: wait".to_string(),
         "Output retry: 1".to_string(),
+        "Context compacting 3 messages...".to_string(),
+        "Context compacted".to_string(),
+        "Compact failed: no space".to_string(),
+        "Summarizing progress (3 messages)...".to_string(),
+        "Summary complete".to_string(),
+        "Summary failed: no summary".to_string(),
         String::new(),
     ];
     let rendered = render_transcript_lines(&lines, 80);
@@ -1809,6 +2213,12 @@ fn transcript_renderer_covers_status_styles_and_plain_lines() {
     assert!(text.contains("◌ thinking hidden"));
     assert!(text.contains("◷ waiting wait"));
     assert!(text.contains("↻ retry 1"));
+    assert!(text.contains("Context compacting 3 messages..."));
+    assert!(text.contains("Context compacted"));
+    assert!(text.contains("x compact failed no space"));
+    assert!(text.contains("Summarizing progress (3 messages)..."));
+    assert!(text.contains("Summary complete"));
+    assert!(text.contains("x summary failed no summary"));
 }
 
 #[test]
@@ -1844,6 +2254,41 @@ fn transcript_renderer_renders_only_assistant_markdown() {
     assert!(rendered
         .iter()
         .any(|line| line_text(line) == "  ✓ completed run_test status=completed"));
+}
+
+#[test]
+fn composer_viewport_scrolls_multiline_input_and_resets_on_edit() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.input = (1..=7)
+        .map(|index| format!("line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let bottom = line_texts(&render_composer_lines(&state, 80)).join("\n");
+    assert!(!bottom.contains("line 1"));
+    assert!(bottom.contains("line 3"));
+    assert!(bottom.contains("line 7"));
+    assert_eq!(
+        input_viewport_lines(&state.input, 5, 0).first().unwrap(),
+        "line 3"
+    );
+
+    assert_eq!(
+        handle_key_event(
+            &mut state,
+            key_code_modified(KeyCode::Up, KeyModifiers::ALT)
+        ),
+        None
+    );
+    assert_eq!(state.composer_scroll_offset(), 1);
+    let scrolled = line_texts(&render_composer_lines(&state, 80)).join("\n");
+    assert!(scrolled.contains("line 2"));
+    assert!(!scrolled.contains("line 7"));
+
+    assert_eq!(handle_key_event(&mut state, key_char('x')), None);
+    assert_eq!(state.composer_scroll_offset(), 0);
+    let edited = line_texts(&render_composer_lines(&state, 80)).join("\n");
+    assert!(edited.contains("line 7x"));
 }
 
 #[test]
@@ -2066,6 +2511,13 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     let deferred = vec![completed_deferred, waiting_deferred];
     let messages = vec![
         DisplayMessage::new(
+            2,
+            session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::ToolCallStart,
+        )
+        .with_payload(json!({"tool_name": "lookup", "arguments": {"query": "starweaver"}})),
+        DisplayMessage::new(
             0,
             session_id.clone(),
             run_id.clone(),
@@ -2080,13 +2532,6 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         )
         .with_preview(" world"),
         DisplayMessage::new(
-            2,
-            session_id.clone(),
-            run_id.clone(),
-            DisplayMessageKind::ToolCallStart,
-        )
-        .with_payload(json!({"tool_name": "lookup", "arguments": {"query": "starweaver"}})),
-        DisplayMessage::new(
             3,
             session_id.clone(),
             run_id.clone(),
@@ -2099,27 +2544,43 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
             run_id.clone(),
             DisplayMessageKind::ToolResult,
         )
-        .with_preview("ok"),
+        .with_payload(json!({"tool_name": "lookup", "content": "ok"})),
         DisplayMessage::new(
             5,
             session_id.clone(),
             run_id.clone(),
             DisplayMessageKind::ToolResult,
         )
-        .with_payload(json!({"content": "permission denied", "is_error": true})),
+        .with_payload(
+            json!({"tool_name": "lookup", "content": "permission denied", "is_error": true}),
+        ),
         DisplayMessage::new(
             6,
+            session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::SteeringSubmitted,
+        )
+        .with_payload(json!({"text": "try another path"})),
+        DisplayMessage::new(
+            7,
+            session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::SteeringReceived,
+        )
+        .with_payload(json!({"text": "try another path"})),
+        DisplayMessage::new(
+            8,
             session_id.clone(),
             run_id.clone(),
             DisplayMessageKind::RunCompleted,
         ),
         DisplayMessage::new(
-            7,
+            9,
             session_id.clone(),
             run_id.clone(),
             DisplayMessageKind::RunFailed,
         ),
-        DisplayMessage::new(8, session_id, run_id, DisplayMessageKind::RunCancelled),
+        DisplayMessage::new(10, session_id, run_id, DisplayMessageKind::RunCancelled),
     ];
     let snapshot = super::snapshot::TuiSnapshot::from_parts(
         "session_snapshot".to_string(),
@@ -2127,7 +2588,7 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         &approvals,
         &deferred,
     );
-    assert_eq!(snapshot.messages, 9);
+    assert_eq!(snapshot.messages, 11);
     assert_eq!(snapshot.pending_approvals, 1);
     assert_eq!(snapshot.pending_deferred, 1);
     assert_eq!(snapshot.assistant_text, "hello world");
@@ -2136,8 +2597,15 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         vec![
             "lookup {\"query\":\"starweaver\"}",
             "fallback_tool",
-            "result:ok",
-            "result:error:permission denied"
+            "result:lookup ok",
+            "result:error:lookup permission denied"
+        ]
+    );
+    assert_eq!(
+        snapshot.steering,
+        vec![
+            "submitted:try another path".to_string(),
+            "received:try another path".to_string(),
         ]
     );
     assert_eq!(snapshot.terminal_status.as_deref(), Some("cancelled"));
@@ -2145,19 +2613,42 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     assert!(text.contains("pending_approvals=1"));
     assert!(text.contains("terminal_status=cancelled"));
     assert!(text.contains("Assistant"));
-    assert!(text.contains("- result:ok"));
-    assert!(text.contains("- result:error:permission denied"));
+    assert!(text.contains("- result:lookup ok"));
+    assert!(text.contains("- result:error:lookup permission denied"));
+    assert!(text.contains("Steering"));
+    assert!(text.contains("- submitted:try another path"));
 
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.set_snapshot(&snapshot);
     assert_eq!(state.status, "CANCELLED");
     assert_eq!(state.phase, "replay");
-    assert!(state.body.iter().any(|line| line == "Assistant:"));
-    assert!(state.body.iter().any(|line| line == "Tool result: ok"));
+    let assistant_index = state
+        .body
+        .iter()
+        .position(|line| line.contains("hello"))
+        .expect("assistant text should be restored");
+    let tool_index = state
+        .body
+        .iter()
+        .position(|line| line.starts_with("Tool call: lookup"))
+        .expect("tool call should be restored");
+    assert!(
+        assistant_index < tool_index,
+        "restore should preserve display-message sequence order"
+    );
+    assert!(state.body.iter().any(|line| line == "Tool result: lookup"));
     assert!(state
         .body
         .iter()
-        .any(|line| line == "Tool error: permission denied"));
+        .any(|line| line == "Tool error: lookup permission denied"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Steering: try another path"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Steering received: try another path"));
     assert!(state
         .body
         .iter()
@@ -2202,7 +2693,8 @@ fn render_helpers_cover_footer_and_truncation_branches() {
 
     let overlay = render_shortcut_overlay(12);
     let overlay_text = line_texts(&overlay).join("\n");
-    assert!(overlay_text.contains("Available Commands"));
+    let compact_overlay_text = overlay_text.replace(['\n', ' '], "");
+    assert!(compact_overlay_text.contains("AvailableCommands"));
     assert!(overlay_text.contains("/help"));
 
     let mut body_state = state.clone();
@@ -2224,7 +2716,12 @@ fn key_handler_covers_quit_and_history_edges() {
         .body
         .extend((0..5).map(|index| format!("line {index}")));
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
+    assert!(!state.enter_sends());
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.input, "\n");
+    state.input.clear();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Tab)), None);
+    assert!(state.enter_sends());
     assert_eq!(
         handle_key_event(&mut state, key_modified('p', KeyModifiers::CONTROL)),
         None
@@ -2363,7 +2860,7 @@ fn key_handler_covers_quit_and_history_edges() {
 #[test]
 fn terminal_width_helpers_handle_wide_characters() {
     assert_eq!(visible_width("中文a"), 5);
-    assert_eq!(composer_cursor_column(&["中文a".to_string()]), 16);
+    assert_eq!(composer_cursor_column(&["中文a".to_string()]), 7);
 
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.workspace_dir = "/workspace/项目/很长很长很长很长".to_string();
@@ -2384,13 +2881,6 @@ fn terminal_width_helpers_handle_wide_characters() {
 fn submit_text(event: Option<InteractiveTuiEvent>) -> Option<String> {
     match event {
         Some(InteractiveTuiEvent::Submit(input)) => Some(input.display_text()),
-        _ => None,
-    }
-}
-
-fn queue_text(event: Option<InteractiveTuiEvent>) -> Option<String> {
-    match event {
-        Some(InteractiveTuiEvent::Queue(input)) => Some(input.display_text()),
         _ => None,
     }
 }
@@ -2435,6 +2925,15 @@ fn key_code(code: KeyCode) -> KeyEvent {
     KeyEvent {
         code,
         modifiers: KeyModifiers::NONE,
+        kind: KeyEventKind::Press,
+        state: KeyEventState::NONE,
+    }
+}
+
+fn key_code_modified(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers,
         kind: KeyEventKind::Press,
         state: KeyEventState::NONE,
     }

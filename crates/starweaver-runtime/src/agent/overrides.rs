@@ -9,7 +9,6 @@ use crate::{
     agent::{Agent, AgentRuntimePolicy},
     capability::{AgentCapability, CapabilityBundle},
     executor::DynAgentExecutor,
-    history::HistoryProcessor,
     instructions::DynDynamicInstruction,
     output::{DynOutputFunction, OutputSchema, OutputValidator},
     usage::UsageLimits,
@@ -78,13 +77,6 @@ impl AgentOverride {
     #[must_use]
     pub const fn usage_limits(mut self, limits: Option<UsageLimits>) -> Self {
         self.agent.usage_limits = limits;
-        self
-    }
-
-    /// Override history processors.
-    #[must_use]
-    pub fn history_processors(mut self, processors: Vec<Arc<dyn HistoryProcessor>>) -> Self {
-        self.agent.history_processors = processors;
         self
     }
 

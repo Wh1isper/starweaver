@@ -3,8 +3,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use starweaver_environment::{
-    DynEnvironmentProvider, EnvironmentPolicy, FilePolicy, LocalEnvironmentProvider, ShellPolicy,
-    VirtualEnvironmentProvider,
+    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentPolicy, FilePolicy,
+    LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
 };
 
 use crate::{CliConfig, CliError, CliResult};
@@ -14,30 +14,65 @@ use crate::{CliConfig, CliError, CliResult};
 pub struct ResolvedEnvironment {
     /// Provider handle attached to `AgentSession`.
     pub provider: DynEnvironmentProvider,
+    /// Optional process-capable provider override for background shell tools.
+    pub process_provider: Option<DynProcessShellProvider>,
+}
+
+/// Validate environment configuration before creating run/session records.
+pub fn validate_environment_config(config: &CliConfig) -> CliResult<()> {
+    let _policy = environment_policy(config)?;
+    validate_environment_provider(config.environment_provider.as_str())
 }
 
 /// Build an environment provider from resolved CLI config.
+#[cfg(test)]
 pub fn resolve_environment(config: &CliConfig) -> CliResult<ResolvedEnvironment> {
+    resolve_environment_with_tmp_namespace(config, None)
+}
+
+/// Build an environment provider with a session-scoped temporary file namespace.
+pub fn resolve_environment_for_session(
+    config: &CliConfig,
+    session_id: &str,
+) -> CliResult<ResolvedEnvironment> {
+    resolve_environment_with_tmp_namespace(config, Some(session_id))
+}
+
+fn resolve_environment_with_tmp_namespace(
+    config: &CliConfig,
+    tmp_namespace: Option<&str>,
+) -> CliResult<ResolvedEnvironment> {
+    validate_environment_config(config)?;
     let policy = environment_policy(config)?;
     let provider: DynEnvironmentProvider = match config.environment_provider.as_str() {
-        "local" => Arc::new(
-            LocalEnvironmentProvider::new(config.workspace_root.clone())
+        "local" => {
+            let mut provider = LocalEnvironmentProvider::new(config.workspace_root.clone())
                 .with_id("cli-local")
                 .with_allowed_paths(local_allowed_paths(config))
-                .with_policy(policy),
-        ),
-        "virtual" => Arc::new(
-            VirtualEnvironmentProvider::new("cli-virtual")
+                .with_policy(policy);
+            if let Some(namespace) = tmp_namespace {
+                provider = provider.with_tmp_namespace(namespace);
+            }
+            Arc::new(provider)
+        }
+        "virtual" => {
+            let mut provider = VirtualEnvironmentProvider::new("cli-virtual")
                 .with_policy(policy)
-                .with_file("README.md", "Virtual Starweaver CLI workspace"),
-        ),
+                .with_file("README.md", "Virtual Starweaver CLI workspace");
+            if let Some(namespace) = tmp_namespace {
+                provider = provider.with_tmp_namespace(namespace);
+            }
+            Arc::new(provider)
+        }
         other => {
-            return Err(CliError::Config(format!(
-                "unknown environment provider: {other}"
-            )))
+            unreachable!("environment provider should be validated before resolution: {other}")
         }
     };
-    Ok(ResolvedEnvironment { provider })
+    let process_provider = provider.clone().process_shell_provider();
+    Ok(ResolvedEnvironment {
+        provider,
+        process_provider,
+    })
 }
 
 fn local_allowed_paths(config: &CliConfig) -> Vec<PathBuf> {
@@ -58,6 +93,15 @@ fn push_allowed_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     let path = path.canonicalize().unwrap_or(path);
     if !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
+    }
+}
+
+fn validate_environment_provider(provider: &str) -> CliResult<()> {
+    match provider {
+        "local" | "virtual" => Ok(()),
+        other => Err(CliError::Config(format!(
+            "unknown environment provider: {other}"
+        ))),
     }
 }
 
@@ -138,6 +182,44 @@ additional_dirs = ["../custom-skills"]
             let content = environment.provider.read_text(&package.path).await.unwrap();
             assert!(content.contains(&format!("name: {}", package.name)));
         }
+    }
+
+    #[tokio::test]
+    async fn cli_local_environment_tmp_outputs_are_readable_without_allowing_all_tmp() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let environment = resolve_environment_for_session(&config, "session_123").unwrap();
+
+        let tmp_path = environment
+            .provider
+            .write_tmp_file("stdout.log", b"captured output")
+            .await
+            .unwrap();
+        assert!(Path::new(&tmp_path).is_absolute());
+        assert!(tmp_path.contains("session_123"));
+        assert_eq!(
+            Path::new(&tmp_path).file_name().unwrap().to_string_lossy(),
+            "stdout.log"
+        );
+        assert_eq!(
+            environment.provider.read_text(&tmp_path).await.unwrap(),
+            "captured output"
+        );
+
+        let unrelated_tmp =
+            std::env::temp_dir().join(format!("starweaver-cli-unrelated-{}", std::process::id()));
+        std::fs::write(&unrelated_tmp, "secret").unwrap();
+        assert!(matches!(
+            environment
+                .provider
+                .read_text(&unrelated_tmp.display().to_string())
+                .await,
+            Err(starweaver_environment::EnvironmentError::AccessDenied(_))
+        ));
+        let _ = std::fs::remove_file(unrelated_tmp);
     }
 
     fn write_skill(path: &Path, name: &str, description: &str) {

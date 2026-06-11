@@ -417,7 +417,7 @@ impl Agent {
                 response
             } else {
                 self.check_before_request(&state)?;
-                let mut messages = self.process_history(&state, context).await?;
+                let mut messages = self.prepare_model_messages(&mut state, context).await?;
                 let params = self.effective_request_params(&state, context).await?;
                 Self::inject_runtime_context(context, &mut messages);
                 let mut model_spec = SpanSpec::new("gen_ai.inference")
@@ -1109,7 +1109,7 @@ impl Agent {
     }
 }
 
-fn agent_error_kind(error: &AgentError) -> &'static str {
+const fn agent_error_kind(error: &AgentError) -> &'static str {
     match error {
         AgentError::Model(_) => "model_error",
         AgentError::Capability(_) => "capability_error",

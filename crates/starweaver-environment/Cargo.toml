@@ -22,6 +22,7 @@ ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 starweaver-core.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -17,7 +17,7 @@ use super::{
     snapshot::TuiSnapshot,
     state::{
         HitlPanelState, InteractiveTuiState, ModelChoice, SessionChoice, SteeringStatus,
-        TaskPanelItem,
+        TaskPanelItem, COMPOSER_VISIBLE_LINES,
     },
 };
 
@@ -25,6 +25,19 @@ const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56;
 const STARWEAVER_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub(super) fn snapshot_interactive_lines(snapshot: &TuiSnapshot) -> Vec<String> {
+    if !snapshot.transcript_lines.is_empty() {
+        let mut lines = snapshot.transcript_lines.clone();
+        if let Some(status) = snapshot.terminal_status.as_deref() {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines.push(format!(
+                "Run completed: {} status={status}",
+                snapshot.session_id
+            ));
+        }
+        return lines;
+    }
     let mut lines = Vec::new();
     if !snapshot.assistant_text.trim().is_empty() {
         lines.push("Assistant:".to_string());
@@ -47,6 +60,20 @@ pub(super) fn snapshot_interactive_lines(snapshot: &TuiSnapshot) -> Vec<String> 
                 lines.push(format!("Tool result: {result}"));
             } else {
                 lines.push(format!("Tool call: {tool}"));
+            }
+        }
+    }
+    if !snapshot.steering.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        for item in &snapshot.steering {
+            if let Some(text) = item.strip_prefix("received:") {
+                lines.push(format!("Steering received: {text}"));
+            } else if let Some(text) = item.strip_prefix("submitted:") {
+                lines.push(format!("Steering: {text}"));
+            } else {
+                lines.push(format!("Steering: {item}"));
             }
         }
     }
@@ -139,7 +166,7 @@ fn render_startup_help() -> Vec<StyledLine> {
         ),
         StyledLine::plain(""),
         startup_help_line("Enter", " - submit the current message"),
-        startup_help_line("Tab", " - submit, or queue a draft while running"),
+        startup_help_line("Tab", " - toggle whether Enter sends or inserts a newline"),
         startup_help_line("Ctrl-O", " - insert a newline"),
         startup_help_line("/help", " - print available commands"),
         startup_help_line("/model", " - open the model profile selector"),
@@ -189,35 +216,33 @@ fn with_codex_border(rows: Vec<Vec<StyledSegment>>, inner_width: usize) -> Vec<S
 }
 
 pub(super) fn render_composer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
-    let input_lines = input_tail_lines(&state.input, 3);
-    let mut lines = Vec::with_capacity(input_lines.len().saturating_add(2));
+    let input_lines = input_viewport_lines(
+        &state.input,
+        COMPOSER_VISIBLE_LINES,
+        state.composer_scroll_offset(),
+    );
+    let mut lines = Vec::with_capacity(input_lines.len().saturating_add(1));
     lines.push(StyledLine::plain(""));
+    let prompt = composer_prompt(state);
     for (offset, input) in input_lines.iter().enumerate() {
-        let mut line = StyledLine::styled(
-            if offset == 0 {
-                composer_prompt(state)
-            } else {
-                " "
-            },
-            SegmentStyle::bold(),
-        );
+        let mut line =
+            StyledLine::styled(if offset == 0 { prompt } else { " " }, SegmentStyle::bold());
         line.push(" ", SegmentStyle::default());
-        if input.is_empty() && offset == 0 {
+        if input.is_empty() && offset == 0 && state.input.is_empty() {
             line.push(composer_placeholder(state), SegmentStyle::dim());
         } else {
             line.push(input, SegmentStyle::default());
         }
         lines.push(pad_styled_line(line, width));
     }
-    lines.push(StyledLine::plain(""));
     lines
 }
 
 const fn composer_prompt(state: &InteractiveTuiState) -> &'static str {
     if state.running {
-        "[scroll] *"
+        "*"
     } else {
-        "[scroll] >"
+        ">"
     }
 }
 
@@ -991,13 +1016,23 @@ fn secondary_status_text(state: &InteractiveTuiState) -> String {
         "Up/Down: Select model | Enter: Use | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
             .to_string()
     } else if state.running {
-        "Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll".to_string()
+        format!(
+            "{} | {} | Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll",
+            state.enter_action_label(),
+            state.enter_toggle_label()
+        )
     } else if state.input.trim().is_empty() && state.pasted_image_count() == 0 {
-        "Enter: Send | Ctrl+V: Attach clipboard image | Up/Down: History | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit"
-            .to_string()
+        format!(
+            "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
+            state.enter_action_label(),
+            state.enter_toggle_label()
+        )
     } else {
-        "Enter: Send | Tab: Multiline | Ctrl+V: Attach clipboard image | Up/Down: History | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit"
-            .to_string()
+        format!(
+            "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+            state.enter_action_label(),
+            state.enter_toggle_label()
+        )
     }
 }
 
@@ -1023,20 +1058,22 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         ("Ctrl+C", "Interrupt active run or exit"),
         ("Ctrl+D", "Exit"),
         ("Ctrl+V", "Attach image from system clipboard"),
-        ("Tab", "Send or queue a draft while running"),
+        ("Tab", "Toggle Enter between send and newline"),
         ("Ctrl+O", "Insert newline"),
         ("Up/Down, Ctrl+P/N", "Browse prompt history"),
+        ("Alt+Up/Down", "Scroll multiline input"),
         ("PageUp/PageDown", "Scroll transcript"),
         ("Mouse wheel", "Scroll transcript"),
     ];
     let mut lines = Vec::new();
     lines.push(StyledLine::plain(""));
-    lines.push(StyledLine::styled(
+    lines.extend(render_help_heading(
         "Available Commands",
+        width,
         SegmentStyle::code().merge(SegmentStyle::bold()),
     ));
     for (command, description) in command_rows {
-        lines.push(render_help_table_row(
+        lines.extend(render_help_table_rows(
             command,
             description,
             SegmentStyle::blockquote(),
@@ -1044,23 +1081,25 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         ));
     }
     lines.push(StyledLine::plain(""));
-    lines.push(StyledLine::styled(
+    lines.extend(render_help_heading(
         "Shell",
+        width,
         SegmentStyle::code().merge(SegmentStyle::bold()),
     ));
-    lines.push(render_help_table_row(
+    lines.extend(render_help_table_rows(
         "!<command>",
         "Run a shell command and show output inline",
         SegmentStyle::warning(),
         width,
     ));
     lines.push(StyledLine::plain(""));
-    lines.push(StyledLine::styled(
+    lines.extend(render_help_heading(
         "Key Bindings",
+        width,
         SegmentStyle::code().merge(SegmentStyle::bold()),
     ));
     for (key, description) in key_rows {
-        lines.push(render_help_table_row(
+        lines.extend(render_help_table_rows(
             key,
             description,
             SegmentStyle::warning(),
@@ -1070,22 +1109,69 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
     lines
 }
 
-fn render_help_table_row(
+fn render_help_heading(text: &str, width: usize, style: SegmentStyle) -> Vec<StyledLine> {
+    wrap_text_width(text, width)
+        .into_iter()
+        .map(|line| pad_styled_line(StyledLine::styled(line, style), width))
+        .collect()
+}
+
+fn render_help_table_rows(
     label: &str,
     description: &str,
     label_style: SegmentStyle,
     width: usize,
-) -> StyledLine {
-    let mut line = StyledLine::plain("  ");
-    line.push(label, label_style);
+) -> Vec<StyledLine> {
+    let width = width.max(1);
+    let label_indent = "  ";
     let label_width = 20usize;
-    let used = visible_width(label).saturating_add(2);
-    line.push(
-        " ".repeat(label_width.saturating_sub(used).max(2)),
-        SegmentStyle::dim(),
-    );
-    line.push(description, SegmentStyle::default());
-    pad_styled_line(line, width)
+    let used = visible_width(label_indent).saturating_add(visible_width(label));
+    let description_start = label_width.max(used.saturating_add(2));
+
+    if description_start < width {
+        let description_width = width.saturating_sub(description_start).max(1);
+        let wrapped_description = wrap_text_width(description, description_width);
+        let mut rows = Vec::with_capacity(wrapped_description.len().max(1));
+        for (index, description_line) in wrapped_description.into_iter().enumerate() {
+            let mut line = if index == 0 {
+                let mut line = StyledLine::plain(label_indent);
+                line.push(label, label_style);
+                line.push(
+                    " ".repeat(description_start.saturating_sub(used)),
+                    SegmentStyle::dim(),
+                );
+                line
+            } else {
+                StyledLine::plain(" ".repeat(description_start))
+            };
+            line.push(description_line, SegmentStyle::default());
+            rows.push(pad_styled_line(line, width));
+        }
+        rows
+    } else {
+        let mut rows = wrap_text_width(label, width.saturating_sub(2).max(1))
+            .into_iter()
+            .map(|label_line| {
+                let mut line = StyledLine::plain(label_indent);
+                line.push(label_line, label_style);
+                pad_styled_line(line, width)
+            })
+            .collect::<Vec<_>>();
+        let description_indent = if width > 4 { "    " } else { "  " };
+        let description_width = width
+            .saturating_sub(visible_width(description_indent))
+            .max(1);
+        rows.extend(
+            wrap_text_width(description, description_width)
+                .into_iter()
+                .map(|description_line| {
+                    let mut line = StyledLine::plain(description_indent);
+                    line.push(description_line, SegmentStyle::default());
+                    pad_styled_line(line, width)
+                }),
+        );
+        rows
+    }
 }
 
 fn pad_styled_line(line: StyledLine, width: usize) -> StyledLine {
@@ -1162,7 +1248,7 @@ fn take_suffix_width(text: &str, width: usize) -> String {
     chars.into_iter().rev().collect()
 }
 
-fn wrap_text_width(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_text_width(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let compact = text.replace('\n', " ");
     if compact.is_empty() || visible_width(&compact) <= width {
@@ -1186,16 +1272,27 @@ fn wrap_text_width(text: &str, width: usize) -> Vec<String> {
 
 pub(super) fn composer_cursor_column(input_tail: &[String]) -> usize {
     let current = input_tail.last().map_or("", String::as_str);
-    "[scroll] > ".len().saturating_add(visible_width(current))
+    "> ".len().saturating_add(visible_width(current))
 }
 
+#[cfg(test)]
 pub(super) fn input_tail_lines(input: &str, max_lines: usize) -> Vec<String> {
+    input_viewport_lines(input, max_lines, 0)
+}
+
+pub(super) fn input_viewport_lines(
+    input: &str,
+    max_lines: usize,
+    scroll_from_bottom: usize,
+) -> Vec<String> {
     let mut lines = input.lines().map(str::to_string).collect::<Vec<_>>();
     if input.ends_with('\n') || lines.is_empty() {
         lines.push(String::new());
     }
-    let start = lines.len().saturating_sub(max_lines.max(1));
-    lines.into_iter().skip(start).collect()
+    let max_lines = max_lines.max(1);
+    let max_start = lines.len().saturating_sub(max_lines);
+    let start = max_start.saturating_sub(scroll_from_bottom.min(max_start));
+    lines.into_iter().skip(start).take(max_lines).collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

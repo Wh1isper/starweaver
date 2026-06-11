@@ -2,16 +2,127 @@
 
 use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
+use starweaver_context::AgentContext;
 use starweaver_core::Usage;
 use starweaver_model::{
     FunctionModel, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart,
     TestModel, ToolCallPart,
 };
 use starweaver_runtime::{
-    Agent, AgentError, CostBudget, FunctionHistoryProcessor, HistoryProcessorError,
-    ReinjectSystemPromptProcessor, UsageLimitError, UsageLimits,
+    Agent, AgentCapability, AgentError, AgentRunState, CapabilityError, CapabilityResult,
+    CostBudget, UsageLimitError, UsageLimits,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
+
+struct KeepLatestMessageCapability;
+
+#[async_trait]
+impl AgentCapability for KeepLatestMessageCapability {
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        Ok(messages.into_iter().rev().take(1).collect())
+    }
+}
+
+struct FailingMessagesCapability;
+
+#[async_trait]
+impl AgentCapability for FailingMessagesCapability {
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        _messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        Err(CapabilityError::Failed(
+            "cannot process messages".to_string(),
+        ))
+    }
+}
+
+struct StripInstructionsCapability;
+
+#[async_trait]
+impl AgentCapability for StripInstructionsCapability {
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        Ok(messages
+            .into_iter()
+            .map(|message| match message {
+                ModelMessage::Request(mut request) => {
+                    request.parts.retain(|part| {
+                        !matches!(
+                            part,
+                            ModelRequestPart::SystemPrompt { .. }
+                                | ModelRequestPart::Instruction { .. }
+                        )
+                    });
+                    ModelMessage::Request(request)
+                }
+                ModelMessage::Response(response) => ModelMessage::Response(response),
+            })
+            .collect())
+    }
+}
+
+struct RestoreInstructionsCapability;
+
+#[async_trait]
+impl AgentCapability for RestoreInstructionsCapability {
+    async fn prepare_model_messages_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        mut messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        let source_parts = instruction_parts(&state.message_history);
+        let existing = instruction_parts(&messages);
+        if !source_parts.is_empty() && !source_parts.iter().all(|part| existing.contains(part)) {
+            messages.insert(
+                0,
+                ModelMessage::Request(ModelRequest {
+                    parts: source_parts,
+                    timestamp: None,
+                    instructions: None,
+                    run_id: None,
+                    conversation_id: None,
+                    metadata: serde_json::Map::new(),
+                }),
+            );
+        }
+        Ok(messages)
+    }
+}
+
+fn instruction_parts(messages: &[ModelMessage]) -> Vec<ModelRequestPart> {
+    messages
+        .iter()
+        .flat_map(|message| match message {
+            ModelMessage::Request(request) => request
+                .parts
+                .iter()
+                .filter(|part| {
+                    matches!(
+                        part,
+                        ModelRequestPart::SystemPrompt { .. }
+                            | ModelRequestPart::Instruction { .. }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+            ModelMessage::Response(_) => Vec::new(),
+        })
+        .collect()
+}
 
 fn response_with_usage(text: &str, usage: Usage) -> ModelResponse {
     ModelResponse {
@@ -109,15 +220,12 @@ async fn usage_limits_include_existing_context_usage() {
 }
 
 #[tokio::test]
-async fn history_processor_filters_messages_sent_to_model() {
+async fn message_prepare_capability_filters_messages_sent_to_model() {
     let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
     let captured_clone = captured.clone();
     let model = FunctionModel::new(move |messages, _settings, _info| {
         captured_clone.lock().unwrap().push(messages);
         Ok(ModelResponse::text("ok"))
-    });
-    let processor = FunctionHistoryProcessor::new(|messages: Vec<ModelMessage>| async move {
-        Ok(messages.into_iter().rev().take(1).collect::<Vec<_>>())
     });
     let prior = vec![
         ModelMessage::Request(ModelRequest::user_text("old")),
@@ -125,7 +233,7 @@ async fn history_processor_filters_messages_sent_to_model() {
     ];
 
     let result = Agent::new(Arc::new(model))
-        .with_history_processor(Arc::new(processor))
+        .with_capability(Arc::new(KeepLatestMessageCapability))
         .run_with_history("new", prior)
         .await
         .unwrap();
@@ -141,19 +249,15 @@ async fn history_processor_filters_messages_sent_to_model() {
 }
 
 #[tokio::test]
-async fn history_processor_failure_returns_capability_error() {
-    let processor = FunctionHistoryProcessor::new(|_messages| async {
-        Err(HistoryProcessorError::failed("cannot process history"))
-    });
-
+async fn message_prepare_capability_failure_returns_capability_error() {
     let error = Agent::new(Arc::new(TestModel::with_text("ok")))
-        .with_history_processor(Arc::new(processor))
+        .with_capability(Arc::new(FailingMessagesCapability))
         .run("hello")
         .await
         .unwrap_err();
 
     assert!(
-        matches!(error, AgentError::Capability(message) if message == "cannot process history")
+        matches!(error, AgentError::Capability(message) if message == "cannot process messages")
     );
 }
 
@@ -439,37 +543,18 @@ async fn parallel_tool_calls_limit_is_checked_as_a_batch() {
 }
 
 #[tokio::test]
-async fn reinject_system_prompt_processor_restores_filtered_instructions() {
+async fn restore_instructions_capability_restores_filtered_instructions() {
     let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
     let captured_clone = captured.clone();
     let model = FunctionModel::new(move |messages, _settings, _info| {
         captured_clone.lock().unwrap().push(messages);
         Ok(ModelResponse::text("ok"))
     });
-    let strip_instructions =
-        FunctionHistoryProcessor::new(|messages: Vec<ModelMessage>| async move {
-            Ok(messages
-                .into_iter()
-                .map(|message| match message {
-                    ModelMessage::Request(mut request) => {
-                        request.parts.retain(|part| {
-                            !matches!(
-                                part,
-                                ModelRequestPart::SystemPrompt { .. }
-                                    | ModelRequestPart::Instruction { .. }
-                            )
-                        });
-                        ModelMessage::Request(request)
-                    }
-                    ModelMessage::Response(response) => ModelMessage::Response(response),
-                })
-                .collect())
-        });
 
     let result = Agent::new(Arc::new(model))
         .with_instruction("System policy")
-        .with_history_processor(Arc::new(strip_instructions))
-        .with_history_processor(Arc::new(ReinjectSystemPromptProcessor::new()))
+        .with_capability(Arc::new(StripInstructionsCapability))
+        .with_capability(Arc::new(RestoreInstructionsCapability))
         .run("hello")
         .await
         .unwrap();
@@ -485,7 +570,7 @@ async fn reinject_system_prompt_processor_restores_filtered_instructions() {
 }
 
 #[tokio::test]
-async fn reinject_system_prompt_processor_keeps_existing_instructions_once() {
+async fn restore_instructions_capability_keeps_existing_instructions_once() {
     let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
     let captured_clone = captured.clone();
     let model = FunctionModel::new(move |messages, _settings, _info| {
@@ -495,7 +580,7 @@ async fn reinject_system_prompt_processor_keeps_existing_instructions_once() {
 
     Agent::new(Arc::new(model))
         .with_instruction("System policy")
-        .with_history_processor(Arc::new(ReinjectSystemPromptProcessor::new()))
+        .with_capability(Arc::new(RestoreInstructionsCapability))
         .run("hello")
         .await
         .unwrap();

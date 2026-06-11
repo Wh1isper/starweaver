@@ -8,8 +8,8 @@ use starweaver_model::{
 };
 use starweaver_runtime::{
     resolve_capability_order, Agent, AgentCapability, CapabilityOrderError, CapabilityOrdering,
-    CapabilityResult, CapabilitySpec, FunctionHistoryProcessor, OutputValidationError,
-    OutputValidationResult, OutputValidator, OutputValue, StaticCapabilityBundle, UsageLimits,
+    CapabilityResult, CapabilitySpec, OutputValidationError, OutputValidationResult,
+    OutputValidator, OutputValue, StaticCapabilityBundle, UsageLimits,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolResult};
 
@@ -148,7 +148,6 @@ async fn capability_bundle_contributes_runtime_components() {
         serde_json::json!({"type": "object"}),
         |_ctx: ToolContext, args| async move { Ok(ToolResult::new(args)) },
     );
-    let processor = FunctionHistoryProcessor::new(|messages| async move { Ok(messages) });
     let bundle = StaticCapabilityBundle::new("bundle")
         .with_instruction("Use the bundle instruction.")
         .with_tool(Arc::new(tool))
@@ -157,7 +156,6 @@ async fn capability_bundle_contributes_runtime_components() {
             ..ModelSettings::default()
         })
         .with_output_validator(Arc::new(BundleAnswerValidator))
-        .with_history_processor(Arc::new(processor))
         .with_usage_limits(UsageLimits::new().with_request_limit(1))
         .with_hook(Arc::new(CompleteRecorder {
             completed: completed.clone(),

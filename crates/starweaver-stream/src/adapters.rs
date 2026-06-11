@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::{DisplayMessage, DisplayMessageKind};
 
-/// AG-UI / YAACLI-compatible top-level event object.
+/// AG-UI / Starweaver-compatible top-level event object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AguiEvent {
     /// Event type such as `RUN_STARTED` or `TEXT_MESSAGE_CONTENT`.
@@ -46,7 +46,7 @@ pub struct VercelDataStreamPart {
     pub value: Value,
 }
 
-/// Convert one Starweaver display message into an AG-UI / YAACLI top-level event.
+/// Convert one Starweaver display message into an AG-UI / Starweaver top-level event.
 #[must_use]
 pub fn display_to_agui_event(message: &DisplayMessage) -> AguiEvent {
     AguiEvent {
@@ -103,7 +103,13 @@ pub fn display_to_vercel_data_stream(message: &DisplayMessage) -> Vec<VercelData
         | DisplayMessageKind::SubagentStarted
         | DisplayMessageKind::SubagentCompleted
         | DisplayMessageKind::CompactionStarted
-        | DisplayMessageKind::CompactionCompleted => vec![part(
+        | DisplayMessageKind::CompactionCompleted
+        | DisplayMessageKind::CompactionFailed
+        | DisplayMessageKind::HandoffStarted
+        | DisplayMessageKind::HandoffCompleted
+        | DisplayMessageKind::HandoffFailed
+        | DisplayMessageKind::SteeringSubmitted
+        | DisplayMessageKind::SteeringReceived => vec![part(
             "data",
             json!({
                 "type": display_event_type(message.kind),
@@ -169,6 +175,12 @@ const fn display_event_type(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::SubagentCompleted => "SUBAGENT_COMPLETED",
         DisplayMessageKind::CompactionStarted => "COMPACTION_STARTED",
         DisplayMessageKind::CompactionCompleted => "COMPACTION_COMPLETED",
+        DisplayMessageKind::CompactionFailed => "COMPACTION_FAILED",
+        DisplayMessageKind::HandoffStarted => "HANDOFF_STARTED",
+        DisplayMessageKind::HandoffCompleted => "HANDOFF_COMPLETED",
+        DisplayMessageKind::HandoffFailed => "HANDOFF_FAILED",
+        DisplayMessageKind::SteeringSubmitted => "STEERING_SUBMITTED",
+        DisplayMessageKind::SteeringReceived => "STEERING_RECEIVED",
         DisplayMessageKind::RunCompleted => "RUN_FINISHED",
         DisplayMessageKind::RunFailed => "RUN_ERROR",
         DisplayMessageKind::RunCancelled => "RUN_CANCELLED",

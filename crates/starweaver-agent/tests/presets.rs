@@ -85,7 +85,7 @@ model:
 }
 
 #[test]
-fn agent_spec_infers_oauth_model_ids_like_ya_agent_sdk() {
+fn agent_spec_infers_oauth_model_ids_like_starweaver_sdk() {
     let spec = AgentSpec::from_yaml(
         r"
 name: oauth-helper

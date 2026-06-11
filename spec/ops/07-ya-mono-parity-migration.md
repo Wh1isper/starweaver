@@ -18,7 +18,7 @@ Active foundation work:
 
 Postponed work:
 
-- CLI parity audit and `.yaacli` import/export behavior
+- CLI parity audit and `.starweaver` import/export behavior
 - additional product surfaces beyond CLI
 - distributed service transports and remote execution adapters
 

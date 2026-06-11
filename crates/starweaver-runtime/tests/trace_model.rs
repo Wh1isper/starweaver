@@ -2,14 +2,17 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use serde_json::json;
+use starweaver_context::AgentContext;
 use starweaver_core::Usage;
 use starweaver_model::{
     ContentPart, FunctionModel, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
     ModelSettings, TestModel,
 };
 use starweaver_runtime::{
-    Agent, FunctionHistoryProcessor, InMemoryTraceRecorder, TraceLevel, TraceRecorder,
+    Agent, AgentCapability, AgentRunState, CapabilityResult, InMemoryTraceRecorder, TraceLevel,
+    TraceRecorder,
 };
 
 #[tokio::test]
@@ -71,12 +74,23 @@ async fn model_trace_events_capture_canonical_request_stream_and_response() {
     );
 }
 
+struct KeepLatestMessageCapability;
+
+#[async_trait]
+impl AgentCapability for KeepLatestMessageCapability {
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        Ok(messages.into_iter().rev().take(1).collect())
+    }
+}
+
 #[tokio::test]
 async fn history_compaction_span_records_message_count_change() {
     let recorder = Arc::new(InMemoryTraceRecorder::new());
-    let processor = FunctionHistoryProcessor::new(|messages: Vec<ModelMessage>| async move {
-        Ok(messages.into_iter().rev().take(1).collect::<Vec<_>>())
-    });
     let prior = vec![
         ModelMessage::Request(ModelRequest {
             parts: vec![ModelRequestPart::UserPrompt {
@@ -96,7 +110,7 @@ async fn history_compaction_span_records_message_count_change() {
     ];
 
     Agent::new(Arc::new(TestModel::with_text("ok")))
-        .with_history_processor(Arc::new(processor))
+        .with_capability(Arc::new(KeepLatestMessageCapability))
         .with_trace_recorder(recorder.clone())
         .run_with_history("new", prior)
         .await
@@ -109,7 +123,7 @@ async fn history_compaction_span_records_message_count_change() {
         .unwrap();
     assert_eq!(
         compaction.attributes["starweaver.capability.name"],
-        json!("history_processor")
+        json!("trace_model::KeepLatestMessageCapability")
     );
     assert_eq!(
         compaction.attributes["starweaver.history.messages.before"],

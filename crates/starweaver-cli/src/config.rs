@@ -556,7 +556,7 @@ fn bootstrap_global_config_dir(global_dir: &Path) -> CliResult<()> {
     Ok(())
 }
 
-/// Write built-in yaacli-compatible subagent presets into a config root.
+/// Write built-in Starweaver-compatible subagent presets into a config root.
 pub fn write_default_subagent_presets(root: &Path, force: bool) -> CliResult<Vec<PathBuf>> {
     let dir = root.join("subagents");
     fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;
@@ -1146,7 +1146,7 @@ fn parse_output_mode(value: &str) -> Option<OutputMode> {
     match value {
         "text" | "Text" => Some(OutputMode::Text),
         "display-jsonl" | "display_jsonl" | "DisplayJsonl" => Some(OutputMode::DisplayJsonl),
-        "agui-jsonl" | "agui_jsonl" | "AguiJsonl" | "yaacli" => Some(OutputMode::AguiJsonl),
+        "agui-jsonl" | "agui_jsonl" | "AguiJsonl" | "starweaver" => Some(OutputMode::AguiJsonl),
         "json" | "Json" => Some(OutputMode::Json),
         "silent" | "Silent" => Some(OutputMode::Silent),
         _ => None,
@@ -2219,7 +2219,7 @@ pub fn tool_need_approval(config: &CliConfig) -> Vec<String> {
     values.unwrap_or_else(default_need_approval)
 }
 
-fn default_need_approval() -> Vec<String> {
+const fn default_need_approval() -> Vec<String> {
     Vec::new()
 }
 

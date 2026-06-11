@@ -5,7 +5,6 @@ pub mod capability;
 pub mod direct;
 pub mod executor;
 pub mod graph;
-pub mod history;
 pub mod instructions;
 pub mod iteration;
 pub mod output;
@@ -29,10 +28,6 @@ pub use executor::{
 pub use graph::{
     inspect_graph, inspect_next_node, next_node, AgentGraphStep, AgentGraphTrace, AgentNode,
     GraphDecision, GraphError,
-};
-pub use history::{
-    FunctionHistoryProcessor, HistoryProcessor, HistoryProcessorError, HistoryProcessorResult,
-    ReinjectSystemPromptProcessor,
 };
 pub use instructions::{
     DynDynamicInstruction, DynamicInstruction, DynamicInstructionError, DynamicInstructionResult,

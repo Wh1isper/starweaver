@@ -1,7 +1,9 @@
 use pulldown_cmark::{CodeBlockKind, Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
 use unicode_width::UnicodeWidthChar;
 
-use super::render::{truncate_line_center, visible_width, SegmentStyle, StyledLine};
+use super::render::{
+    truncate_line_center, visible_width, wrap_text_width, SegmentStyle, StyledLine,
+};
 
 pub(super) const ASSISTANT_CONTENT_PREFIX: &str = "\u{200b}";
 
@@ -11,14 +13,7 @@ pub(super) fn render_transcript_lines(lines: &[String], width: usize) -> Vec<Sty
     let mut in_assistant = false;
     for line in lines {
         if let Some(content) = line.strip_prefix(ASSISTANT_CONTENT_PREFIX) {
-            if in_assistant {
-                assistant_markdown.push(content.to_string());
-            } else {
-                rendered.extend(render_markdown_lines(
-                    &[content.to_string()],
-                    width.saturating_sub(2).max(1),
-                ));
-            }
+            assistant_markdown.push(content.to_string());
             continue;
         }
         if line == "Assistant:" {
@@ -63,13 +58,22 @@ fn is_transcript_boundary(line: &str) -> bool {
         || line.starts_with("Tool call:")
         || line.starts_with("Tool result:")
         || line.starts_with("Tool error:")
+        || line.starts_with("Steering:")
+        || line.starts_with("Steering received")
         || line.starts_with("Thinking:")
         || line.starts_with("Error:")
         || line.starts_with("Suspended:")
         || line.starts_with("Output retry:")
+        || line.starts_with("Context compacting")
+        || line.starts_with("Context compacted")
+        || line.starts_with("Compact failed:")
+        || line.starts_with("Summarizing progress")
+        || line.starts_with("Summary complete")
+        || line.starts_with("Summary failed:")
         || line.starts_with("Run completed:")
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
     if let Some(prompt) = line.strip_prefix("User:") {
         let mut rendered = StyledLine::styled("› ", SegmentStyle::bold());
@@ -84,6 +88,30 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
     }
     if let Some(tool) = line.strip_prefix("Tool error:") {
         return render_tool_lines(tool.trim_start(), ToolLineKind::Error, width);
+    }
+    if let Some(text) = line.strip_prefix("Steering received:") {
+        let mut rendered = StyledLine::styled("  ✓ steer received", SegmentStyle::blockquote());
+        let detail = text.trim_start();
+        if !detail.is_empty() {
+            rendered.push(" ", SegmentStyle::dim());
+            rendered.push(detail, SegmentStyle::dim());
+        }
+        return vec![rendered];
+    }
+    if line == "Steering received" {
+        return vec![StyledLine::styled(
+            "  ✓ steer received",
+            SegmentStyle::blockquote(),
+        )];
+    }
+    if let Some(text) = line.strip_prefix("Steering:") {
+        let mut rendered = StyledLine::styled("  >>> steer", SegmentStyle::warning());
+        let detail = text.trim_start();
+        if !detail.is_empty() {
+            rendered.push(" ", SegmentStyle::dim());
+            rendered.push(detail, SegmentStyle::dim());
+        }
+        return vec![rendered];
     }
     if let Some(thinking) = line.strip_prefix("Thinking:") {
         let mut rendered = StyledLine::styled("  ◌ thinking", SegmentStyle::warning());
@@ -127,6 +155,38 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
         }
         return vec![rendered];
     }
+    if line.starts_with("Context compacting") || line == "Context compacted" {
+        return vec![StyledLine::styled(
+            format!("  {line}"),
+            SegmentStyle::warning().merge(SegmentStyle::bold()),
+        )];
+    }
+    if let Some(error) = line.strip_prefix("Compact failed:") {
+        return render_status_detail_lines(
+            "  x compact failed",
+            error.trim_start(),
+            SegmentStyle::error().merge(SegmentStyle::bold()),
+            width,
+        );
+    }
+    if line.starts_with("Summarizing progress") || line == "Summary complete" {
+        return vec![StyledLine::styled(
+            format!("  {line}"),
+            SegmentStyle::blockquote().merge(SegmentStyle::bold()),
+        )];
+    }
+    if let Some(error) = line.strip_prefix("Summary failed:") {
+        let mut rendered = StyledLine::styled(
+            "  x summary failed",
+            SegmentStyle::error().merge(SegmentStyle::bold()),
+        );
+        let detail = error.trim_start();
+        if !detail.is_empty() {
+            rendered.push(" ", SegmentStyle::dim());
+            rendered.push(detail, SegmentStyle::dim());
+        }
+        return vec![rendered];
+    }
     if let Some(status) = line.strip_prefix("Run completed:") {
         let mut rendered = StyledLine::styled("  ✓ completed", SegmentStyle::blockquote());
         rendered.push(" ", SegmentStyle::dim());
@@ -136,7 +196,10 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
     if let Some(rendered) = render_file_tool_detail_line(line) {
         return vec![rendered];
     }
-    vec![StyledLine::plain(line)]
+    wrap_text_width(line, width)
+        .into_iter()
+        .map(StyledLine::plain)
+        .collect()
 }
 
 fn render_file_tool_detail_line(line: &str) -> Option<StyledLine> {
@@ -162,6 +225,7 @@ fn render_file_metadata_line(line: &str) -> Option<StyledLine> {
         ("  Status: ", SegmentStyle::blockquote()),
         ("  Result: ", SegmentStyle::dim()),
         ("  Duration: ", SegmentStyle::dim()),
+        ("  Auto-load files: ", SegmentStyle::code()),
         ("  Mode: ", SegmentStyle::warning()),
         ("  Lines: ", SegmentStyle::list_marker()),
         ("  Truncation: ", SegmentStyle::warning()),
@@ -242,6 +306,34 @@ enum ToolLineKind {
     Error,
 }
 
+fn render_status_detail_lines(
+    prefix: &str,
+    detail: &str,
+    prefix_style: SegmentStyle,
+    width: usize,
+) -> Vec<StyledLine> {
+    let mut rendered = StyledLine::styled(prefix, prefix_style);
+    if detail.is_empty() {
+        return vec![rendered];
+    }
+    rendered.push(" ", SegmentStyle::dim());
+    let available = width
+        .max(40)
+        .saturating_sub(visible_width(prefix).saturating_add(visible_width(" ")))
+        .max(1);
+    let mut chunks = wrap_status_text(detail, available);
+    if let Some(first) = chunks.first() {
+        rendered.push(first, SegmentStyle::dim());
+    }
+    let mut lines = vec![rendered];
+    for chunk in chunks.drain(1..) {
+        let mut continuation = StyledLine::plain("    ");
+        continuation.push(chunk, SegmentStyle::dim());
+        lines.push(continuation);
+    }
+    lines
+}
+
 fn render_tool_lines(detail: &str, kind: ToolLineKind, width: usize) -> Vec<StyledLine> {
     let (prefix, name_style, label_style) = match kind {
         ToolLineKind::Call => (
@@ -283,7 +375,7 @@ fn render_tool_lines(detail: &str, kind: ToolLineKind, width: usize) -> Vec<Styl
     rendered.push(result_label, label_style);
 
     let available = tool_detail_available_width(width, prefix, name, result_label);
-    if matches!(kind, ToolLineKind::Error) {
+    if matches!(kind, ToolLineKind::Error | ToolLineKind::Call) {
         let mut chunks = wrap_status_text(rest, available.max(1));
         if let Some(first) = chunks.first() {
             rendered.push(first, SegmentStyle::dim());
@@ -320,17 +412,49 @@ fn tool_detail_available_width(
 fn wrap_status_text(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let compact = text.replace('\n', " ");
-    if compact.is_empty() {
+    if compact.trim().is_empty() {
         return Vec::new();
     }
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut used = 0usize;
-    for ch in compact.chars() {
+    for word in compact.split_whitespace() {
+        let word_width = visible_width(word);
+        if word_width > width {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                used = 0;
+            }
+            lines.extend(wrap_long_status_word(word, width));
+            continue;
+        }
+        let separator = usize::from(!current.is_empty());
+        if used > 0 && used.saturating_add(separator).saturating_add(word_width) > width {
+            lines.push(std::mem::take(&mut current));
+            used = 0;
+        }
+        if !current.is_empty() {
+            current.push(' ');
+            used = used.saturating_add(1);
+        }
+        current.push_str(word);
+        used = used.saturating_add(word_width);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+fn wrap_long_status_word(word: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut used = 0usize;
+    for ch in word.chars() {
         let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
         if used > 0 && used.saturating_add(ch_width) > width {
-            lines.push(current);
-            current = String::new();
+            lines.push(std::mem::take(&mut current));
             used = 0;
         }
         current.push(ch);

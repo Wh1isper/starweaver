@@ -64,10 +64,17 @@ impl AgentCapability for EnvironmentContextCapability {
 }
 
 /// Attach the active environment to an `AgentContext`.
+///
+/// Process-capable environment providers also expose the background shell handle
+/// from the same attachment point, so callers do not need a separate injection
+/// path for foreground and background shell operations.
 pub fn attach_environment(context: &mut AgentContext, provider: DynEnvironmentProvider) {
     context
         .dependencies
-        .insert(EnvironmentHandle::new(provider));
+        .insert(EnvironmentHandle::new(provider.clone()));
+    if let Some(process_provider) = provider.process_shell_provider() {
+        super::shell::attach_process_shell(context, process_provider);
+    }
 }
 
 /// Collect environment-provided toolsets for a provider.

@@ -17,10 +17,13 @@ use crate::{prompt_input::PromptInput, CliResult};
 
 use super::{
     render::{
-        composer_cursor_column, input_tail_lines, queue_styled_line_at, render_composer_lines,
+        composer_cursor_column, input_viewport_lines, queue_styled_line_at, render_composer_lines,
         render_footer_lines, render_live_history_lines, terminal_error,
     },
-    state::{InteractiveTuiState, PendingSessionCommand, RunMode, SteeringSubmission},
+    state::{
+        BodyScrollDirection, InteractiveTuiState, PendingSessionCommand, RunMode,
+        SteeringSubmission, COMPOSER_VISIBLE_LINES,
+    },
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,8 +32,6 @@ pub enum InteractiveTuiEvent {
     Redraw,
     /// Submit a prompt.
     Submit(PromptInput),
-    /// Queue a prompt while a run is active.
-    Queue(PromptInput),
     /// Send steering to the active run UI pane.
     Steer(SteeringSubmission),
     /// Reload or list sessions from the service-owned local store.
@@ -75,7 +76,7 @@ impl InteractiveTui {
     }
 
     /// Render the current state.
-    pub fn render(&mut self, state: &InteractiveTuiState) -> CliResult<()> {
+    pub fn render(&mut self, state: &mut InteractiveTuiState) -> CliResult<()> {
         self.sync_mouse_capture(should_capture_mouse(state))?;
         let (width, height) = terminal::size().unwrap_or((80, 24));
         let width = if width == 0 { 80 } else { width };
@@ -87,6 +88,7 @@ impl InteractiveTui {
         let fixed_height = composer_lines.len().saturating_add(status_lines.len());
         let body_height = height.saturating_sub(fixed_height).max(1);
         let rendered_body = render_live_history_lines(state, width);
+        state.update_render_metrics(rendered_body.len(), body_height);
         let (visible_start, visible_end) =
             visible_body_bounds(state, rendered_body.len(), body_height);
 
@@ -131,11 +133,19 @@ impl InteractiveTui {
                 width,
             )?;
         }
-        let input_tail = input_tail_lines(&state.input, 3);
+        let input_tail = input_viewport_lines(
+            &state.input,
+            COMPOSER_VISIBLE_LINES,
+            state.composer_scroll_offset(),
+        );
         let cursor_row = composer_start
             .saturating_add(1)
             .saturating_add(input_tail.len().saturating_sub(1));
-        let cursor_col = composer_cursor_column(&input_tail);
+        let cursor_col = if state.composer_scroll_offset() == 0 {
+            composer_cursor_column(&input_tail)
+        } else {
+            "> ".len()
+        };
         queue!(
             self.stdout,
             MoveTo(
@@ -186,38 +196,12 @@ impl InteractiveTui {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ScrollDirection {
-    Up,
-    Down,
-}
-
-fn scroll_viewport(state: &mut InteractiveTuiState, amount: usize, direction: ScrollDirection) {
-    let (width, height) = terminal::size().unwrap_or((80, 24));
-    let width = if width == 0 { 80 } else { width };
-    let height = if height == 0 { 24 } else { height };
-    let width = usize::from(width);
-    let height = usize::from(height).max(8);
-    let fixed_height = render_composer_lines(state, width)
-        .len()
-        .saturating_add(render_footer_lines(state, width).len());
-    let body_height = height.saturating_sub(fixed_height).max(1);
-    let rendered_body_len = render_live_history_lines(state, width).len();
-    let max_scroll = rendered_body_len.saturating_sub(body_height);
-    let current = if state.is_at_bottom() {
-        max_scroll
-    } else {
-        state.scroll_offset.min(max_scroll)
-    };
-    let next = match direction {
-        ScrollDirection::Up => current.saturating_sub(amount),
-        ScrollDirection::Down => current.saturating_add(amount),
-    };
-    if next >= max_scroll {
-        state.scroll_to_bottom();
-    } else {
-        state.scroll_offset = next;
-    }
+fn scroll_viewport(
+    state: &mut InteractiveTuiState,
+    amount: usize,
+    direction: BodyScrollDirection,
+) -> bool {
+    state.scroll_body(amount, direction)
 }
 
 pub(super) fn handle_mouse_event(
@@ -225,14 +209,10 @@ pub(super) fn handle_mouse_event(
     mouse: MouseEvent,
 ) -> Option<InteractiveTuiEvent> {
     match mouse.kind {
-        MouseEventKind::ScrollUp => {
-            scroll_viewport(state, 3, ScrollDirection::Up);
-            Some(InteractiveTuiEvent::Redraw)
-        }
-        MouseEventKind::ScrollDown => {
-            scroll_viewport(state, 3, ScrollDirection::Down);
-            Some(InteractiveTuiEvent::Redraw)
-        }
+        MouseEventKind::ScrollUp => scroll_viewport(state, 3, BodyScrollDirection::Up)
+            .then_some(InteractiveTuiEvent::Redraw),
+        MouseEventKind::ScrollDown => scroll_viewport(state, 3, BodyScrollDirection::Down)
+            .then_some(InteractiveTuiEvent::Redraw),
         _ => None,
     }
 }
@@ -283,13 +263,17 @@ pub(super) fn handle_key_event(
                     .map(session_command_event);
             }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                scroll_viewport(state, 1, ScrollDirection::Up);
+                scroll_viewport(state, 1, BodyScrollDirection::Up);
             }
             KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                scroll_viewport(state, 1, ScrollDirection::Down);
+                scroll_viewport(state, 1, BodyScrollDirection::Down);
             }
-            KeyCode::PageUp => scroll_viewport(state, 10, ScrollDirection::Up),
-            KeyCode::PageDown => scroll_viewport(state, 10, ScrollDirection::Down),
+            KeyCode::PageUp => {
+                scroll_viewport(state, 10, BodyScrollDirection::Up);
+            }
+            KeyCode::PageDown => {
+                scroll_viewport(state, 10, BodyScrollDirection::Down);
+            }
             KeyCode::Up => state.move_session_picker_selection(-1),
             KeyCode::Down => state.move_session_picker_selection(1),
             _ => {}
@@ -304,13 +288,17 @@ pub(super) fn handle_key_event(
             }
             KeyCode::Enter => state.select_model_picker_choice(),
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                scroll_viewport(state, 1, ScrollDirection::Up);
+                scroll_viewport(state, 1, BodyScrollDirection::Up);
             }
             KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                scroll_viewport(state, 1, ScrollDirection::Down);
+                scroll_viewport(state, 1, BodyScrollDirection::Down);
             }
-            KeyCode::PageUp => scroll_viewport(state, 10, ScrollDirection::Up),
-            KeyCode::PageDown => scroll_viewport(state, 10, ScrollDirection::Down),
+            KeyCode::PageUp => {
+                scroll_viewport(state, 10, BodyScrollDirection::Up);
+            }
+            KeyCode::PageDown => {
+                scroll_viewport(state, 10, BodyScrollDirection::Down);
+            }
             KeyCode::Up => state.move_model_picker_selection(-1),
             KeyCode::Down => state.move_model_picker_selection(1),
             _ => {}
@@ -325,17 +313,17 @@ pub(super) fn handle_key_event(
             }
             KeyCode::PageUp => {
                 state.move_selection(-10);
-                scroll_viewport(state, 10, ScrollDirection::Up);
+                scroll_viewport(state, 10, BodyScrollDirection::Up);
             }
             KeyCode::PageDown => {
                 state.move_selection(10);
-                scroll_viewport(state, 10, ScrollDirection::Down);
+                scroll_viewport(state, 10, BodyScrollDirection::Down);
             }
             KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                scroll_viewport(state, 1, ScrollDirection::Up);
+                scroll_viewport(state, 1, BodyScrollDirection::Up);
             }
             KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                scroll_viewport(state, 1, ScrollDirection::Down);
+                scroll_viewport(state, 1, BodyScrollDirection::Down);
             }
             KeyCode::Up => state.move_selection(-1),
             KeyCode::Down => state.move_selection(1),
@@ -357,7 +345,7 @@ pub(super) fn handle_key_event(
             if should_exit || state.input.is_empty() {
                 return Some(InteractiveTuiEvent::Quit);
             }
-            state.input.clear();
+            state.clear_composer();
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if state.running {
@@ -372,11 +360,17 @@ pub(super) fn handle_key_event(
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.clear_composer();
         }
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+            state.scroll_composer_up(1);
+        }
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+            state.scroll_composer_down(1);
+        }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             return Some(InteractiveTuiEvent::PasteImage);
         }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.input.push('\n');
+            state.insert_composer_newline();
         }
         KeyCode::Char('p' | 'r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.previous_history();
@@ -400,14 +394,11 @@ pub(super) fn handle_key_event(
                 RunMode::Plan => RunMode::Act,
             };
         }
-        KeyCode::Tab if state.running => {
-            if state.take_paste_image_command() {
-                return Some(InteractiveTuiEvent::PasteImage);
-            }
-            if let Some(prompt) = state.take_queued_prompt() {
-                state.push_history(prompt.display_text());
-                return Some(InteractiveTuiEvent::Queue(prompt));
-            }
+        KeyCode::Tab => {
+            state.toggle_enter_mode();
+        }
+        KeyCode::Enter if !state.enter_sends() => {
+            state.insert_composer_newline();
         }
         KeyCode::Enter if state.running => {
             if state.take_paste_image_command() {
@@ -418,7 +409,7 @@ pub(super) fn handle_key_event(
                 return Some(InteractiveTuiEvent::Steer(steering));
             }
         }
-        KeyCode::Tab | KeyCode::Enter => {
+        KeyCode::Enter => {
             if state.take_paste_image_command() {
                 return Some(InteractiveTuiEvent::PasteImage);
             }
@@ -437,23 +428,21 @@ pub(super) fn handle_key_event(
             state.backspace_composer();
         }
         KeyCode::PageUp => {
-            scroll_viewport(state, 10, ScrollDirection::Up);
+            scroll_viewport(state, 10, BodyScrollDirection::Up);
         }
         KeyCode::PageDown => {
-            scroll_viewport(state, 10, ScrollDirection::Down);
+            scroll_viewport(state, 10, BodyScrollDirection::Down);
         }
         KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            scroll_viewport(state, 1, ScrollDirection::Up);
+            scroll_viewport(state, 1, BodyScrollDirection::Up);
         }
         KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            scroll_viewport(state, 1, ScrollDirection::Down);
+            scroll_viewport(state, 1, BodyScrollDirection::Down);
         }
         KeyCode::Up => state.previous_history(),
         KeyCode::Down => state.next_history(),
         KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.input.push(ch);
-            state.input_status = None;
-            state.history_index = None;
+            state.push_composer_char(ch);
         }
         _ => {}
     }

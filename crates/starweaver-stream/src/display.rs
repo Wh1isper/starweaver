@@ -68,6 +68,24 @@ pub enum DisplayMessageKind {
     /// History or context compaction completed.
     #[serde(rename = "COMPACTION_COMPLETED", alias = "compaction_completed")]
     CompactionCompleted,
+    /// History or context compaction failed.
+    #[serde(rename = "COMPACTION_FAILED", alias = "compaction_failed")]
+    CompactionFailed,
+    /// Progress handoff summary started.
+    #[serde(rename = "HANDOFF_STARTED", alias = "handoff_started")]
+    HandoffStarted,
+    /// Progress handoff summary completed.
+    #[serde(rename = "HANDOFF_COMPLETED", alias = "handoff_completed")]
+    HandoffCompleted,
+    /// Progress handoff summary failed.
+    #[serde(rename = "HANDOFF_FAILED", alias = "handoff_failed")]
+    HandoffFailed,
+    /// Steering message was submitted to a running agent.
+    #[serde(rename = "STEERING_SUBMITTED", alias = "steering_submitted")]
+    SteeringSubmitted,
+    /// Steering message was received by a running agent.
+    #[serde(rename = "STEERING_RECEIVED", alias = "steering_received")]
+    SteeringReceived,
     /// Run completed successfully.
     #[serde(rename = "RUN_FINISHED", alias = "run_completed")]
     RunCompleted,
@@ -288,12 +306,7 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
                 project_tool_call_messages(context, record.sequence, run_id, call, false)
             }
             AgentStreamEvent::ToolReturn { tool_return, .. } => {
-                vec![project_tool_return(
-                    context,
-                    record.sequence,
-                    run_id,
-                    tool_return,
-                )]
+                project_tool_return_messages(context, record.sequence, run_id, tool_return)
             }
             AgentStreamEvent::Checkpoint { node, step } => {
                 vec![project_checkpoint(
@@ -304,6 +317,13 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
                     *step,
                 )]
             }
+            AgentStreamEvent::Custom { event } => project_custom_event(
+                context,
+                record.sequence,
+                run_id,
+                &event.kind,
+                &event.payload,
+            ),
             AgentStreamEvent::SteeringGuard { step, prompt } => {
                 vec![project_steering_guard(
                     context,
@@ -635,14 +655,40 @@ fn project_tool_call_messages(
     call: &ToolCallPart,
     include_end: bool,
 ) -> Vec<DisplayMessage> {
-    let mut messages = vec![
+    let mut messages = Vec::new();
+    if call.name == "summarize" {
+        messages.push(project_handoff_started(
+            context,
+            sequence,
+            run_id.clone(),
+            call,
+        ));
+    }
+    messages.extend([
         project_tool_call_start(context, sequence, run_id.clone(), call),
         project_tool_call_delta(context, sequence, run_id.clone(), call),
-    ];
+    ]);
     if include_end {
         messages.push(project_tool_call_end(context, sequence, run_id, call));
     }
     messages
+}
+
+fn project_handoff_started(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    call: &ToolCallPart,
+) -> DisplayMessage {
+    let payload = call.arguments.replay_value();
+    DisplayMessage::new(
+        sequence,
+        context.session_id.clone(),
+        run_id,
+        DisplayMessageKind::HandoffStarted,
+    )
+    .with_payload(payload)
+    .with_preview("handoff summary started")
 }
 
 fn project_tool_call_start(
@@ -707,6 +753,20 @@ fn project_tool_call_end(
     .with_preview(format!("tool call {} ended", call.name))
 }
 
+fn project_tool_return_messages(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    tool_return: &ToolReturnPart,
+) -> Vec<DisplayMessage> {
+    let tool_result = project_tool_return(context, sequence, run_id.clone(), tool_return);
+    if tool_return.name != "summarize" {
+        return vec![tool_result];
+    }
+    let handoff = project_handoff_from_summarize_return(context, sequence, run_id, tool_return);
+    vec![tool_result, handoff]
+}
+
 fn project_tool_return(
     context: &DisplayProjectionContext,
     sequence: usize,
@@ -738,6 +798,212 @@ fn project_tool_return(
     )
     .with_payload(serde_json::Value::Object(payload))
     .with_preview(format!("tool result {}", tool_return.name))
+}
+
+fn project_handoff_from_summarize_return(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    tool_return: &ToolReturnPart,
+) -> DisplayMessage {
+    let payload =
+        summarize_payload(&tool_return.content).unwrap_or_else(|| tool_return.content.clone());
+    let display_kind = if tool_return.is_error {
+        DisplayMessageKind::HandoffFailed
+    } else {
+        DisplayMessageKind::HandoffCompleted
+    };
+    let preview = if tool_return.is_error {
+        payload_string(&payload, &["error", "message", "reason"]).map_or_else(
+            || "handoff summary failed".to_string(),
+            |error| format!("handoff summary failed: {error}"),
+        )
+    } else {
+        "handoff summary completed".to_string()
+    };
+    DisplayMessage::new(sequence, context.session_id.clone(), run_id, display_kind)
+        .with_payload(payload)
+        .with_preview(preview)
+}
+
+fn summarize_payload(value: &Value) -> Option<Value> {
+    if value.get("operation").and_then(Value::as_str) == Some("summarize") {
+        return value.get("payload").cloned();
+    }
+    None
+}
+
+fn project_custom_event(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    kind: &str,
+    payload: &Value,
+) -> Vec<DisplayMessage> {
+    let normalized = kind.to_ascii_lowercase().replace(['.', '-'], "_");
+    let Some(display_kind) = custom_display_kind(&normalized) else {
+        return Vec::new();
+    };
+    let preview = custom_display_preview(display_kind, payload);
+    vec![
+        DisplayMessage::new(sequence, context.session_id.clone(), run_id, display_kind)
+            .with_payload(payload.clone())
+            .with_preview(preview),
+    ]
+}
+
+fn custom_display_kind(normalized: &str) -> Option<DisplayMessageKind> {
+    if custom_event_kind_matches(
+        normalized,
+        &[
+            "compact_start",
+            "compact_started",
+            "compaction_start",
+            "compaction_started",
+        ],
+    ) {
+        Some(DisplayMessageKind::CompactionStarted)
+    } else if custom_event_kind_matches(
+        normalized,
+        &[
+            "compact_complete",
+            "compact_completed",
+            "compaction_complete",
+            "compaction_completed",
+        ],
+    ) {
+        Some(DisplayMessageKind::CompactionCompleted)
+    } else if custom_event_kind_matches(
+        normalized,
+        &[
+            "compact_failed",
+            "compact_failure",
+            "compaction_failed",
+            "compaction_failure",
+        ],
+    ) {
+        Some(DisplayMessageKind::CompactionFailed)
+    } else if custom_event_kind_matches(
+        normalized,
+        &[
+            "handoff_start",
+            "handoff_started",
+            "summary_start",
+            "summary_started",
+        ],
+    ) {
+        Some(DisplayMessageKind::HandoffStarted)
+    } else if custom_event_kind_matches(
+        normalized,
+        &[
+            "handoff_complete",
+            "handoff_completed",
+            "summary_complete",
+            "summary_completed",
+        ],
+    ) {
+        Some(DisplayMessageKind::HandoffCompleted)
+    } else if custom_event_kind_matches(
+        normalized,
+        &[
+            "handoff_failed",
+            "handoff_failure",
+            "summary_failed",
+            "summary_failure",
+        ],
+    ) {
+        Some(DisplayMessageKind::HandoffFailed)
+    } else if custom_event_kind_matches(normalized, &["steering_submitted", "steer_submitted"]) {
+        Some(DisplayMessageKind::SteeringSubmitted)
+    } else if custom_event_kind_matches(
+        normalized,
+        &[
+            "steering_received",
+            "steer_received",
+            "steering_ack",
+            "steer_ack",
+        ],
+    ) {
+        Some(DisplayMessageKind::SteeringReceived)
+    } else {
+        None
+    }
+}
+
+fn custom_event_kind_matches(normalized: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| normalized == *candidate || normalized.ends_with(&format!("_{candidate}")))
+}
+
+fn custom_display_preview(kind: DisplayMessageKind, payload: &Value) -> String {
+    match kind {
+        DisplayMessageKind::CompactionStarted => payload_u64(
+            payload,
+            &[
+                "message_count",
+                "messages",
+                "original_count",
+                "original_message_count",
+            ],
+        )
+        .map_or_else(
+            || "context compaction started".to_string(),
+            |count| format!("context compacting {count} messages"),
+        ),
+        DisplayMessageKind::CompactionCompleted => "context compaction completed".to_string(),
+        DisplayMessageKind::CompactionFailed => payload_string(payload, &["error", "message"])
+            .map_or_else(
+                || "context compaction failed".to_string(),
+                |error| format!("context compaction failed: {error}"),
+            ),
+        DisplayMessageKind::HandoffStarted => payload_u64(payload, &["message_count", "messages"])
+            .map_or_else(
+                || "handoff summary started".to_string(),
+                |count| format!("summarizing progress ({count} messages)"),
+            ),
+        DisplayMessageKind::HandoffCompleted => "handoff summary completed".to_string(),
+        DisplayMessageKind::HandoffFailed => payload_string(payload, &["error", "message"])
+            .map_or_else(
+                || "handoff summary failed".to_string(),
+                |error| format!("handoff summary failed: {error}"),
+            ),
+        DisplayMessageKind::SteeringSubmitted => {
+            payload_string(payload, &["text", "prompt", "message"]).map_or_else(
+                || "steering submitted".to_string(),
+                |text| format!("steering submitted: {text}"),
+            )
+        }
+        DisplayMessageKind::SteeringReceived => {
+            payload_string(payload, &["text", "prompt", "message"]).map_or_else(
+                || "steering received".to_string(),
+                |text| format!("steering received: {text}"),
+            )
+        }
+        _ => "custom display event".to_string(),
+    }
+}
+
+fn payload_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|item| {
+            item.as_u64()
+                .or_else(|| item.as_i64().and_then(|number| u64::try_from(number).ok()))
+                .or_else(|| item.as_str().and_then(|text| text.parse::<u64>().ok()))
+        })
+    })
+}
+
+fn payload_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        let item = value.get(*key)?;
+        match item {
+            Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
+            Value::Null => None,
+            other if !other.to_string().trim().is_empty() => Some(other.to_string()),
+            _ => None,
+        }
+    })
 }
 
 fn project_checkpoint(

@@ -6,23 +6,29 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    default_filter_processors, AgentRunState, ConversationId, HistoryProcessor, MediaUploadRequest,
-    MediaUploader, NamedFilterProcessor, RunId, DEFAULT_FILTER_ORDER,
+    default_filter_capabilities, default_filter_capabilities_with_config, AgentCapability,
+    AgentContext, AgentRunState, CacheFriendlyCompactCapability, ConversationId, FunctionModel,
+    FunctionModelInfo, MediaUploadRequest, MediaUploader, ModelConfig, NamedFilterCapability,
+    Ratio, RunId, Usage, DEFAULT_FILTER_ORDER,
 };
 use starweaver_model::{
-    ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ToolCallPart, ToolReturnPart,
+    ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
+    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ToolCallPart,
+    ToolDefinition, ToolReturnPart,
 };
 
 #[tokio::test]
-async fn default_filter_processors_record_order() -> starweaver_agent::HistoryProcessorResult<()> {
+async fn default_filter_capabilities_record_order() -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
     }]);
     let mut messages = vec![ModelMessage::Request(request)];
-    let state = AgentRunState::new(RunId::from_string("run_filter"), ConversationId::new());
-    for processor in default_filter_processors() {
-        messages = processor.process(&state, messages).await?;
+    let mut state = AgentRunState::new(RunId::from_string("run_filter"), ConversationId::new());
+    let mut context = AgentContext::default();
+    for processor in default_filter_capabilities(None) {
+        messages = processor
+            .prepare_model_messages_with_context(&mut state, &mut context, messages)
+            .await?;
     }
 
     let Some(ModelMessage::Request(request)) = messages.last() else {
@@ -45,7 +51,7 @@ async fn default_filter_processors_record_order() -> starweaver_agent::HistoryPr
 
 #[tokio::test]
 async fn media_preflight_corrects_binary_media_and_replaces_corruption(
-) -> starweaver_agent::HistoryProcessorResult<()> {
+) -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![
         ContentPart::Binary {
             data: png_bytes(2, 1),
@@ -66,8 +72,12 @@ async fn media_preflight_corrects_binary_media_and_replaces_corruption(
         .expect("media policy"),
     );
 
-    let messages = NamedFilterProcessor::new("media_preflight")
-        .process(&state, vec![ModelMessage::Request(request)])
+    let messages = NamedFilterCapability::new("media_preflight")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
         .await?;
     let content = latest_user_content(&messages);
     assert!(matches!(
@@ -84,7 +94,7 @@ async fn media_preflight_corrects_binary_media_and_replaces_corruption(
 }
 
 #[tokio::test]
-async fn media_preflight_limits_newest_images() -> starweaver_agent::HistoryProcessorResult<()> {
+async fn media_preflight_limits_newest_images() -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![
         ContentPart::ImageUrl {
             url: "https://example.test/old.png".to_string(),
@@ -104,8 +114,12 @@ async fn media_preflight_limits_newest_images() -> starweaver_agent::HistoryProc
         .expect("media policy"),
     );
 
-    let messages = NamedFilterProcessor::new("media_preflight")
-        .process(&state, vec![ModelMessage::Request(request)])
+    let messages = NamedFilterCapability::new("media_preflight")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
         .await?;
     let content = latest_user_content(&messages);
     assert!(
@@ -116,8 +130,7 @@ async fn media_preflight_limits_newest_images() -> starweaver_agent::HistoryProc
 }
 
 #[tokio::test]
-async fn media_preflight_traverses_nested_tool_returns(
-) -> starweaver_agent::HistoryProcessorResult<()> {
+async fn media_preflight_traverses_nested_tool_returns() -> starweaver_agent::CapabilityResult<()> {
     let request = ModelRequest {
         parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
             "call_media",
@@ -150,8 +163,12 @@ async fn media_preflight_traverses_nested_tool_returns(
         .expect("media policy"),
     );
 
-    let messages = NamedFilterProcessor::new("media_preflight")
-        .process(&state, vec![ModelMessage::Request(request)])
+    let messages = NamedFilterCapability::new("media_preflight")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
         .await?;
     let tool_content = messages
         .iter()
@@ -175,7 +192,7 @@ async fn media_preflight_traverses_nested_tool_returns(
 
 #[tokio::test]
 async fn compact_filter_trims_history_like_compactor_builder(
-) -> starweaver_agent::HistoryProcessorResult<()> {
+) -> starweaver_agent::CapabilityResult<()> {
     let mut state = AgentRunState::new(RunId::from_string("run_compact"), ConversationId::new());
     state.metadata.insert(
         "starweaver_compact_keep_messages".to_string(),
@@ -203,7 +220,7 @@ async fn compact_filter_trims_history_like_compactor_builder(
         metadata: serde_json::Map::from_iter([("keep".to_string(), serde_json::json!("compact"))]),
     });
     let old_context = user_request(vec![ContentPart::Text {
-        text: "before <runtime-context>stale</runtime-context> after".to_string(),
+        text: "before <runtime-context>stale</runtime-context> <project-guidance name=AGENTS.md>old project</project-guidance> <user-rules location=/tmp/RULES.md>old rules</user-rules> after".to_string(),
     }]);
     let media_request = user_request(vec![ContentPart::ImageUrl {
         url: "https://example.test/image.png".to_string(),
@@ -221,9 +238,11 @@ async fn compact_filter_trims_history_like_compactor_builder(
         metadata: serde_json::Map::new(),
     };
 
-    let output = NamedFilterProcessor::new("compact")
-        .process(
-            &state,
+    let mut context = AgentContext::default();
+    let output = CacheFriendlyCompactCapability::new(None)
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
             vec![
                 kept_summary,
                 ModelMessage::Request(old_context),
@@ -244,6 +263,10 @@ async fn compact_filter_trims_history_like_compactor_builder(
         .collect::<Vec<_>>()
         .join("\n");
     assert!(!all_text.contains("runtime-context"));
+    assert!(!all_text.contains("project-guidance"));
+    assert!(!all_text.contains("user-rules"));
+    assert!(!all_text.contains("old project"));
+    assert!(!all_text.contains("old rules"));
     assert!(all_text.contains("[image: https://example.test/image.png]"));
     assert!(all_text.contains("chars truncated"));
     assert!(all_text.contains("<original-request>"));
@@ -259,8 +282,233 @@ async fn compact_filter_trims_history_like_compactor_builder(
 }
 
 #[tokio::test]
+async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_history(
+) -> starweaver_agent::CapabilityResult<()> {
+    let compact_model = FunctionModel::streaming(
+        |messages: Vec<ModelMessage>,
+         _settings: Option<starweaver_agent::ModelSettings>,
+         _info: FunctionModelInfo| {
+            let text = messages
+                .iter()
+                .flat_map(request_text_parts)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("Compact the conversation history"));
+            let mut response = ModelResponse::text(
+                "## Condensed conversation summary\n\n### Analysis\n\nAuto compacted.",
+            );
+            response.usage = Usage {
+                requests: 1,
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                tool_calls: 0,
+            };
+            Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
+                response,
+            ))])
+        },
+    );
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_auto_compact"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_original_request".to_string(),
+        serde_json::json!("Original goal"),
+    );
+    let request = ModelMessage::Request(ModelRequest {
+        parts: vec![ModelRequestPart::SystemPrompt {
+            text: "Real system prompt".to_string(),
+            metadata: serde_json::Map::new(),
+        }],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    });
+    let mut response = ModelResponse::text("large prior response");
+    response.usage = Usage {
+        requests: 1,
+        input_tokens: 90,
+        output_tokens: 5,
+        total_tokens: 95,
+        ..Usage::default()
+    };
+    state.message_history = vec![request.clone(), ModelMessage::Response(response)];
+    let mut context = AgentContext {
+        model_config: ModelConfig {
+            context_window: Some(100),
+            compact_threshold: Ratio::from_parts_per_thousand(900),
+            ..ModelConfig::default()
+        },
+        message_history: state.message_history.clone(),
+        ..AgentContext::default()
+    };
+
+    let input_messages = context.message_history.clone();
+    let output = CacheFriendlyCompactCapability::new(Some(Arc::new(compact_model)))
+        .prepare_model_messages_with_context(&mut state, &mut context, input_messages)
+        .await?;
+
+    assert_eq!(output.len(), 3);
+    assert_eq!(state.message_history, output);
+    assert_eq!(context.message_history, output);
+    assert!(matches!(
+        &output[0],
+        ModelMessage::Request(request) if request.parts.iter().any(|part| matches!(
+            part,
+            ModelRequestPart::SystemPrompt { text, .. } if text == "Real system prompt"
+        ))
+    ));
+    assert!(matches!(
+        &output[1],
+        ModelMessage::Response(response)
+            if response.text_output().contains("Auto compacted")
+                && response.metadata.get("keep") == Some(&serde_json::json!("compact"))
+    ));
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "compact_start"));
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "compact_complete"));
+    assert_eq!(context.usage.total_tokens, 15);
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_shape(
+) -> starweaver_agent::CapabilityResult<()> {
+    let compact_model = FunctionModel::streaming(
+        |_messages: Vec<ModelMessage>, settings: Option<ModelSettings>, info: FunctionModelInfo| {
+            let settings = settings.expect("compact settings");
+            assert_eq!(settings.temperature, Some(0.2));
+            assert_eq!(
+                settings.extra_body.get("route"),
+                Some(&serde_json::json!("main"))
+            );
+            assert!(!settings.extra_body.contains_key("anthropic_cache"));
+            assert!(!settings.extra_body.contains_key("thinking"));
+            assert!(!settings
+                .extra_headers
+                .get("anthropic-beta")
+                .is_some_and(|value| value.contains("interleaved-thinking")));
+
+            assert_eq!(info.params.tools.len(), 1);
+            assert_eq!(info.params.tools[0].name, "view");
+            assert_eq!(
+                info.params.extra_body.get("route"),
+                Some(&serde_json::json!("main"))
+            );
+            assert!(!info.params.extra_body.contains_key("anthropic_cache"));
+            assert!(!info.params.http.extra_body.contains_key("thinking"));
+            assert_eq!(info.params.allow_text_output, Some(true));
+            assert!(info.params.output_schema.is_none());
+
+            Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
+                ModelResponse::text(
+                    "## Condensed conversation summary\n\n### Analysis\n\nInherited.",
+                ),
+            ))])
+        },
+    );
+    let compact_model = Arc::new(compact_model) as Arc<dyn starweaver_model::ModelAdapter>;
+    let mut settings = ModelSettings {
+        temperature: Some(0.2),
+        ..ModelSettings::default()
+    };
+    settings
+        .extra_body
+        .insert("route".to_string(), serde_json::json!("main"));
+    settings
+        .extra_body
+        .insert("anthropic_cache".to_string(), serde_json::json!(true));
+    settings.extra_body.insert(
+        "thinking".to_string(),
+        serde_json::json!({"type":"enabled"}),
+    );
+    settings.extra_headers.insert(
+        "anthropic-beta".to_string(),
+        "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14".to_string(),
+    );
+
+    let mut params = ModelRequestParameters::default();
+    params.tools.push(ToolDefinition {
+        name: "view".to_string(),
+        description: Some("View file".to_string()),
+        parameters: serde_json::json!({"type":"object"}),
+        metadata: serde_json::Map::new(),
+    });
+    params
+        .extra_body
+        .insert("route".to_string(), serde_json::json!("main"));
+    params
+        .extra_body
+        .insert("anthropic_cache".to_string(), serde_json::json!(true));
+    params.http.extra_body.insert(
+        "thinking".to_string(),
+        serde_json::json!({"type":"enabled"}),
+    );
+    params.output_schema = Some(serde_json::json!({"type":"object"}));
+
+    let compact_capability = default_filter_capabilities_with_config(
+        Some(&compact_model),
+        Some(&settings),
+        Some(&params),
+    )
+    .into_iter()
+    .find(|capability| capability.spec().id.as_str() == "starweaver.filter.compact")
+    .expect("compact capability");
+
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_auto_compact_inherit"),
+        ConversationId::new(),
+    );
+    let request = ModelMessage::Request(user_request(vec![ContentPart::Text {
+        text: "hello".to_string(),
+    }]));
+    let mut response = ModelResponse::text("large prior response");
+    response.usage = Usage {
+        requests: 1,
+        input_tokens: 90,
+        output_tokens: 5,
+        total_tokens: 95,
+        ..Usage::default()
+    };
+    state.message_history = vec![request.clone(), ModelMessage::Response(response)];
+    let mut context = AgentContext {
+        model_config: ModelConfig {
+            context_window: Some(100),
+            compact_threshold: Ratio::from_parts_per_thousand(900),
+            ..ModelConfig::default()
+        },
+        message_history: state.message_history.clone(),
+        ..AgentContext::default()
+    };
+
+    let input_messages = context.message_history.clone();
+    let output = compact_capability
+        .prepare_model_messages_with_context(&mut state, &mut context, input_messages)
+        .await?;
+    assert_eq!(output.len(), 3);
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "compact_complete"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn media_upload_replaces_oversized_binary_with_resource_ref(
-) -> starweaver_agent::HistoryProcessorResult<()> {
+) -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Binary {
         data: png_bytes(1, 1),
         media_type: "image/png".to_string(),
@@ -275,9 +523,13 @@ async fn media_upload_replaces_oversized_binary_with_resource_ref(
         .expect("media policy"),
     );
 
-    let processor = NamedFilterProcessor::media_upload(Arc::new(FakeUploader));
+    let processor = NamedFilterCapability::media_upload(Arc::new(FakeUploader));
     let messages = processor
-        .process(&state, vec![ModelMessage::Request(request)])
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
         .await?;
     let content = latest_user_content(&messages);
     assert!(matches!(
@@ -295,7 +547,7 @@ async fn media_upload_replaces_oversized_binary_with_resource_ref(
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
-) -> starweaver_agent::HistoryProcessorResult<()> {
+) -> starweaver_agent::CapabilityResult<()> {
     let mut state = AgentRunState::new(RunId::from_string("run_context"), ConversationId::new());
     state.metadata.insert(
         "starweaver_runtime_instructions".to_string(),
@@ -347,20 +599,20 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
         }),
     ];
 
-    let mut output = NamedFilterProcessor::new("cold_start")
-        .process(&state, messages)
+    let mut output = NamedFilterCapability::new("cold_start")
+        .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), messages)
         .await?;
-    output = NamedFilterProcessor::new("auto_load_files")
-        .process(&state, output)
+    output = NamedFilterCapability::new("auto_load_files")
+        .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), output)
         .await?;
-    output = NamedFilterProcessor::new("runtime_instructions")
-        .process(&state, output)
+    output = NamedFilterCapability::new("runtime_instructions")
+        .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), output)
         .await?;
-    output = NamedFilterProcessor::new("tool_args")
-        .process(&state, output)
+    output = NamedFilterCapability::new("tool_args")
+        .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), output)
         .await?;
-    output = NamedFilterProcessor::new("reasoning_normalize")
-        .process(&state, output)
+    output = NamedFilterCapability::new("reasoning_normalize")
+        .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), output)
         .await?;
 
     assert!(output.iter().any(|message| match message {

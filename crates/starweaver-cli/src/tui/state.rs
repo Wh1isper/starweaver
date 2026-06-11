@@ -15,7 +15,9 @@ use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStrea
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
 const MAX_STEERING_ITEMS: usize = 5;
 const SHELL_OUTPUT_MAX_LINES: usize = 200;
+const SHELL_STREAM_PREVIEW_MAX_LINES: usize = 6;
 const TOOL_PREVIEW_MAX_CHARS: usize = 240;
+pub(super) const COMPOSER_VISIBLE_LINES: usize = 5;
 
 use crate::{
     prompt_input::{format_size_bytes, PromptAttachment, PromptInput},
@@ -43,6 +45,25 @@ impl RunMode {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum EnterMode {
+    Send,
+    Newline,
+}
+
+impl EnterMode {
+    const fn toggle(self) -> Self {
+        match self {
+            Self::Send => Self::Newline,
+            Self::Newline => Self::Send,
+        }
+    }
+
+    pub(super) const fn sends(self) -> bool {
+        matches!(self, Self::Send)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum FooterMode {
     Context,
@@ -59,6 +80,12 @@ impl FooterMode {
 pub(super) enum PendingSessionCommand {
     Current,
     Select(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BodyScrollDirection {
+    Up,
+    Down,
 }
 
 #[allow(dead_code)]
@@ -186,8 +213,16 @@ pub struct InteractiveTuiState {
     pub phase: String,
     /// True while a background run is active.
     pub running: bool,
+    /// Current behavior for the Enter key in the composer.
+    pub(super) enter_mode: EnterMode,
     /// Scrollback offset from bottom.
     pub scroll_offset: usize,
+    /// Last rendered transcript height, used to keep scroll handling cheap between frames.
+    pub(super) rendered_body_len: usize,
+    /// Last rendered body viewport height, used to keep scroll handling cheap between frames.
+    pub(super) body_viewport_height: usize,
+    /// Multiline composer scrollback offset from the bottom of the draft.
+    pub(super) input_scroll_offset: usize,
     /// Short-lived composer status for paste, media attach, and steering actions.
     pub(super) input_status: Option<String>,
     /// Image attachments queued into the fixed composer.
@@ -246,7 +281,11 @@ impl InteractiveTuiState {
             model: "local_echo".to_string(),
             phase: "ready".to_string(),
             running: false,
+            enter_mode: EnterMode::Send,
             scroll_offset: usize::MAX,
+            rendered_body_len: 0,
+            body_viewport_height: 1,
+            input_scroll_offset: 0,
             input_status: None,
             pending_attachments: Vec::new(),
             run_mode: RunMode::Act,
@@ -338,6 +377,7 @@ impl InteractiveTuiState {
             return;
         }
         self.input.clear();
+        self.reset_composer_scroll();
         self.pending_attachments.clear();
         self.footer_mode = FooterMode::Context;
         if self.session_choices.is_empty() {
@@ -429,6 +469,7 @@ impl InteractiveTuiState {
             return;
         }
         self.input.clear();
+        self.reset_composer_scroll();
         self.pending_attachments.clear();
         self.footer_mode = FooterMode::Context;
         self.session_picker_open = false;
@@ -484,6 +525,7 @@ impl InteractiveTuiState {
         self.footer_mode = FooterMode::Context;
         self.input_status = None;
         self.pending_attachments.clear();
+        self.reset_composer_scroll();
         self.status = snapshot
             .terminal_status
             .clone()
@@ -653,6 +695,11 @@ impl InteractiveTuiState {
                         .get("text")
                         .and_then(serde_json::Value::as_str);
                     self.ack_steering_event(steering_id, text);
+                    if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
+                        self.body.push(format!("Steering received: {text}"));
+                    } else {
+                        self.body.push("Steering received".to_string());
+                    }
                 }
             }
             AgentStreamEvent::RunComplete { output, .. } => {
@@ -1012,6 +1059,7 @@ impl InteractiveTuiState {
         let image_paths = pasted_image_paths(text);
         if image_paths.is_empty() {
             self.input.push_str(text);
+            self.reset_composer_scroll();
             self.input_status = Some(format!("pasted {} chars", text.chars().count()));
             return;
         }
@@ -1025,6 +1073,7 @@ impl InteractiveTuiState {
             }
             self.input.push_str(&path);
         }
+        self.reset_composer_scroll();
         self.input_status = Some("image path pasted".to_string());
     }
 
@@ -1036,6 +1085,7 @@ impl InteractiveTuiState {
         self.input.push_str(&placeholder);
         self.input.push(' ');
         self.pending_attachments.push(attachment);
+        self.reset_composer_scroll();
         let count = self.pending_attachments.len();
         self.input_status = Some(if count == 1 {
             format!(
@@ -1059,14 +1109,10 @@ impl InteractiveTuiState {
         self.take_prompt(SubmissionKind::Message)
     }
 
-    pub(super) fn take_queued_prompt(&mut self) -> Option<PromptInput> {
-        self.take_prompt(SubmissionKind::Queued)
-    }
-
     pub(super) fn take_steering_prompt(&mut self) -> Option<SteeringSubmission> {
         self.retain_visible_attachments();
         if !self.pending_attachments.is_empty() {
-            self.input_status = Some("image steering unsupported; press Tab to queue".to_string());
+            self.input_status = Some("image steering unsupported while running".to_string());
             return None;
         }
         self.take_prompt(SubmissionKind::Steering)
@@ -1107,6 +1153,7 @@ impl InteractiveTuiState {
             return false;
         }
         self.input.clear();
+        self.reset_composer_scroll();
         self.footer_mode = FooterMode::Context;
         true
     }
@@ -1129,13 +1176,14 @@ impl InteractiveTuiState {
         };
         if prompt.is_empty() && self.pending_attachments.is_empty() {
             self.input.clear();
+            self.reset_composer_scroll();
             return None;
         }
         let attachments = std::mem::take(&mut self.pending_attachments);
         self.input.clear();
+        self.reset_composer_scroll();
         match kind {
             SubmissionKind::Message => self.input_status = Some("message sent".to_string()),
-            SubmissionKind::Queued => self.input_status = Some("queued".to_string()),
             SubmissionKind::Steering => {
                 self.input_status = Some("steer sent".to_string());
             }
@@ -1143,11 +1191,13 @@ impl InteractiveTuiState {
         Some(PromptInput {
             text: prompt,
             attachments,
+            extra_text_parts: Vec::new(),
         })
     }
 
     pub(super) fn clear_composer(&mut self) {
         self.input.clear();
+        self.reset_composer_scroll();
         self.pending_attachments.clear();
         self.input_status = None;
         self.history_index = None;
@@ -1161,6 +1211,7 @@ impl InteractiveTuiState {
         if self.input.pop().is_none() {
             self.remove_last_pasted_image();
         }
+        self.reset_composer_scroll();
     }
 
     fn retain_visible_attachments(&mut self) {
@@ -1177,6 +1228,7 @@ impl InteractiveTuiState {
             return false;
         };
         self.input.truncate(prefix.len());
+        self.reset_composer_scroll();
         self.remove_last_pasted_image();
         true
     }
@@ -1197,6 +1249,34 @@ impl InteractiveTuiState {
 
     pub(super) fn composer_has_draft(&self) -> bool {
         !self.input.trim().is_empty() || !self.pending_attachments.is_empty()
+    }
+
+    pub(super) fn toggle_enter_mode(&mut self) {
+        self.enter_mode = self.enter_mode.toggle();
+        self.input_status = Some(match self.enter_mode {
+            EnterMode::Send => "Enter sends".to_string(),
+            EnterMode::Newline => "Enter inserts newline".to_string(),
+        });
+    }
+
+    pub(super) const fn enter_sends(&self) -> bool {
+        self.enter_mode.sends()
+    }
+
+    pub(super) const fn enter_action_label(&self) -> &'static str {
+        match (self.running, self.enter_mode) {
+            (true, EnterMode::Send) => "Enter: Steer",
+            (false, EnterMode::Send) => "Enter: Send",
+            (_, EnterMode::Newline) => "Enter: Newline",
+        }
+    }
+
+    pub(super) const fn enter_toggle_label(&self) -> &'static str {
+        match (self.running, self.enter_mode) {
+            (_, EnterMode::Send) => "Tab: Enter inserts newline",
+            (true, EnterMode::Newline) => "Tab: Enter steers",
+            (false, EnterMode::Newline) => "Tab: Enter sends",
+        }
     }
 
     pub(super) fn input_mode_label(&self) -> &'static str {
@@ -1634,7 +1714,7 @@ impl InteractiveTuiState {
         &self.steering_items
     }
 
-    pub(super) fn pending_hitl(&self) -> Option<&HitlPanelState> {
+    pub(super) const fn pending_hitl(&self) -> Option<&HitlPanelState> {
         self.pending_hitl.as_ref()
     }
 
@@ -1662,6 +1742,7 @@ impl InteractiveTuiState {
     fn record_steering_message(&mut self, text: String) -> SteeringSubmission {
         let id = format!("steer_{}", self.next_steering_id);
         self.next_steering_id = self.next_steering_id.saturating_add(1);
+        self.body.push(format!("Steering: {text}"));
         self.steering_items.push(SteeringItem {
             id: id.clone(),
             text: text.clone(),
@@ -1680,6 +1761,72 @@ impl InteractiveTuiState {
 
     pub(super) const fn is_at_bottom(&self) -> bool {
         self.scroll_offset == usize::MAX
+    }
+
+    pub(super) const fn update_render_metrics(
+        &mut self,
+        rendered_body_len: usize,
+        body_viewport_height: usize,
+    ) {
+        self.rendered_body_len = rendered_body_len;
+        self.body_viewport_height = body_viewport_height;
+    }
+
+    pub(super) fn scroll_body(&mut self, amount: usize, direction: BodyScrollDirection) -> bool {
+        let previous = self.scroll_offset;
+        let body_height = self.body_viewport_height.max(1);
+        let max_scroll = self.rendered_body_len.saturating_sub(body_height);
+        let current = if self.is_at_bottom() {
+            max_scroll
+        } else {
+            self.scroll_offset.min(max_scroll)
+        };
+        let next = match direction {
+            BodyScrollDirection::Up => current.saturating_sub(amount),
+            BodyScrollDirection::Down => current.saturating_add(amount),
+        };
+        if next >= max_scroll {
+            self.scroll_to_bottom();
+        } else {
+            self.scroll_offset = next;
+        }
+        self.scroll_offset != previous
+    }
+
+    pub(super) const fn composer_scroll_offset(&self) -> usize {
+        self.input_scroll_offset
+    }
+
+    pub(super) fn reset_composer_scroll(&mut self) {
+        self.input_scroll_offset = 0;
+    }
+
+    pub(super) fn scroll_composer_up(&mut self, amount: usize) {
+        let max_scroll = self.max_composer_scroll();
+        self.input_scroll_offset = self
+            .input_scroll_offset
+            .saturating_add(amount)
+            .min(max_scroll);
+    }
+
+    pub(super) fn scroll_composer_down(&mut self, amount: usize) {
+        self.input_scroll_offset = self.input_scroll_offset.saturating_sub(amount);
+    }
+
+    pub(super) fn push_composer_char(&mut self, ch: char) {
+        self.input.push(ch);
+        self.reset_composer_scroll();
+        self.input_status = None;
+        self.history_index = None;
+    }
+
+    pub(super) fn insert_composer_newline(&mut self) {
+        self.input.push('\n');
+        self.reset_composer_scroll();
+    }
+
+    fn max_composer_scroll(&self) -> usize {
+        composer_input_line_count(&self.input).saturating_sub(COMPOSER_VISIBLE_LINES)
     }
 
     fn update_context_usage(&mut self, usage: &Usage) {
@@ -1712,6 +1859,7 @@ impl InteractiveTuiState {
         }
         if let Some(index) = self.history_index {
             self.input = self.history[index].clone();
+            self.reset_composer_scroll();
         }
     }
 
@@ -1728,6 +1876,7 @@ impl InteractiveTuiState {
             self.history_index = Some(next);
             self.input = self.history[next].clone();
         }
+        self.reset_composer_scroll();
     }
 
     pub(super) fn request_cancel(&mut self) {
@@ -1818,7 +1967,6 @@ enum LocalCommandOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SubmissionKind {
     Message,
-    Queued,
     Steering,
 }
 
@@ -1936,12 +2084,56 @@ fn model_choice_config_suffix(choice: &ModelChoice) -> String {
     }
 }
 
+pub(super) fn display_lines_for_stream_record(record: &AgentStreamRecord) -> Vec<String> {
+    match &record.event {
+        AgentStreamEvent::ModelStream {
+            event: ModelResponseStreamEvent::PartDelta(PartDelta { delta, .. }),
+            ..
+        } => match delta {
+            StreamDelta::Thinking { text } => text
+                .lines()
+                .map(|line| assistant_content_line(format!("> {line}")))
+                .collect(),
+            StreamDelta::Text { text } => text.lines().map(assistant_content_line).collect(),
+            _ => Vec::new(),
+        },
+        AgentStreamEvent::ToolCall { call, .. } => vec![format_tool_call_line(call)],
+        AgentStreamEvent::ToolReturn { tool_return, .. } => {
+            format_tool_return_lines(tool_return, None)
+        }
+        AgentStreamEvent::Custom { event } if event.kind == "steering_submitted" => event
+            .payload
+            .get("text")
+            .and_then(Value::as_str)
+            .map_or_else(Vec::new, |text| vec![format!("Steering: {text}")]),
+        AgentStreamEvent::Custom { event } if event.kind == "steering_received" => event
+            .payload
+            .get("text")
+            .and_then(Value::as_str)
+            .map_or_else(
+                || vec!["Steering received".to_string()],
+                |text| vec![format!("Steering received: {text}")],
+            ),
+        AgentStreamEvent::RunFailed { message, .. } => vec![format!("Run failed: {message}")],
+        _ => Vec::new(),
+    }
+}
+
 fn format_tool_call_line(call: &starweaver_model::ToolCallPart) -> String {
-    let arguments = value_preview(&call.arguments.replay_value());
+    let arguments = tool_call_arguments_text(call);
     if arguments == "{}" || arguments == "null" || arguments.is_empty() {
         format!("Tool call: {}", call.name)
     } else {
         format!("Tool call: {} {arguments}", call.name)
+    }
+}
+
+fn tool_call_arguments_text(call: &starweaver_model::ToolCallPart) -> String {
+    let value = call.arguments.replay_value();
+    if call.name == "shell_exec" {
+        full_value_text(&value)
+    } else {
+        value_preview(&value)
     }
 }
 
@@ -1967,19 +2159,127 @@ fn format_tool_return_lines(
             "write" => format_write_tool_lines(display_value, arguments),
             "view" => format_view_tool_lines(display_value, arguments),
             "summarize" => format_summarize_tool_lines(display_value, arguments),
+            "shell_exec" | "shell_wait" | "shell_status" | "shell_input" | "shell_signal"
+            | "shell_kill" => format_shell_tool_lines(&tool_return.name, display_value, arguments),
             "task_create" | "task_get" | "task_update" | "task_list" => {
                 format_task_tool_lines(&tool_return.name, display_value)
             }
-            _ => vec![format!(
-                "Tool result: {} {}",
-                tool_return.name,
-                value_preview(display_value)
-            )],
+            _ => format_generic_tool_lines(&tool_return.name, display_value),
         }
     };
     if let Some(duration) = tool_duration_label(&tool_return.metadata) {
         lines.push(format!("  Duration: {duration}"));
     }
+    lines
+}
+
+fn format_shell_tool_lines(name: &str, result: &Value, arguments: Option<&Value>) -> Vec<String> {
+    let mut lines = vec![format!("Tool result: {name}")];
+    if let Some(command) = shell_command(result, arguments) {
+        lines.push("  Command:".to_string());
+        for line in full_command_lines(command) {
+            lines.push(format!("    │ {line}"));
+        }
+    }
+    if let Some(cwd) = result
+        .get("cwd")
+        .or_else(|| arguments.and_then(|args| args.get("cwd")))
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.trim().is_empty())
+    {
+        lines.push(format!("  Cwd: {cwd}"));
+    }
+    if let Some(process_id) = result.get("process_id").and_then(Value::as_str) {
+        lines.push(format!("  Process: {process_id}"));
+    }
+    if let Some(status) = shell_status_text(result) {
+        lines.push(format!("  Status: {status}"));
+    }
+    if let Some(stdout) = result.get("stdout").and_then(Value::as_str) {
+        push_shell_stream_preview(&mut lines, "stdout", stdout);
+    }
+    if let Some(stderr) = result.get("stderr").and_then(Value::as_str) {
+        push_shell_stream_preview(&mut lines, "stderr", stderr);
+    }
+    for field in ["stdout_file_path", "stderr_file_path"] {
+        if let Some(path) = result.get(field).and_then(Value::as_str) {
+            lines.push(format!("  {field}: {path}"));
+        }
+    }
+    if lines.len() == 1 && !is_empty_result(result) {
+        push_indented_preview(&mut lines, &value_text(result), 12);
+    }
+    lines
+}
+
+fn shell_command<'a>(result: &'a Value, arguments: Option<&'a Value>) -> Option<&'a str> {
+    result
+        .get("command")
+        .or_else(|| arguments.and_then(|args| args.get("command")))
+        .and_then(Value::as_str)
+        .filter(|command| !command.trim().is_empty())
+}
+
+fn shell_status_text(result: &Value) -> Option<String> {
+    result
+        .get("return_code")
+        .and_then(Value::as_i64)
+        .map(|code| format!("exit {code}"))
+        .or_else(|| {
+            result
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+fn push_shell_stream_preview(lines: &mut Vec<String>, label: &str, output: &str) {
+    if output.trim().is_empty() {
+        return;
+    }
+    lines.push(format!("  {label}:"));
+    for line in preview_lines(output, SHELL_STREAM_PREVIEW_MAX_LINES) {
+        lines.push(format!("    │ {line}"));
+    }
+}
+
+fn full_command_lines(command: &str) -> Vec<String> {
+    let mut lines = command.lines().collect::<Vec<_>>();
+    if command.ends_with('\n') || lines.is_empty() {
+        lines.push("");
+    }
+    lines
+        .into_iter()
+        .flat_map(|line| split_sanitized_line(line, TOOL_PREVIEW_MAX_CHARS))
+        .collect()
+}
+
+fn split_sanitized_line(line: &str, max_chars: usize) -> Vec<String> {
+    let line = sanitize_control_chars(line);
+    let max_chars = max_chars.max(1);
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for ch in line.chars() {
+        if current.chars().count() >= max_chars {
+            chunks.push(std::mem::take(&mut current));
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn format_generic_tool_lines(name: &str, result: &Value) -> Vec<String> {
+    let mut lines = vec![format!("Tool result: {name}")];
+    if is_empty_result(result) {
+        return lines;
+    }
+    push_indented_preview(&mut lines, &value_text(result), 12);
     lines
 }
 
@@ -2057,8 +2357,7 @@ fn format_write_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec<Str
         let mode = args
             .get("mode")
             .and_then(Value::as_str)
-            .map(write_mode_label)
-            .unwrap_or("overwrite");
+            .map_or("overwrite", write_mode_label);
         lines.push(format!("  Mode: {mode}"));
         let content = string_field(args, "content");
         if content.is_empty() {
@@ -2088,7 +2387,6 @@ fn format_write_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec<Str
 fn write_mode_label(mode: &str) -> &'static str {
     match mode {
         "a" => "append",
-        "w" => "overwrite",
         _ => "overwrite",
     }
 }
@@ -2360,9 +2658,9 @@ fn format_view_content_lines(content: &str, start_line: Option<usize>) -> Vec<St
         return vec!["    Empty file".to_string()];
     }
     let preview = preview_lines(content, 20);
-    let line_number_width = start_line
-        .map(|start| start.saturating_add(preview.len()).to_string().len().max(4))
-        .unwrap_or(0);
+    let line_number_width = start_line.map_or(0, |start| {
+        start.saturating_add(preview.len()).to_string().len().max(4)
+    });
     preview
         .into_iter()
         .enumerate()
@@ -2370,23 +2668,27 @@ fn format_view_content_lines(content: &str, start_line: Option<usize>) -> Vec<St
             if line.starts_with("... (") {
                 return format!("    {line}");
             }
-            if let Some(start) = start_line {
-                format!(
-                    "    {:>line_number_width$} │ {line}",
-                    start.saturating_add(index)
-                )
-            } else {
-                format!("    │ {line}")
-            }
+            start_line.map_or_else(
+                || format!("    │ {line}"),
+                |start| {
+                    format!(
+                        "    {:>line_number_width$} │ {line}",
+                        start.saturating_add(index)
+                    )
+                },
+            )
         })
         .collect()
 }
 
 fn format_summarize_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec<String> {
     let payload = result.get("payload").unwrap_or(result);
-    let content = payload_string(payload, &["content", "handoff_content", "summary_markdown", "summary"])
-        .or_else(|| arguments.and_then(|args| payload_string(args, &["content", "summary"])))
-        .unwrap_or_default();
+    let content = payload_string(
+        payload,
+        &["content", "handoff_content", "summary_markdown", "summary"],
+    )
+    .or_else(|| arguments.and_then(|args| payload_string(args, &["content", "summary"])))
+    .unwrap_or_default();
     let auto_load_files = payload_string_array(payload, "auto_load_files")
         .or_else(|| arguments.and_then(|args| payload_string_array(args, "auto_load_files")))
         .unwrap_or_default();
@@ -2409,6 +2711,246 @@ fn format_summarize_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec
         ));
     }
     lines
+}
+
+fn format_custom_context_event_lines(kind: &str, payload: &Value) -> Option<Vec<String>> {
+    let normalized = normalized_event_kind(kind);
+    let context_payload = payload.get("payload").unwrap_or(payload);
+    if event_kind_matches(
+        &normalized,
+        &[
+            "compact_start",
+            "compact_started",
+            "compaction_start",
+            "compaction_started",
+        ],
+    ) {
+        return Some(format_compaction_started_lines(context_payload));
+    }
+    if event_kind_matches(
+        &normalized,
+        &[
+            "compact_complete",
+            "compact_completed",
+            "compaction_complete",
+            "compaction_completed",
+        ],
+    ) {
+        return Some(format_compaction_completed_lines(context_payload, payload));
+    }
+    if event_kind_matches(
+        &normalized,
+        &[
+            "compact_failed",
+            "compact_failure",
+            "compaction_failed",
+            "compaction_failure",
+        ],
+    ) {
+        return Some(vec![format!(
+            "Compact failed: {}",
+            compact_error_text(context_payload, payload)
+        )]);
+    }
+    if event_kind_matches(
+        &normalized,
+        &[
+            "handoff_start",
+            "handoff_started",
+            "summary_start",
+            "summary_started",
+        ],
+    ) {
+        return Some(format_handoff_started_lines(context_payload));
+    }
+    if event_kind_matches(
+        &normalized,
+        &[
+            "handoff_complete",
+            "handoff_completed",
+            "summary_complete",
+            "summary_completed",
+        ],
+    ) {
+        return Some(format_handoff_completed_lines(context_payload, payload));
+    }
+    if event_kind_matches(
+        &normalized,
+        &[
+            "handoff_failed",
+            "handoff_failure",
+            "summary_failed",
+            "summary_failure",
+        ],
+    ) {
+        return Some(vec![format!(
+            "Summary failed: {}",
+            compact_error_text(context_payload, payload)
+        )]);
+    }
+    None
+}
+
+fn normalized_event_kind(kind: &str) -> String {
+    kind.to_ascii_lowercase().replace(['.', '-'], "_")
+}
+
+fn event_kind_matches(normalized: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| normalized == *candidate || normalized.ends_with(&format!("_{candidate}")))
+}
+
+fn format_compaction_started_lines(payload: &Value) -> Vec<String> {
+    let message_count = payload_u64(
+        payload,
+        &[
+            "message_count",
+            "messages",
+            "original_count",
+            "original_message_count",
+            "original_messages",
+        ],
+    );
+    vec![message_count.map_or_else(
+        || "Context compacting...".to_string(),
+        |count| format!("Context compacting {count} messages..."),
+    )]
+}
+
+fn format_compaction_completed_lines(payload: &Value, wrapper: &Value) -> Vec<String> {
+    let mut lines = vec!["Context compacted".to_string()];
+    let original = payload_u64(
+        payload,
+        &[
+            "original_count",
+            "original_message_count",
+            "original_messages",
+        ],
+    );
+    let compacted = payload_u64(
+        payload,
+        &[
+            "compacted_count",
+            "compacted_message_count",
+            "compacted_messages",
+            "message_count",
+            "messages",
+        ],
+    );
+    match (original, compacted) {
+        (Some(original), Some(compacted)) if original > 0 => {
+            let reduction = original
+                .saturating_sub(compacted)
+                .saturating_mul(100)
+                .saturating_add(original / 2)
+                / original;
+            lines.push(format!(
+                "  Summary: {original} -> {compacted} messages ({reduction}% reduction)"
+            ));
+        }
+        (_, Some(compacted)) => {
+            if let Some(revision) = payload_u64(payload, &["revision"]) {
+                lines.push(format!(
+                    "  Summary: revision {revision}, {compacted} messages retained"
+                ));
+            } else {
+                lines.push(format!("  Summary: {compacted} messages retained"));
+            }
+        }
+        _ => {
+            let preview = payload_string(wrapper, &["preview"])
+                .unwrap_or_else(|| "Context compaction completed".to_string());
+            lines.push(format!("  Summary: {}", preview_line(&preview)));
+        }
+    }
+    if let Some(summary) = payload_string(
+        payload,
+        &["summary", "summary_markdown", "content", "handoff_content"],
+    ) {
+        push_indented_preview(&mut lines, &summary, 8);
+    }
+    lines
+}
+
+fn format_handoff_started_lines(payload: &Value) -> Vec<String> {
+    let message_count = payload_u64(
+        payload,
+        &[
+            "message_count",
+            "messages",
+            "original_count",
+            "original_message_count",
+        ],
+    );
+    vec![message_count.map_or_else(
+        || "Summarizing progress...".to_string(),
+        |count| format!("Summarizing progress ({count} messages)..."),
+    )]
+}
+
+fn format_handoff_completed_lines(payload: &Value, wrapper: &Value) -> Vec<String> {
+    let mut lines = vec!["Summary complete".to_string()];
+    lines.push("  Summary: Progress summarized, continuing with fresh context".to_string());
+    let content = payload_string(
+        payload,
+        &["handoff_content", "content", "summary_markdown", "summary"],
+    )
+    .or_else(|| payload_string(wrapper, &["preview"]));
+    if let Some(content) = content {
+        push_indented_preview(&mut lines, &content, 12);
+    }
+    lines
+}
+
+fn push_indented_preview(lines: &mut Vec<String>, content: &str, max_lines: usize) {
+    if content.trim().is_empty() {
+        return;
+    }
+    for line in preview_lines(content, max_lines) {
+        lines.push(format!("    │ {line}"));
+    }
+}
+
+fn compact_error_text(payload: &Value, wrapper: &Value) -> String {
+    payload_string(payload, &["error", "message", "reason"])
+        .or_else(|| payload_string(wrapper, &["error", "message", "preview"]))
+        .unwrap_or_else(|| "unknown error".to_string())
+}
+
+fn payload_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|item| {
+            item.as_u64()
+                .or_else(|| item.as_i64().and_then(|number| u64::try_from(number).ok()))
+                .or_else(|| item.as_str().and_then(|text| text.parse::<u64>().ok()))
+        })
+    })
+}
+
+fn payload_string(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        let item = value.get(*key)?;
+        match item {
+            Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
+            Value::Null => None,
+            other if !other.to_string().trim().is_empty() => Some(other.to_string()),
+            _ => None,
+        }
+    })
+}
+
+fn payload_string_array(value: &Value, key: &str) -> Option<Vec<String>> {
+    let item = value.get(key)?;
+    let values = match item {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect::<Vec<_>>(),
+        Value::String(text) if !text.trim().is_empty() => vec![text.clone()],
+        _ => Vec::new(),
+    };
+    (!values.is_empty()).then_some(values)
 }
 
 fn format_task_tool_lines(name: &str, result: &Value) -> Vec<String> {
@@ -2526,6 +3068,7 @@ fn upsert_task_panel_item(items: &mut Vec<TaskPanelItem>, item: TaskPanelItem) {
     }
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn tool_duration_label(metadata: &serde_json::Map<String, Value>) -> Option<String> {
     let millis = metadata.get("duration_ms").and_then(Value::as_u64)?;
     if millis < 1_000 {
@@ -2560,6 +3103,15 @@ fn string_field<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
+fn composer_input_line_count(input: &str) -> usize {
+    let count = input.lines().count();
+    if input.ends_with('\n') || count == 0 {
+        count.saturating_add(1)
+    } else {
+        count
+    }
+}
+
 fn preview_lines(content: &str, max_lines: usize) -> Vec<String> {
     let lines = content.lines().collect::<Vec<_>>();
     let mut preview = lines
@@ -2574,7 +3126,23 @@ fn preview_lines(content: &str, max_lines: usize) -> Vec<String> {
 }
 
 fn preview_line(line: &str) -> String {
-    truncate_line_center(line, TOOL_PREVIEW_MAX_CHARS)
+    truncate_line_center(&sanitize_control_chars(line), TOOL_PREVIEW_MAX_CHARS)
+}
+
+fn sanitize_control_chars(text: &str) -> String {
+    let mut sanitized = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\t' => sanitized.push(ch),
+            '\r' => sanitized.push_str("\\r"),
+            '\x1b' => sanitized.push_str("\\x1b"),
+            ch if ch.is_control() => {
+                let _ = write!(&mut sanitized, "\\x{:02x}", u32::from(ch));
+            }
+            ch => sanitized.push(ch),
+        }
+    }
+    sanitized
 }
 
 const fn plural_suffix(count: usize) -> &'static str {
@@ -2601,7 +3169,7 @@ fn value_text(value: &Value) -> String {
 }
 
 fn full_value_text(value: &Value) -> String {
-    value_text(value).replace('\n', " ")
+    sanitize_control_chars(&value_text(value).replace('\n', " "))
 }
 
 fn streaming_tool_state_is_available(state: &StreamingToolCallState, key: &str) -> bool {

@@ -11,9 +11,15 @@ use starweaver_agent::{
     MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
     SearchResultItem, ToolContext, ToolRegistry, ToolResult,
 };
+use starweaver_context::ToolConfig;
 use starweaver_core::{ConversationId, Metadata, RunId, Usage};
-use starweaver_environment::{EnvironmentProvider, ShellOutput, VirtualEnvironmentProvider};
-use starweaver_model::{tool_call_response, ModelProfile, ModelResponse, ProtocolFamily};
+use starweaver_environment::{
+    EnvironmentPolicy, EnvironmentProvider, FilePolicy, LocalEnvironmentProvider, ShellOutput,
+    ShellPolicy, VirtualEnvironmentProvider,
+};
+use starweaver_model::{
+    tool_call_response, ModelProfile, ModelResponse, ProtocolFamily, TestModel,
+};
 
 #[tokio::test]
 async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
@@ -235,7 +241,6 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
 
     let mut process_agent_context = AgentContext::default();
     attach_environment(&mut process_agent_context, provider.clone());
-    starweaver_agent::attach_process_shell(&mut process_agent_context, provider.clone());
     let mut process_dependencies = process_agent_context.dependencies.clone();
     process_dependencies.insert(process_agent_context);
     let process_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
@@ -744,6 +749,73 @@ async fn glob_grep_and_shell_large_outputs_are_saved_to_environment_tmp_files() 
 }
 
 #[tokio::test]
+async fn local_shell_tmp_output_path_can_be_viewed() {
+    let root = unique_agent_test_dir();
+    let provider = Arc::new(
+        LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        }),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&filesystem_tools());
+    registry.insert_toolset(&shell_tools());
+    let mut agent_context = AgentContext {
+        tool_config: ToolConfig {
+            shell_output_truncate_limit: 8,
+            ..ToolConfig::default()
+        },
+        ..AgentContext::default()
+    };
+    attach_environment(&mut agent_context, provider);
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let shell = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "shell".to_string(),
+                name: "shell_exec".to_string(),
+                arguments: serde_json::json!({"command": "printf '0123456789abcdef'"}).into(),
+            },
+        )
+        .await;
+    let stdout_path = shell.content["stdout_file_path"].as_str().unwrap();
+    assert!(std::path::Path::new(stdout_path).is_absolute());
+
+    let viewed = registry
+        .execute_call(
+            context,
+            &starweaver_model::ToolCallPart {
+                id: "view".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": stdout_path}).into(),
+            },
+        )
+        .await;
+    assert_eq!(viewed.content.as_str().unwrap(), "0123456789abcdef");
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+fn unique_agent_test_dir() -> std::path::PathBuf {
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "starweaver-agent-test-{}-{:?}-{suffix}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&path).unwrap();
+    path.canonicalize().unwrap_or(path)
+}
+
+#[tokio::test]
 async fn agent_builder_attaches_model_media_capabilities_to_host_tools() {
     let responses = vec![
         tool_call_response(
@@ -753,9 +825,9 @@ async fn agent_builder_attaches_model_media_capabilities_to_host_tools() {
         ),
         ModelResponse::text("done"),
     ];
-    let model = starweaver_agent::TestModel::with_responses(responses).with_profile(
-        ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent),
-    );
+    let model = TestModel::with_responses(responses).with_profile(ModelProfile::for_protocol(
+        ProtocolFamily::GeminiGenerateContent,
+    ));
     let mut session = AgentSession::new(
         starweaver_agent::AgentBuilder::new(Arc::new(model))
             .toolset(&host_operation_tools())
@@ -781,6 +853,57 @@ async fn agent_builder_attaches_model_media_capabilities_to_host_tools() {
     assert_eq!(tool_return.content["native_supported"], true);
     assert_eq!(tool_return.content["model_id"], "test");
     assert_eq!(tool_return.content["provider_ready"]["type"], "media_url");
+}
+
+#[tokio::test]
+async fn agent_builder_filters_media_tools_by_model_capabilities() {
+    let model = TestModel::with_text("done").with_profile(ModelProfile::for_protocol(
+        ProtocolFamily::GeminiGenerateContent,
+    ));
+    let model_handle = Arc::new(model.clone());
+    let mut session = AgentSession::new(
+        starweaver_agent::AgentBuilder::new(model_handle)
+            .toolset(&host_operation_tools())
+            .build(),
+    );
+
+    let result = session.run("inspect tools").await.unwrap();
+
+    assert_eq!(result.output, "done");
+    let params = model.captured_params();
+    let tool_names = params[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(tool_names.contains(&"load_media_url"));
+    assert!(!tool_names.contains(&"read_image"));
+    assert!(!tool_names.contains(&"read_video"));
+    assert!(!tool_names.contains(&"read_audio"));
+
+    let text_model = TestModel::with_text("done").with_profile(ModelProfile::for_protocol(
+        ProtocolFamily::OpenAiChatCompletions,
+    ));
+    let text_model_handle = Arc::new(text_model.clone());
+    let mut text_session = AgentSession::new(
+        starweaver_agent::AgentBuilder::new(text_model_handle)
+            .toolset(&host_operation_tools())
+            .build(),
+    );
+
+    let result = text_session.run("inspect tools").await.unwrap();
+
+    assert_eq!(result.output, "done");
+    let text_params = text_model.captured_params();
+    let text_tool_names = text_params[0]
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(text_tool_names.contains(&"load_media_url"));
+    assert!(!text_tool_names.contains(&"read_image"));
+    assert!(text_tool_names.contains(&"read_video"));
+    assert!(text_tool_names.contains(&"read_audio"));
 }
 
 #[tokio::test]
@@ -1004,7 +1127,13 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert_eq!(note_metadata["auto_inherit"], true);
 
     let filesystem_instructions = filesystem.get_instructions();
-    assert_eq!(filesystem_instructions.len(), 3);
+    assert_eq!(filesystem_instructions.len(), 13);
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "view"
+            && instruction
+                .content
+                .contains("pass `instructions` when you need focused analysis")));
     assert!(filesystem_instructions
         .iter()
         .any(|instruction| instruction.group == "edit"
@@ -1017,14 +1146,55 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
             && instruction
                 .content
                 .contains("do not issue concurrent edit calls")));
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "glob"
+            && instruction.content.contains("ripgrep-style glob semantics")));
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "grep"
+            && instruction.content.contains("ripgrep-backed regex")));
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "mkdir"
+            && instruction.content.contains("parents=true")));
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "delete"
+            && instruction
+                .content
+                .contains("Verify broad recursive targets")));
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "move"
+            && instruction.content.contains("overwrite=true")));
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "copy"
+            && instruction.content.contains("multiple copies")));
+    assert!(filesystem_instructions
+        .iter()
+        .any(|instruction| instruction.group == "resource_ref"
+            && instruction.content.contains("durable reference")));
     assert_eq!(shell.get_instructions().len(), 1);
+    assert!(shell.get_instructions()[0]
+        .content
+        .contains("Set background=true for long-running commands"));
     assert_eq!(task.get_instructions().len(), 1);
-    assert_eq!(host.get_instructions().len(), 1);
+    assert!(task.get_instructions()[0]
+        .content
+        .contains("Task management tools track multi-step work"));
+    assert_eq!(host.get_instructions().len(), 9);
+    assert!(host
+        .get_instructions()
+        .iter()
+        .any(|instruction| instruction.group == "load_media_url"
+            && instruction.content.contains("native media/document URL")));
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn first_party_tool_arg_schemas_match_ya_agent_sdk_and_describe_args() {
+fn first_party_tool_arg_schemas_match_starweaver_sdk_and_describe_args() {
     let expected = [
         (
             filesystem_tools(),

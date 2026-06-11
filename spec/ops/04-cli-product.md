@@ -16,7 +16,7 @@ Prioritize the CLI as the bootstrap product for Starweaver:
 - display-protocol-first rendering
 - persisted `DisplayMessage` records as the session restore source
 - TUI renderers, Desktop renderers, and CLI JSONL over the same Starweaver `DisplayMessage` stream
-- protocol adapters for YAACLI/AGUI event compatibility
+- protocol adapters for Starweaver/AGUI event compatibility
 - launcher-based command dispatch through `starweaver`
 - short alias through `sw`
 - GitHub release based install and update flow
@@ -92,7 +92,7 @@ Primary postponed parity gaps:
 - shared runtime coordinator used by RPC, TUI, and CLI commands
 - normalized JSON output for CLI management subsets
 - live stdout streaming for one-shot headless output
-- YAACLI/AGUI top-level event compatibility mode
+- Starweaver/AGUI top-level event compatibility mode
 - slash command parity
 - deeper TUI session/task/HITL/media workflows
 - startup asset seeding and config import
@@ -130,11 +130,11 @@ Headless output modes:
 | Mode            | Flag                                        | Output contract                                                                    |
 | --------------- | ------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `display-jsonl` | default / `--output display-jsonl`          | one Starweaver `DisplayMessage` JSON object per line                               |
-| `agui-jsonl`    | `--output agui-jsonl` or compatibility mode | YAACLI/AGUI top-level event objects mapped from `DisplayMessage`                   |
+| `agui-jsonl`    | `--output agui-jsonl` or compatibility mode | Starweaver/AGUI top-level event objects mapped from `DisplayMessage`               |
 | `json`          | `--output json`                             | final run summary with session id, run id, status, output preview, and cursor refs |
 | `silent`        | `--output silent`                           | persist session/display records and print compact final status                     |
 
-`display-jsonl` is the Starweaver-native automation format for live output. `json` is the compact command-result format for hosts that only need the final run summary. `DisplayMessage` is the durable Starweaver wire event used by CLI output, replay archives, and restore views. `agui-jsonl` is the compatibility format for consumers that expect YAACLI/AGUI top-level event objects.
+`display-jsonl` is the Starweaver-native automation format for live output. `json` is the compact command-result format for hosts that only need the final run summary. `DisplayMessage` is the durable Starweaver wire event used by CLI output, replay archives, and restore views. `agui-jsonl` is the compatibility format for consumers that expect Starweaver/AGUI top-level event objects.
 
 JSON-RPC stdio is the complete local runtime API. It covers both management operations and active agent execution. CLI commands are the shell-friendly subset over the same service handlers, and TUI is a terminal client over the same runtime surface. Desktop applications can use the same RPC protocol as a desktop client.
 
@@ -438,7 +438,7 @@ sw cli session replay <session-id> --run <run-id> --output display-jsonl
 
 ## AGUI Compatibility Path
 
-`DisplayMessage` is the Starweaver wire event. It carries AGUI-style lifecycle event names in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads. Exact YAACLI/AGUI compatibility is an adapter that maps `DisplayMessage` into top-level protocol events such as `RUN_STARTED`, `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_CHUNK`, and `TOOL_CALL_RESULT`.
+`DisplayMessage` is the Starweaver wire event. It carries AGUI-style lifecycle event names in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads. Exact Starweaver/AGUI compatibility is an adapter that maps `DisplayMessage` into top-level protocol events such as `RUN_STARTED`, `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_CHUNK`, and `TOOL_CALL_RESULT`.
 
 Starweaver mapping layers:
 

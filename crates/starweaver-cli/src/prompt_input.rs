@@ -53,7 +53,11 @@ pub struct PromptInput {
     /// Natural language prompt text.
     pub text: String,
     /// Attached binary media.
+    #[serde(default)]
     pub attachments: Vec<PromptAttachment>,
+    /// Additional text-only context parts appended to the first user prompt.
+    #[serde(default)]
+    pub extra_text_parts: Vec<String>,
 }
 
 impl PromptInput {
@@ -63,10 +67,25 @@ impl PromptInput {
         Self {
             text: text.into(),
             attachments: Vec::new(),
+            extra_text_parts: Vec::new(),
         }
     }
 
-    /// Strip generated placeholders out of text and append attachments as content parts.
+    /// Return true when this input needs first-request content-part rewriting.
+    #[must_use]
+    pub fn has_content_parts(&self) -> bool {
+        !self.attachments.is_empty() || !self.extra_text_parts.is_empty()
+    }
+
+    /// Append an extra text context part to the first user prompt.
+    pub fn push_extra_text_part(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if !text.trim().is_empty() {
+            self.extra_text_parts.push(text);
+        }
+    }
+
+    /// Strip generated placeholders out of text and append attachments and extra text parts.
     #[must_use]
     pub fn into_content_parts(self) -> Vec<ContentPart> {
         let mut text = self.text;
@@ -84,6 +103,12 @@ impl PromptInput {
             self.attachments
                 .into_iter()
                 .map(PromptAttachment::into_content_part),
+        );
+        parts.extend(
+            self.extra_text_parts
+                .into_iter()
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| ContentPart::Text { text }),
         );
         parts
     }
@@ -135,6 +160,7 @@ mod tests {
         let input = PromptInput {
             text: format!("look at this {placeholder} please"),
             attachments: vec![attachment],
+            extra_text_parts: Vec::new(),
         };
 
         let parts = input.into_content_parts();
@@ -153,10 +179,34 @@ mod tests {
     }
 
     #[test]
+    fn prompt_input_appends_extra_text_parts_after_attachments() {
+        let mut input = PromptInput::text("inspect");
+        input.push_extra_text_part(
+            "<user-rules location=/tmp/RULES.md>\nPrefer concise output.\n</user-rules>",
+        );
+
+        let parts = input.into_content_parts();
+        assert_eq!(
+            parts,
+            vec![
+                ContentPart::Text {
+                    text: "inspect".to_string(),
+                },
+                ContentPart::Text {
+                    text:
+                        "<user-rules location=/tmp/RULES.md>\nPrefer concise output.\n</user-rules>"
+                            .to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn display_text_falls_back_to_attachment_placeholder() {
         let input = PromptInput {
             text: "   ".to_string(),
             attachments: vec![PromptAttachment::image(1, vec![1, 2, 3], "image/png")],
+            extra_text_parts: Vec::new(),
         };
 
         assert_eq!(input.display_text(), "[Attached image 1: image/png 3B]");

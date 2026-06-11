@@ -47,6 +47,7 @@ pub fn attach_process_shell(context: &mut AgentContext, provider: DynProcessShel
 
 /// Create shell tools backed by the `EnvironmentHandle` stored in `AgentContext`.
 #[must_use]
+#[allow(clippy::needless_raw_string_hashes)]
 pub fn shell_tools() -> DynToolset {
     let approval_metadata = tool_metadata("shell", false, true);
 
@@ -55,7 +56,34 @@ pub fn shell_tools() -> DynToolset {
             .with_id("shell")
             .with_instruction(ToolInstruction::new(
                 "shell",
-                "Shell tools execute through the active AgentContext environment policy. Use shell_exec for bounded one-shot commands, set background=true for long-running work, and use shell_wait, shell_status, shell_input, shell_signal, or shell_kill for durable background handles when the provider supports them. Large stdout and stderr are saved via the active environment provider tmp-file abstraction.",
+                r#"<shell-tool>
+Execute shell commands via `shell_exec`. Check the runtime `<shell-environment>` context for the active shell dialect. Local POSIX environments use `/bin/bash` by default when available; other environments may use the platform default shell or a sandbox-specific shell.
+
+Parameters:
+- command (required): The shell command string to execute.
+- timeout_seconds: Maximum execution time in seconds.
+- environment: Environment variables as key-value pairs.
+- cwd: Working directory (relative or absolute path).
+- background (default false): Run command in background and return process_id immediately.
+
+Large outputs are saved to temporary files with paths in stdout_file_path/stderr_file_path.
+
+<background-mode>
+Set background=true for long-running commands such as builds, servers, and test suites. Manage background processes with:
+- shell_wait: Wait for or poll a background process. Use timeout_seconds=0 to poll and drain current output immediately.
+- shell_input: Write to a background process stdin for prompts, REPL commands, or piped data.
+- shell_signal: Send a Unix signal such as 2 (SIGINT) or 15 (SIGTERM).
+- shell_kill: Terminate a running process and clean up tracking.
+- shell_status: List all background processes and their status.
+
+Completed background processes are automatically reported in context. Use shell_wait only when you need results before proceeding.
+</background-mode>
+
+Avoid:
+- find/grep for searching when glob or grep tools can do the job.
+- cat/head/tail/ls to read files when view and ls tools can do the job.
+- cd command; use the cwd parameter instead.
+</shell-tool>"#,
             ))
             .with_tools([
                 static_tool_with_metadata(

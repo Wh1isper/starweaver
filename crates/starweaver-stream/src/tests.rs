@@ -4,12 +4,30 @@ use serde_json::json;
 use starweaver_core::RunId;
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
-    ToolCallPart,
+    ToolCallPart, ToolReturnPart,
 };
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 
 use super::*;
 use starweaver_core::SessionId;
+
+fn custom_stream_record(
+    sequence: usize,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> AgentStreamRecord {
+    serde_json::from_value(json!({
+        "sequence": sequence,
+        "event": {
+            "kind": "custom",
+            "event": {
+                "kind": kind,
+                "payload": payload,
+            }
+        }
+    }))
+    .unwrap()
+}
 
 fn display_message(
     sequence: usize,
@@ -66,6 +84,12 @@ fn all_display_message_kinds_serialize_to_agui_compatible_types() {
             DisplayMessageKind::CompactionCompleted,
             "COMPACTION_COMPLETED",
         ),
+        (DisplayMessageKind::CompactionFailed, "COMPACTION_FAILED"),
+        (DisplayMessageKind::HandoffStarted, "HANDOFF_STARTED"),
+        (DisplayMessageKind::HandoffCompleted, "HANDOFF_COMPLETED"),
+        (DisplayMessageKind::HandoffFailed, "HANDOFF_FAILED"),
+        (DisplayMessageKind::SteeringSubmitted, "STEERING_SUBMITTED"),
+        (DisplayMessageKind::SteeringReceived, "STEERING_RECEIVED"),
         (DisplayMessageKind::RunCompleted, "RUN_FINISHED"),
         (DisplayMessageKind::RunFailed, "RUN_ERROR"),
         (DisplayMessageKind::RunCancelled, "RUN_CANCELLED"),
@@ -362,6 +386,111 @@ async fn default_projector_maps_runtime_stream_parts_to_display_messages() {
     assert_eq!(
         part_end_messages[0].kind,
         DisplayMessageKind::AssistantTextEnd
+    );
+}
+
+#[tokio::test]
+async fn default_projector_maps_summary_and_compaction_custom_events() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = DisplayProjectionContext::new(
+        SessionId::from_string("session-context-events"),
+        RunId::from_string("run-context-events"),
+    );
+
+    let compact_started = custom_stream_record(
+        10,
+        "starweaver.compaction_started",
+        &json!({"message_count": 50}),
+    );
+    let handoff_completed =
+        custom_stream_record(11, "summary_complete", &json!({"content": "handoff body"}));
+    let steering_received = custom_stream_record(
+        12,
+        "steering_received",
+        &json!({"id": "steer_0", "text": "keep going"}),
+    );
+    let unrelated = custom_stream_record(13, "task_panel", &json!({"tasks": []}));
+
+    let compact_messages = projector.project(&context, &compact_started).await;
+    let handoff_messages = projector.project(&context, &handoff_completed).await;
+    let steering_messages = projector.project(&context, &steering_received).await;
+    let unrelated_messages = projector.project(&context, &unrelated).await;
+
+    assert_eq!(compact_messages.len(), 1);
+    assert_eq!(
+        compact_messages[0].kind,
+        DisplayMessageKind::CompactionStarted
+    );
+    assert_eq!(compact_messages[0].payload["message_count"], 50);
+    assert_eq!(
+        compact_messages[0].preview.as_deref(),
+        Some("context compacting 50 messages")
+    );
+    assert_eq!(handoff_messages.len(), 1);
+    assert_eq!(
+        handoff_messages[0].kind,
+        DisplayMessageKind::HandoffCompleted
+    );
+    assert_eq!(handoff_messages[0].payload["content"], "handoff body");
+    assert_eq!(steering_messages.len(), 1);
+    assert_eq!(
+        steering_messages[0].kind,
+        DisplayMessageKind::SteeringReceived
+    );
+    assert_eq!(steering_messages[0].payload["text"], "keep going");
+    assert_eq!(
+        steering_messages[0].preview.as_deref(),
+        Some("steering received: keep going")
+    );
+    assert!(unrelated_messages.is_empty());
+}
+
+#[tokio::test]
+async fn default_projector_maps_summarize_tool_to_handoff_events() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = DisplayProjectionContext::new(
+        SessionId::from_string("session-summarize"),
+        RunId::from_string("run-summarize"),
+    );
+    let call = ToolCallPart {
+        id: "summarize-call".to_string(),
+        name: "summarize".to_string(),
+        arguments: json!({"content": "handoff body"}).into(),
+    };
+    let call_record = AgentStreamRecord::new(20, AgentStreamEvent::ToolCall { step: 1, call });
+    let return_record = AgentStreamRecord::new(
+        21,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "summarize-call",
+                "summarize",
+                json!({
+                    "operation": "summarize",
+                    "payload": {
+                        "content": "handoff body",
+                        "auto_load_files": ["AGENTS.md"]
+                    }
+                }),
+            ),
+        },
+    );
+
+    let call_messages = projector.project(&context, &call_record).await;
+    let return_messages = projector.project(&context, &return_record).await;
+
+    assert_eq!(call_messages[0].kind, DisplayMessageKind::HandoffStarted);
+    assert_eq!(call_messages[0].payload["content"], "handoff body");
+    assert_eq!(return_messages.len(), 2);
+    assert_eq!(return_messages[0].kind, DisplayMessageKind::ToolResult);
+    assert_eq!(
+        return_messages[1].kind,
+        DisplayMessageKind::HandoffCompleted
+    );
+    assert_eq!(return_messages[1].payload["content"], "handoff body");
+    assert_eq!(
+        return_messages[1].payload["auto_load_files"][0],
+        "AGENTS.md"
     );
 }
 

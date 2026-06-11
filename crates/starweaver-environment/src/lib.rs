@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::{self, Read},
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, UNIX_EPOCH},
@@ -28,6 +28,7 @@ pub type DynEnvironmentProvider = Arc<dyn EnvironmentProvider>;
 const DEFAULT_INSTRUCTIONS_SKIP_DIRS: &[&str] = &["node_modules", ".git", ".venv", "__pycache__"];
 const DEFAULT_INSTRUCTIONS_MAX_DEPTH: usize = 3;
 const DEFAULT_TMP_DIR: &str = ".starweaver/tmp";
+const LOCAL_TMP_DIR_PREFIX: &str = "starweaver-";
 
 /// Environment operation failure.
 #[derive(Debug, Error)]
@@ -510,6 +511,14 @@ pub trait EnvironmentProvider: Send + Sync {
     /// Execute a foreground shell command through the provider boundary.
     async fn run_shell(&self, command: ShellCommand) -> EnvironmentResult<ShellOutput>;
 
+    /// Return this provider as a process-capable shell provider when supported.
+    ///
+    /// This lets SDK sessions attach one environment resource and have foreground
+    /// and background shell capabilities discovered from that same provider.
+    fn process_shell_provider(self: Arc<Self>) -> Option<DynProcessShellProvider> {
+        None
+    }
+
     /// Return compact workspace context for shell command review.
     fn shell_review_context(&self) -> ShellReviewEnvironmentContext {
         ShellReviewEnvironmentContext::default()
@@ -529,6 +538,7 @@ pub trait EnvironmentProvider: Send + Sync {
 pub struct VirtualEnvironmentProvider {
     id: String,
     policy: EnvironmentPolicy,
+    tmp_namespace: Option<String>,
     files: Arc<Mutex<BTreeMap<String, String>>>,
     binary_files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     directories: Arc<Mutex<BTreeSet<String>>>,
@@ -546,6 +556,7 @@ impl VirtualEnvironmentProvider {
                 files: FilePolicy::read_write(),
                 shell: ShellPolicy::allow_all(),
             },
+            tmp_namespace: None,
             files: Arc::new(Mutex::new(BTreeMap::new())),
             binary_files: Arc::new(Mutex::new(BTreeMap::new())),
             directories: Arc::new(Mutex::new(BTreeSet::new())),
@@ -558,6 +569,16 @@ impl VirtualEnvironmentProvider {
     #[must_use]
     pub fn with_policy(mut self, policy: EnvironmentPolicy) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Set a provider-scoped temporary file namespace.
+    ///
+    /// Namespaces isolate tool-generated large output files under a stable
+    /// subdirectory of the provider temporary root.
+    #[must_use]
+    pub fn with_tmp_namespace(mut self, namespace: impl AsRef<str>) -> Self {
+        self.tmp_namespace = normalize_tmp_namespace(namespace.as_ref()).ok();
         self
     }
 
@@ -653,6 +674,15 @@ impl VirtualEnvironmentProvider {
             }
         }
         Ok(())
+    }
+
+    fn tmp_file_path(&self, filename: &str) -> EnvironmentResult<String> {
+        let filename = normalize_tmp_filename(filename)?;
+        let relative = self.tmp_namespace.as_deref().map_or_else(
+            || filename.clone(),
+            |namespace| join_logical_path(namespace, &filename),
+        );
+        Ok(join_logical_path(DEFAULT_TMP_DIR, &relative))
     }
 
     fn path_exists_unchecked(&self, path: &str) -> EnvironmentResult<bool> {
@@ -842,6 +872,10 @@ impl ProcessShellProvider for VirtualEnvironmentProvider {
 impl EnvironmentProvider for VirtualEnvironmentProvider {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn process_shell_provider(self: Arc<Self>) -> Option<DynProcessShellProvider> {
+        Some(self)
     }
 
     fn shell_review_context(&self) -> ShellReviewEnvironmentContext {
@@ -1117,17 +1151,16 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
     }
 
     async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
-        let normalized = normalize_tmp_filename(filename)?;
-        let path = join_logical_path(DEFAULT_TMP_DIR, &normalized);
+        let normalized = self.tmp_file_path(filename)?;
         self.binary_files
             .lock()
             .map_err(|error| EnvironmentError::Provider(error.to_string()))?
-            .insert(path.clone(), content.to_vec());
+            .insert(normalized.clone(), content.to_vec());
         self.files
             .lock()
             .map_err(|error| EnvironmentError::Provider(error.to_string()))?
-            .remove(&path);
-        Ok(path)
+            .remove(&normalized);
+        Ok(normalized)
     }
 
     async fn stat(&self, path: &str) -> EnvironmentResult<FileStat> {
@@ -1301,7 +1334,10 @@ pub struct LocalEnvironmentProvider {
     id: String,
     root: PathBuf,
     allowed_paths: Vec<PathBuf>,
+    tmp_dir: Option<Arc<tempfile::TempDir>>,
+    tmp_namespace: Option<String>,
     policy: EnvironmentPolicy,
+    processes: Arc<Mutex<BTreeMap<String, LocalShellProcess>>>,
 }
 
 impl LocalEnvironmentProvider {
@@ -1309,14 +1345,25 @@ impl LocalEnvironmentProvider {
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = normalize_local_config_path(root.into());
+        let tmp_dir = create_local_tmp_dir(None).map(Arc::new);
+        let mut allowed_paths = vec![root.clone()];
+        if let Some(tmp_path) = tmp_dir.as_ref().map(|tmp_dir| tmp_dir.path()) {
+            push_unique_path(
+                &mut allowed_paths,
+                normalize_local_config_path(tmp_path.to_path_buf()),
+            );
+        }
         Self {
             id: "local".to_string(),
-            allowed_paths: vec![root.clone()],
+            allowed_paths,
+            tmp_dir,
+            tmp_namespace: None,
             root,
             policy: EnvironmentPolicy {
                 files: FilePolicy::read_only(),
                 shell: ShellPolicy::default(),
             },
+            processes: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -1344,12 +1391,45 @@ impl LocalEnvironmentProvider {
         I: IntoIterator<Item = P>,
         P: Into<PathBuf>,
     {
-        let mut allowed_paths = Vec::new();
-        for path in paths {
-            push_unique_path(&mut allowed_paths, normalize_local_config_path(path.into()));
+        let allowed_paths = paths
+            .into_iter()
+            .map(|path| normalize_local_config_path(path.into()))
+            .collect::<Vec<_>>();
+        self.rebuild_allowed_paths_with_managed_roots(allowed_paths);
+        self
+    }
+
+    /// Create provider-managed temporary files under a specific base directory.
+    ///
+    /// The created session directory is added to the allowed path set and is
+    /// cleaned up when the provider and its clones are dropped. If creation
+    /// fails, the existing temporary directory configuration is left unchanged.
+    #[must_use]
+    pub fn with_tmp_base_dir(mut self, base_dir: impl Into<PathBuf>) -> Self {
+        let old_tmp_dir = self
+            .tmp_dir_path()
+            .map(|path| normalize_local_config_path(path.to_path_buf()));
+        let base_dir = normalize_local_config_path(base_dir.into());
+        if let Some(tmp_dir) = create_local_tmp_dir(Some(&base_dir)) {
+            self.tmp_dir = Some(Arc::new(tmp_dir));
+            let allowed_paths = self
+                .allowed_paths
+                .iter()
+                .filter(|path| old_tmp_dir.as_ref() != Some(path))
+                .cloned()
+                .collect::<Vec<_>>();
+            self.rebuild_allowed_paths_with_managed_roots(allowed_paths);
         }
-        push_unique_path(&mut allowed_paths, self.root.clone());
-        self.allowed_paths = allowed_paths;
+        self
+    }
+
+    /// Set a provider-scoped temporary file namespace.
+    ///
+    /// Namespaces isolate tool-generated large output files under a stable
+    /// subdirectory of the provider temporary root.
+    #[must_use]
+    pub fn with_tmp_namespace(mut self, namespace: impl AsRef<str>) -> Self {
+        self.tmp_namespace = normalize_tmp_namespace(namespace.as_ref()).ok();
         self
     }
 
@@ -1359,9 +1439,17 @@ impl LocalEnvironmentProvider {
         &self.allowed_paths
     }
 
+    /// Return this provider's managed temporary directory when available.
+    #[must_use]
+    pub fn tmp_dir_path(&self) -> Option<&Path> {
+        self.tmp_dir.as_ref().map(|tmp_dir| tmp_dir.path())
+    }
+
     fn resolve(&self, path: &str, write: bool) -> EnvironmentResult<PathBuf> {
         let (visible_path, filesystem_path) = self.resolve_with_visible_path(path)?;
-        if !is_tmp_path(&visible_path) && !self.policy.files.permits(&visible_path, write) {
+        if !self.path_is_managed_tmp(&filesystem_path)
+            && !self.policy.files.permits(&visible_path, write)
+        {
             return Err(EnvironmentError::AccessDenied(path.to_string()));
         }
         Ok(filesystem_path)
@@ -1382,6 +1470,9 @@ impl LocalEnvironmentProvider {
         if logical_path == "." {
             logical_path.clear();
         }
+        if let Some(tmp_path) = self.managed_tmp_path(&logical_path)? {
+            return Ok((logical_path, tmp_path));
+        }
         Ok((logical_path.clone(), self.root.join(&logical_path)))
     }
 
@@ -1399,6 +1490,9 @@ impl LocalEnvironmentProvider {
 
     fn logical_path(&self, path: &Path) -> EnvironmentResult<String> {
         let path = normalize_local_config_path(path.to_path_buf());
+        if self.path_is_managed_tmp(&path) {
+            return Ok(display_local_path(&path));
+        }
         if let Ok(relative) = path.strip_prefix(&self.root) {
             return Ok(normalize_path(relative));
         }
@@ -1413,12 +1507,272 @@ impl LocalEnvironmentProvider {
         path.strip_prefix(&self.root)
             .map_or_else(|_| display_local_path(&path), normalize_path)
     }
+
+    fn resolve_shell_cwd(&self, cwd: Option<&str>) -> EnvironmentResult<PathBuf> {
+        let cwd = match cwd {
+            Some(cwd) => self.resolve(cwd, false)?,
+            None => self.root.clone(),
+        };
+        if !cwd.is_dir() {
+            return Err(EnvironmentError::InvalidRequest(format!(
+                "shell cwd is not a directory: {}",
+                cwd.display()
+            )));
+        }
+        Ok(cwd)
+    }
+
+    fn rebuild_allowed_paths_with_managed_roots(&mut self, paths: Vec<PathBuf>) {
+        let mut allowed_paths = Vec::new();
+        for path in paths {
+            push_unique_path(&mut allowed_paths, normalize_local_config_path(path));
+        }
+        push_unique_path(&mut allowed_paths, self.root.clone());
+        if let Some(tmp_dir) = self.tmp_dir_path() {
+            push_unique_path(
+                &mut allowed_paths,
+                normalize_local_config_path(tmp_dir.to_path_buf()),
+            );
+        }
+        self.allowed_paths = allowed_paths;
+    }
+
+    fn tmp_file_relative_path(&self, filename: &str) -> EnvironmentResult<String> {
+        let filename = normalize_tmp_filename(filename)?;
+        Ok(self.tmp_namespace.as_deref().map_or_else(
+            || filename.clone(),
+            |namespace| join_logical_path(namespace, &filename),
+        ))
+    }
+
+    fn managed_tmp_path(&self, logical_path: &str) -> EnvironmentResult<Option<PathBuf>> {
+        if !is_tmp_path(logical_path) {
+            return Ok(None);
+        }
+        let Some(tmp_dir) = self.tmp_dir_path() else {
+            return Ok(None);
+        };
+        let normalized = normalize_str_path(logical_path);
+        let relative = normalized
+            .strip_prefix(DEFAULT_TMP_DIR)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+            .unwrap_or_default();
+        if relative.is_empty() {
+            return Ok(Some(tmp_dir.to_path_buf()));
+        }
+        Ok(Some(tmp_dir.join(normalize_requested_path(relative)?)))
+    }
+
+    fn path_is_managed_tmp(&self, path: &Path) -> bool {
+        let path = normalize_local_config_path(path.to_path_buf());
+        self.tmp_dir_path().is_some_and(|tmp_dir| {
+            let tmp_dir = normalize_local_config_path(tmp_dir.to_path_buf());
+            path == tmp_dir || path.starts_with(tmp_dir)
+        })
+    }
+}
+
+#[derive(Debug)]
+struct LocalShellProcess {
+    command: String,
+    child: Child,
+    stdout_handle: Option<thread::JoinHandle<io::Result<String>>>,
+    stderr_handle: Option<thread::JoinHandle<io::Result<String>>>,
+    metadata: Metadata,
+    completed: Option<ShellProcessSnapshot>,
+}
+
+#[async_trait]
+#[allow(clippy::significant_drop_tightening)]
+impl ProcessShellProvider for LocalEnvironmentProvider {
+    async fn start_process(
+        &self,
+        command: ShellCommand,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        if !self.policy.shell.permits(&command.command) {
+            return Err(EnvironmentError::AccessDenied(command.command));
+        }
+        let cwd = self.resolve_shell_cwd(command.cwd.as_deref())?;
+        let mut child = Command::new("/bin/sh")
+            .arg("-lc")
+            .arg(&command.command)
+            .current_dir(cwd)
+            .envs(&command.environment)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+        let mut stdout_reader = child.stdout.take();
+        let mut stderr_reader = child.stderr.take();
+        let stdout_handle = thread::spawn(move || read_child_pipe(stdout_reader.take()));
+        let stderr_handle = thread::spawn(move || read_child_pipe(stderr_reader.take()));
+        let process_id = format!("process_{}", child.id());
+        let metadata = shell_process_metadata(&command);
+        let snapshot = ShellProcessSnapshot {
+            process_id: process_id.clone(),
+            command: command.command.clone(),
+            status: ShellProcessStatus::Running,
+            stdout: String::new(),
+            stderr: String::new(),
+            return_code: None,
+            metadata: metadata.clone(),
+        };
+        self.processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+            .insert(
+                process_id,
+                LocalShellProcess {
+                    command: command.command,
+                    child,
+                    stdout_handle: Some(stdout_handle),
+                    stderr_handle: Some(stderr_handle),
+                    metadata,
+                    completed: None,
+                },
+            );
+        Ok(snapshot)
+    }
+
+    async fn wait_process(
+        &self,
+        process_id: &str,
+        timeout_seconds: u64,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
+        loop {
+            let snapshot = {
+                let mut processes = self
+                    .processes
+                    .lock()
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                let process = processes
+                    .get_mut(process_id)
+                    .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
+                refresh_local_shell_process(process_id, process, false)?
+            };
+            if snapshot.status != ShellProcessStatus::Running || timeout_seconds == 0 {
+                return Ok(snapshot);
+            }
+            if Instant::now() >= deadline {
+                return Ok(snapshot);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    async fn list_processes(&self) -> EnvironmentResult<Vec<ShellProcessSnapshot>> {
+        let snapshots = {
+            let mut processes = self
+                .processes
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            let mut snapshots = Vec::new();
+            for (process_id, process) in processes.iter_mut() {
+                snapshots.push(refresh_local_shell_process(process_id, process, false)?);
+            }
+            snapshots
+        };
+        Ok(snapshots)
+    }
+
+    async fn input_process(
+        &self,
+        process_id: &str,
+        text: &str,
+        close_stdin: bool,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        let snapshot = {
+            let mut processes = self
+                .processes
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            let process = processes
+                .get_mut(process_id)
+                .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
+            if let Some(stdin) = process.child.stdin.as_mut() {
+                use std::io::Write as _;
+                stdin
+                    .write_all(text.as_bytes())
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                stdin
+                    .write_all(b"\n")
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                if close_stdin {
+                    process.child.stdin.take();
+                }
+            } else {
+                return Err(EnvironmentError::InvalidRequest(format!(
+                    "stdin is closed for process: {process_id}"
+                )));
+            }
+            refresh_local_shell_process(process_id, process, false)?
+        };
+        Ok(snapshot)
+    }
+
+    async fn signal_process(
+        &self,
+        process_id: &str,
+        signal: i32,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        let snapshot = {
+            let mut processes = self
+                .processes
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            let process = processes
+                .get_mut(process_id)
+                .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
+            #[cfg(unix)]
+            {
+                let pid = process.child.id().to_string();
+                let status = Command::new("kill")
+                    .arg(format!("-{signal}"))
+                    .arg(pid)
+                    .status()
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                if !status.success() {
+                    return Err(EnvironmentError::Provider(format!(
+                        "failed to signal process {process_id} with signal {signal}"
+                    )));
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                return Err(EnvironmentError::InvalidRequest(
+                    "shell_signal is only supported on Unix local providers".to_string(),
+                ));
+            }
+            refresh_local_shell_process(process_id, process, false)?
+        };
+        Ok(snapshot)
+    }
+
+    async fn kill_process(&self, process_id: &str) -> EnvironmentResult<ShellProcessSnapshot> {
+        let snapshot = {
+            let mut processes = self
+                .processes
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            let process = processes
+                .get_mut(process_id)
+                .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
+            refresh_local_shell_process(process_id, process, true)?
+        };
+        Ok(snapshot)
+    }
 }
 
 #[async_trait]
 impl EnvironmentProvider for LocalEnvironmentProvider {
     fn id(&self) -> &str {
         &self.id
+    }
+
+    fn process_shell_provider(self: Arc<Self>) -> Option<DynProcessShellProvider> {
+        Some(self)
     }
 
     fn shell_review_context(&self) -> ShellReviewEnvironmentContext {
@@ -1562,15 +1916,17 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
     }
 
     async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
-        let normalized = normalize_tmp_filename(filename)?;
-        let logical_path = join_logical_path(DEFAULT_TMP_DIR, &normalized);
-        let path = self.resolve(&logical_path, true)?;
+        let normalized = self.tmp_file_relative_path(filename)?;
+        let tmp_dir = self.tmp_dir_path().ok_or_else(|| {
+            EnvironmentError::Provider("local temporary directory is unavailable".to_string())
+        })?;
+        let path = tmp_dir.join(&normalized);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
         }
         std::fs::write(&path, content).map_err(|error| map_io_error(&path, &error))?;
-        Ok(logical_path)
+        Ok(display_local_path(&path))
     }
 
     async fn stat(&self, path: &str) -> EnvironmentResult<FileStat> {
@@ -2150,6 +2506,20 @@ fn map_io_error(path: &Path, error: &io::Error) -> EnvironmentError {
     }
 }
 
+fn create_local_tmp_dir(base_dir: Option<&Path>) -> Option<tempfile::TempDir> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(LOCAL_TMP_DIR_PREFIX);
+    match base_dir {
+        Some(base_dir) => {
+            if std::fs::create_dir_all(base_dir).is_err() {
+                return None;
+            }
+            builder.tempdir_in(base_dir).ok()
+        }
+        None => builder.tempdir().ok(),
+    }
+}
+
 fn prepare_local_destination(path: &Path, overwrite: bool) -> EnvironmentResult<()> {
     if path.exists() {
         if !overwrite {
@@ -2189,6 +2559,84 @@ fn copy_local_dir(src: &Path, dst: &Path) -> EnvironmentResult<()> {
         }
     }
     Ok(())
+}
+
+fn shell_process_metadata(command: &ShellCommand) -> Metadata {
+    let mut metadata = Metadata::default();
+    if let Some(timeout_seconds) = command.timeout_seconds {
+        metadata.insert(
+            "timeout_seconds".to_string(),
+            serde_json::json!(timeout_seconds),
+        );
+    }
+    if let Some(cwd) = &command.cwd {
+        metadata.insert("cwd".to_string(), serde_json::json!(cwd));
+    }
+    if !command.environment.is_empty() {
+        metadata.insert(
+            "environment".to_string(),
+            serde_json::json!(command.environment),
+        );
+    }
+    metadata
+}
+
+fn refresh_local_shell_process(
+    process_id: &str,
+    process: &mut LocalShellProcess,
+    kill: bool,
+) -> EnvironmentResult<ShellProcessSnapshot> {
+    if let Some(snapshot) = &process.completed {
+        return Ok(snapshot.clone());
+    }
+    let status = if kill {
+        let _ = process.child.kill();
+        Some(
+            process
+                .child
+                .wait()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?,
+        )
+    } else {
+        process
+            .child
+            .try_wait()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+    };
+    let Some(status) = status else {
+        return Ok(ShellProcessSnapshot {
+            process_id: process_id.to_string(),
+            command: process.command.clone(),
+            status: ShellProcessStatus::Running,
+            stdout: String::new(),
+            stderr: String::new(),
+            return_code: None,
+            metadata: process.metadata.clone(),
+        });
+    };
+    let stdout_handle = process.stdout_handle.take().ok_or_else(|| {
+        EnvironmentError::Provider(format!("stdout reader missing for process: {process_id}"))
+    })?;
+    let stderr_handle = process.stderr_handle.take().ok_or_else(|| {
+        EnvironmentError::Provider(format!("stderr reader missing for process: {process_id}"))
+    })?;
+    let snapshot = ShellProcessSnapshot {
+        process_id: process_id.to_string(),
+        command: process.command.clone(),
+        status: if kill {
+            ShellProcessStatus::Killed
+        } else if status.success() {
+            ShellProcessStatus::Completed
+        } else {
+            ShellProcessStatus::Failed
+        },
+        stdout: join_pipe_reader(stdout_handle)?,
+        stderr: join_pipe_reader(stderr_handle)?,
+        return_code: status.code(),
+        metadata: process.metadata.clone(),
+    };
+    process.completed = Some(snapshot.clone());
+    Ok(snapshot)
 }
 
 fn run_local_shell_command(
@@ -2647,6 +3095,16 @@ fn normalize_tmp_filename(filename: &str) -> EnvironmentResult<String> {
     Ok(normalized)
 }
 
+fn normalize_tmp_namespace(namespace: &str) -> EnvironmentResult<String> {
+    let normalized = normalize_tmp_filename(namespace)?;
+    if normalized.contains('/') {
+        return Err(EnvironmentError::InvalidRequest(
+            "tmp namespace must be a single path segment".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
+
 fn normalize_str_path(path: &str) -> String {
     let mut normalized = path.replace('\\', "/");
     if let Some(stripped) = normalized.strip_prefix("./") {
@@ -3036,6 +3494,160 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_provider_runs_background_shell_processes() {
+        let root = unique_test_dir();
+        std::fs::create_dir_all(&root).unwrap();
+        let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_write(),
+            shell: ShellPolicy::allow_all(),
+        });
+
+        let started = provider
+            .start_process(ShellCommand {
+                command: "printf ready".to_string(),
+                timeout_seconds: Some(5),
+                ..ShellCommand::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(started.status, ShellProcessStatus::Running);
+        assert_eq!(started.command, "printf ready");
+        assert_eq!(started.metadata["timeout_seconds"], serde_json::json!(5));
+
+        let completed = provider.wait_process(&started.process_id, 5).await.unwrap();
+        assert_eq!(completed.status, ShellProcessStatus::Completed);
+        assert_eq!(completed.stdout, "ready");
+        assert_eq!(completed.return_code, Some(0));
+
+        let listed = provider.list_processes().await.unwrap();
+        assert!(listed.iter().any(|process| {
+            process.process_id == started.process_id
+                && process.status == ShellProcessStatus::Completed
+        }));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
+        let root = unique_test_dir();
+        let external = unique_test_dir();
+        let unrelated_tmp = std::env::temp_dir().join(format!(
+            "starweaver-unrelated-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&unrelated_tmp, "secret").unwrap();
+        let provider = LocalEnvironmentProvider::new(&root)
+            .with_allowed_paths([external.clone()])
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::default(),
+            });
+
+        let tmp_path = provider
+            .write_tmp_file("stdout.log", b"full shell output")
+            .await
+            .unwrap();
+        let tmp_path_buf = PathBuf::from(&tmp_path);
+        assert!(tmp_path_buf.is_absolute());
+        assert!(provider.path_is_managed_tmp(&tmp_path_buf));
+        assert!(provider
+            .allowed_paths()
+            .iter()
+            .any(|path| tmp_path_buf.starts_with(path)));
+        assert_eq!(
+            provider.read_text(&tmp_path).await.unwrap(),
+            "full shell output"
+        );
+        assert!(!root.join(".starweaver/tmp/stdout.log").exists());
+        assert_eq!(
+            provider
+                .read_text(".starweaver/tmp/stdout.log")
+                .await
+                .unwrap(),
+            "full shell output"
+        );
+        assert!(matches!(
+            provider
+                .read_text(&unrelated_tmp.display().to_string())
+                .await,
+            Err(EnvironmentError::AccessDenied(_))
+        ));
+
+        let _ = std::fs::remove_file(unrelated_tmp);
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(external).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_provider_tmp_namespace_isolates_managed_tmp_files() {
+        let root = unique_test_dir();
+        let provider = LocalEnvironmentProvider::new(&root)
+            .with_tmp_namespace("session_123")
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::default(),
+            });
+
+        let tmp_path = provider.write_tmp_file("grep.json", b"[]").await.unwrap();
+        let tmp_path_buf = PathBuf::from(&tmp_path);
+        assert!(tmp_path_buf.ends_with("session_123/grep.json"));
+        assert_eq!(provider.read_text(&tmp_path).await.unwrap(), "[]");
+        assert_eq!(
+            provider
+                .read_text(".starweaver/tmp/session_123/grep.json")
+                .await
+                .unwrap(),
+            "[]"
+        );
+        assert!(tmp_path_buf
+            .parent()
+            .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "session_123")));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn virtual_provider_tmp_namespace_isolates_tmp_files() {
+        let provider = VirtualEnvironmentProvider::new("virtual").with_tmp_namespace("session_123");
+
+        let tmp_path = provider.write_tmp_file("grep.json", b"[]").await.unwrap();
+        assert_eq!(tmp_path, ".starweaver/tmp/session_123/grep.json");
+        assert_eq!(provider.read_text(&tmp_path).await.unwrap(), "[]");
+        assert!(matches!(
+            provider.read_text(".starweaver/tmp/grep.json").await,
+            Err(EnvironmentError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn local_provider_tmp_base_dir_places_managed_tmp_under_base() {
+        let root = unique_test_dir();
+        let tmp_base = unique_test_dir();
+        let provider = LocalEnvironmentProvider::new(&root)
+            .with_tmp_base_dir(tmp_base.clone())
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::default(),
+            });
+
+        let tmp_dir = provider.tmp_dir_path().unwrap().to_path_buf();
+        assert!(tmp_dir.starts_with(&tmp_base));
+        assert!(tmp_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(LOCAL_TMP_DIR_PREFIX));
+        let tmp_path = provider.write_tmp_file("grep.json", b"[]").await.unwrap();
+        assert!(PathBuf::from(&tmp_path).starts_with(&tmp_dir));
+        assert_eq!(provider.read_text(&tmp_path).await.unwrap(), "[]");
+
+        std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(tmp_base).unwrap();
+    }
+
+    #[tokio::test]
     async fn local_provider_search_preserves_gitignore_negations() {
         let root = unique_test_dir();
         std::fs::create_dir_all(root.join("ignored")).unwrap();
@@ -3115,7 +3727,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn virtual_context_file_tree_matches_ya_agent_sdk_semantics() {
+    async fn virtual_context_file_tree_matches_starweaver_sdk_semantics() {
         let provider = VirtualEnvironmentProvider::new("test")
             .with_file(".git/config", "git")
             .with_file(".gitignore", "*.log\nbuild/\n")
@@ -3154,7 +3766,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_context_file_tree_matches_ya_agent_sdk_semantics() {
+    async fn local_context_file_tree_matches_starweaver_sdk_semantics() {
         let root = unique_test_dir();
         std::fs::create_dir_all(root.join(".git")).unwrap();
         std::fs::create_dir_all(root.join(".hidden")).unwrap();

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use starweaver_context::AgentContext;
 use starweaver_core::Metadata;
 use starweaver_model::{
-    ModelRequest, ModelRequestParameters, ModelResponse, ModelSettings, ToolCallPart,
+    ModelMessage, ModelRequest, ModelRequestParameters, ModelResponse, ModelSettings, ToolCallPart,
     ToolDefinition, ToolReturnPart,
 };
 use starweaver_tools::{DynTool, DynToolset, ToolContext, ToolRegistry};
@@ -18,7 +18,6 @@ use thiserror::Error;
 
 use crate::{
     executor::AgentCheckpoint,
-    history::HistoryProcessor,
     instructions::DynDynamicInstruction,
     output::{DynOutputFunction, OutputValidator},
     run::AgentRunState,
@@ -302,6 +301,25 @@ pub trait AgentCapability: Send + Sync {
         self.on_run_start(state).await
     }
 
+    /// Called after message history is assembled and before runtime context injection/model call.
+    async fn prepare_model_messages(
+        &self,
+        _state: &mut AgentRunState,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        Ok(messages)
+    }
+
+    /// Context-aware model-message preparation hook.
+    async fn prepare_model_messages_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        self.prepare_model_messages(state, messages).await
+    }
+
     /// Called after tool definitions are collected and before request parameters are finalized.
     async fn prepare_tools(
         &self,
@@ -540,7 +558,7 @@ pub trait AgentCapability: Send + Sync {
     }
 }
 
-/// Composable agent extension that contributes hooks, tools, instructions, settings, and processors.
+/// Composable agent extension that contributes hooks, tools, instructions, and settings.
 pub trait CapabilityBundle: Send + Sync {
     /// Bundle name for diagnostics and registry surfaces.
     fn name(&self) -> &str;
@@ -595,11 +613,6 @@ pub trait CapabilityBundle: Send + Sync {
         Vec::new()
     }
 
-    /// History processors contributed by this bundle.
-    fn history_processors(&self) -> Vec<Arc<dyn HistoryProcessor>> {
-        Vec::new()
-    }
-
     /// Usage limits contributed by this bundle.
     fn usage_limits(&self) -> Option<UsageLimits> {
         None
@@ -620,7 +633,6 @@ pub struct StaticCapabilityBundle {
     request_params: Option<ModelRequestParameters>,
     output_functions: Vec<DynOutputFunction>,
     output_validators: Vec<Arc<dyn OutputValidator>>,
-    history_processors: Vec<Arc<dyn HistoryProcessor>>,
     usage_limits: Option<UsageLimits>,
 }
 
@@ -640,7 +652,6 @@ impl StaticCapabilityBundle {
             request_params: None,
             output_functions: Vec::new(),
             output_validators: Vec::new(),
-            history_processors: Vec::new(),
             usage_limits: None,
         }
     }
@@ -722,13 +733,6 @@ impl StaticCapabilityBundle {
         self
     }
 
-    /// Add a history processor.
-    #[must_use]
-    pub fn with_history_processor(mut self, processor: Arc<dyn HistoryProcessor>) -> Self {
-        self.history_processors.push(processor);
-        self
-    }
-
     /// Set usage limits overlay.
     #[must_use]
     pub const fn with_usage_limits(mut self, limits: UsageLimits) -> Self {
@@ -786,10 +790,6 @@ impl CapabilityBundle for StaticCapabilityBundle {
 
     fn output_validators(&self) -> Vec<Arc<dyn OutputValidator>> {
         self.output_validators.clone()
-    }
-
-    fn history_processors(&self) -> Vec<Arc<dyn HistoryProcessor>> {
-        self.history_processors.clone()
     }
 
     fn usage_limits(&self) -> Option<UsageLimits> {
