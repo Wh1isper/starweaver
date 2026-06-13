@@ -200,6 +200,8 @@ model:
         usage: Usage {
             requests: 1,
             input_tokens: 200_000,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 100_001,
             total_tokens: 300_001,
             tool_calls: 0,

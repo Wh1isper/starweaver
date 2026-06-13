@@ -7,8 +7,10 @@ use std::{
     time::Instant,
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_core::Usage;
+use starweaver_context::TASK_SNAPSHOT_EVENT_KIND;
+use starweaver_core::{Usage, UsageSnapshot};
 use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
 
@@ -181,11 +183,16 @@ pub(super) struct HitlPanelState {
     pub(super) reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct TaskPanelItem {
-    pub(super) id: String,
-    pub(super) subject: String,
-    pub(super) status: String,
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TaskPanelItem {
+    pub id: String,
+    pub subject: String,
+    pub description: String,
+    pub status: String,
+    pub active_form: Option<String>,
+    pub owner: Option<String>,
+    pub blocked_by: Vec<String>,
+    pub blocks: Vec<String>,
 }
 
 /// Interactive terminal UI state.
@@ -265,6 +272,7 @@ pub struct InteractiveTuiState {
     pub(super) goal_max_iterations: usize,
     pub(super) context_tokens: Option<u64>,
     pub(super) context_window: Option<u64>,
+    usage_snapshots: BTreeMap<String, UsageSnapshot>,
     pub(super) steering_items: Vec<SteeringItem>,
     next_steering_id: u64,
 }
@@ -328,6 +336,7 @@ impl InteractiveTuiState {
             goal_max_iterations: 10,
             context_tokens: None,
             context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
+            usage_snapshots: BTreeMap::new(),
             steering_items: Vec::new(),
             next_steering_id: 0,
         }
@@ -542,6 +551,7 @@ impl InteractiveTuiState {
         self.selection_mode = false;
         self.selection_index = None;
         self.pending_submission_display_prompt = None;
+        self.task_panel_items.clone_from(&snapshot.tasks);
         self.sync_session_picker_index_to_current();
         self.phase = "replay".to_string();
     }
@@ -662,7 +672,7 @@ impl InteractiveTuiState {
                 self.phase = "tools".to_string();
                 let arguments = self.tool_call_arguments.remove(&tool_return.tool_call_id);
                 self.update_hitl_panel(tool_return);
-                self.update_task_panel(tool_return);
+                self.update_task_panel_from_tool_return(tool_return);
                 self.body
                     .extend(format_tool_return_lines(tool_return, arguments.as_ref()));
             }
@@ -685,11 +695,14 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::Custom { event } => {
                 self.phase.clone_from(&event.kind);
-                if let Some(lines) = format_custom_context_event_lines(&event.kind, &event.payload)
+                if event.kind == "usage_snapshot" {
+                    self.apply_usage_snapshot_payload(&event.payload, record.sequence);
+                } else if is_task_snapshot_event(&event.kind) {
+                    self.apply_task_snapshot_payload(&event.payload);
+                } else if let Some(lines) =
+                    format_custom_context_event_lines(&event.kind, &event.payload)
                 {
                     self.body.extend(lines);
-                } else if event.kind == "task_panel" {
-                    self.apply_task_panel_payload(&event.payload);
                 } else if event.kind == "steering_received" {
                     let steering_id = event
                         .payload
@@ -857,18 +870,23 @@ impl InteractiveTuiState {
     fn apply_model_response_parts(&mut self, parts: &[starweaver_model::ModelResponsePart]) {
         for part in parts {
             match part {
-                starweaver_model::ModelResponsePart::Text { text } if !self.streaming_text_seen => {
+                starweaver_model::ModelResponsePart::Text { text }
+                | starweaver_model::ModelResponsePart::ProviderText { text, .. }
+                    if !self.streaming_text_seen =>
+                {
                     self.push_text_lines(text);
                     self.streaming_text_seen = true;
                     self.visible_text_seen = true;
                 }
                 starweaver_model::ModelResponsePart::Thinking { text, .. }
+                | starweaver_model::ModelResponsePart::ProviderThinking { text, .. }
                     if !self.streaming_reasoning_seen =>
                 {
                     self.push_thinking_lines(text);
                     self.streaming_reasoning_seen = true;
                 }
-                starweaver_model::ModelResponsePart::ToolCall(call) => {
+                starweaver_model::ModelResponsePart::ToolCall(call)
+                | starweaver_model::ModelResponsePart::ProviderToolCall { call, .. } => {
                     self.push_tool_call(call);
                 }
                 _ => {}
@@ -1028,35 +1046,21 @@ impl InteractiveTuiState {
         });
     }
 
-    fn update_task_panel(&mut self, tool_return: &starweaver_model::ToolReturnPart) {
-        if !matches!(
-            tool_return.name.as_str(),
-            "task_create" | "task_get" | "task_update" | "task_list"
-        ) {
+    fn update_task_panel_from_tool_return(
+        &mut self,
+        tool_return: &starweaver_model::ToolReturnPart,
+    ) {
+        if !is_task_tool_name(&tool_return.name) {
             return;
         }
-        let display_value = tool_return
-            .user_content
-            .as_ref()
-            .unwrap_or(&tool_return.content);
-        if tool_return.name == "task_list" {
-            self.task_panel_items = value_text(display_value)
-                .lines()
-                .filter_map(parse_task_panel_line)
-                .collect();
-        } else if let Some(item) =
-            task_panel_item_from_tool_return(&tool_return.name, &tool_return.content, display_value)
-        {
-            upsert_task_panel_item(&mut self.task_panel_items, item);
+        if let Some(items) = task_panel_items_from_value(&tool_return.content) {
+            self.task_panel_items = items;
         }
     }
 
-    fn apply_task_panel_payload(&mut self, payload: &Value) {
-        if let Some(items) = payload.get("tasks").and_then(Value::as_array) {
-            self.task_panel_items = items
-                .iter()
-                .filter_map(task_panel_item_from_value)
-                .collect();
+    fn apply_task_snapshot_payload(&mut self, payload: &Value) {
+        if let Some(items) = task_panel_items_from_value(payload) {
+            self.task_panel_items = items;
         }
     }
 
@@ -1679,24 +1683,7 @@ impl InteractiveTuiState {
     }
 
     fn append_cost_summary(&mut self) {
-        self.body.push("[SYS] Cost summary".to_string());
-        match self.context_tokens {
-            Some(tokens) => self
-                .body
-                .push(format!("[SYS] Latest request context tokens: {tokens}")),
-            None => self
-                .body
-                .push("[SYS] Latest request context tokens: 0".to_string()),
-        }
-        if let Some(window) = self.context_window {
-            self.body.push(format!("[SYS] Context window: {window}"));
-            self.body.push(format!(
-                "[SYS] Context used: {}",
-                self.context_percent_label()
-            ));
-        }
-        self.body
-            .push("[SYS] Cost data: unavailable in current run".to_string());
+        self.body.extend(self.format_cost_summary_lines());
     }
 
     fn run_shell_command(&mut self, command: &str) {
@@ -1819,11 +1806,7 @@ impl InteractiveTuiState {
     }
 
     pub(super) fn scroll_composer_up(&mut self, amount: usize) {
-        let max_scroll = self.max_composer_scroll();
-        self.input_scroll_offset = self
-            .input_scroll_offset
-            .saturating_add(amount)
-            .min(max_scroll);
+        self.input_scroll_offset = self.input_scroll_offset.saturating_add(amount);
     }
 
     pub(super) fn scroll_composer_down(&mut self, amount: usize) {
@@ -1913,14 +1896,109 @@ impl InteractiveTuiState {
         self.insert_composer_str("\n");
     }
 
-    fn max_composer_scroll(&self) -> usize {
-        composer_input_line_count(&self.input).saturating_sub(COMPOSER_VISIBLE_LINES)
-    }
-
     fn update_context_usage(&mut self, usage: &Usage) {
         if usage.total_tokens > 0 {
             self.context_tokens = Some(usage.total_tokens);
         }
+    }
+
+    fn apply_usage_snapshot_payload(&mut self, payload: &Value, sequence: usize) {
+        if let Ok(snapshot) = serde_json::from_value::<UsageSnapshot>(payload.clone()) {
+            let key = if snapshot.run_id.is_empty() {
+                format!("sequence:{sequence}")
+            } else {
+                snapshot.run_id.clone()
+            };
+            self.usage_snapshots.insert(key, snapshot);
+        }
+    }
+
+    fn format_cost_summary_lines(&self) -> Vec<String> {
+        let mut lines = vec!["[SYS] Token Usage Summary:".to_string(), String::new()];
+        lines.push(format!(
+            "[SYS] Latest request context tokens: {}",
+            format_u64_with_commas(self.context_tokens.unwrap_or_default())
+        ));
+        if let Some(window) = self.context_window {
+            lines.push(format!(
+                "[SYS] Context window: {}",
+                format_u64_with_commas(window)
+            ));
+            lines.push(format!(
+                "[SYS] Context used: {}",
+                self.context_percent_label()
+            ));
+        }
+
+        let mut model_usages = BTreeMap::<String, Usage>::new();
+        let mut agent_usages = BTreeMap::<String, Usage>::new();
+        for snapshot in self.usage_snapshots.values() {
+            for (model_id, usage) in &snapshot.model_usages {
+                model_usages
+                    .entry(model_id.clone())
+                    .or_default()
+                    .add_assign(usage);
+            }
+            for (agent_id, total) in &snapshot.agent_usages {
+                agent_usages
+                    .entry(agent_id.clone())
+                    .or_default()
+                    .add_assign(&total.usage);
+            }
+        }
+
+        if model_usages.is_empty() && agent_usages.is_empty() {
+            lines.push("[SYS] No usage data available.".to_string());
+            return lines;
+        }
+
+        lines.push(String::new());
+        lines.push("[SYS] By Model:".to_string());
+        for (model_id, usage) in &model_usages {
+            push_usage_entry_lines(&mut lines, model_id, usage);
+            lines.push(String::new());
+        }
+
+        lines.push("[SYS] By Agent:".to_string());
+        for (agent_id, usage) in &agent_usages {
+            push_usage_entry_lines(&mut lines, agent_id, usage);
+            lines.push(String::new());
+        }
+
+        let mut total = Usage::default();
+        for usage in model_usages.values() {
+            total.add_assign(usage);
+        }
+        lines.push("[SYS] Total:".to_string());
+        lines.push(format!(
+            "[SYS]   Input:  {} tokens",
+            format_u64_with_commas(total.input_tokens)
+        ));
+        lines.push(format!(
+            "[SYS]   Output: {} tokens",
+            format_u64_with_commas(total.output_tokens)
+        ));
+        if total.cache_write_tokens > 0 {
+            lines.push(format!(
+                "[SYS]   Cache Write: {} tokens",
+                format_u64_with_commas(total.cache_write_tokens)
+            ));
+        }
+        if total.cache_read_tokens > 0 {
+            lines.push(format!(
+                "[SYS]   Cache Read:  {} tokens",
+                format_u64_with_commas(total.cache_read_tokens)
+            ));
+        }
+        lines.push(format!(
+            "[SYS]   Total:  {} tokens",
+            format_u64_with_commas(total.total_tokens)
+        ));
+        lines.push(format!("[SYS]   Requests: {}", total.requests));
+        if total.tool_calls > 0 {
+            lines.push(format!("[SYS]   Tool calls: {}", total.tool_calls));
+        }
+        lines
     }
 
     pub(crate) fn pasted_image_count(&self) -> usize {
@@ -2071,6 +2149,46 @@ fn push_user_prompt_lines(body: &mut Vec<String>, prompt: &str) {
     } else {
         body.push("User:".to_string());
     }
+}
+
+fn push_usage_entry_lines(lines: &mut Vec<String>, name: &str, usage: &Usage) {
+    lines.push(format!("[SYS]   {name}:"));
+    lines.push(format!(
+        "[SYS]     Input:  {} tokens",
+        format_u64_with_commas(usage.input_tokens)
+    ));
+    lines.push(format!(
+        "[SYS]     Output: {} tokens",
+        format_u64_with_commas(usage.output_tokens)
+    ));
+    if usage.cache_write_tokens > 0 {
+        lines.push(format!(
+            "[SYS]     Cache Write: {} tokens",
+            format_u64_with_commas(usage.cache_write_tokens)
+        ));
+    }
+    if usage.cache_read_tokens > 0 {
+        lines.push(format!(
+            "[SYS]     Cache Read:  {} tokens",
+            format_u64_with_commas(usage.cache_read_tokens)
+        ));
+    }
+    lines.push(format!("[SYS]     Requests: {}", usage.requests));
+    if usage.tool_calls > 0 {
+        lines.push(format!("[SYS]     Tool calls: {}", usage.tool_calls));
+    }
+}
+
+fn format_u64_with_commas(value: u64) -> String {
+    let text = value.to_string();
+    let mut output = String::with_capacity(text.len() + text.len() / 3);
+    for (index, ch) in text.chars().rev().enumerate() {
+        if index > 0 && index % 3 == 0 {
+            output.push(',');
+        }
+        output.push(ch);
+    }
+    output.chars().rev().collect()
 }
 
 fn assistant_content_line(line: impl AsRef<str>) -> String {
@@ -3060,6 +3178,10 @@ fn is_task_tool_name(name: &str) -> bool {
 
 fn format_task_tool_lines(name: &str, structured: &Value, display_value: &Value) -> Vec<String> {
     let payload = structured.get("payload").unwrap_or(structured);
+    let task_payload = payload
+        .get("task")
+        .filter(|value| value.is_object())
+        .unwrap_or(payload);
     let content = value_text(display_value);
     let mut lines = vec![format!("Task result: {name}")];
     match name {
@@ -3067,7 +3189,7 @@ fn format_task_tool_lines(name: &str, structured: &Value, display_value: &Value)
             lines.push("  Summary: Task created".to_string());
             let pushed = push_task_payload_fields(
                 &mut lines,
-                payload,
+                task_payload,
                 &[
                     ("Task ID", &["id", "task_id"]),
                     ("Subject", &["subject"]),
@@ -3085,7 +3207,7 @@ fn format_task_tool_lines(name: &str, structured: &Value, display_value: &Value)
             lines.push("  Summary: Task updated".to_string());
             let pushed = push_task_payload_fields(
                 &mut lines,
-                payload,
+                task_payload,
                 &[
                     ("Task ID", &["task_id", "id"]),
                     ("Status", &["status"]),
@@ -3106,7 +3228,7 @@ fn format_task_tool_lines(name: &str, structured: &Value, display_value: &Value)
             lines.push("  Summary: Task details requested".to_string());
             let pushed = push_task_payload_fields(
                 &mut lines,
-                payload,
+                task_payload,
                 &[("Task ID", &["task_id", "id"]), ("Metadata", &["metadata"])],
             );
             if !pushed || !content.trim_start().starts_with("Task #") {
@@ -3235,65 +3357,103 @@ fn is_task_status_line(line: &str) -> bool {
         .any(|status| line.contains(status))
 }
 
-fn parse_task_panel_line(line: &str) -> Option<TaskPanelItem> {
-    let trimmed = line.trim();
-    let id_start = trimmed.strip_prefix('#')?;
-    let (id, rest) = id_start.split_once(' ')?;
-    let status_start = rest.strip_prefix('[')?;
-    let (status, subject) = status_start.split_once("] ")?;
-    Some(TaskPanelItem {
-        id: id.to_string(),
-        status: status.to_string(),
-        subject: subject.to_string(),
-    })
+fn is_task_snapshot_event(kind: &str) -> bool {
+    let normalized = kind.to_ascii_lowercase().replace(['.', '-'], "_");
+    normalized == TASK_SNAPSHOT_EVENT_KIND
+        || normalized == "task_panel"
+        || normalized.ends_with("_task_snapshot")
+        || normalized.ends_with("_task_panel")
 }
 
-fn task_panel_item_from_tool_return(
-    name: &str,
-    structured: &Value,
-    display: &Value,
-) -> Option<TaskPanelItem> {
-    let structured_item = structured
-        .get("payload")
-        .or_else(|| structured.get("task"))
-        .or_else(|| structured.as_object().map(|_| structured))
-        .and_then(task_panel_item_from_value);
-    if structured_item.is_some() {
-        return structured_item;
+fn task_panel_items_from_value(value: &Value) -> Option<Vec<TaskPanelItem>> {
+    let payload = value.get("payload").unwrap_or(value);
+    for candidate in [payload, value] {
+        if let Some(items) = candidate
+            .get("tasks")
+            .or_else(|| candidate.get("items"))
+            .and_then(Value::as_array)
+            .or_else(|| candidate.as_array())
+        {
+            return Some(
+                items
+                    .iter()
+                    .filter_map(task_panel_item_from_value)
+                    .collect(),
+            );
+        }
     }
-    let text = value_text(display);
-    match name {
-        "task_get" | "task_update" => text.lines().find_map(parse_task_panel_line),
-        _ => None,
+    for candidate in [payload, value] {
+        if let Some(task) = candidate.get("task").filter(|task| task.is_object()) {
+            if let Some(item) = task_panel_item_from_value(task) {
+                return Some(vec![item]);
+            }
+        }
+        if candidate.is_object() {
+            if let Some(item) = task_panel_item_from_value(candidate) {
+                return Some(vec![item]);
+            }
+        }
     }
+    None
 }
 
 fn task_panel_item_from_value(value: &Value) -> Option<TaskPanelItem> {
+    let task = value
+        .get("task")
+        .filter(|task| task.is_object())
+        .unwrap_or(value);
     Some(TaskPanelItem {
-        id: value
+        id: task
             .get("id")
-            .or_else(|| value.get("task_id"))
+            .or_else(|| task.get("task_id"))
             .and_then(Value::as_str)?
             .trim_start_matches('#')
             .to_string(),
-        subject: value
+        subject: task
             .get("subject")
             .and_then(Value::as_str)
             .unwrap_or("untitled")
             .to_string(),
-        status: value
+        description: task
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        status: task
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("pending")
             .to_string(),
+        active_form: task
+            .get("active_form")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string),
+        owner: task
+            .get("owner")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string),
+        blocked_by: value_string_vec(task.get("blocked_by")),
+        blocks: value_string_vec(task.get("blocks")),
     })
 }
 
-fn upsert_task_panel_item(items: &mut Vec<TaskPanelItem>, item: TaskPanelItem) {
-    if let Some(existing) = items.iter_mut().find(|existing| existing.id == item.id) {
-        *existing = item;
-    } else {
-        items.push(item);
+fn value_string_vec(value: Option<&Value>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim_start_matches('#').to_string())
+            .collect(),
+        Value::String(text) if !text.trim().is_empty() => {
+            vec![text.trim_start_matches('#').to_string()]
+        }
+        _ => Vec::new(),
     }
 }
 
@@ -3338,15 +3498,6 @@ fn previous_char_boundary(text: &str, index: usize) -> usize {
         index = index.saturating_sub(1);
     }
     index
-}
-
-fn composer_input_line_count(input: &str) -> usize {
-    let count = input.lines().count();
-    if input.ends_with('\n') || count == 0 {
-        count.saturating_add(1)
-    } else {
-        count
-    }
 }
 
 fn preview_lines(content: &str, max_lines: usize) -> Vec<String> {

@@ -56,7 +56,16 @@ async fn subagent_registry_exports_typed_delegate_tool() {
     assert_eq!(result.content["output"], "child output");
     assert!(result.content["usage"]["requests"].as_u64().unwrap() >= 1);
     assert_eq!(result.metadata["context_mutated"], true);
-    assert_eq!(context_handle.snapshot().events.events().len(), 2);
+    let snapshot = context_handle.snapshot();
+    let event_kinds = snapshot
+        .events
+        .events()
+        .iter()
+        .map(|event| event.kind.as_str())
+        .collect::<Vec<_>>();
+    assert!(event_kinds.contains(&"subagent_started"));
+    assert!(event_kinds.contains(&"subagent_completed"));
+    assert!(event_kinds.contains(&"usage_snapshot"));
 }
 
 #[tokio::test]
@@ -124,6 +133,8 @@ async fn runtime_delegate_tool_merges_child_context_into_parent_context() {
             usage: Usage {
                 requests: 1,
                 input_tokens: 2,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
                 output_tokens: 3,
                 total_tokens: 5,
                 tool_calls: 0,

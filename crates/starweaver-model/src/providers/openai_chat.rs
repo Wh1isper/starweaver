@@ -25,6 +25,7 @@ impl OpenAiChatAdapter {
     /// # Errors
     ///
     /// Returns an error when canonical history cannot be mapped into chat messages.
+    #[allow(clippy::too_many_lines)]
     pub fn build_request(
         model: &str,
         messages: &[ModelMessage],
@@ -70,15 +71,29 @@ impl OpenAiChatAdapter {
                     let mut tool_calls = Vec::new();
                     for part in &response.parts {
                         match part {
-                            ModelResponsePart::Text { text } => content.push_str(text),
-                            ModelResponsePart::ToolCall(call) => tool_calls.push(json!({
-                                "id": call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": call.name,
-                                    "arguments": call.arguments.wire_json_string(),
-                                }
-                            })),
+                            ModelResponsePart::Text { text }
+                            | ModelResponsePart::ProviderText { text, .. } => {
+                                content.push_str(text);
+                            }
+                            ModelResponsePart::Thinking { text, .. }
+                            | ModelResponsePart::ProviderThinking { text, .. }
+                                if !text.is_empty() =>
+                            {
+                                content.push_str("<think>\n");
+                                content.push_str(text);
+                                content.push_str("\n</think>");
+                            }
+                            ModelResponsePart::ToolCall(call)
+                            | ModelResponsePart::ProviderToolCall { call, .. } => {
+                                tool_calls.push(json!({
+                                    "id": call.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": call.name,
+                                        "arguments": call.arguments.wire_json_string(),
+                                    }
+                                }));
+                            }
                             _ => {}
                         }
                     }
@@ -189,6 +204,7 @@ impl OpenAiChatAdapter {
             provider: Some(ProviderInfo {
                 name: "openai".to_string(),
                 response_id: value.get("id").and_then(Value::as_str).map(str::to_string),
+                details: serde_json::Map::new(),
             }),
             finish_reason: choice
                 .get("finish_reason")

@@ -17,8 +17,9 @@ use crate::{prompt_input::PromptInput, CliResult};
 
 use super::{
     render::{
-        composer_cursor_position, input_viewport_lines, queue_styled_line_at,
-        render_composer_lines, render_footer_lines, render_live_history_lines, terminal_error,
+        composer_cursor_position_wrapped, composer_input_width, input_viewport_lines_wrapped,
+        input_visual_line_count, queue_styled_line_at, render_composer_lines, render_footer_lines,
+        render_live_history_lines, terminal_error,
     },
     state::{
         BodyScrollDirection, InteractiveTuiState, PendingSessionCommand, RunMode,
@@ -81,13 +82,18 @@ impl InteractiveTui {
         let (width, height) = terminal::size().unwrap_or((80, 24));
         let width = if width == 0 { 80 } else { width };
         let height = if height == 0 { 24 } else { height };
-        let width = usize::from(width);
+        let terminal_width = usize::from(width);
+        // Leave the terminal's last column untouched while painting content.
+        // Many terminals enable delayed auto-wrap when a printable cell reaches
+        // the final column, which can make the right edge look clipped or can
+        // spill into the next row before the cursor is moved for the next draw.
+        let render_width = terminal_width.saturating_sub(1).max(1);
         let height = usize::from(height).max(8);
-        let composer_lines = render_composer_lines(state, width);
-        let status_lines = render_footer_lines(state, width);
+        let composer_lines = render_composer_lines(state, render_width);
+        let status_lines = render_footer_lines(state, render_width);
         let fixed_height = composer_lines.len().saturating_add(status_lines.len());
         let body_height = height.saturating_sub(fixed_height).max(1);
-        let rendered_body = render_live_history_lines(state, width);
+        let rendered_body = render_live_history_lines(state, render_width);
         state.update_render_metrics(rendered_body.len(), body_height);
         let (visible_start, visible_end) =
             visible_body_bounds(state, rendered_body.len(), body_height);
@@ -109,7 +115,7 @@ impl InteractiveTui {
                     &mut self.stdout,
                     u16::try_from(row).unwrap_or(u16::MAX),
                     line,
-                    width,
+                    render_width,
                 )?;
             }
         }
@@ -120,7 +126,7 @@ impl InteractiveTui {
                 &mut self.stdout,
                 u16::try_from(status_start.saturating_add(offset)).unwrap_or(u16::MAX),
                 line,
-                width,
+                render_width,
             )?;
         }
 
@@ -130,28 +136,34 @@ impl InteractiveTui {
                 &mut self.stdout,
                 u16::try_from(composer_start.saturating_add(offset)).unwrap_or(u16::MAX),
                 line,
-                width,
+                render_width,
             )?;
         }
-        let input_tail = input_viewport_lines(
+        let input_width = composer_input_width(render_width);
+        let input_tail = input_viewport_lines_wrapped(
             &state.input,
             COMPOSER_VISIBLE_LINES,
             state.composer_scroll_offset(),
+            input_width,
         );
-        let total_input_lines = input_line_count(&state.input);
+        let total_input_lines = input_visual_line_count(&state.input, input_width);
         let max_start = total_input_lines.saturating_sub(COMPOSER_VISIBLE_LINES);
         let visible_start = max_start.saturating_sub(state.composer_scroll_offset().min(max_start));
-        let (cursor_line, cursor_col) =
-            composer_cursor_position(&state.input, state.composer_cursor_byte());
+        let (cursor_line, cursor_col) = composer_cursor_position_wrapped(
+            &state.input,
+            state.composer_cursor_byte(),
+            input_width,
+        );
         let cursor_row = composer_start.saturating_add(1).saturating_add(
             cursor_line
                 .saturating_sub(visible_start)
                 .min(input_tail.len().saturating_sub(1)),
         );
+        let cursor_col = 2usize.saturating_add(cursor_col);
         queue!(
             self.stdout,
             MoveTo(
-                u16::try_from(cursor_col.min(width.saturating_sub(1))).unwrap_or(u16::MAX),
+                u16::try_from(cursor_col.min(render_width.saturating_sub(1))).unwrap_or(u16::MAX),
                 u16::try_from(cursor_row).unwrap_or(u16::MAX),
             ),
             Show
@@ -223,15 +235,6 @@ fn session_command_event(command: PendingSessionCommand) -> InteractiveTuiEvent 
     match command {
         PendingSessionCommand::Current => InteractiveTuiEvent::Session(None),
         PendingSessionCommand::Select(session_id) => InteractiveTuiEvent::Session(Some(session_id)),
-    }
-}
-
-fn input_line_count(input: &str) -> usize {
-    let count = input.lines().count();
-    if input.ends_with('\n') || count == 0 {
-        count.saturating_add(1)
-    } else {
-        count
     }
 }
 

@@ -10,7 +10,7 @@ use crate::{
     },
     providers::{
         collect_system_and_non_system, gemini_parts_from_content, insert_optional_description,
-        provider_tool_parameters, usage_from_named,
+        provider_tool_parameters, usage_from_named_with_output_extras,
     },
     ModelError, ModelSettings,
 };
@@ -76,13 +76,27 @@ impl GeminiGenerateContentAdapter {
                     let mut parts = Vec::new();
                     for part in &response.parts {
                         match part {
-                            ModelResponsePart::Text { text } => parts.push(json!({"text": text})),
-                            ModelResponsePart::ToolCall(call) => parts.push(json!({
-                                "functionCall": {
-                                    "name": call.name,
-                                    "args": call.arguments,
-                                }
-                            })),
+                            ModelResponsePart::Text { text }
+                            | ModelResponsePart::ProviderText { text, .. } => {
+                                parts.push(json!({"text": text}));
+                            }
+                            ModelResponsePart::Thinking { text, .. }
+                            | ModelResponsePart::ProviderThinking { text, .. }
+                                if !text.is_empty() =>
+                            {
+                                parts.push(json!({
+                                    "text": format!("<think>\n{text}\n</think>")
+                                }));
+                            }
+                            ModelResponsePart::ToolCall(call)
+                            | ModelResponsePart::ProviderToolCall { call, .. } => {
+                                parts.push(json!({
+                                    "functionCall": {
+                                        "name": call.name,
+                                        "args": call.arguments,
+                                    }
+                                }));
+                            }
                             _ => {}
                         }
                     }
@@ -151,11 +165,17 @@ impl GeminiGenerateContentAdapter {
 
         Ok(ModelResponse {
             parts,
-            usage: usage_from_named(value, "promptTokenCount", "candidatesTokenCount"),
+            usage: usage_from_named_with_output_extras(
+                value,
+                "promptTokenCount",
+                "candidatesTokenCount",
+                &["thoughtsTokenCount", "thoughts_token_count"],
+            ),
             model_name: None,
             provider: Some(ProviderInfo {
                 name: "gemini".to_string(),
                 response_id: None,
+                details: serde_json::Map::new(),
             }),
             finish_reason: match candidate.get("finishReason").and_then(Value::as_str) {
                 Some("STOP") => Some(FinishReason::Stop),

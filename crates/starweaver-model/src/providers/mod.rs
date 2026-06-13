@@ -211,12 +211,20 @@ impl SystemInstructionPart {
     fn instruction(text: String, metadata: &Metadata) -> Self {
         Self {
             text,
-            dynamic: metadata
-                .get("starweaver_instruction_dynamic")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            dynamic: is_dynamic_system_instruction(metadata),
         }
     }
+}
+
+pub(crate) fn is_dynamic_system_instruction(metadata: &Metadata) -> bool {
+    metadata
+        .get("starweaver_instruction_dynamic")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || metadata
+            .get("starweaver_instruction_origin")
+            .and_then(Value::as_str)
+            .is_some_and(|origin| matches!(origin, "runtime_context" | "environment_context"))
 }
 
 pub(crate) fn collect_system_parts_and_non_system(
@@ -268,47 +276,154 @@ fn collect_system_and_non_system(messages: &[ModelMessage]) -> (Vec<String>, Vec
 
 fn usage_from_openai(value: &Value) -> starweaver_core::Usage {
     let usage = value.get("usage");
+    let input_tokens = usage
+        .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let cache_write_tokens = usage.map_or(0, usage_cache_write_tokens);
+    let cache_read_tokens = usage.map_or(0, usage_cache_read_tokens);
+    let output_tokens = usage
+        .and_then(|u| {
+            u.get("completion_tokens")
+                .or_else(|| u.get("output_tokens"))
+        })
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let computed_total = input_tokens.saturating_add(output_tokens);
     starweaver_core::Usage {
         requests: 1,
-        input_tokens: usage
-            .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
-        output_tokens: usage
-            .and_then(|u| {
-                u.get("completion_tokens")
-                    .or_else(|| u.get("output_tokens"))
-            })
-            .and_then(Value::as_u64)
-            .unwrap_or_default(),
+        input_tokens,
+        cache_write_tokens,
+        cache_read_tokens,
+        output_tokens,
         total_tokens: usage
             .and_then(|u| u.get("total_tokens"))
             .and_then(Value::as_u64)
-            .unwrap_or_default(),
+            .unwrap_or(computed_total)
+            .max(computed_total),
         tool_calls: 0,
     }
 }
 
+#[cfg(test)]
 fn usage_from_named(value: &Value, input: &str, output: &str) -> starweaver_core::Usage {
+    usage_from_named_with_options(value, input, output, false, &[])
+}
+
+fn usage_from_named_including_cache_input(
+    value: &Value,
+    input: &str,
+    output: &str,
+) -> starweaver_core::Usage {
+    usage_from_named_with_options(value, input, output, true, &[])
+}
+
+fn usage_from_named_with_output_extras(
+    value: &Value,
+    input: &str,
+    output: &str,
+    output_extras: &[&str],
+) -> starweaver_core::Usage {
+    usage_from_named_with_options(value, input, output, false, output_extras)
+}
+
+fn usage_from_named_with_options(
+    value: &Value,
+    input: &str,
+    output: &str,
+    add_cache_to_input: bool,
+    output_extras: &[&str],
+) -> starweaver_core::Usage {
     let usage = value.get("usage").or_else(|| value.get("usageMetadata"));
-    let input_tokens = usage
+    let input_base = usage
         .and_then(|u| u.get(input))
         .and_then(Value::as_u64)
         .unwrap_or_default();
+    let cache_write_tokens = usage.map_or(0, usage_cache_write_tokens);
+    let cache_read_tokens = usage.map_or(0, usage_cache_read_tokens);
+    let input_tokens = if add_cache_to_input {
+        input_base
+            .saturating_add(cache_write_tokens)
+            .saturating_add(cache_read_tokens)
+    } else {
+        input_base
+    };
     let output_tokens = usage
         .and_then(|u| u.get(output))
         .and_then(Value::as_u64)
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .saturating_add(usage.map_or(0, |usage| usage_u64(usage, output_extras)));
+    let computed_total = input_tokens.saturating_add(output_tokens);
+    let total_tokens = usage
+        .and_then(|u| u.get("totalTokens").or_else(|| u.get("total_tokens")))
+        .and_then(Value::as_u64)
+        .unwrap_or(computed_total)
+        .max(computed_total);
     starweaver_core::Usage {
         requests: 1,
         input_tokens,
+        cache_write_tokens,
+        cache_read_tokens,
         output_tokens,
-        total_tokens: usage
-            .and_then(|u| u.get("totalTokens").or_else(|| u.get("total_tokens")))
-            .and_then(Value::as_u64)
-            .unwrap_or(input_tokens + output_tokens),
+        total_tokens,
         tool_calls: 0,
     }
+}
+
+fn usage_cache_write_tokens(usage: &Value) -> u64 {
+    usage_u64(
+        usage,
+        &[
+            "cache_write_tokens",
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+            "cacheWriteInputTokens",
+            "cache_write_input_tokens",
+        ],
+    )
+}
+
+fn usage_cache_read_tokens(usage: &Value) -> u64 {
+    let direct = usage_u64(
+        usage,
+        &[
+            "cache_read_tokens",
+            "cache_read_input_tokens",
+            "cacheReadInputTokens",
+            "cacheReadTokens",
+            "cachedContentTokenCount",
+            "cached_content_token_count",
+        ],
+    );
+    if direct > 0 {
+        return direct;
+    }
+    usage_nested_u64(
+        usage,
+        &[
+            &["prompt_tokens_details", "cached_tokens"],
+            &["input_tokens_details", "cached_tokens"],
+            &["input_token_details", "cached_tokens"],
+            &["inputTokenDetails", "cacheReadTokens"],
+        ],
+    )
+}
+
+fn usage_u64(value: &Value, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_u64))
+        .unwrap_or_default()
+}
+
+fn usage_nested_u64(value: &Value, paths: &[&[&str]]) -> u64 {
+    paths
+        .iter()
+        .find_map(|path| {
+            path.iter()
+                .try_fold(value, |current, key| current.get(*key))
+                .and_then(Value::as_u64)
+        })
+        .unwrap_or_default()
 }
 
 fn finish_reason_openai(reason: &str) -> FinishReason {
@@ -653,6 +768,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
         assert_eq!(openai_chat_tool_choice(&ToolChoice::Auto), json!("auto"));
         assert_eq!(openai_chat_tool_choice(&ToolChoice::None), json!("none"));
@@ -685,17 +801,67 @@ mod tests {
             "lookup"
         );
 
-        let openai_usage = usage_from_openai(
-            &json!({"usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}}),
-        );
+        let openai_usage = usage_from_openai(&json!({"usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 2,
+            "total_tokens": 3,
+            "prompt_tokens_details": {"cached_tokens": 4}
+        }}));
         assert_eq!(openai_usage.input_tokens, 1);
+        assert_eq!(openai_usage.cache_read_tokens, 4);
         assert_eq!(openai_usage.output_tokens, 2);
+        assert_eq!(openai_usage.total_tokens, 3);
+        let openai_usage_without_total = usage_from_openai(&json!({"usage": {
+            "prompt_tokens": 3,
+            "completion_tokens": 4
+        }}));
+        assert_eq!(openai_usage_without_total.total_tokens, 7);
+        let responses_usage = usage_from_openai(&json!({"usage": {
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "total_tokens": 13,
+            "input_tokens_details": {"cached_tokens": 6}
+        }}));
+        assert_eq!(responses_usage.cache_read_tokens, 6);
         let named_usage = usage_from_named(
-            &json!({"usageMetadata": {"promptTokenCount": 4, "candidatesTokenCount": 5}}),
+            &json!({"usageMetadata": {
+                "promptTokenCount": 4,
+                "candidatesTokenCount": 5,
+                "cachedContentTokenCount": 3
+            }}),
             "promptTokenCount",
             "candidatesTokenCount",
         );
+        assert_eq!(named_usage.cache_read_tokens, 3);
         assert_eq!(named_usage.total_tokens, 9);
+        let gemini_usage = usage_from_named_with_output_extras(
+            &json!({"usageMetadata": {
+                "promptTokenCount": 4,
+                "candidatesTokenCount": 5,
+                "cachedContentTokenCount": 3,
+                "thoughtsTokenCount": 2
+            }}),
+            "promptTokenCount",
+            "candidatesTokenCount",
+            &["thoughtsTokenCount"],
+        );
+        assert_eq!(gemini_usage.cache_read_tokens, 3);
+        assert_eq!(gemini_usage.output_tokens, 7);
+        assert_eq!(gemini_usage.total_tokens, 11);
+        let anthropic_usage = usage_from_named_including_cache_input(
+            &json!({"usage": {
+                "input_tokens": 7,
+                "output_tokens": 8,
+                "cache_creation_input_tokens": 9,
+                "cache_read_input_tokens": 10
+            }}),
+            "input_tokens",
+            "output_tokens",
+        );
+        assert_eq!(anthropic_usage.input_tokens, 26);
+        assert_eq!(anthropic_usage.cache_write_tokens, 9);
+        assert_eq!(anthropic_usage.cache_read_tokens, 10);
+        assert_eq!(anthropic_usage.total_tokens, 34);
 
         assert_eq!(finish_reason_openai("stop"), FinishReason::Stop);
         assert_eq!(finish_reason_openai("completed"), FinishReason::Stop);
@@ -725,6 +891,11 @@ mod tests {
 
     #[test]
     fn collect_system_prompts_preserves_non_system_messages() {
+        let mut dynamic_metadata = Map::new();
+        dynamic_metadata.insert(
+            "starweaver_instruction_origin".to_string(),
+            json!("environment_context"),
+        );
         let request = ModelMessage::Request(ModelRequest {
             parts: vec![
                 ModelRequestPart::SystemPrompt {
@@ -733,7 +904,7 @@ mod tests {
                 },
                 ModelRequestPart::Instruction {
                     text: "instruction".to_string(),
-                    metadata: Map::new(),
+                    metadata: dynamic_metadata,
                 },
                 ModelRequestPart::UserPrompt {
                     content: vec![ContentPart::Text {
@@ -775,6 +946,10 @@ mod tests {
         });
 
         let messages = vec![request, system_only, response, tool_return];
+        let (system_parts, _) = collect_system_parts_and_non_system(&messages);
+        assert!(!system_parts[0].dynamic);
+        assert!(system_parts[1].dynamic);
+        assert!(!system_parts[2].dynamic);
         let (system, rest) = collect_system_and_non_system(&messages);
         assert_eq!(system, ["system", "instruction", "only-system"]);
         assert_eq!(rest.len(), 3);

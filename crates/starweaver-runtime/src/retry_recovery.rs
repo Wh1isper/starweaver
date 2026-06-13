@@ -135,42 +135,90 @@ fn heal_openai_response(
     tool_call_id_map: &mut Map<String, Value>,
 ) -> bool {
     let mut changed = false;
+    let response_is_openai = response
+        .provider
+        .as_ref()
+        .is_some_and(|provider| provider.name == "openai");
     if let Some(provider) = &mut response.provider {
-        if provider.response_id.take().is_some() {
-            changed = true;
+        if provider.name == "openai" {
+            if provider.response_id.take().is_some() {
+                changed = true;
+            }
+            changed |= drop_metadata_keys(
+                &mut provider.details,
+                &[
+                    "conversation_id",
+                    "encrypted_content",
+                    "previous_response_id",
+                    "response_id",
+                    "usage",
+                ],
+            );
         }
     }
-    changed |= drop_metadata_keys(
-        &mut response.metadata,
-        &[
-            "conversation_id",
-            "encrypted_content",
-            "previous_response_id",
-            "response_id",
-        ],
-    );
+    if response_is_openai {
+        changed |= drop_metadata_keys(
+            &mut response.metadata,
+            &[
+                "conversation_id",
+                "encrypted_content",
+                "previous_response_id",
+                "response_id",
+            ],
+        );
+    }
 
     for part in &mut response.parts {
         match part {
             ModelResponsePart::Thinking { signature, .. } => {
-                if signature.take().is_some() {
+                if response_is_openai && signature.take().is_some() {
                     changed = true;
                 }
+            }
+            ModelResponsePart::ProviderThinking {
+                signature,
+                provider,
+                ..
+            } => {
+                if provider_part_is_openai(provider, response_is_openai)
+                    && signature.take().is_some()
+                {
+                    changed = true;
+                }
+                changed |= heal_provider_part_references(part, response_is_openai);
             }
             ModelResponsePart::ToolCall(call) => {
-                let original = call.id.clone();
-                let healed = strip_openai_compound_id(&original);
-                if healed != original {
-                    call.id.clone_from(&healed);
-                    tool_call_id_map.insert(original, Value::String(healed));
-                    changed = true;
+                if response_is_openai {
+                    let original = call.id.clone();
+                    let healed = strip_openai_compound_id(&original);
+                    if healed != original {
+                        call.id.clone_from(&healed);
+                        tool_call_id_map.insert(original, Value::String(healed));
+                        changed = true;
+                    }
                 }
             }
+            ModelResponsePart::ProviderToolCall { call, provider } => {
+                if provider_part_is_openai(provider, response_is_openai) {
+                    let original = call.id.clone();
+                    let healed = strip_openai_compound_id(&original);
+                    if healed != original {
+                        call.id.clone_from(&healed);
+                        tool_call_id_map.insert(original, Value::String(healed));
+                        changed = true;
+                    }
+                }
+                changed |= heal_provider_part_references(part, response_is_openai);
+            }
             ModelResponsePart::Text { .. }
+            | ModelResponsePart::ProviderText { .. }
             | ModelResponsePart::NativeToolCall { .. }
             | ModelResponsePart::NativeToolReturn { .. }
             | ModelResponsePart::File { .. }
-            | ModelResponsePart::Compaction { .. } => {}
+            | ModelResponsePart::Compaction { .. }
+            | ModelResponsePart::ProviderOpaque { .. } => {
+                changed |= heal_provider_part_references(part, response_is_openai);
+            }
         }
     }
 
@@ -217,6 +265,89 @@ fn strip_openai_compound_id(value: &str) -> String {
     value
         .split_once('|')
         .map_or_else(|| value.to_string(), |(head, _)| head.to_string())
+}
+
+fn heal_provider_part_references(part: &mut ModelResponsePart, response_is_openai: bool) -> bool {
+    match part {
+        ModelResponsePart::ProviderText { provider, .. }
+        | ModelResponsePart::ProviderThinking { provider, .. }
+        | ModelResponsePart::ProviderToolCall { provider, .. }
+            if provider_part_is_openai(provider, response_is_openai) =>
+        {
+            heal_provider_part_info(provider)
+        }
+        ModelResponsePart::ProviderOpaque {
+            provider, payload, ..
+        } if provider_part_is_openai(provider, response_is_openai) => {
+            let provider_changed = heal_provider_part_info(provider);
+            let payload_changed = scrub_provider_opaque_payload_references(payload);
+            provider_changed || payload_changed
+        }
+        ModelResponsePart::Text { .. }
+        | ModelResponsePart::ProviderText { .. }
+        | ModelResponsePart::Thinking { .. }
+        | ModelResponsePart::ProviderThinking { .. }
+        | ModelResponsePart::ToolCall(_)
+        | ModelResponsePart::ProviderToolCall { .. }
+        | ModelResponsePart::NativeToolCall { .. }
+        | ModelResponsePart::NativeToolReturn { .. }
+        | ModelResponsePart::File { .. }
+        | ModelResponsePart::Compaction { .. }
+        | ModelResponsePart::ProviderOpaque { .. } => false,
+    }
+}
+
+fn provider_part_is_openai(
+    provider: &starweaver_model::ProviderPartInfo,
+    response_is_openai: bool,
+) -> bool {
+    provider.is_provider("openai") || (response_is_openai && provider.provider_name.is_none())
+}
+
+fn heal_provider_part_info(provider: &mut starweaver_model::ProviderPartInfo) -> bool {
+    let mut changed = provider.id.take().is_some();
+    changed |= drop_metadata_keys(
+        &mut provider.details,
+        &[
+            "encrypted_content",
+            "raw_content",
+            "previous_response_id",
+            "response_id",
+            "conversation_id",
+            "namespace",
+        ],
+    );
+    changed
+}
+
+fn scrub_provider_opaque_payload_references(payload: &mut Value) -> bool {
+    const REPLAY_REFERENCE_KEYS: &[&str] = &[
+        "id",
+        "call_id",
+        "encrypted_content",
+        "previous_response_id",
+        "response_id",
+        "conversation_id",
+        "namespace",
+    ];
+
+    match payload {
+        Value::Object(object) => {
+            let mut changed = drop_metadata_keys(object, REPLAY_REFERENCE_KEYS);
+            for value in object.values_mut() {
+                changed |= scrub_provider_opaque_payload_references(value);
+            }
+            changed
+        }
+        Value::Array(items) => {
+            let mut changed = false;
+            for value in items {
+                changed |= scrub_provider_opaque_payload_references(value);
+            }
+            changed
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
 }
 
 fn drop_metadata_keys(metadata: &mut Map<String, Value>, keys: &[&str]) -> bool {
@@ -449,7 +580,7 @@ fn collect_model_error_text(error: &ModelError, parts: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use starweaver_model::{ProviderInfo, ToolCallPart};
+    use starweaver_model::{ProviderInfo, ProviderPartInfo, ToolCallPart};
 
     #[test]
     fn context_overflow_recovery_trims_old_tool_returns_and_strips_media() {
@@ -553,6 +684,142 @@ mod tests {
     }
 
     #[test]
+    fn openai_reference_recovery_preserves_non_openai_provider_metadata() {
+        let mut details = Map::new();
+        details.insert(
+            "encrypted_content".to_string(),
+            Value::String("anthropic-signature".to_string()),
+        );
+        let mut history = vec![ModelMessage::Response(ModelResponse {
+            parts: vec![
+                ModelResponsePart::ProviderThinking {
+                    text: "inspect".to_string(),
+                    signature: Some("anthropic-signature".to_string()),
+                    provider: ProviderPartInfo::new("anthropic")
+                        .with_id("thinking_1")
+                        .with_details(details),
+                },
+                ModelResponsePart::ProviderOpaque {
+                    item_type: "anthropic_native".to_string(),
+                    payload: serde_json::json!({
+                        "type": "anthropic_native",
+                        "id": "anthropic_item_1",
+                        "signature": "anthropic-signature"
+                    }),
+                    provider: ProviderPartInfo::new("anthropic").with_id("anthropic_item_1"),
+                },
+            ],
+            usage: starweaver_core::Usage::default(),
+            model_name: None,
+            provider: Some(ProviderInfo {
+                name: "anthropic".to_string(),
+                response_id: Some("msg_1".to_string()),
+                details: Map::new(),
+            }),
+            finish_reason: None,
+            timestamp: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        })];
+
+        let changed = heal_openai_item_reference_history(&mut history);
+
+        assert!(!changed);
+        let ModelMessage::Response(response) = &history[0] else {
+            panic!("response")
+        };
+        assert_eq!(
+            response
+                .provider
+                .as_ref()
+                .and_then(|provider| provider.response_id.as_deref()),
+            Some("msg_1")
+        );
+        assert!(matches!(
+            &response.parts[0],
+            ModelResponsePart::ProviderThinking { signature, provider, .. }
+                if signature.as_deref() == Some("anthropic-signature")
+                    && provider.id.as_deref() == Some("thinking_1")
+                    && provider.details.get("encrypted_content").and_then(Value::as_str) == Some("anthropic-signature")
+        ));
+        assert!(matches!(
+            &response.parts[1],
+            ModelResponsePart::ProviderOpaque { payload, provider, .. }
+                if provider.id.as_deref() == Some("anthropic_item_1")
+                    && payload.get("id").and_then(Value::as_str) == Some("anthropic_item_1")
+        ));
+    }
+
+    #[test]
+    fn openai_reference_recovery_scrubs_provider_opaque_payload_references() {
+        let mut history = vec![ModelMessage::Response(ModelResponse {
+            parts: vec![ModelResponsePart::ProviderOpaque {
+                item_type: "mcp_call".to_string(),
+                payload: serde_json::json!({
+                    "type": "mcp_call",
+                    "id": "mcp_1",
+                    "call_id": "call_1",
+                    "encrypted_content": "encrypted",
+                    "namespace": "tools",
+                    "nested": {
+                        "response_id": "resp_1",
+                        "conversation_id": "conv_1",
+                        "items": [{"id": "nested_1", "call_id": "nested_call"}]
+                    }
+                }),
+                provider: ProviderPartInfo::new("openai")
+                    .with_id("mcp_1")
+                    .with_details({
+                        let mut details = Map::new();
+                        details.insert(
+                            "encrypted_content".to_string(),
+                            Value::String("encrypted".to_string()),
+                        );
+                        details.insert("raw_content".to_string(), serde_json::json!(["raw"]));
+                        details
+                    }),
+            }],
+            usage: starweaver_core::Usage::default(),
+            model_name: None,
+            provider: None,
+            finish_reason: None,
+            timestamp: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        })];
+
+        let changed = heal_openai_item_reference_history(&mut history);
+
+        assert!(changed);
+        let ModelMessage::Response(response) = &history[0] else {
+            panic!("response")
+        };
+        let ModelResponsePart::ProviderOpaque {
+            payload, provider, ..
+        } = &response.parts[0]
+        else {
+            panic!("provider opaque")
+        };
+        assert!(provider.id.is_none());
+        assert!(provider.details.get("encrypted_content").is_none());
+        assert!(provider.details.get("raw_content").is_none());
+        let serialized = payload.to_string();
+        assert!(!serialized.contains("mcp_1"));
+        assert!(!serialized.contains("call_1"));
+        assert!(!serialized.contains("encrypted"));
+        assert!(!serialized.contains("resp_1"));
+        assert!(!serialized.contains("conv_1"));
+        assert!(!serialized.contains("nested_1"));
+        assert_eq!(payload["type"], "mcp_call");
+        let Some(items) = payload["nested"]["items"].as_array() else {
+            panic!("nested items should be an array");
+        };
+        assert_eq!(items.len(), 1);
+    }
+
+    #[test]
     fn openai_reference_recovery_drops_response_ids_and_rewrites_tool_ids() {
         let mut history = vec![
             ModelMessage::Response(ModelResponse {
@@ -566,6 +833,7 @@ mod tests {
                 provider: Some(ProviderInfo {
                     name: "openai".to_string(),
                     response_id: Some("resp_1".to_string()),
+                    details: Map::new(),
                 }),
                 finish_reason: None,
                 timestamp: None,

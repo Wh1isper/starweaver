@@ -25,10 +25,11 @@ use starweaver_model::{
     get_model_config, get_model_settings, openai_chat_http_config, openai_responses_http_config,
     ContentPart, HttpModelConfig, ModelAdapter, ModelMessage, ModelProfile, ModelRequest,
     ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient, ToolCallPart,
+    ModelResponsePart, ModelSettings, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient,
+    ToolCallPart,
 };
 
-use starweaver_context::AgentContext;
+use starweaver_context::{AgentContext, ModelCapability, ModelConfig};
 use starweaver_core::{ConversationId, RunId};
 
 use crate::{
@@ -819,14 +820,23 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
         registry = registry.with_mcp_server(server.name.clone(), server);
     }
     let inherited_model_id = spec_model_id(spec).unwrap_or("local_echo");
-    let inherited_model_config = spec
-        .model
-        .as_ref()
-        .and_then(|model| model.config_preset.as_deref());
-    if let Some(model) = provider_model(config, inherited_model_id, inherited_model_config)? {
+    let inherited_model = spec.model.as_ref().or(spec.preset.model.as_ref());
+    let inherited_model_settings = resolve_inherited_model_settings(inherited_model)?;
+    let inherited_model_config_preset =
+        inherited_model.and_then(|model| model.config_preset.as_deref());
+    let inherited_model_config = resolve_inherited_model_config(inherited_model_config_preset)?;
+    if let Some(model) = provider_model(config, inherited_model_id, inherited_model_config_preset)?
+    {
         registry = registry.with_model(inherited_model_id, model);
     }
-    registry = register_configured_subagents(config, registry, inherited_model_id)?;
+    registry = register_configured_subagents(
+        config,
+        registry,
+        inherited_model_id,
+        inherited_model_settings.as_ref(),
+        inherited_model_config.as_ref(),
+        inherited_model_config_preset,
+    )?;
     Ok(registry)
 }
 
@@ -1336,6 +1346,9 @@ fn register_configured_subagents(
     config: &CliConfig,
     mut registry: AgentSpecRegistry,
     inherited_model_id: &str,
+    inherited_model_settings: Option<&ModelSettings>,
+    inherited_model_config: Option<&ModelConfig>,
+    inherited_model_config_preset: Option<&str>,
 ) -> CliResult<AgentSpecRegistry> {
     for dir in &config.subagent_dirs {
         if !dir.exists() {
@@ -1347,8 +1360,14 @@ fn register_configured_subagents(
             if config.disabled_subagents.contains(&spec.name) {
                 continue;
             }
-            registry =
-                registry.with_subagent(build_subagent_config(config, &spec, inherited_model_id)?);
+            registry = registry.with_subagent(build_subagent_config(
+                config,
+                &spec,
+                inherited_model_id,
+                inherited_model_settings,
+                inherited_model_config,
+                inherited_model_config_preset,
+            )?);
         }
     }
     Ok(registry)
@@ -1358,15 +1377,30 @@ fn build_subagent_config(
     config: &CliConfig,
     spec: &starweaver_core::SubagentSpec,
     inherited_model_id: &str,
+    inherited_model_settings: Option<&ModelSettings>,
+    inherited_model_config: Option<&ModelConfig>,
+    inherited_model_config_preset: Option<&str>,
 ) -> CliResult<SubagentConfig> {
     let model_id = match spec.model.as_deref() {
         Some("inherit") | None => inherited_model_id,
         Some(model_id) => model_id,
     };
-    let model = subagent_model(config, model_id)?;
-    let agent = AgentBuilder::new(model)
-        .instruction(spec.system_prompt.clone())
-        .build();
+    let model_config = resolve_subagent_model_config(
+        spec.model_config.as_ref(),
+        inherited_model_config,
+        inherited_model_config_preset,
+    )?;
+    let model = subagent_model(config, model_id, model_config.preset.as_deref())?;
+    let mut agent = AgentBuilder::new(model).instruction(spec.system_prompt.clone());
+    if let Some(settings) =
+        resolve_subagent_model_settings(spec.model_settings.as_ref(), inherited_model_settings)?
+    {
+        agent = agent.model_settings(settings);
+    }
+    if let Some(model_config) = model_config.context {
+        agent = agent.model_config(model_config);
+    }
+    let agent = agent.build();
     let denied_tools = spec
         .metadata
         .get("denied_tools")
@@ -1385,15 +1419,144 @@ fn build_subagent_config(
         .with_tool_inheritance(inheritance))
 }
 
+struct ResolvedSubagentModelConfig {
+    context: Option<ModelConfig>,
+    preset: Option<String>,
+}
+
+fn resolve_inherited_model_settings(
+    model: Option<&starweaver_agent::ModelPreset>,
+) -> CliResult<Option<ModelSettings>> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    let preset_settings = model
+        .settings_preset
+        .as_deref()
+        .map(get_model_settings)
+        .transpose()
+        .map_err(|error| CliError::Config(error.to_string()))?;
+    Ok(match (preset_settings, model.settings.clone()) {
+        (Some(base), Some(overlay)) => Some(base.merge(&overlay)),
+        (Some(base), None) => Some(base),
+        (None, Some(settings)) => Some(settings),
+        (None, None) => None,
+    })
+}
+
+fn resolve_inherited_model_config(
+    model_config_preset: Option<&str>,
+) -> CliResult<Option<ModelConfig>> {
+    model_config_preset
+        .map(|preset| {
+            get_model_config(preset)
+                .map(|config| context_model_config_from_preset(&config))
+                .map_err(|error| CliError::Config(error.to_string()))
+        })
+        .transpose()
+}
+
+fn resolve_subagent_model_settings(
+    value: Option<&serde_json::Value>,
+    inherited: Option<&ModelSettings>,
+) -> CliResult<Option<ModelSettings>> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(inherited.cloned()),
+        Some(serde_json::Value::String(value)) if value == "inherit" => Ok(inherited.cloned()),
+        Some(serde_json::Value::String(preset)) => get_model_settings(preset)
+            .map(Some)
+            .map_err(|error| CliError::Config(error.to_string())),
+        Some(serde_json::Value::Object(_)) => serde_json::from_value::<ModelSettings>(
+            value.cloned().unwrap_or(serde_json::Value::Null),
+        )
+        .map(Some)
+        .map_err(|error| {
+            CliError::Config(format!("invalid subagent model_settings: {error}"))
+        }),
+        Some(other) => Err(CliError::Config(format!(
+            "invalid subagent model_settings: expected 'inherit', preset name, or object, got {other}"
+        ))),
+    }
+}
+
+fn resolve_subagent_model_config(
+    value: Option<&serde_json::Value>,
+    inherited: Option<&ModelConfig>,
+    inherited_preset: Option<&str>,
+) -> CliResult<ResolvedSubagentModelConfig> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(ResolvedSubagentModelConfig {
+            context: inherited.cloned(),
+            preset: inherited_preset.map(str::to_string),
+        }),
+        Some(serde_json::Value::String(value)) if value == "inherit" => {
+            Ok(ResolvedSubagentModelConfig {
+                context: inherited.cloned(),
+                preset: inherited_preset.map(str::to_string),
+            })
+        }
+        Some(serde_json::Value::String(preset)) => get_model_config(preset)
+            .map(|config| ResolvedSubagentModelConfig {
+                context: Some(context_model_config_from_preset(&config)),
+                preset: Some(preset.clone()),
+            })
+            .map_err(|error| CliError::Config(error.to_string())),
+        Some(serde_json::Value::Object(_)) => {
+            serde_json::from_value::<ModelConfig>(value.cloned().unwrap_or(serde_json::Value::Null))
+                .map(|context| ResolvedSubagentModelConfig {
+                    context: Some(context),
+                    preset: None,
+                })
+                .map_err(|error| CliError::Config(format!("invalid subagent model_cfg: {error}")))
+        }
+        Some(other) => Err(CliError::Config(format!(
+            "invalid subagent model_cfg: expected 'inherit', preset name, or object, got {other}"
+        ))),
+    }
+}
+
+fn context_model_config_from_preset(
+    config: &starweaver_model::ModelConfigPresetData,
+) -> ModelConfig {
+    let mut capabilities = BTreeSet::new();
+    if config.profile.supports_image_input {
+        capabilities.insert(ModelCapability::Vision);
+    }
+    if config.profile.supports_video_input {
+        capabilities.insert(ModelCapability::VideoUnderstanding);
+    }
+    if config.profile.supports_audio_input {
+        capabilities.insert(ModelCapability::AudioUnderstanding);
+    }
+    if config.profile.supports_document_input {
+        capabilities.insert(ModelCapability::DocumentUnderstanding);
+    }
+    ModelConfig {
+        context_window: Some(u64::from(config.context_window)),
+        max_images: usize::try_from(config.max_images).unwrap_or(usize::MAX),
+        max_videos: usize::try_from(config.max_videos).unwrap_or(usize::MAX),
+        support_gif: config.supports_gif,
+        split_large_images: config.split_large_images,
+        image_split_max_height: usize::try_from(config.image_split_max_height)
+            .unwrap_or(usize::MAX),
+        image_split_overlap: usize::try_from(config.image_split_overlap).unwrap_or(usize::MAX),
+        capabilities,
+        ..ModelConfig::default()
+    }
+}
+
 fn subagent_model(
     config: &CliConfig,
     model_id: &str,
+    model_config_preset: Option<&str>,
 ) -> CliResult<Arc<dyn starweaver_model::ModelAdapter>> {
     match model_id {
         "local_echo" => Ok(Arc::new(local_echo_model())),
         "approval_model" => Ok(Arc::new(scripted_tool_model("approval_probe"))),
         "deferred_model" => Ok(Arc::new(scripted_tool_model("deferred_probe"))),
-        other => provider_model(config, other, None)?
+        #[cfg(test)]
+        "capture_subagent_inheritance" => Ok(Arc::new(capture_subagent_inheritance_model())),
+        other => provider_model(config, other, model_config_preset)?
             .ok_or_else(|| CliError::Config(format!("unknown subagent model id {other}"))),
     }
 }
@@ -1631,6 +1794,35 @@ fn local_echo_model() -> FunctionModel {
     })
 }
 
+#[cfg(test)]
+fn capture_subagent_inheritance_model() -> FunctionModel {
+    FunctionModel::new(move |messages, settings, _info| {
+        let Some(settings) = settings else {
+            return Err(starweaver_model::ModelError::Transport(
+                "missing inherited model settings".to_string(),
+            ));
+        };
+        if settings
+            .provider_options
+            .as_ref()
+            .and_then(|options| options.get("store"))
+            != Some(&json!(false))
+        {
+            return Err(starweaver_model::ModelError::Transport(format!(
+                "missing inherited store=false in settings: {settings:?}"
+            )));
+        }
+        let rendered = format!("{messages:?}");
+        if !rendered.contains("<context-window>200000</context-window>") {
+            return Err(starweaver_model::ModelError::Transport(format!(
+                "missing inherited context window in messages: {rendered}"
+            )));
+        }
+        let prompt = latest_user_prompt(&messages).unwrap_or_default();
+        Ok(ModelResponse::text(format!("captured: {prompt}")))
+    })
+}
+
 fn scripted_tool_model(tool_name: &'static str) -> FunctionModel {
     FunctionModel::new(move |messages, _settings, _info| {
         if messages.iter().any(message_has_tool_return) {
@@ -1718,6 +1910,8 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    use starweaver_agent::{SubagentRegistry, SubagentTask};
+
     use crate::config::ConfigResolver;
 
     fn test_config() -> CliConfig {
@@ -1770,5 +1964,111 @@ mod tests {
             Some("Custom shell review prompt")
         );
         assert!(handle.config().model.is_some());
+    }
+
+    #[test]
+    fn subagent_model_settings_default_to_parent_settings() {
+        let inherited = ModelSettings {
+            provider_options: Some(json!({"store": false})),
+            temperature: Some(0.2),
+            ..ModelSettings::default()
+        };
+
+        let inherited_settings = resolve_subagent_model_settings(None, Some(&inherited)).unwrap();
+        assert_eq!(inherited_settings, Some(inherited.clone()));
+
+        let explicit_inherit =
+            resolve_subagent_model_settings(Some(&json!("inherit")), Some(&inherited)).unwrap();
+        assert_eq!(explicit_inherit, Some(inherited));
+    }
+
+    #[test]
+    fn subagent_model_settings_can_override_with_preset_or_inline_object() {
+        let Some(preset) =
+            resolve_subagent_model_settings(Some(&json!("openai_responses_high")), None).unwrap()
+        else {
+            panic!("settings preset");
+        };
+        assert_eq!(preset.provider_options.unwrap()["store"], false);
+
+        let Some(inline) = resolve_subagent_model_settings(
+            Some(&json!({
+                "provider_options": {"store": false},
+                "temperature": 0.1
+            })),
+            None,
+        )
+        .unwrap() else {
+            panic!("inline settings");
+        };
+        assert_eq!(inline.provider_options.unwrap()["store"], false);
+        assert_eq!(inline.temperature, Some(0.1));
+    }
+
+    #[test]
+    fn subagent_model_config_defaults_to_parent_config() {
+        let inherited = ModelConfig {
+            context_window: Some(123_456),
+            ..ModelConfig::default()
+        };
+
+        let resolved =
+            resolve_subagent_model_config(None, Some(&inherited), Some("claude_200k")).unwrap();
+        assert_eq!(resolved.context, Some(inherited));
+        assert_eq!(resolved.preset.as_deref(), Some("claude_200k"));
+    }
+
+    #[test]
+    fn subagent_model_config_can_override_with_preset_or_inline_object() {
+        let preset =
+            resolve_subagent_model_config(Some(&json!("claude_200k")), None, None).unwrap();
+        assert_eq!(preset.context.unwrap().context_window, Some(200_000));
+        assert_eq!(preset.preset.as_deref(), Some("claude_200k"));
+
+        let inline = resolve_subagent_model_config(
+            Some(&json!({"context_window": 42_000, "max_images": 3})),
+            None,
+            None,
+        )
+        .unwrap();
+        let Some(context) = inline.context else {
+            panic!("inline config");
+        };
+        assert_eq!(context.context_window, Some(42_000));
+        assert_eq!(context.max_images, 3);
+        assert!(inline.preset.is_none());
+    }
+
+    #[tokio::test]
+    async fn configured_subagent_delegate_inherits_parent_model_settings_and_config() {
+        let config = test_config();
+        let inherited_settings = get_model_settings("openai_responses_high").unwrap();
+        let Some(inherited_config) = resolve_inherited_model_config(Some("claude_200k")).unwrap()
+        else {
+            panic!("parent config");
+        };
+        let spec =
+            starweaver_core::SubagentSpec::new("child", "Child helper", "You are a child helper.")
+                .with_tools(Vec::new());
+        let child_config = build_subagent_config(
+            &config,
+            &spec,
+            "capture_subagent_inheritance",
+            Some(&inherited_settings),
+            Some(&inherited_config),
+            Some("claude_200k"),
+        )
+        .unwrap();
+        let registry = SubagentRegistry::new().with_subagent(child_config);
+        let mut context = AgentContext::default();
+
+        let result = registry
+            .delegate_task("child", SubagentTask::new("hello"), &mut context)
+            .await
+            .unwrap();
+
+        assert_eq!(result.output(), "captured: hello");
+        assert_eq!(context.events.events()[0].kind, "subagent_started");
+        assert_eq!(context.events.events()[1].kind, "subagent_completed");
     }
 }

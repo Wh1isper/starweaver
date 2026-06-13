@@ -3,9 +3,10 @@
 use std::collections::BTreeMap;
 
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
-use starweaver_core::RunId;
+use starweaver_core::{RunId, Usage};
 use starweaver_model::{
-    ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
+    ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponse,
+    ModelResponseStreamEvent,
 };
 use starweaver_tools::ToolContext;
 
@@ -317,6 +318,9 @@ impl Agent {
         context.trace_context = run_span.context().clone();
         let run_id = RunId::new();
         context.run_id = Some(run_id.clone());
+        if !context.metadata.contains_key("parent_agent_id") {
+            context.usage_snapshot_entries.clear();
+        }
         if let Some(model_config) = self.model_config.clone() {
             context.merge_model_config(model_config);
         }
@@ -571,8 +575,30 @@ impl Agent {
                     response: response.clone(),
                 }
             );
-            state.apply_model_response(response);
+            state.apply_model_response(response.clone());
             context.add_usage(&response_usage);
+            if !response_usage.is_empty() {
+                let agent_id = context.agent_id.as_str().to_string();
+                let ledger_key = agent_id.clone();
+                let mut agent_usage = context
+                    .usage_snapshot_entries
+                    .get(&ledger_key)
+                    .map_or_else(Usage::default, |entry| entry.usage.clone());
+                agent_usage.add_assign(&response_usage);
+                let snapshot = context.update_usage_snapshot_entry(
+                    agent_id.clone(),
+                    agent_id.clone(),
+                    self.usage_model_id(&response),
+                    agent_usage,
+                    Some(format!("{}:{agent_id}", run_id.as_str())),
+                    "model_request",
+                    Some(ledger_key),
+                );
+                context.publish_event(AgentEvent::new(
+                    "usage_snapshot",
+                    serde_json::to_value(snapshot).unwrap_or_else(|_| serde_json::json!({})),
+                ));
+            }
             stream_context_events!(&state, context_event_cursor);
             checkpoint!(
                 AgentExecutionNode::ModelResponse,
@@ -1106,6 +1132,15 @@ impl Agent {
                 }
             }
         }
+    }
+
+    fn usage_model_id(&self, response: &ModelResponse) -> String {
+        response.model_name.clone().unwrap_or_else(|| {
+            self.model.provider_name().map_or_else(
+                || self.model.model_name().to_string(),
+                |provider| format!("{provider}:{}", self.model.model_name()),
+            )
+        })
     }
 }
 

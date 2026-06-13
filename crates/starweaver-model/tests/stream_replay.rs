@@ -60,6 +60,8 @@ fn replays_cross_provider_streaming_delta_and_usage_at_end_fixtures() {
             usage: starweaver_core::Usage {
                 requests: 1,
                 input_tokens: 10,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
                 output_tokens: 2,
                 total_tokens: 12,
                 tool_calls: 0,
@@ -67,6 +69,7 @@ fn replays_cross_provider_streaming_delta_and_usage_at_end_fixtures() {
             provider: Some(starweaver_model::ProviderInfo {
                 name: provider.to_string(),
                 response_id: None,
+                details: serde_json::Map::new(),
             }),
             ..ModelResponse::text("ok")
         };

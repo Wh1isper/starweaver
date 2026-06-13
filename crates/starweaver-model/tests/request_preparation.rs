@@ -167,6 +167,8 @@ fn prepare_messages_merges_adjacent_requests() {
 
 #[test]
 fn prepare_messages_lifts_system_parts_for_system_field_profiles() {
+    let mut dynamic_metadata = Map::new();
+    dynamic_metadata.insert("starweaver_instruction_dynamic".to_string(), json!(true));
     let messages = vec![request(vec![
         ModelRequestPart::SystemPrompt {
             text: "system".to_string(),
@@ -174,7 +176,7 @@ fn prepare_messages_lifts_system_parts_for_system_field_profiles() {
         },
         ModelRequestPart::Instruction {
             text: "instruction".to_string(),
-            metadata: Map::new(),
+            metadata: dynamic_metadata,
         },
         ModelRequestPart::UserPrompt {
             content: vec![ContentPart::Text {
@@ -191,11 +193,19 @@ fn prepare_messages_lifts_system_parts_for_system_field_profiles() {
     let ModelMessage::Request(system_request) = &normalized[0] else {
         panic!("expected system request")
     };
-    let ModelRequestPart::SystemPrompt { text, metadata } = &system_request.parts[0] else {
-        panic!("expected system prompt")
-    };
-    assert_eq!(text, "system\ninstruction");
-    assert_eq!(metadata["starweaver_instruction_origin"], "lifted_system");
+    assert_eq!(
+        system_request.metadata["starweaver_instruction_origin"],
+        "lifted_system"
+    );
+    assert!(matches!(
+        &system_request.parts[0],
+        ModelRequestPart::SystemPrompt { text, .. } if text == "system"
+    ));
+    assert!(matches!(
+        &system_request.parts[1],
+        ModelRequestPart::Instruction { text, metadata }
+            if text == "instruction" && metadata["starweaver_instruction_dynamic"] == true
+    ));
 }
 
 #[test]

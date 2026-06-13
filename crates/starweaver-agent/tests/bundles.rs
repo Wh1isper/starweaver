@@ -5,11 +5,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use starweaver_agent::{
     attach_environment, filesystem_tools, host_operation_tools, namespaced_toolset, shell_tools,
-    string_tool, task_tools, tool_proxy_toolset, AgentContext, AgentSession, HostMediaCapabilities,
-    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
-    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
-    MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
-    SearchResultItem, ToolContext, ToolRegistry, ToolResult,
+    string_tool, task_tools, tool_proxy_toolset, AgentCapability, AgentContext, AgentSession,
+    EnvironmentContextCapability, HostMediaCapabilities, HostMediaUnderstandingClient,
+    HostMediaUnderstandingClientHandle, HostScrapeClient, HostScrapeClientHandle, HostSearchClient,
+    HostSearchClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse, ScrapeRequest,
+    ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem, ToolContext, ToolRegistry,
+    ToolResult,
 };
 use starweaver_context::ToolConfig;
 use starweaver_core::{ConversationId, Metadata, RunId, Usage};
@@ -18,8 +19,37 @@ use starweaver_environment::{
     ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
-    tool_call_response, ModelProfile, ModelResponse, ProtocolFamily, TestModel,
+    tool_call_response, ModelProfile, ModelRequest, ModelRequestPart, ModelResponse,
+    ProtocolFamily, TestModel,
 };
+
+#[tokio::test]
+async fn environment_context_capability_marks_provider_context_dynamic() {
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_file("README.md", "hello")
+            .with_file("src/lib.rs", "pub fn hello() {}\n"),
+    );
+    let mut context = AgentContext::default();
+    attach_environment(&mut context, provider);
+    let mut request = ModelRequest::user_text("inspect workspace");
+    let mut state =
+        starweaver_agent::AgentRunState::new(RunId::default(), ConversationId::default());
+    let mut settings = None;
+
+    EnvironmentContextCapability
+        .before_model_request_with_context(&mut state, &mut context, &mut request, &mut settings)
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        request.parts.first(),
+        Some(ModelRequestPart::Instruction { text, metadata })
+            if text.contains("<environment-context>")
+                && metadata["starweaver_instruction_origin"] == "environment_context"
+                && metadata["starweaver_instruction_dynamic"] == true
+    ));
+}
 
 #[tokio::test]
 async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
@@ -1001,8 +1031,11 @@ async fn task_bundle_creates_operation_envelopes() {
         .unwrap();
 
     assert_eq!(task.content["operation"], "task_create");
-    assert_eq!(task.content["payload"]["subject"], "ship");
-    assert_eq!(task.content["payload"]["description"], "Ship the release");
+    assert_eq!(task.content["payload"]["task"]["subject"], "ship");
+    assert_eq!(
+        task.content["payload"]["task"]["description"],
+        "Ship the release"
+    );
 }
 
 #[tokio::test]

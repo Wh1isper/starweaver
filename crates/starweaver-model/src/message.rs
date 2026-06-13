@@ -112,10 +112,7 @@ impl ModelResponse {
     pub fn text_output(&self) -> String {
         self.parts
             .iter()
-            .filter_map(|part| match part {
-                ModelResponsePart::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
+            .filter_map(ModelResponsePart::text)
             .collect::<Vec<_>>()
             .join("")
     }
@@ -125,11 +122,58 @@ impl ModelResponse {
     pub fn tool_calls(&self) -> Vec<ToolCallPart> {
         self.parts
             .iter()
-            .filter_map(|part| match part {
-                ModelResponsePart::ToolCall(call) => Some(call.clone()),
-                _ => None,
-            })
+            .filter_map(ModelResponsePart::tool_call)
+            .cloned()
             .collect()
+    }
+}
+
+/// Provider-private replay metadata attached to response parts.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProviderPartInfo {
+    /// Provider output item identifier, when the provider exposes one separately from call IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Provider that produced the part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+    /// Provider-private fields needed for same-provider replay and diagnostics.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub details: Metadata,
+}
+
+impl ProviderPartInfo {
+    /// Build provider metadata for one provider output item.
+    #[must_use]
+    pub fn new(provider_name: impl Into<String>) -> Self {
+        Self {
+            id: None,
+            provider_name: Some(provider_name.into()),
+            details: Metadata::default(),
+        }
+    }
+
+    /// Attach a provider item identifier.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        let id = id.into();
+        if !id.is_empty() {
+            self.id = Some(id);
+        }
+        self
+    }
+
+    /// Attach provider details.
+    #[must_use]
+    pub fn with_details(mut self, details: Metadata) -> Self {
+        self.details = details;
+        self
+    }
+
+    /// Returns true when this metadata belongs to `provider_name`.
+    #[must_use]
+    pub fn is_provider(&self, provider_name: &str) -> bool {
+        self.provider_name.as_deref() == Some(provider_name)
     }
 }
 
@@ -237,6 +281,14 @@ pub enum ModelResponsePart {
         /// Output text.
         text: String,
     },
+    /// Plain text output with provider-private replay metadata.
+    ProviderText {
+        /// Output text.
+        text: String,
+        /// Provider replay metadata.
+        #[serde(default, skip_serializing_if = "ProviderPartInfo::is_empty")]
+        provider: ProviderPartInfo,
+    },
     /// Reasoning or thinking output.
     Thinking {
         /// Thinking text.
@@ -245,8 +297,27 @@ pub enum ModelResponsePart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
+    /// Reasoning or thinking output with provider-private replay metadata.
+    ProviderThinking {
+        /// Thinking text or provider-provided reasoning summary.
+        text: String,
+        /// Provider signature or encrypted reasoning payload where available.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        /// Provider replay metadata.
+        #[serde(default, skip_serializing_if = "ProviderPartInfo::is_empty")]
+        provider: ProviderPartInfo,
+    },
     /// Provider-neutral tool call.
     ToolCall(ToolCallPart),
+    /// Provider-neutral tool call with provider-private replay metadata.
+    ProviderToolCall {
+        /// Tool call visible to runtime tool execution.
+        call: ToolCallPart,
+        /// Provider replay metadata, including output item ID and namespaces.
+        #[serde(default, skip_serializing_if = "ProviderPartInfo::is_empty")]
+        provider: ProviderPartInfo,
+    },
     /// Provider-native tool call payload.
     NativeToolCall {
         /// Native tool type.
@@ -273,6 +344,114 @@ pub enum ModelResponsePart {
         /// Summary text.
         summary: String,
     },
+    /// Opaque provider output item kept for same-provider replay.
+    ProviderOpaque {
+        /// Provider output item type.
+        item_type: String,
+        /// Provider payload.
+        payload: Value,
+        /// Provider replay metadata.
+        #[serde(default, skip_serializing_if = "ProviderPartInfo::is_empty")]
+        provider: ProviderPartInfo,
+    },
+}
+
+impl ProviderPartInfo {
+    fn is_empty(&self) -> bool {
+        self.id.is_none() && self.provider_name.is_none() && self.details.is_empty()
+    }
+}
+
+impl ModelResponsePart {
+    /// Return text content for text-like parts.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Text { text } | Self::ProviderText { text, .. } => Some(text.as_str()),
+            Self::Thinking { .. }
+            | Self::ProviderThinking { .. }
+            | Self::ToolCall(_)
+            | Self::ProviderToolCall { .. }
+            | Self::NativeToolCall { .. }
+            | Self::NativeToolReturn { .. }
+            | Self::File { .. }
+            | Self::Compaction { .. }
+            | Self::ProviderOpaque { .. } => None,
+        }
+    }
+
+    /// Return thinking text and signature for reasoning-like parts.
+    #[must_use]
+    pub fn thinking(&self) -> Option<(&str, Option<&str>)> {
+        match self {
+            Self::Thinking { text, signature }
+            | Self::ProviderThinking {
+                text, signature, ..
+            } => Some((text.as_str(), signature.as_deref())),
+            Self::Text { .. }
+            | Self::ProviderText { .. }
+            | Self::ToolCall(_)
+            | Self::ProviderToolCall { .. }
+            | Self::NativeToolCall { .. }
+            | Self::NativeToolReturn { .. }
+            | Self::File { .. }
+            | Self::Compaction { .. }
+            | Self::ProviderOpaque { .. } => None,
+        }
+    }
+
+    /// Return a function-style tool call when present.
+    #[must_use]
+    pub const fn tool_call(&self) -> Option<&ToolCallPart> {
+        match self {
+            Self::ToolCall(call) | Self::ProviderToolCall { call, .. } => Some(call),
+            Self::Text { .. }
+            | Self::ProviderText { .. }
+            | Self::Thinking { .. }
+            | Self::ProviderThinking { .. }
+            | Self::NativeToolCall { .. }
+            | Self::NativeToolReturn { .. }
+            | Self::File { .. }
+            | Self::Compaction { .. }
+            | Self::ProviderOpaque { .. } => None,
+        }
+    }
+
+    /// Return provider replay metadata when present.
+    #[must_use]
+    pub const fn provider_part(&self) -> Option<&ProviderPartInfo> {
+        match self {
+            Self::ProviderText { provider, .. }
+            | Self::ProviderThinking { provider, .. }
+            | Self::ProviderToolCall { provider, .. }
+            | Self::ProviderOpaque { provider, .. } => Some(provider),
+            Self::Text { .. }
+            | Self::Thinking { .. }
+            | Self::ToolCall(_)
+            | Self::NativeToolCall { .. }
+            | Self::NativeToolReturn { .. }
+            | Self::File { .. }
+            | Self::Compaction { .. } => None,
+        }
+    }
+
+    /// Return true when this response part is a compaction boundary.
+    #[must_use]
+    pub fn is_compaction(&self) -> bool {
+        match self {
+            Self::Compaction { .. } => true,
+            Self::ProviderOpaque { item_type, .. } => item_type == "compaction",
+            Self::Text { .. }
+            | Self::ProviderText { .. }
+            | Self::Thinking { .. }
+            | Self::ProviderThinking { .. }
+            | Self::ToolCall(_)
+            | Self::ProviderToolCall { .. }
+            | Self::NativeToolCall { .. }
+            | Self::NativeToolReturn { .. }
+            | Self::File { .. } => false,
+        }
+    }
 }
 
 /// Function-style tool call.
@@ -559,6 +738,9 @@ pub struct ProviderInfo {
     /// Provider response identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_id: Option<String>,
+    /// Provider-private response metadata such as conversation IDs, request IDs, and service tiers.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub details: Metadata,
 }
 
 /// Provider-neutral finish reason.

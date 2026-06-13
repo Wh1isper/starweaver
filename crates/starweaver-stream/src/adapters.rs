@@ -109,7 +109,8 @@ pub fn display_to_vercel_data_stream(message: &DisplayMessage) -> Vec<VercelData
         | DisplayMessageKind::HandoffCompleted
         | DisplayMessageKind::HandoffFailed
         | DisplayMessageKind::SteeringSubmitted
-        | DisplayMessageKind::SteeringReceived => vec![part(
+        | DisplayMessageKind::SteeringReceived
+        | DisplayMessageKind::TaskSnapshot => vec![part(
             "data",
             json!({
                 "type": display_event_type(message.kind),
@@ -181,6 +182,7 @@ const fn display_event_type(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::HandoffFailed => "HANDOFF_FAILED",
         DisplayMessageKind::SteeringSubmitted => "STEERING_SUBMITTED",
         DisplayMessageKind::SteeringReceived => "STEERING_RECEIVED",
+        DisplayMessageKind::TaskSnapshot => "TASK_SNAPSHOT",
         DisplayMessageKind::RunCompleted => "RUN_FINISHED",
         DisplayMessageKind::RunFailed => "RUN_ERROR",
         DisplayMessageKind::RunCancelled => "RUN_CANCELLED",

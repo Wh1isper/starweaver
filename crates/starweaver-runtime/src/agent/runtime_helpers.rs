@@ -80,6 +80,125 @@ pub(super) fn is_steering_guard_prompt(prompt: &str) -> bool {
     prompt == STEERING_GUARD_PROMPT
 }
 
+fn sanitize_incomplete_tool_call_history(messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
+    if messages.is_empty() {
+        return messages;
+    }
+
+    let valid_tool_call_ids = valid_tool_call_ids(&messages);
+    let mut pending_tool_call_ids = BTreeSet::new();
+    let mut sanitized = Vec::with_capacity(messages.len());
+
+    for message in messages {
+        match message {
+            ModelMessage::Response(mut response) => {
+                response.parts.retain(|part| match part {
+                    starweaver_model::ModelResponsePart::ToolCall(call)
+                    | starweaver_model::ModelResponsePart::ProviderToolCall { call, .. } => {
+                        valid_tool_call_ids.contains(&call.id)
+                    }
+                    starweaver_model::ModelResponsePart::Text { text }
+                    | starweaver_model::ModelResponsePart::ProviderText { text, .. }
+                    | starweaver_model::ModelResponsePart::Thinking { text, .. }
+                    | starweaver_model::ModelResponsePart::ProviderThinking { text, .. } => {
+                        !text.is_empty()
+                    }
+                    starweaver_model::ModelResponsePart::Compaction { summary } => {
+                        !summary.is_empty()
+                    }
+                    starweaver_model::ModelResponsePart::NativeToolCall { .. }
+                    | starweaver_model::ModelResponsePart::NativeToolReturn { .. }
+                    | starweaver_model::ModelResponsePart::File { .. }
+                    | starweaver_model::ModelResponsePart::ProviderOpaque { .. } => true,
+                });
+                for call in response.tool_calls() {
+                    pending_tool_call_ids.insert(call.id);
+                }
+                if !response.parts.is_empty() {
+                    sanitized.push(ModelMessage::Response(response));
+                }
+            }
+            ModelMessage::Request(mut request) => {
+                request.parts.retain(|part| match part {
+                    ModelRequestPart::ToolReturn(tool_return) => {
+                        pending_tool_call_ids.remove(&tool_return.tool_call_id)
+                            || tool_return
+                                .metadata
+                                .get("starweaver_retry_recovery_truncated")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false)
+                    }
+                    ModelRequestPart::RetryPrompt {
+                        tool_call_id: Some(tool_call_id),
+                        ..
+                    } => valid_tool_call_ids.contains(tool_call_id),
+                    ModelRequestPart::SystemPrompt { .. }
+                    | ModelRequestPart::UserPrompt { .. }
+                    | ModelRequestPart::RetryPrompt {
+                        tool_call_id: None, ..
+                    }
+                    | ModelRequestPart::Instruction { .. } => true,
+                });
+                if !request.parts.is_empty() {
+                    sanitized.push(ModelMessage::Request(request));
+                }
+            }
+        }
+    }
+
+    sanitized
+}
+
+fn valid_tool_call_ids(messages: &[ModelMessage]) -> BTreeSet<String> {
+    let mut valid = BTreeSet::new();
+
+    for (message_index, message) in messages.iter().enumerate() {
+        let ModelMessage::Response(response) = message else {
+            continue;
+        };
+        for call in response.tool_calls() {
+            if has_following_tool_return_before_barrier(messages, message_index, &call.id) {
+                valid.insert(call.id);
+            }
+        }
+    }
+
+    valid
+}
+
+fn has_following_tool_return_before_barrier(
+    messages: &[ModelMessage],
+    response_index: usize,
+    tool_call_id: &str,
+) -> bool {
+    for message in messages.iter().skip(response_index.saturating_add(1)) {
+        match message {
+            ModelMessage::Response(_) => return false,
+            ModelMessage::Request(request) => {
+                let mut has_barrier = false;
+                for part in &request.parts {
+                    match part {
+                        ModelRequestPart::ToolReturn(tool_return) => {
+                            if tool_return.tool_call_id == tool_call_id {
+                                return true;
+                            }
+                        }
+                        ModelRequestPart::SystemPrompt { .. }
+                        | ModelRequestPart::UserPrompt { .. }
+                        | ModelRequestPart::RetryPrompt { .. }
+                        | ModelRequestPart::Instruction { .. } => has_barrier = true,
+                    }
+                }
+                if has_barrier {
+                    return false;
+                }
+            }
+        }
+    }
+
+    false
+}
+
 fn steering_message(message: &BusMessage) -> Option<SteeringMessage> {
     if message.topic != "steering" {
         return None;
@@ -216,13 +335,9 @@ impl Agent {
     }
 
     pub(super) fn inject_runtime_context(context: &AgentContext, messages: &mut Vec<ModelMessage>) {
-        let is_user_prompt = messages.iter().rev().any(|message| {
-            matches!(
-                message,
-                ModelMessage::Request(request)
-                    if request.parts.iter().any(|part| matches!(part, ModelRequestPart::UserPrompt { .. }))
-            )
-        });
+        let is_user_prompt = latest_request(messages)
+            .map_or(true, |request| !request_has_tool_return_or_retry(request))
+            || metadata_bool(&context.metadata, "starweaver_force_inject_instructions");
         let Some(text) = context.inject_runtime_context(is_user_prompt) else {
             return;
         };
@@ -230,6 +345,10 @@ impl Agent {
         metadata.insert(
             "starweaver_instruction_origin".to_string(),
             serde_json::json!("runtime_context"),
+        );
+        metadata.insert(
+            "starweaver_instruction_dynamic".to_string(),
+            serde_json::json!(true),
         );
         insert_instruction_into_latest_request(
             messages,
@@ -332,6 +451,7 @@ impl Agent {
         context.usage = usage.clone();
         state.usage = usage;
         context.notes.clone_from(&snapshot.notes);
+        context.state.clone_from(&snapshot.state);
         context.events.clone_from(&snapshot.events);
         snapshot
             .message_history
@@ -389,6 +509,24 @@ impl Agent {
                 );
                 self.trace_recorder.close_span(&span, SpanStatus::Ok);
             }
+        }
+        let before_count = messages.len();
+        messages = sanitize_incomplete_tool_call_history(messages);
+        let after_count = messages.len();
+        if before_count != after_count {
+            let span = self.trace_recorder.start_span(
+                SpanSpec::new("starweaver.history.sanitize_incomplete_tool_calls")
+                    .with_attribute(
+                        "starweaver.history.messages.before",
+                        serde_json::json!(before_count),
+                    )
+                    .with_attribute(
+                        "starweaver.history.messages.after",
+                        serde_json::json!(after_count),
+                    ),
+                &context.trace_context,
+            );
+            self.trace_recorder.close_span(&span, SpanStatus::Ok);
         }
         Ok(messages)
     }
@@ -789,13 +927,36 @@ impl Agent {
     }
 }
 
+fn latest_request(messages: &[ModelMessage]) -> Option<&ModelRequest> {
+    messages.iter().rev().find_map(|message| match message {
+        ModelMessage::Request(request) => Some(request),
+        ModelMessage::Response(_) => None,
+    })
+}
+
+fn request_has_tool_return_or_retry(request: &ModelRequest) -> bool {
+    request.parts.iter().any(|part| {
+        matches!(
+            part,
+            ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. }
+        )
+    })
+}
+
+fn metadata_bool(metadata: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    metadata
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn insert_instruction_into_latest_request(
     messages: &mut Vec<ModelMessage>,
     part: ModelRequestPart,
 ) {
     for message in messages.iter_mut().rev() {
         if let ModelMessage::Request(request) = message {
-            request.parts.insert(0, part);
+            insert_request_part_after_control_parts(request, part);
             return;
         }
     }
@@ -807,4 +968,22 @@ fn insert_instruction_into_latest_request(
         conversation_id: None,
         metadata: serde_json::Map::new(),
     }));
+}
+
+fn insert_request_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
+    let insert_at = request
+        .parts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, part)| match part {
+            ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => {
+                Some(index + 1)
+            }
+            ModelRequestPart::SystemPrompt { .. }
+            | ModelRequestPart::UserPrompt { .. }
+            | ModelRequestPart::Instruction { .. } => None,
+        })
+        .next_back()
+        .unwrap_or(0);
+    request.parts.insert(insert_at, part);
 }

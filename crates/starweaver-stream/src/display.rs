@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use starweaver_context::TASK_SNAPSHOT_EVENT_KIND;
 use starweaver_core::{AgentId, Metadata, RunId, SessionId, TraceContext};
 use starweaver_model::{
     ModelResponse, ModelResponsePart, StreamDelta, ToolCallPart, ToolReturnPart,
@@ -86,6 +87,14 @@ pub enum DisplayMessageKind {
     /// Steering message was received by a running agent.
     #[serde(rename = "STEERING_RECEIVED", alias = "steering_received")]
     SteeringReceived,
+    /// Full task board snapshot.
+    #[serde(
+        rename = "TASK_SNAPSHOT",
+        alias = "task_snapshot",
+        alias = "TASK_PANEL",
+        alias = "task_panel"
+    )]
+    TaskSnapshot,
     /// Run completed successfully.
     #[serde(rename = "RUN_FINISHED", alias = "run_completed")]
     RunCompleted,
@@ -516,10 +525,17 @@ fn project_model_response(
     let mut messages = Vec::new();
     for (part_index, part) in response.parts.iter().enumerate() {
         match part {
-            ModelResponsePart::Text { text } if !text.is_empty() => messages.extend(
-                project_text_response_messages(context, sequence, run_id, part_index, text),
-            ),
-            ModelResponsePart::Thinking { text, signature } if !text.is_empty() => {
+            ModelResponsePart::Text { text } | ModelResponsePart::ProviderText { text, .. }
+                if !text.is_empty() =>
+            {
+                messages.extend(project_text_response_messages(
+                    context, sequence, run_id, part_index, text,
+                ));
+            }
+            ModelResponsePart::Thinking { text, signature }
+            | ModelResponsePart::ProviderThinking {
+                text, signature, ..
+            } if !text.is_empty() => {
                 messages.extend(project_thinking_response_messages(
                     context,
                     sequence,
@@ -529,7 +545,8 @@ fn project_model_response(
                     signature.as_ref(),
                 ));
             }
-            ModelResponsePart::ToolCall(call) => {
+            ModelResponsePart::ToolCall(call)
+            | ModelResponsePart::ProviderToolCall { call, .. } => {
                 messages.extend(project_tool_call_messages(
                     context,
                     sequence,
@@ -600,6 +617,7 @@ fn project_thinking_response_messages(
     signature: Option<&String>,
 ) -> Vec<DisplayMessage> {
     let message_id = format!("thinking-{sequence}-{part_index}");
+    let has_signature = signature.is_some();
     let mut start = DisplayMessage::new(
         sequence,
         context.session_id.clone(),
@@ -611,7 +629,7 @@ fn project_thinking_response_messages(
         "role": "reasoning",
         "part_index": part_index,
         "part_kind": "thinking",
-        "signature": signature,
+        "has_signature": has_signature,
     }));
     start.metadata.insert("reasoning".to_string(), json!(true));
 
@@ -627,7 +645,7 @@ fn project_thinking_response_messages(
         "part_kind": "thinking",
         "delta": text,
         "thinking": text,
-        "signature": signature,
+        "has_signature": has_signature,
     }))
     .with_preview(text.to_string());
     delta.metadata.insert("reasoning".to_string(), json!(true));
@@ -925,6 +943,11 @@ fn custom_display_kind(normalized: &str) -> Option<DisplayMessageKind> {
         ],
     ) {
         Some(DisplayMessageKind::SteeringReceived)
+    } else if custom_event_kind_matches(
+        normalized,
+        &[TASK_SNAPSHOT_EVENT_KIND, "task_snapshot", "task_panel"],
+    ) {
+        Some(DisplayMessageKind::TaskSnapshot)
     } else {
         None
     }
@@ -980,8 +1003,20 @@ fn custom_display_preview(kind: DisplayMessageKind, payload: &Value) -> String {
                 |text| format!("steering received: {text}"),
             )
         }
+        DisplayMessageKind::TaskSnapshot => task_snapshot_items(payload).map_or_else(
+            || "task snapshot".to_string(),
+            |tasks| format!("task snapshot: {} task(s)", tasks.len()),
+        ),
         _ => "custom display event".to_string(),
     }
+}
+
+fn task_snapshot_items(value: &Value) -> Option<&Vec<Value>> {
+    value
+        .get("tasks")
+        .or_else(|| value.get("items"))
+        .and_then(Value::as_array)
+        .or_else(|| value.as_array())
 }
 
 fn payload_u64(value: &Value, keys: &[&str]) -> Option<u64> {

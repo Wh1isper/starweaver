@@ -484,6 +484,8 @@ impl ModelAdapter for StaticAdapter {
             usage: Usage {
                 requests: 1,
                 input_tokens: 1,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
                 output_tokens: 1,
                 total_tokens: 2,
                 tool_calls: 0,
@@ -558,6 +560,8 @@ fn core_contracts_are_covered() {
     let mut usage = Usage {
         requests: 1,
         input_tokens: 2,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 3,
         total_tokens: 5,
         tool_calls: 1,
@@ -565,6 +569,8 @@ fn core_contracts_are_covered() {
     usage.add_assign(&Usage {
         requests: 2,
         input_tokens: 4,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 6,
         total_tokens: 10,
         tool_calls: 3,

@@ -1335,11 +1335,15 @@ fn tool_args_filter(mut messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
     for message in &mut messages {
         if let ModelMessage::Response(response) = message {
             for part in &mut response.parts {
-                if let ModelResponsePart::ToolCall(call) = part {
-                    if let Some(repaired_args) = repair_tool_arguments(&call.arguments) {
-                        call.arguments = repaired_args;
-                        repaired += 1;
+                match part {
+                    ModelResponsePart::ToolCall(call)
+                    | ModelResponsePart::ProviderToolCall { call, .. } => {
+                        if let Some(repaired_args) = repair_tool_arguments(&call.arguments) {
+                            call.arguments = repaired_args;
+                            repaired += 1;
+                        }
                     }
+                    _ => {}
                 }
             }
         }
@@ -1356,17 +1360,20 @@ fn reasoning_normalize_filter(mut messages: Vec<ModelMessage>) -> Vec<ModelMessa
     for message in &mut messages {
         if let ModelMessage::Response(response) = message {
             let before = response.parts.len();
-            response.parts.retain(|part| match part {
-                ModelResponsePart::Thinking { text, .. } => !text.trim().is_empty(),
-                _ => true,
-            });
+            response.parts.retain(reasoning_part_has_replay_value);
             removed += before.saturating_sub(response.parts.len());
             for part in &mut response.parts {
-                if let ModelResponsePart::Thinking { text, signature } = part {
-                    *text = normalize_reasoning_text(text);
-                    if signature.as_deref().is_some_and(str::is_empty) {
-                        *signature = None;
+                match part {
+                    ModelResponsePart::Thinking { text, signature }
+                    | ModelResponsePart::ProviderThinking {
+                        text, signature, ..
+                    } => {
+                        *text = normalize_reasoning_text(text);
+                        if signature.as_deref().is_some_and(str::is_empty) {
+                            *signature = None;
+                        }
                     }
+                    _ => {}
                 }
             }
         }
@@ -1378,6 +1385,25 @@ fn reasoning_normalize_filter(mut messages: Vec<ModelMessage>) -> Vec<ModelMessa
         );
     }
     messages
+}
+
+fn reasoning_part_has_replay_value(part: &ModelResponsePart) -> bool {
+    match part {
+        ModelResponsePart::Thinking { text, signature } => {
+            !text.trim().is_empty() || signature.as_deref().is_some_and(|value| !value.is_empty())
+        }
+        ModelResponsePart::ProviderThinking {
+            text,
+            signature,
+            provider,
+        } => {
+            !text.trim().is_empty()
+                || signature.as_deref().is_some_and(|value| !value.is_empty())
+                || provider.id.is_some()
+                || !provider.details.is_empty()
+        }
+        _ => true,
+    }
 }
 
 fn truncate_tool_return(tool_return: &mut ToolReturnPart, limit: usize) -> bool {

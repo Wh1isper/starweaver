@@ -4,7 +4,7 @@ use serde_json::json;
 use starweaver_core::RunId;
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
-    ToolCallPart, ToolReturnPart,
+    ProviderPartInfo, ToolCallPart, ToolReturnPart,
 };
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 
@@ -90,6 +90,7 @@ fn all_display_message_kinds_serialize_to_agui_compatible_types() {
         (DisplayMessageKind::HandoffFailed, "HANDOFF_FAILED"),
         (DisplayMessageKind::SteeringSubmitted, "STEERING_SUBMITTED"),
         (DisplayMessageKind::SteeringReceived, "STEERING_RECEIVED"),
+        (DisplayMessageKind::TaskSnapshot, "TASK_SNAPSHOT"),
         (DisplayMessageKind::RunCompleted, "RUN_FINISHED"),
         (DisplayMessageKind::RunFailed, "RUN_ERROR"),
         (DisplayMessageKind::RunCancelled, "RUN_CANCELLED"),
@@ -115,6 +116,17 @@ fn display_message_accepts_legacy_snake_case_kind_alias() {
     value.as_object_mut().unwrap().remove("type");
     let message = serde_json::from_value::<DisplayMessage>(value).unwrap();
     assert_eq!(message.kind, DisplayMessageKind::AssistantTextDelta);
+
+    let mut task_panel = serde_json::to_value(display_message(
+        2,
+        DisplayMessageKind::TaskSnapshot,
+        json!([]),
+    ))
+    .unwrap();
+    task_panel["kind"] = json!("task_panel");
+    task_panel.as_object_mut().unwrap().remove("type");
+    let message = serde_json::from_value::<DisplayMessage>(task_panel).unwrap();
+    assert_eq!(message.kind, DisplayMessageKind::TaskSnapshot);
 }
 
 #[tokio::test]
@@ -409,11 +421,23 @@ async fn default_projector_maps_summary_and_compaction_custom_events() {
         "steering_received",
         &json!({"id": "steer_0", "text": "keep going"}),
     );
-    let unrelated = custom_stream_record(13, "task_panel", &json!({"tasks": []}));
+    let task_snapshot = custom_stream_record(
+        13,
+        "task_snapshot",
+        &json!({"tasks": [{"id": "1", "subject": "Ship", "status": "pending"}]}),
+    );
+    let legacy_task_panel = custom_stream_record(
+        14,
+        "task_panel",
+        &json!({"items": [{"id": "2", "subject": "Legacy", "status": "pending"}]}),
+    );
+    let unrelated = custom_stream_record(15, "unknown_event", &json!({"ok": true}));
 
     let compact_messages = projector.project(&context, &compact_started).await;
     let handoff_messages = projector.project(&context, &handoff_completed).await;
     let steering_messages = projector.project(&context, &steering_received).await;
+    let task_messages = projector.project(&context, &task_snapshot).await;
+    let legacy_task_messages = projector.project(&context, &legacy_task_panel).await;
     let unrelated_messages = projector.project(&context, &unrelated).await;
 
     assert_eq!(compact_messages.len(), 1);
@@ -441,6 +465,26 @@ async fn default_projector_maps_summary_and_compaction_custom_events() {
     assert_eq!(
         steering_messages[0].preview.as_deref(),
         Some("steering received: keep going")
+    );
+    assert_eq!(task_messages.len(), 1);
+    assert_eq!(task_messages[0].kind, DisplayMessageKind::TaskSnapshot);
+    assert_eq!(task_messages[0].payload["tasks"][0]["subject"], "Ship");
+    assert_eq!(
+        task_messages[0].preview.as_deref(),
+        Some("task snapshot: 1 task(s)")
+    );
+    assert_eq!(legacy_task_messages.len(), 1);
+    assert_eq!(
+        legacy_task_messages[0].kind,
+        DisplayMessageKind::TaskSnapshot
+    );
+    assert_eq!(
+        legacy_task_messages[0].payload["items"][0]["subject"],
+        "Legacy"
+    );
+    assert_eq!(
+        legacy_task_messages[0].preview.as_deref(),
+        Some("task snapshot: 1 task(s)")
     );
     assert!(unrelated_messages.is_empty());
 }
@@ -557,17 +601,22 @@ async fn default_projector_maps_thinking_and_tool_calls_from_model_response() {
     let context = DisplayProjectionContext::new(session_id, run_id.clone());
     let response = ModelResponse {
         parts: vec![
-            ModelResponsePart::Thinking {
+            ModelResponsePart::ProviderThinking {
                 text: "inspect context".to_string(),
                 signature: Some("sig".to_string()),
+                provider: ProviderPartInfo::new("openai").with_id("rs_1"),
             },
-            ModelResponsePart::ToolCall(ToolCallPart {
-                id: "call_1".to_string(),
-                name: "lookup".to_string(),
-                arguments: json!({"query": "starweaver"}).into(),
-            }),
-            ModelResponsePart::Text {
+            ModelResponsePart::ProviderToolCall {
+                call: ToolCallPart {
+                    id: "call_1".to_string(),
+                    name: "lookup".to_string(),
+                    arguments: json!({"query": "starweaver"}).into(),
+                },
+                provider: ProviderPartInfo::new("openai").with_id("fc_1"),
+            },
+            ModelResponsePart::ProviderText {
                 text: "done".to_string(),
+                provider: ProviderPartInfo::new("openai").with_id("msg_1"),
             },
         ],
         usage: starweaver_core::Usage::default(),
@@ -583,11 +632,23 @@ async fn default_projector_maps_thinking_and_tool_calls_from_model_response() {
 
     let messages = projector.project(&context, &record).await;
 
-    assert!(messages.iter().any(|message| {
+    let thinking_messages = messages
+        .iter()
+        .filter(|message| message.payload["part_kind"] == "thinking")
+        .collect::<Vec<_>>();
+    assert!(thinking_messages.iter().any(|message| {
         message.kind == DisplayMessageKind::AssistantTextDelta
-            && message.payload["part_kind"] == "thinking"
             && message.payload["delta"] == "inspect context"
     }));
+    assert!(thinking_messages
+        .iter()
+        .any(|message| message.payload["has_signature"] == true));
+    assert!(thinking_messages
+        .iter()
+        .all(|message| message.payload.get("signature").is_none()));
+    assert!(!serde_json::to_string(&thinking_messages)
+        .unwrap()
+        .contains("\"sig\""));
     assert!(messages.iter().any(|message| {
         message.kind == DisplayMessageKind::ToolCallStart
             && message.payload["tool_name"] == "lookup"

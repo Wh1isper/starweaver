@@ -28,7 +28,7 @@ pub use media::{
 };
 pub use message::{
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ProviderInfo, ToolArguments, ToolCallPart, ToolReturnPart,
+    ModelResponsePart, ProviderInfo, ProviderPartInfo, ToolArguments, ToolCallPart, ToolReturnPart,
 };
 pub use oauth::{
     build_codex_headers, build_codex_model, build_codex_model_with_profile, build_session_headers,
@@ -51,7 +51,9 @@ pub use request::{
     prepare_messages, prepare_model_request, InstructionPart, OutputMode, PreparedInstruction,
     PreparedModelRequest,
 };
-pub use settings::{ModelSettings, ServiceTier, ThinkingSettings, ToolChoice};
+pub use settings::{
+    ModelSettings, ProviderReplaySettings, ServiceTier, ThinkingSettings, ToolChoice,
+};
 pub use stream::{
     ModelResponseStreamEvent, ModelStreamState, PartDelta, PartEnd, PartStart, StreamDelta,
     StreamLifecycle,

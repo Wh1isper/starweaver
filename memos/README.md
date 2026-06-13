@@ -6,6 +6,8 @@ Current memos:
 
 - `implementation-todo.md` — ready-to-go checklist, validation gate, and small post-release parking lot.
 - `hitl-audit-2026-06-08.md` — HITL audit findings, implementation evidence, and validation commands.
+- `cache-investigation-2026-06-12.md` — CLI/provider cache investigation, Pydantic AI alignment gaps, live API evidence, and fix roadmap.
+- `model-provider-alignment-audit-2026-06-12.md` — full Starweaver model/provider audit against latest Pydantic AI, with cache, reasoning replay, server-state, streaming, and test gaps.
 
 Memo maintenance rules:
 

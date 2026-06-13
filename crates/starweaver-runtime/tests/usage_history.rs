@@ -7,11 +7,11 @@ use starweaver_context::AgentContext;
 use starweaver_core::Usage;
 use starweaver_model::{
     FunctionModel, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart,
-    TestModel, ToolCallPart,
+    TestModel, ToolCallPart, ToolReturnPart,
 };
 use starweaver_runtime::{
-    Agent, AgentCapability, AgentError, AgentRunState, CapabilityError, CapabilityResult,
-    CostBudget, UsageLimitError, UsageLimits,
+    Agent, AgentCapability, AgentError, AgentRunState, AgentStreamEvent, CapabilityError,
+    CapabilityResult, CostBudget, UsageLimitError, UsageLimits,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 
@@ -158,6 +158,8 @@ async fn usage_limits_check_accumulated_tokens_after_response() {
         Usage {
             requests: 1,
             input_tokens: 4,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 6,
             tool_calls: 0,
@@ -187,6 +189,8 @@ async fn usage_limits_include_existing_context_usage() {
         Usage {
             requests: 1,
             input_tokens: 1,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 1,
             total_tokens: 2,
             tool_calls: 0,
@@ -196,6 +200,8 @@ async fn usage_limits_include_existing_context_usage() {
         usage: Usage {
             requests: 1,
             input_tokens: 3,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 5,
             tool_calls: 0,
@@ -217,6 +223,68 @@ async fn usage_limits_include_existing_context_usage() {
             actual: 7
         })
     ));
+}
+
+#[tokio::test]
+async fn run_stream_emits_cumulative_usage_snapshot_events() {
+    let model = Arc::new(TestModel::with_responses(vec![
+        ModelResponse {
+            parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_usage".to_string(),
+                name: "echo".to_string(),
+                arguments: serde_json::json!({"value": "again"}).into(),
+            })],
+            usage: Usage {
+                requests: 1,
+                input_tokens: 3,
+                cache_write_tokens: 2,
+                cache_read_tokens: 1,
+                output_tokens: 4,
+                total_tokens: 7,
+                tool_calls: 0,
+            },
+            ..ModelResponse::text("")
+        },
+        response_with_usage(
+            "done",
+            Usage {
+                requests: 1,
+                input_tokens: 5,
+                cache_write_tokens: 3,
+                cache_read_tokens: 7,
+                output_tokens: 6,
+                total_tokens: 11,
+                tool_calls: 0,
+            },
+        ),
+    ]));
+    let result = Agent::new(model)
+        .with_tools(echo_registry())
+        .run_stream("hello")
+        .await
+        .unwrap();
+
+    let snapshots = result
+        .events()
+        .iter()
+        .filter_map(|record| match &record.event {
+            AgentStreamEvent::Custom { event } if event.kind == "usage_snapshot" => Some(
+                serde_json::from_value::<starweaver_core::UsageSnapshot>(event.payload.clone())
+                    .unwrap(),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].total_usage.total_tokens, 7);
+    assert_eq!(snapshots[1].total_usage.input_tokens, 8);
+    assert_eq!(snapshots[1].total_usage.cache_write_tokens, 5);
+    assert_eq!(snapshots[1].total_usage.cache_read_tokens, 8);
+    assert_eq!(snapshots[1].total_usage.output_tokens, 10);
+    assert_eq!(snapshots[1].total_usage.total_tokens, 18);
+    assert_eq!(snapshots[1].agent_usages["main"].usage.requests, 2);
+    assert_eq!(snapshots[1].model_usages["test:test"].total_tokens, 18);
 }
 
 #[tokio::test]
@@ -261,6 +329,89 @@ async fn message_prepare_capability_failure_returns_capability_error() {
     );
 }
 
+#[tokio::test]
+async fn provider_messages_sanitize_unclosed_tool_call_history() {
+    let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
+    let captured_clone = captured.clone();
+    let model = FunctionModel::new(move |messages, _settings, _info| {
+        captured_clone.lock().unwrap().push(messages);
+        Ok(ModelResponse::text("continued"))
+    });
+    let prior = vec![
+        ModelMessage::Request(ModelRequest::user_text("run a tool")),
+        ModelMessage::Response(tool_call_response("call_interrupted", "echo")),
+    ];
+
+    let result = Agent::new(Arc::new(model))
+        .run_with_history("continue", prior)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "continued");
+    let provider_messages = captured.lock().unwrap()[0].clone();
+    assert_eq!(provider_messages.len(), 2);
+    assert!(matches!(
+        &provider_messages[0],
+        ModelMessage::Request(request)
+            if request.parts.iter().any(|part| matches!(part, ModelRequestPart::UserPrompt { content, .. } if format!("{content:?}").contains("run a tool")))
+    ));
+    assert!(matches!(
+        &provider_messages[1],
+        ModelMessage::Request(request)
+            if request.parts.iter().any(|part| matches!(part, ModelRequestPart::UserPrompt { content, .. } if format!("{content:?}").contains("continue")))
+    ));
+    assert!(!provider_messages.iter().any(|message| matches!(
+        message,
+        ModelMessage::Response(response) if !response.tool_calls().is_empty()
+    )));
+}
+
+#[tokio::test]
+async fn provider_messages_keep_closed_tool_call_history() {
+    let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
+    let captured_clone = captured.clone();
+    let model = FunctionModel::new(move |messages, _settings, _info| {
+        captured_clone.lock().unwrap().push(messages);
+        Ok(ModelResponse::text("continued"))
+    });
+    let prior = vec![
+        ModelMessage::Request(ModelRequest::user_text("run a tool")),
+        ModelMessage::Response(tool_call_response("call_done", "echo")),
+        ModelMessage::Request(ModelRequest {
+            parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                "call_done",
+                "echo",
+                serde_json::json!({"value": "ok"}),
+            ))],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        }),
+        ModelMessage::Response(ModelResponse::text("tool done")),
+    ];
+
+    let result = Agent::new(Arc::new(model))
+        .run_with_history("continue", prior)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "continued");
+    let provider_messages = captured.lock().unwrap()[0].clone();
+    assert_eq!(provider_messages.len(), 5);
+    assert!(provider_messages.iter().any(|message| matches!(
+        message,
+        ModelMessage::Response(response)
+            if response.tool_calls().iter().any(|call| call.id == "call_done")
+    )));
+    assert!(provider_messages.iter().any(|message| matches!(
+        message,
+        ModelMessage::Request(request)
+            if request.parts.iter().any(|part| matches!(part, ModelRequestPart::ToolReturn(tool_return) if tool_return.tool_call_id == "call_done"))
+    )));
+}
+
 #[test]
 fn cost_budget_estimates_usage_cost_in_micros() {
     let budget = CostBudget::new()
@@ -271,6 +422,8 @@ fn cost_budget_estimates_usage_cost_in_micros() {
     let usage = Usage {
         requests: 2,
         input_tokens: 10,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 20,
         total_tokens: 30,
         tool_calls: 0,
@@ -292,6 +445,8 @@ async fn usage_limits_check_accumulated_cost_after_response() {
         Usage {
             requests: 1,
             input_tokens: 10,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 20,
             total_tokens: 30,
             tool_calls: 0,
@@ -328,6 +483,8 @@ async fn usage_cost_budget_includes_existing_context_usage() {
         Usage {
             requests: 1,
             input_tokens: 1,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 1,
             total_tokens: 2,
             tool_calls: 0,
@@ -337,6 +494,8 @@ async fn usage_cost_budget_includes_existing_context_usage() {
         usage: Usage {
             requests: 1,
             input_tokens: 2,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 2,
             total_tokens: 4,
             tool_calls: 0,
@@ -374,6 +533,8 @@ async fn capability_bundle_can_contribute_cost_budget() {
         Usage {
             requests: 1,
             input_tokens: 10,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 0,
             total_tokens: 10,
             tool_calls: 0,

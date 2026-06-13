@@ -111,6 +111,8 @@ async fn sdk_subagent_child_context_inherits_dependencies_notes_and_usage() {
             Usage {
                 requests: 1,
                 input_tokens: 4,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
                 output_tokens: 2,
                 total_tokens: 6,
                 tool_calls: 0,
@@ -138,6 +140,8 @@ async fn sdk_subagent_child_context_inherits_dependencies_notes_and_usage() {
     context.usage = Usage {
         requests: 2,
         input_tokens: 10,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 4,
         total_tokens: 14,
         tool_calls: 1,

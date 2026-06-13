@@ -54,8 +54,48 @@ fn assert_openai_responses_fixture(name: &str) -> starweaver_model::ModelRespons
     assert_json_eq(&request, &fixture.request.expected_provider_request);
 
     let response = OpenAiResponsesAdapter::parse_response(&fixture.provider_response).unwrap();
-    assert_eq!(response, fixture.expected_response);
+    assert_eq!(
+        legacy_openai_response_projection(&response),
+        fixture.expected_response
+    );
     response
+}
+
+fn legacy_openai_response_projection(
+    response: &starweaver_model::ModelResponse,
+) -> starweaver_model::ModelResponse {
+    let mut projected = response.clone();
+    if let Some(provider) = &mut projected.provider {
+        provider.details.clear();
+    }
+    projected.parts = response
+        .parts
+        .iter()
+        .map(|part| match part {
+            ModelResponsePart::ProviderText { text, .. } => {
+                ModelResponsePart::Text { text: text.clone() }
+            }
+            ModelResponsePart::ProviderThinking {
+                text,
+                signature,
+                provider,
+            } => ModelResponsePart::Thinking {
+                text: text.clone(),
+                signature: signature.clone().or_else(|| provider.id.clone()),
+            },
+            ModelResponsePart::ProviderToolCall { call, .. } => {
+                ModelResponsePart::ToolCall(call.clone())
+            }
+            ModelResponsePart::ProviderOpaque {
+                item_type, payload, ..
+            } => ModelResponsePart::NativeToolCall {
+                tool_type: item_type.clone(),
+                payload: payload.clone(),
+            },
+            other => other.clone(),
+        })
+        .collect();
+    projected
 }
 
 fn assert_anthropic_fixture(name: &str) -> starweaver_model::ModelResponse {
@@ -200,7 +240,12 @@ fn replays_openai_responses_text_response() {
 fn replays_openai_responses_request_and_tool_response() {
     let response = assert_openai_responses_fixture("tool_response");
     assert_eq!(response.text_output(), "Need lookup");
-    assert!(matches!(response.parts[1], ModelResponsePart::ToolCall(_)));
+    assert!(matches!(
+        &response.parts[1],
+        ModelResponsePart::ProviderToolCall { call, provider }
+            if call.id == "call_1" && call.name == "lookup" && provider.provider_name.as_deref() == Some("openai")
+    ));
+    assert_eq!(response.tool_calls()[0].id, "call_1");
     assert_eq!(response.provider.unwrap().response_id.unwrap(), "resp_1");
 }
 

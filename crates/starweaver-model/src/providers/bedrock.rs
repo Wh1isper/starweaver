@@ -10,7 +10,7 @@ use crate::{
     },
     providers::{
         bedrock_content_from_content, collect_system_and_non_system, insert_optional_description,
-        provider_tool_parameters, usage_from_named,
+        provider_tool_parameters, usage_from_named_including_cache_input,
     },
     ModelError, ModelSettings,
 };
@@ -68,14 +68,28 @@ impl BedrockConverseAdapter {
                     let mut content = Vec::new();
                     for part in &response.parts {
                         match part {
-                            ModelResponsePart::Text { text } => content.push(json!({"text": text})),
-                            ModelResponsePart::ToolCall(call) => content.push(json!({
-                                "toolUse": {
-                                    "toolUseId": call.id,
-                                    "name": call.name,
-                                    "input": call.arguments,
-                                }
-                            })),
+                            ModelResponsePart::Text { text }
+                            | ModelResponsePart::ProviderText { text, .. } => {
+                                content.push(json!({"text": text}));
+                            }
+                            ModelResponsePart::Thinking { text, .. }
+                            | ModelResponsePart::ProviderThinking { text, .. }
+                                if !text.is_empty() =>
+                            {
+                                content.push(json!({
+                                    "text": format!("<think>\n{text}\n</think>")
+                                }));
+                            }
+                            ModelResponsePart::ToolCall(call)
+                            | ModelResponsePart::ProviderToolCall { call, .. } => {
+                                content.push(json!({
+                                    "toolUse": {
+                                        "toolUseId": call.id,
+                                        "name": call.name,
+                                        "input": call.arguments,
+                                    }
+                                }));
+                            }
                             _ => {}
                         }
                     }
@@ -206,7 +220,7 @@ impl BedrockConverseAdapter {
 
         Ok(ModelResponse {
             parts,
-            usage: usage_from_named(value, "inputTokens", "outputTokens"),
+            usage: usage_from_named_including_cache_input(value, "inputTokens", "outputTokens"),
             model_name: None,
             provider: Some(ProviderInfo {
                 name: "bedrock".to_string(),
@@ -215,6 +229,7 @@ impl BedrockConverseAdapter {
                     .and_then(|meta| meta.get("RequestId"))
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                details: serde_json::Map::new(),
             }),
             finish_reason: match value.get("stopReason").and_then(Value::as_str) {
                 Some("end_turn") => Some(FinishReason::Stop),

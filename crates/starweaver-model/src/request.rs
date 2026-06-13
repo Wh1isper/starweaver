@@ -408,14 +408,22 @@ fn lift_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
             ModelMessage::Request(request) => {
                 if let Some(instructions) = request.instructions.as_ref() {
                     if !instructions.trim().is_empty() {
-                        lifted.push(instructions.clone());
+                        let mut metadata = Map::new();
+                        metadata.insert(
+                            "starweaver_instruction_origin".to_string(),
+                            serde_json::json!("request_instructions"),
+                        );
+                        lifted.push(ModelRequestPart::SystemPrompt {
+                            text: instructions.clone(),
+                            metadata,
+                        });
                     }
                 }
                 let mut remaining = Vec::new();
                 for part in &request.parts {
                     match part {
-                        ModelRequestPart::SystemPrompt { text, .. }
-                        | ModelRequestPart::Instruction { text, .. } => lifted.push(text.clone()),
+                        ModelRequestPart::SystemPrompt { .. }
+                        | ModelRequestPart::Instruction { .. } => lifted.push(part.clone()),
                         other => remaining.push(other.clone()),
                     }
                 }
@@ -432,23 +440,18 @@ fn lift_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
     if lifted.is_empty() {
         return output;
     }
-    let mut metadata = Map::new();
-    metadata.insert(
-        "starweaver_instruction_origin".to_string(),
-        serde_json::json!("lifted_system"),
-    );
     output.insert(
         0,
         ModelMessage::Request(ModelRequest {
-            parts: vec![ModelRequestPart::SystemPrompt {
-                text: lifted.join("\n"),
-                metadata,
-            }],
+            parts: lifted,
             timestamp: None,
             instructions: None,
             run_id: None,
             conversation_id: None,
-            metadata: Map::new(),
+            metadata: Map::from_iter([(
+                "starweaver_instruction_origin".to_string(),
+                serde_json::json!("lifted_system"),
+            )]),
         }),
     );
     output

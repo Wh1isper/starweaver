@@ -103,6 +103,8 @@ async fn failing_subagent_absorbs_usage_into_parent_context() {
             usage: Usage {
                 requests: 1,
                 input_tokens: 7,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
                 output_tokens: 11,
                 total_tokens: 18,
                 tool_calls: 0,
@@ -117,6 +119,8 @@ async fn failing_subagent_absorbs_usage_into_parent_context() {
         usage: Usage {
             requests: 2,
             input_tokens: 3,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 5,
             total_tokens: 8,
             tool_calls: 1,

@@ -8,11 +8,11 @@ use crate::{
     media::parse_data_url,
     message::{
         ContentPart, FinishReason, ModelMessage, ModelRequestPart, ModelResponse,
-        ModelResponsePart, ProviderInfo, ToolCallPart, ToolReturnPart,
+        ModelResponsePart, ProviderInfo, ProviderPartInfo, ToolCallPart, ToolReturnPart,
     },
     providers::{
         collect_system_parts_and_non_system, insert_optional_description, provider_tool_parameters,
-        usage_from_named, SystemInstructionPart,
+        usage_from_named_including_cache_input, SystemInstructionPart,
     },
     ModelError, ModelSettings,
 };
@@ -65,21 +65,43 @@ impl AnthropicMessagesAdapter {
                     let mut content = Vec::new();
                     for part in &response.parts {
                         match part {
-                            ModelResponsePart::Text { text } => {
+                            ModelResponsePart::Text { text }
+                            | ModelResponsePart::ProviderText { text, .. } => {
                                 content.push(json!({"type": "text", "text": text}));
                             }
-                            ModelResponsePart::ToolCall(call) => content.push(json!({
-                                "type": "tool_use",
-                                "id": call.id,
-                                "name": call.name,
-                                "input": call.arguments,
-                            })),
-                            ModelResponsePart::Thinking { text, signature } => {
-                                let mut thinking = json!({"type": "thinking", "thinking": text});
-                                if let Some(signature) = signature {
-                                    thinking["signature"] = json!(signature);
+                            ModelResponsePart::ToolCall(call)
+                            | ModelResponsePart::ProviderToolCall { call, .. } => {
+                                content.push(json!({
+                                    "type": "tool_use",
+                                    "id": call.id,
+                                    "name": call.name,
+                                    "input": call.arguments,
+                                }));
+                            }
+                            ModelResponsePart::Thinking { text, .. } if !text.is_empty() => {
+                                content.push(json!({
+                                    "type": "text",
+                                    "text": format!("<think>\n{text}\n</think>"),
+                                }));
+                            }
+                            ModelResponsePart::ProviderThinking {
+                                text,
+                                signature,
+                                provider,
+                            } => {
+                                if provider.is_provider("anthropic") {
+                                    let mut thinking =
+                                        json!({"type": "thinking", "thinking": text});
+                                    if let Some(signature) = signature {
+                                        thinking["signature"] = json!(signature);
+                                    }
+                                    content.push(thinking);
+                                } else if !text.is_empty() {
+                                    content.push(json!({
+                                        "type": "text",
+                                        "text": format!("<think>\n{text}\n</think>"),
+                                    }));
                                 }
-                                content.push(thinking);
                             }
                             _ => {}
                         }
@@ -127,7 +149,7 @@ impl AnthropicMessagesAdapter {
                         });
                     }
                 }
-                Some("thinking") => parts.push(ModelResponsePart::Thinking {
+                Some("thinking") => parts.push(ModelResponsePart::ProviderThinking {
                     text: block
                         .get("thinking")
                         .and_then(Value::as_str)
@@ -137,6 +159,10 @@ impl AnthropicMessagesAdapter {
                         .get("signature")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    provider: block.get("id").and_then(Value::as_str).map_or_else(
+                        || ProviderPartInfo::new("anthropic"),
+                        |id| ProviderPartInfo::new("anthropic").with_id(id),
+                    ),
                 }),
                 Some("tool_use") => parts.push(ModelResponsePart::ToolCall(ToolCallPart {
                     id: block
@@ -157,7 +183,7 @@ impl AnthropicMessagesAdapter {
 
         Ok(ModelResponse {
             parts,
-            usage: usage_from_named(value, "input_tokens", "output_tokens"),
+            usage: usage_from_named_including_cache_input(value, "input_tokens", "output_tokens"),
             model_name: value
                 .get("model")
                 .and_then(Value::as_str)
@@ -165,6 +191,7 @@ impl AnthropicMessagesAdapter {
             provider: Some(ProviderInfo {
                 name: "anthropic".to_string(),
                 response_id: value.get("id").and_then(Value::as_str).map(str::to_string),
+                details: serde_json::Map::new(),
             }),
             finish_reason: match value.get("stop_reason").and_then(Value::as_str) {
                 Some("end_turn") => Some(FinishReason::Stop),
@@ -420,4 +447,115 @@ fn anthropic_tool_result(tool_return: &ToolReturnPart) -> Value {
         result["cache_control"] = cache_control.clone();
     }
     result
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn response_with_provider_thinking(provider_name: &str) -> ModelMessage {
+        ModelMessage::Response(ModelResponse {
+            parts: vec![ModelResponsePart::ProviderThinking {
+                text: "inspect context".to_string(),
+                signature: Some("provider-signature".to_string()),
+                provider: ProviderPartInfo::new(provider_name).with_id("thinking_1"),
+            }],
+            usage: starweaver_core::Usage::default(),
+            model_name: None,
+            provider: None,
+            finish_reason: None,
+            timestamp: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        })
+    }
+
+    #[test]
+    fn build_request_replays_anthropic_provider_thinking_natively() {
+        let request = AnthropicMessagesAdapter::build_request(
+            "claude-test",
+            &[response_with_provider_thinking("anthropic")],
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let content = request["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "thinking");
+        assert_eq!(content[0]["thinking"], "inspect context");
+        assert_eq!(content[0]["signature"], "provider-signature");
+    }
+
+    #[test]
+    fn build_request_does_not_replay_foreign_thinking_signature() {
+        let request = AnthropicMessagesAdapter::build_request(
+            "claude-test",
+            &[response_with_provider_thinking("openai")],
+            None,
+            &[],
+        )
+        .unwrap();
+
+        let content = request["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "<think>\ninspect context\n</think>");
+        assert!(content[0].get("signature").is_none());
+    }
+
+    #[test]
+    fn build_request_does_not_replay_ambiguous_legacy_thinking_signature() {
+        let response = ModelMessage::Response(ModelResponse {
+            parts: vec![ModelResponsePart::Thinking {
+                text: "legacy inspect".to_string(),
+                signature: Some("ambiguous-signature".to_string()),
+            }],
+            usage: starweaver_core::Usage::default(),
+            model_name: None,
+            provider: None,
+            finish_reason: None,
+            timestamp: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        });
+
+        let request =
+            AnthropicMessagesAdapter::build_request("claude-test", &[response], None, &[]).unwrap();
+
+        let content = request["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "<think>\nlegacy inspect\n</think>");
+        assert!(content[0].get("signature").is_none());
+        assert!(!serde_json::to_string(&request)
+            .unwrap()
+            .contains("ambiguous-signature"));
+    }
+
+    #[test]
+    fn parse_response_preserves_anthropic_provider_thinking() {
+        let response = AnthropicMessagesAdapter::parse_response(&json!({
+            "id": "msg_1",
+            "model": "claude-test",
+            "stop_reason": "end_turn",
+            "content": [{
+                "type": "thinking",
+                "id": "thinking_1",
+                "thinking": "inspect",
+                "signature": "anthropic-signature"
+            }],
+            "usage": {"input_tokens": 1, "output_tokens": 2}
+        }))
+        .unwrap();
+
+        assert!(matches!(
+            &response.parts[0],
+            ModelResponsePart::ProviderThinking { text, signature, provider }
+                if text == "inspect"
+                    && signature.as_deref() == Some("anthropic-signature")
+                    && provider.provider_name.as_deref() == Some("anthropic")
+                    && provider.id.as_deref() == Some("thinking_1")
+        ));
+    }
 }

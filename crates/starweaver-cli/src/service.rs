@@ -2172,7 +2172,8 @@ fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
         | DisplayMessageKind::HandoffCompleted
         | DisplayMessageKind::HandoffFailed
         | DisplayMessageKind::SteeringSubmitted
-        | DisplayMessageKind::SteeringReceived => custom_agui_event(
+        | DisplayMessageKind::SteeringReceived
+        | DisplayMessageKind::TaskSnapshot => custom_agui_event(
             display_extension_name(message.kind),
             message,
             &message.payload,
@@ -2217,6 +2218,7 @@ const fn display_extension_name(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::HandoffFailed => "starweaver.handoff_failed",
         DisplayMessageKind::SteeringSubmitted => "starweaver.steering_submitted",
         DisplayMessageKind::SteeringReceived => "starweaver.steering_received",
+        DisplayMessageKind::TaskSnapshot => "starweaver.task_snapshot",
         _ => "starweaver.display_message",
     }
 }

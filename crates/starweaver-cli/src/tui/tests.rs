@@ -6,11 +6,13 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use serde_json::json;
-use starweaver_context::AgentEvent;
-use starweaver_core::{ConversationId, Metadata, RunId, SessionId};
+use starweaver_context::{AgentEvent, TASK_SNAPSHOT_EVENT_KIND};
+use starweaver_core::{
+    ConversationId, Metadata, RunId, SessionId, Usage, UsageAgentTotal, UsageSnapshot,
+};
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
-    StreamDelta, ToolCallPart, ToolReturnPart,
+    ProviderPartInfo, StreamDelta, ToolCallPart, ToolReturnPart,
 };
 use starweaver_runtime::{AgentExecutionNode, AgentStreamEvent, AgentStreamRecord, RunStatus};
 use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus};
@@ -21,9 +23,11 @@ use crate::{prompt_input::PromptAttachment, slash_commands::SlashCommandDefiniti
 use super::{
     markdown::{render_markdown_lines, render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
     render::{
-        composer_cursor_column, input_tail_lines, input_viewport_lines, render_composer_lines,
-        render_footer_lines, render_live_history_lines, render_shortcut_overlay, visible_width,
-        SegmentStyle, StyledLine,
+        composer_cursor_column, composer_cursor_position_wrapped, composer_input_width,
+        input_tail_lines, input_viewport_lines, input_viewport_lines_wrapped,
+        input_visual_line_count, render_composer_lines, render_footer_lines,
+        render_live_history_lines, render_shortcut_overlay, visible_width, SegmentStyle,
+        StyledLine,
     },
     state::{FooterMode, InteractiveTuiState, ModelChoice, RunMode, SessionChoice},
     terminal::{
@@ -98,8 +102,8 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     assert!(footer_text.contains("Model: local_echo"));
     assert!(footer_text.contains("Context: 0%"));
     assert!(footer_text.contains("Enter: Send"));
-    assert!(footer_text.contains("Up/Down: History"));
-    assert!(footer_text.contains("PageUp/PageDown/Mouse: Scroll"));
+    assert!(footer_text.contains("History"));
+    assert!(footer_text.contains("Scroll"));
     assert!(has_segment(&footer_lines, " ACT ", SegmentStyle::MODE_BG));
     assert!(footer_lines.iter().any(|line| line
         .segments
@@ -1510,11 +1514,11 @@ fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
         3,
         AgentStreamEvent::Custom {
             event: AgentEvent::new(
-                "task_panel",
+                TASK_SNAPSHOT_EVENT_KIND,
                 json!({
                     "tasks": [
-                        {"id": "1", "subject": "Done", "status": "completed"},
-                        {"id": "2", "subject": "Work", "status": "in_progress"}
+                        {"id": "1", "subject": "Done", "description": "", "status": "completed"},
+                        {"id": "2", "subject": "Work", "description": "", "status": "in_progress", "active_form": "Working", "blocked_by": ["1"]}
                     ]
                 }),
             ),
@@ -1525,6 +1529,45 @@ fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
     assert!(footer.contains("Progress: 1/2 (1 in progress)"));
     assert!(footer.contains("Done"));
     assert!(footer.contains("Work"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        4,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "task_panel",
+                json!([
+                    {"id": "legacy", "subject": "Legacy task", "description": "", "status": "pending"}
+                ]),
+            ),
+        },
+    ));
+    let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(footer.contains("Tasks"));
+    assert!(footer.contains("Progress: 0/1"));
+    assert!(footer.contains("Legacy task"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        5,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "task_return",
+                "task_list",
+                json!({
+                    "operation": "task_list",
+                    "payload": {
+                        "tasks": [
+                            {"id": "tool", "subject": "Tool-return task", "description": "", "status": "completed"}
+                        ]
+                    }
+                }),
+            )
+            .with_user_content(json!("#tool [completed] Tool-return task")),
+        },
+    ));
+    let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(footer.contains("Progress: 1/1"));
+    assert!(footer.contains("Tool-return task"));
 }
 
 #[test]
@@ -2092,6 +2135,131 @@ fn session_command_opens_picker_selects_directly_and_blocks_while_running() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn cost_command_shows_accumulated_usage_snapshots() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_cost_1".to_string(),
+                    total_usage: Usage {
+                        requests: 1,
+                        input_tokens: 1_000,
+                        cache_write_tokens: 100,
+                        cache_read_tokens: 200,
+                        output_tokens: 500,
+                        total_tokens: 1_500,
+                        tool_calls: 0,
+                    },
+                    entries: Vec::new(),
+                    agent_usages: BTreeMap::from([(
+                        "main".to_string(),
+                        UsageAgentTotal {
+                            agent_name: "main".to_string(),
+                            model_id: "test:test".to_string(),
+                            usage: Usage {
+                                requests: 1,
+                                input_tokens: 1_000,
+                                cache_write_tokens: 100,
+                                cache_read_tokens: 200,
+                                output_tokens: 500,
+                                total_tokens: 1_500,
+                                tool_calls: 0,
+                            },
+                            usage_id: None,
+                            source: "model_request".to_string(),
+                        },
+                    )]),
+                    model_usages: BTreeMap::from([(
+                        "test:test".to_string(),
+                        Usage {
+                            requests: 1,
+                            input_tokens: 1_000,
+                            cache_write_tokens: 100,
+                            cache_read_tokens: 200,
+                            output_tokens: 500,
+                            total_tokens: 1_500,
+                            tool_calls: 0,
+                        },
+                    )]),
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_cost_2".to_string(),
+                    total_usage: Usage {
+                        requests: 2,
+                        input_tokens: 2_000,
+                        cache_write_tokens: 300,
+                        cache_read_tokens: 400,
+                        output_tokens: 700,
+                        total_tokens: 2_700,
+                        tool_calls: 0,
+                    },
+                    entries: Vec::new(),
+                    agent_usages: BTreeMap::from([(
+                        "debugger".to_string(),
+                        UsageAgentTotal {
+                            agent_name: "debugger".to_string(),
+                            model_id: "test:test".to_string(),
+                            usage: Usage {
+                                requests: 2,
+                                input_tokens: 2_000,
+                                cache_write_tokens: 300,
+                                cache_read_tokens: 400,
+                                output_tokens: 700,
+                                total_tokens: 2_700,
+                                tool_calls: 0,
+                            },
+                            usage_id: None,
+                            source: "model_request".to_string(),
+                        },
+                    )]),
+                    model_usages: BTreeMap::from([(
+                        "test:test".to_string(),
+                        Usage {
+                            requests: 2,
+                            input_tokens: 2_000,
+                            cache_write_tokens: 300,
+                            cache_read_tokens: 400,
+                            output_tokens: 700,
+                            total_tokens: 2_700,
+                            tool_calls: 0,
+                        },
+                    )]),
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+
+    state.input = "/cost".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+
+    assert!(body_has_line(&state, "[SYS] Token Usage Summary:"));
+    assert!(body_has_line(&state, "[SYS] By Model:"));
+    assert!(body_has_line(&state, "[SYS]   test:test:"));
+    assert!(body_has_line(&state, "[SYS]   Input:  3,000 tokens"));
+    assert!(body_has_line(&state, "[SYS]   Output: 1,200 tokens"));
+    assert!(body_has_line(&state, "[SYS]   Cache Write: 400 tokens"));
+    assert!(body_has_line(&state, "[SYS]   Cache Read:  600 tokens"));
+    assert!(body_has_line(&state, "[SYS]   Total:  4,200 tokens"));
+    assert!(body_has_line(&state, "[SYS]   Requests: 3"));
+    assert!(body_has_line(&state, "[SYS]   main:"));
+    assert!(body_has_line(&state, "[SYS]   debugger:"));
+}
+
+#[test]
 fn interactive_state_covers_model_response_finish_and_failure() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("respond");
@@ -2101,22 +2269,29 @@ fn interactive_state_covers_model_response_finish_and_failure() {
             step: 0,
             response: ModelResponse {
                 parts: vec![
-                    ModelResponsePart::Text {
+                    ModelResponsePart::ProviderText {
                         text: "answer".to_string(),
+                        provider: ProviderPartInfo::new("openai").with_id("msg_1"),
                     },
-                    ModelResponsePart::Thinking {
+                    ModelResponsePart::ProviderThinking {
                         text: "reasoning".to_string(),
                         signature: Some("sig".to_string()),
+                        provider: ProviderPartInfo::new("openai").with_id("rs_1"),
                     },
-                    ModelResponsePart::ToolCall(ToolCallPart {
-                        id: "call_2".to_string(),
-                        name: "search".to_string(),
-                        arguments: json!({}).into(),
-                    }),
+                    ModelResponsePart::ProviderToolCall {
+                        call: ToolCallPart {
+                            id: "call_2".to_string(),
+                            name: "search".to_string(),
+                            arguments: json!({}).into(),
+                        },
+                        provider: ProviderPartInfo::new("openai").with_id("fc_1"),
+                    },
                 ],
                 usage: starweaver_core::Usage {
                     requests: 1,
                     input_tokens: 1_000,
+                    cache_write_tokens: 0,
+                    cache_read_tokens: 0,
                     output_tokens: 500,
                     total_tokens: 1_500,
                     tool_calls: 0,
@@ -2145,6 +2320,8 @@ fn interactive_state_covers_model_response_finish_and_failure() {
                 usage: starweaver_core::Usage {
                     requests: 1,
                     input_tokens: 6_000,
+                    cache_write_tokens: 0,
+                    cache_read_tokens: 0,
                     output_tokens: 500,
                     total_tokens: 6_500,
                     tool_calls: 0,
@@ -2696,15 +2873,26 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
             8,
             session_id.clone(),
             run_id.clone(),
-            DisplayMessageKind::RunCompleted,
-        ),
+            DisplayMessageKind::TaskSnapshot,
+        )
+        .with_payload(json!({
+            "tasks": [
+                {"id": "1", "subject": "Replay task", "description": "Restore task", "status": "in_progress", "active_form": "Restoring task", "blocked_by": ["2"]}
+            ]
+        })),
         DisplayMessage::new(
             9,
             session_id.clone(),
             run_id.clone(),
+            DisplayMessageKind::RunCompleted,
+        ),
+        DisplayMessage::new(
+            10,
+            session_id.clone(),
+            run_id.clone(),
             DisplayMessageKind::RunFailed,
         ),
-        DisplayMessage::new(10, session_id, run_id, DisplayMessageKind::RunCancelled),
+        DisplayMessage::new(11, session_id, run_id, DisplayMessageKind::RunCancelled),
     ];
     let snapshot = super::snapshot::TuiSnapshot::from_parts(
         "session_snapshot".to_string(),
@@ -2712,7 +2900,7 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         &approvals,
         &deferred,
     );
-    assert_eq!(snapshot.messages, 11);
+    assert_eq!(snapshot.messages, 12);
     assert_eq!(snapshot.pending_approvals, 1);
     assert_eq!(snapshot.pending_deferred, 1);
     assert_eq!(snapshot.assistant_text, "hello world");
@@ -2733,6 +2921,8 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         ]
     );
     assert_eq!(snapshot.terminal_status.as_deref(), Some("cancelled"));
+    assert_eq!(snapshot.tasks.len(), 1);
+    assert_eq!(snapshot.tasks[0].subject, "Replay task");
     let text = snapshot.render_text();
     assert!(text.contains("pending_approvals=1"));
     assert!(text.contains("terminal_status=cancelled"));
@@ -2777,6 +2967,52 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         .body
         .iter()
         .any(|line| line == "Run completed: session_snapshot status=cancelled"));
+    let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(footer.contains("Tasks"));
+    assert!(footer.contains("Replay task"));
+    assert!(footer.contains("blocked by #2"));
+}
+
+#[test]
+fn tui_snapshot_accepts_legacy_task_panel_items_payload() {
+    let session_id = SessionId::from_string("session_legacy_task_panel");
+    let run_id = RunId::from_string("run_legacy_task_panel");
+    let messages = vec![
+        DisplayMessage::new(
+            0,
+            session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::TaskSnapshot,
+        )
+        .with_payload(json!({
+            "items": [
+                {"id": "legacy", "subject": "Legacy task", "description": "", "status": "pending"}
+            ]
+        })),
+        DisplayMessage::new(1, session_id, run_id, DisplayMessageKind::ToolResult)
+            .with_payload(json!({
+                "tool_name": "task_list",
+                "content": {
+                    "operation": "task_list",
+                    "payload": {
+                        "tasks": [
+                            {"id": "tool", "subject": "Tool-return task", "description": "", "status": "completed"}
+                        ]
+                    }
+                }
+            })),
+    ];
+
+    let snapshot = super::snapshot::TuiSnapshot::from_parts(
+        "session_legacy_task_panel".to_string(),
+        messages,
+        &[],
+        &[],
+    );
+
+    assert_eq!(snapshot.tasks.len(), 1);
+    assert_eq!(snapshot.tasks[0].id, "tool");
+    assert_eq!(snapshot.tasks[0].subject, "Tool-return task");
 }
 
 #[test]
@@ -2808,9 +3044,12 @@ fn render_helpers_cover_footer_and_truncation_branches() {
     assert!(drafting_footer.contains("Ctrl+U: Clear"));
 
     let composer = render_composer_lines(&drafting, 6);
-    assert!(line_texts(&composer)
-        .iter()
-        .any(|line| line.contains("draft")));
+    let composer_text = line_texts(&composer).join(
+        "
+",
+    );
+    assert!(composer_text.contains("> draf"));
+    assert!(composer_text.contains("  t"));
 
     let footer_overlay_text = line_texts(&render_footer_lines(&state, 72)).join("\n");
     assert!(!footer_overlay_text.contains("Available Commands"));
@@ -2995,6 +3234,60 @@ fn key_handler_covers_quit_and_history_edges() {
         handle_key_event(&mut ctrl_c_state, key_modified('c', KeyModifiers::CONTROL)),
         Some(InteractiveTuiEvent::Quit)
     );
+}
+
+#[test]
+fn composer_soft_wraps_long_input_and_tracks_visual_cursor() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.input = "abcdefghij".to_string();
+
+    let rendered = render_composer_lines(&state, 6);
+    let texts = line_texts(&rendered);
+    assert_eq!(texts[1], "> abcd");
+    assert_eq!(texts[2], "  efgh");
+    assert_eq!(texts[3], "  ij");
+    assert!(rendered.iter().all(|line| line.visible_width() <= 6));
+
+    let input_width = composer_input_width(6);
+    assert_eq!(input_width, 4);
+    assert_eq!(input_visual_line_count(&state.input, input_width), 3);
+    assert_eq!(
+        input_viewport_lines_wrapped(&state.input, 2, 0, input_width),
+        vec!["efgh".to_string(), "ij".to_string()]
+    );
+    assert_eq!(
+        composer_cursor_position_wrapped(&state.input, state.input.len(), input_width),
+        (2, 2)
+    );
+}
+
+#[test]
+fn composer_soft_wraps_wide_characters_by_display_width() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.input = "中文abc".to_string();
+
+    let rendered = render_composer_lines(&state, 6);
+    let texts = line_texts(&rendered);
+    assert_eq!(texts[1], "> 中文");
+    assert_eq!(texts[2], "  abc");
+    assert!(rendered.iter().all(|line| line.visible_width() <= 6));
+    assert_eq!(
+        composer_cursor_position_wrapped(&state.input, state.input.len(), 4),
+        (1, 3)
+    );
+}
+
+#[test]
+fn status_bar_secondary_uses_compact_text_on_narrow_widths() {
+    let state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let text = line_texts(&render_footer_lines(&state, 36)).join(
+        "
+",
+    );
+    assert!(text.contains("Enter Send"));
+    assert!(text.contains("Esc Select"));
+    assert!(text.contains("Ctrl+C Exit"));
+    assert!(!text.contains("Attach clipboard image"));
 }
 
 #[test]

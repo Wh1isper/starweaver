@@ -53,6 +53,9 @@ pub struct ModelSettings {
     /// Latency/cost tier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
+    /// Provider replay and server-side state controls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_replay: Option<ProviderReplaySettings>,
     /// Provider-specific settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<Value>,
@@ -99,6 +102,10 @@ impl ModelSettings {
                 .service_tier
                 .clone()
                 .or_else(|| self.service_tier.clone()),
+            provider_replay: overlay
+                .provider_replay
+                .clone()
+                .or_else(|| self.provider_replay.clone()),
             provider_options: overlay
                 .provider_options
                 .clone()
@@ -119,6 +126,23 @@ impl ModelSettings {
             },
         }
     }
+}
+
+/// Provider replay and server-side state controls.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProviderReplaySettings {
+    /// Same-provider response ID chaining policy, such as `auto` or a concrete provider response ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    /// Same-provider server-side conversation policy, such as `auto` or a concrete conversation ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    /// Whether to replay provider item IDs when the same provider can consume them safely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_item_ids: Option<bool>,
+    /// Whether to request and replay encrypted reasoning payloads when supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_encrypted_reasoning: Option<bool>,
 }
 
 /// Tool selection policy.

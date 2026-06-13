@@ -120,6 +120,8 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
     context.usage = Usage {
         requests: 2,
         input_tokens: 10,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 4,
         total_tokens: 14,
         tool_calls: 1,
@@ -157,6 +159,8 @@ fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
         usage: Usage {
             requests: 2,
             input_tokens: 120,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 80,
             total_tokens: 200,
             tool_calls: 0,
@@ -167,6 +171,8 @@ fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
     first.usage = Usage {
         requests: 1,
         input_tokens: 20,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 5,
         total_tokens: 25,
         tool_calls: 0,
@@ -175,6 +181,8 @@ fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
     second.usage = Usage {
         requests: 1,
         input_tokens: 40,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 10,
         total_tokens: 50,
         tool_calls: 0,
@@ -201,6 +209,8 @@ fn runtime_context_adds_proactive_context_pressure_reminder_from_latest_request_
         usage: Usage {
             requests: 2,
             input_tokens: 90,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 20,
             total_tokens: 110,
             tool_calls: 0,
@@ -211,6 +221,8 @@ fn runtime_context_adds_proactive_context_pressure_reminder_from_latest_request_
     first.usage = Usage {
         requests: 1,
         input_tokens: 40,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 10,
         total_tokens: 50,
         tool_calls: 0,
@@ -219,6 +231,8 @@ fn runtime_context_adds_proactive_context_pressure_reminder_from_latest_request_
     second.usage = Usage {
         requests: 1,
         input_tokens: 50,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 10,
         total_tokens: 60,
         tool_calls: 0,
@@ -241,6 +255,8 @@ fn parent_absorbs_subagent_usage_and_notes_after_success() {
     parent.usage = Usage {
         requests: 1,
         input_tokens: 3,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 2,
         total_tokens: 5,
         tool_calls: 0,
@@ -251,6 +267,8 @@ fn parent_absorbs_subagent_usage_and_notes_after_success() {
     child.usage.add_assign(&Usage {
         requests: 2,
         input_tokens: 4,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
         output_tokens: 6,
         total_tokens: 10,
         tool_calls: 1,

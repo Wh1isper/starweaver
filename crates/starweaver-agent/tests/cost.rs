@@ -12,6 +12,8 @@ async fn builder_applies_cost_budget_usage_limits() {
         usage: Usage {
             requests: 1,
             input_tokens: 10,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
             output_tokens: 0,
             total_tokens: 10,
             tool_calls: 0,

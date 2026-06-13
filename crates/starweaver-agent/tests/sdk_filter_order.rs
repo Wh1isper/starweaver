@@ -14,8 +14,8 @@ use starweaver_agent::{
 };
 use starweaver_model::{
     ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
-    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ToolCallPart,
-    ToolDefinition, ToolReturnPart,
+    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderPartInfo,
+    ToolCallPart, ToolDefinition, ToolReturnPart,
 };
 
 #[tokio::test]
@@ -405,6 +405,8 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
             response.usage = Usage {
                 requests: 1,
                 input_tokens: 10,
+                cache_write_tokens: 0,
+                cache_read_tokens: 0,
                 output_tokens: 5,
                 total_tokens: 15,
                 tool_calls: 0,
@@ -765,6 +767,88 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
     assert!(matches!(
         &response.parts[1],
         ModelResponsePart::Thinking { text, signature } if text == "keep reasoning" && signature.is_none()
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn filters_repair_and_normalize_provider_aware_response_parts(
+) -> starweaver_agent::CapabilityResult<()> {
+    let mut provider_details = serde_json::Map::new();
+    provider_details.insert(
+        "encrypted_content".to_string(),
+        serde_json::json!("encrypted-only"),
+    );
+    let messages = vec![ModelMessage::Response(ModelResponse {
+        parts: vec![
+            ModelResponsePart::ProviderToolCall {
+                call: ToolCallPart {
+                    id: "call_provider".to_string(),
+                    name: "json_tool".to_string(),
+                    arguments: serde_json::json!("{\"ok\":true}").into(),
+                },
+                provider: ProviderPartInfo::new("openai").with_id("fc_provider"),
+            },
+            ModelResponsePart::ProviderThinking {
+                text: "  keep provider reasoning   \n".to_string(),
+                signature: Some(String::new()),
+                provider: ProviderPartInfo::new("openai").with_id("rs_keep"),
+            },
+            ModelResponsePart::ProviderThinking {
+                text: String::new(),
+                signature: Some("encrypted-only".to_string()),
+                provider: ProviderPartInfo::new("openai")
+                    .with_id("rs_encrypted")
+                    .with_details(provider_details),
+            },
+        ],
+        usage: starweaver_agent::Usage::default(),
+        model_name: None,
+        provider: None,
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    })];
+
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_provider_filter"),
+        ConversationId::new(),
+    );
+    let mut output = NamedFilterCapability::new("tool_args")
+        .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), messages)
+        .await?;
+    output = NamedFilterCapability::new("reasoning_normalize")
+        .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), output)
+        .await?;
+
+    let response = output
+        .iter()
+        .find_map(|message| match message {
+            ModelMessage::Response(response) => Some(response),
+            ModelMessage::Request(_) => None,
+        })
+        .expect("response");
+    assert!(matches!(
+        &response.parts[0],
+        ModelResponsePart::ProviderToolCall { call, provider }
+            if call.arguments == serde_json::json!({"ok": true})
+                && provider.id.as_deref() == Some("fc_provider")
+    ));
+    assert!(matches!(
+        &response.parts[1],
+        ModelResponsePart::ProviderThinking { text, signature, provider }
+            if text == "keep provider reasoning"
+                && signature.is_none()
+                && provider.id.as_deref() == Some("rs_keep")
+    ));
+    assert!(matches!(
+        &response.parts[2],
+        ModelResponsePart::ProviderThinking { text, signature, provider }
+            if text.is_empty()
+                && signature.as_deref() == Some("encrypted-only")
+                && provider.id.as_deref() == Some("rs_encrypted")
     ));
     Ok(())
 }

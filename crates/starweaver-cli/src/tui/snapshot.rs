@@ -4,12 +4,13 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 use serde_json::Value;
+use starweaver_context::TASK_SNAPSHOT_EVENT_KIND;
 use starweaver_model::{ToolArguments, ToolCallPart, ToolReturnPart};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{ApprovalRecord, DeferredToolRecord};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
-use super::state::display_lines_for_stream_record;
+use super::state::{display_lines_for_stream_record, TaskPanelItem};
 
 /// Non-interactive TUI snapshot used by the renderer and tests.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -30,6 +31,9 @@ pub struct TuiSnapshot {
     pub pending_deferred: usize,
     /// Terminal status if seen.
     pub terminal_status: Option<String>,
+    /// Latest task board snapshot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tasks: Vec<TaskPanelItem>,
     /// Transcript lines reconstructed in durable display-message order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transcript_lines: Vec<String>,
@@ -89,6 +93,7 @@ impl TuiSnapshot {
             DisplayMessageKind::SteeringSubmitted | DisplayMessageKind::SteeringReceived => {
                 self.apply_steering(message);
             }
+            DisplayMessageKind::TaskSnapshot => self.apply_task_snapshot(message),
             DisplayMessageKind::RunCompleted => {
                 self.terminal_status = Some("completed".to_string());
             }
@@ -155,26 +160,44 @@ impl TuiSnapshot {
             .get("is_error")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let preview = message
+        let tool_name = message
+            .payload
+            .get("tool_name")
+            .or_else(|| message.payload.get("name"))
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty());
+        let content = message
             .payload
             .get("user_content")
-            .or_else(|| message.payload.get("content"))
+            .or_else(|| message.payload.get("content"));
+        if tool_name.is_some_and(is_task_tool_name) {
+            if let Some(tasks) = content.and_then(task_panel_items_from_value) {
+                self.tasks = tasks;
+            }
+        }
+        let preview = content
             .map(|value| value_preview_for_status(value, is_error))
             .or_else(|| message.preview.clone());
         if let Some(preview) = preview {
-            let display = message
-                .payload
-                .get("tool_name")
-                .or_else(|| message.payload.get("name"))
-                .and_then(Value::as_str)
-                .filter(|name| !name.trim().is_empty())
-                .map_or_else(|| preview.clone(), |name| format!("{name} {preview}"));
+            let display =
+                tool_name.map_or_else(|| preview.clone(), |name| format!("{name} {preview}"));
             if is_error {
                 self.tool_calls.push(format!("result:error:{display}"));
             } else {
                 self.tool_calls.push(format!("result:{display}"));
             }
         }
+    }
+
+    fn apply_task_snapshot(&mut self, message: &DisplayMessage) {
+        self.tasks = task_snapshot_items(&message.payload)
+            .map(|tasks| {
+                tasks
+                    .iter()
+                    .filter_map(task_panel_item_from_value)
+                    .collect()
+            })
+            .unwrap_or_default();
     }
 
     fn apply_steering(&mut self, message: &DisplayMessage) {
@@ -345,6 +368,12 @@ fn display_message_to_stream_record(
                 message.payload.clone(),
             ),
         },
+        DisplayMessageKind::TaskSnapshot => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                TASK_SNAPSHOT_EVENT_KIND,
+                message.payload.clone(),
+            ),
+        },
         DisplayMessageKind::RunCompleted => AgentStreamEvent::RunComplete {
             run_id: message.run_id.clone(),
             output: message
@@ -384,6 +413,114 @@ fn message_delta(message: &DisplayMessage) -> Option<String> {
         .and_then(Value::as_str)
         .or(message.preview.as_deref())
         .map(ToString::to_string)
+}
+
+fn task_snapshot_items(value: &Value) -> Option<&Vec<Value>> {
+    let payload = value.get("payload").unwrap_or(value);
+    payload
+        .get("tasks")
+        .or_else(|| payload.get("items"))
+        .and_then(Value::as_array)
+        .or_else(|| payload.as_array())
+        .or_else(|| {
+            value
+                .get("tasks")
+                .or_else(|| value.get("items"))
+                .and_then(Value::as_array)
+                .or_else(|| value.as_array())
+        })
+}
+
+fn task_panel_items_from_value(value: &Value) -> Option<Vec<TaskPanelItem>> {
+    if let Some(items) = task_snapshot_items(value) {
+        return Some(
+            items
+                .iter()
+                .filter_map(task_panel_item_from_value)
+                .collect(),
+        );
+    }
+    let payload = value.get("payload").unwrap_or(value);
+    for candidate in [payload, value] {
+        if let Some(task) = candidate.get("task").filter(|task| task.is_object()) {
+            if let Some(item) = task_panel_item_from_value(task) {
+                return Some(vec![item]);
+            }
+        }
+        if candidate.is_object() {
+            if let Some(item) = task_panel_item_from_value(candidate) {
+                return Some(vec![item]);
+            }
+        }
+    }
+    None
+}
+
+fn is_task_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "task_create" | "task_get" | "task_update" | "task_list"
+    )
+}
+
+fn task_panel_item_from_value(value: &Value) -> Option<TaskPanelItem> {
+    let task = value
+        .get("task")
+        .filter(|task| task.is_object())
+        .unwrap_or(value);
+    Some(TaskPanelItem {
+        id: task
+            .get("id")
+            .or_else(|| task.get("task_id"))
+            .and_then(Value::as_str)?
+            .trim_start_matches('#')
+            .to_string(),
+        subject: task
+            .get("subject")
+            .and_then(Value::as_str)
+            .unwrap_or("untitled")
+            .to_string(),
+        description: task
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        status: task
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("pending")
+            .to_string(),
+        active_form: task
+            .get("active_form")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string),
+        owner: task
+            .get("owner")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string),
+        blocked_by: value_string_vec(task.get("blocked_by")),
+        blocks: value_string_vec(task.get("blocks")),
+    })
+}
+
+fn value_string_vec(value: Option<&Value>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim_start_matches('#').to_string())
+            .collect(),
+        Value::String(text) if !text.trim().is_empty() => {
+            vec![text.trim_start_matches('#').to_string()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn append_blockquote_text(target: &mut String, text: &str) {

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use starweaver_context::AgentContext;
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
+use starweaver_model::{ModelMessage, ModelRequest, ModelRequestPart};
 use starweaver_runtime::{AgentCapability, AgentRunState, CapabilityError, CapabilityResult};
 use starweaver_tools::{ToolContext, ToolError};
 
@@ -32,15 +33,25 @@ pub struct EnvironmentContextCapability;
 
 #[async_trait]
 impl AgentCapability for EnvironmentContextCapability {
-    async fn before_model_request_with_context(
+    async fn prepare_model_messages_with_context(
         &self,
-        _state: &mut AgentRunState,
+        state: &mut AgentRunState,
         context: &mut AgentContext,
-        request: &mut starweaver_model::ModelRequest,
-        _settings: &mut Option<starweaver_model::ModelSettings>,
-    ) -> CapabilityResult<()> {
+        mut messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        let Some(request_index) = latest_request_index(&messages) else {
+            return Ok(messages);
+        };
+        let has_control_part = match &messages[request_index] {
+            ModelMessage::Request(request) => request_has_tool_return_or_retry(request),
+            ModelMessage::Response(_) => false,
+        };
+        if has_control_part && !force_inject_instructions(state, context) {
+            return Ok(messages);
+        }
+
         let Some(environment) = context.dependencies.get::<EnvironmentHandle>() else {
-            return Ok(());
+            return Ok(messages);
         };
         let Some(text) = environment
             .provider()
@@ -48,19 +59,70 @@ impl AgentCapability for EnvironmentContextCapability {
             .await
             .map_err(|error| CapabilityError::Failed(error.to_string()))?
         else {
-            return Ok(());
+            return Ok(messages);
         };
         let mut metadata = serde_json::Map::new();
         metadata.insert(
             "starweaver_instruction_origin".to_string(),
             serde_json::json!("environment_context"),
         );
-        request.parts.insert(
-            0,
-            starweaver_model::ModelRequestPart::Instruction { text, metadata },
+        metadata.insert(
+            "starweaver_instruction_dynamic".to_string(),
+            serde_json::json!(true),
         );
-        Ok(())
+        if let ModelMessage::Request(request) = &mut messages[request_index] {
+            insert_request_part_after_control_parts(
+                request,
+                ModelRequestPart::Instruction { text, metadata },
+            );
+        }
+        Ok(messages)
     }
+}
+
+fn latest_request_index(messages: &[ModelMessage]) -> Option<usize> {
+    messages
+        .iter()
+        .rposition(|message| matches!(message, ModelMessage::Request(_)))
+}
+
+fn request_has_tool_return_or_retry(request: &ModelRequest) -> bool {
+    request.parts.iter().any(|part| {
+        matches!(
+            part,
+            ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. }
+        )
+    })
+}
+
+fn insert_request_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
+    let insert_at = request
+        .parts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, part)| match part {
+            ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => {
+                Some(index + 1)
+            }
+            ModelRequestPart::SystemPrompt { .. }
+            | ModelRequestPart::UserPrompt { .. }
+            | ModelRequestPart::Instruction { .. } => None,
+        })
+        .next_back()
+        .unwrap_or(0);
+    request.parts.insert(insert_at, part);
+}
+
+fn force_inject_instructions(state: &AgentRunState, context: &AgentContext) -> bool {
+    metadata_bool(&state.metadata, "starweaver_force_inject_instructions")
+        || metadata_bool(&context.metadata, "starweaver_force_inject_instructions")
+}
+
+fn metadata_bool(metadata: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    metadata
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Attach the active environment to an `AgentContext`.

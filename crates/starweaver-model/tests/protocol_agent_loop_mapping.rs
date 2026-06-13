@@ -200,6 +200,128 @@ fn openai_responses_preserves_agent_loop_boundaries() {
 }
 
 #[test]
+fn openai_responses_maps_dynamic_runtime_context_as_latest_input_not_top_level_instructions() {
+    fn request_with_runtime_context(runtime_context: &str) -> serde_json::Value {
+        let mut metadata = Map::new();
+        metadata.insert(
+            "starweaver_instruction_origin".to_string(),
+            json!("runtime_context"),
+        );
+        metadata.insert("starweaver_instruction_dynamic".to_string(), json!(true));
+        let messages = vec![ModelMessage::Request(ModelRequest {
+            parts: vec![
+                ModelRequestPart::SystemPrompt {
+                    text: "stable system".to_string(),
+                    metadata: Map::new(),
+                },
+                ModelRequestPart::Instruction {
+                    text: runtime_context.to_string(),
+                    metadata,
+                },
+                ModelRequestPart::UserPrompt {
+                    content: vec![starweaver_model::ContentPart::Text {
+                        text: "latest user".to_string(),
+                    }],
+                    name: None,
+                    metadata: Map::new(),
+                },
+            ],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        })];
+
+        OpenAiResponsesAdapter::build_request("gpt-test", &messages, None, &[], &[]).unwrap()
+    }
+
+    let first = request_with_runtime_context(
+        "<runtime-context><current-time>first</current-time></runtime-context>",
+    );
+    let second = request_with_runtime_context(
+        "<runtime-context><current-time>second</current-time></runtime-context>",
+    );
+
+    assert_eq!(first["instructions"], "stable system");
+    assert_eq!(first["instructions"], second["instructions"]);
+    assert!(!first["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    let input = first["input"].as_array().unwrap();
+    assert!(input.iter().any(|item| {
+        item["role"] == "system"
+            && item["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("current-time")
+    }));
+    assert!(input
+        .iter()
+        .any(|item| { item["role"] == "user" && item["content"][0]["text"] == "latest user" }));
+}
+
+#[test]
+fn openai_responses_maps_dynamic_environment_context_origin_as_latest_input() {
+    fn request_with_environment_context(environment_context: &str) -> serde_json::Value {
+        let mut metadata = Map::new();
+        metadata.insert(
+            "starweaver_instruction_origin".to_string(),
+            json!("environment_context"),
+        );
+        let messages = vec![ModelMessage::Request(ModelRequest {
+            parts: vec![
+                ModelRequestPart::SystemPrompt {
+                    text: "stable system".to_string(),
+                    metadata: Map::new(),
+                },
+                ModelRequestPart::Instruction {
+                    text: environment_context.to_string(),
+                    metadata,
+                },
+                ModelRequestPart::UserPrompt {
+                    content: vec![starweaver_model::ContentPart::Text {
+                        text: "latest user".to_string(),
+                    }],
+                    name: None,
+                    metadata: Map::new(),
+                },
+            ],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        })];
+
+        OpenAiResponsesAdapter::build_request("gpt-test", &messages, None, &[], &[]).unwrap()
+    }
+
+    let first = request_with_environment_context(
+        "<environment-context><default-directory>/first</default-directory></environment-context>",
+    );
+    let second = request_with_environment_context(
+        "<environment-context><default-directory>/second</default-directory></environment-context>",
+    );
+
+    assert_eq!(first["instructions"], "stable system");
+    assert_eq!(first["instructions"], second["instructions"]);
+    assert!(!first["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("environment-context"));
+    let input = first["input"].as_array().unwrap();
+    assert!(input.iter().any(|item| {
+        item["role"] == "system"
+            && item["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("environment-context")
+    }));
+}
+
+#[test]
 fn openai_responses_parses_text_tool_call_usage_and_finish_reason() {
     let response = OpenAiResponsesAdapter::parse_response(&json!({
         "id": "resp_1",
@@ -348,8 +470,10 @@ fn anthropic_parses_text_thinking_tool_call_usage_and_finish_reason() {
 
     assert!(response.parts.iter().any(|part| matches!(
         part,
-        ModelResponsePart::Thinking { text, signature }
-            if text == "inspect" && signature.as_deref() == Some("sig_1")
+        ModelResponsePart::ProviderThinking { text, signature, provider }
+            if text == "inspect"
+                && signature.as_deref() == Some("sig_1")
+                && provider.provider_name.as_deref() == Some("anthropic")
     )));
     assert_eq!(response.text_output(), "Need a lookup.");
     assert_eq!(response.provider.as_ref().unwrap().name, "anthropic");

@@ -653,6 +653,11 @@ impl SubagentRegistry {
                     )
                     .unwrap_or_else(|_| serde_json::json!({"name": name})),
                 ));
+                parent_context.publish_event(starweaver_context::AgentEvent::new(
+                    "usage_snapshot",
+                    serde_json::to_value(parent_context.build_usage_snapshot())
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                ));
                 return Err(error);
             }
         };
@@ -669,6 +674,11 @@ impl SubagentRegistry {
                 .with_metadata(task.metadata.clone()),
             )
             .unwrap_or_else(|_| serde_json::json!({"name": name})),
+        ));
+        parent_context.publish_event(starweaver_context::AgentEvent::new(
+            "usage_snapshot",
+            serde_json::to_value(parent_context.build_usage_snapshot())
+                .unwrap_or_else(|_| serde_json::json!({})),
         ));
         Ok(SubagentResult {
             name: name.to_string(),

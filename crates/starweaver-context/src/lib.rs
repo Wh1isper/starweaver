@@ -10,7 +10,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub use starweaver_core::AgentId;
-use starweaver_core::{ConversationId, Metadata, RunId, TraceContext, Usage, XmlWriter};
+use starweaver_core::{
+    ConversationId, Metadata, RunId, TraceContext, Usage, UsageAgentTotal, UsageSnapshot,
+    UsageSnapshotEntry, XmlWriter,
+};
 use starweaver_model::ModelMessage;
 
 /// In-memory state store for context domains.
@@ -47,6 +50,76 @@ impl StateStore {
     #[allow(clippy::missing_const_for_fn)]
     pub fn domains(&self) -> &BTreeMap<String, Value> {
         &self.domains
+    }
+}
+
+/// Custom event kind emitted with a full task board snapshot.
+pub const TASK_SNAPSHOT_EVENT_KIND: &str = "task_snapshot";
+
+const TASK_STATE_DOMAIN: &str = "tasks";
+
+/// Agent-managed task record used by task tools and display snapshots.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Task {
+    /// Task identifier.
+    pub id: String,
+    /// Task title in imperative form.
+    pub subject: String,
+    /// Detailed task description.
+    pub description: String,
+    /// Current task status: `pending`, `in_progress`, or `completed`.
+    pub status: String,
+    /// Present-progress label shown while in progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_form: Option<String>,
+    /// Optional task owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    /// Task ids this task is blocked by.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
+    /// Task ids this task blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<String>,
+    /// Additional task metadata.
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
+}
+
+impl Task {
+    /// Create a pending task.
+    #[must_use]
+    pub fn new(
+        id: impl Into<String>,
+        subject: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            subject: subject.into(),
+            description: description.into(),
+            status: "pending".to_string(),
+            active_form: None,
+            owner: None,
+            blocked_by: Vec::new(),
+            blocks: Vec::new(),
+            metadata: Metadata::default(),
+        }
+    }
+}
+
+/// Full task board snapshot transported through custom events.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TaskSnapshot {
+    /// Full task list in display order.
+    pub tasks: Vec<Task>,
+}
+
+impl TaskSnapshot {
+    /// Return the snapshot as event payload.
+    #[must_use]
+    pub fn into_payload(self) -> Value {
+        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({"tasks": []}))
     }
 }
 
@@ -265,6 +338,9 @@ pub struct ResumableState {
     /// Accumulated usage.
     #[serde(default)]
     pub usage: Usage,
+    /// Per-run cumulative usage ledger entries keyed by stable source id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub usage_snapshot_entries: BTreeMap<String, UsageSnapshotEntry>,
     /// Model/runtime configuration used for injected runtime context and tool policies.
     #[serde(default, skip_serializing_if = "RuntimeModelConfig::is_default")]
     pub model_config: RuntimeModelConfig,
@@ -973,6 +1049,9 @@ pub struct AgentContext {
     /// Accumulated usage.
     #[serde(default)]
     pub usage: Usage,
+    /// Per-run cumulative usage ledger entries keyed by stable source id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub usage_snapshot_entries: BTreeMap<String, UsageSnapshotEntry>,
     /// Model/runtime configuration used for injected runtime context and tool policies.
     #[serde(default, skip_serializing_if = "RuntimeModelConfig::is_default")]
     pub model_config: RuntimeModelConfig,
@@ -1018,6 +1097,7 @@ impl AgentContext {
             conversation_id: ConversationId::new(),
             message_history: Vec::new(),
             usage: Usage::default(),
+            usage_snapshot_entries: BTreeMap::new(),
             model_config: RuntimeModelConfig::default(),
             tool_config: ToolConfig::default(),
             security: SecurityConfig::default(),
@@ -1041,6 +1121,7 @@ impl AgentContext {
             conversation_id: state.conversation_id.unwrap_or_default(),
             message_history: state.message_history,
             usage: state.usage,
+            usage_snapshot_entries: state.usage_snapshot_entries,
             model_config: state.model_config,
             tool_config: state.tool_config,
             security: state.security,
@@ -1064,6 +1145,7 @@ impl AgentContext {
             conversation_id: Some(self.conversation_id.clone()),
             message_history: self.message_history.clone(),
             usage: self.usage.clone(),
+            usage_snapshot_entries: self.usage_snapshot_entries.clone(),
             model_config: self.model_config.clone(),
             tool_config: self.tool_config.clone(),
             security: self.security.clone(),
@@ -1106,6 +1188,7 @@ impl AgentContext {
             conversation_id: self.conversation_id.clone(),
             message_history: Vec::new(),
             usage: self.usage.clone(),
+            usage_snapshot_entries: self.usage_snapshot_entries.clone(),
             model_config: self.model_config.clone(),
             tool_config: self.tool_config.clone(),
             security: self.security.clone(),
@@ -1123,6 +1206,8 @@ impl AgentContext {
     /// Absorb child context state that should survive successful subagent execution.
     pub fn absorb_subagent_context(&mut self, child: &Self) {
         self.usage = child.usage.clone();
+        self.usage_snapshot_entries
+            .clone_from(&child.usage_snapshot_entries);
         self.notes = child.notes.clone();
     }
 
@@ -1148,6 +1233,84 @@ impl AgentContext {
         self.usage.add_assign(usage);
     }
 
+    /// Update one cumulative usage snapshot ledger entry and return the latest run snapshot.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_usage_snapshot_entry(
+        &mut self,
+        agent_id: impl Into<String>,
+        agent_name: impl Into<String>,
+        model_id: impl Into<String>,
+        usage: Usage,
+        usage_id: Option<String>,
+        source: impl Into<String>,
+        ledger_key: Option<String>,
+    ) -> UsageSnapshot {
+        let agent_id = agent_id.into();
+        let entry = UsageSnapshotEntry {
+            agent_id: agent_id.clone(),
+            agent_name: agent_name.into(),
+            model_id: model_id.into(),
+            usage,
+            usage_id,
+            source: source.into(),
+        };
+        self.usage_snapshot_entries
+            .insert(ledger_key.unwrap_or(agent_id), entry);
+        self.build_usage_snapshot()
+    }
+
+    /// Build a cumulative usage snapshot for this run.
+    #[must_use]
+    pub fn build_usage_snapshot(&self) -> UsageSnapshot {
+        let mut total_usage = Usage::default();
+        let mut agent_usages = BTreeMap::<String, UsageAgentTotal>::new();
+        let mut model_usages = BTreeMap::<String, Usage>::new();
+        let mut entries = self
+            .usage_snapshot_entries
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        for entry in &entries {
+            total_usage.add_assign(&entry.usage);
+            if let Some(agent_total) = agent_usages.get_mut(&entry.agent_id) {
+                agent_total.usage.add_assign(&entry.usage);
+                if agent_total.model_id != entry.model_id {
+                    agent_total.model_id = "multiple".to_string();
+                }
+                if agent_total.usage_id != entry.usage_id {
+                    agent_total.usage_id = None;
+                }
+            } else {
+                agent_usages.insert(
+                    entry.agent_id.clone(),
+                    UsageAgentTotal {
+                        agent_name: entry.agent_name.clone(),
+                        model_id: entry.model_id.clone(),
+                        usage: entry.usage.clone(),
+                        usage_id: entry.usage_id.clone(),
+                        source: entry.source.clone(),
+                    },
+                );
+            }
+            model_usages
+                .entry(entry.model_id.clone())
+                .or_default()
+                .add_assign(&entry.usage);
+        }
+        UsageSnapshot {
+            run_id: self
+                .run_id
+                .as_ref()
+                .map_or_else(String::new, |run_id| run_id.as_str().to_string()),
+            total_usage,
+            entries,
+            agent_usages,
+            model_usages,
+        }
+    }
+
     /// Return the latest model request token usage reported by the provider.
     #[must_use]
     pub fn latest_request_total_tokens(&self) -> Option<u64> {
@@ -1162,6 +1325,41 @@ impl AgentContext {
     /// Publish an event.
     pub fn publish_event(&mut self, event: AgentEvent) {
         self.events.publish(event);
+    }
+
+    /// Return all tasks from the context task state domain.
+    #[must_use]
+    pub fn tasks(&self) -> Vec<Task> {
+        self.state
+            .get(TASK_STATE_DOMAIN)
+            .cloned()
+            .and_then(|value| serde_json::from_value::<TaskSnapshot>(value).ok())
+            .map_or_else(Vec::new, |snapshot| snapshot.tasks)
+    }
+
+    /// Replace all tasks in the context task state domain.
+    pub fn set_tasks(&mut self, tasks: Vec<Task>) {
+        self.state.set(
+            TASK_STATE_DOMAIN,
+            serde_json::to_value(TaskSnapshot { tasks })
+                .unwrap_or_else(|_| serde_json::json!({"tasks": []})),
+        );
+    }
+
+    /// Return a full task snapshot.
+    #[must_use]
+    pub fn task_snapshot(&self) -> TaskSnapshot {
+        TaskSnapshot {
+            tasks: self.tasks(),
+        }
+    }
+
+    /// Publish a full task snapshot event.
+    pub fn publish_task_snapshot_event(&mut self) {
+        self.publish_event(AgentEvent::new(
+            TASK_SNAPSHOT_EVENT_KIND,
+            self.task_snapshot().into_payload(),
+        ));
     }
 
     /// Enqueue a message.
@@ -1377,6 +1575,17 @@ impl AgentContextHandle {
             Err(error) => {
                 let mut guard = error.into_inner();
                 *guard = context;
+            }
+        }
+    }
+
+    /// Mutate the context snapshot held by this handle.
+    pub fn update(&self, update: impl FnOnce(&mut AgentContext)) {
+        match self.inner.lock() {
+            Ok(mut guard) => update(&mut guard),
+            Err(error) => {
+                let mut guard = error.into_inner();
+                update(&mut guard);
             }
         }
     }

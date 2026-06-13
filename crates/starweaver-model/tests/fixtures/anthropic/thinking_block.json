@@ -59,9 +59,12 @@
   "expected_response": {
     "parts": [
       {
-        "kind": "thinking",
+        "kind": "provider_thinking",
         "text": "Need arithmetic.",
-        "signature": "sig_1"
+        "signature": "sig_1",
+        "provider": {
+          "provider_name": "anthropic"
+        }
       },
       {
         "kind": "text",

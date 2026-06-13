@@ -6,6 +6,7 @@ use crossterm::{
     style::{
         Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
     },
+    terminal::{Clear, ClearType},
 };
 use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -216,10 +217,12 @@ fn with_codex_border(rows: Vec<Vec<StyledSegment>>, inner_width: usize) -> Vec<S
 }
 
 pub(super) fn render_composer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
-    let input_lines = input_viewport_lines(
+    let input_width = composer_input_width(width);
+    let input_lines = input_viewport_lines_wrapped(
         &state.input,
         COMPOSER_VISIBLE_LINES,
         state.composer_scroll_offset(),
+        input_width,
     );
     let mut lines = Vec::with_capacity(input_lines.len().saturating_add(1));
     lines.push(StyledLine::plain(""));
@@ -830,13 +833,21 @@ fn render_task_panel(items: &[TaskPanelItem], width: usize) -> Vec<StyledLine> {
 
 fn render_task_row(item: &TaskPanelItem, inner_width: usize) -> Vec<StyledSegment> {
     let id_width = 8usize.min(inner_width.saturating_sub(18).max(4));
+    let status_label = truncate_line(&task_status_label(item), 11);
+    let details = task_details_label(item);
     let subject_width = inner_width
         .saturating_sub(id_width)
-        .saturating_sub(visible_width(&item.status))
+        .saturating_sub(visible_width(&status_label))
+        .saturating_sub(visible_width(&details))
         .saturating_sub(8)
         .max(1);
     let status_style = task_status_style(&item.status);
-    vec![
+    let subject_style = if item.status == "completed" {
+        SegmentStyle::dim()
+    } else {
+        SegmentStyle::default()
+    };
+    let mut row = vec![
         StyledSegment {
             text: "  #".to_string(),
             style: SegmentStyle::dim(),
@@ -846,18 +857,53 @@ fn render_task_row(item: &TaskPanelItem, inner_width: usize) -> Vec<StyledSegmen
             style: SegmentStyle::dim(),
         },
         StyledSegment {
-            text: format!(" [{:<11}] ", item.status),
+            text: format!(" [{status_label:<11}] "),
             style: status_style,
         },
         StyledSegment {
             text: truncate_line(&item.subject, subject_width),
-            style: if item.status == "completed" {
-                SegmentStyle::dim()
-            } else {
-                SegmentStyle::default()
-            },
+            style: subject_style,
         },
-    ]
+    ];
+    if !details.is_empty() {
+        row.push(StyledSegment {
+            text: format!(" {details}"),
+            style: SegmentStyle::dim(),
+        });
+    }
+    row
+}
+
+fn task_status_label(item: &TaskPanelItem) -> String {
+    if item.status == "in_progress" {
+        item.active_form
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(
+                || item.status.clone(),
+                |active| format!("in_progress: {active}"),
+            )
+    } else {
+        item.status.clone()
+    }
+}
+
+fn task_details_label(item: &TaskPanelItem) -> String {
+    let mut details = Vec::new();
+    if let Some(owner) = item
+        .owner
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        details.push(format!("@{owner}"));
+    }
+    if !item.blocked_by.is_empty() {
+        details.push(format!("[blocked by #{}]", item.blocked_by.join(", #")));
+    }
+    if !item.blocks.is_empty() {
+        details.push(format!("[blocks #{}]", item.blocks.join(", #")));
+    }
+    details.join(" ")
 }
 
 fn task_status_style(status: &str) -> SegmentStyle {
@@ -908,7 +954,7 @@ fn render_status_bar_lines(state: &InteractiveTuiState, width: usize) -> Vec<Sty
             SegmentStyle::status_bar(),
         ),
         pad_styled_line_with_style(
-            render_status_bar_secondary(state),
+            render_status_bar_secondary(state, width),
             width,
             SegmentStyle::status_bar(),
         ),
@@ -962,8 +1008,11 @@ fn render_status_bar_primary(state: &InteractiveTuiState) -> StyledLine {
     line
 }
 
-fn render_status_bar_secondary(state: &InteractiveTuiState) -> StyledLine {
-    let mut line = StyledLine::styled(secondary_status_text(state), SegmentStyle::status_bar());
+fn render_status_bar_secondary(state: &InteractiveTuiState, width: usize) -> StyledLine {
+    let mut line = StyledLine::styled(
+        secondary_status_text(state, width),
+        SegmentStyle::status_bar(),
+    );
     if !state.is_at_bottom() {
         line.push(" | ", SegmentStyle::status_bar());
         line.push(
@@ -1002,36 +1051,92 @@ fn status_style(state: &InteractiveTuiState) -> SegmentStyle {
     }
 }
 
-fn secondary_status_text(state: &InteractiveTuiState) -> String {
+fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
+    fn pick(width: usize, full: String, medium: String, narrow: String) -> String {
+        if width >= visible_width(&full) {
+            full
+        } else if width >= visible_width(&medium) || width >= 60 {
+            medium
+        } else {
+            narrow
+        }
+    }
+
     if state.pending_hitl().is_some() {
-        return "Approval required: run `starweaver-cli approval list`, then approve or reject the pending approval | PageUp/PageDown/Mouse: Scroll".to_string();
+        return pick(
+            width,
+            "Approval required: run `starweaver-cli approval list`, then approve or reject the pending approval | PageUp/PageDown/Mouse: Scroll".to_string(),
+            "Approval required | approve/reject pending approval | PgUp/PgDn: Scroll".to_string(),
+            "Approval required | Ctrl+C interrupt".to_string(),
+        );
     }
     if state.selection_mode_visible() {
-        return "Mouse drag: Select terminal text to copy | Up/Down: Move marker | Enter/Esc: Close selection".to_string();
+        return pick(
+            width,
+            "Mouse drag: Select terminal text to copy | Up/Down: Move marker | Enter/Esc: Close selection".to_string(),
+            "Select text | Up/Down: Move | Enter/Esc: Close".to_string(),
+            "Select | Enter/Esc Close".to_string(),
+        );
     }
     if state.session_picker_visible() {
-        "Up/Down: Select session | Enter: Reload | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
-            .to_string()
+        pick(
+            width,
+            "Up/Down: Select session | Enter: Reload | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
+                .to_string(),
+            "Up/Down: Select | Enter: Reload | Esc: Cancel | PgUp/PgDn: Scroll".to_string(),
+            "↑/↓ Select | Enter | Esc".to_string(),
+        )
     } else if state.model_picker_visible() {
-        "Up/Down: Select model | Enter: Use | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
-            .to_string()
+        pick(
+            width,
+            "Up/Down: Select model | Enter: Use | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
+                .to_string(),
+            "Up/Down: Select | Enter: Use | Esc: Cancel | PgUp/PgDn: Scroll".to_string(),
+            "↑/↓ Select | Enter | Esc".to_string(),
+        )
     } else if state.running {
-        format!(
-            "{} | {} | Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll",
-            state.enter_action_label(),
-            state.enter_toggle_label()
+        pick(
+            width,
+            format!(
+                "{} | {} | Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll",
+                state.enter_action_label(),
+                state.enter_toggle_label()
+            ),
+            format!(
+                "{} | {} | Ctrl+C: Interrupt | PgUp/PgDn: Scroll",
+                state.enter_action_label(),
+                state.enter_toggle_label()
+            ),
+            "Ctrl+C Interrupt | PgUp/PgDn Scroll".to_string(),
         )
     } else if state.input.trim().is_empty() && state.pasted_image_count() == 0 {
-        format!(
-            "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
-            state.enter_action_label(),
-            state.enter_toggle_label()
+        pick(
+            width,
+            format!(
+                "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
+                state.enter_action_label(),
+                state.enter_toggle_label()
+            ),
+            format!(
+                "{} | {} | Ctrl+V: Image | ↑/↓: History | PgUp/PgDn: Scroll | Esc: Select | Ctrl+C: Exit",
+                state.enter_action_label(),
+                state.enter_toggle_label()
+            ),
+            "Enter Send | Esc Select | Ctrl+C Exit".to_string(),
         )
     } else {
-        format!(
-            "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
-            state.enter_action_label(),
-            state.enter_toggle_label()
+        pick(
+            width,
+            format!(
+                "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+                state.enter_action_label(),
+                state.enter_toggle_label()
+            ),
+            format!(
+                "{} | Ctrl+V: Image | ↑/↓: History | Alt+↑/↓: Input | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+                state.enter_action_label()
+            ),
+            "Enter Send | Ctrl+U Clear | Ctrl+C Exit".to_string(),
         )
     }
 }
@@ -1270,14 +1375,20 @@ pub(super) fn wrap_text_width(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+pub(super) fn composer_input_width(total_width: usize) -> usize {
+    total_width.saturating_sub(2).max(1)
+}
+
 #[cfg(test)]
 pub(super) fn composer_cursor_column(input_tail: &[String]) -> usize {
     let current = input_tail.last().map_or("", String::as_str);
     "> ".len().saturating_add(visible_width(current))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 pub(super) fn composer_cursor_position(input: &str, cursor_byte: usize) -> (usize, usize) {
-    let cursor_byte = cursor_byte.min(input.len());
+    let cursor_byte = clamp_char_boundary(input, cursor_byte);
     let before_cursor = &input[..cursor_byte];
     let line_index = before_cursor.bytes().filter(|byte| *byte == b'\n').count();
     let line_start = before_cursor.rfind('\n').map_or(0, |index| index + 1);
@@ -1287,24 +1398,135 @@ pub(super) fn composer_cursor_position(input: &str, cursor_byte: usize) -> (usiz
     (line_index, column)
 }
 
+pub(super) fn composer_cursor_position_wrapped(
+    input: &str,
+    cursor_byte: usize,
+    content_width: usize,
+) -> (usize, usize) {
+    let cursor_byte = clamp_char_boundary(input, cursor_byte);
+    wrapped_cursor_position(&input[..cursor_byte], content_width.max(1))
+}
+
 #[cfg(test)]
 pub(super) fn input_tail_lines(input: &str, max_lines: usize) -> Vec<String> {
     input_viewport_lines(input, max_lines, 0)
 }
 
+#[cfg(test)]
 pub(super) fn input_viewport_lines(
     input: &str,
     max_lines: usize,
     scroll_from_bottom: usize,
 ) -> Vec<String> {
+    let lines = logical_input_lines(input);
+    viewport_from_lines(lines, max_lines, scroll_from_bottom)
+}
+
+pub(super) fn input_visual_line_count(input: &str, content_width: usize) -> usize {
+    visual_input_lines(input, content_width).len()
+}
+
+pub(super) fn input_viewport_lines_wrapped(
+    input: &str,
+    max_lines: usize,
+    scroll_from_bottom: usize,
+    content_width: usize,
+) -> Vec<String> {
+    let lines = visual_input_lines(input, content_width);
+    viewport_from_lines(lines, max_lines, scroll_from_bottom)
+}
+
+fn logical_input_lines(input: &str) -> Vec<String> {
     let mut lines = input.lines().map(str::to_string).collect::<Vec<_>>();
     if input.ends_with('\n') || lines.is_empty() {
         lines.push(String::new());
     }
+    lines
+}
+
+fn viewport_from_lines(
+    lines: Vec<String>,
+    max_lines: usize,
+    scroll_from_bottom: usize,
+) -> Vec<String> {
     let max_lines = max_lines.max(1);
     let max_start = lines.len().saturating_sub(max_lines);
     let start = max_start.saturating_sub(scroll_from_bottom.min(max_start));
     lines.into_iter().skip(start).take(max_lines).collect()
+}
+
+fn visual_input_lines(input: &str, content_width: usize) -> Vec<String> {
+    let width = content_width.max(1);
+    logical_input_lines(input)
+        .into_iter()
+        .flat_map(|line| wrap_input_line(&line, width))
+        .collect()
+}
+
+fn wrap_input_line(line: &str, width: usize) -> Vec<String> {
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    for ch in line.chars() {
+        let char_width = ch.width().unwrap_or(0);
+        if current_width > 0 && current_width.saturating_add(char_width) > width {
+            lines.push(current);
+            current = String::new();
+            current_width = 0;
+        }
+        current.push(ch);
+        current_width = current_width.saturating_add(char_width);
+        if current_width >= width {
+            lines.push(current);
+            current = String::new();
+            current_width = 0;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn wrapped_cursor_position(input_before_cursor: &str, content_width: usize) -> (usize, usize) {
+    let width = content_width.max(1);
+    let mut row = 0usize;
+    let mut col = 0usize;
+
+    for ch in input_before_cursor.chars() {
+        if ch == '\n' {
+            row = row.saturating_add(1);
+            col = 0;
+            continue;
+        }
+        let char_width = ch.width().unwrap_or(0);
+        if col > 0 && col.saturating_add(char_width) > width {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+        col = col.saturating_add(char_width);
+        if col >= width {
+            row = row.saturating_add(1);
+            col = 0;
+        }
+    }
+
+    (row, col)
+}
+
+fn clamp_char_boundary(input: &str, cursor_byte: usize) -> usize {
+    let mut cursor_byte = cursor_byte.min(input.len());
+    while cursor_byte > 0 && !input.is_char_boundary(cursor_byte) {
+        cursor_byte -= 1;
+    }
+    cursor_byte
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1457,7 +1679,7 @@ pub(super) fn queue_styled_line_at(
     line: &StyledLine,
     width: usize,
 ) -> CliResult<()> {
-    queue!(stdout, MoveTo(0, row)).map_err(terminal_error)?;
+    queue!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine)).map_err(terminal_error)?;
     queue_styled_segments(stdout, line, width)
 }
 

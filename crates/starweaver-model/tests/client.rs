@@ -424,8 +424,8 @@ async fn protocol_client_streams_openai_responses_reasoning_summary_events() {
     assert_eq!(final_response.text_output(), "done");
     assert!(final_response.parts.iter().any(|part| matches!(
         part,
-        starweaver_model::ModelResponsePart::Thinking { text, .. }
-            if text == "inspect context"
+        starweaver_model::ModelResponsePart::ProviderThinking { text, provider, .. }
+            if text == "inspect context" && provider.provider_name.as_deref() == Some("openai")
     )));
 }
 
