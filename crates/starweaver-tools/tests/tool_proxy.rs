@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::json;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_tools::{
-    string_tool, tool_proxy_toolset, FunctionTool, StaticToolset, ToolContext, ToolError,
+    dynamic_tool_proxy, json_tool, FunctionTool, StaticToolset, ToolContext, ToolError,
     ToolInstruction, ToolProxyToolset, ToolResult, Toolset,
 };
 
@@ -38,7 +38,7 @@ async fn proxy_searches_namespaces_and_calls_tools() {
         .with_tool(Arc::new(lookup))
         .with_tool(Arc::new(hidden_proxy_name))
         .with_instruction(ToolInstruction::new("docs", "Documentation tools."));
-    let proxy = tool_proxy_toolset(vec![Arc::new(toolset)]);
+    let proxy = dynamic_tool_proxy(vec![Arc::new(toolset)]);
     let tools = proxy.get_tools();
     assert_eq!(tools.len(), 2);
     assert_eq!(proxy.max_retries(), Some(3));
@@ -104,7 +104,7 @@ async fn proxy_supports_prefixed_visible_tools_and_instructions() {
         .with_tool(Arc::new(hidden_prefixed_proxy_name));
 
     let proxy = ToolProxyToolset::new(vec![Arc::new(toolset)])
-        .try_with_prefix("__mcp__")
+        .try_with_name_prefix("__mcp__")
         .unwrap();
     assert_eq!(proxy.name(), "tool_proxy");
     assert_eq!(proxy.prefix(), Some("mcp"));
@@ -162,7 +162,7 @@ async fn proxy_supports_prefixed_visible_tools_and_instructions() {
 
 #[test]
 fn proxy_rejects_invalid_prefixes() {
-    let Err(error) = ToolProxyToolset::new(vec![]).try_with_prefix("mcp-server") else {
+    let Err(error) = ToolProxyToolset::new(vec![]).try_with_name_prefix("mcp-server") else {
         panic!("invalid prefix should be rejected");
     };
     assert_eq!(error.prefix(), "mcp-server");
@@ -184,7 +184,7 @@ async fn proxy_returns_xml_for_empty_unknown_and_execution_errors() {
     let toolset = StaticToolset::new("ops")
         .with_id("ops")
         .with_tool(Arc::new(failing));
-    let proxy = tool_proxy_toolset(vec![Arc::new(toolset)]);
+    let proxy = dynamic_tool_proxy(vec![Arc::new(toolset)]);
     let tools = proxy.get_tools();
     let search = tools
         .iter()
@@ -233,7 +233,7 @@ async fn proxy_returns_xml_for_empty_unknown_and_execution_errors() {
 
 #[tokio::test]
 async fn proxy_propagates_approval_and_deferred_errors() {
-    let approval = string_tool(
+    let approval = json_tool(
         "approval_tool",
         Some("Needs approval".to_string()),
         json!({"type":"object"}),
@@ -244,7 +244,7 @@ async fn proxy_propagates_approval_and_deferred_errors() {
             })
         },
     );
-    let deferred = string_tool(
+    let deferred = json_tool(
         "deferred_tool",
         Some("Defers work".to_string()),
         json!({"type":"object"}),
@@ -259,7 +259,7 @@ async fn proxy_propagates_approval_and_deferred_errors() {
         .with_id("control")
         .with_tool(Arc::new(approval))
         .with_tool(Arc::new(deferred));
-    let proxy = tool_proxy_toolset(vec![Arc::new(toolset)]);
+    let proxy = dynamic_tool_proxy(vec![Arc::new(toolset)]);
     let call = proxy
         .get_tools()
         .into_iter()

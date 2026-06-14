@@ -19,13 +19,14 @@ pub use context::{ToolApprovalState, ToolContext};
 pub use error::{error_return, ToolError};
 pub use instruction::ToolInstruction;
 pub use mcp::{
-    mcp_tool_definition, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer,
+    tool_definition_from_mcp_spec, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport,
+    NativeMcpServer,
 };
 pub use prefixed::{PrefixedTool, PrefixedToolset};
 pub use registry::ToolRegistry;
 pub use tool::{
-    string_tool, typed_tool, DynTool, EmptyToolArgs, FunctionTool, Tool, ToolResult,
+    json_tool, typed_json_tool, DynTool, EmptyToolArgs, FunctionTool, Tool, ToolResult,
     TypedFunctionTool,
 };
-pub use tool_proxy::{tool_proxy_toolset, ToolProxyPrefixError, ToolProxyToolset};
+pub use tool_proxy::{dynamic_tool_proxy, ToolProxyNamePrefixError, ToolProxyToolset};
 pub use toolset::{DynToolset, StaticToolset, Toolset};

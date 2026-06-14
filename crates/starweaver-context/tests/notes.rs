@@ -27,7 +27,7 @@ fn note_store_lists_entries_sorted_by_key() {
     notes.set("m-key", "middle");
 
     assert_eq!(
-        notes.list_all(),
+        notes.entries(),
         vec![
             ("a-key".to_string(), "first".to_string()),
             ("m-key".to_string(), "middle".to_string()),
@@ -42,8 +42,8 @@ fn note_store_exports_and_restores() {
     notes.set("lang", "Chinese");
     notes.set("os", "macOS");
 
-    let exported = notes.export_notes();
-    let restored = NoteStore::from_exported(exported.clone());
+    let exported = notes.to_map();
+    let restored = NoteStore::from_map(exported.clone());
 
     assert_eq!(
         exported,

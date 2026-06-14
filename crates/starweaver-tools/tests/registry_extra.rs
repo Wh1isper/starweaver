@@ -6,7 +6,7 @@ use serde_json::json;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::ToolCallPart;
 use starweaver_tools::{
-    string_tool, DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext, ToolError,
+    json_tool, DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext, ToolError,
     ToolInstruction, ToolRegistry, ToolResult, Toolset,
 };
 
@@ -153,7 +153,7 @@ async fn registry_maps_tool_result_layers_to_tool_return_part() {
 
 #[test]
 fn registry_insert_registry_carries_retry_and_instructions() {
-    let tool = string_tool(
+    let tool = json_tool(
         "plain",
         Some("Plain tool".to_string()),
         json!({"type":"object"}),

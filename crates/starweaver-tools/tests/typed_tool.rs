@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use starweaver_core::{ConversationId, RunId};
-use starweaver_tools::{typed_tool, Tool, ToolContext, ToolResult};
+use starweaver_tools::{typed_json_tool, Tool, ToolContext, ToolResult};
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct AddArgs {
@@ -30,7 +30,7 @@ struct BatchEntry {
 
 #[tokio::test]
 async fn typed_tool_derives_schema_and_validates_arguments() {
-    let tool = typed_tool::<AddArgs, _, _>(
+    let tool = typed_json_tool::<AddArgs, _, _>(
         "add",
         Some("Add two integers.".to_string()),
         |_context: ToolContext, arguments: AddArgs| async move {
@@ -79,7 +79,7 @@ async fn typed_tool_derives_schema_and_validates_arguments() {
 
 #[tokio::test]
 async fn typed_tool_preserves_nested_schema_descriptions_and_required_fields() {
-    let tool = typed_tool::<BatchArgs, _, _>(
+    let tool = typed_json_tool::<BatchArgs, _, _>(
         "batch",
         Some("Process entries.".to_string()),
         |_context: ToolContext, arguments: BatchArgs| async move {

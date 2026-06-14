@@ -104,6 +104,117 @@ impl ApprovalRecord {
     }
 }
 
+/// Tool approval decision supplied by a host or user.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum ToolApprovalDecision {
+    /// Approve tool execution.
+    Approved {
+        /// Actor that approved the call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<String>,
+        /// Optional reason.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Optional replacement arguments for the approved call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        override_arguments: Option<Value>,
+        /// Decision metadata.
+        #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+        metadata: Metadata,
+    },
+    /// Deny tool execution.
+    Denied {
+        /// Actor that denied the call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<String>,
+        /// Optional reason.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        /// Decision metadata.
+        #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+        metadata: Metadata,
+    },
+}
+
+impl ToolApprovalDecision {
+    /// Build an approved decision.
+    #[must_use]
+    pub fn approved() -> Self {
+        Self::Approved {
+            decided_by: None,
+            reason: None,
+            override_arguments: None,
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Build a denied decision with a reason.
+    #[must_use]
+    pub fn denied(reason: impl Into<String>) -> Self {
+        Self::Denied {
+            decided_by: None,
+            reason: Some(reason.into()),
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Attach replacement arguments to an approved decision.
+    #[must_use]
+    pub fn with_override_arguments(self, arguments: Value) -> Self {
+        match self {
+            Self::Approved {
+                decided_by,
+                reason,
+                metadata,
+                ..
+            } => Self::Approved {
+                decided_by,
+                reason,
+                override_arguments: Some(arguments),
+                metadata,
+            },
+            denied @ Self::Denied { .. } => denied,
+        }
+    }
+
+    /// Convert this SDK decision into a durable approval decision.
+    #[must_use]
+    pub fn into_approval_decision(self) -> ApprovalDecision {
+        let decided_at = Utc::now();
+        match self {
+            Self::Approved {
+                decided_by,
+                reason,
+                override_arguments,
+                mut metadata,
+            } => {
+                if let Some(arguments) = override_arguments {
+                    metadata.insert("override_arguments".to_string(), arguments);
+                }
+                ApprovalDecision {
+                    status: ApprovalStatus::Approved,
+                    decided_by,
+                    decided_at,
+                    reason,
+                    metadata,
+                }
+            }
+            Self::Denied {
+                decided_by,
+                reason,
+                metadata,
+            } => ApprovalDecision {
+                status: ApprovalStatus::Denied,
+                decided_by,
+                decided_at,
+                reason,
+                metadata,
+            },
+        }
+    }
+}
+
 /// Durable deferred tool record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DeferredToolRecord {
@@ -246,117 +357,6 @@ impl DeferredToolRequests {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.requests.is_empty()
-    }
-}
-
-/// Tool approval decision supplied by a host or user.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "decision", rename_all = "snake_case")]
-pub enum ToolApprovalDecision {
-    /// Approve tool execution.
-    Approved {
-        /// Actor that approved the call.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        decided_by: Option<String>,
-        /// Optional reason.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-        /// Optional replacement arguments for the approved call.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        override_arguments: Option<Value>,
-        /// Decision metadata.
-        #[serde(default, skip_serializing_if = "Metadata::is_empty")]
-        metadata: Metadata,
-    },
-    /// Deny tool execution.
-    Denied {
-        /// Actor that denied the call.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        decided_by: Option<String>,
-        /// Optional reason.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-        /// Decision metadata.
-        #[serde(default, skip_serializing_if = "Metadata::is_empty")]
-        metadata: Metadata,
-    },
-}
-
-impl ToolApprovalDecision {
-    /// Build an approved decision.
-    #[must_use]
-    pub fn approved() -> Self {
-        Self::Approved {
-            decided_by: None,
-            reason: None,
-            override_arguments: None,
-            metadata: Metadata::default(),
-        }
-    }
-
-    /// Build a denied decision with a reason.
-    #[must_use]
-    pub fn denied(reason: impl Into<String>) -> Self {
-        Self::Denied {
-            decided_by: None,
-            reason: Some(reason.into()),
-            metadata: Metadata::default(),
-        }
-    }
-
-    /// Attach replacement arguments to an approved decision.
-    #[must_use]
-    pub fn with_override_arguments(self, arguments: Value) -> Self {
-        match self {
-            Self::Approved {
-                decided_by,
-                reason,
-                metadata,
-                ..
-            } => Self::Approved {
-                decided_by,
-                reason,
-                override_arguments: Some(arguments),
-                metadata,
-            },
-            denied @ Self::Denied { .. } => denied,
-        }
-    }
-
-    /// Convert this SDK decision into a durable approval decision.
-    #[must_use]
-    pub fn into_approval_decision(self) -> ApprovalDecision {
-        let decided_at = Utc::now();
-        match self {
-            Self::Approved {
-                decided_by,
-                reason,
-                override_arguments,
-                mut metadata,
-            } => {
-                if let Some(arguments) = override_arguments {
-                    metadata.insert("override_arguments".to_string(), arguments);
-                }
-                ApprovalDecision {
-                    status: ApprovalStatus::Approved,
-                    decided_by,
-                    decided_at,
-                    reason,
-                    metadata,
-                }
-            }
-            Self::Denied {
-                decided_by,
-                reason,
-                metadata,
-            } => ApprovalDecision {
-                status: ApprovalStatus::Denied,
-                decided_by,
-                decided_at,
-                reason,
-                metadata,
-            },
-        }
     }
 }
 

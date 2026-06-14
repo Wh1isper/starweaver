@@ -5,12 +5,13 @@ use std::collections::BTreeMap;
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 use starweaver_core::{RunId, Usage};
 use starweaver_model::{
-    ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponse,
-    ModelResponseStreamEvent,
+    ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
 };
 use starweaver_tools::ToolContext;
 
 const DEFAULT_MODEL_ERROR_RETRIES: usize = 2;
+
+mod entrypoints;
 
 use crate::{
     agent::{
@@ -18,181 +19,19 @@ use crate::{
             has_pending_tool_control_flow, is_tool_retry_return, mark_tool_retry_return,
             record_tool_control_flow, tool_return_control_flow,
         },
+        run_loop_helpers::{agent_error_kind, preserve_pending_tool_returns_for_resume},
         runtime_helpers::tool_return_media_prompt,
         Agent, AgentError, AgentResult,
     },
     capability::{CapabilityError, RetryEventKind},
     executor::{AgentExecutionDecision, AgentExecutionNode},
-    iteration::{AgentIterResult, AgentIterationTrace},
     retry_recovery::{recover_retry_message_history, DEFAULT_MODEL_ERROR_RESUME_PROMPT},
     run::{AgentRunState, RunStatus},
-    stream::{push_stream_event, AgentStreamEvent, AgentStreamRecord, AgentStreamResult},
+    stream::{push_stream_event, AgentStreamEvent, AgentStreamRecord},
     trace::{SpanEvent, SpanKind, SpanSpec, SpanStatus},
 };
 
 impl Agent {
-    /// Run the agent with a user prompt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run(&self, prompt: impl Into<String>) -> Result<AgentResult, AgentError> {
-        self.run_with_history(prompt, Vec::new()).await
-    }
-
-    /// Run the agent and collect a compact iteration trace.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_iter(&self, prompt: impl Into<String>) -> Result<AgentIterResult, AgentError> {
-        let mut events = Vec::new();
-        let result = self.run_with_stream_events(prompt, &mut events).await?;
-        let iterations = AgentIterationTrace::from_stream_records(&events);
-        Ok(AgentIterResult {
-            result,
-            iterations,
-            events,
-        })
-    }
-
-    /// Run the agent and collect typed stream events emitted during execution.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_stream(
-        &self,
-        prompt: impl Into<String>,
-    ) -> Result<AgentStreamResult, AgentError> {
-        let mut events = Vec::new();
-        let result = self.run_with_stream_events(prompt, &mut events).await?;
-        Ok(AgentStreamResult { result, events })
-    }
-
-    /// Run the agent with prior history and collect a compact iteration trace.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_with_history_iter(
-        &self,
-        prompt: impl Into<String>,
-        message_history: Vec<ModelMessage>,
-    ) -> Result<AgentIterResult, AgentError> {
-        let mut events = Vec::new();
-        let result = self
-            .run_with_history_and_stream_events(prompt, message_history, &mut events)
-            .await?;
-        let iterations = AgentIterationTrace::from_stream_records(&events);
-        Ok(AgentIterResult {
-            result,
-            iterations,
-            events,
-        })
-    }
-
-    /// Run the agent with an explicit typed stream event collector.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_with_stream_events(
-        &self,
-        prompt: impl Into<String>,
-        events: &mut Vec<AgentStreamRecord>,
-    ) -> Result<AgentResult, AgentError> {
-        self.run_with_history_and_stream_events(prompt, Vec::new(), events)
-            .await
-    }
-
-    /// Run the agent with prior history and collect typed stream events.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_with_history_and_stream_events(
-        &self,
-        prompt: impl Into<String>,
-        message_history: Vec<ModelMessage>,
-        events: &mut Vec<AgentStreamRecord>,
-    ) -> Result<AgentResult, AgentError> {
-        let mut context = AgentContext {
-            message_history,
-            ..AgentContext::default()
-        };
-        self.run_with_context_and_stream_events(prompt, &mut context, events)
-            .await
-    }
-
-    /// Run the agent with prior canonical message history.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_with_history(
-        &self,
-        prompt: impl Into<String>,
-        message_history: Vec<ModelMessage>,
-    ) -> Result<AgentResult, AgentError> {
-        let mut context = AgentContext {
-            message_history,
-            ..AgentContext::default()
-        };
-        self.run_with_context(prompt, &mut context).await
-    }
-
-    /// Run the agent using a lifecycle-wide context and collect a compact iteration trace.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_with_context_iter(
-        &self,
-        prompt: impl Into<String>,
-        context: &mut AgentContext,
-    ) -> Result<AgentIterResult, AgentError> {
-        let mut events = Vec::new();
-        let result = self
-            .run_with_context_and_stream_events(prompt, context, &mut events)
-            .await?;
-        let iterations = AgentIterationTrace::from_stream_records(&events);
-        Ok(AgentIterResult {
-            result,
-            iterations,
-            events,
-        })
-    }
-
-    /// Run the agent using a lifecycle-wide context and typed stream event collector.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_with_context_and_stream_events(
-        &self,
-        prompt: impl Into<String>,
-        context: &mut AgentContext,
-        events: &mut Vec<AgentStreamRecord>,
-    ) -> Result<AgentResult, AgentError> {
-        self.run_with_context_inner(prompt, context, Some(events))
-            .await
-    }
-
-    /// Run the agent using a lifecycle-wide context.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    #[allow(clippy::too_many_lines)]
-    pub async fn run_with_context(
-        &self,
-        prompt: impl Into<String>,
-        context: &mut AgentContext,
-    ) -> Result<AgentResult, AgentError> {
-        self.run_with_context_inner(prompt, context, None).await
-    }
-
     #[allow(clippy::too_many_lines)]
     async fn run_with_context_inner(
         &self,
@@ -1133,59 +972,4 @@ impl Agent {
             }
         }
     }
-
-    fn usage_model_id(&self, response: &ModelResponse) -> String {
-        response.model_name.clone().unwrap_or_else(|| {
-            self.model.provider_name().map_or_else(
-                || self.model.model_name().to_string(),
-                |provider| format!("{provider}:{}", self.model.model_name()),
-            )
-        })
-    }
-}
-
-const fn agent_error_kind(error: &AgentError) -> &'static str {
-    match error {
-        AgentError::Model(_) => "model_error",
-        AgentError::Capability(_) => "capability_error",
-        AgentError::CapabilityOrder(_) => "capability_order_error",
-        AgentError::StructuredOutput(_) => "structured_output_error",
-        AgentError::DynamicInstruction(_) => "dynamic_instruction_error",
-        AgentError::OutputRetryLimitExceeded { .. } => "output_retry_limit_exceeded",
-        AgentError::ToolRetryLimitExceeded { .. } => "tool_retry_limit_exceeded",
-        AgentError::StepLimitExceeded { .. } => "step_limit_exceeded",
-        AgentError::UsageLimit(_) => "usage_limit_exceeded",
-        AgentError::ExecutionSuspended { .. } => "execution_suspended",
-        AgentError::Executor(_) => "executor_error",
-        AgentError::ToolCallsRequireTools => "tool_calls_require_tools",
-    }
-}
-
-fn preserve_pending_tool_returns_for_resume(state: &mut AgentRunState) {
-    if state.pending_tool_returns.is_empty() {
-        return;
-    }
-    let mut parts = Vec::new();
-    for tool_return in &state.pending_tool_returns {
-        parts.push(ModelRequestPart::ToolReturn(tool_return.clone()));
-        if let Some(media_prompt) = tool_return_media_prompt(tool_return) {
-            parts.push(media_prompt);
-        }
-    }
-    state
-        .message_history
-        .push(ModelMessage::Request(ModelRequest {
-            parts,
-            timestamp: None,
-            instructions: None,
-            run_id: Some(state.run_id.clone()),
-            conversation_id: Some(state.conversation_id.clone()),
-            metadata: serde_json::json!({
-                "starweaver.failed.pending_tool_returns": true,
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-        }));
-    state.pending_tool_returns.clear();
 }

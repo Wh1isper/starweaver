@@ -9,16 +9,20 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    AgentBuilder, AgentCapability, AgentContext, AgentRunState, CapabilityOrdering,
-    CapabilityResult, CapabilitySpec, FunctionDynamicInstruction, FunctionModel, FunctionModelInfo,
-    FunctionOutputFunction, FunctionOutputValidator, FunctionTool, OutputFunctionDefinition,
-    OutputSchema, OutputValue, StaticCapabilityBundle, StaticToolset, TestModel, ToolContext,
-    ToolRegistry, ToolResult, UsageLimits, DEFAULT_FILTER_ORDER,
+    attach_environment, AgentBuilder, AgentCapability, AgentContext, AgentRunState,
+    CapabilityOrdering, CapabilityResult, CapabilitySpec, FunctionDynamicInstruction,
+    FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
+    FunctionTool, OutputFunctionDefinition, OutputSchema, OutputValue, StaticCapabilityBundle,
+    StaticToolset, TestModel, ToolContext, ToolRegistry, ToolResult, UsageLimits,
+    DEFAULT_FILTER_ORDER,
+};
+use starweaver_environment::{
+    EnvironmentPolicy, FilePolicy, ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
-    ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily,
-    ToolCallPart,
+    ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
+    ProtocolFamily, ToolCallPart,
 };
 
 #[derive(Clone)]
@@ -27,6 +31,11 @@ struct CaptureModel {
 }
 
 struct CustomFilterCapability;
+
+#[derive(Clone)]
+struct MessageCaptureModel {
+    captured_messages: Arc<Mutex<Vec<Vec<ModelMessage>>>>,
+}
 
 #[async_trait]
 impl AgentCapability for CustomFilterCapability {
@@ -100,6 +109,38 @@ impl ModelAdapter for LoopingToolModel {
         } else {
             Ok(ModelResponse::text("done"))
         }
+    }
+}
+
+#[async_trait]
+impl ModelAdapter for MessageCaptureModel {
+    fn model_name(&self) -> &'static str {
+        "message-capture"
+    }
+
+    fn provider_name(&self) -> Option<&'static str> {
+        Some("test")
+    }
+
+    fn profile(&self) -> &ModelProfile {
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
+        &PROFILE
+    }
+
+    fn default_settings(&self) -> Option<&ModelSettings> {
+        None
+    }
+
+    async fn request(
+        &self,
+        messages: Vec<ModelMessage>,
+        _settings: Option<ModelSettings>,
+        _params: ModelRequestParameters,
+        _context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        self.captured_messages.lock().unwrap().push(messages);
+        Ok(ModelResponse::text("captured"))
     }
 }
 
@@ -224,6 +265,49 @@ async fn builder_installs_default_filter_capabilities_before_custom_capabilities
         .unwrap();
 
     assert_eq!(result.output, "filters ok");
+}
+
+#[tokio::test]
+async fn builder_injects_runtime_context_before_environment_context_and_user_prompt() {
+    let captured_messages = Arc::new(Mutex::new(Vec::new()));
+    let model = Arc::new(MessageCaptureModel {
+        captured_messages: Arc::clone(&captured_messages),
+    });
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test-env")
+            .with_file("README.md", "workspace")
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::default(),
+            }),
+    );
+    let mut context = AgentContext::default();
+    attach_environment(&mut context, provider);
+
+    let result = AgentBuilder::new(model)
+        .build()
+        .run_with_context("inspect workspace", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "captured");
+    let captured = captured_messages.lock().unwrap();
+    let ModelMessage::Request(request) = captured[0].last().unwrap() else {
+        panic!("expected latest request");
+    };
+    assert!(matches!(
+        &request.parts[0],
+        ModelRequestPart::Instruction { text, .. } if text.contains("<runtime-context>")
+    ));
+    assert!(matches!(
+        &request.parts[1],
+        ModelRequestPart::Instruction { text, .. } if text.contains("<environment-context>")
+    ));
+    assert!(matches!(
+        &request.parts[2],
+        ModelRequestPart::UserPrompt { content, .. }
+            if matches!(&content[0], starweaver_model::ContentPart::Text { text } if text == "inspect workspace")
+    ));
 }
 
 #[tokio::test]

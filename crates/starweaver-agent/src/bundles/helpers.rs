@@ -3,7 +3,7 @@ use std::{future::Future, sync::Arc};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use starweaver_core::Metadata;
-use starweaver_tools::{typed_tool, DynTool, ToolContext, ToolError, ToolResult};
+use starweaver_tools::{typed_json_tool, DynTool, ToolContext, ToolError, ToolResult};
 
 pub fn static_tool<Args, F, Fut>(
     name: &'static str,
@@ -15,7 +15,7 @@ where
     F: Send + Sync + 'static + Fn(ToolContext, Args) -> Fut,
     Fut: Send + Future<Output = Result<ToolResult, ToolError>> + 'static,
 {
-    Arc::new(typed_tool::<Args, _, _>(
+    Arc::new(typed_json_tool::<Args, _, _>(
         name,
         Some(description.to_string()),
         function,
@@ -34,7 +34,7 @@ where
     Fut: Send + Future<Output = Result<ToolResult, ToolError>> + 'static,
 {
     Arc::new(
-        typed_tool::<Args, _, _>(name, Some(description.to_string()), function)
+        typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function)
             .with_metadata(metadata),
     )
 }

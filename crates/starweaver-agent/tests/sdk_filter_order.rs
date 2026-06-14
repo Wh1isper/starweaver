@@ -10,7 +10,7 @@ use starweaver_agent::{
     default_filter_capabilities, default_filter_capabilities_with_config, AgentCapability,
     AgentContext, AgentRunState, CacheFriendlyCompactCapability, ConversationId, FunctionModel,
     FunctionModelInfo, MediaUploadRequest, MediaUploader, ModelConfig, NamedFilterCapability,
-    Ratio, RunId, Usage, DEFAULT_FILTER_ORDER,
+    PerThousandRatio, RunId, Usage, DEFAULT_FILTER_ORDER,
 };
 use starweaver_model::{
     ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
@@ -47,6 +47,62 @@ async fn default_filter_capabilities_record_order() -> starweaver_agent::Capabil
         .filter_map(serde_json::Value::as_str)
         .collect::<Vec<_>>();
     assert_eq!(observed, DEFAULT_FILTER_ORDER);
+    Ok(())
+}
+
+#[tokio::test]
+async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
+) -> starweaver_agent::CapabilityResult<()> {
+    let request = ModelRequest {
+        parts: vec![
+            ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                "call_1",
+                "tool",
+                serde_json::json!({"ok": true}),
+            )),
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "continue".to_string(),
+                }],
+                name: None,
+                metadata: serde_json::Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_metadata_instruction"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_environment_instructions".to_string(),
+        serde_json::json!("<environment-context>fresh</environment-context>"),
+    );
+
+    let messages = NamedFilterCapability::new("environment_instructions")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+    let ModelMessage::Request(request) = messages.last().expect("request") else {
+        panic!("expected request");
+    };
+
+    assert!(matches!(request.parts[0], ModelRequestPart::ToolReturn(_)));
+    assert!(matches!(
+        &request.parts[1],
+        ModelRequestPart::Instruction { text, .. } if text.contains("<environment-context>fresh</environment-context>")
+    ));
+    assert!(matches!(
+        request.parts[2],
+        ModelRequestPart::UserPrompt { .. }
+    ));
     Ok(())
 }
 
@@ -447,7 +503,7 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
     let mut context = AgentContext {
         model_config: ModelConfig {
             context_window: Some(100),
-            compact_threshold: Ratio::from_parts_per_thousand(900),
+            compact_threshold: PerThousandRatio::from_per_thousand(900),
             ..ModelConfig::default()
         },
         message_history: state.message_history.clone(),
@@ -593,7 +649,7 @@ async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_s
     let mut context = AgentContext {
         model_config: ModelConfig {
             context_window: Some(100),
-            compact_threshold: Ratio::from_parts_per_thousand(900),
+            compact_threshold: PerThousandRatio::from_per_thousand(900),
             ..ModelConfig::default()
         },
         message_history: state.message_history.clone(),

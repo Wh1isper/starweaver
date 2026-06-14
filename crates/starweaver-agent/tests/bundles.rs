@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    attach_environment, filesystem_tools, host_operation_tools, namespaced_toolset, shell_tools,
-    string_tool, task_tools, tool_proxy_toolset, AgentCapability, AgentContext, AgentSession,
+    attach_environment, dynamic_tool_proxy, filesystem_tools, host_operation_tools, json_tool,
+    namespaced_toolset, shell_tools, task_tools, AgentCapability, AgentContext, AgentSession,
     EnvironmentContextCapability, HostMediaCapabilities, HostMediaUnderstandingClient,
     HostMediaUnderstandingClientHandle, HostScrapeClient, HostScrapeClientHandle, HostSearchClient,
     HostSearchClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse, ScrapeRequest,
@@ -32,15 +32,21 @@ async fn environment_context_capability_marks_provider_context_dynamic() {
     );
     let mut context = AgentContext::default();
     attach_environment(&mut context, provider);
-    let mut request = ModelRequest::user_text("inspect workspace");
+    let request = ModelRequest::user_text("inspect workspace");
     let mut state =
         starweaver_agent::AgentRunState::new(RunId::default(), ConversationId::default());
-    let mut settings = None;
 
-    EnvironmentContextCapability
-        .before_model_request_with_context(&mut state, &mut context, &mut request, &mut settings)
+    let messages = EnvironmentContextCapability
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![starweaver_model::ModelMessage::Request(request)],
+        )
         .await
         .unwrap();
+    let starweaver_model::ModelMessage::Request(request) = messages.last().unwrap() else {
+        panic!("expected request");
+    };
 
     assert!(matches!(
         request.parts.first(),
@@ -1350,7 +1356,7 @@ fn first_party_tool_arg_schemas_match_starweaver_sdk_and_describe_args() {
         }
     }
 
-    let proxy = tool_proxy_toolset(vec![]);
+    let proxy = dynamic_tool_proxy(vec![]);
     assert_tool_schema_fields(proxy.as_ref(), "search_tools", &["query"]);
     assert_tool_schema_fields(proxy.as_ref(), "call_tool", &["name", "arguments"]);
 }
@@ -1361,7 +1367,7 @@ async fn tool_proxy_searches_and_calls_namespaced_toolsets() {
         Arc::new(VirtualEnvironmentProvider::new("test").with_file("README.md", "proxied content"));
     let filesystem = filesystem_tools();
     let namespaced = namespaced_toolset("workspace", filesystem.clone());
-    let proxy = tool_proxy_toolset(vec![namespaced.clone()]);
+    let proxy = dynamic_tool_proxy(vec![namespaced.clone()]);
     let proxy_tools = proxy.get_tools();
 
     assert_eq!(proxy.name(), "tool_proxy");
@@ -1422,7 +1428,7 @@ async fn tool_proxy_searches_and_calls_namespaced_toolsets() {
 
 #[tokio::test]
 async fn tool_proxy_escapes_xml_attributes_and_text() {
-    let quoted = Arc::new(string_tool(
+    let quoted = Arc::new(json_tool(
         "quote\"tool",
         Some("Handle <quoted> & special text".to_string()),
         serde_json::json!({
@@ -1436,7 +1442,7 @@ async fn tool_proxy_escapes_xml_attributes_and_text() {
         },
     ));
     let toolset = Arc::new(starweaver_tools::StaticToolset::new("quoted\"set").with_tool(quoted));
-    let proxy = tool_proxy_toolset(vec![toolset]);
+    let proxy = dynamic_tool_proxy(vec![toolset]);
     let search_tools = proxy
         .get_tools()
         .into_iter()

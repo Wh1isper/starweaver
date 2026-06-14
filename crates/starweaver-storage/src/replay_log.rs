@@ -15,9 +15,11 @@ use starweaver_stream::{
 };
 
 use crate::{
-    connection::{open_connection, open_in_memory_connection},
-    errors::{replay_sql_error, session_to_replay_error},
     migrations::apply_sqlite_migrations,
+    sqlite::{
+        map_session_to_replay_error, map_sqlite_replay_error, open_in_memory_sqlite_connection,
+        open_sqlite_connection,
+    },
 };
 
 /// SQLite-backed replay event log with in-process live subscriptions.
@@ -34,8 +36,8 @@ impl SqliteReplayEventLog {
     ///
     /// Returns a replay error when SQLite cannot open or initialize the database.
     pub fn open(path: impl AsRef<Path>) -> ReplayResult<Self> {
-        let mut connection = open_connection(path).map_err(session_to_replay_error)?;
-        apply_sqlite_migrations(&mut connection).map_err(session_to_replay_error)?;
+        let mut connection = open_sqlite_connection(path).map_err(map_session_to_replay_error)?;
+        apply_sqlite_migrations(&mut connection).map_err(map_session_to_replay_error)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             live: InMemoryReplayEventLog::new(),
@@ -48,8 +50,9 @@ impl SqliteReplayEventLog {
     ///
     /// Returns a replay error when SQLite cannot initialize the database.
     pub fn in_memory() -> ReplayResult<Self> {
-        let mut connection = open_in_memory_connection().map_err(session_to_replay_error)?;
-        apply_sqlite_migrations(&mut connection).map_err(session_to_replay_error)?;
+        let mut connection =
+            open_in_memory_sqlite_connection().map_err(map_session_to_replay_error)?;
+        apply_sqlite_migrations(&mut connection).map_err(map_session_to_replay_error)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
             live: InMemoryReplayEventLog::new(),
@@ -82,7 +85,7 @@ impl ReplayEventLog for SqliteReplayEventLog {
                         event.timestamp.to_rfc3339(),
                     ],
                 )
-                .map_err(replay_sql_error)?;
+                .map_err(map_sqlite_replay_error)?;
         }
         self.live.append(scope, event).await
     }
@@ -108,7 +111,7 @@ impl ReplayEventLog for SqliteReplayEventLog {
                      ORDER BY sequence_no ASC
                      LIMIT ?3",
                 )
-                .map_err(replay_sql_error)?;
+                .map_err(map_sqlite_replay_error)?;
             let rows = statement
                 .query_map(
                     params![
@@ -119,9 +122,9 @@ impl ReplayEventLog for SqliteReplayEventLog {
                     ],
                     |row| row.get::<_, String>(0),
                 )
-                .map_err(replay_sql_error)?;
+                .map_err(map_sqlite_replay_error)?;
             for row in rows {
-                let payload = row.map_err(replay_sql_error)?;
+                let payload = row.map_err(map_sqlite_replay_error)?;
                 events.push(
                     serde_json::from_str::<ReplayEvent>(&payload)
                         .map_err(|error| ReplayError::Failed(error.to_string()))?,
@@ -134,14 +137,14 @@ impl ReplayEventLog for SqliteReplayEventLog {
                      WHERE scope = ?1 AND sequence_no >= ?2
                      ORDER BY sequence_no ASC",
                 )
-                .map_err(replay_sql_error)?;
+                .map_err(map_sqlite_replay_error)?;
             let rows = statement
                 .query_map(params![scope.as_str(), after], |row| {
                     row.get::<_, String>(0)
                 })
-                .map_err(replay_sql_error)?;
+                .map_err(map_sqlite_replay_error)?;
             for row in rows {
-                let payload = row.map_err(replay_sql_error)?;
+                let payload = row.map_err(map_sqlite_replay_error)?;
                 events.push(
                     serde_json::from_str::<ReplayEvent>(&payload)
                         .map_err(|error| ReplayError::Failed(error.to_string()))?,
@@ -169,7 +172,7 @@ impl ReplayEventLog for SqliteReplayEventLog {
                     |row| row.get::<_, String>(0),
                 )
                 .optional()
-                .map_err(replay_sql_error)?
+                .map_err(map_sqlite_replay_error)?
         };
         if let Some(payload) = snapshot_payload {
             return serde_json::from_str::<ReplaySnapshot>(&payload)
@@ -215,7 +218,7 @@ impl SqliteReplayEventLog {
                     Utc::now().to_rfc3339(),
                 ],
             )
-            .map_err(replay_sql_error)?;
+            .map_err(map_sqlite_replay_error)?;
         Ok(())
     }
 }

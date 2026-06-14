@@ -16,9 +16,11 @@ use starweaver_stream::{
 };
 
 use crate::{
-    connection::{open_connection, open_in_memory_connection},
-    errors::{replay_sql_error, session_to_replay_error},
     migrations::apply_sqlite_migrations,
+    sqlite::{
+        map_session_to_replay_error, map_sqlite_replay_error, open_in_memory_sqlite_connection,
+        open_sqlite_connection,
+    },
 };
 
 /// SQLite-backed stream archive for raw runtime records, display replay, and snapshots.
@@ -34,8 +36,8 @@ impl SqliteStreamArchive {
     ///
     /// Returns a replay error when SQLite cannot open or initialize the database.
     pub fn open(path: impl AsRef<Path>) -> ReplayResult<Self> {
-        let mut connection = open_connection(path).map_err(session_to_replay_error)?;
-        apply_sqlite_migrations(&mut connection).map_err(session_to_replay_error)?;
+        let mut connection = open_sqlite_connection(path).map_err(map_session_to_replay_error)?;
+        apply_sqlite_migrations(&mut connection).map_err(map_session_to_replay_error)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -47,8 +49,9 @@ impl SqliteStreamArchive {
     ///
     /// Returns a replay error when SQLite cannot initialize the database.
     pub fn in_memory() -> ReplayResult<Self> {
-        let mut connection = open_in_memory_connection().map_err(session_to_replay_error)?;
-        apply_sqlite_migrations(&mut connection).map_err(session_to_replay_error)?;
+        let mut connection =
+            open_in_memory_sqlite_connection().map_err(map_session_to_replay_error)?;
+        apply_sqlite_migrations(&mut connection).map_err(map_session_to_replay_error)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -85,7 +88,7 @@ impl StreamArchive for SqliteStreamArchive {
                             .map_err(|error| ReplayError::Failed(error.to_string()))?,
                     ],
                 )
-                .map_err(replay_sql_error)?;
+                .map_err(map_sqlite_replay_error)?;
         }
         Ok(())
     }
@@ -107,7 +110,7 @@ impl StreamArchive for SqliteStreamArchive {
                  WHERE session_id = ?1 AND run_id = ?2 AND sequence_no >= ?3
                  ORDER BY sequence_no ASC",
             )
-            .map_err(replay_sql_error)?;
+            .map_err(map_sqlite_replay_error)?;
         let rows = statement
             .query_map(
                 params![
@@ -117,11 +120,11 @@ impl StreamArchive for SqliteStreamArchive {
                 ],
                 |row| row.get::<_, String>(0),
             )
-            .map_err(replay_sql_error)?;
+            .map_err(map_sqlite_replay_error)?;
         let mut records = Vec::new();
         for row in rows {
             records.push(
-                serde_json::from_str::<AgentStreamRecord>(&row.map_err(replay_sql_error)?)
+                serde_json::from_str::<AgentStreamRecord>(&row.map_err(map_sqlite_replay_error)?)
                     .map_err(|error| ReplayError::Failed(error.to_string()))?,
             );
         }
@@ -149,7 +152,7 @@ impl StreamArchive for SqliteStreamArchive {
                         event.timestamp.to_rfc3339(),
                     ],
                 )
-                .map_err(replay_sql_error)?;
+                .map_err(map_sqlite_replay_error)?;
         }
         Ok(())
     }
@@ -170,7 +173,7 @@ impl StreamArchive for SqliteStreamArchive {
                  WHERE scope = ?1 AND sequence_no >= ?2
                  ORDER BY sequence_no ASC",
             )
-            .map_err(replay_sql_error)?;
+            .map_err(map_sqlite_replay_error)?;
         let rows = statement
             .query_map(
                 params![
@@ -179,10 +182,10 @@ impl StreamArchive for SqliteStreamArchive {
                 ],
                 |row| row.get::<_, String>(0),
             )
-            .map_err(replay_sql_error)?;
+            .map_err(map_sqlite_replay_error)?;
         let mut messages = Vec::new();
         for row in rows {
-            let event = serde_json::from_str::<ReplayEvent>(&row.map_err(replay_sql_error)?)
+            let event = serde_json::from_str::<ReplayEvent>(&row.map_err(map_sqlite_replay_error)?)
                 .map_err(|error| ReplayError::Failed(error.to_string()))?;
             if let ReplayEventKind::DisplayMessage(message) = event.event {
                 messages.push(*message);
@@ -208,7 +211,7 @@ impl StreamArchive for SqliteStreamArchive {
                     Utc::now().to_rfc3339(),
                 ],
             )
-            .map_err(replay_sql_error)?;
+            .map_err(map_sqlite_replay_error)?;
         Ok(())
     }
 
@@ -221,7 +224,7 @@ impl StreamArchive for SqliteStreamArchive {
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(replay_sql_error)?;
+            .map_err(map_sqlite_replay_error)?;
         payload
             .map(|payload| {
                 serde_json::from_str::<ReplaySnapshot>(&payload)
@@ -241,7 +244,7 @@ impl StreamArchive for SqliteStreamArchive {
                 params![scope.as_str()],
                 |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
-            .map_err(replay_sql_error)?;
+            .map_err(map_sqlite_replay_error)?;
         let (Some(first), Some(last)) = range else {
             return Ok(None);
         };

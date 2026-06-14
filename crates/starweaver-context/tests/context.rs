@@ -1,7 +1,7 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use starweaver_context::{
-    AgentContext, AgentEvent, AgentId, BusMessage, ModelConfig, Ratio, ResumableState,
+    AgentContext, AgentEvent, AgentId, BusMessage, ModelConfig, PerThousandRatio, ResumableState,
 };
 use starweaver_core::{TraceContext, Usage};
 use starweaver_model::{ModelMessage, ModelRequest, ModelResponse};
@@ -202,8 +202,8 @@ fn runtime_context_adds_proactive_context_pressure_reminder_from_latest_request_
     let mut context = AgentContext {
         model_config: ModelConfig {
             context_window: Some(100),
-            proactive_context_management_threshold: Some(Ratio::from_parts_per_thousand(500)),
-            compact_threshold: Ratio::from_parts_per_thousand(900),
+            proactive_context_management_threshold: Some(PerThousandRatio::from_per_thousand(500)),
+            compact_threshold: PerThousandRatio::from_per_thousand(900),
             ..ModelConfig::default()
         },
         usage: Usage {
@@ -246,6 +246,44 @@ fn runtime_context_adds_proactive_context_pressure_reminder_from_latest_request_
     assert!(injected.contains("Context usage is at 60% (60 / 100 tokens)"));
     assert!(injected.contains("Configured compact threshold is 90%"));
     assert!(!injected.contains("110 / 100 tokens"));
+}
+
+#[test]
+fn runtime_context_includes_active_tasks_with_user_prompt_details() {
+    let mut context = AgentContext::default();
+    let mut pending = starweaver_context::Task::new("1", "Plan work", "Plan the implementation");
+    pending.blocked_by.push("2".to_string());
+    let mut in_progress = starweaver_context::Task::new("2", "Implement changes", "Edit code");
+    in_progress.status = "in_progress".to_string();
+    in_progress.active_form = Some("Implementing changes".to_string());
+    let mut completed = starweaver_context::Task::new("3", "Done", "Completed task");
+    completed.status = "completed".to_string();
+    context.set_tasks(vec![pending, in_progress, completed]);
+
+    let injected = context.inject_runtime_context(true).unwrap();
+
+    assert!(injected.contains("<active-tasks hint=\"Update status with task_update tool\">"));
+    assert!(injected.contains("<task id=\"1\" status=\"pending\" blocked-by=\"2\">"));
+    assert!(injected.contains("<subject>Plan work</subject>"));
+    assert!(injected.contains("<active-form>Implementing changes</active-form>"));
+    assert!(!injected.contains("Done"));
+}
+
+#[test]
+fn runtime_context_includes_compact_active_tasks_for_tool_turns() {
+    let mut context = AgentContext::default();
+    context.set_tasks(vec![starweaver_context::Task::new(
+        "1",
+        "Plan work",
+        "Plan the implementation",
+    )]);
+
+    let injected = context.inject_runtime_context(false).unwrap();
+
+    assert!(injected.contains("<active-tasks>"));
+    assert!(injected.contains("<task id=\"1\" status=\"pending\">Plan work</task>"));
+    assert!(!injected.contains("hint="));
+    assert!(!injected.contains("<subject>"));
 }
 
 #[test]

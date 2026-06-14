@@ -6,7 +6,6 @@ mod helpers;
 mod media;
 mod skills;
 mod task;
-mod tool_proxy;
 mod web;
 
 use std::sync::Arc;
@@ -29,8 +28,8 @@ pub use media::{
 pub use skills::{
     parse_skill_markdown, skill_tools, SkillError, SkillPackage, SkillRegistry, SkillSourceScope,
 };
+pub use starweaver_tools::{dynamic_tool_proxy, ToolProxyNamePrefixError, ToolProxyToolset};
 pub use task::task_tools;
-pub use tool_proxy::{tool_proxy_toolset, ToolProxyPrefixError, ToolProxyToolset};
 pub use web::{
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
     ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem,

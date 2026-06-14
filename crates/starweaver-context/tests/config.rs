@@ -1,17 +1,15 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use starweaver_context::{
-    AgentContext, AgentId, ModelCapability, ModelConfig, Ratio, ResumableState, ToolConfig,
+    AgentContext, AgentId, ModelCapability, ModelConfig, PerThousandRatio, ResumableState,
+    ToolConfig,
 };
 
 #[test]
 fn agent_context_has_default_model_and_tool_config() {
     let context = AgentContext::default();
 
-    assert_eq!(
-        context.model_config.compact_threshold.parts_per_thousand(),
-        900
-    );
+    assert_eq!(context.model_config.compact_threshold.per_thousand(), 900);
     assert_eq!(context.model_config.max_images, 20);
     assert_eq!(
         context.tool_config.view_max_text_file_size,
@@ -50,7 +48,13 @@ fn dynamic_relaxed_view_patterns_are_runtime_only() {
         "skills:test",
         vec!["re:^skills/demo/.*\\.md$".to_string()],
     );
-    assert_eq!(context.tool_config.view_relaxed_text_patterns().len(), 1);
+    assert_eq!(
+        context
+            .tool_config
+            .effective_view_relaxed_text_patterns()
+            .len(),
+        1
+    );
 
     let encoded = serde_json::to_string(&context.export_state()).unwrap();
     assert!(!encoded.contains("skills:test"));
@@ -58,7 +62,10 @@ fn dynamic_relaxed_view_patterns_are_runtime_only() {
 
     let restored =
         AgentContext::from_state(serde_json::from_str::<ResumableState>(&encoded).unwrap());
-    assert!(restored.tool_config.view_relaxed_text_patterns().is_empty());
+    assert!(restored
+        .tool_config
+        .effective_view_relaxed_text_patterns()
+        .is_empty());
 }
 
 #[test]
@@ -86,7 +93,7 @@ fn merge_model_and_tool_config_updates_context_defaults() {
     let mut context = AgentContext::default();
     let model_config = ModelConfig {
         context_window: Some(123_000),
-        compact_threshold: Ratio::from_parts_per_thousand(875),
+        compact_threshold: PerThousandRatio::from_per_thousand(875),
         ..ModelConfig::default()
     };
     let tool_config = ToolConfig {
@@ -99,10 +106,7 @@ fn merge_model_and_tool_config_updates_context_defaults() {
     context.merge_tool_config(tool_config);
 
     assert_eq!(context.model_config.context_window, Some(123_000));
-    assert_eq!(
-        context.model_config.compact_threshold.parts_per_thousand(),
-        875
-    );
+    assert_eq!(context.model_config.compact_threshold.per_thousand(), 875);
     assert_eq!(context.tool_config.download_max_concurrency, 1);
     assert_eq!(
         context.tool_config.view_relaxed_text_patterns,

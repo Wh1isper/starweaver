@@ -18,18 +18,18 @@
 )]
 //! Shared SQLite storage adapters and migrations for Starweaver.
 
-mod connection;
-mod errors;
 mod migrations;
 mod replay_log;
-mod reports;
 mod schema;
 mod session_store;
+mod sqlite;
 mod stream_archive;
 
-pub use migrations::{migrate_sqlite_database, sqlite_migration_status};
+pub use migrations::{
+    migrate_sqlite_database, sqlite_migration_status, SqliteAppliedMigration,
+    SqliteMigrationStatus, SqlitePendingMigration,
+};
 pub use replay_log::SqliteReplayEventLog;
-pub use reports::{SqliteAppliedMigration, SqliteMigrationStatus, SqlitePendingMigration};
 pub use session_store::SqliteSessionStore;
 pub use stream_archive::SqliteStreamArchive;
 

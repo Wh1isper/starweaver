@@ -16,16 +16,16 @@ use starweaver_runtime::Agent as RuntimeAgent;
 
 pub use bundles::{
     attach_environment, attach_process_shell, attach_shell_review, attach_shell_review_handle,
-    core_toolsets, environment_toolsets, filesystem_tools, host_operation_tools,
-    namespaced_toolset, parse_skill_markdown, process_shell_toolsets, shell_tools, skill_tools,
-    task_tools, tool_proxy_toolset, EnvironmentContextCapability, EnvironmentHandle,
+    core_toolsets, dynamic_tool_proxy, environment_toolsets, filesystem_tools,
+    host_operation_tools, namespaced_toolset, parse_skill_markdown, process_shell_toolsets,
+    shell_tools, skill_tools, task_tools, EnvironmentContextCapability, EnvironmentHandle,
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
     MediaUnderstandingRequest, MediaUnderstandingResponse, ProcessShellHandle, ScrapeRequest,
     ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem, ShellReviewAction,
     ShellReviewConfig, ShellReviewContextSnapshot, ShellReviewDecision, ShellReviewHandle,
     ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
-    SkillError, SkillPackage, SkillRegistry, SkillSourceScope, ToolProxyPrefixError,
+    SkillError, SkillPackage, SkillRegistry, SkillSourceScope, ToolProxyNamePrefixError,
     ToolProxyToolset, DEFAULT_SHELL_REVIEW_PROMPT,
 };
 pub use filters::{
@@ -45,8 +45,8 @@ pub use presets::{
 };
 pub use session::{AgentRunOptions, AgentSession};
 pub use starweaver_context::{
-    AgentContext, AgentContextHandle, ModelCapability, ModelConfig, Ratio, ResumableState,
-    SecurityConfig, ToolConfig,
+    AgentContext, AgentContextHandle, ModelCapability, ModelConfig, PerThousandRatio,
+    ResumableState, SecurityConfig, ToolConfig,
 };
 pub use starweaver_core::{
     AgentId, CheckpointId, ConversationId, RunId, SubagentLifecycleEvent, SubagentLifecycleKind,
@@ -81,11 +81,12 @@ pub use starweaver_runtime::{
     TraceLevel, TraceRecorder, UsageLimitError, UsageLimits,
 };
 pub use starweaver_tools::{
-    mcp_tool_definition, string_tool, typed_tool, ApprovalRequiredToolset, DeferredLoadingToolset,
-    DynTool, DynToolset, DynamicToolset, EmptyToolArgs, FilteredToolset, FunctionTool, McpToolSpec,
-    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset,
-    PreparedToolset, RenamedToolset, StaticToolset, Tool, ToolApprovalState, ToolContext,
-    ToolError, ToolInstruction, ToolRegistry, ToolResult, Toolset, TypedFunctionTool,
+    json_tool, tool_definition_from_mcp_spec, typed_json_tool, ApprovalRequiredToolset,
+    DeferredLoadingToolset, DynTool, DynToolset, DynamicToolset, EmptyToolArgs, FilteredToolset,
+    FunctionTool, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer,
+    PrefixedTool, PrefixedToolset, PreparedToolset, RenamedToolset, StaticToolset, Tool,
+    ToolApprovalState, ToolContext, ToolError, ToolInstruction, ToolRegistry, ToolResult, Toolset,
+    TypedFunctionTool,
 };
 pub use subagent::{
     AgentApp, SubagentConfig, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
