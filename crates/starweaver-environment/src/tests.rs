@@ -783,6 +783,104 @@ async fn local_context_file_tree_includes_allowed_external_roots() {
 }
 
 #[tokio::test]
+async fn local_context_file_tree_deduplicates_visible_nested_allowed_roots() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(root.join("skills/research")).unwrap();
+    std::fs::write(root.join("README.md"), "readme").unwrap();
+    std::fs::write(root.join("skills/research/SKILL.md"), "skill").unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_allowed_paths([root.join("skills")])
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+
+    assert_eq!(
+        instructions
+            .matches(&format!("<directory path=\"{}\">", root.display()))
+            .count(),
+        1
+    );
+    assert!(!instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        root.join("skills").display()
+    )));
+    assert!(instructions.contains("skills/research/SKILL.md"));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn local_context_file_tree_keeps_hidden_nested_allowed_roots() {
+    let root = unique_test_dir();
+    let hidden = root.join(".starweaver/skills/research");
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::write(root.join("README.md"), "readme").unwrap();
+    std::fs::write(hidden.join("SKILL.md"), "skill").unwrap();
+    let allowed_root = root.join(".starweaver/skills");
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_allowed_paths([allowed_root.clone()])
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+
+    assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
+    assert!(instructions.contains(&format!("<directory path=\"{}\">", allowed_root.display())));
+    assert!(instructions.contains("research/SKILL.md"));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn local_context_file_tree_keeps_gitignored_nested_allowed_roots() {
+    let root = unique_test_dir();
+    let allowed_root = root.join("ignored/skills");
+    std::fs::create_dir_all(&allowed_root).unwrap();
+    std::fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
+    std::fs::write(root.join("README.md"), "readme").unwrap();
+    std::fs::write(allowed_root.join("SKILL.md"), "skill").unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_allowed_paths([allowed_root.clone()])
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+
+    assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
+    assert!(instructions.contains("ignored/ (gitignored)"));
+    assert!(instructions.contains(&format!("<directory path=\"{}\">", allowed_root.display())));
+    assert!(instructions.contains("SKILL.md"));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn local_context_file_tree_keeps_deep_nested_allowed_roots() {
+    let root = unique_test_dir();
+    let allowed_root = root.join("level1/level2/level3");
+    std::fs::create_dir_all(&allowed_root).unwrap();
+    std::fs::write(root.join("README.md"), "readme").unwrap();
+    std::fs::write(allowed_root.join("SKILL.md"), "skill").unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_allowed_paths([allowed_root.clone()])
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+
+    assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
+    assert!(instructions.contains(&format!("<directory path=\"{}\">", allowed_root.display())));
+    assert!(instructions.contains("SKILL.md"));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn local_provider_runs_shell_with_cwd_environment_and_policy() {
     let root = unique_test_dir();
     std::fs::create_dir_all(root.join("work")).unwrap();

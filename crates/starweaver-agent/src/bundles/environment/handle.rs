@@ -96,21 +96,35 @@ fn request_has_tool_return_or_retry(request: &ModelRequest) -> bool {
 }
 
 fn insert_request_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
-    let insert_at = request
+    let control_prefix_len = request
         .parts
         .iter()
-        .enumerate()
-        .filter_map(|(index, part)| match part {
-            ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => {
-                Some(index + 1)
-            }
-            ModelRequestPart::SystemPrompt { .. }
-            | ModelRequestPart::UserPrompt { .. }
-            | ModelRequestPart::Instruction { .. } => None,
-        })
-        .next_back()
-        .unwrap_or(0);
+        .take_while(|part| is_control_prefix_part(part))
+        .count();
+    let insert_at = control_prefix_len
+        + request.parts[control_prefix_len..]
+            .iter()
+            .take_while(|part| is_instruction_prefix_part(part))
+            .count();
     request.parts.insert(insert_at, part);
+}
+
+fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
+    match part {
+        ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
+        ModelRequestPart::UserPrompt { metadata, .. } => metadata
+            .get("starweaver_instruction_origin")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|origin| origin == "tool_return_media"),
+        ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,
+    }
+}
+
+const fn is_instruction_prefix_part(part: &ModelRequestPart) -> bool {
+    matches!(
+        part,
+        ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. }
+    )
 }
 
 fn force_inject_instructions(state: &AgentRunState, context: &AgentContext) -> bool {

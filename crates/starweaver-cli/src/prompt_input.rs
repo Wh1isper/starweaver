@@ -58,6 +58,9 @@ pub struct PromptInput {
     /// Additional text-only context parts appended to the first user prompt.
     #[serde(default)]
     pub extra_text_parts: Vec<String>,
+    /// Transient guidance loaded for the current request only.
+    #[serde(default)]
+    pub guidance_text_parts: Vec<String>,
 }
 
 impl PromptInput {
@@ -68,20 +71,24 @@ impl PromptInput {
             text: text.into(),
             attachments: Vec::new(),
             extra_text_parts: Vec::new(),
+            guidance_text_parts: Vec::new(),
         }
     }
 
     /// Return true when this input needs first-request content-part rewriting.
+    ///
+    /// Deliberately excludes `guidance_text_parts`: guidance is injected as
+    /// transient request instructions, not as user prompt content.
     #[must_use]
     pub fn has_content_parts(&self) -> bool {
         !self.attachments.is_empty() || !self.extra_text_parts.is_empty()
     }
 
-    /// Append an extra text context part to the first user prompt.
-    pub fn push_extra_text_part(&mut self, text: impl Into<String>) {
+    /// Append transient guidance to the current model request.
+    pub fn push_guidance_text_part(&mut self, text: impl Into<String>) {
         let text = text.into();
         if !text.trim().is_empty() {
-            self.extra_text_parts.push(text);
+            self.guidance_text_parts.push(text);
         }
     }
 
@@ -161,6 +168,7 @@ mod tests {
             text: format!("look at this {placeholder} please"),
             attachments: vec![attachment],
             extra_text_parts: Vec::new(),
+            guidance_text_parts: Vec::new(),
         };
 
         let parts = input.into_content_parts();
@@ -181,8 +189,9 @@ mod tests {
     #[test]
     fn prompt_input_appends_extra_text_parts_after_attachments() {
         let mut input = PromptInput::text("inspect");
-        input.push_extra_text_part(
-            "<user-rules location=/tmp/RULES.md>\nPrefer concise output.\n</user-rules>",
+        input.extra_text_parts.push(
+            "<user-rules location=/tmp/RULES.md>\nPrefer concise output.\n</user-rules>"
+                .to_string(),
         );
 
         let parts = input.into_content_parts();
@@ -207,6 +216,7 @@ mod tests {
             text: "   ".to_string(),
             attachments: vec![PromptAttachment::image(1, vec![1, 2, 3], "image/png")],
             extra_text_parts: Vec::new(),
+            guidance_text_parts: Vec::new(),
         };
 
         assert_eq!(input.display_text(), "[Attached image 1: image/png 3B]");

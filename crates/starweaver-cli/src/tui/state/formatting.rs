@@ -19,7 +19,11 @@ mod context_events;
 mod tasks;
 mod tool_returns;
 
-pub(super) use context_events::format_custom_context_event_lines;
+pub(super) use context_events::{
+    format_custom_context_event_lines, format_subagent_finished_line, format_subagent_running_line,
+    is_subagent_lifecycle_event_kind, is_subagent_start_event_kind, normalized_event_kind,
+    subagent_display_id,
+};
 use context_events::{payload_string, payload_string_array, push_indented_preview};
 use tasks::format_task_tool_lines;
 pub(super) use tasks::{is_task_snapshot_event, is_task_tool_name, task_panel_items_from_value};
@@ -227,6 +231,17 @@ pub(in crate::tui) fn display_lines_for_stream_record(record: &AgentStreamRecord
                 || vec!["Steering received".to_string()],
                 |text| vec![format!("Steering received: {text}")],
             ),
+        AgentStreamEvent::Custom { event } if is_subagent_lifecycle_event_kind(&event.kind) => {
+            let normalized = normalized_event_kind(&event.kind);
+            if context_events::is_subagent_start_event_kind(&normalized) {
+                vec![format_subagent_running_line(&event.payload)]
+            } else {
+                vec![format_subagent_finished_line(&event.kind, &event.payload)]
+            }
+        }
+        AgentStreamEvent::Custom { event } => {
+            format_custom_context_event_lines(&event.kind, &event.payload).unwrap_or_default()
+        }
         AgentStreamEvent::RunFailed { message, .. } => vec![format!("Run failed: {message}")],
         _ => Vec::new(),
     }

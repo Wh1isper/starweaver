@@ -268,7 +268,7 @@ async fn builder_installs_default_filter_capabilities_before_custom_capabilities
 }
 
 #[tokio::test]
-async fn builder_injects_runtime_context_before_environment_context_and_user_prompt() {
+async fn builder_injects_environment_context_before_runtime_context_and_user_prompt() {
     let captured_messages = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(MessageCaptureModel {
         captured_messages: Arc::clone(&captured_messages),
@@ -297,11 +297,11 @@ async fn builder_injects_runtime_context_before_environment_context_and_user_pro
     };
     assert!(matches!(
         &request.parts[0],
-        ModelRequestPart::Instruction { text, .. } if text.contains("<runtime-context>")
+        ModelRequestPart::Instruction { text, .. } if text.contains("<environment-context>")
     ));
     assert!(matches!(
         &request.parts[1],
-        ModelRequestPart::Instruction { text, .. } if text.contains("<environment-context>")
+        ModelRequestPart::Instruction { text, .. } if text.contains("<runtime-context>")
     ));
     assert!(matches!(
         &request.parts[2],

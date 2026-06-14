@@ -29,7 +29,10 @@ use super::{
         render_live_history_lines, render_shortcut_overlay, visible_width, SegmentStyle,
         StyledLine,
     },
-    state::{FooterMode, InteractiveTuiState, ModelChoice, RunMode, SessionChoice},
+    state::{
+        display_lines_for_stream_record, FooterMode, InteractiveTuiState, ModelChoice, RunMode,
+        SessionChoice,
+    },
     terminal::{
         handle_key_event, handle_mouse_event, should_capture_mouse, visible_body_bounds,
         InteractiveTuiEvent,
@@ -2595,6 +2598,76 @@ fn interactive_state_covers_model_response_finish_and_failure() {
     assert_eq!(state.status, "ERROR");
     assert_eq!(state.phase, "failed");
     assert!(state.body.iter().any(|line| line == "Error: boom"));
+}
+
+#[test]
+fn subagent_lifecycle_events_render_as_folded_status_lines() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let started = AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "subagent_started",
+                json!({
+                    "kind": "started",
+                    "agent_id": "explorer-abc",
+                    "agent_name": "explorer",
+                    "prompt_preview": "inspect files"
+                }),
+            ),
+        },
+    );
+    state.apply_stream_record(&started);
+    assert!(body_has_line(&state, "[explorer-abc] Running..."));
+    assert_eq!(
+        display_lines_for_stream_record(&started),
+        vec!["[explorer-abc] Running...".to_string()]
+    );
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "subagent_completed",
+                json!({
+                    "kind": "completed",
+                    "agent_id": "explorer-abc",
+                    "agent_name": "explorer",
+                    "success": true,
+                    "duration_seconds": 12.34,
+                    "request_count": 2,
+                    "result_preview": "found the owner"
+                }),
+            ),
+        },
+    ));
+    assert!(!body_has_line(&state, "[explorer-abc] Running..."));
+    assert!(body_has_line(
+        &state,
+        "[explorer-abc] Done (12.3s) | 2 reqs | \"found the owner\""
+    ));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "subagent_failed",
+                json!({
+                    "kind": "failed",
+                    "agent_id": "debugger-def",
+                    "agent_name": "debugger",
+                    "success": false,
+                    "duration_seconds": 1.2,
+                    "error": "missing_subagent"
+                }),
+            ),
+        },
+    ));
+    assert!(body_has_line(
+        &state,
+        "[debugger-def] Failed (1.2s) | missing_subagent"
+    ));
+    assert!(!state.body.iter().any(|line| line.contains("inspect files")));
 }
 
 #[test]

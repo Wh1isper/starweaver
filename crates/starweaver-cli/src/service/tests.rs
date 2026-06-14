@@ -177,7 +177,7 @@ fn display_and_control_renderers_cover_edge_branches() {
 }
 
 #[test]
-fn guidance_files_append_project_guidance_and_user_rules_parts() {
+fn guidance_files_append_project_guidance_and_user_rules_as_transient_guidance() {
     let temp = tempfile::tempdir().unwrap();
     let global = temp.path().join("global");
     let project = temp.path().join("project");
@@ -198,17 +198,18 @@ fn guidance_files_append_project_guidance_and_user_rules_parts() {
     };
 
     append_guidance_files(&mut input, &config);
-    assert_eq!(input.extra_text_parts.len(), 2);
+    assert!(input.extra_text_parts.is_empty());
+    assert_eq!(input.guidance_text_parts.len(), 2);
     assert_eq!(
-        input.extra_text_parts[0],
+        input.guidance_text_parts[0],
         "<project-guidance name=AGENTS.md>\n# Project\nUse cargo test.\n\n</project-guidance>"
     );
-    assert!(input.extra_text_parts[1].starts_with(&format!(
+    assert!(input.guidance_text_parts[1].starts_with(&format!(
         "<user-rules location={}>",
         global.join("RULES.md").display()
     )));
-    assert!(input.extra_text_parts[1].contains("Prefer Chinese replies."));
-    assert!(input.extra_text_parts[1].ends_with("</user-rules>"));
+    assert!(input.guidance_text_parts[1].contains("Prefer Chinese replies."));
+    assert!(input.guidance_text_parts[1].ends_with("</user-rules>"));
 }
 
 #[test]
@@ -229,6 +230,7 @@ fn guidance_files_skip_missing_or_blank_files() {
 
     append_guidance_files(&mut input, &config);
     assert!(input.extra_text_parts.is_empty());
+    assert!(input.guidance_text_parts.is_empty());
 }
 
 fn test_config(root: &Path) -> CliConfig {

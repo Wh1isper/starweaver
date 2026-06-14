@@ -21,6 +21,15 @@ pub(in crate::agent) fn request_instruction_insert_index(request: &ModelRequest)
             .count()
 }
 
+pub(in crate::agent) fn request_instruction_end_index(request: &ModelRequest) -> usize {
+    let control_prefix_len = request_control_prefix_len(request);
+    control_prefix_len
+        + request.parts[control_prefix_len..]
+            .iter()
+            .take_while(|part| is_instruction_prefix_part(part))
+            .count()
+}
+
 fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
     match part {
         ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
@@ -43,4 +52,11 @@ fn is_static_instruction_prefix_part(part: &ModelRequestPart) -> bool {
         | ModelRequestPart::ToolReturn(_)
         | ModelRequestPart::RetryPrompt { .. } => false,
     }
+}
+
+const fn is_instruction_prefix_part(part: &ModelRequestPart) -> bool {
+    matches!(
+        part,
+        ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. }
+    )
 }

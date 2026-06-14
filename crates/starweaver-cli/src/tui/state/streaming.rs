@@ -1,15 +1,42 @@
 use super::{
     append_delta_segments, assistant_content_line, format_custom_context_event_lines,
-    format_streaming_tool_call_line, format_tool_call_line, format_tool_return_lines,
-    is_assistant_content_line, is_task_snapshot_event, is_task_tool_name, is_thinking_quote_line,
-    merge_stream_fragment, streaming_part_kind, streaming_tool_arguments_match,
-    streaming_tool_state_is_available, task_panel_items_from_value, tool_call_visibility_key,
-    AgentStreamEvent, AgentStreamRecord, HitlPanelState, InteractiveTuiState,
-    ModelResponseStreamEvent, PartDelta, StreamDelta, StreamingPartKind, StreamingToolCallState,
-    Value,
+    format_streaming_tool_call_line, format_subagent_finished_line, format_subagent_running_line,
+    format_tool_call_line, format_tool_return_lines, is_assistant_content_line,
+    is_subagent_lifecycle_event_kind, is_subagent_start_event_kind, is_task_snapshot_event,
+    is_task_tool_name, is_thinking_quote_line, merge_stream_fragment, normalized_event_kind,
+    streaming_part_kind, streaming_tool_arguments_match, streaming_tool_state_is_available,
+    subagent_display_id, task_panel_items_from_value, tool_call_visibility_key, AgentStreamEvent,
+    AgentStreamRecord, HitlPanelState, InteractiveTuiState, ModelResponseStreamEvent, PartDelta,
+    StreamDelta, StreamingPartKind, StreamingToolCallState, Value,
 };
 
 impl InteractiveTuiState {
+    fn apply_subagent_lifecycle_event(&mut self, kind: &str, payload: &Value) {
+        let normalized = normalized_event_kind(kind);
+        let agent_id = subagent_display_id(payload);
+        if is_subagent_start_event_kind(&normalized) {
+            let line_index = self.body.len();
+            self.body.push(format_subagent_running_line(payload));
+            self.subagent_states.insert(
+                agent_id,
+                super::SubagentDisplayState {
+                    line_index,
+                    tool_names: Vec::new(),
+                },
+            );
+            return;
+        }
+
+        let line = format_subagent_finished_line(kind, payload);
+        if let Some(state) = self.subagent_states.remove(&agent_id) {
+            if let Some(slot) = self.body.get_mut(state.line_index) {
+                *slot = line;
+                return;
+            }
+        }
+        self.body.push(line);
+    }
+
     /// Apply a live runtime stream event to the view state.
     pub fn apply_stream_record(&mut self, record: &AgentStreamRecord) {
         let should_auto_scroll = !self.selection_mode;
@@ -66,6 +93,8 @@ impl InteractiveTuiState {
                 self.phase.clone_from(&event.kind);
                 if event.kind == "usage_snapshot" {
                     self.apply_usage_snapshot_payload(&event.payload, record.sequence);
+                } else if is_subagent_lifecycle_event_kind(&event.kind) {
+                    self.apply_subagent_lifecycle_event(&event.kind, &event.payload);
                 } else if is_task_snapshot_event(&event.kind) {
                     self.apply_task_snapshot_payload(&event.payload);
                 } else if let Some(lines) =

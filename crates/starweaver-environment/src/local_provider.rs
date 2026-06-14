@@ -474,7 +474,7 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
 
     async fn get_context_instructions(&self) -> EnvironmentResult<Option<String>> {
         let mut file_trees = Vec::new();
-        for allowed_path in &self.allowed_paths {
+        for allowed_path in context_file_tree_roots(&self.allowed_paths) {
             let visible_root = self.logical_root_for_allowed_path(allowed_path);
             let tree = render_local_file_tree_listing(
                 allowed_path,
@@ -513,4 +513,61 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
             metadata,
         })
     }
+}
+
+fn context_file_tree_roots(allowed_paths: &[PathBuf]) -> Vec<&PathBuf> {
+    let mut roots = Vec::new();
+    for path in allowed_paths {
+        if allowed_paths
+            .iter()
+            .any(|root| path != root && path_is_visible_under_root(path, root))
+        {
+            continue;
+        }
+        roots.push(path);
+    }
+    roots
+}
+
+fn path_is_visible_under_root(path: &Path, root: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let components = relative.components().collect::<Vec<_>>();
+    if components.is_empty() || components.len() >= DEFAULT_FILE_TREE_MAX_DEPTH {
+        return false;
+    }
+    let gitignore = root_gitignore(root);
+    let mut logical = String::new();
+    for component in components {
+        let name = component.as_os_str().to_string_lossy();
+        if name.starts_with('.')
+            || matches!(
+                name.as_ref(),
+                "node_modules" | ".git" | ".venv" | "__pycache__"
+            )
+        {
+            return false;
+        }
+        if !logical.is_empty() {
+            logical.push('/');
+        }
+        logical.push_str(&name);
+        if gitignore
+            .as_ref()
+            .is_some_and(|matcher| matcher.matched(&logical, true).is_ignore())
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn root_gitignore(root: &Path) -> Option<ignore::gitignore::Gitignore> {
+    let content = std::fs::read_to_string(root.join(".gitignore")).ok()?;
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(".");
+    for line in content.lines() {
+        builder.add_line(None, line).ok()?;
+    }
+    builder.build().ok()
 }

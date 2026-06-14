@@ -36,12 +36,14 @@ pub(super) use formatting::display_lines_for_stream_record;
 use formatting::{
     append_delta_segments, assistant_content_line, body_line_display_text, cache_hit_rate_label,
     compact_status_text, format_custom_context_event_lines, format_streaming_tool_call_line,
-    format_tool_call_line, format_tool_return_lines, format_u64_with_commas,
-    is_assistant_content_line, is_task_snapshot_event, is_task_tool_name, is_thinking_quote_line,
-    merge_stream_fragment, model_choice_config_suffix, model_choice_label, pasted_image_paths,
-    previous_char_boundary, push_shell_output_lines, push_usage_entry_lines,
-    push_user_prompt_lines, streaming_part_kind, streaming_tool_arguments_match,
-    streaming_tool_state_is_available, task_panel_items_from_value, tool_call_visibility_key,
+    format_subagent_finished_line, format_subagent_running_line, format_tool_call_line,
+    format_tool_return_lines, format_u64_with_commas, is_assistant_content_line,
+    is_subagent_lifecycle_event_kind, is_subagent_start_event_kind, is_task_snapshot_event,
+    is_task_tool_name, is_thinking_quote_line, merge_stream_fragment, model_choice_config_suffix,
+    model_choice_label, normalized_event_kind, pasted_image_paths, previous_char_boundary,
+    push_shell_output_lines, push_usage_entry_lines, push_user_prompt_lines, streaming_part_kind,
+    streaming_tool_arguments_match, streaming_tool_state_is_available, subagent_display_id,
+    task_panel_items_from_value, tool_call_visibility_key,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -187,6 +189,12 @@ struct StreamingToolCallState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SubagentDisplayState {
+    pub(super) line_index: usize,
+    pub(super) tool_names: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct HitlPanelState {
     pub(super) tool_call_id: String,
     pub(super) tool_name: String,
@@ -261,6 +269,7 @@ pub struct InteractiveTuiState {
     streaming_tool_calls: HashMap<usize, StreamingToolCallState>,
     visible_tool_calls: HashSet<String>,
     tool_call_arguments: HashMap<String, Value>,
+    pub(super) subagent_states: HashMap<String, SubagentDisplayState>,
     pending_hitl: Option<HitlPanelState>,
     task_panel_items: Vec<TaskPanelItem>,
     pending_clear_context: bool,
@@ -326,6 +335,7 @@ impl InteractiveTuiState {
             streaming_tool_calls: HashMap::new(),
             visible_tool_calls: HashSet::new(),
             tool_call_arguments: HashMap::new(),
+            subagent_states: HashMap::new(),
             pending_hitl: None,
             task_panel_items: Vec::new(),
             pending_clear_context: false,
@@ -433,6 +443,7 @@ impl InteractiveTuiState {
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
         self.tool_call_arguments.clear();
+        self.subagent_states.clear();
         self.pending_hitl = None;
         self.task_panel_items.clear();
         self.selection_mode = false;
@@ -464,6 +475,7 @@ impl InteractiveTuiState {
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
         self.tool_call_arguments.clear();
+        self.subagent_states.clear();
         self.pending_hitl = None;
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
@@ -480,6 +492,7 @@ impl InteractiveTuiState {
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
         self.tool_call_arguments.clear();
+        self.subagent_states.clear();
         self.pending_hitl = None;
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
@@ -497,6 +510,7 @@ impl InteractiveTuiState {
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
         self.tool_call_arguments.clear();
+        self.subagent_states.clear();
         self.pending_hitl = None;
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
@@ -521,6 +535,7 @@ impl InteractiveTuiState {
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
         self.tool_call_arguments.clear();
+        self.subagent_states.clear();
         self.pending_hitl = None;
         self.task_panel_items.clear();
         self.steering_items.clear();

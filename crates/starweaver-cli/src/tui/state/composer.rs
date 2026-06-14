@@ -117,6 +117,7 @@ impl InteractiveTuiState {
             text: prompt,
             attachments,
             extra_text_parts: Vec::new(),
+            guidance_text_parts: Vec::new(),
         })
     }
 

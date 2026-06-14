@@ -59,10 +59,10 @@ const USER_RULES_TAG: &str = "user-rules";
 
 fn append_guidance_files(input: &mut PromptInput, config: &CliConfig) {
     if let Some(project_guidance) = load_project_guidance(&config.workspace_root) {
-        input.push_extra_text_part(project_guidance);
+        input.push_guidance_text_part(project_guidance);
     }
     if let Some(user_rules) = load_user_rules(&config.global_dir) {
-        input.push_extra_text_part(user_rules);
+        input.push_guidance_text_part(user_rules);
     }
 }
 
@@ -253,6 +253,7 @@ impl CliService {
             text: prompt.clone(),
             attachments: input.attachments,
             extra_text_parts: input.extra_text_parts,
+            guidance_text_parts: input.guidance_text_parts,
         };
         let worktree = self.resolve_worktree(command)?;
         let selected_profile = command
