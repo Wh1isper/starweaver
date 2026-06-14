@@ -34,14 +34,14 @@ mod streaming;
 
 pub(super) use formatting::display_lines_for_stream_record;
 use formatting::{
-    append_delta_segments, assistant_content_line, body_line_display_text, compact_status_text,
-    format_custom_context_event_lines, format_streaming_tool_call_line, format_tool_call_line,
-    format_tool_return_lines, format_u64_with_commas, is_assistant_content_line,
-    is_task_snapshot_event, is_task_tool_name, is_thinking_quote_line, merge_stream_fragment,
-    model_choice_config_suffix, model_choice_label, pasted_image_paths, previous_char_boundary,
-    push_shell_output_lines, push_usage_entry_lines, push_user_prompt_lines, streaming_part_kind,
-    streaming_tool_arguments_match, streaming_tool_state_is_available, task_panel_items_from_value,
-    tool_call_visibility_key,
+    append_delta_segments, assistant_content_line, body_line_display_text, cache_hit_rate_label,
+    compact_status_text, format_custom_context_event_lines, format_streaming_tool_call_line,
+    format_tool_call_line, format_tool_return_lines, format_u64_with_commas,
+    is_assistant_content_line, is_task_snapshot_event, is_task_tool_name, is_thinking_quote_line,
+    merge_stream_fragment, model_choice_config_suffix, model_choice_label, pasted_image_paths,
+    previous_char_boundary, push_shell_output_lines, push_usage_entry_lines,
+    push_user_prompt_lines, streaming_part_kind, streaming_tool_arguments_match,
+    streaming_tool_state_is_available, task_panel_items_from_value, tool_call_visibility_key,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -283,6 +283,7 @@ pub struct InteractiveTuiState {
     pub(super) goal_iteration: usize,
     pub(super) goal_max_iterations: usize,
     pub(super) context_tokens: Option<u64>,
+    pub(super) latest_request_total_tokens: Option<u64>,
     pub(super) context_window: Option<u64>,
     usage_snapshots: BTreeMap<String, UsageSnapshot>,
     pub(super) steering_items: Vec<SteeringItem>,
@@ -347,6 +348,7 @@ impl InteractiveTuiState {
             goal_iteration: 0,
             goal_max_iterations: 10,
             context_tokens: None,
+            latest_request_total_tokens: None,
             context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
             usage_snapshots: BTreeMap::new(),
             steering_items: Vec::new(),
@@ -510,6 +512,8 @@ impl InteractiveTuiState {
         self.session_id = None;
         self.body.clear();
         self.context_tokens = None;
+        self.latest_request_total_tokens = None;
+        self.usage_snapshots.clear();
         self.streaming_parts.clear();
         self.streaming_text_seen = false;
         self.streaming_reasoning_seen = false;

@@ -3,13 +3,19 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 use starweaver_core::{Usage, UsageSnapshot};
 
-use super::{format_u64_with_commas, push_usage_entry_lines, InteractiveTuiState};
+use super::{
+    cache_hit_rate_label, format_u64_with_commas, push_usage_entry_lines, InteractiveTuiState,
+};
 
 impl InteractiveTuiState {
     pub(super) fn apply_usage_snapshot_payload(&mut self, payload: &Value, sequence: usize) {
         if let Ok(snapshot) = serde_json::from_value::<UsageSnapshot>(payload.clone()) {
-            if snapshot.total_usage.total_tokens > 0 {
-                self.context_tokens = Some(snapshot.total_usage.total_tokens);
+            if let Some(context_tokens) = latest_request_total_tokens(&snapshot) {
+                self.latest_request_total_tokens = Some(context_tokens);
+                self.context_tokens = Some(
+                    self.context_tokens
+                        .map_or(context_tokens, |current| current.max(context_tokens)),
+                );
             }
             let key = if snapshot.run_id.is_empty() {
                 format!("sequence:{sequence}")
@@ -23,7 +29,11 @@ impl InteractiveTuiState {
     pub(super) fn format_cost_summary_lines(&self) -> Vec<String> {
         let mut lines = vec!["[SYS] Token Usage Summary:".to_string(), String::new()];
         lines.push(format!(
-            "[SYS] Latest request context tokens: {}",
+            "[SYS] Latest request total tokens: {}",
+            format_u64_with_commas(self.latest_request_total_tokens.unwrap_or_default())
+        ));
+        lines.push(format!(
+            "[SYS] Displayed context high-water: {}",
             format_u64_with_commas(self.context_tokens.unwrap_or_default())
         ));
         if let Some(window) = self.context_window {
@@ -97,6 +107,9 @@ impl InteractiveTuiState {
                 format_u64_with_commas(total.cache_read_tokens)
             ));
         }
+        if let Some(cache_hit_rate) = cache_hit_rate_label(&total) {
+            lines.push(format!("[SYS]   Cache Hit Rate: {cache_hit_rate}"));
+        }
         lines.push(format!(
             "[SYS]   Total:  {} tokens",
             format_u64_with_commas(total.total_tokens)
@@ -120,4 +133,15 @@ impl InteractiveTuiState {
             _ => "--%".to_string(),
         }
     }
+}
+
+fn latest_request_total_tokens(snapshot: &UsageSnapshot) -> Option<u64> {
+    snapshot
+        .latest_usage
+        .as_ref()
+        .and_then(|usage| (usage.total_tokens > 0).then_some(usage.total_tokens))
+        .or_else(|| {
+            (snapshot.total_usage.requests <= 1 && snapshot.total_usage.total_tokens > 0)
+                .then_some(snapshot.total_usage.total_tokens)
+        })
 }

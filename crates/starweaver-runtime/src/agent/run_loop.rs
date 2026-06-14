@@ -439,7 +439,7 @@ impl Agent {
                     .get(&ledger_key)
                     .map_or_else(Usage::default, |entry| entry.usage.clone());
                 agent_usage.add_assign(&response_usage);
-                let snapshot = context.update_usage_snapshot_entry(
+                let mut snapshot = context.update_usage_snapshot_entry(
                     agent_id.clone(),
                     agent_id.clone(),
                     self.usage_model_id(&response),
@@ -448,6 +448,7 @@ impl Agent {
                     "model_request",
                     Some(ledger_key),
                 );
+                snapshot.latest_usage = Some(response_usage.clone());
                 context.publish_event(AgentEvent::new(
                     "usage_snapshot",
                     serde_json::to_value(snapshot).unwrap_or_else(|_| serde_json::json!({})),

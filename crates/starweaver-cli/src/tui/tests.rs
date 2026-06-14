@@ -2238,6 +2238,7 @@ fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
                 "usage_snapshot",
                 serde_json::to_value(UsageSnapshot {
                     run_id: "run_context".to_string(),
+                    latest_usage: None,
                     total_usage: Usage {
                         requests: 1,
                         input_tokens: 2_000,
@@ -2291,6 +2292,15 @@ fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
                 "usage_snapshot",
                 serde_json::to_value(UsageSnapshot {
                     run_id: "run_context".to_string(),
+                    latest_usage: Some(Usage {
+                        requests: 1,
+                        input_tokens: 100,
+                        cache_write_tokens: 0,
+                        cache_read_tokens: 0,
+                        output_tokens: 100,
+                        total_tokens: 200,
+                        tool_calls: 0,
+                    }),
                     total_usage: Usage {
                         requests: 2,
                         input_tokens: 2_100,
@@ -2308,7 +2318,18 @@ fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
             ),
         },
     ));
-    assert_eq!(state.context_percent_label(), "32%");
+    assert_eq!(state.context_percent_label(), "30%");
+
+    state.input = "/cost".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert!(body_has_line(
+        &state,
+        "[SYS] Latest request total tokens: 200"
+    ));
+    assert!(body_has_line(
+        &state,
+        "[SYS] Displayed context high-water: 3,000"
+    ));
 }
 
 #[test]
@@ -2322,6 +2343,7 @@ fn cost_command_shows_accumulated_usage_snapshots() {
                 "usage_snapshot",
                 serde_json::to_value(UsageSnapshot {
                     run_id: "run_cost_1".to_string(),
+                    latest_usage: None,
                     total_usage: Usage {
                         requests: 1,
                         input_tokens: 1_000,
@@ -2374,6 +2396,7 @@ fn cost_command_shows_accumulated_usage_snapshots() {
                 "usage_snapshot",
                 serde_json::to_value(UsageSnapshot {
                     run_id: "run_cost_2".to_string(),
+                    latest_usage: None,
                     total_usage: Usage {
                         requests: 2,
                         input_tokens: 2_000,
@@ -2523,6 +2546,15 @@ fn interactive_state_covers_model_response_finish_and_failure() {
                 "usage_snapshot",
                 serde_json::to_value(UsageSnapshot {
                     run_id: "run_test".to_string(),
+                    latest_usage: Some(Usage {
+                        requests: 1,
+                        input_tokens: 7_000,
+                        cache_write_tokens: 0,
+                        cache_read_tokens: 0,
+                        output_tokens: 500,
+                        total_tokens: 7_500,
+                        tool_calls: 0,
+                    }),
                     total_usage: Usage {
                         requests: 2,
                         input_tokens: 7_000,

@@ -56,10 +56,25 @@ pub(super) fn push_usage_entry_lines(lines: &mut Vec<String>, name: &str, usage:
             format_u64_with_commas(usage.cache_read_tokens)
         ));
     }
+    if let Some(cache_hit_rate) = cache_hit_rate_label(usage) {
+        lines.push(format!("[SYS]     Cache Hit Rate: {cache_hit_rate}"));
+    }
     lines.push(format!("[SYS]     Requests: {}", usage.requests));
     if usage.tool_calls > 0 {
         lines.push(format!("[SYS]     Tool calls: {}", usage.tool_calls));
     }
+}
+
+pub(super) fn cache_hit_rate_label(usage: &Usage) -> Option<String> {
+    if usage.input_tokens == 0 || usage.cache_read_tokens == 0 {
+        return None;
+    }
+    let basis_points = usage
+        .cache_read_tokens
+        .saturating_mul(10_000)
+        .saturating_add(usage.input_tokens / 2)
+        / usage.input_tokens;
+    Some(format!("{}.{:02}%", basis_points / 100, basis_points % 100))
 }
 
 pub(super) fn format_u64_with_commas(value: u64) -> String {

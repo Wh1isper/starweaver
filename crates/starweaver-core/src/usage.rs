@@ -100,6 +100,13 @@ pub struct UsageAgentTotal {
 pub struct UsageSnapshot {
     /// Run identifier for the snapshot.
     pub run_id: String,
+    /// Usage reported by the latest provider request that produced this snapshot.
+    ///
+    /// This is intentionally separate from `total_usage`: realtime UI surfaces may use
+    /// the latest request total tokens as the current context-window estimate,
+    /// while `total_usage` remains the cumulative run ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_usage: Option<Usage>,
     /// Cumulative usage across all known entries in this run.
     #[serde(default)]
     pub total_usage: Usage,

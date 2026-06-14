@@ -285,6 +285,7 @@ impl AgentContext {
                 .run_id
                 .as_ref()
                 .map_or_else(String::new, |run_id| run_id.as_str().to_string()),
+            latest_usage: None,
             total_usage,
             entries,
             agent_usages,

@@ -277,7 +277,18 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
         .collect::<Vec<_>>();
 
     assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].latest_usage.as_ref().unwrap().total_tokens, 7);
     assert_eq!(snapshots[0].total_usage.total_tokens, 7);
+    assert_eq!(snapshots[1].latest_usage.as_ref().unwrap().input_tokens, 5);
+    assert_eq!(
+        snapshots[1]
+            .latest_usage
+            .as_ref()
+            .unwrap()
+            .cache_read_tokens,
+        7
+    );
+    assert_eq!(snapshots[1].latest_usage.as_ref().unwrap().total_tokens, 11);
     assert_eq!(snapshots[1].total_usage.input_tokens, 8);
     assert_eq!(snapshots[1].total_usage.cache_write_tokens, 5);
     assert_eq!(snapshots[1].total_usage.cache_read_tokens, 8);
