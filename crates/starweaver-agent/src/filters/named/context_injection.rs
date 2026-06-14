@@ -1,5 +1,9 @@
 use serde_json::{json, Map, Value};
-use starweaver_model::{ModelMessage, ModelRequest, ModelRequestPart, ToolReturnPart};
+use starweaver_model::{
+    ModelMessage, ModelRequest, ModelRequestPart, ToolReturnPart, INSTRUCTION_DYNAMIC_METADATA,
+    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_HANDOFF,
+    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+};
 use starweaver_runtime::AgentRunState;
 
 use crate::filters::{
@@ -96,12 +100,18 @@ pub(super) fn inject_instruction_from_metadata(
     let Some(text) = metadata_text(&state.metadata, metadata_key) else {
         return messages;
     };
+    let origin = instruction_origin(instruction_type);
+    let dynamic = instruction_is_dynamic(&origin);
     let part = ModelRequestPart::Instruction {
         text,
-        metadata: Map::from_iter([(
-            "starweaver_instruction_type".to_string(),
-            json!(instruction_type),
-        )]),
+        metadata: Map::from_iter([
+            (
+                "starweaver_instruction_type".to_string(),
+                json!(instruction_type),
+            ),
+            (INSTRUCTION_ORIGIN_METADATA.to_string(), json!(origin)),
+            (INSTRUCTION_DYNAMIC_METADATA.to_string(), json!(dynamic)),
+        ]),
     };
     insert_request_part_after_control_parts(&mut messages, part);
     messages
@@ -189,6 +199,22 @@ pub(super) fn bus_message_filter(
         "bus_message",
     );
     messages
+}
+
+fn instruction_origin(instruction_type: &str) -> String {
+    match instruction_type {
+        "environment" => INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT.to_string(),
+        "runtime" => INSTRUCTION_ORIGIN_RUNTIME_CONTEXT.to_string(),
+        "handoff" => INSTRUCTION_ORIGIN_HANDOFF.to_string(),
+        _ => instruction_type.to_string(),
+    }
+}
+
+fn instruction_is_dynamic(origin: &str) -> bool {
+    matches!(
+        origin,
+        INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
+    )
 }
 
 fn truncate_tool_return(tool_return: &mut ToolReturnPart, limit: usize) -> bool {

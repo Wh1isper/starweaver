@@ -1,4 +1,5 @@
 use starweaver_context::AgentContext;
+use starweaver_core::ConversationId;
 use starweaver_model::ModelMessage;
 
 use crate::{
@@ -94,10 +95,7 @@ impl Agent {
         message_history: Vec<ModelMessage>,
         events: &mut Vec<AgentStreamRecord>,
     ) -> Result<AgentResult, AgentError> {
-        let mut context = AgentContext {
-            message_history,
-            ..AgentContext::default()
-        };
+        let mut context = context_from_history(message_history);
         self.run_with_context_and_stream_events(prompt, &mut context, events)
             .await
     }
@@ -112,10 +110,7 @@ impl Agent {
         prompt: impl Into<String>,
         message_history: Vec<ModelMessage>,
     ) -> Result<AgentResult, AgentError> {
-        let mut context = AgentContext {
-            message_history,
-            ..AgentContext::default()
-        };
+        let mut context = context_from_history(message_history);
         self.run_with_context(prompt, &mut context).await
     }
 
@@ -169,4 +164,23 @@ impl Agent {
     ) -> Result<AgentResult, AgentError> {
         self.run_with_context_inner(prompt, context, None).await
     }
+}
+
+fn context_from_history(message_history: Vec<ModelMessage>) -> AgentContext {
+    let conversation_id = latest_conversation_id(&message_history).unwrap_or_default();
+    AgentContext {
+        conversation_id,
+        message_history,
+        ..AgentContext::default()
+    }
+}
+
+fn latest_conversation_id(message_history: &[ModelMessage]) -> Option<ConversationId> {
+    message_history
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            ModelMessage::Request(request) => request.conversation_id.clone(),
+            ModelMessage::Response(response) => response.conversation_id.clone(),
+        })
 }

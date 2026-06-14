@@ -2,18 +2,21 @@
 
 use std::collections::BTreeSet;
 
+use chrono::Utc;
 use starweaver_context::AgentContext;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings,
-    PreparedInstruction,
+    PreparedInstruction, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
+    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_TOOLSET,
 };
 
 use crate::{
     agent::{
         runtime_helpers::{
             history_sanitize::sanitize_incomplete_tool_call_history,
-            steering::is_steering_guard_prompt, tool_media::tool_return_media_prompt,
+            request_instruction_insert_index, steering::is_steering_guard_prompt,
+            tool_media::tool_return_media_prompt,
         },
         Agent, AgentError,
     },
@@ -23,31 +26,19 @@ use crate::{
 };
 
 impl Agent {
-    pub(in crate::agent) async fn prepare_request(
+    pub(in crate::agent) fn prepare_request(
         &self,
         state: &AgentRunState,
         prompt: &str,
         run_id: &RunId,
         conversation_id: &ConversationId,
-    ) -> Result<ModelRequest, AgentError> {
+    ) -> ModelRequest {
         let mut parts = Vec::new();
         if state.message_history.is_empty() {
-            let dynamic_instructions = self.dynamic_instructions(state).await?;
             parts.extend(self.instructions.iter().map(|instruction| {
                 ModelRequestPart::SystemPrompt {
                     text: instruction.clone(),
                     metadata: serde_json::Map::new(),
-                }
-            }));
-            parts.extend(dynamic_instructions.into_iter().map(|instruction| {
-                let mut metadata = serde_json::Map::new();
-                metadata.insert(
-                    "starweaver_instruction_dynamic".to_string(),
-                    serde_json::json!(true),
-                );
-                ModelRequestPart::Instruction {
-                    text: instruction,
-                    metadata,
                 }
             }));
         }
@@ -74,8 +65,12 @@ impl Agent {
                     serde_json::json!("steering_guard"),
                 );
                 metadata.insert(
-                    "starweaver_instruction_dynamic".to_string(),
+                    INSTRUCTION_DYNAMIC_METADATA.to_string(),
                     serde_json::json!(true),
+                );
+                metadata.insert(
+                    INSTRUCTION_ORIGIN_METADATA.to_string(),
+                    serde_json::json!(INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION),
                 );
                 parts.push(ModelRequestPart::Instruction {
                     text: prompt.to_string(),
@@ -89,14 +84,14 @@ impl Agent {
                 });
             }
         }
-        Ok(ModelRequest {
+        ModelRequest {
             parts,
-            timestamp: None,
+            timestamp: Some(Utc::now()),
             instructions: None,
             run_id: Some(run_id.clone()),
             conversation_id: Some(conversation_id.clone()),
             metadata: serde_json::Map::new(),
-        })
+        }
     }
 
     pub(in crate::agent) async fn dynamic_instructions(
@@ -113,6 +108,80 @@ impl Agent {
             );
         }
         Ok(instructions)
+    }
+
+    pub(in crate::agent) fn inject_missing_static_instructions(
+        &self,
+        run_id: &RunId,
+        conversation_id: &ConversationId,
+        messages: &mut Vec<ModelMessage>,
+    ) {
+        let missing = self
+            .instructions
+            .iter()
+            .filter(|instruction| !messages_contain_system_instruction(messages, instruction))
+            .map(|instruction| ModelRequestPart::SystemPrompt {
+                text: instruction.clone(),
+                metadata: serde_json::Map::new(),
+            })
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return;
+        }
+        messages.insert(
+            0,
+            ModelMessage::Request(ModelRequest {
+                parts: missing,
+                timestamp: Some(Utc::now()),
+                instructions: None,
+                run_id: Some(run_id.clone()),
+                conversation_id: Some(conversation_id.clone()),
+                metadata: serde_json::Map::new(),
+            }),
+        );
+    }
+
+    pub(in crate::agent) async fn dynamic_instruction_parts(
+        &self,
+        state: &AgentRunState,
+    ) -> Result<Vec<ModelRequestPart>, AgentError> {
+        Ok(self
+            .dynamic_instructions(state)
+            .await?
+            .into_iter()
+            .map(|instruction| {
+                let mut metadata = serde_json::Map::new();
+                metadata.insert(
+                    INSTRUCTION_DYNAMIC_METADATA.to_string(),
+                    serde_json::json!(true),
+                );
+                metadata.insert(
+                    INSTRUCTION_ORIGIN_METADATA.to_string(),
+                    serde_json::json!(INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION),
+                );
+                ModelRequestPart::Instruction {
+                    text: instruction,
+                    metadata,
+                }
+            })
+            .collect())
+    }
+
+    pub(in crate::agent) fn insert_request_parts_after_control_parts(
+        messages: &mut [ModelMessage],
+        parts: Vec<ModelRequestPart>,
+    ) {
+        if parts.is_empty() {
+            return;
+        }
+        if let Some(ModelMessage::Request(request)) = messages
+            .iter_mut()
+            .rev()
+            .find(|message| matches!(message, ModelMessage::Request(_)))
+        {
+            let insert_at = request_instruction_insert_index(request);
+            request.parts.splice(insert_at..insert_at, parts);
+        }
     }
 
     pub(in crate::agent) fn effective_settings(&self) -> Option<ModelSettings> {
@@ -195,13 +264,48 @@ impl Agent {
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<BTreeSet<_>>();
+        let mut output_names = BTreeSet::new();
         for function in &self.output_functions {
-            let tool = function.definition().tool_definition();
+            let name = function.definition().name;
+            if !output_names.insert(name.clone()) {
+                return Err(AgentError::Capability(format!(
+                    "duplicate output function name {name:?}"
+                )));
+            }
+        }
+        for tool in &mut params.tools {
+            if output_names.contains(&tool.name) {
+                return Err(AgentError::Capability(format!(
+                    "output function name {:?} collides with request tool",
+                    tool.name
+                )));
+            }
+            tool.metadata.insert(
+                "starweaver_tool_kind".to_string(),
+                serde_json::json!("function"),
+            );
+        }
+        for function in &self.output_functions {
+            let mut tool = function.definition().tool_definition();
+            tool.metadata.insert(
+                "starweaver_tool_kind".to_string(),
+                serde_json::json!("output"),
+            );
             if names.insert(tool.name.clone()) {
                 params.tools.push(tool);
             }
         }
-        for tool in self.tools.definitions() {
+        for mut tool in self.tools.definitions() {
+            if output_names.contains(&tool.name) {
+                return Err(AgentError::Capability(format!(
+                    "output function name {:?} collides with runtime tool",
+                    tool.name
+                )));
+            }
+            tool.metadata.insert(
+                "starweaver_tool_kind".to_string(),
+                serde_json::json!("function"),
+            );
             if names.insert(tool.name.clone()) {
                 params.tools.push(tool);
             }
@@ -210,8 +314,12 @@ impl Agent {
         for instruction in self.tools.instructions() {
             let mut metadata = serde_json::Map::new();
             metadata.insert(
-                "starweaver_instruction_origin".to_string(),
-                serde_json::json!("toolset"),
+                INSTRUCTION_ORIGIN_METADATA.to_string(),
+                serde_json::json!(INSTRUCTION_ORIGIN_TOOLSET),
+            );
+            metadata.insert(
+                INSTRUCTION_DYNAMIC_METADATA.to_string(),
+                serde_json::json!(true),
             );
             metadata.insert(
                 "starweaver_toolset_group".to_string(),
@@ -219,10 +327,63 @@ impl Agent {
             );
             params.instructions.push(PreparedInstruction {
                 text: instruction.render_xml(),
-                dynamic: false,
+                dynamic: true,
                 metadata,
             });
         }
         Ok(params)
     }
+
+    pub(in crate::agent) fn fill_message_metadata(
+        message: &mut ModelMessage,
+        run_id: &RunId,
+        conversation_id: &ConversationId,
+    ) {
+        match message {
+            ModelMessage::Request(request) => {
+                request.run_id.get_or_insert_with(|| run_id.clone());
+                request
+                    .conversation_id
+                    .get_or_insert_with(|| conversation_id.clone());
+                request.timestamp.get_or_insert_with(Utc::now);
+            }
+            ModelMessage::Response(response) => {
+                response.run_id.get_or_insert_with(|| run_id.clone());
+                response
+                    .conversation_id
+                    .get_or_insert_with(|| conversation_id.clone());
+                response.timestamp.get_or_insert_with(Utc::now);
+            }
+        }
+    }
+
+    pub(in crate::agent) fn validate_model_request_messages(
+        messages: &[ModelMessage],
+    ) -> Result<(), AgentError> {
+        if messages.is_empty() {
+            return Err(AgentError::Capability(
+                "prepared model history cannot be empty".to_string(),
+            ));
+        }
+        if !matches!(messages.last(), Some(ModelMessage::Request(_))) {
+            return Err(AgentError::Capability(
+                "prepared model history must end with a model request".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn messages_contain_system_instruction(messages: &[ModelMessage], text: &str) -> bool {
+    messages.iter().any(|message| match message {
+        ModelMessage::Request(request) => {
+            request.instructions.as_deref() == Some(text)
+                || request.parts.iter().any(|part| match part {
+                    ModelRequestPart::SystemPrompt { text: existing, .. }
+                    | ModelRequestPart::Instruction { text: existing, .. } => existing == text,
+                    _ => false,
+                })
+        }
+        ModelMessage::Response(_) => false,
+    })
 }

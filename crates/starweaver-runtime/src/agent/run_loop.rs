@@ -228,9 +228,8 @@ impl Agent {
                 &state,
                 context_event_cursor
             );
-            let mut request = self
-                .prepare_request(&state, &next_prompt, &run_id, &conversation_id)
-                .await?;
+            let dynamic_instruction_parts = self.dynamic_instruction_parts(&state).await?;
+            let mut request = self.prepare_request(&state, &next_prompt, &run_id, &conversation_id);
             let mut settings = self.effective_settings();
             let skipped_response = self
                 .call_before_model_request(&mut state, context, &mut request, &mut settings)
@@ -261,8 +260,18 @@ impl Agent {
             } else {
                 self.check_before_request(&state)?;
                 let mut messages = self.prepare_model_messages(&mut state, context).await?;
+                Self::validate_model_request_messages(&messages)?;
+                self.inject_missing_static_instructions(&run_id, &conversation_id, &mut messages);
                 let params = self.effective_request_params(&state, context).await?;
+                Self::insert_request_parts_after_control_parts(
+                    &mut messages,
+                    dynamic_instruction_parts.clone(),
+                );
                 Self::inject_runtime_context(context, &mut messages);
+                for message in &mut messages {
+                    Self::fill_message_metadata(message, &run_id, &conversation_id);
+                }
+                Self::validate_model_request_messages(&messages)?;
                 let mut model_spec = SpanSpec::new("gen_ai.inference")
                     .with_kind(SpanKind::Client)
                     .with_attribute("gen_ai.operation.name", serde_json::json!("chat"))
@@ -405,6 +414,12 @@ impl Agent {
                     response
                 }
             };
+            let mut response = response;
+            response.run_id.get_or_insert_with(|| run_id.clone());
+            response
+                .conversation_id
+                .get_or_insert_with(|| conversation_id.clone());
+            response.timestamp.get_or_insert_with(chrono::Utc::now);
             state.run_step += 1;
             let response_usage = response.usage.clone();
             stream_event!(
@@ -801,7 +816,7 @@ impl Agent {
                             .message_history
                             .push(ModelMessage::Request(ModelRequest {
                                 parts,
-                                timestamp: None,
+                                timestamp: Some(chrono::Utc::now()),
                                 instructions: None,
                                 run_id: Some(run_id.clone()),
                                 conversation_id: Some(conversation_id.clone()),

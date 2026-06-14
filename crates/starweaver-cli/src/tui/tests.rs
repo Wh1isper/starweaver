@@ -1673,6 +1673,70 @@ fn interleaved_thinking_part_does_not_mark_text_seen() {
 }
 
 #[test]
+fn text_delta_after_unfinished_thinking_starts_visible_line() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "thinking".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "hidden chain")),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 1,
+                part_kind: "text".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(1, "visible answer")),
+        },
+    ));
+
+    assert!(state
+        .body
+        .iter()
+        .any(|line| body_line_text(line) == "> hidden chain"));
+    assert!(body_has_line(&state, "visible answer"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line) == "> hidden chainvisible answer"));
+}
+
+#[test]
+fn rendered_text_after_thinking_is_not_blockquoted() {
+    let lines = vec![
+        format!("{ASSISTANT_CONTENT_PREFIX}> hidden chain"),
+        format!("{ASSISTANT_CONTENT_PREFIX}visible answer"),
+    ];
+    let rendered = render_transcript_lines(&lines, 80);
+
+    let rendered_texts = line_texts(&rendered);
+    assert!(rendered_texts.iter().any(|line| line == "│ hidden chain"));
+    assert!(rendered_texts.iter().any(|line| line == "visible answer"));
+    assert!(!rendered_texts.iter().any(|line| line == "│ visible answer"));
+}
+
+#[test]
 fn tool_call_from_model_response_and_tool_event_renders_once() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("use tool");
@@ -2136,6 +2200,119 @@ fn session_command_opens_picker_selects_directly_and_blocks_while_running() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
+fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.context_window = Some(10_000);
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelResponse {
+            step: 0,
+            response: ModelResponse {
+                parts: Vec::new(),
+                usage: Usage {
+                    requests: 1,
+                    input_tokens: 2_000,
+                    cache_write_tokens: 0,
+                    cache_read_tokens: 0,
+                    output_tokens: 1_000,
+                    total_tokens: 3_000,
+                    tool_calls: 0,
+                },
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            },
+        },
+    ));
+    assert_eq!(state.context_percent_label(), "0%");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_context".to_string(),
+                    total_usage: Usage {
+                        requests: 1,
+                        input_tokens: 2_000,
+                        cache_write_tokens: 0,
+                        cache_read_tokens: 0,
+                        output_tokens: 1_000,
+                        total_tokens: 3_000,
+                        tool_calls: 0,
+                    },
+                    entries: Vec::new(),
+                    agent_usages: BTreeMap::new(),
+                    model_usages: BTreeMap::new(),
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+    assert_eq!(state.context_percent_label(), "30%");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelResponse {
+            step: 1,
+            response: ModelResponse {
+                parts: Vec::new(),
+                usage: Usage {
+                    requests: 1,
+                    input_tokens: 100,
+                    cache_write_tokens: 0,
+                    cache_read_tokens: 0,
+                    output_tokens: 100,
+                    total_tokens: 200,
+                    tool_calls: 0,
+                },
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            },
+        },
+    ));
+    assert_eq!(state.context_percent_label(), "30%");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_context".to_string(),
+                    total_usage: Usage {
+                        requests: 2,
+                        input_tokens: 2_100,
+                        cache_write_tokens: 0,
+                        cache_read_tokens: 0,
+                        output_tokens: 1_100,
+                        total_tokens: 3_200,
+                        tool_calls: 0,
+                    },
+                    entries: Vec::new(),
+                    agent_usages: BTreeMap::new(),
+                    model_usages: BTreeMap::new(),
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+    assert_eq!(state.context_percent_label(), "32%");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
 fn cost_command_shows_accumulated_usage_snapshots() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -2260,6 +2437,7 @@ fn cost_command_shows_accumulated_usage_snapshots() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn interactive_state_covers_model_response_finish_and_failure() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("respond");
@@ -2310,7 +2488,7 @@ fn interactive_state_covers_model_response_finish_and_failure() {
     assert!(body_has_line(&state, "answer"));
     assert!(body_has_line(&state, "> reasoning"));
     assert!(state.body.iter().any(|line| line == "Tool call: search"));
-    assert_eq!(state.context_percent_label(), "1%");
+    assert_eq!(state.context_percent_label(), "0%");
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
         AgentStreamEvent::ModelResponse {
@@ -2336,10 +2514,36 @@ fn interactive_state_covers_model_response_finish_and_failure() {
             },
         },
     ));
-    assert_eq!(state.context_percent_label(), "3%");
+    assert_eq!(state.context_percent_label(), "0%");
 
     state.apply_stream_record(&AgentStreamRecord::new(
         2,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_test".to_string(),
+                    total_usage: Usage {
+                        requests: 2,
+                        input_tokens: 7_000,
+                        cache_write_tokens: 0,
+                        cache_read_tokens: 0,
+                        output_tokens: 1_000,
+                        total_tokens: 8_000,
+                        tool_calls: 0,
+                    },
+                    entries: Vec::new(),
+                    agent_usages: BTreeMap::new(),
+                    model_usages: BTreeMap::new(),
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+    assert_eq!(state.context_percent_label(), "4%");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
         AgentStreamEvent::RunComplete {
             run_id: RunId::from_string("run_test"),
             output: "unused because streamed".to_string(),
@@ -3288,6 +3492,44 @@ fn status_bar_secondary_uses_compact_text_on_narrow_widths() {
     assert!(text.contains("Esc Select"));
     assert!(text.contains("Ctrl+C Exit"));
     assert!(!text.contains("Attach clipboard image"));
+}
+
+#[test]
+fn status_bar_secondary_keeps_pgup_pgdn_hint_untruncated_when_it_fits() {
+    let state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let width = 60;
+    let lines = render_footer_lines(&state, width);
+    assert!(lines.iter().all(|line| line.visible_width() <= width));
+    let text = line_texts(&lines).join("\n");
+    assert!(text.contains("PgUp/PgDn Scroll"));
+    assert!(!text.contains("PgUp/PgDo"));
+}
+
+#[test]
+fn status_bar_keeps_context_visible_with_long_labels_on_narrow_widths() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.model = "openai-responses:gpt-5-with-a-very-long-routing-profile-name".to_string();
+    state.profile = "coding-profile-with-a-very-long-name".to_string();
+    state.session_id =
+        Some("session_with_a_very_long_identifier_that_should_not_clip_help".to_string());
+    state.context_tokens = Some(90_000);
+    state.context_window = Some(200_000);
+
+    let width = 48;
+    let lines = render_footer_lines(&state, width);
+    assert!(
+        lines.iter().all(|line| line.visible_width() <= width),
+        "line widths: {:?}",
+        lines
+            .iter()
+            .map(|line| (line.visible_width(), line_text(line)))
+            .collect::<Vec<_>>()
+    );
+    let text = line_texts(&lines).join("\n");
+    assert!(text.contains("Context: 45%"));
+    assert!(text.contains("Enter Send"));
+    assert!(text.contains("Ctrl+C Exit"));
+    assert!(!text.contains("very-long-routing-profile-name"));
 }
 
 #[test]

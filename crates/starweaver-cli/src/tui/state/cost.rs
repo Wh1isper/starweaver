@@ -6,14 +6,11 @@ use starweaver_core::{Usage, UsageSnapshot};
 use super::{format_u64_with_commas, push_usage_entry_lines, InteractiveTuiState};
 
 impl InteractiveTuiState {
-    pub(super) fn update_context_usage(&mut self, usage: &Usage) {
-        if usage.total_tokens > 0 {
-            self.context_tokens = Some(usage.total_tokens);
-        }
-    }
-
     pub(super) fn apply_usage_snapshot_payload(&mut self, payload: &Value, sequence: usize) {
         if let Ok(snapshot) = serde_json::from_value::<UsageSnapshot>(payload.clone()) {
+            if snapshot.total_usage.total_tokens > 0 {
+                self.context_tokens = Some(snapshot.total_usage.total_tokens);
+            }
             let key = if snapshot.run_id.is_empty() {
                 format!("sequence:{sequence}")
             } else {

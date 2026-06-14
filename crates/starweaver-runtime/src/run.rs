@@ -1,5 +1,6 @@
 //! Runtime run state and result types.
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_core::{ConversationId, Metadata, RunId, Usage};
@@ -91,7 +92,12 @@ impl AgentRunState {
     }
 
     /// Apply a model response to state.
-    pub fn apply_model_response(&mut self, response: ModelResponse) {
+    pub fn apply_model_response(&mut self, mut response: ModelResponse) {
+        response.run_id.get_or_insert_with(|| self.run_id.clone());
+        response
+            .conversation_id
+            .get_or_insert_with(|| self.conversation_id.clone());
+        response.timestamp.get_or_insert_with(Utc::now);
         self.usage.add_assign(&response.usage);
         self.message_history
             .push(ModelMessage::Response(response.clone()));

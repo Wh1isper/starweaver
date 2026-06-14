@@ -237,7 +237,10 @@ pub(super) fn render_steering_lines(state: &InteractiveTuiState, width: usize) -
     if state.steering_items().is_empty() {
         return vec![pad_styled_line_with_style(
             StyledLine::styled(
-                " [Steering messages will appear here during agent execution]",
+                truncate_line(
+                    " [Steering messages will appear here during agent execution]",
+                    width,
+                ),
                 style,
             ),
             width,
@@ -254,7 +257,10 @@ pub(super) fn render_steering_lines(state: &InteractiveTuiState, width: usize) -
                 SteeringStatus::Pending => ">>> ",
             };
             pad_styled_line_with_style(
-                StyledLine::styled(format!("{prefix}{}", item.text), style),
+                StyledLine::styled(
+                    truncate_line(&format!("{prefix}{}", item.text), width),
+                    style,
+                ),
                 width,
                 style,
             )
@@ -268,7 +274,7 @@ pub(super) fn render_status_bar_lines(
 ) -> Vec<StyledLine> {
     vec![
         pad_styled_line_with_style(
-            render_status_bar_primary(state),
+            render_status_bar_primary(state, width),
             width,
             SegmentStyle::status_bar(),
         ),
@@ -280,36 +286,27 @@ pub(super) fn render_status_bar_lines(
     ]
 }
 
-fn render_status_bar_primary(state: &InteractiveTuiState) -> StyledLine {
+fn render_status_bar_primary(state: &InteractiveTuiState, width: usize) -> StyledLine {
     let mut line = StyledLine::styled(
         format!(" {} ", state.input_mode_label()),
         SegmentStyle::mode_badge().merge(SegmentStyle::bold()),
     );
-    line.push(" | ", SegmentStyle::status_bar());
-    if state.running {
-        line.push(
-            phase_display(state),
-            status_style(state).merge(SegmentStyle::status_bar()),
-        );
-    } else {
-        line.push(
-            format!("State: {}", state.status),
-            status_style(state).merge(SegmentStyle::status_bar()),
-        );
-    }
-    line.push(" | ", SegmentStyle::status_bar());
-    line.push(
-        format!("Model: {}", state.model),
-        SegmentStyle::status_bar(),
+    push_bounded_status_segment(
+        &mut line,
+        width,
+        primary_state_text(state),
+        status_style(state),
     );
-    line.push(" | ", SegmentStyle::status_bar());
-    line.push(
+    push_bounded_status_segment(
+        &mut line,
+        width,
         format!("Context: {}", state.context_percent_label()),
         SegmentStyle::status_bar(),
     );
     if state.goal_active {
-        line.push(" | ", SegmentStyle::status_bar());
-        line.push(
+        push_bounded_status_segment(
+            &mut line,
+            width,
             format!(
                 "Goal: {}/{}",
                 state.goal_iteration, state.goal_max_iterations
@@ -318,12 +315,19 @@ fn render_status_bar_primary(state: &InteractiveTuiState) -> StyledLine {
         );
     }
     if state.pasted_image_count() > 0 {
-        line.push(" | ", SegmentStyle::status_bar());
-        line.push(
+        push_bounded_status_segment(
+            &mut line,
+            width,
             format!("images:{}", state.pasted_image_count()),
             SegmentStyle::status_warning(),
         );
     }
+    push_optional_status_segment(
+        &mut line,
+        width,
+        format!("Model: {}", state.model),
+        SegmentStyle::status_bar(),
+    );
     line
 }
 
@@ -333,24 +337,83 @@ fn render_status_bar_secondary(state: &InteractiveTuiState, width: usize) -> Sty
         SegmentStyle::status_bar(),
     );
     if !state.is_at_bottom() {
-        line.push(" | ", SegmentStyle::status_bar());
-        line.push(
+        push_status_segment(
+            &mut line,
             format!("Scrolled: {}", state.scroll_offset),
             SegmentStyle::status_warning(),
         );
     }
     if !state.profile.is_empty() {
-        line.push(" | ", SegmentStyle::status_bar());
-        line.push(
+        push_optional_status_segment(
+            &mut line,
+            width,
             format!("Profile: {}", state.profile),
             SegmentStyle::status_bar(),
         );
     }
     if let Some(session) = state.session_id.as_deref() {
-        line.push(" | ", SegmentStyle::status_bar());
-        line.push(format!("Session: {session}"), SegmentStyle::status_bar());
+        push_optional_status_segment(
+            &mut line,
+            width,
+            format!("Session: {session}"),
+            SegmentStyle::status_bar(),
+        );
     }
     line
+}
+
+fn push_status_segment(line: &mut StyledLine, text: impl Into<String>, style: SegmentStyle) {
+    let text = text.into();
+    if text.is_empty() {
+        return;
+    }
+    line.push(" | ", SegmentStyle::status_bar());
+    line.push(text, style.merge(SegmentStyle::status_bar()));
+}
+
+fn push_bounded_status_segment(
+    line: &mut StyledLine,
+    width: usize,
+    text: impl AsRef<str>,
+    style: SegmentStyle,
+) {
+    let separator_width = visible_width(" | ");
+    let available = width.saturating_sub(line.visible_width());
+    if available <= separator_width {
+        return;
+    }
+    let content_width = available.saturating_sub(separator_width);
+    if content_width == 0 {
+        return;
+    }
+    push_status_segment(line, truncate_line(text.as_ref(), content_width), style);
+}
+
+fn push_optional_status_segment(
+    line: &mut StyledLine,
+    width: usize,
+    text: impl AsRef<str>,
+    style: SegmentStyle,
+) {
+    let separator_width = visible_width(" | ");
+    let used = line.visible_width();
+    let available = width.saturating_sub(used);
+    if available <= separator_width {
+        return;
+    }
+    let content_width = available.saturating_sub(separator_width);
+    if content_width < 8 {
+        return;
+    }
+    push_status_segment(line, truncate_line(text.as_ref(), content_width), style);
+}
+
+fn primary_state_text(state: &InteractiveTuiState) -> String {
+    if state.running {
+        phase_display(state)
+    } else {
+        format!("State: {}", state.status)
+    }
 }
 
 fn phase_display(state: &InteractiveTuiState) -> String {
@@ -370,92 +433,109 @@ fn status_style(state: &InteractiveTuiState) -> SegmentStyle {
     }
 }
 
-fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
-    fn pick(width: usize, full: String, medium: String, narrow: String) -> String {
-        if width >= visible_width(&full) {
-            full
-        } else if width >= visible_width(&medium) || width >= 60 {
-            medium
-        } else {
-            narrow
-        }
-    }
+fn pick_status_candidate(width: usize, candidates: &[String]) -> String {
+    candidates
+        .iter()
+        .find(|candidate| visible_width(candidate) <= width)
+        .cloned()
+        .unwrap_or_else(|| candidates.last().cloned().unwrap_or_default())
+}
 
+fn secondary_status_text(state: &InteractiveTuiState, width: usize) -> String {
     if state.pending_hitl().is_some() {
-        return pick(
+        return pick_status_candidate(
             width,
-            "Approval required: run `starweaver-cli approval list`, then approve or reject the pending approval | PageUp/PageDown/Mouse: Scroll".to_string(),
-            "Approval required | approve/reject pending approval | PgUp/PgDn: Scroll".to_string(),
-            "Approval required | Ctrl+C interrupt".to_string(),
+            &[
+                "Approval required: run `starweaver-cli approval list`, then approve or reject the pending approval | PageUp/PageDown/Mouse: Scroll".to_string(),
+                "Approval required | approve/reject pending approval | PgUp/PgDn: Scroll".to_string(),
+                "Approval required | PgUp/PgDn Scroll | Ctrl+C Interrupt".to_string(),
+                "Approval required | Ctrl+C interrupt".to_string(),
+            ],
         );
     }
     if state.selection_mode_visible() {
-        return pick(
+        return pick_status_candidate(
             width,
-            "Mouse drag: Select terminal text to copy | Up/Down: Move marker | Enter/Esc: Close selection".to_string(),
-            "Select text | Up/Down: Move | Enter/Esc: Close".to_string(),
-            "Select | Enter/Esc Close".to_string(),
+            &[
+                "Mouse drag: Select terminal text to copy | Up/Down: Move marker | Enter/Esc: Close selection".to_string(),
+                "Select text | Up/Down: Move | Enter/Esc: Close".to_string(),
+                "Select | Enter/Esc Close".to_string(),
+            ],
         );
     }
     if state.session_picker_visible() {
-        pick(
+        pick_status_candidate(
             width,
-            "Up/Down: Select session | Enter: Reload | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
-                .to_string(),
-            "Up/Down: Select | Enter: Reload | Esc: Cancel | PgUp/PgDn: Scroll".to_string(),
-            "↑/↓ Select | Enter | Esc".to_string(),
+            &[
+                "Up/Down: Select session | Enter: Reload | Esc: Cancel | PageUp/PageDown/Mouse: Scroll".to_string(),
+                "Up/Down: Select | Enter: Reload | Esc: Cancel | PgUp/PgDn: Scroll".to_string(),
+                "↑/↓ Select | Enter | Esc | PgUp/PgDn Scroll".to_string(),
+                "↑/↓ Select | Enter | Esc".to_string(),
+            ],
         )
     } else if state.model_picker_visible() {
-        pick(
+        pick_status_candidate(
             width,
-            "Up/Down: Select model | Enter: Use | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
-                .to_string(),
-            "Up/Down: Select | Enter: Use | Esc: Cancel | PgUp/PgDn: Scroll".to_string(),
-            "↑/↓ Select | Enter | Esc".to_string(),
+            &[
+                "Up/Down: Select model | Enter: Use | Esc: Cancel | PageUp/PageDown/Mouse: Scroll"
+                    .to_string(),
+                "Up/Down: Select | Enter: Use | Esc: Cancel | PgUp/PgDn: Scroll".to_string(),
+                "↑/↓ Select | Enter | Esc | PgUp/PgDn Scroll".to_string(),
+                "↑/↓ Select | Enter | Esc".to_string(),
+            ],
         )
     } else if state.running {
-        pick(
+        pick_status_candidate(
             width,
-            format!(
-                "{} | {} | Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll",
-                state.enter_action_label(),
-                state.enter_toggle_label()
-            ),
-            format!(
-                "{} | {} | Ctrl+C: Interrupt | PgUp/PgDn: Scroll",
-                state.enter_action_label(),
-                state.enter_toggle_label()
-            ),
-            "Ctrl+C Interrupt | PgUp/PgDn Scroll".to_string(),
+            &[
+                format!(
+                    "{} | {} | Ctrl+C: Interrupt | PageUp/PageDown/Mouse: Scroll",
+                    state.enter_action_label(),
+                    state.enter_toggle_label()
+                ),
+                format!(
+                    "{} | {} | Ctrl+C: Interrupt | PgUp/PgDn: Scroll",
+                    state.enter_action_label(),
+                    state.enter_toggle_label()
+                ),
+                "Ctrl+C Interrupt | PgUp/PgDn Scroll".to_string(),
+                "Ctrl+C Interrupt".to_string(),
+            ],
         )
     } else if state.input.trim().is_empty() && state.pasted_image_count() == 0 {
-        pick(
+        pick_status_candidate(
             width,
-            format!(
-                "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
-                state.enter_action_label(),
-                state.enter_toggle_label()
-            ),
-            format!(
-                "{} | {} | Ctrl+V: Image | ↑/↓: History | PgUp/PgDn: Scroll | Esc: Select | Ctrl+C: Exit",
-                state.enter_action_label(),
-                state.enter_toggle_label()
-            ),
-            "Enter Send | Esc Select | Ctrl+C Exit".to_string(),
+            &[
+                format!(
+                    "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | PageUp/PageDown/Mouse: Scroll | Esc: Select | Ctrl+C: Exit",
+                    state.enter_action_label(),
+                    state.enter_toggle_label()
+                ),
+                format!(
+                    "{} | {} | Ctrl+V: Image | ↑/↓: History | PgUp/PgDn: Scroll | Esc: Select | Ctrl+C: Exit",
+                    state.enter_action_label(),
+                    state.enter_toggle_label()
+                ),
+                "Enter Send | PgUp/PgDn Scroll | Esc Select | Ctrl+C Exit".to_string(),
+                "Enter Send | Esc Select | Ctrl+C Exit".to_string(),
+            ],
         )
     } else {
-        pick(
+        pick_status_candidate(
             width,
-            format!(
-                "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
-                state.enter_action_label(),
-                state.enter_toggle_label()
-            ),
-            format!(
-                "{} | Ctrl+V: Image | ↑/↓: History | Alt+↑/↓: Input | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
-                state.enter_action_label()
-            ),
-            "Enter Send | Ctrl+U Clear | Ctrl+C Exit".to_string(),
+            &[
+                format!(
+                    "{} | {} | Ctrl+V: Attach clipboard image | Up/Down: History | Alt+Up/Down: Input scroll | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+                    state.enter_action_label(),
+                    state.enter_toggle_label()
+                ),
+                format!(
+                    "{} | Ctrl+V: Image | ↑/↓: History | Alt+↑/↓: Input | Ctrl+U: Clear | Esc: Select | Ctrl+C: Exit",
+                    state.enter_action_label()
+                ),
+                "Enter Send | Ctrl+U: Clear | Esc Select | Ctrl+C Exit".to_string(),
+                "Enter Send | Ctrl+U Clear | Ctrl+C Exit".to_string(),
+            ],
         )
     }
 }

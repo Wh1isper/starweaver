@@ -2,7 +2,14 @@
 
 use serde_json::Value;
 
-use crate::message::{Metadata, ModelMessage, ModelRequestPart};
+use crate::{
+    message::{Metadata, ModelMessage, ModelRequestPart},
+    request::{
+        INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
+        INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+        INSTRUCTION_ORIGIN_TOOLSET,
+    },
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemInstructionPart {
@@ -35,13 +42,20 @@ impl SystemInstructionPart {
 
 pub fn is_dynamic_system_instruction(metadata: &Metadata) -> bool {
     metadata
-        .get("starweaver_instruction_dynamic")
+        .get(INSTRUCTION_DYNAMIC_METADATA)
         .and_then(Value::as_bool)
         .unwrap_or(false)
         || metadata
-            .get("starweaver_instruction_origin")
+            .get(INSTRUCTION_ORIGIN_METADATA)
             .and_then(Value::as_str)
-            .is_some_and(|origin| matches!(origin, "runtime_context" | "environment_context"))
+            .is_some_and(|origin| {
+                matches!(
+                    origin,
+                    INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
+                        | INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
+                        | INSTRUCTION_ORIGIN_TOOLSET
+                )
+            })
 }
 
 pub fn collect_system_parts_and_non_system(

@@ -45,11 +45,35 @@ fn flush_assistant_markdown(
     if markdown.is_empty() {
         return;
     }
+    let normalized = markdown_with_explicit_quote_boundaries(markdown);
     rendered.extend(render_markdown_lines(
-        markdown,
+        &normalized,
         width.saturating_sub(2).max(1),
     ));
     markdown.clear();
+}
+
+fn markdown_with_explicit_quote_boundaries(markdown: &[String]) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(markdown.len());
+    let mut previous_was_quote = false;
+    for line in markdown {
+        let current_is_quote = is_markdown_quote_line(line);
+        if previous_was_quote && is_markdown_plain_line(line) {
+            normalized.push(String::new());
+        }
+        normalized.push(line.clone());
+        previous_was_quote = current_is_quote;
+    }
+    normalized
+}
+
+fn is_markdown_quote_line(line: &str) -> bool {
+    line.trim_start().starts_with('>')
+}
+
+fn is_markdown_plain_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    !trimmed.is_empty() && !trimmed.starts_with('>')
 }
 
 fn is_transcript_boundary(line: &str) -> bool {

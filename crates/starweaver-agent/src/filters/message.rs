@@ -1,9 +1,12 @@
 //! Shared message and request metadata helpers for SDK filters.
 
 use serde_json::{json, Map, Value};
-use starweaver_model::{ContentPart, ModelMessage, ModelRequest, ModelRequestPart};
+use starweaver_model::{
+    ContentPart, ModelMessage, ModelRequest, ModelRequestPart, INSTRUCTION_DYNAMIC_METADATA,
+};
 
 const FILTER_ORDER_METADATA: &str = "starweaver_filter_order";
+const TOOL_RETURN_MEDIA_ORIGIN: &str = "tool_return_media";
 
 pub(super) fn metadata_text(metadata: &Map<String, Value>, key: &str) -> Option<String> {
     match metadata.get(key)? {
@@ -42,20 +45,7 @@ pub(super) fn insert_request_part_after_control_parts(
 ) {
     for message in messages.iter_mut().rev() {
         if let ModelMessage::Request(request) = message {
-            let insert_at = request
-                .parts
-                .iter()
-                .enumerate()
-                .filter_map(|(index, part)| match part {
-                    ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => {
-                        Some(index + 1)
-                    }
-                    ModelRequestPart::SystemPrompt { .. }
-                    | ModelRequestPart::UserPrompt { .. }
-                    | ModelRequestPart::Instruction { .. } => None,
-                })
-                .next_back()
-                .unwrap_or(0);
+            let insert_at = request_instruction_insert_index(request);
             request.parts.insert(insert_at, part);
             return;
         }
@@ -68,6 +58,47 @@ pub(super) fn insert_request_part_after_control_parts(
         conversation_id: None,
         metadata: Map::new(),
     }));
+}
+
+fn request_instruction_insert_index(request: &ModelRequest) -> usize {
+    let control_prefix_len = request_control_prefix_len(request);
+    control_prefix_len
+        + request.parts[control_prefix_len..]
+            .iter()
+            .take_while(|part| is_static_instruction_prefix_part(part))
+            .count()
+}
+
+fn request_control_prefix_len(request: &ModelRequest) -> usize {
+    request
+        .parts
+        .iter()
+        .take_while(|part| is_control_prefix_part(part))
+        .count()
+}
+
+fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
+    match part {
+        ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
+        ModelRequestPart::UserPrompt { metadata, .. } => metadata
+            .get("starweaver_instruction_origin")
+            .and_then(Value::as_str)
+            .is_some_and(|origin| origin == TOOL_RETURN_MEDIA_ORIGIN),
+        ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,
+    }
+}
+
+fn is_static_instruction_prefix_part(part: &ModelRequestPart) -> bool {
+    match part {
+        ModelRequestPart::SystemPrompt { .. } => true,
+        ModelRequestPart::Instruction { metadata, .. } => !metadata
+            .get(INSTRUCTION_DYNAMIC_METADATA)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        ModelRequestPart::UserPrompt { .. }
+        | ModelRequestPart::ToolReturn(_)
+        | ModelRequestPart::RetryPrompt { .. } => false,
+    }
 }
 
 pub(super) fn request_metadata_mut(messages: &mut Vec<ModelMessage>) -> &mut Map<String, Value> {

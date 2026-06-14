@@ -4,7 +4,7 @@ use starweaver_context::AgentContext;
 use starweaver_model::{ModelRequest, ModelResponse, ModelSettings, ToolDefinition};
 
 use crate::{
-    agent::{Agent, AgentError},
+    agent::{runtime_helpers::validate_prepared_tools, Agent, AgentError},
     capability::{CapabilityError, RetryEventKind},
     run::AgentRunState,
 };
@@ -31,10 +31,12 @@ impl Agent {
         mut tools: Vec<ToolDefinition>,
     ) -> Result<Vec<ToolDefinition>, AgentError> {
         for capability in &self.ordered_capabilities()? {
-            tools = capability
+            let original = tools.clone();
+            let prepared = capability
                 .prepare_tools_with_context(state, context, tools)
                 .await
                 .map_err(Self::capability_error)?;
+            tools = validate_prepared_tools(&original, prepared)?;
         }
         Ok(tools)
     }

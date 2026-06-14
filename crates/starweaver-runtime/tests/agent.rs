@@ -11,7 +11,7 @@ use starweaver_core::Usage;
 use starweaver_model::{
     ContentPart, ModelAdapter, ModelError, ModelMessage, ModelRequest, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponseEventStream,
-    ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ToolReturnPart,
+    ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ToolCallPart, ToolReturnPart,
 };
 use starweaver_runtime::{
     Agent, AgentCapability, AgentError, AgentRuntimePolicy, CapabilityError, CapabilityResult,
@@ -443,6 +443,14 @@ async fn model_error_retry_recovers_context_overflow_history() {
         captured: Arc::new(Mutex::new(Vec::new())),
     });
     let history = vec![
+        ModelMessage::Response(ModelResponse {
+            parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_1".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "large.txt"}).into(),
+            })],
+            ..ModelResponse::text("")
+        }),
         ModelMessage::Request(ModelRequest {
             parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
                 "call_1",
@@ -589,7 +597,14 @@ async fn model_error_retry_recovers_stream_context_overflow() {
         captured: Arc::new(Mutex::new(Vec::new())),
     });
     let history = vec![
-        ModelMessage::Response(ModelResponse::text("tool requested")),
+        ModelMessage::Response(ModelResponse {
+            parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_latest".to_string(),
+                name: "view".to_string(),
+                arguments: serde_json::json!({"path": "large.txt"}).into(),
+            })],
+            ..ModelResponse::text("")
+        }),
         ModelMessage::Request(ModelRequest {
             parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
                 "call_latest",

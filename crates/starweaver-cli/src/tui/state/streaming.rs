@@ -32,7 +32,6 @@ impl InteractiveTuiState {
             AgentStreamEvent::ModelStream { event, .. } => self.apply_model_stream_event(event),
             AgentStreamEvent::ModelResponse { response, .. } => {
                 self.phase = "response".to_string();
-                self.update_context_usage(&response.usage);
                 self.apply_model_response_parts(&response.parts);
             }
             AgentStreamEvent::ToolCall { call, .. } => {

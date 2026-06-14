@@ -1,9 +1,12 @@
 use serde_json::{Map, Value};
 
+const TOOL_RETURN_MEDIA_ORIGIN: &str = "tool_return_media";
+
 use crate::{
     adapter::ModelRequestParameters,
     message::{ModelMessage, ModelRequest, ModelRequestPart},
     profile::{ModelProfile, NativeToolKind},
+    request::INSTRUCTION_DYNAMIC_METADATA,
     settings::ModelSettings,
 };
 
@@ -230,7 +233,9 @@ fn attach_structured_output_instruction(
     });
 }
 
-fn attach_prepared_instructions(
+/// Attach prepared instruction fragments to the latest request, preserving static-before-dynamic order.
+#[must_use]
+pub fn attach_prepared_instructions(
     mut messages: Vec<ModelMessage>,
     instructions: &[PreparedInstruction],
 ) -> Vec<ModelMessage> {
@@ -255,7 +260,8 @@ fn attach_prepared_instructions(
             .into_iter()
             .map(|instruction| instruction.to_request_part())
             .collect::<Vec<_>>();
-        request.parts.splice(0..0, parts);
+        let insert_at = request_instruction_insert_index(request);
+        request.parts.splice(insert_at..insert_at, parts);
         return messages;
     }
 
@@ -271,6 +277,47 @@ fn attach_prepared_instructions(
         metadata: Map::new(),
     }));
     messages
+}
+
+fn request_control_prefix_len(request: &ModelRequest) -> usize {
+    request
+        .parts
+        .iter()
+        .take_while(|part| is_control_prefix_part(part))
+        .count()
+}
+
+fn request_instruction_insert_index(request: &ModelRequest) -> usize {
+    let control_prefix_len = request_control_prefix_len(request);
+    control_prefix_len
+        + request.parts[control_prefix_len..]
+            .iter()
+            .take_while(|part| is_static_instruction_prefix_part(part))
+            .count()
+}
+
+fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
+    match part {
+        ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
+        ModelRequestPart::UserPrompt { metadata, .. } => metadata
+            .get("starweaver_instruction_origin")
+            .and_then(Value::as_str)
+            .is_some_and(|origin| origin == TOOL_RETURN_MEDIA_ORIGIN),
+        ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,
+    }
+}
+
+fn is_static_instruction_prefix_part(part: &ModelRequestPart) -> bool {
+    match part {
+        ModelRequestPart::SystemPrompt { .. } => true,
+        ModelRequestPart::Instruction { metadata, .. } => !metadata
+            .get(INSTRUCTION_DYNAMIC_METADATA)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        ModelRequestPart::UserPrompt { .. }
+        | ModelRequestPart::ToolReturn(_)
+        | ModelRequestPart::RetryPrompt { .. } => false,
+    }
 }
 
 fn request_contains_instruction(request: &ModelRequest, text: &str) -> bool {

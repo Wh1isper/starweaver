@@ -1,9 +1,12 @@
 //! Runtime context instruction injection helpers.
 
 use starweaver_context::AgentContext;
-use starweaver_model::{ModelMessage, ModelRequest, ModelRequestPart};
+use starweaver_model::{
+    ModelMessage, ModelRequest, ModelRequestPart, INSTRUCTION_DYNAMIC_METADATA,
+    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+};
 
-use crate::agent::Agent;
+use crate::agent::{runtime_helpers::request_instruction_insert_index, Agent};
 
 impl Agent {
     pub(in crate::agent) fn inject_runtime_context(
@@ -18,11 +21,11 @@ impl Agent {
         };
         let mut metadata = serde_json::Map::new();
         metadata.insert(
-            "starweaver_instruction_origin".to_string(),
-            serde_json::json!("runtime_context"),
+            INSTRUCTION_ORIGIN_METADATA.to_string(),
+            serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT),
         );
         metadata.insert(
-            "starweaver_instruction_dynamic".to_string(),
+            INSTRUCTION_DYNAMIC_METADATA.to_string(),
             serde_json::json!(true),
         );
         insert_instruction_into_latest_request(
@@ -75,19 +78,6 @@ fn insert_instruction_into_latest_request(
 }
 
 fn insert_request_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
-    let insert_at = request
-        .parts
-        .iter()
-        .enumerate()
-        .filter_map(|(index, part)| match part {
-            ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => {
-                Some(index + 1)
-            }
-            ModelRequestPart::SystemPrompt { .. }
-            | ModelRequestPart::UserPrompt { .. }
-            | ModelRequestPart::Instruction { .. } => None,
-        })
-        .next_back()
-        .unwrap_or(0);
+    let insert_at = request_instruction_insert_index(request);
     request.parts.insert(insert_at, part);
 }

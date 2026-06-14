@@ -68,12 +68,17 @@ async fn bare_agent_passes_settings_and_request_params_to_model() {
         temperature: Some(0.4),
         ..ModelSettings::default()
     };
+    let mut tool_metadata = serde_json::Map::new();
+    tool_metadata.insert(
+        "starweaver_tool_kind".to_string(),
+        serde_json::json!("function"),
+    );
     let params = ModelRequestParameters {
         tools: vec![ToolDefinition {
             name: "placeholder".to_string(),
             description: Some("placeholder schema for future tools".to_string()),
             parameters: serde_json::json!({"type": "object"}),
-            metadata: serde_json::Map::new(),
+            metadata: tool_metadata,
         }],
         ..ModelRequestParameters::default()
     };

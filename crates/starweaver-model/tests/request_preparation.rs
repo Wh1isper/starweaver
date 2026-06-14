@@ -7,7 +7,7 @@ use starweaver_model::{
     prepare_messages, prepare_model_request, ContentPart, MessageNormalization, ModelMessage,
     ModelProfile, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings,
     NativeToolDefinition, OutputMode, PreparedInstruction, ProtocolFamily, StructuredOutputMode,
-    ThinkingSettings,
+    ThinkingSettings, ToolReturnPart,
 };
 
 fn request(parts: Vec<ModelRequestPart>) -> ModelMessage {
@@ -134,6 +134,100 @@ fn prepared_instructions_are_sorted_and_attached_as_structured_parts() {
         ModelRequestPart::Instruction { text, metadata }
             if text == "dynamic instruction"
                 && metadata["starweaver_instruction_dynamic"] == true
+    ));
+}
+
+#[test]
+fn prepared_instructions_preserve_static_system_prompt_prefix() {
+    let params = ModelRequestParameters {
+        instructions: vec![PreparedInstruction::dynamic_text("dynamic instruction")],
+        ..ModelRequestParameters::default()
+    };
+
+    let prepared = prepare_model_request(
+        vec![request(vec![
+            ModelRequestPart::SystemPrompt {
+                text: "static system".to_string(),
+                metadata: Map::new(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "answer".to_string(),
+                }],
+                name: None,
+                metadata: Map::new(),
+            },
+        ])],
+        None,
+        None,
+        params,
+        &ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+    );
+
+    let ModelMessage::Request(request) = &prepared.canonical_messages[0] else {
+        panic!("expected request")
+    };
+    assert!(matches!(
+        request.parts.first(),
+        Some(ModelRequestPart::SystemPrompt { text, .. }) if text == "static system"
+    ));
+    assert!(matches!(
+        request.parts.get(1),
+        Some(ModelRequestPart::Instruction { text, metadata })
+            if text == "dynamic instruction"
+                && metadata["starweaver_instruction_dynamic"] == true
+    ));
+}
+
+#[test]
+fn prepared_instructions_preserve_tool_return_media_control_block() {
+    let mut media_metadata = Map::new();
+    media_metadata.insert(
+        "starweaver_instruction_origin".to_string(),
+        json!("tool_return_media"),
+    );
+    let params = ModelRequestParameters {
+        instructions: vec![PreparedInstruction::dynamic_text("dynamic instruction")],
+        ..ModelRequestParameters::default()
+    };
+
+    let prepared = prepare_model_request(
+        vec![request(vec![
+            ModelRequestPart::ToolReturn(ToolReturnPart::new("call_1", "view", json!("ok"))),
+            ModelRequestPart::UserPrompt {
+                content: vec![
+                    ContentPart::Text {
+                        text: "Tool view returned provider-native media content.".to_string(),
+                    },
+                    ContentPart::ImageUrl {
+                        url: "https://example.test/image.png".to_string(),
+                    },
+                ],
+                name: None,
+                metadata: media_metadata,
+            },
+        ])],
+        None,
+        None,
+        params,
+        &ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+    );
+
+    let ModelMessage::Request(request) = &prepared.canonical_messages[0] else {
+        panic!("expected request")
+    };
+    assert!(matches!(
+        request.parts.first(),
+        Some(ModelRequestPart::ToolReturn(_))
+    ));
+    assert!(matches!(
+        request.parts.get(1),
+        Some(ModelRequestPart::UserPrompt { metadata, .. })
+            if metadata.get("starweaver_instruction_origin") == Some(&json!("tool_return_media"))
+    ));
+    assert!(matches!(
+        request.parts.get(2),
+        Some(ModelRequestPart::Instruction { text, .. }) if text == "dynamic instruction"
     ));
 }
 

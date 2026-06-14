@@ -65,7 +65,10 @@ async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
                     text: "continue".to_string(),
                 }],
                 name: None,
-                metadata: serde_json::Map::new(),
+                metadata: serde_json::Map::from_iter([(
+                    "starweaver_instruction_origin".to_string(),
+                    serde_json::json!("tool_return_media"),
+                )]),
             },
         ],
         timestamp: None,
@@ -97,11 +100,72 @@ async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
     assert!(matches!(request.parts[0], ModelRequestPart::ToolReturn(_)));
     assert!(matches!(
         &request.parts[1],
-        ModelRequestPart::Instruction { text, .. } if text.contains("<environment-context>fresh</environment-context>")
+        ModelRequestPart::UserPrompt { metadata, .. }
+            if metadata.get("starweaver_instruction_origin") == Some(&serde_json::json!("tool_return_media"))
     ));
     assert!(matches!(
-        request.parts[2],
-        ModelRequestPart::UserPrompt { .. }
+        &request.parts[2],
+        ModelRequestPart::Instruction { text, metadata }
+            if text.contains("<environment-context>fresh</environment-context>")
+                && metadata.get("starweaver_instruction_origin") == Some(&serde_json::json!("environment_context"))
+                && metadata.get("starweaver_instruction_dynamic") == Some(&serde_json::json!(true))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix(
+) -> starweaver_agent::CapabilityResult<()> {
+    let request = ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "static policy".to_string(),
+                metadata: serde_json::Map::new(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string(),
+                }],
+                name: None,
+                metadata: serde_json::Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_static_metadata_instruction"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_environment_instructions".to_string(),
+        serde_json::json!("<environment-context>fresh</environment-context>"),
+    );
+
+    let messages = NamedFilterCapability::new("environment_instructions")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+    let ModelMessage::Request(request) = messages.last().expect("request") else {
+        panic!("expected request");
+    };
+
+    assert!(matches!(
+        &request.parts[0],
+        ModelRequestPart::SystemPrompt { text, .. } if text == "static policy"
+    ));
+    assert!(matches!(
+        &request.parts[1],
+        ModelRequestPart::Instruction { text, metadata }
+            if text.contains("<environment-context>fresh</environment-context>")
+                && metadata.get("starweaver_instruction_origin") == Some(&serde_json::json!("environment_context"))
+                && metadata.get("starweaver_instruction_dynamic") == Some(&serde_json::json!(true))
     ));
     Ok(())
 }

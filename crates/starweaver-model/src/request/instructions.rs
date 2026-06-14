@@ -3,6 +3,22 @@ use serde_json::{Map, Value};
 
 use crate::message::ModelRequestPart;
 
+/// Metadata key indicating whether an instruction is dynamic for prompt-cache placement.
+pub const INSTRUCTION_DYNAMIC_METADATA: &str = "starweaver_instruction_dynamic";
+/// Metadata key describing the instruction source/origin.
+pub const INSTRUCTION_ORIGIN_METADATA: &str = "starweaver_instruction_origin";
+
+/// Runtime context instruction origin.
+pub const INSTRUCTION_ORIGIN_RUNTIME_CONTEXT: &str = "runtime_context";
+/// Environment context instruction origin.
+pub const INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT: &str = "environment_context";
+/// Toolset instruction origin.
+pub const INSTRUCTION_ORIGIN_TOOLSET: &str = "toolset";
+/// Dynamic agent instruction origin.
+pub const INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION: &str = "dynamic_instruction";
+/// SDK handoff instruction origin.
+pub const INSTRUCTION_ORIGIN_HANDOFF: &str = "handoff";
+
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(value: &bool) -> bool {
     !*value
@@ -42,6 +58,27 @@ impl PreparedInstruction {
         }
     }
 
+    /// Attach instruction origin metadata.
+    #[must_use]
+    pub fn with_origin(mut self, origin: impl Into<String>) -> Self {
+        self.metadata.insert(
+            INSTRUCTION_ORIGIN_METADATA.to_string(),
+            serde_json::json!(origin.into()),
+        );
+        self
+    }
+
+    /// Attach instruction dynamic metadata and update the typed dynamic flag.
+    #[must_use]
+    pub fn with_dynamic(mut self, dynamic: bool) -> Self {
+        self.dynamic = dynamic;
+        self.metadata.insert(
+            INSTRUCTION_DYNAMIC_METADATA.to_string(),
+            serde_json::json!(dynamic),
+        );
+        self
+    }
+
     /// Sort instruction parts with static instructions before dynamic instructions.
     #[must_use]
     pub fn sorted(instructions: &[Self]) -> Vec<Self> {
@@ -53,7 +90,7 @@ impl PreparedInstruction {
     pub(super) fn to_request_part(&self) -> ModelRequestPart {
         let mut metadata = self.metadata.clone();
         metadata.insert(
-            "starweaver_instruction_dynamic".to_string(),
+            INSTRUCTION_DYNAMIC_METADATA.to_string(),
             serde_json::json!(self.dynamic),
         );
         ModelRequestPart::Instruction {
