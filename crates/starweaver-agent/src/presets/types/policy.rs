@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use starweaver_runtime::AgentRuntimePolicy;
 
-use super::helpers::is_false;
+use super::is_false;
 
 /// Approval policy preset for tools and host operations.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

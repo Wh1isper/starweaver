@@ -9,8 +9,8 @@ use crate::{
         ProviderInfo, ToolCallPart,
     },
     providers::{
-        bedrock_content_from_content, collect_system_and_non_system, insert_optional_description,
-        provider_tool_parameters, usage_from_named_including_cache_input,
+        bedrock_content_from_content, collect_system_and_non_system, insert_nonempty_description,
+        provider_tool_schema_without_meta, usage_from_named_including_cache_input,
     },
     ModelError, ModelSettings,
 };
@@ -156,10 +156,10 @@ impl BedrockConverseAdapter {
                     .map(|tool| {
                         let mut spec = serde_json::Map::new();
                         spec.insert("name".to_string(), json!(tool.name));
-                        insert_optional_description(&mut spec, tool.description.as_ref());
+                        insert_nonempty_description(&mut spec, tool.description.as_ref());
                         spec.insert(
                             "inputSchema".to_string(),
-                            json!({"json": provider_tool_parameters(&tool.parameters)}),
+                            json!({"json": provider_tool_schema_without_meta(&tool.parameters)}),
                         );
                         json!({"toolSpec": spec})
                     })

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::{
     adapter::ToolDefinition,
-    providers::{insert_optional_description, provider_tool_parameters},
+    providers::{insert_nonempty_description, provider_tool_schema_without_meta},
     ModelSettings,
 };
 
@@ -75,10 +75,10 @@ pub(super) fn append_anthropic_tools(
         .map(|tool| {
             let mut definition = serde_json::Map::new();
             definition.insert("name".to_string(), json!(tool.name));
-            insert_optional_description(&mut definition, tool.description.as_ref());
+            insert_nonempty_description(&mut definition, tool.description.as_ref());
             definition.insert(
                 "input_schema".to_string(),
-                provider_tool_parameters(&tool.parameters),
+                provider_tool_schema_without_meta(&tool.parameters),
             );
             Value::Object(definition)
         })

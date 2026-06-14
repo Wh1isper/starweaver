@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::helpers::{default_skills_dir, default_true, is_false};
+use super::{default_skills_dir, default_true, is_false};
 
 /// Skill bundle configuration for fileops-loaded skills.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

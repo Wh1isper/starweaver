@@ -3,10 +3,8 @@
 mod environment;
 mod external;
 mod helpers;
-mod media;
 mod skills;
 mod task;
-mod web;
 
 use std::sync::Arc;
 
@@ -20,20 +18,19 @@ pub use environment::{
     ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
     DEFAULT_SHELL_REVIEW_PROMPT,
 };
-pub use external::host_operation_tools;
-pub use media::{
-    HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
-    MediaUnderstandingRequest, MediaUnderstandingResponse,
+pub use external::{
+    host_operation_tools, HostMediaCapabilities, HostMediaUnderstandingClient,
+    HostMediaUnderstandingClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse,
+};
+pub use external::{
+    HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
+    ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem,
 };
 pub use skills::{
     parse_skill_markdown, skill_tools, SkillError, SkillPackage, SkillRegistry, SkillSourceScope,
 };
 pub use starweaver_tools::{dynamic_tool_proxy, ToolProxyNamePrefixError, ToolProxyToolset};
 pub use task::task_tools;
-pub use web::{
-    HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
-    ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem,
-};
 
 /// Create the currently implemented first-party core toolsets.
 #[must_use]

@@ -9,8 +9,8 @@ use crate::{
         ProviderInfo, ToolCallPart,
     },
     providers::{
-        collect_system_and_non_system, gemini_parts_from_content, insert_optional_description,
-        provider_tool_parameters, usage_from_named_with_output_extras,
+        collect_system_and_non_system, gemini_parts_from_content, insert_nonempty_description,
+        provider_tool_schema_without_meta, usage_from_named_with_output_extras,
     },
     ModelError, ModelSettings,
 };
@@ -270,10 +270,10 @@ fn append_gemini_tools(
             .map(|tool| {
                 let mut declaration = serde_json::Map::new();
                 declaration.insert("name".to_string(), json!(tool.name));
-                insert_optional_description(&mut declaration, tool.description.as_ref());
+                insert_nonempty_description(&mut declaration, tool.description.as_ref());
                 declaration.insert(
                     "parameters".to_string(),
-                    provider_tool_parameters(&tool.parameters),
+                    provider_tool_schema_without_meta(&tool.parameters),
                 );
                 Value::Object(declaration)
             })

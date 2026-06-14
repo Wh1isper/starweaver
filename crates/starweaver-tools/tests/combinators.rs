@@ -28,7 +28,7 @@ async fn filtered_toolset_limits_discovery_and_dispatch() {
             .with_tool(echo_tool("keep"))
             .with_tool(echo_tool("drop")),
     );
-    let filtered: DynToolset = Arc::new(FilteredToolset::allow_names(inner, ["keep"]));
+    let filtered: DynToolset = Arc::new(FilteredToolset::include_names(inner, ["keep"]));
     let registry = ToolRegistry::new().with_toolset(&filtered);
 
     let definitions = registry.definitions();

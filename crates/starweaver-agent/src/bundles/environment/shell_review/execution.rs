@@ -61,7 +61,7 @@ pub async fn review_shell_command_or_block(
     request.previous_reviews = previous_shell_reviews(&handle, &request, tool_call_id.as_deref());
     let decision = review_shell_command(context, &handle, &request).await?;
     let mut record =
-        ShellReviewRecord::new(request.clone(), decision.clone(), tool_call_id.clone());
+        ShellReviewRecord::pending(request.clone(), decision.clone(), tool_call_id.clone());
     if !decision.requires_approval(handle.config()) {
         record.approved = true;
         handle.push_record(record);

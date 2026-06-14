@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use crate::{
     adapter::{NativeToolDefinition, ToolDefinition},
-    providers::{insert_optional_description, provider_tool_parameters},
+    providers::{insert_nonempty_description, provider_tool_schema_without_meta},
 };
 
 pub(super) fn response_tool_defs(
@@ -15,10 +15,10 @@ pub(super) fn response_tool_defs(
             let mut definition = serde_json::Map::new();
             definition.insert("type".to_string(), json!("function"));
             definition.insert("name".to_string(), json!(tool.name));
-            insert_optional_description(&mut definition, tool.description.as_ref());
+            insert_nonempty_description(&mut definition, tool.description.as_ref());
             definition.insert(
                 "parameters".to_string(),
-                provider_tool_parameters(&tool.parameters),
+                provider_tool_schema_without_meta(&tool.parameters),
             );
             Value::Object(definition)
         })

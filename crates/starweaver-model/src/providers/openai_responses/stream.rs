@@ -1,7 +1,6 @@
 //! `OpenAI` Responses incremental stream parsing.
 
 mod response_parts;
-mod state;
 
 use std::collections::BTreeMap;
 
@@ -9,9 +8,21 @@ use serde_json::{json, Value};
 
 use crate::{message::Metadata, ModelError, ModelResponseStreamEvent};
 
-use state::StreamedFunctionCall;
-
 use super::response::{parse_response, raw_reasoning_content, reasoning_summary_text};
+
+/// Incrementally assembled function-call item from `OpenAI` Responses streaming events.
+#[derive(Clone, Debug, Default)]
+pub(super) struct StreamedFunctionCall {
+    pub(super) index: usize,
+    pub(super) item_id: String,
+    pub(super) call_id: String,
+    pub(super) name: String,
+    pub(super) arguments: String,
+    pub(super) namespace: Option<String>,
+    pub(super) status: Option<String>,
+    pub(super) started: bool,
+    pub(super) ended: bool,
+}
 
 pub(super) fn parse_stream_events(
     events: &[Value],

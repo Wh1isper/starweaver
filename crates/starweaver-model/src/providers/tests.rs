@@ -123,15 +123,15 @@ fn provider_schema_helpers_strip_meta_and_descriptions() {
             "items": [{"$schema": "array", "type": "number"}]
         }
     });
-    schema = provider_tool_parameters(&schema);
+    schema = provider_tool_schema_without_meta(&schema);
     assert!(schema.get("$schema").is_none());
     assert!(schema["properties"]["nested"].get("$schema").is_none());
     assert!(schema["properties"]["items"][0].get("$schema").is_none());
 
     let mut object = Map::new();
-    insert_optional_description(&mut object, Some(&" useful ".to_string()));
-    insert_optional_description(&mut object, Some(&"   ".to_string()));
-    insert_optional_description(&mut object, None);
+    insert_nonempty_description(&mut object, Some(&" useful ".to_string()));
+    insert_nonempty_description(&mut object, Some(&"   ".to_string()));
+    insert_nonempty_description(&mut object, None);
     assert_eq!(object["description"], " useful ");
 }
 

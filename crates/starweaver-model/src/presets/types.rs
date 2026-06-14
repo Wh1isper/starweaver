@@ -1,11 +1,32 @@
 //! Public preset types.
 
+use thiserror::Error;
+
 mod config_preset;
 mod data;
-mod error;
 mod settings_preset;
 
 pub use config_preset::ModelConfigPreset;
 pub use data::{ModelConfigPresetData, ModelRuntimePreset};
-pub use error::ModelPresetError;
 pub use settings_preset::ModelSettingsPreset;
+
+/// Preset lookup failure.
+#[derive(Debug, Error)]
+pub enum ModelPresetError {
+    /// The requested preset name is unknown.
+    #[error("unknown model preset: {name}. available: {available:?}")]
+    UnknownPreset {
+        /// Requested preset name.
+        name: String,
+        /// Available canonical names and aliases.
+        available: Vec<String>,
+    },
+    /// The requested model config preset name is unknown.
+    #[error("unknown model config preset: {name}. available: {available:?}")]
+    UnknownModelConfig {
+        /// Requested preset name.
+        name: String,
+        /// Available canonical names and aliases.
+        available: Vec<String>,
+    },
+}

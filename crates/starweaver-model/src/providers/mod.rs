@@ -9,7 +9,6 @@ pub mod openai_responses;
 
 mod content;
 mod openai_common;
-mod schema;
 mod settings;
 mod system;
 mod usage;
@@ -24,7 +23,6 @@ pub(crate) use openai_common::{
     finish_reason_openai, openai_chat_tool_choice, openai_responses_tool_choice,
     parse_tool_call_arguments,
 };
-pub(crate) use schema::{insert_optional_description, provider_tool_parameters};
 pub(crate) use settings::{apply_common_settings, apply_common_settings_with_max_tokens};
 pub(crate) use system::{
     collect_system_and_non_system, collect_system_parts_and_non_system,
@@ -39,3 +37,40 @@ pub(crate) use usage::{
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests;
+
+use serde_json::{json, Map, Value};
+
+pub(crate) fn provider_tool_schema_without_meta(parameters: &Value) -> Value {
+    let mut schema = parameters.clone();
+    remove_json_schema_meta(&mut schema);
+    schema
+}
+
+pub(crate) fn insert_nonempty_description(
+    object: &mut Map<String, Value>,
+    description: Option<&String>,
+) {
+    if let Some(description) = description
+        .map(String::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        object.insert("description".to_string(), json!(description));
+    }
+}
+
+fn remove_json_schema_meta(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("$schema");
+            for nested in object.values_mut() {
+                remove_json_schema_meta(nested);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                remove_json_schema_meta(item);
+            }
+        }
+        _ => {}
+    }
+}
