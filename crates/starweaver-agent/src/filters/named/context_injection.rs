@@ -1,6 +1,7 @@
 use serde_json::{json, Map, Value};
 use starweaver_model::{
-    ModelMessage, ModelRequest, ModelRequestPart, ToolReturnPart, INSTRUCTION_DYNAMIC_METADATA,
+    ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ToolReturnPart,
+    INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
     INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_HANDOFF,
     INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
@@ -9,8 +10,9 @@ use starweaver_runtime::AgentRunState;
 use crate::filters::{
     compact::instruction_parts,
     message::{
-        insert_request_part_after_control_parts, metadata_text, push_user_text,
-        request_metadata_mut,
+        build_restored_request_parts, insert_context_part_after_control_parts,
+        insert_context_parts_after_control_parts, insert_request_part_after_control_parts,
+        metadata_text, push_user_text, request_metadata_mut,
     },
 };
 
@@ -101,18 +103,36 @@ pub(super) fn inject_instruction_from_metadata(
         return messages;
     };
     let origin = instruction_origin(instruction_type);
-    let dynamic = instruction_is_dynamic(&origin);
-    let part = ModelRequestPart::Instruction {
-        text,
-        metadata: Map::from_iter([
-            (
-                "starweaver_instruction_type".to_string(),
-                json!(instruction_type),
-            ),
-            (INSTRUCTION_ORIGIN_METADATA.to_string(), json!(origin)),
-            (INSTRUCTION_DYNAMIC_METADATA.to_string(), json!(dynamic)),
-        ]),
-    };
+    if instruction_type == "handoff" && !text.contains("<context-restored>") {
+        let mut parts =
+            build_restored_request_parts(Some(vec![ContentPart::Text { text }]), None, Vec::new());
+        annotate_context_parts(&mut parts, instruction_type, &origin);
+        insert_context_parts_after_control_parts(&mut messages, parts);
+        return messages;
+    }
+    let mut metadata = Map::from_iter([
+        (
+            "starweaver_instruction_type".to_string(),
+            json!(instruction_type),
+        ),
+        (INSTRUCTION_ORIGIN_METADATA.to_string(), json!(origin)),
+    ]);
+    if instruction_is_context(&origin) {
+        insert_context_part_after_control_parts(
+            &mut messages,
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text { text }],
+                name: None,
+                metadata,
+            },
+        );
+        return messages;
+    }
+    metadata.insert(
+        INSTRUCTION_DYNAMIC_METADATA.to_string(),
+        json!(instruction_is_dynamic(&origin)),
+    );
+    let part = ModelRequestPart::Instruction { text, metadata };
     insert_request_part_after_control_parts(&mut messages, part);
     messages
 }
@@ -201,6 +221,18 @@ pub(super) fn bus_message_filter(
     messages
 }
 
+fn annotate_context_parts(parts: &mut [ModelRequestPart], instruction_type: &str, origin: &str) {
+    for part in parts {
+        if let ModelRequestPart::UserPrompt { metadata, .. } = part {
+            metadata.insert(
+                "starweaver_instruction_type".to_string(),
+                json!(instruction_type),
+            );
+            metadata.insert(INSTRUCTION_ORIGIN_METADATA.to_string(), json!(origin));
+        }
+    }
+}
+
 fn instruction_origin(instruction_type: &str) -> String {
     match instruction_type {
         "environment" => INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT.to_string(),
@@ -211,9 +243,15 @@ fn instruction_origin(instruction_type: &str) -> String {
 }
 
 fn instruction_is_dynamic(origin: &str) -> bool {
+    matches!(origin, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION)
+}
+
+fn instruction_is_context(origin: &str) -> bool {
     matches!(
         origin,
-        INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
+        INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
+            | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
+            | INSTRUCTION_ORIGIN_HANDOFF
     )
 }
 

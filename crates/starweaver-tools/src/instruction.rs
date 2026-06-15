@@ -10,6 +10,9 @@ pub struct ToolInstruction {
     pub group: String,
     /// Instruction content.
     pub content: String,
+    /// Whether this instruction is dynamic for provider cache-boundary placement.
+    #[serde(default)]
+    pub dynamic: bool,
 }
 
 impl ToolInstruction {
@@ -19,7 +22,15 @@ impl ToolInstruction {
         Self {
             group: group.into(),
             content: content.into(),
+            dynamic: false,
         }
+    }
+
+    /// Mark this instruction as dynamic or static for provider cache-boundary placement.
+    #[must_use]
+    pub const fn with_dynamic(mut self, dynamic: bool) -> Self {
+        self.dynamic = dynamic;
+        self
     }
 
     /// Render this instruction block in the ya-agent-sdk tool-instruction XML shape.

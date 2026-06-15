@@ -300,6 +300,13 @@ fn prepare_messages_lifts_system_parts_for_system_field_profiles() {
         ModelRequestPart::Instruction { text, metadata }
             if text == "instruction" && metadata["starweaver_instruction_dynamic"] == true
     ));
+    let ModelMessage::Request(user_request) = &normalized[1] else {
+        panic!("expected user request")
+    };
+    assert!(matches!(
+        &user_request.parts[0],
+        ModelRequestPart::UserPrompt { .. }
+    ));
 }
 
 #[test]
@@ -343,4 +350,83 @@ fn prepared_request_serializes_snapshot_evidence() {
     );
     assert_eq!(decoded.output_mode, OutputMode::Text);
     assert_eq!(decoded.params.output_mode, Some(OutputMode::Text));
+}
+
+#[test]
+fn merge_adjacent_requests_does_not_reapply_historical_instruction_material() {
+    let mut old_dynamic = Map::new();
+    old_dynamic.insert("starweaver_instruction_dynamic".to_string(), json!(true));
+    let mut new_dynamic = Map::new();
+    new_dynamic.insert("starweaver_instruction_dynamic".to_string(), json!(true));
+    let messages = vec![
+        ModelMessage::Request(ModelRequest {
+            parts: vec![
+                ModelRequestPart::Instruction {
+                    text: "old dynamic".to_string(),
+                    metadata: old_dynamic,
+                },
+                ModelRequestPart::UserPrompt {
+                    content: vec![ContentPart::Text {
+                        text: "old user".to_string(),
+                    }],
+                    name: None,
+                    metadata: Map::new(),
+                },
+            ],
+            timestamp: None,
+            instructions: Some("old request instruction".to_string()),
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        }),
+        ModelMessage::Request(ModelRequest {
+            parts: vec![
+                ModelRequestPart::Instruction {
+                    text: "new dynamic".to_string(),
+                    metadata: new_dynamic,
+                },
+                ModelRequestPart::UserPrompt {
+                    content: vec![ContentPart::Text {
+                        text: "new user".to_string(),
+                    }],
+                    name: None,
+                    metadata: Map::new(),
+                },
+            ],
+            timestamp: None,
+            instructions: Some("new request instruction".to_string()),
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        }),
+    ];
+
+    let normalized = prepare_messages(&messages, MessageNormalization::MergeAdjacentSameRole);
+
+    assert_eq!(normalized.len(), 1);
+    let ModelMessage::Request(request) = &normalized[0] else {
+        panic!("expected merged request")
+    };
+    assert_eq!(
+        request.instructions.as_deref(),
+        Some("new request instruction")
+    );
+    assert!(request.parts.iter().any(|part| matches!(
+        part,
+        ModelRequestPart::UserPrompt { content, .. }
+            if matches!(&content[0], ContentPart::Text { text } if text == "old user")
+    )));
+    assert!(request.parts.iter().any(|part| matches!(
+        part,
+        ModelRequestPart::UserPrompt { content, .. }
+            if matches!(&content[0], ContentPart::Text { text } if text == "new user")
+    )));
+    assert!(request.parts.iter().any(|part| matches!(
+        part,
+        ModelRequestPart::Instruction { text, .. } if text == "new dynamic"
+    )));
+    assert!(!request.parts.iter().any(|part| matches!(
+        part,
+        ModelRequestPart::Instruction { text, .. } if text == "old dynamic"
+    )));
 }

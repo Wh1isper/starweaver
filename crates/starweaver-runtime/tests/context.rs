@@ -3,17 +3,33 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
+use serde_json::Map;
 use starweaver_context::{AgentContext, AgentId, BusMessage};
+use starweaver_core::Usage;
 use starweaver_model::{
     ContentPart, ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
-    ModelRequestParameters, ModelRequestPart, ModelResponse, ModelSettings, ProtocolFamily,
-    TestModel,
+    ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
+    ProtocolFamily, TestModel,
 };
 use starweaver_runtime::{
     Agent, AgentCapability, AgentRunState, AgentRuntimePolicy, AgentStreamEvent, CapabilityError,
+    CapabilityResult,
 };
 
 struct ContextModel;
+
+struct CompactContextRecorder {
+    previous_state: Arc<Mutex<Option<String>>>,
+    original_state: Arc<Mutex<Option<String>>>,
+    context_previous: Arc<Mutex<Option<String>>>,
+    context_prompt: Arc<Mutex<Option<String>>>,
+}
+
+struct EffectivePromptAdapter;
+
+struct EffectivePromptRecorder {
+    metadata_content: Arc<Mutex<Option<Vec<ContentPart>>>>,
+}
 
 #[async_trait]
 impl ModelAdapter for ContextModel {
@@ -46,6 +62,186 @@ impl ModelAdapter for ContextModel {
     }
 }
 
+#[async_trait]
+impl AgentCapability for EffectivePromptAdapter {
+    async fn before_model_request_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        request: &mut starweaver_model::ModelRequest,
+        _settings: &mut Option<ModelSettings>,
+    ) -> Result<(), CapabilityError> {
+        if state.run_step != 0 {
+            return Ok(());
+        }
+        let Some(ModelRequestPart::UserPrompt { content, .. }) = request
+            .parts
+            .iter_mut()
+            .find(|part| matches!(part, ModelRequestPart::UserPrompt { .. }))
+        else {
+            return Ok(());
+        };
+        *content = vec![
+            ContentPart::Text {
+                text: "inspect this".to_string(),
+            },
+            ContentPart::ImageUrl {
+                url: "https://example.test/image.png".to_string(),
+            },
+        ];
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentCapability for EffectivePromptRecorder {
+    async fn before_model_request_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        _request: &mut starweaver_model::ModelRequest,
+        _settings: &mut Option<ModelSettings>,
+    ) -> Result<(), CapabilityError> {
+        Ok(())
+    }
+
+    async fn on_run_complete_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+    ) -> CapabilityResult<()> {
+        *self.metadata_content.lock().unwrap() = state
+            .metadata
+            .get("starweaver_original_request_content")
+            .and_then(|value| serde_json::from_value::<Vec<ContentPart>>(value.clone()).ok());
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentCapability for CompactContextRecorder {
+    async fn on_run_start_with_context(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+    ) -> CapabilityResult<()> {
+        *self.previous_state.lock().unwrap() = state
+            .metadata
+            .get("starweaver_previous_assistant_response_reference")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        *self.original_state.lock().unwrap() = state
+            .metadata
+            .get("starweaver_original_request")
+            .and_then(serde_json::Value::as_str)
+            .map(ToString::to_string);
+        self.context_previous
+            .lock()
+            .unwrap()
+            .clone_from(&context.previous_assistant_response_reference);
+        *self.context_prompt.lock().unwrap() = context.user_prompts.as_ref().and_then(|content| {
+            content.iter().find_map(|part| match part {
+                starweaver_model::ContentPart::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+        });
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn run_start_captures_compact_restore_context() {
+    let previous_state_value = Arc::new(Mutex::new(None));
+    let original_state_value = Arc::new(Mutex::new(None));
+    let context_previous_value = Arc::new(Mutex::new(None));
+    let context_prompt_value = Arc::new(Mutex::new(None));
+    let mut context = AgentContext {
+        previous_assistant_response_reference: Some("stale reference".to_string()),
+        message_history: vec![
+            ModelMessage::Request(starweaver_model::ModelRequest::user_text(
+                "What should we do?",
+            )),
+            ModelMessage::Response(ModelResponse::text("1. Add tests\n2. Update docs")),
+            ModelMessage::Response(ModelResponse {
+                parts: vec![ModelResponsePart::Thinking {
+                    text: "private reasoning".to_string(),
+                    signature: None,
+                }],
+                usage: Usage::default(),
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Map::default(),
+            }),
+        ],
+        ..AgentContext::default()
+    };
+
+    Agent::new(Arc::new(ContextModel))
+        .with_capability(Arc::new(CompactContextRecorder {
+            previous_state: previous_state_value.clone(),
+            original_state: original_state_value.clone(),
+            context_previous: context_previous_value.clone(),
+            context_prompt: context_prompt_value.clone(),
+        }))
+        .run_with_context("do 1 and 2", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        previous_state_value.lock().unwrap().as_deref(),
+        Some("1. Add tests\n2. Update docs"),
+    );
+    assert_eq!(
+        original_state_value.lock().unwrap().as_deref(),
+        Some("do 1 and 2"),
+    );
+    assert_eq!(
+        context_previous_value.lock().unwrap().as_deref(),
+        Some("1. Add tests\n2. Update docs"),
+    );
+    assert_eq!(
+        context_prompt_value.lock().unwrap().as_deref(),
+        Some("do 1 and 2"),
+    );
+    assert_eq!(
+        context.previous_assistant_response_reference.as_deref(),
+        Some("1. Add tests\n2. Update docs"),
+    );
+}
+
+#[tokio::test]
+async fn before_request_rewrites_update_compact_restore_user_prompt() {
+    let metadata_content = Arc::new(Mutex::new(None));
+    let mut context = AgentContext::default();
+
+    Agent::new(Arc::new(ContextModel))
+        .with_capability(Arc::new(EffectivePromptAdapter))
+        .with_capability(Arc::new(EffectivePromptRecorder {
+            metadata_content: metadata_content.clone(),
+        }))
+        .run_with_context("raw placeholder", &mut context)
+        .await
+        .unwrap();
+
+    let expected = vec![
+        ContentPart::Text {
+            text: "inspect this".to_string(),
+        },
+        ContentPart::ImageUrl {
+            url: "https://example.test/image.png".to_string(),
+        },
+    ];
+    assert_eq!(context.user_prompts.as_deref(), Some(expected.as_slice()));
+    assert_eq!(
+        metadata_content.lock().unwrap().as_deref(),
+        Some(expected.as_slice()),
+    );
+}
+
 #[tokio::test]
 async fn agent_run_updates_context_history_usage_and_events() {
     let mut context = AgentContext::new(AgentId::from_string("main"));
@@ -61,6 +257,8 @@ async fn agent_run_updates_context_history_usage_and_events() {
 
     assert_eq!(result.output, "context output");
     assert_eq!(context.message_history.len(), 2);
+    assert_eq!(context.user_prompts.as_ref().unwrap().len(), 1);
+    assert_eq!(context.steering_messages, vec!["keep going".to_string()]);
     assert_eq!(context.events.events().len(), 3);
     assert_eq!(context.events.events()[0].kind, "run_start");
     assert_eq!(context.events.events()[1].kind, "steering_received");

@@ -3,6 +3,7 @@ use serde_json::Map;
 use crate::{
     message::{ModelMessage, ModelRequest, ModelRequestPart},
     profile::MessageNormalization,
+    request::current_instruction_request_index,
 };
 
 /// Normalize canonical history according to a provider profile policy.
@@ -22,21 +23,45 @@ pub fn prepare_messages(
 }
 
 fn merge_adjacent_requests(messages: &[ModelMessage]) -> Vec<ModelMessage> {
+    let current_instruction_index = current_instruction_request_index(messages);
     let mut output = Vec::new();
-    for message in messages {
-        match (output.last_mut(), message) {
-            (Some(ModelMessage::Request(previous)), ModelMessage::Request(next)) => {
-                previous.parts.extend(next.parts.clone());
-                previous.metadata.extend(next.metadata.clone());
-                previous.instructions = merge_optional_instructions(
-                    previous.instructions.take(),
-                    next.instructions.clone(),
-                );
-            }
-            _ => output.push(message.clone()),
+    for (index, message) in messages.iter().enumerate() {
+        let message = match message {
+            ModelMessage::Request(request) => ModelMessage::Request(request_for_normalization(
+                request,
+                current_instruction_index == Some(index),
+            )),
+            ModelMessage::Response(_) => message.clone(),
+        };
+        if let (Some(ModelMessage::Request(previous)), ModelMessage::Request(next)) =
+            (output.last_mut(), &message)
+        {
+            previous.parts.extend(next.parts.clone());
+            previous.metadata.extend(next.metadata.clone());
+            previous.instructions = merge_optional_instructions(
+                previous.instructions.take(),
+                next.instructions.clone(),
+            );
+        } else {
+            output.push(message);
         }
     }
     output
+}
+
+fn request_for_normalization(
+    request: &ModelRequest,
+    keep_instruction_material: bool,
+) -> ModelRequest {
+    if keep_instruction_material {
+        return request.clone();
+    }
+    let mut request = request.clone();
+    request.instructions = None;
+    request
+        .parts
+        .retain(|part| !matches!(part, ModelRequestPart::Instruction { .. }));
+    request
 }
 
 fn merge_optional_instructions(left: Option<String>, right: Option<String>) -> Option<String> {
@@ -57,27 +82,34 @@ fn merge_optional_instructions(left: Option<String>, right: Option<String>) -> O
 fn lift_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
     let mut lifted = Vec::new();
     let mut output = Vec::new();
-    for message in messages {
+    let current_instruction_index = current_instruction_request_index(messages);
+    for (index, message) in messages.iter().enumerate() {
         match message {
             ModelMessage::Request(request) => {
-                if let Some(instructions) = request.instructions.as_ref() {
-                    if !instructions.trim().is_empty() {
-                        let mut metadata = Map::new();
-                        metadata.insert(
-                            "starweaver_instruction_origin".to_string(),
-                            serde_json::json!("request_instructions"),
-                        );
-                        lifted.push(ModelRequestPart::SystemPrompt {
-                            text: instructions.clone(),
-                            metadata,
-                        });
+                let collect_instruction_material = current_instruction_index == Some(index);
+                if collect_instruction_material {
+                    if let Some(instructions) = request.instructions.as_ref() {
+                        if !instructions.trim().is_empty() {
+                            let mut metadata = Map::new();
+                            metadata.insert(
+                                "starweaver_instruction_origin".to_string(),
+                                serde_json::json!("request_instructions"),
+                            );
+                            lifted.push(ModelRequestPart::SystemPrompt {
+                                text: instructions.clone(),
+                                metadata,
+                            });
+                        }
                     }
                 }
                 let mut remaining = Vec::new();
                 for part in &request.parts {
                     match part {
-                        ModelRequestPart::SystemPrompt { .. }
-                        | ModelRequestPart::Instruction { .. } => lifted.push(part.clone()),
+                        ModelRequestPart::SystemPrompt { .. } => lifted.push(part.clone()),
+                        ModelRequestPart::Instruction { .. } if collect_instruction_material => {
+                            lifted.push(part.clone());
+                        }
+                        ModelRequestPart::Instruction { .. } => {}
                         other => remaining.push(other.clone()),
                     }
                 }
@@ -112,36 +144,49 @@ fn lift_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
 }
 
 fn wrap_inline_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
+    let current_instruction_index = current_instruction_request_index(messages);
     messages
         .iter()
-        .map(|message| match message {
+        .enumerate()
+        .map(|(index, message)| match message {
             ModelMessage::Request(request) => {
+                let collect_instruction_material = current_instruction_index == Some(index);
                 let mut request = request.clone();
-                let request_level_instruction =
-                    request
-                        .instructions
-                        .take()
-                        .map(|text| ModelRequestPart::UserPrompt {
-                            content: vec![crate::message::ContentPart::Text {
-                                text: format!("<system>{text}</system>"),
-                            }],
-                            name: None,
-                            metadata: Map::new(),
-                        });
+                let request_level_instruction = collect_instruction_material
+                    .then(|| request.instructions.take())
+                    .flatten()
+                    .map(|text| ModelRequestPart::UserPrompt {
+                        content: vec![crate::message::ContentPart::Text {
+                            text: format!("<system>{text}</system>"),
+                        }],
+                        name: None,
+                        metadata: Map::new(),
+                    });
                 request.parts = request_level_instruction
                     .into_iter()
-                    .chain(request.parts.into_iter().map(|part| match part {
-                        ModelRequestPart::SystemPrompt { text, metadata }
-                        | ModelRequestPart::Instruction { text, metadata } => {
-                            ModelRequestPart::UserPrompt {
+                    .chain(request.parts.into_iter().filter_map(|part| match part {
+                        ModelRequestPart::SystemPrompt { text, metadata } => {
+                            Some(ModelRequestPart::UserPrompt {
                                 content: vec![crate::message::ContentPart::Text {
                                     text: format!("<system>{text}</system>"),
                                 }],
                                 name: None,
                                 metadata,
-                            }
+                            })
                         }
-                        other => other,
+                        ModelRequestPart::Instruction { text, metadata }
+                            if collect_instruction_material =>
+                        {
+                            Some(ModelRequestPart::UserPrompt {
+                                content: vec![crate::message::ContentPart::Text {
+                                    text: format!("<system>{text}</system>"),
+                                }],
+                                name: None,
+                                metadata,
+                            })
+                        }
+                        ModelRequestPart::Instruction { .. } => None,
+                        other => Some(other),
                     }))
                     .collect();
                 ModelMessage::Request(request)

@@ -16,9 +16,7 @@ mod replay_items;
 mod server_state;
 mod tools;
 
-use instructions::{
-    collect_static_openai_instructions, is_dynamic_instruction, push_instruction_message,
-};
+use instructions::collect_openai_instructions;
 use options::OpenAiReplayOptions;
 use replay_items::push_response_replay_items;
 use server_state::resolve_server_side_state;
@@ -33,7 +31,7 @@ pub(super) fn build_request_with_options(
     max_tokens_parameter: MaxTokensParameter,
 ) -> Result<Value, ModelError> {
     let replay = OpenAiReplayOptions::from_settings(settings);
-    let instructions = collect_static_openai_instructions(messages);
+    let instructions = collect_openai_instructions(messages);
     let (previous_response_id, conversation_id, messages) =
         resolve_server_side_state(messages, &replay)?;
     let mut input = Vec::new();
@@ -43,12 +41,8 @@ pub(super) fn build_request_with_options(
             ModelMessage::Request(request) => {
                 for part in &request.parts {
                     match part {
-                        ModelRequestPart::SystemPrompt { .. } => {}
-                        ModelRequestPart::Instruction { text, metadata } => {
-                            if is_dynamic_instruction(metadata) {
-                                push_instruction_message(text, &mut input);
-                            }
-                        }
+                        ModelRequestPart::SystemPrompt { .. }
+                        | ModelRequestPart::Instruction { .. } => {}
                         ModelRequestPart::UserPrompt { content, .. } => input.push(json!({
                             "role": "user",
                             "content": openai_responses_content(content)

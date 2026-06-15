@@ -304,8 +304,9 @@ fn collect_system_prompts_preserves_non_system_messages() {
     let mut dynamic_metadata = Map::new();
     dynamic_metadata.insert(
         "starweaver_instruction_origin".to_string(),
-        json!("environment_context"),
+        json!("dynamic_instruction"),
     );
+    dynamic_metadata.insert("starweaver_instruction_dynamic".to_string(), json!(true));
     let request = ModelMessage::Request(ModelRequest {
         parts: vec![
             ModelRequestPart::SystemPrompt {

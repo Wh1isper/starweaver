@@ -78,13 +78,13 @@ impl PromptInput {
     /// Return true when this input needs first-request content-part rewriting.
     ///
     /// Deliberately excludes `guidance_text_parts`: guidance is injected as
-    /// transient request instructions, not as user prompt content.
+    /// transient provider-bound context, not as persisted user prompt content.
     #[must_use]
     pub fn has_content_parts(&self) -> bool {
         !self.attachments.is_empty() || !self.extra_text_parts.is_empty()
     }
 
-    /// Append transient guidance to the current model request.
+    /// Append transient guidance to the current provider request.
     pub fn push_guidance_text_part(&mut self, text: impl Into<String>) {
         let text = text.into();
         if !text.trim().is_empty() {

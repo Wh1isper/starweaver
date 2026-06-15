@@ -3,12 +3,8 @@
 use serde_json::Value;
 
 use crate::{
-    message::{Metadata, ModelMessage, ModelRequestPart},
-    request::{
-        INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
-        INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
-        INSTRUCTION_ORIGIN_TOOLSET,
-    },
+    message::{Metadata, ModelMessage, ModelRequest, ModelRequestPart},
+    request::{current_instruction_request_index, is_dynamic_instruction_metadata},
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,21 +37,7 @@ impl SystemInstructionPart {
 }
 
 pub fn is_dynamic_system_instruction(metadata: &Metadata) -> bool {
-    metadata
-        .get(INSTRUCTION_DYNAMIC_METADATA)
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || metadata
-            .get(INSTRUCTION_ORIGIN_METADATA)
-            .and_then(Value::as_str)
-            .is_some_and(|origin| {
-                matches!(
-                    origin,
-                    INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
-                        | INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
-                        | INSTRUCTION_ORIGIN_TOOLSET
-                )
-            })
+    is_dynamic_instruction_metadata(metadata)
 }
 
 pub fn collect_system_parts_and_non_system(
@@ -63,15 +45,20 @@ pub fn collect_system_parts_and_non_system(
 ) -> (Vec<SystemInstructionPart>, Vec<&ModelMessage>) {
     let mut system = Vec::new();
     let mut rest = Vec::new();
+    let current_instruction_index = current_instruction_request_index(messages);
 
-    for message in messages {
+    for (index, message) in messages.iter().enumerate() {
         match message {
             ModelMessage::Request(request) => {
-                if let Some(request_instructions) = request.instructions.as_ref() {
-                    if !request_instructions.trim().is_empty() {
-                        system.push(SystemInstructionPart::request_level(
-                            request_instructions.clone(),
-                        ));
+                let collect_instruction_material =
+                    current_instruction_index == Some(index) || is_lifted_system_request(request);
+                if collect_instruction_material {
+                    if let Some(request_instructions) = request.instructions.as_ref() {
+                        if !request_instructions.trim().is_empty() {
+                            system.push(SystemInstructionPart::request_level(
+                                request_instructions.clone(),
+                            ));
+                        }
                     }
                 }
                 let mut has_non_system = false;
@@ -80,9 +67,12 @@ pub fn collect_system_parts_and_non_system(
                         ModelRequestPart::SystemPrompt { text, .. } => {
                             system.push(SystemInstructionPart::system_prompt(text.clone()));
                         }
-                        ModelRequestPart::Instruction { text, metadata } => {
+                        ModelRequestPart::Instruction { text, metadata }
+                            if collect_instruction_material =>
+                        {
                             system.push(SystemInstructionPart::instruction(text.clone(), metadata));
                         }
+                        ModelRequestPart::Instruction { .. } => {}
                         _ => has_non_system = true,
                     }
                 }
@@ -95,6 +85,14 @@ pub fn collect_system_parts_and_non_system(
     }
 
     (system, rest)
+}
+
+fn is_lifted_system_request(request: &ModelRequest) -> bool {
+    request
+        .metadata
+        .get("starweaver_instruction_origin")
+        .and_then(Value::as_str)
+        .is_some_and(|origin| origin == "lifted_system")
 }
 
 pub fn collect_system_and_non_system(

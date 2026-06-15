@@ -19,12 +19,12 @@ use starweaver_environment::{
     ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
-    tool_call_response, ModelProfile, ModelRequest, ModelRequestPart, ModelResponse,
-    ProtocolFamily, TestModel,
+    tool_call_response, ContentPart, ModelProfile, ModelRequest, ModelRequestPart, ModelResponse,
+    ProtocolFamily, TestModel, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_METADATA,
 };
 
 #[tokio::test]
-async fn environment_context_capability_marks_provider_context_dynamic() {
+async fn environment_context_capability_injects_provider_context_as_user_prompt() {
     let provider = Arc::new(
         VirtualEnvironmentProvider::new("test")
             .with_file("README.md", "hello")
@@ -37,7 +37,7 @@ async fn environment_context_capability_marks_provider_context_dynamic() {
         starweaver_agent::AgentRunState::new(RunId::default(), ConversationId::default());
 
     let messages = EnvironmentContextCapability
-        .prepare_model_messages_with_context(
+        .prepare_provider_messages_with_context(
             &mut state,
             &mut context,
             vec![starweaver_model::ModelMessage::Request(request)],
@@ -50,10 +50,10 @@ async fn environment_context_capability_marks_provider_context_dynamic() {
 
     assert!(matches!(
         request.parts.first(),
-        Some(ModelRequestPart::Instruction { text, metadata })
-            if text.contains("<environment-context>")
-                && metadata["starweaver_instruction_origin"] == "environment_context"
-                && metadata["starweaver_instruction_dynamic"] == true
+        Some(ModelRequestPart::UserPrompt { content, metadata, .. })
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+                && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>"))
     ));
 }
 

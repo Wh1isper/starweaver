@@ -1,7 +1,11 @@
 use async_trait::async_trait;
 use starweaver_context::AgentContext;
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
-use starweaver_model::{ModelMessage, ModelRequest, ModelRequestPart};
+use starweaver_model::{
+    ContentPart, ModelMessage, ModelRequest, ModelRequestPart,
+    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_HANDOFF,
+    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+};
 use starweaver_runtime::{AgentCapability, AgentRunState, CapabilityError, CapabilityResult};
 use starweaver_tools::{ToolContext, ToolError};
 
@@ -33,7 +37,7 @@ pub struct EnvironmentContextCapability;
 
 #[async_trait]
 impl AgentCapability for EnvironmentContextCapability {
-    async fn prepare_model_messages_with_context(
+    async fn prepare_provider_messages_with_context(
         &self,
         state: &mut AgentRunState,
         context: &mut AgentContext,
@@ -63,17 +67,17 @@ impl AgentCapability for EnvironmentContextCapability {
         };
         let mut metadata = serde_json::Map::new();
         metadata.insert(
-            "starweaver_instruction_origin".to_string(),
-            serde_json::json!("environment_context"),
-        );
-        metadata.insert(
-            "starweaver_instruction_dynamic".to_string(),
-            serde_json::json!(true),
+            INSTRUCTION_ORIGIN_METADATA.to_string(),
+            serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT),
         );
         if let ModelMessage::Request(request) = &mut messages[request_index] {
-            insert_request_part_after_control_parts(
+            insert_context_part_after_control_parts(
                 request,
-                ModelRequestPart::Instruction { text, metadata },
+                ModelRequestPart::UserPrompt {
+                    content: vec![ContentPart::Text { text }],
+                    name: None,
+                    metadata,
+                },
             );
         }
         Ok(messages)
@@ -95,18 +99,28 @@ fn request_has_tool_return_or_retry(request: &ModelRequest) -> bool {
     })
 }
 
-fn insert_request_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
+fn insert_context_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
+    let instruction_end = request_instruction_end_index(request);
+    let context_prefix_len = request.parts[instruction_end..]
+        .iter()
+        .take_while(|part| is_context_user_prompt(part))
+        .count();
+    request
+        .parts
+        .insert(instruction_end + context_prefix_len, part);
+}
+
+fn request_instruction_end_index(request: &ModelRequest) -> usize {
     let control_prefix_len = request
         .parts
         .iter()
         .take_while(|part| is_control_prefix_part(part))
         .count();
-    let insert_at = control_prefix_len
+    control_prefix_len
         + request.parts[control_prefix_len..]
             .iter()
             .take_while(|part| is_instruction_prefix_part(part))
-            .count();
-    request.parts.insert(insert_at, part);
+            .count()
 }
 
 fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
@@ -125,6 +139,26 @@ const fn is_instruction_prefix_part(part: &ModelRequestPart) -> bool {
         part,
         ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. }
     )
+}
+
+fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
+    match part {
+        ModelRequestPart::UserPrompt { metadata, .. } => metadata
+            .get(INSTRUCTION_ORIGIN_METADATA)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|origin| {
+                matches!(
+                    origin,
+                    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
+                        | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
+                        | INSTRUCTION_ORIGIN_HANDOFF
+                )
+            }),
+        ModelRequestPart::SystemPrompt { .. }
+        | ModelRequestPart::Instruction { .. }
+        | ModelRequestPart::ToolReturn(_)
+        | ModelRequestPart::RetryPrompt { .. } => false,
+    }
 }
 
 fn force_inject_instructions(state: &AgentRunState, context: &AgentContext) -> bool {

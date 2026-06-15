@@ -15,7 +15,8 @@ use starweaver_agent::{
 use starweaver_model::{
     ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderPartInfo,
-    ToolCallPart, ToolDefinition, ToolReturnPart,
+    ToolCallPart, ToolDefinition, ToolReturnPart, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
+    INSTRUCTION_ORIGIN_HANDOFF, INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
 
 #[tokio::test]
@@ -105,11 +106,69 @@ async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
     ));
     assert!(matches!(
         &request.parts[2],
-        ModelRequestPart::Instruction { text, metadata }
-            if text.contains("<environment-context>fresh</environment-context>")
-                && metadata.get("starweaver_instruction_origin") == Some(&serde_json::json!("environment_context"))
-                && metadata.get("starweaver_instruction_dynamic") == Some(&serde_json::json!(true))
+        ModelRequestPart::UserPrompt { content, metadata, .. }
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+                && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>fresh</environment-context>"))
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn handoff_filter_uses_shared_restored_request_builder(
+) -> starweaver_agent::CapabilityResult<()> {
+    let request = ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "static policy".to_string(),
+                metadata: serde_json::Map::new(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "continue".to_string(),
+                }],
+                name: None,
+                metadata: serde_json::Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+    let mut state = AgentRunState::new(RunId::from_string("run_handoff"), ConversationId::new());
+    state.metadata.insert(
+        "starweaver_handoff".to_string(),
+        serde_json::json!("Resume the delegated implementation plan."),
+    );
+
+    let messages = NamedFilterCapability::new("handoff")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+    let ModelMessage::Request(request) = messages.last().expect("request") else {
+        panic!("expected request");
+    };
+
+    let text = request_text_parts(&ModelMessage::Request(request.clone())).join("\n");
+    assert!(text.contains("<context-restored>"));
+    assert!(text.contains("<original-request>"));
+    assert!(text.contains("Resume the delegated implementation plan."));
+    assert!(!text.contains("<current-request>"));
+    assert!(matches!(
+        &request.parts[0],
+        ModelRequestPart::SystemPrompt { text, .. } if text == "static policy"
+    ));
+    assert!(request.parts[1..].iter().any(|part| matches!(
+        part,
+        ModelRequestPart::UserPrompt { metadata, .. }
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_HANDOFF))
+    )));
     Ok(())
 }
 
@@ -162,10 +221,10 @@ async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix(
     ));
     assert!(matches!(
         &request.parts[1],
-        ModelRequestPart::Instruction { text, metadata }
-            if text.contains("<environment-context>fresh</environment-context>")
-                && metadata.get("starweaver_instruction_origin") == Some(&serde_json::json!("environment_context"))
-                && metadata.get("starweaver_instruction_dynamic") == Some(&serde_json::json!(true))
+        ModelRequestPart::UserPrompt { content, metadata, .. }
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+                && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>fresh</environment-context>"))
     ));
     Ok(())
 }
@@ -421,14 +480,6 @@ async fn compact_filter_trims_history_like_compactor_builder(
         "starweaver_compact_keep_messages".to_string(),
         serde_json::json!(2),
     );
-    state.metadata.insert(
-        "starweaver_original_request".to_string(),
-        serde_json::json!("Original user goal"),
-    );
-    state.metadata.insert(
-        "starweaver_user_steering".to_string(),
-        serde_json::json!(["Keep the current approach"]),
-    );
     let kept_summary = ModelMessage::Response(ModelResponse {
         parts: vec![ModelResponsePart::Text {
             text: "previous compact summary".to_string(),
@@ -461,7 +512,21 @@ async fn compact_filter_trims_history_like_compactor_builder(
         metadata: serde_json::Map::new(),
     };
 
-    let mut context = AgentContext::default();
+    let mut context = AgentContext {
+        user_prompts: Some(vec![
+            ContentPart::Text {
+                text: "Original user goal".to_string(),
+            },
+            ContentPart::ImageUrl {
+                url: "https://example.test/original.png".to_string(),
+            },
+        ]),
+        previous_assistant_response_reference: Some(
+            "1. Use cached requests\n2. Add restore tests".to_string(),
+        ),
+        steering_messages: vec!["Keep the current approach".to_string()],
+        ..AgentContext::default()
+    };
     let output = CacheFriendlyCompactCapability::new(None)
         .prepare_model_messages_with_context(
             &mut state,
@@ -492,12 +557,19 @@ async fn compact_filter_trims_history_like_compactor_builder(
     assert!(!all_text.contains("old rules"));
     assert!(all_text.contains("[image: https://example.test/image.png]"));
     assert!(all_text.contains("chars truncated"));
+    assert!(all_text.contains("<previous-assistant-reference>"));
+    assert!(all_text.contains("1. Use cached requests\n2. Add restore tests"));
     assert!(all_text.contains("<original-request>"));
     assert!(all_text.contains("Original user goal"));
-    assert!(all_text.contains("<current-request>"));
-    assert!(all_text.contains("[image: https://example.test/image.png]"));
+    assert!(contains_image_url(
+        &output,
+        "https://example.test/original.png"
+    ));
+    assert!(!all_text.contains("<current-request>"));
     assert!(all_text.contains("<user-steering>"));
+    assert!(all_text.contains("[User Steering] Keep the current approach"));
     assert!(all_text.contains("<context-restored>"));
+    assert_restore_block_order(&all_text);
     assert_eq!(latest_request_metadata(&output)["keep"], "compact");
     assert_eq!(
         latest_request_metadata(&output)["starweaver_compacted"],
@@ -540,10 +612,6 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
         RunId::from_string("run_auto_compact"),
         ConversationId::new(),
     );
-    state.metadata.insert(
-        "starweaver_original_request".to_string(),
-        serde_json::json!("Original goal"),
-    );
     let request = ModelMessage::Request(ModelRequest {
         parts: vec![ModelRequestPart::SystemPrompt {
             text: "Real system prompt".to_string(),
@@ -571,6 +639,12 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
             ..ModelConfig::default()
         },
         message_history: state.message_history.clone(),
+        user_prompts: Some(vec![ContentPart::Text {
+            text: "Original goal".to_string(),
+        }]),
+        previous_assistant_response_reference: Some(
+            "1. first option\n2. second option".to_string(),
+        ),
         ..AgentContext::default()
     };
 
@@ -844,7 +918,15 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
 
     assert!(output.iter().any(|message| match message {
         ModelMessage::Request(request) => request.parts.iter().any(|part| match part {
-            ModelRequestPart::Instruction { text, .. } => text == "Prefer concise answers.",
+            ModelRequestPart::UserPrompt {
+                content, metadata, ..
+            } =>
+                metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                    == Some(&serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT))
+                    && content.iter().any(|part| matches!(
+                        part,
+                        ContentPart::Text { text } if text == "Prefer concise answers."
+                    )),
             _ => false,
         }),
         ModelMessage::Response(_) => false,
@@ -1032,6 +1114,33 @@ fn request_text_parts(message: &ModelMessage) -> Vec<String> {
             })
             .collect(),
     }
+}
+
+fn assert_restore_block_order(text: &str) {
+    let context_restored = text.find("<context-restored>").expect("context restored");
+    let previous = text
+        .find("<previous-assistant-reference>")
+        .expect("previous assistant reference");
+    let original = text.find("<original-request>").expect("original request");
+    let steering = text.find("<user-steering>").expect("user steering");
+    assert!(context_restored < previous);
+    assert!(previous < original);
+    assert!(original < steering);
+}
+
+fn contains_image_url(messages: &[ModelMessage], expected: &str) -> bool {
+    messages.iter().any(|message| match message {
+        ModelMessage::Request(request) => request.parts.iter().any(|part| match part {
+            ModelRequestPart::UserPrompt { content, .. } => content
+                .iter()
+                .any(|content| matches!(content, ContentPart::ImageUrl { url } if url == expected)),
+            ModelRequestPart::SystemPrompt { .. }
+            | ModelRequestPart::Instruction { .. }
+            | ModelRequestPart::ToolReturn(_)
+            | ModelRequestPart::RetryPrompt { .. } => false,
+        }),
+        ModelMessage::Response(_) => false,
+    })
 }
 
 fn latest_user_content(messages: &[ModelMessage]) -> Vec<ContentPart> {

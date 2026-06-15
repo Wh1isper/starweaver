@@ -53,6 +53,28 @@ pub trait AgentCapability: Send + Sync {
         self.prepare_model_messages(state, messages).await
     }
 
+    /// Called after durable history capture and before runtime context injection/model call.
+    ///
+    /// Mutations from this hook are provider-bound only and are not copied back into the
+    /// session message history.
+    async fn prepare_provider_messages(
+        &self,
+        _state: &mut AgentRunState,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        Ok(messages)
+    }
+
+    /// Context-aware provider-bound message preparation hook.
+    async fn prepare_provider_messages_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        self.prepare_provider_messages(state, messages).await
+    }
+
     /// Called after tool definitions are collected and before request parameters are finalized.
     async fn prepare_tools(
         &self,

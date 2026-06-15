@@ -20,7 +20,7 @@ use crate::{
             record_tool_control_flow, tool_return_control_flow,
         },
         run_loop_helpers::{agent_error_kind, preserve_pending_tool_returns_for_resume},
-        runtime_helpers::tool_return_media_prompt,
+        runtime_helpers::{request_instruction_insert_index, tool_return_media_prompt},
         Agent, AgentError, AgentResult,
     },
     capability::{CapabilityError, RetryEventKind},
@@ -148,6 +148,7 @@ impl Agent {
             }};
         }
 
+        let initial_prompt = prompt.into();
         let run_span = self.trace_recorder.start_span(
             SpanSpec::new("gen_ai.invoke_agent")
                 .with_attribute("gen_ai.operation.name", serde_json::json!("invoke_agent")),
@@ -168,10 +169,17 @@ impl Agent {
         }
         let conversation_id = context.conversation_id.clone();
         let history_len = context.message_history.len();
+        context.user_prompts = Some(vec![starweaver_model::ContentPart::Text {
+            text: initial_prompt.clone(),
+        }]);
+        context.previous_assistant_response_reference =
+            Self::previous_assistant_response_reference(&context.message_history);
+        context.steering_messages.clear();
         let mut state = AgentRunState::new(run_id.clone(), conversation_id.clone());
         state.message_history = context.message_history.clone();
         state.usage = context.usage.clone();
         state.status = RunStatus::Running;
+        Self::sync_compact_context_metadata(context, &mut state);
         let mut context_event_cursor = context.events.len();
         context.publish_event(AgentEvent::new(
             "run_start",
@@ -188,7 +196,7 @@ impl Agent {
         stream_context_events!(&state, context_event_cursor);
         checkpoint!(AgentExecutionNode::RunStart, &state, context_event_cursor);
 
-        let mut next_prompt = prompt.into();
+        let mut next_prompt = initial_prompt;
         let mut output_retries_used = 0;
         let mut model_error_retries_used = 0usize;
         let mut tool_retries = BTreeMap::<String, usize>::new();
@@ -230,12 +238,23 @@ impl Agent {
             );
             let dynamic_instruction_parts = self.dynamic_instruction_parts(&state).await?;
             let mut request = self.prepare_request(&state, &next_prompt, &run_id, &conversation_id);
+            if !dynamic_instruction_parts.is_empty() {
+                let insert_at = request_instruction_insert_index(&request);
+                request
+                    .parts
+                    .splice(insert_at..insert_at, dynamic_instruction_parts);
+            }
             let mut settings = self.effective_settings();
             let skipped_response = self
                 .call_before_model_request(&mut state, context, &mut request, &mut settings)
                 .await?;
+            if state.run_step == 0 {
+                Self::capture_effective_user_prompt_for_compact_restore(context, &request);
+                Self::sync_compact_context_metadata(context, &mut state);
+            }
             if skipped_response.is_none() {
                 Self::apply_steering_messages(context, &mut request);
+                Self::sync_compact_context_metadata(context, &mut state);
                 stream_context_events!(&state, context_event_cursor);
             }
             state.message_history.push(ModelMessage::Request(request));
@@ -263,14 +282,17 @@ impl Agent {
                 Self::validate_model_request_messages(&messages)?;
                 self.inject_missing_static_instructions(&run_id, &conversation_id, &mut messages);
                 let params = self.effective_request_params(&state, context).await?;
-                Self::insert_request_parts_after_control_parts(
-                    &mut messages,
-                    dynamic_instruction_parts.clone(),
-                );
-                Self::inject_runtime_context(context, &mut messages);
+                messages = Self::attach_prepared_request_instructions(messages, &params);
                 for message in &mut messages {
                     Self::fill_message_metadata(message, &run_id, &conversation_id);
                 }
+                Self::validate_model_request_messages(&messages)?;
+                state.message_history.clone_from(&messages);
+                context.message_history.clone_from(&state.message_history);
+                messages = self
+                    .prepare_provider_messages(&mut state, context, messages)
+                    .await?;
+                Self::inject_runtime_context(context, &mut messages);
                 Self::validate_model_request_messages(&messages)?;
                 let mut model_spec = SpanSpec::new("gen_ai.inference")
                     .with_kind(SpanKind::Client)

@@ -6,7 +6,7 @@ use starweaver_core::{
     AgentId, ConversationId, Metadata, RunId, TraceContext, Usage, UsageAgentTotal, UsageSnapshot,
     UsageSnapshotEntry,
 };
-use starweaver_model::ModelMessage;
+use starweaver_model::{ContentPart, ModelMessage};
 
 use crate::{
     runtime_context, task::TASK_STATE_DOMAIN, AgentEvent, BusMessage, DependencyStore, EventBus,
@@ -27,6 +27,20 @@ pub struct AgentContext {
     /// Canonical message history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub message_history: Vec<ModelMessage>,
+    /// User prompt content collected for the current run.
+    ///
+    /// Compact restore wraps this as the original request being resumed after a context reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_prompts: Option<Vec<ContentPart>>,
+    /// Visible assistant response immediately before the current user prompt.
+    ///
+    /// Compact restore uses this to resolve references in the current prompt such as numbered
+    /// items, "the above", or "that option".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_assistant_response_reference: Option<String>,
+    /// Accumulated user steering messages for compact restore.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steering_messages: Vec<String>,
     /// Accumulated usage.
     #[serde(default)]
     pub usage: Usage,
@@ -77,6 +91,9 @@ impl AgentContext {
             run_id: None,
             conversation_id: ConversationId::new(),
             message_history: Vec::new(),
+            user_prompts: None,
+            previous_assistant_response_reference: None,
+            steering_messages: Vec::new(),
             usage: Usage::default(),
             usage_snapshot_entries: BTreeMap::new(),
             model_config: ModelConfig::default(),
@@ -101,6 +118,9 @@ impl AgentContext {
             run_id: state.run_id,
             conversation_id: state.conversation_id.unwrap_or_default(),
             message_history: state.message_history,
+            user_prompts: state.user_prompts,
+            previous_assistant_response_reference: state.previous_assistant_response_reference,
+            steering_messages: state.steering_messages,
             usage: state.usage,
             usage_snapshot_entries: state.usage_snapshot_entries,
             model_config: state.model_config,
@@ -125,6 +145,11 @@ impl AgentContext {
             run_id: self.run_id.clone(),
             conversation_id: Some(self.conversation_id.clone()),
             message_history: self.message_history.clone(),
+            user_prompts: self.user_prompts.clone(),
+            previous_assistant_response_reference: self
+                .previous_assistant_response_reference
+                .clone(),
+            steering_messages: self.steering_messages.clone(),
             usage: self.usage.clone(),
             usage_snapshot_entries: self.usage_snapshot_entries.clone(),
             model_config: self.model_config.clone(),
@@ -168,6 +193,9 @@ impl AgentContext {
             run_id: None,
             conversation_id: self.conversation_id.clone(),
             message_history: Vec::new(),
+            user_prompts: None,
+            previous_assistant_response_reference: None,
+            steering_messages: Vec::new(),
             usage: self.usage.clone(),
             usage_snapshot_entries: self.usage_snapshot_entries.clone(),
             model_config: self.model_config.clone(),

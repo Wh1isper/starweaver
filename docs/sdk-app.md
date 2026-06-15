@@ -25,6 +25,8 @@ Use `build()` when only the core runtime agent is needed. Use `build_app()` when
 
 `AgentSession` keeps an `AgentContext` next to the app's runtime agent. Use it for multi-turn applications that need message history, usage, state, events, typed dependencies, and export/restore through one SDK object.
 
+During each run, `AgentContext` also records compact-restore inputs: `user_prompts` for the current effective request, `previous_assistant_response_reference` for resolving references in that request, and accumulated `steering_messages`. These fields round-trip through exported state so compact restore can reconstruct `<context-restored>`, `<previous-assistant-reference>`, `<original-request>`, and `<user-steering>` without guessing from history.
+
 ```rust
 use std::sync::Arc;
 

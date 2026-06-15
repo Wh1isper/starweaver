@@ -6,17 +6,17 @@ use chrono::Utc;
 use starweaver_context::AgentContext;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
-    ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings,
-    PreparedInstruction, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
-    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_TOOLSET,
+    attach_prepared_instructions, ModelMessage, ModelRequest, ModelRequestParameters,
+    ModelRequestPart, ModelSettings, PreparedInstruction, INSTRUCTION_DYNAMIC_METADATA,
+    INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
+    INSTRUCTION_ORIGIN_TOOLSET,
 };
 
 use crate::{
     agent::{
         runtime_helpers::{
             history_sanitize::sanitize_incomplete_tool_call_history,
-            request_instruction_insert_index, steering::is_steering_guard_prompt,
-            tool_media::tool_return_media_prompt,
+            steering::is_steering_guard_prompt, tool_media::tool_return_media_prompt,
         },
         Agent, AgentError,
     },
@@ -167,23 +167,6 @@ impl Agent {
             .collect())
     }
 
-    pub(in crate::agent) fn insert_request_parts_after_control_parts(
-        messages: &mut [ModelMessage],
-        parts: Vec<ModelRequestPart>,
-    ) {
-        if parts.is_empty() {
-            return;
-        }
-        if let Some(ModelMessage::Request(request)) = messages
-            .iter_mut()
-            .rev()
-            .find(|message| matches!(message, ModelMessage::Request(_)))
-        {
-            let insert_at = request_instruction_insert_index(request);
-            request.parts.splice(insert_at..insert_at, parts);
-        }
-    }
-
     pub(in crate::agent) fn effective_settings(&self) -> Option<ModelSettings> {
         match (self.model.default_settings(), &self.model_settings) {
             (Some(defaults), Some(settings)) => Some(defaults.merge(settings)),
@@ -243,6 +226,21 @@ impl Agent {
                 &context.trace_context,
             );
             self.trace_recorder.close_span(&span, SpanStatus::Ok);
+        }
+        Ok(messages)
+    }
+
+    pub(in crate::agent) async fn prepare_provider_messages(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        mut messages: Vec<ModelMessage>,
+    ) -> Result<Vec<ModelMessage>, AgentError> {
+        for capability in &self.ordered_capabilities()? {
+            messages = capability
+                .prepare_provider_messages_with_context(state, context, messages)
+                .await
+                .map_err(Self::capability_error)?;
         }
         Ok(messages)
     }
@@ -319,7 +317,7 @@ impl Agent {
             );
             metadata.insert(
                 INSTRUCTION_DYNAMIC_METADATA.to_string(),
-                serde_json::json!(true),
+                serde_json::json!(instruction.dynamic),
             );
             metadata.insert(
                 "starweaver_toolset_group".to_string(),
@@ -327,11 +325,18 @@ impl Agent {
             );
             params.instructions.push(PreparedInstruction {
                 text: instruction.render_xml(),
-                dynamic: true,
+                dynamic: instruction.dynamic,
                 metadata,
             });
         }
         Ok(params)
+    }
+
+    pub(in crate::agent) fn attach_prepared_request_instructions(
+        messages: Vec<ModelMessage>,
+        params: &ModelRequestParameters,
+    ) -> Vec<ModelMessage> {
+        attach_prepared_instructions(messages, &params.instructions)
     }
 
     pub(in crate::agent) fn fill_message_metadata(

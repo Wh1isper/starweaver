@@ -28,7 +28,13 @@ pub struct ModelRequest {
     /// Creation timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<DateTime<Utc>>,
-    /// Optional request-level instructions.
+    /// Optional request-level instructions for the current model call.
+    ///
+    /// Provider mappers apply request-level instructions from the current instruction-bearing
+    /// request, mirroring Pydantic AI's `instruction_parts` behavior. Use
+    /// `ModelRequestPart::SystemPrompt` for durable static system prompts, and use
+    /// `ModelRequestPart::Instruction` metadata for structured instruction parts that need
+    /// origin or dynamic-cache-boundary information, such as dynamic agent or toolset guidance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
     /// Run identifier.

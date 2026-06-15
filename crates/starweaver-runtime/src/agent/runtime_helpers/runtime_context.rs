@@ -2,8 +2,8 @@
 
 use starweaver_context::AgentContext;
 use starweaver_model::{
-    ModelMessage, ModelRequest, ModelRequestPart, INSTRUCTION_DYNAMIC_METADATA,
-    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+    ContentPart, ModelMessage, ModelRequest, ModelRequestPart, INSTRUCTION_ORIGIN_METADATA,
+    INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
 
 use crate::agent::{runtime_helpers::request_instruction_end_index, Agent};
@@ -24,13 +24,13 @@ impl Agent {
             INSTRUCTION_ORIGIN_METADATA.to_string(),
             serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT),
         );
-        metadata.insert(
-            INSTRUCTION_DYNAMIC_METADATA.to_string(),
-            serde_json::json!(true),
-        );
-        insert_instruction_into_latest_request(
+        insert_context_into_latest_request(
             messages,
-            ModelRequestPart::Instruction { text, metadata },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text { text }],
+                name: None,
+                metadata,
+            },
         );
     }
 }
@@ -57,13 +57,10 @@ fn metadata_bool(metadata: &serde_json::Map<String, serde_json::Value>, key: &st
         .unwrap_or(false)
 }
 
-fn insert_instruction_into_latest_request(
-    messages: &mut Vec<ModelMessage>,
-    part: ModelRequestPart,
-) {
+fn insert_context_into_latest_request(messages: &mut Vec<ModelMessage>, part: ModelRequestPart) {
     for message in messages.iter_mut().rev() {
         if let ModelMessage::Request(request) = message {
-            insert_request_part_after_control_parts(request, part);
+            insert_context_part_after_control_parts(request, part);
             return;
         }
     }
@@ -77,7 +74,25 @@ fn insert_instruction_into_latest_request(
     }));
 }
 
-fn insert_request_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
-    let insert_at = request_instruction_end_index(request);
-    request.parts.insert(insert_at, part);
+fn insert_context_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
+    let instruction_end = request_instruction_end_index(request);
+    let context_prefix_len = request.parts[instruction_end..]
+        .iter()
+        .take_while(|part| is_context_user_prompt(part))
+        .count();
+    request
+        .parts
+        .insert(instruction_end + context_prefix_len, part);
+}
+
+fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
+    match part {
+        ModelRequestPart::UserPrompt { metadata, .. } => {
+            metadata.contains_key(INSTRUCTION_ORIGIN_METADATA)
+        }
+        ModelRequestPart::SystemPrompt { .. }
+        | ModelRequestPart::Instruction { .. }
+        | ModelRequestPart::ToolReturn(_)
+        | ModelRequestPart::RetryPrompt { .. } => false,
+    }
 }

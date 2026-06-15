@@ -1,10 +1,14 @@
 use serde_json::{json, Map, Value};
+use starweaver_context::AgentContext;
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ToolReturnPart,
 };
 use starweaver_runtime::AgentRunState;
 
-use super::super::message::{metadata_text, request_metadata_mut};
+use super::super::message::{
+    build_restored_request_parts, metadata_content_parts, metadata_string_array, metadata_text,
+    request_metadata_mut,
+};
 use super::constants::{
     COMPACT_KEEP_MESSAGES_METADATA, COMPACT_LIMIT_PROMPT, MAX_COMPACT_INSTRUCTION_CHARS,
     MAX_COMPACT_REPLAY_INSTRUCTION_CHARS, PROJECT_GUIDANCE_TAG, USER_RULES_TAG,
@@ -12,6 +16,7 @@ use super::constants::{
 
 pub(super) fn build_cache_friendly_compacted_messages(
     state: &AgentRunState,
+    context: &AgentContext,
     messages: &[ModelMessage],
     summary: &str,
 ) -> Vec<ModelMessage> {
@@ -46,7 +51,7 @@ pub(super) fn build_cache_friendly_compacted_messages(
             metadata: Map::new(),
         }),
         ModelMessage::Response(summary_response),
-        context_restored_request(state, messages),
+        context_restored_request(state, context),
     ]
 }
 
@@ -134,6 +139,7 @@ pub(super) fn manual_compact_keep(state: &AgentRunState) -> Option<usize> {
 
 pub(super) fn build_trimmed_compact_messages(
     state: &AgentRunState,
+    context: &AgentContext,
     messages: &[ModelMessage],
     keep: usize,
 ) -> Vec<ModelMessage> {
@@ -155,7 +161,7 @@ pub(super) fn build_trimmed_compact_messages(
     );
 
     if !has_context_restored_marker(&compacted) {
-        compacted.push(context_restored_request(state, messages));
+        compacted.push(context_restored_request(state, context));
     }
     request_metadata_mut(&mut compacted).insert("starweaver_compacted".to_string(), json!(true));
     compacted
@@ -331,78 +337,37 @@ fn has_context_restored_marker(messages: &[ModelMessage]) -> bool {
     })
 }
 
-fn latest_user_prompt_replay_part(messages: &[ModelMessage]) -> Option<ModelRequestPart> {
-    messages.iter().rev().find_map(|message| {
-        let ModelMessage::Request(request) = message else {
-            return None;
-        };
-        request.parts.iter().rev().find_map(|part| {
-            let ModelRequestPart::UserPrompt {
-                content,
-                name,
-                metadata,
-            } = part
-            else {
-                return None;
-            };
-            let content = content
-                .iter()
-                .cloned()
-                .filter_map(trim_content_for_compact)
-                .collect::<Vec<_>>();
-            (!content.is_empty()).then(|| ModelRequestPart::UserPrompt {
-                content,
-                name: name.clone(),
-                metadata: metadata.clone(),
-            })
-        })
-    })
-}
-
-fn context_restored_request(state: &AgentRunState, messages: &[ModelMessage]) -> ModelMessage {
-    let mut parts = Vec::new();
-    if let Some(original) = metadata_text(&state.metadata, "starweaver_original_request") {
-        parts.push(ModelRequestPart::UserPrompt {
-            content: vec![ContentPart::Text {
-                text: "<original-request>Below is the user's original request from the start of the conversation:</original-request>".to_string(),
-            }],
-            name: None,
-            metadata: Map::new(),
+fn context_restored_request(state: &AgentRunState, context: &AgentContext) -> ModelMessage {
+    let previous_reference = context
+        .previous_assistant_response_reference
+        .clone()
+        .filter(|reference| !reference.trim().is_empty())
+        .or_else(|| {
+            metadata_text(
+                &state.metadata,
+                "starweaver_previous_assistant_response_reference",
+            )
         });
-        parts.push(ModelRequestPart::UserPrompt {
-            content: vec![ContentPart::Text { text: original }],
-            name: None,
-            metadata: Map::new(),
+    let original_request = context
+        .user_prompts
+        .clone()
+        .filter(|content| !content.is_empty())
+        .or_else(|| metadata_content_parts(&state.metadata, "starweaver_original_request_content"))
+        .or_else(|| {
+            metadata_text(&state.metadata, "starweaver_original_request")
+                .map(|text| vec![ContentPart::Text { text }])
         });
-    }
-    if let Some(current_request) = latest_user_prompt_replay_part(messages) {
-        parts.push(ModelRequestPart::UserPrompt {
-            content: vec![ContentPart::Text {
-                text: "<current-request>Below is the user's latest request that triggered compaction:</current-request>".to_string(),
-            }],
-            name: None,
-            metadata: Map::new(),
-        });
-        parts.push(current_request);
-    }
-    if let Some(steering) = metadata_text(&state.metadata, "starweaver_user_steering") {
-        parts.push(ModelRequestPart::UserPrompt {
-            content: vec![ContentPart::Text {
-                text: format!("<user-steering>Below are messages the user sent during your previous work session:</user-steering>\n{steering}"),
-            }],
-            name: None,
-            metadata: Map::new(),
-        });
-    }
-    parts.push(ModelRequestPart::UserPrompt {
-        content: vec![ContentPart::Text {
-            text: "<context-restored>Context was compacted from a long conversation. The summary above is the most authoritative source for current state. Synthesize the summary, original request, and any user steering messages to resume work. Do NOT repeat questions, confirmations, or actions documented in the summary. If the summary records a user decision, respect it without re-asking.</context-restored>".to_string(),
-        }],
-        name: None,
-        metadata: Map::new(),
-    });
+    let steering_messages = if context.steering_messages.is_empty() {
+        metadata_string_array(&state.metadata, "starweaver_user_steering")
+    } else {
+        context.steering_messages.clone()
+    };
     ModelMessage::Request(ModelRequest {
-        parts,
+        parts: build_restored_request_parts(
+            original_request,
+            previous_reference.as_deref(),
+            steering_messages,
+        ),
         timestamp: None,
         instructions: None,
         run_id: Some(state.run_id.clone()),

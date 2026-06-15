@@ -20,6 +20,19 @@ fn final_response(events: &[ModelResponseStreamEvent]) -> &ModelResponse {
         .unwrap()
 }
 
+fn runtime_context_part(text: impl Into<String>) -> ModelRequestPart {
+    let mut metadata = Metadata::default();
+    metadata.insert(
+        "starweaver_instruction_origin".to_string(),
+        json!("runtime_context"),
+    );
+    ModelRequestPart::UserPrompt {
+        content: vec![crate::message::ContentPart::Text { text: text.into() }],
+        name: None,
+        metadata,
+    }
+}
+
 #[test]
 fn responses_stream_function_call_deltas_become_final_tool_call() {
     let events = vec![
@@ -289,12 +302,121 @@ fn responses_replay_merges_text_and_reasoning_items_by_provider_id() {
 }
 
 #[test]
-fn responses_previous_response_auto_keeps_static_instructions_after_trimming() {
-    let mut dynamic_metadata = Metadata::default();
-    dynamic_metadata.insert(
-        "starweaver_instruction_origin".to_string(),
-        json!("runtime_context"),
-    );
+#[allow(clippy::too_many_lines)]
+fn responses_full_history_keeps_durable_input_prefix_with_runtime_context_blocks() {
+    let first = vec![ModelMessage::Request(ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "stable system".to_string(),
+                metadata: Metadata::default(),
+            },
+            runtime_context_part(
+                "<runtime-context><current-time>first</current-time></runtime-context>",
+            ),
+            ModelRequestPart::UserPrompt {
+                content: vec![crate::message::ContentPart::Text {
+                    text: "first user".to_string(),
+                }],
+                name: None,
+                metadata: Metadata::default(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    })];
+    let mut second = vec![ModelMessage::Request(ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "stable system".to_string(),
+                metadata: Metadata::default(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![crate::message::ContentPart::Text {
+                    text: "first user".to_string(),
+                }],
+                name: None,
+                metadata: Metadata::default(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    })];
+    second.push(ModelMessage::Response(ModelResponse {
+        parts: vec![ModelResponsePart::Text {
+            text: "first assistant".to_string(),
+        }],
+        usage: Usage::default(),
+        model_name: None,
+        provider: None,
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    }));
+    second.push(ModelMessage::Request(ModelRequest {
+        parts: vec![
+            runtime_context_part(
+                "<runtime-context><current-time>second</current-time></runtime-context>",
+            ),
+            ModelRequestPart::UserPrompt {
+                content: vec![crate::message::ContentPart::Text {
+                    text: "second user".to_string(),
+                }],
+                name: None,
+                metadata: Metadata::default(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    }));
+
+    let first_request =
+        OpenAiResponsesAdapter::build_request("gpt-5.5", &first, None, &[], &[]).unwrap();
+    let second_request =
+        OpenAiResponsesAdapter::build_request("gpt-5.5", &second, None, &[], &[]).unwrap();
+
+    assert_eq!(first_request["instructions"], "stable system");
+    assert_eq!(second_request["instructions"], "stable system");
+
+    let first_input = first_request["input"].as_array().unwrap();
+    let second_input = second_request["input"].as_array().unwrap();
+    assert_eq!(first_input.len(), 2);
+    assert_eq!(second_input.len(), 4);
+    assert!(first_input[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(first_input[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("first"));
+    assert_eq!(first_input[1]["content"][0]["text"], "first user");
+    assert_eq!(first_input[1], second_input[0]);
+    assert_eq!(second_input[1]["role"], "assistant");
+    assert_eq!(second_input[1]["content"][0]["text"], "first assistant");
+    assert!(second_input[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(second_input[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("second"));
+    assert_eq!(second_input[3]["content"][0]["text"], "second user");
+}
+
+#[test]
+fn responses_previous_response_auto_keeps_current_runtime_context_input_after_trimming() {
     let messages = vec![
         ModelMessage::Request(ModelRequest {
             parts: vec![
@@ -319,11 +441,9 @@ fn responses_previous_response_auto_keeps_static_instructions_after_trimming() {
         openai_response_with_id("resp_1"),
         ModelMessage::Request(ModelRequest {
             parts: vec![
-                ModelRequestPart::Instruction {
-                    text: "<runtime-context><current-time>now</current-time></runtime-context>"
-                        .to_string(),
-                    metadata: dynamic_metadata,
-                },
+                runtime_context_part(
+                    "<runtime-context><current-time>now</current-time></runtime-context>",
+                ),
                 ModelRequestPart::UserPrompt {
                     content: vec![crate::message::ContentPart::Text {
                         text: "new".to_string(),
@@ -353,13 +473,9 @@ fn responses_previous_response_auto_keeps_static_instructions_after_trimming() {
 
     assert_eq!(request["previous_response_id"], "resp_1");
     assert_eq!(request["instructions"], "stable system");
-    assert!(!request["instructions"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
     let input = request["input"].as_array().unwrap();
     assert_eq!(input.len(), 2);
-    assert_eq!(input[0]["role"], "system");
+    assert_eq!(input[0]["role"], "user");
     assert!(input[0]["content"][0]["text"]
         .as_str()
         .unwrap()

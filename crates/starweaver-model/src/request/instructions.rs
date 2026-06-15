@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::message::ModelRequestPart;
+use crate::message::{Metadata, ModelMessage, ModelRequest, ModelRequestPart};
 
 /// Metadata key indicating whether an instruction is dynamic for prompt-cache placement.
 pub const INSTRUCTION_DYNAMIC_METADATA: &str = "starweaver_instruction_dynamic";
@@ -22,6 +22,72 @@ pub const INSTRUCTION_ORIGIN_HANDOFF: &str = "handoff";
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(value: &bool) -> bool {
     !*value
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn is_dynamic_instruction_metadata(metadata: &Metadata) -> bool {
+    metadata
+        .get(INSTRUCTION_DYNAMIC_METADATA)
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Return the request whose instruction material should be applied to the current model call.
+///
+/// This mirrors Pydantic AI's separation between durable message history and current
+/// request `instruction_parts`: instruction material in older requests remains part of
+/// the session history but is not re-applied as current system/developer instructions.
+/// If the newest request only carries tool returns/retry prompts and has no instruction
+/// material, fall back to the preceding request's instructions for direct/replay callers.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn current_instruction_request_index(messages: &[ModelMessage]) -> Option<usize> {
+    let latest = messages
+        .iter()
+        .rposition(|message| matches!(message, ModelMessage::Request(_)))?;
+    let ModelMessage::Request(request) = &messages[latest] else {
+        unreachable!("latest request index points at a request")
+    };
+    if request_has_instruction_material(request) {
+        return Some(latest);
+    }
+    if request_is_control_only(request) {
+        return messages[..latest].iter().rposition(|message| {
+            matches!(message, ModelMessage::Request(request) if request_has_instruction_material(request))
+        });
+    }
+    None
+}
+
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) fn request_has_instruction_material(request: &ModelRequest) -> bool {
+    request
+        .instructions
+        .as_deref()
+        .is_some_and(|instructions| !instructions.trim().is_empty())
+        || request
+            .parts
+            .iter()
+            .any(|part| matches!(part, ModelRequestPart::Instruction { .. }))
+}
+
+fn request_is_control_only(request: &ModelRequest) -> bool {
+    !request.parts.is_empty()
+        && request.parts.iter().all(|part| match part {
+            ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
+            ModelRequestPart::UserPrompt { metadata, .. } => metadata
+                .get(INSTRUCTION_ORIGIN_METADATA)
+                .and_then(Value::as_str)
+                .is_some_and(|origin| {
+                    matches!(
+                        origin,
+                        "tool_return_media"
+                            | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
+                            | INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
+                            | INSTRUCTION_ORIGIN_HANDOFF
+                    )
+                }),
+            ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,
+        })
 }
 
 /// Prepared instruction fragment attached to request parameters.

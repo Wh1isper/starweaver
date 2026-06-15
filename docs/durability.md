@@ -49,7 +49,7 @@ Every `AgentCheckpoint` includes `resume: AgentResumeEvidence`. This compact evi
 A durable store should persist these records together:
 
 - session id and conversation id
-- exported `AgentContext` state
+- exported `AgentContext` state, including compact-restore inputs (`user_prompts`, `previous_assistant_response_reference`, and `steering_messages`)
 - `AgentStreamRecord` events with sequence numbers
 - `AgentCheckpoint` values and their `resume` evidence
 - environment state reference from the service layer

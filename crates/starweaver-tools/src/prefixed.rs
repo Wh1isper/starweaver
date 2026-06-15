@@ -129,6 +129,7 @@ impl Toolset for PrefixedToolset {
             .map(|instruction| ToolInstruction {
                 group: prefixed_name(&self.prefix, &instruction.group),
                 content: instruction.content,
+                dynamic: instruction.dynamic,
             })
             .collect()
     }

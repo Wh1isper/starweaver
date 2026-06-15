@@ -81,6 +81,6 @@ async fn toolset_instructions_are_injected_on_first_request() {
         .iter()
         .any(
             |instruction| instruction.text.contains("Use echo for mirroring")
-                && instruction.dynamic
+                && !instruction.dynamic
         ));
 }

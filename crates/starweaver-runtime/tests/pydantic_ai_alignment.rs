@@ -406,8 +406,8 @@ async fn dynamic_instructions_re_evaluate_each_model_request_and_history_is_appe
     let captured_messages = captured.lock().unwrap().clone();
     assert_eq!(captured_messages.len(), 2);
     assert!(format!("{:?}", captured_messages[0]).contains("Dynamic step 0"));
+    assert!(format!("{:?}", captured_messages[1]).contains("Dynamic step 0"));
     assert!(format!("{:?}", captured_messages[1]).contains("Dynamic step 1"));
-    assert!(!format!("{:?}", captured_messages[1]).contains("Dynamic step 0"));
     let second_latest_request = captured_messages[1]
         .iter()
         .rev()
@@ -423,7 +423,8 @@ async fn dynamic_instructions_re_evaluate_each_model_request_and_history_is_appe
     assert!(second_latest_request.parts.iter().skip(1).any(|part| {
         matches!(part, ModelRequestPart::Instruction { text, .. } if text == "Dynamic step 1")
     }));
-    assert!(!format!("{:?}", result.messages).contains("Dynamic step"));
+    assert!(format!("{:?}", result.messages).contains("Dynamic step 0"));
+    assert!(format!("{:?}", result.messages).contains("Dynamic step 1"));
     for message in result.new_messages() {
         match message {
             ModelMessage::Request(request) => {
@@ -447,7 +448,7 @@ async fn dynamic_instructions_re_evaluate_each_model_request_and_history_is_appe
 }
 
 #[tokio::test]
-async fn static_instructions_are_reinjected_for_provider_request_without_polluting_history() {
+async fn static_instructions_are_reinjected_for_provider_request_and_current_session_history() {
     let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
     let model_captured = captured.clone();
     let model = FunctionModel::new(move |messages, _settings, _info| {
@@ -482,7 +483,7 @@ async fn static_instructions_are_reinjected_for_provider_request_without_polluti
             if request.parts.iter().any(|part| matches!(part, ModelRequestPart::SystemPrompt { text, .. } if text == "stable server policy"))
     ));
     assert!(format!("{provider_messages:?}").contains("stable server policy"));
-    assert!(!format!("{:?}", result.messages).contains("stable server policy"));
+    assert!(format!("{:?}", result.messages).contains("stable server policy"));
 }
 
 #[tokio::test]
@@ -527,7 +528,34 @@ async fn run_with_history_preserves_latest_conversation_id() {
 }
 
 #[tokio::test]
-async fn toolset_instructions_are_marked_dynamic_for_prompt_cache_boundaries() {
+async fn toolset_instructions_are_static_by_default_for_prompt_cache_boundaries() {
+    let model = FunctionModel::new(|_messages, _settings, info| {
+        let Some(instruction) = info.params.instructions.first() else {
+            panic!("toolset instruction missing");
+        };
+        assert!(!instruction.dynamic);
+        assert_eq!(
+            instruction.metadata.get("starweaver_instruction_origin"),
+            Some(&json!(INSTRUCTION_ORIGIN_TOOLSET))
+        );
+        Ok(ModelResponse::text("ok"))
+    });
+    let toolset = StaticToolset::new("echo-set")
+        .with_tool(tool("echo"))
+        .with_instruction(ToolInstruction::new("echo-set", "Use echo."));
+    let toolset: DynToolset = Arc::new(toolset);
+
+    let result = Agent::new(Arc::new(model))
+        .with_tools(ToolRegistry::new().with_toolset(&toolset))
+        .run("hello")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "ok");
+}
+
+#[tokio::test]
+async fn toolset_instructions_can_be_marked_dynamic_for_prompt_cache_boundaries() {
     let model = FunctionModel::new(|_messages, _settings, info| {
         let Some(instruction) = info.params.instructions.first() else {
             panic!("toolset instruction missing");
@@ -541,7 +569,7 @@ async fn toolset_instructions_are_marked_dynamic_for_prompt_cache_boundaries() {
     });
     let toolset = StaticToolset::new("echo-set")
         .with_tool(tool("echo"))
-        .with_instruction(ToolInstruction::new("echo-set", "Use echo."));
+        .with_instruction(ToolInstruction::new("echo-set", "Use echo.").with_dynamic(true));
     let toolset: DynToolset = Arc::new(toolset);
 
     let result = Agent::new(Arc::new(model))

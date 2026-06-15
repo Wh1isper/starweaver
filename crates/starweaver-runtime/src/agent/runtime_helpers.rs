@@ -2,10 +2,12 @@
 
 mod capability_hooks;
 mod checkpoint;
+mod compact_context;
 mod errors;
 mod history_sanitize;
 mod output_validation;
 mod prepare_tools_safety;
+mod previous_response;
 mod request_building;
 mod request_parts;
 mod runtime_context;

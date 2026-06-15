@@ -9,8 +9,9 @@ use crate::{
         ProviderInfo, ToolCallPart,
     },
     providers::{
-        bedrock_content_from_content, collect_system_and_non_system, insert_nonempty_description,
-        provider_tool_schema_without_meta, usage_from_named_including_cache_input,
+        bedrock_content_from_content, collect_system_parts_and_non_system,
+        insert_nonempty_description, provider_tool_schema_without_meta,
+        usage_from_named_including_cache_input, SystemInstructionPart,
     },
     ModelError, ModelSettings,
 };
@@ -31,7 +32,7 @@ impl BedrockConverseAdapter {
         settings: Option<&ModelSettings>,
         tools: &[ToolDefinition],
     ) -> Result<Value, ModelError> {
-        let (system, rest) = collect_system_and_non_system(messages);
+        let (system, rest) = collect_system_parts_and_non_system(messages);
         let mut wire_messages = Vec::new();
 
         for message in rest {
@@ -103,14 +104,8 @@ impl BedrockConverseAdapter {
         let mut request = serde_json::Map::new();
         request.insert("modelId".to_string(), json!(model));
         request.insert("messages".to_string(), json!(wire_messages));
-        if !system.is_empty() {
-            request.insert(
-                "system".to_string(),
-                json!(system
-                    .into_iter()
-                    .map(|text| json!({"text": text}))
-                    .collect::<Vec<_>>()),
-            );
+        if let Some(system) = bedrock_system_value(&system, settings) {
+            request.insert("system".to_string(), system);
         }
         if let Some(settings) = settings {
             let mut inference_config = serde_json::Map::new();
@@ -138,8 +133,16 @@ impl BedrockConverseAdapter {
                 .as_ref()
                 .and_then(Value::as_object)
             {
-                if !options.is_empty() {
-                    request.insert("additionalModelRequestFields".to_string(), json!(options));
+                let additional_model_request_fields = options
+                    .iter()
+                    .filter(|(key, _)| !is_internal_bedrock_option(key))
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<serde_json::Map<_, _>>();
+                if !additional_model_request_fields.is_empty() {
+                    request.insert(
+                        "additionalModelRequestFields".to_string(),
+                        Value::Object(additional_model_request_fields),
+                    );
                 }
             }
             if let Some(fields) = settings.extra_body.get("additionalModelResponseFieldPaths") {
@@ -150,20 +153,26 @@ impl BedrockConverseAdapter {
             }
         }
         if !tools.is_empty() {
+            let mut tool_definitions = tools
+                .iter()
+                .map(|tool| {
+                    let mut spec = serde_json::Map::new();
+                    spec.insert("name".to_string(), json!(tool.name));
+                    insert_nonempty_description(&mut spec, tool.description.as_ref());
+                    spec.insert(
+                        "inputSchema".to_string(),
+                        json!({"json": provider_tool_schema_without_meta(&tool.parameters)}),
+                    );
+                    json!({"toolSpec": spec})
+                })
+                .collect::<Vec<_>>();
+            if let Some(cache_setting) =
+                bedrock_cache_setting(settings, "bedrock_cache_tool_definitions")
+            {
+                tool_definitions.push(bedrock_cache_point(cache_setting));
+            }
             let mut tool_config = json!({
-                "tools": tools
-                    .iter()
-                    .map(|tool| {
-                        let mut spec = serde_json::Map::new();
-                        spec.insert("name".to_string(), json!(tool.name));
-                        insert_nonempty_description(&mut spec, tool.description.as_ref());
-                        spec.insert(
-                            "inputSchema".to_string(),
-                            json!({"json": provider_tool_schema_without_meta(&tool.parameters)}),
-                        );
-                        json!({"toolSpec": spec})
-                    })
-                    .collect::<Vec<_>>()
+                "tools": tool_definitions
             });
             if let Some(choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {
                 tool_config["toolChoice"] = match choice {
@@ -247,6 +256,87 @@ impl BedrockConverseAdapter {
             metadata: bedrock_metadata(value),
         })
     }
+}
+
+fn bedrock_system_value(
+    system: &[SystemInstructionPart],
+    settings: Option<&ModelSettings>,
+) -> Option<Value> {
+    if system.is_empty() {
+        return None;
+    }
+    let mut blocks = system
+        .iter()
+        .map(|part| json!({"text": part.text}))
+        .collect::<Vec<_>>();
+    if let Some(cache_point) = bedrock_instruction_cache_point(system, settings) {
+        blocks.insert(cache_point.index, cache_point.value);
+    }
+    Some(Value::Array(blocks))
+}
+
+struct BedrockCachePoint {
+    index: usize,
+    value: Value,
+}
+
+fn bedrock_instruction_cache_point(
+    system: &[SystemInstructionPart],
+    settings: Option<&ModelSettings>,
+) -> Option<BedrockCachePoint> {
+    let cache_setting = bedrock_cache_setting(settings, "bedrock_cache_instructions")?;
+    let index = if let Some(first_dynamic) = system.iter().position(|part| part.dynamic) {
+        let num_static = system[..first_dynamic]
+            .iter()
+            .filter(|part| !part.dynamic)
+            .count();
+        if num_static == 0 {
+            return None;
+        }
+        first_dynamic
+    } else {
+        system.len()
+    };
+    Some(BedrockCachePoint {
+        index,
+        value: bedrock_cache_point(cache_setting),
+    })
+}
+
+#[derive(Clone, Copy)]
+enum BedrockCacheSetting {
+    Default,
+    Ttl(&'static str),
+}
+
+fn bedrock_cache_setting(
+    settings: Option<&ModelSettings>,
+    key: &str,
+) -> Option<BedrockCacheSetting> {
+    let value = settings
+        .and_then(|settings| settings.provider_options.as_ref())
+        .and_then(|options| options.get(key));
+    match value {
+        Some(Value::Bool(true)) => Some(BedrockCacheSetting::Default),
+        Some(Value::String(value)) if value == "5m" => Some(BedrockCacheSetting::Ttl("5m")),
+        Some(Value::String(value)) if value == "1h" => Some(BedrockCacheSetting::Ttl("1h")),
+        _ => None,
+    }
+}
+
+fn bedrock_cache_point(setting: BedrockCacheSetting) -> Value {
+    let mut cache_point = serde_json::Map::from_iter([("type".to_string(), json!("default"))]);
+    if let BedrockCacheSetting::Ttl(ttl) = setting {
+        cache_point.insert("ttl".to_string(), json!(ttl));
+    }
+    json!({"cachePoint": cache_point})
+}
+
+fn is_internal_bedrock_option(key: &str) -> bool {
+    matches!(
+        key,
+        "bedrock_cache_instructions" | "bedrock_cache_tool_definitions" | "bedrock_cache_messages"
+    )
 }
 
 fn bedrock_metadata(value: &Value) -> serde_json::Map<String, Value> {

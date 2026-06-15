@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use starweaver_core::{
     AgentId, ConversationId, Metadata, RunId, TraceContext, Usage, UsageSnapshotEntry,
 };
-use starweaver_model::ModelMessage;
+use starweaver_model::{ContentPart, ModelMessage};
 
 use crate::{MessageBus, ModelConfig, NoteStore, SecurityConfig, StateStore, ToolConfig};
 
@@ -25,6 +25,20 @@ pub struct ResumableState {
     /// Canonical message history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub message_history: Vec<ModelMessage>,
+    /// User prompt content collected for the current run.
+    ///
+    /// Compact restore wraps this as the original request being resumed after a context reset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_prompts: Option<Vec<ContentPart>>,
+    /// Visible assistant response immediately before the current user prompt.
+    ///
+    /// Compact restore uses this to resolve references in the current prompt such as numbered
+    /// items, "the above", or "that option".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_assistant_response_reference: Option<String>,
+    /// Accumulated user steering messages for compact restore.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steering_messages: Vec<String>,
     /// Accumulated usage.
     #[serde(default)]
     pub usage: Usage,

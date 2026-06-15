@@ -22,7 +22,8 @@ use starweaver_environment::{
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
-    ProtocolFamily, ToolCallPart,
+    ProtocolFamily, ToolCallPart, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
+    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
 
 #[derive(Clone)]
@@ -297,17 +298,28 @@ async fn builder_injects_environment_context_before_runtime_context_and_user_pro
     };
     assert!(matches!(
         &request.parts[0],
-        ModelRequestPart::Instruction { text, .. } if text.contains("<environment-context>")
+        ModelRequestPart::UserPrompt { content, metadata, .. }
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text.contains("<environment-context>"))
     ));
     assert!(matches!(
         &request.parts[1],
-        ModelRequestPart::Instruction { text, .. } if text.contains("<runtime-context>")
+        ModelRequestPart::UserPrompt { content, metadata, .. }
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT))
+                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text.contains("<runtime-context>"))
     ));
     assert!(matches!(
         &request.parts[2],
         ModelRequestPart::UserPrompt { content, .. }
             if matches!(&content[0], starweaver_model::ContentPart::Text { text } if text == "inspect workspace")
     ));
+
+    let durable_history =
+        serde_json::to_string(&context.message_history).expect("message history should serialize");
+    assert!(!durable_history.contains("<environment-context>"));
+    assert!(!durable_history.contains("<runtime-context>"));
 }
 
 #[tokio::test]

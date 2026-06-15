@@ -6,6 +6,7 @@
 
 - Identify the active agent, run, and conversation.
 - Store canonical model history.
+- Store explicit compact-restore inputs for the current run: user prompt content, previous assistant reference text, and user steering messages.
 - Track usage across runs and subagent delegation.
 - Carry typed and named dependencies for tools, hooks, validators, and dynamic instructions.
 - Persist `StateStore` domains for application state.
@@ -25,6 +26,9 @@ classDiagram
         RunId? run_id
         ConversationId conversation_id
         Vec~ModelMessage~ message_history
+        Option~Vec~ContentPart~~ user_prompts
+        Option~String~ previous_assistant_response_reference
+        Vec~String~ steering_messages
         Usage usage
         StateStore state
         NoteStore notes
@@ -40,6 +44,9 @@ classDiagram
         RunId? run_id
         ConversationId conversation_id
         Vec~ModelMessage~ message_history
+        Option~Vec~ContentPart~~ user_prompts
+        Option~String~ previous_assistant_response_reference
+        Vec~String~ steering_messages
         Usage usage
         StateStore state
         NoteStore notes
@@ -50,6 +57,8 @@ classDiagram
 
     AgentContext --> ResumableState
 ```
+
+Compact restore uses these explicit fields instead of reconstructing intent from history. The runtime records the effective current prompt in `user_prompts`, captures visible text from the assistant response immediately before the prompt in `previous_assistant_response_reference`, and appends drained sideband steering text to `steering_messages`. The compact and handoff filters share restored-request builders that emit blocks in this order: `<context-restored>`, `<previous-assistant-reference>`, `<original-request>`, then `<user-steering>`.
 
 ## State Domains
 

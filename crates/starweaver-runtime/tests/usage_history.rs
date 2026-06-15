@@ -19,7 +19,7 @@ struct KeepLatestMessageCapability;
 
 #[async_trait]
 impl AgentCapability for KeepLatestMessageCapability {
-    async fn prepare_model_messages_with_context(
+    async fn prepare_provider_messages_with_context(
         &self,
         _state: &mut AgentRunState,
         _context: &mut AgentContext,

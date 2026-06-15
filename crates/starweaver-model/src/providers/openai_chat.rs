@@ -9,9 +9,9 @@ use crate::{
         ToolCallPart,
     },
     providers::{
-        apply_common_settings, finish_reason_openai, insert_nonempty_description,
-        openai_chat_content, parse_tool_call_arguments, provider_tool_schema_without_meta,
-        usage_from_openai,
+        apply_common_settings, collect_system_parts_and_non_system, finish_reason_openai,
+        insert_nonempty_description, openai_chat_content, parse_tool_call_arguments,
+        provider_tool_schema_without_meta, usage_from_openai,
     },
     ModelError, ModelSettings,
 };
@@ -32,22 +32,19 @@ impl OpenAiChatAdapter {
         settings: Option<&ModelSettings>,
         tools: &[ToolDefinition],
     ) -> Result<Value, ModelError> {
+        let (system, rest) = collect_system_parts_and_non_system(messages);
+        let mut system_messages = system
+            .into_iter()
+            .map(|part| json!({"role": "system", "content": part.text}))
+            .collect::<Vec<_>>();
         let mut wire_messages = Vec::new();
-        for message in messages {
+        for message in rest {
             match message {
                 ModelMessage::Request(request) => {
-                    if let Some(request_instructions) = request.instructions.as_ref() {
-                        if !request_instructions.trim().is_empty() {
-                            wire_messages
-                                .push(json!({"role": "system", "content": request_instructions}));
-                        }
-                    }
                     for part in &request.parts {
                         match part {
-                            ModelRequestPart::SystemPrompt { text, .. }
-                            | ModelRequestPart::Instruction { text, .. } => {
-                                wire_messages.push(json!({"role": "system", "content": text}));
-                            }
+                            ModelRequestPart::SystemPrompt { .. }
+                            | ModelRequestPart::Instruction { .. } => {}
                             ModelRequestPart::UserPrompt { content, .. } => {
                                 wire_messages.push(
                                     json!({"role": "user", "content": openai_chat_content(content)}),
@@ -104,6 +101,11 @@ impl OpenAiChatAdapter {
                     wire_messages.push(item);
                 }
             }
+        }
+
+        if !system_messages.is_empty() {
+            system_messages.extend(wire_messages);
+            wire_messages = system_messages;
         }
 
         let mut request = serde_json::Map::new();

@@ -195,7 +195,7 @@ pub fn skill_tools(packages: impl IntoIterator<Item = SkillPackage>) -> DynTools
     Arc::new(
         StaticToolset::new("skills")
             .with_id("skills")
-            .with_instruction(ToolInstruction::new("skills", content)),
+            .with_instruction(ToolInstruction::new("skills", content).with_dynamic(true)),
     )
 }
 

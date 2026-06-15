@@ -5,6 +5,7 @@ mod normalization;
 mod prepare;
 mod types;
 
+pub(crate) use instructions::{current_instruction_request_index, is_dynamic_instruction_metadata};
 pub use instructions::{
     InstructionPart, PreparedInstruction, INSTRUCTION_DYNAMIC_METADATA,
     INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,

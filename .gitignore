@@ -15,3 +15,4 @@ scripts/.venv/
 !.env.example
 
 /refs/
+.starweaver-cache-dumps/

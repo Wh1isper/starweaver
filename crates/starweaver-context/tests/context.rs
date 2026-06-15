@@ -4,7 +4,7 @@ use starweaver_context::{
     AgentContext, AgentEvent, AgentId, BusMessage, ModelConfig, PerThousandRatio, ResumableState,
 };
 use starweaver_core::{TraceContext, Usage};
-use starweaver_model::{ModelMessage, ModelRequest, ModelResponse};
+use starweaver_model::{ContentPart, ModelMessage, ModelRequest, ModelResponse};
 
 #[test]
 fn context_exports_and_restores_state() {
@@ -17,6 +17,12 @@ fn context_exports_and_restores_state() {
         "steering",
         serde_json::json!({"text": "continue"}),
     ));
+    context.user_prompts = Some(vec![ContentPart::Text {
+        text: "do 1 and 2".to_string(),
+    }]);
+    context.previous_assistant_response_reference =
+        Some("1. Add tests\n2. Update docs".to_string());
+    context.steering_messages = vec!["Keep current approach".to_string()];
     context.set_trace_context(
         TraceContext::from_trace_id("trace-main")
             .with_span_id("span-main")
@@ -28,6 +34,22 @@ fn context_exports_and_restores_state() {
 
     assert_eq!(restored.agent_id.as_str(), "main");
     assert_eq!(restored.message_history.len(), 1);
+    assert_eq!(
+        restored.user_prompts.as_deref(),
+        Some(
+            &[ContentPart::Text {
+                text: "do 1 and 2".to_string(),
+            }][..]
+        ),
+    );
+    assert_eq!(
+        restored.previous_assistant_response_reference.as_deref(),
+        Some("1. Add tests\n2. Update docs"),
+    );
+    assert_eq!(
+        restored.steering_messages,
+        vec!["Keep current approach".to_string()],
+    );
     assert_eq!(
         restored.state.get("notes"),
         Some(&serde_json::json!({"answer": 42}))
@@ -113,6 +135,11 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
         "steering",
         serde_json::json!({"text": "parent only"}),
     ));
+    context.user_prompts = Some(vec![ContentPart::Text {
+        text: "parent prompt".to_string(),
+    }]);
+    context.previous_assistant_response_reference = Some("parent response".to_string());
+    context.steering_messages = vec!["parent steering".to_string()];
     context
         .state
         .set("domain", serde_json::json!({"value": 42}));
@@ -149,6 +176,9 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
     assert_eq!(*child.named_dependency::<u32>("answer").unwrap(), 42);
     assert_eq!(child.trace_context, context.trace_context);
     assert!(child.message_history.is_empty());
+    assert!(child.user_prompts.is_none());
+    assert!(child.previous_assistant_response_reference.is_none());
+    assert!(child.steering_messages.is_empty());
     assert!(child.messages.is_empty());
     assert!(child.events.events().is_empty());
 }

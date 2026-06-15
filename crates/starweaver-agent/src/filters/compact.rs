@@ -80,7 +80,7 @@ impl AgentCapability for CacheFriendlyCompactCapability {
         messages: Vec<ModelMessage>,
     ) -> CapabilityResult<Vec<ModelMessage>> {
         let mut compacted = if let Some(keep) = manual_compact_keep(state) {
-            build_trimmed_compact_messages(state, &messages, keep)
+            build_trimmed_compact_messages(state, context, &messages, keep)
         } else if need_auto_compact(context, &messages) {
             self.compact_with_model(state, context, &messages).await?
         } else {
@@ -115,6 +115,7 @@ impl CacheFriendlyCompactCapability {
         let Some(model) = &self.model else {
             return Ok(build_trimmed_compact_messages(
                 state,
+                context,
                 messages,
                 DEFAULT_AUTO_COMPACT_KEEP_MESSAGES,
             ));
@@ -153,7 +154,7 @@ impl CacheFriendlyCompactCapability {
         context.metadata.remove(COMPACT_DEPTH_METADATA);
         context.add_usage(&response.usage);
         let summary = response.text_output();
-        let compacted = build_cache_friendly_compacted_messages(state, messages, &summary);
+        let compacted = build_cache_friendly_compacted_messages(state, context, messages, &summary);
         context.publish_event(AgentEvent::new(
             "compact_complete",
             json!({

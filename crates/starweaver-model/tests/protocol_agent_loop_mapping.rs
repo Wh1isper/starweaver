@@ -8,8 +8,10 @@ use starweaver_model::{
         gemini::GeminiGenerateContentAdapter, openai_chat::OpenAiChatAdapter,
         openai_responses::OpenAiResponsesAdapter,
     },
-    FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart,
-    ModelSettings, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
+    ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
+    ModelResponsePart, ModelSettings, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
+    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_METADATA,
+    INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
 
 fn lookup_tool() -> ToolDefinition {
@@ -87,6 +89,187 @@ fn tool_calls(response: &ModelResponse) -> Vec<ToolCallPart> {
     response.tool_calls()
 }
 
+fn context_metadata(origin: &str) -> Map<String, serde_json::Value> {
+    let mut metadata = Map::new();
+    metadata.insert(INSTRUCTION_ORIGIN_METADATA.to_string(), json!(origin));
+    metadata
+}
+
+fn context_user_prompt(text: impl Into<String>, origin: &str) -> ModelRequestPart {
+    ModelRequestPart::UserPrompt {
+        content: vec![ContentPart::Text { text: text.into() }],
+        name: None,
+        metadata: context_metadata(origin),
+    }
+}
+
+fn runtime_context_part(text: impl Into<String>) -> ModelRequestPart {
+    context_user_prompt(text, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT)
+}
+
+fn environment_context_part(text: impl Into<String>) -> ModelRequestPart {
+    context_user_prompt(text, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT)
+}
+
+fn cache_shape_first_turn() -> Vec<ModelMessage> {
+    vec![ModelMessage::Request(ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "stable system".to_string(),
+                metadata: Map::new(),
+            },
+            runtime_context_part(
+                "<runtime-context><current-time>first</current-time></runtime-context>",
+            ),
+            ModelRequestPart::UserPrompt {
+                content: vec![starweaver_model::ContentPart::Text {
+                    text: "first user".to_string(),
+                }],
+                name: None,
+                metadata: Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    })]
+}
+
+fn cache_shape_persisted_first_turn() -> Vec<ModelMessage> {
+    vec![ModelMessage::Request(ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "stable system".to_string(),
+                metadata: Map::new(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![starweaver_model::ContentPart::Text {
+                    text: "first user".to_string(),
+                }],
+                name: None,
+                metadata: Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    })]
+}
+
+fn cache_shape_second_turn() -> Vec<ModelMessage> {
+    let mut messages = cache_shape_persisted_first_turn();
+    messages.push(ModelMessage::Response(ModelResponse {
+        parts: vec![ModelResponsePart::Text {
+            text: "first assistant".to_string(),
+        }],
+        usage: Usage::default(),
+        model_name: None,
+        provider: None,
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    }));
+    messages.push(ModelMessage::Request(ModelRequest {
+        parts: vec![
+            runtime_context_part(
+                "<runtime-context><current-time>second</current-time></runtime-context>",
+            ),
+            ModelRequestPart::UserPrompt {
+                content: vec![starweaver_model::ContentPart::Text {
+                    text: "second user".to_string(),
+                }],
+                name: None,
+                metadata: Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    }));
+    messages
+}
+
+fn dynamic_only_turn() -> Vec<ModelMessage> {
+    vec![ModelMessage::Request(ModelRequest {
+        parts: vec![runtime_context_part(
+            "<runtime-context><current-time>only</current-time></runtime-context>",
+        )],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    })]
+}
+
+#[test]
+fn openai_chat_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
+    let first = OpenAiChatAdapter::build_request(
+        "gpt-test",
+        &cache_shape_first_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+    let second = OpenAiChatAdapter::build_request(
+        "gpt-test",
+        &cache_shape_second_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    let first_messages = first["messages"].as_array().unwrap();
+    let second_messages = second["messages"].as_array().unwrap();
+    assert_eq!(first_messages[0]["role"], "system");
+    assert_eq!(first_messages[0]["content"], "stable system");
+    assert_eq!(second_messages[0]["role"], "system");
+    assert_eq!(second_messages[0]["content"], "stable system");
+
+    let first_body = &first_messages[1..];
+    let second_body = &second_messages[1..];
+    assert_eq!(first_body.len(), 2);
+    assert_eq!(first_body[0]["role"], "user");
+    assert!(first_body[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(first_body[0]["content"].as_str().unwrap().contains("first"));
+    assert_eq!(first_body[1]["role"], "user");
+    assert_eq!(first_body[1]["content"], "first user");
+
+    assert_eq!(second_body.len(), 4);
+    assert_eq!(second_body[0]["role"], "user");
+    assert_eq!(second_body[0]["content"], "first user");
+    assert_eq!(second_body[1]["role"], "assistant");
+    assert_eq!(second_body[1]["content"], "first assistant");
+    assert_eq!(second_body[2]["role"], "user");
+    assert!(second_body[2]["content"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(second_body[2]["content"]
+        .as_str()
+        .unwrap()
+        .contains("second"));
+    assert!(!second_body[2]["content"]
+        .as_str()
+        .unwrap()
+        .contains("first"));
+    assert_eq!(second_body[3]["role"], "user");
+    assert_eq!(second_body[3]["content"], "second user");
+    assert_eq!(first_body[1], second_body[0]);
+    assert_eq!(first["tools"], second["tools"]);
+}
+
 #[test]
 fn openai_chat_preserves_agent_loop_boundaries() {
     let request =
@@ -162,6 +345,61 @@ fn openai_chat_parses_text_tool_call_usage_and_finish_reason() {
 }
 
 #[test]
+fn openai_responses_cache_shape_keeps_durable_input_append_only_with_runtime_context() {
+    let first = OpenAiResponsesAdapter::build_request(
+        "gpt-test",
+        &cache_shape_first_turn(),
+        None,
+        &[lookup_tool()],
+        &[],
+    )
+    .unwrap();
+    let second = OpenAiResponsesAdapter::build_request(
+        "gpt-test",
+        &cache_shape_second_turn(),
+        None,
+        &[lookup_tool()],
+        &[],
+    )
+    .unwrap();
+
+    assert_eq!(first["instructions"], "stable system");
+    assert_eq!(second["instructions"], "stable system");
+    let first_input = first["input"].as_array().unwrap();
+    let second_input = second["input"].as_array().unwrap();
+    assert_eq!(first_input.len(), 2);
+    assert!(first_input[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(first_input[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("first"));
+    assert_eq!(first_input[1]["content"][0]["text"], "first user");
+
+    assert_eq!(second_input.len(), 4);
+    assert_eq!(second_input[0]["content"][0]["text"], "first user");
+    assert_eq!(second_input[1]["role"], "assistant");
+    assert_eq!(second_input[1]["content"][0]["text"], "first assistant");
+    assert!(second_input[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(second_input[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("second"));
+    assert!(!second_input[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("first"));
+    assert_eq!(second_input[3]["content"][0]["text"], "second user");
+    assert_eq!(first_input[1], second_input[0]);
+    assert_eq!(first["tools"], second["tools"]);
+}
+
+#[test]
 fn openai_responses_preserves_agent_loop_boundaries() {
     let request = OpenAiResponsesAdapter::build_request(
         "gpt-test",
@@ -200,24 +438,15 @@ fn openai_responses_preserves_agent_loop_boundaries() {
 }
 
 #[test]
-fn openai_responses_maps_dynamic_runtime_context_as_latest_input_not_top_level_instructions() {
+fn openai_responses_maps_runtime_context_to_input_user_prompt() {
     fn request_with_runtime_context(runtime_context: &str) -> serde_json::Value {
-        let mut metadata = Map::new();
-        metadata.insert(
-            "starweaver_instruction_origin".to_string(),
-            json!("runtime_context"),
-        );
-        metadata.insert("starweaver_instruction_dynamic".to_string(), json!(true));
         let messages = vec![ModelMessage::Request(ModelRequest {
             parts: vec![
                 ModelRequestPart::SystemPrompt {
                     text: "stable system".to_string(),
                     metadata: Map::new(),
                 },
-                ModelRequestPart::Instruction {
-                    text: runtime_context.to_string(),
-                    metadata,
-                },
+                runtime_context_part(runtime_context),
                 ModelRequestPart::UserPrompt {
                     content: vec![starweaver_model::ContentPart::Text {
                         text: "latest user".to_string(),
@@ -244,42 +473,37 @@ fn openai_responses_maps_dynamic_runtime_context_as_latest_input_not_top_level_i
     );
 
     assert_eq!(first["instructions"], "stable system");
-    assert_eq!(first["instructions"], second["instructions"]);
-    assert!(!first["instructions"]
+    assert_eq!(second["instructions"], "stable system");
+    let first_input = first["input"].as_array().unwrap();
+    let second_input = second["input"].as_array().unwrap();
+    assert_eq!(first_input.len(), 2);
+    assert_eq!(second_input.len(), 2);
+    assert!(first_input[0]["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("runtime-context"));
-    let input = first["input"].as_array().unwrap();
-    assert!(input.iter().any(|item| {
-        item["role"] == "system"
-            && item["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("current-time")
-    }));
-    assert!(input
-        .iter()
-        .any(|item| { item["role"] == "user" && item["content"][0]["text"] == "latest user" }));
+    assert!(first_input[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("first"));
+    assert!(second_input[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("second"));
+    assert_eq!(first_input[1]["content"][0]["text"], "latest user");
+    assert_eq!(second_input[1]["content"][0]["text"], "latest user");
 }
 
 #[test]
-fn openai_responses_maps_dynamic_environment_context_origin_as_latest_input() {
+fn openai_responses_maps_environment_context_to_input_user_prompt() {
     fn request_with_environment_context(environment_context: &str) -> serde_json::Value {
-        let mut metadata = Map::new();
-        metadata.insert(
-            "starweaver_instruction_origin".to_string(),
-            json!("environment_context"),
-        );
         let messages = vec![ModelMessage::Request(ModelRequest {
             parts: vec![
                 ModelRequestPart::SystemPrompt {
                     text: "stable system".to_string(),
                     metadata: Map::new(),
                 },
-                ModelRequestPart::Instruction {
-                    text: environment_context.to_string(),
-                    metadata,
-                },
+                environment_context_part(environment_context),
                 ModelRequestPart::UserPrompt {
                     content: vec![starweaver_model::ContentPart::Text {
                         text: "latest user".to_string(),
@@ -306,19 +530,25 @@ fn openai_responses_maps_dynamic_environment_context_origin_as_latest_input() {
     );
 
     assert_eq!(first["instructions"], "stable system");
-    assert_eq!(first["instructions"], second["instructions"]);
-    assert!(!first["instructions"]
+    assert_eq!(second["instructions"], "stable system");
+    let first_input = first["input"].as_array().unwrap();
+    let second_input = second["input"].as_array().unwrap();
+    assert_eq!(first_input.len(), 2);
+    assert_eq!(second_input.len(), 2);
+    assert!(first_input[0]["content"][0]["text"]
         .as_str()
         .unwrap()
         .contains("environment-context"));
-    let input = first["input"].as_array().unwrap();
-    assert!(input.iter().any(|item| {
-        item["role"] == "system"
-            && item["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("environment-context")
-    }));
+    assert!(first_input[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("/first"));
+    assert!(second_input[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("/second"));
+    assert_eq!(first_input[1]["content"][0]["text"], "latest user");
+    assert_eq!(second_input[1]["content"][0]["text"], "latest user");
 }
 
 #[test]
@@ -355,6 +585,81 @@ fn openai_responses_parses_text_tool_call_usage_and_finish_reason() {
     assert_eq!(calls[0].id, "call_1");
     assert_eq!(calls[0].name, "lookup");
     assert_eq!(calls[0].arguments.execution_value()["query"], "Paris");
+}
+
+#[test]
+fn anthropic_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
+    let first = AnthropicMessagesAdapter::build_request(
+        "claude-test",
+        &cache_shape_first_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+    let second = AnthropicMessagesAdapter::build_request(
+        "claude-test",
+        &cache_shape_second_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    assert_eq!(first["system"], "stable system");
+    assert_eq!(second["system"], "stable system");
+    let first_messages = first["messages"].as_array().unwrap();
+    let second_messages = second["messages"].as_array().unwrap();
+    assert_eq!(first_messages.len(), 1);
+    assert_eq!(first_messages[0]["role"], "user");
+    assert!(first_messages[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(first_messages[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("first"));
+    assert_eq!(first_messages[0]["content"][1]["text"], "first user");
+
+    assert_eq!(second_messages.len(), 3);
+    assert_eq!(second_messages[0]["role"], "user");
+    assert_eq!(second_messages[0]["content"][0]["text"], "first user");
+    assert_eq!(second_messages[1]["role"], "assistant");
+    assert_eq!(second_messages[1]["content"][0]["text"], "first assistant");
+    assert_eq!(second_messages[2]["role"], "user");
+    assert!(second_messages[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(second_messages[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("second"));
+    assert_eq!(second_messages[2]["content"][1]["text"], "second user");
+    assert_eq!(
+        first_messages[0]["content"][1],
+        second_messages[0]["content"][0]
+    );
+    assert_eq!(first["tools"], second["tools"]);
+}
+
+#[test]
+fn anthropic_runtime_context_only_request_maps_context_to_user_content() {
+    let request = AnthropicMessagesAdapter::build_request(
+        "claude-test",
+        &dynamic_only_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    assert!(request.get("system").is_none());
+    let messages = request["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
 }
 
 #[test]
@@ -447,7 +752,8 @@ fn anthropic_caches_static_instruction_boundary_and_tool_definitions() {
     assert_eq!(system[0]["text"], "static system");
     assert_eq!(system[0]["cache_control"]["type"], "ephemeral");
     assert_eq!(system[1]["text"], "dynamic instruction");
-    assert!(system[1].get("cache_control").is_none());
+    let messages = request["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["content"][0]["text"], "hello");
     assert_eq!(request["tools"][0]["cache_control"]["type"], "ephemeral");
     assert!(request.get("anthropic_cache_instructions").is_none());
     assert!(request.get("anthropic_cache_tool_definitions").is_none());
@@ -482,6 +788,81 @@ fn anthropic_parses_text_thinking_tool_call_usage_and_finish_reason() {
     let calls = tool_calls(&response);
     assert_eq!(calls[0].id, "call_1");
     assert_eq!(calls[0].arguments.execution_value()["query"], "Paris");
+}
+
+#[test]
+fn gemini_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
+    let first = GeminiGenerateContentAdapter::build_request(
+        &cache_shape_first_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+    let second = GeminiGenerateContentAdapter::build_request(
+        &cache_shape_second_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    assert_eq!(
+        first["systemInstruction"]["parts"][0]["text"],
+        "stable system"
+    );
+    assert_eq!(
+        second["systemInstruction"]["parts"][0]["text"],
+        "stable system"
+    );
+    let first_contents = first["contents"].as_array().unwrap();
+    let second_contents = second["contents"].as_array().unwrap();
+    assert_eq!(first_contents.len(), 1);
+    assert_eq!(first_contents[0]["role"], "user");
+    assert!(first_contents[0]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(first_contents[0]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("first"));
+    assert_eq!(first_contents[0]["parts"][1]["text"], "first user");
+
+    assert_eq!(second_contents.len(), 3);
+    assert_eq!(second_contents[0]["role"], "user");
+    assert_eq!(second_contents[0]["parts"][0]["text"], "first user");
+    assert_eq!(second_contents[1]["role"], "model");
+    assert_eq!(second_contents[1]["parts"][0]["text"], "first assistant");
+    assert_eq!(second_contents[2]["role"], "user");
+    assert!(second_contents[2]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(second_contents[2]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("second"));
+    assert_eq!(second_contents[2]["parts"][1]["text"], "second user");
+    assert_eq!(
+        first_contents[0]["parts"][1],
+        second_contents[0]["parts"][0]
+    );
+    assert_eq!(first["tools"], second["tools"]);
+}
+
+#[test]
+fn gemini_runtime_context_only_request_maps_context_to_user_content() {
+    let request =
+        GeminiGenerateContentAdapter::build_request(&dynamic_only_turn(), None, &[lookup_tool()])
+            .unwrap();
+
+    assert!(request.get("systemInstruction").is_none());
+    let contents = request["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0]["role"], "user");
+    assert!(contents[0]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
 }
 
 #[test]
@@ -542,6 +923,81 @@ fn gemini_parses_text_tool_call_usage_and_finish_reason() {
 }
 
 #[test]
+fn bedrock_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
+    let first = BedrockConverseAdapter::build_request(
+        "anthropic.claude-test",
+        &cache_shape_first_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+    let second = BedrockConverseAdapter::build_request(
+        "anthropic.claude-test",
+        &cache_shape_second_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    assert_eq!(first["system"][0]["text"], "stable system");
+    assert_eq!(second["system"][0]["text"], "stable system");
+    let first_messages = first["messages"].as_array().unwrap();
+    let second_messages = second["messages"].as_array().unwrap();
+    assert_eq!(first_messages.len(), 1);
+    assert_eq!(first_messages[0]["role"], "user");
+    assert!(first_messages[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(first_messages[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("first"));
+    assert_eq!(first_messages[0]["content"][1]["text"], "first user");
+
+    assert_eq!(second_messages.len(), 3);
+    assert_eq!(second_messages[0]["role"], "user");
+    assert_eq!(second_messages[0]["content"][0]["text"], "first user");
+    assert_eq!(second_messages[1]["role"], "assistant");
+    assert_eq!(second_messages[1]["content"][0]["text"], "first assistant");
+    assert_eq!(second_messages[2]["role"], "user");
+    assert!(second_messages[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+    assert!(second_messages[2]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("second"));
+    assert_eq!(second_messages[2]["content"][1]["text"], "second user");
+    assert_eq!(
+        first_messages[0]["content"][1],
+        second_messages[0]["content"][0]
+    );
+    assert_eq!(first["toolConfig"], second["toolConfig"]);
+}
+
+#[test]
+fn bedrock_runtime_context_only_request_maps_context_to_user_content() {
+    let request = BedrockConverseAdapter::build_request(
+        "anthropic.claude-test",
+        &dynamic_only_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    assert!(request.get("system").is_none());
+    let messages = request["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("runtime-context"));
+}
+
+#[test]
 fn bedrock_preserves_agent_loop_boundaries() {
     let request = BedrockConverseAdapter::build_request(
         "anthropic.claude-test",
@@ -576,6 +1032,73 @@ fn bedrock_preserves_agent_loop_boundaries() {
         request["toolConfig"]["tools"][0]["toolSpec"]["name"],
         "lookup"
     );
+}
+
+#[test]
+fn bedrock_caches_static_instruction_boundary_and_tool_definitions() {
+    let mut dynamic_metadata = Map::new();
+    dynamic_metadata.insert("starweaver_instruction_dynamic".to_string(), json!(true));
+    let messages = vec![ModelMessage::Request(ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "static system".to_string(),
+                metadata: Map::new(),
+            },
+            ModelRequestPart::Instruction {
+                text: "dynamic instruction".to_string(),
+                metadata: dynamic_metadata,
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![starweaver_model::ContentPart::Text {
+                    text: "hello".to_string(),
+                }],
+                name: None,
+                metadata: Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    })];
+    let settings = ModelSettings {
+        provider_options: Some(json!({
+            "bedrock_cache_instructions": true,
+            "bedrock_cache_tool_definitions": "1h",
+            "anthropic_version": "bedrock-2023-05-31"
+        })),
+        ..ModelSettings::default()
+    };
+
+    let request = BedrockConverseAdapter::build_request(
+        "anthropic.claude-test",
+        &messages,
+        Some(&settings),
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    let system = request["system"].as_array().unwrap();
+    assert_eq!(system[0]["text"], "static system");
+    assert_eq!(system[1]["cachePoint"]["type"], "default");
+    assert_eq!(system[2]["text"], "dynamic instruction");
+    let messages = request["messages"].as_array().unwrap();
+    assert_eq!(messages[0]["content"][0]["text"], "hello");
+    let tools = request["toolConfig"]["tools"].as_array().unwrap();
+    assert_eq!(tools[0]["toolSpec"]["name"], "lookup");
+    assert_eq!(tools[1]["cachePoint"]["type"], "default");
+    assert_eq!(tools[1]["cachePoint"]["ttl"], "1h");
+    assert_eq!(
+        request["additionalModelRequestFields"]["anthropic_version"],
+        "bedrock-2023-05-31"
+    );
+    assert!(request["additionalModelRequestFields"]
+        .get("bedrock_cache_instructions")
+        .is_none());
+    assert!(request["additionalModelRequestFields"]
+        .get("bedrock_cache_tool_definitions")
+        .is_none());
 }
 
 #[test]

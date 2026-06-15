@@ -18,8 +18,8 @@ use starweaver_context::{AgentContext, BusMessage};
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
 use starweaver_model::{
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ModelSettings, StreamDelta, INSTRUCTION_DYNAMIC_METADATA,
-    INSTRUCTION_ORIGIN_METADATA,
+    ModelResponsePart, ModelSettings, StreamDelta, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
+    INSTRUCTION_ORIGIN_HANDOFF, INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
 use starweaver_runtime::{
     AgentCapability, AgentRunState, AgentStreamEvent, CapabilityResult, ModelResponseStreamEvent,
@@ -352,6 +352,8 @@ struct CliPromptContentAdapter {
     content_parts: Vec<ContentPart>,
 }
 
+const CLI_GUIDANCE_ORIGIN: &str = "cli_guidance";
+
 struct CliGuidanceAdapter {
     guidance_text_parts: Vec<String>,
 }
@@ -389,10 +391,7 @@ impl AgentCapability for CliPromptContentAdapter {
 
 #[async_trait]
 impl AgentCapability for CliGuidanceAdapter {
-    // This capability may run after dynamic/environment context injection. It
-    // intentionally inserts at the static instruction boundary so CLI guidance
-    // remains cacheable and independent of capability ordering.
-    async fn prepare_model_messages_with_context(
+    async fn prepare_provider_messages_with_context(
         &self,
         _state: &mut AgentRunState,
         _context: &mut AgentContext,
@@ -416,11 +415,11 @@ impl AgentCapability for CliGuidanceAdapter {
                 let mut metadata = serde_json::Map::new();
                 metadata.insert(
                     INSTRUCTION_ORIGIN_METADATA.to_string(),
-                    json!("cli_guidance"),
+                    json!(CLI_GUIDANCE_ORIGIN),
                 );
-                metadata.insert(INSTRUCTION_DYNAMIC_METADATA.to_string(), json!(false));
-                ModelRequestPart::Instruction {
-                    text: text.clone(),
+                ModelRequestPart::UserPrompt {
+                    content: vec![ContentPart::Text { text: text.clone() }],
+                    name: None,
                     metadata,
                 }
             })
@@ -428,13 +427,22 @@ impl AgentCapability for CliGuidanceAdapter {
         if parts.is_empty() {
             return Ok(messages);
         }
-        let insert_at = static_instruction_insert_index(request);
+        let insert_at = context_insert_index(request);
         request.parts.splice(insert_at..insert_at, parts);
         Ok(messages)
     }
 }
 
-fn static_instruction_insert_index(request: &ModelRequest) -> usize {
+fn context_insert_index(request: &ModelRequest) -> usize {
+    let instruction_end = instruction_end_index(request);
+    instruction_end
+        + request.parts[instruction_end..]
+            .iter()
+            .take_while(|part| is_context_user_prompt(part))
+            .count()
+}
+
+fn instruction_end_index(request: &ModelRequest) -> usize {
     let control_prefix_len = request
         .parts
         .iter()
@@ -443,7 +451,7 @@ fn static_instruction_insert_index(request: &ModelRequest) -> usize {
     control_prefix_len
         + request.parts[control_prefix_len..]
             .iter()
-            .take_while(|part| is_static_instruction_prefix_part(part))
+            .take_while(|part| is_instruction_prefix_part(part))
             .count()
 }
 
@@ -458,14 +466,29 @@ fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
     }
 }
 
-fn is_static_instruction_prefix_part(part: &ModelRequestPart) -> bool {
+const fn is_instruction_prefix_part(part: &ModelRequestPart) -> bool {
+    matches!(
+        part,
+        ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. }
+    )
+}
+
+fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
     match part {
-        ModelRequestPart::SystemPrompt { .. } => true,
-        ModelRequestPart::Instruction { metadata, .. } => !metadata
-            .get(INSTRUCTION_DYNAMIC_METADATA)
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-        ModelRequestPart::UserPrompt { .. }
+        ModelRequestPart::UserPrompt { metadata, .. } => metadata
+            .get(INSTRUCTION_ORIGIN_METADATA)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|origin| {
+                matches!(
+                    origin,
+                    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
+                        | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
+                        | INSTRUCTION_ORIGIN_HANDOFF
+                        | CLI_GUIDANCE_ORIGIN
+                )
+            }),
+        ModelRequestPart::SystemPrompt { .. }
+        | ModelRequestPart::Instruction { .. }
         | ModelRequestPart::ToolReturn(_)
         | ModelRequestPart::RetryPrompt { .. } => false,
     }
@@ -542,6 +565,7 @@ mod tests {
     use super::{
         cancelled_display_projection, interrupted_partial_response, start_steering_collector,
         CliGuidanceAdapter, CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage,
+        CLI_GUIDANCE_ORIGIN,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
 
@@ -643,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_guidance_adapter_injects_guidance_as_static_request_instructions() {
+    fn cli_guidance_adapter_injects_guidance_as_provider_only_context() {
         let adapter = CliGuidanceAdapter {
             guidance_text_parts: vec![
                 "<project-guidance name=AGENTS.md>\nUse cargo test.\n</project-guidance>"
@@ -689,7 +713,7 @@ mod tests {
 
         let messages = tokio::runtime::Runtime::new()
             .expect("runtime should start")
-            .block_on(adapter.prepare_model_messages_with_context(
+            .block_on(adapter.prepare_provider_messages_with_context(
                 &mut state,
                 &mut context,
                 vec![ModelMessage::Request(request)],
@@ -706,22 +730,24 @@ mod tests {
         assert!(matches!(
             &request.parts[1],
             ModelRequestPart::Instruction { text, metadata }
-                if text.contains("<project-guidance name=AGENTS.md>")
-                    && metadata.get(INSTRUCTION_ORIGIN_METADATA) == Some(&serde_json::json!("cli_guidance"))
-                    && metadata.get(INSTRUCTION_DYNAMIC_METADATA) == Some(&serde_json::json!(false))
+                if text.contains("<environment-context>fresh</environment-context>")
+                    && metadata.get(INSTRUCTION_DYNAMIC_METADATA) == Some(&serde_json::json!(true))
         ));
         assert!(matches!(
             &request.parts[2],
-            ModelRequestPart::Instruction { text, metadata }
-                if text.contains("<user-rules location=/home/user/.starweaver/RULES.md>")
-                    && metadata.get(INSTRUCTION_ORIGIN_METADATA) == Some(&serde_json::json!("cli_guidance"))
-                    && metadata.get(INSTRUCTION_DYNAMIC_METADATA) == Some(&serde_json::json!(false))
+            ModelRequestPart::UserPrompt { content, metadata, .. }
+                if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                    == Some(&serde_json::json!(CLI_GUIDANCE_ORIGIN))
+                    && matches!(&content[0], ContentPart::Text { text }
+                        if text.contains("<project-guidance name=AGENTS.md>"))
         ));
         assert!(matches!(
             &request.parts[3],
-            ModelRequestPart::Instruction { text, metadata }
-                if text.contains("<environment-context>fresh</environment-context>")
-                    && metadata.get(INSTRUCTION_DYNAMIC_METADATA) == Some(&serde_json::json!(true))
+            ModelRequestPart::UserPrompt { content, metadata, .. }
+                if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                    == Some(&serde_json::json!(CLI_GUIDANCE_ORIGIN))
+                    && matches!(&content[0], ContentPart::Text { text }
+                        if text.contains("<user-rules location=/home/user/.starweaver/RULES.md>"))
         ));
         assert!(matches!(
             &request.parts[4],
@@ -784,12 +810,10 @@ mod tests {
             .filter(|part| {
                 matches!(
                     part,
-                    ModelRequestPart::Instruction { text, metadata }
-                        if text == guidance
-                            && metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                                == Some(&serde_json::json!("cli_guidance"))
-                            && metadata.get(INSTRUCTION_DYNAMIC_METADATA)
-                                == Some(&serde_json::json!(false))
+                    ModelRequestPart::UserPrompt { content, metadata, .. }
+                        if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                            == Some(&serde_json::json!(CLI_GUIDANCE_ORIGIN))
+                            && matches!(content.first(), Some(ContentPart::Text { text }) if text == guidance)
                 )
             })
             .count()

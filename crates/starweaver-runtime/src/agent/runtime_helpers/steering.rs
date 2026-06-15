@@ -49,6 +49,7 @@ impl Agent {
                     "steering_received",
                     serde_json::json!({"id": steering.id, "text": steering.text}),
                 ));
+                context.steering_messages.push(steering.text.clone());
                 steering_messages.push(steering);
             } else {
                 retained_messages.push(message);

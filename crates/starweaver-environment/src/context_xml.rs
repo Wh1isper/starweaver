@@ -22,12 +22,8 @@ pub fn render_environment_context_xml(
     xml.open("environment-context")
         .open("file-system")
         .text_element("provider-id", provider_id)
-        .text_element("default-directory", default_directory);
-    if let Some(tmp_directory) = tmp_directory {
-        xml.text_element("tmp-directory", tmp_directory)
-            .text_element("tmp-directory-note", TMP_DIRECTORY_CONTEXT_NOTE);
-    }
-    xml.open("file-trees");
+        .text_element("default-directory", default_directory)
+        .open("file-trees");
     for file_tree in file_trees {
         if !file_tree.listing_text.is_empty() {
             xml.text_block_element_attrs(
@@ -37,7 +33,12 @@ pub fn render_environment_context_xml(
             );
         }
     }
-    xml.close("file-trees").close("file-system");
+    xml.close("file-trees");
+    if let Some(tmp_directory) = tmp_directory {
+        xml.text_element("tmp-directory", tmp_directory)
+            .text_element("tmp-directory-note", TMP_DIRECTORY_CONTEXT_NOTE);
+    }
+    xml.close("file-system");
 
     if shell_enabled {
         xml.open("shell-execution");
@@ -69,5 +70,35 @@ pub fn local_shell_metadata() -> ShellMetadata {
         platform: std::env::consts::OS,
         shell_type,
         shell_executable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_trees_are_rendered_before_volatile_tmp_directory() {
+        let xml = render_environment_context_xml(
+            "local",
+            "/workspace",
+            Some("/tmp/starweaver-run-1".to_string()),
+            &[FileTreeBlock {
+                path: "/workspace".to_string(),
+                listing_text: "Cargo.toml".to_string(),
+            }],
+            false,
+            None,
+        );
+
+        let Some(file_trees_index) = xml.find("<file-trees>") else {
+            panic!("environment context should include file trees: {xml}");
+        };
+        let Some(tmp_directory_index) = xml.find("<tmp-directory>") else {
+            panic!("environment context should include tmp directory: {xml}");
+        };
+        assert!(file_trees_index < tmp_directory_index);
+        assert!(xml.contains("Cargo.toml"));
+        assert!(xml.contains("/tmp/starweaver-run-1"));
     }
 }

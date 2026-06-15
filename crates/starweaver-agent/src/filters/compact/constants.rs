@@ -1,4 +1,4 @@
-pub(super) const CACHE_FRIENDLY_COMPACT_INSTRUCTION: &str = "Generate a compact continuation summary for the conversation history.
+pub(super) const CACHE_FRIENDLY_COMPACT_INSTRUCTION: &str = r#"Generate a compact continuation summary for the conversation history.
 Return only the summary text. Do not call tools.
 Use this exact Markdown structure:
 
@@ -26,7 +26,7 @@ Use this exact Markdown structure:
    - [Explicit pending tasks]
 
 6. Current Work:
-   [Precise current work immediately before compaction]
+   [Precise current work immediately before compaction. If the current user request references numbered items, "above", "that", or similar phrases, resolve those references using the previous assistant response and spell out what they refer to.]
 
 7. Optional Next Step:
    [Direct next step aligned with the current work]
@@ -37,9 +37,9 @@ Use this exact Markdown structure:
 9. Skills Documentation:
    [If any /skills/ documentation was accessed, list the relevant skill files and remind the next agent to re-read them]
 
-10. Auto-load Files:
-   [List only file paths that should be auto-loaded when resuming]
-";
+10. Files to Inspect on Resume:
+   [List only file paths that may need to be inspected when resuming. Do not include file contents and do not assume they will be automatically loaded.]
+"#;
 pub(super) const CACHE_FRIENDLY_COMPACT_PROMPT: &str = "Compact the conversation history into the requested continuation summary format. Focus on details needed to continue the user's work accurately after older messages are removed. Return only the summary text.";
 pub(super) const COMPACT_LIMIT_PROMPT: &str = "You have exceeded the maximum token limit for this conversation. Please provide a summary of the conversation so far and what you should work on next and I'll resume the conversation.";
 pub(super) const MAX_COMPACT_INSTRUCTION_CHARS: usize = 12_000;

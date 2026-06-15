@@ -25,8 +25,7 @@ pub(crate) use openai_common::{
 };
 pub(crate) use settings::{apply_common_settings, apply_common_settings_with_max_tokens};
 pub(crate) use system::{
-    collect_system_and_non_system, collect_system_parts_and_non_system,
-    is_dynamic_system_instruction, SystemInstructionPart,
+    collect_system_and_non_system, collect_system_parts_and_non_system, SystemInstructionPart,
 };
 #[cfg(test)]
 pub(crate) use usage::usage_from_named;
