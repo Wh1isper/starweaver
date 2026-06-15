@@ -18,7 +18,7 @@ pub use agent::{Agent, AgentError, AgentOverride, AgentResult, AgentRuntimePolic
 pub use capability::{
     resolve_capability_order, AgentCapability, CapabilityBundle, CapabilityError, CapabilityId,
     CapabilityOrderError, CapabilityOrdering, CapabilityResult, CapabilitySpec, RetryEventKind,
-    StaticCapabilityBundle,
+    StaticCapabilityBundle, RUNTIME_CONTEXT_CAPABILITY_ID,
 };
 pub use direct::{model_request, model_request_stream, tool_call, DirectModelRequest};
 pub use executor::{

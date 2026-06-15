@@ -41,3 +41,17 @@ assert_eq!(context.state.get("last_output"), Some(&serde_json::json!("ok")));
 ```
 
 Capability bundles can package hooks, instructions, tools, settings, output validators, output functions, history processors, and usage limits.
+
+Model-visible context belongs in `prepare_model_messages_with_context`, because mutations from that hook are captured in canonical session history and remain part of future prompt-cache prefixes. Runtime-owned context is installed by the runtime as the built-in `starweaver.runtime.context` capability in this same canonical pipeline. Use `prepare_provider_messages_with_context` only for provider-bound rewrites that must not be stored in session history.
+
+Capabilities can order themselves around the built-in runtime context injector with `RUNTIME_CONTEXT_CAPABILITY_ID`:
+
+```rust
+use starweaver_agent::{CapabilityOrdering, CapabilitySpec, RUNTIME_CONTEXT_CAPABILITY_ID};
+
+# fn example() {
+let spec = CapabilitySpec::new("my.after_runtime_context")
+    .with_ordering(CapabilityOrdering::default().after(RUNTIME_CONTEXT_CAPABILITY_ID));
+# let _ = spec;
+# }
+```

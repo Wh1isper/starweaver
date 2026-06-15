@@ -37,7 +37,7 @@ async fn environment_context_capability_injects_provider_context_as_user_prompt(
         starweaver_agent::AgentRunState::new(RunId::default(), ConversationId::default());
 
     let messages = EnvironmentContextCapability
-        .prepare_provider_messages_with_context(
+        .prepare_model_messages_with_context(
             &mut state,
             &mut context,
             vec![starweaver_model::ModelMessage::Request(request)],

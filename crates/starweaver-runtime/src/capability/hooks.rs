@@ -34,7 +34,12 @@ pub trait AgentCapability: Send + Sync {
         self.on_run_start(state).await
     }
 
-    /// Called after message history is assembled and before runtime context injection/model call.
+    /// Called after message history is assembled and before provider-bound preparation/model call.
+    ///
+    /// Mutations from this hook are captured in canonical session history. Use this hook
+    /// for model-visible context that must remain part of future request prefixes; use
+    /// `prepare_provider_messages` for provider-only transient rewrites. The runtime
+    /// context injector is implemented as a built-in capability in this canonical pipeline.
     async fn prepare_model_messages(
         &self,
         _state: &mut AgentRunState,
@@ -44,6 +49,10 @@ pub trait AgentCapability: Send + Sync {
     }
 
     /// Context-aware model-message preparation hook.
+    ///
+    /// Mutations from this hook are captured in canonical session history. Use this hook
+    /// for model-visible context that must remain part of future request prefixes; use
+    /// `prepare_provider_messages_with_context` for provider-only transient rewrites.
     async fn prepare_model_messages_with_context(
         &self,
         state: &mut AgentRunState,
@@ -53,7 +62,7 @@ pub trait AgentCapability: Send + Sync {
         self.prepare_model_messages(state, messages).await
     }
 
-    /// Called after durable history capture and before runtime context injection/model call.
+    /// Called after canonical model-message capabilities and durable history capture, before the model call.
     ///
     /// Mutations from this hook are provider-bound only and are not copied back into the
     /// session message history.

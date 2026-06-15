@@ -78,15 +78,16 @@ pub use starweaver_runtime::{
     OutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputPolicy, OutputSchema,
     OutputValidationError, OutputValidationResult, OutputValidator, OutputValue, RecordedSpan,
     RetryEventKind, SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus, StaticCapabilityBundle,
-    TraceLevel, TraceRecorder, UsageLimitError, UsageLimits,
+    TraceLevel, TraceRecorder, UsageLimitError, UsageLimits, RUNTIME_CONTEXT_CAPABILITY_ID,
 };
 pub use starweaver_tools::{
-    json_tool, tool_definition_from_mcp_spec, typed_json_tool, ApprovalRequiredToolset,
-    DeferredLoadingToolset, DynTool, DynToolset, DynamicToolset, EmptyToolArgs, FilteredToolset,
-    FunctionTool, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer,
-    PrefixedTool, PrefixedToolset, PreparedToolset, RenamedToolset, StaticToolset, Tool,
-    ToolApprovalState, ToolContext, ToolError, ToolInstruction, ToolRegistry, ToolResult, Toolset,
-    TypedFunctionTool,
+    dynamic_tool_proxy as tool_proxy_toolset, json_tool, json_tool as string_tool,
+    tool_definition_from_mcp_spec, typed_json_tool, typed_json_tool as typed_tool,
+    ApprovalRequiredToolset, DeferredLoadingToolset, DynTool, DynToolset, DynamicToolset,
+    EmptyToolArgs, FilteredToolset, FunctionTool, McpToolSpec, McpToolset, McpToolsetConfig,
+    McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset, PreparedToolset, RenamedToolset,
+    StaticToolset, Tool, ToolApprovalState, ToolContext, ToolError, ToolInstruction, ToolRegistry,
+    ToolResult, Toolset, TypedFunctionTool,
 };
 pub use subagent::{
     AgentApp, SubagentConfig, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,

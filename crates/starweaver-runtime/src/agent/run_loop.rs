@@ -292,7 +292,6 @@ impl Agent {
                 messages = self
                     .prepare_provider_messages(&mut state, context, messages)
                     .await?;
-                Self::inject_runtime_context(context, &mut messages);
                 Self::validate_model_request_messages(&messages)?;
                 let mut model_spec = SpanSpec::new("gen_ai.inference")
                     .with_kind(SpanKind::Client)

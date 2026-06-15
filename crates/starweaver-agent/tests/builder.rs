@@ -9,7 +9,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    attach_environment, AgentBuilder, AgentCapability, AgentContext, AgentRunState,
+    attach_environment, AgentBuilder, AgentCapability, AgentContext, AgentRunState, AgentSession,
     CapabilityOrdering, CapabilityResult, CapabilitySpec, FunctionDynamicInstruction,
     FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
     FunctionTool, OutputFunctionDefinition, OutputSchema, OutputValue, StaticCapabilityBundle,
@@ -20,10 +20,11 @@ use starweaver_environment::{
     EnvironmentPolicy, FilePolicy, ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
-    ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
-    ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
-    ProtocolFamily, ToolCallPart, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
-    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+    providers::openai_responses::OpenAiResponsesAdapter, ModelAdapter, ModelError, ModelMessage,
+    ModelProfile, ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelResponse,
+    ModelResponsePart, ModelSettings, ProtocolFamily, ToolCallPart,
+    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_METADATA,
+    INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
 
 #[derive(Clone)]
@@ -269,7 +270,7 @@ async fn builder_installs_default_filter_capabilities_before_custom_capabilities
 }
 
 #[tokio::test]
-async fn builder_injects_environment_context_before_runtime_context_and_user_prompt() {
+async fn builder_persists_environment_and_runtime_context_for_prefix_stability() {
     let captured_messages = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(MessageCaptureModel {
         captured_messages: Arc::clone(&captured_messages),
@@ -318,8 +319,47 @@ async fn builder_injects_environment_context_before_runtime_context_and_user_pro
 
     let durable_history =
         serde_json::to_string(&context.message_history).expect("message history should serialize");
-    assert!(!durable_history.contains("<environment-context>"));
-    assert!(!durable_history.contains("<runtime-context>"));
+    assert!(durable_history.contains("<environment-context>"));
+    assert!(durable_history.contains("<runtime-context>"));
+}
+
+#[tokio::test]
+async fn multi_run_session_preserves_previous_model_request_prefix() {
+    let captured_messages = Arc::new(Mutex::new(Vec::new()));
+    let model = Arc::new(MessageCaptureModel {
+        captured_messages: Arc::clone(&captured_messages),
+    });
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test-env")
+            .with_file("README.md", "workspace")
+            .with_policy(EnvironmentPolicy {
+                files: FilePolicy::read_only(),
+                shell: ShellPolicy::default(),
+            }),
+    );
+    let agent = AgentBuilder::new(model).build();
+    let mut session = AgentSession::new(agent);
+    attach_environment(session.context_mut(), provider);
+
+    let first = session.run("inspect workspace").await.unwrap();
+    assert_eq!(first.output, "captured");
+    let second = session.run("continue").await.unwrap();
+    assert_eq!(second.output, "captured");
+
+    let captured = captured_messages.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[0].len(), 1);
+    assert!(captured[1].len() >= 3);
+    assert_eq!(captured[0][0], captured[1][0]);
+
+    let first_wire =
+        OpenAiResponsesAdapter::build_request("gpt-5.5", &captured[0], None, &[], &[]).unwrap();
+    let second_wire =
+        OpenAiResponsesAdapter::build_request("gpt-5.5", &captured[1], None, &[], &[]).unwrap();
+    let first_input = first_wire["input"].as_array().unwrap();
+    let second_input = second_wire["input"].as_array().unwrap();
+    assert!(second_input.len() > first_input.len());
+    assert_eq!(first_input.as_slice(), &second_input[..first_input.len()]);
 }
 
 #[tokio::test]

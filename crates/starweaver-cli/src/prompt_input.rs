@@ -58,7 +58,7 @@ pub struct PromptInput {
     /// Additional text-only context parts appended to the first user prompt.
     #[serde(default)]
     pub extra_text_parts: Vec<String>,
-    /// Transient guidance loaded for the current request only.
+    /// Cacheable guidance loaded for the current run and synchronized into canonical history.
     #[serde(default)]
     pub guidance_text_parts: Vec<String>,
 }
@@ -77,14 +77,14 @@ impl PromptInput {
 
     /// Return true when this input needs first-request content-part rewriting.
     ///
-    /// Deliberately excludes `guidance_text_parts`: guidance is injected as
-    /// transient provider-bound context, not as persisted user prompt content.
+    /// Deliberately excludes `guidance_text_parts`: guidance is injected by
+    /// `CliGuidanceAdapter` as cacheable canonical system prompts, not user prompt content.
     #[must_use]
     pub fn has_content_parts(&self) -> bool {
         !self.attachments.is_empty() || !self.extra_text_parts.is_empty()
     }
 
-    /// Append transient guidance to the current provider request.
+    /// Append cacheable guidance for the current run.
     pub fn push_guidance_text_part(&mut self, text: impl Into<String>) {
         let text = text.into();
         if !text.trim().is_empty() {

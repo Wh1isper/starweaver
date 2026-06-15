@@ -37,7 +37,7 @@ pub struct EnvironmentContextCapability;
 
 #[async_trait]
 impl AgentCapability for EnvironmentContextCapability {
-    async fn prepare_provider_messages_with_context(
+    async fn prepare_model_messages_with_context(
         &self,
         state: &mut AgentRunState,
         context: &mut AgentContext,

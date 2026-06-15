@@ -9,11 +9,11 @@ use starweaver_core::Usage;
 use starweaver_model::{
     ContentPart, ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
-    ProtocolFamily, TestModel,
+    ProtocolFamily, TestModel, INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
 use starweaver_runtime::{
     Agent, AgentCapability, AgentRunState, AgentRuntimePolicy, AgentStreamEvent, CapabilityError,
-    CapabilityResult,
+    CapabilityOrdering, CapabilityResult, CapabilitySpec, RUNTIME_CONTEXT_CAPABILITY_ID,
 };
 
 struct ContextModel;
@@ -26,6 +26,8 @@ struct CompactContextRecorder {
 }
 
 struct EffectivePromptAdapter;
+
+struct AfterRuntimeContextMarker;
 
 struct EffectivePromptRecorder {
     metadata_content: Arc<Mutex<Option<Vec<ContentPart>>>>,
@@ -90,6 +92,46 @@ impl AgentCapability for EffectivePromptAdapter {
             },
         ];
         Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentCapability for AfterRuntimeContextMarker {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new("test.after_runtime_context")
+            .with_ordering(CapabilityOrdering::default().after(RUNTIME_CONTEXT_CAPABILITY_ID))
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        mut messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        let Some(ModelMessage::Request(request)) = messages
+            .iter_mut()
+            .rev()
+            .find(|message| matches!(message, ModelMessage::Request(_)))
+        else {
+            return Ok(messages);
+        };
+        let runtime_context_seen = request.parts.iter().any(|part| {
+            matches!(
+                part,
+                ModelRequestPart::UserPrompt { content, metadata, .. }
+                    if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                        == Some(&serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT))
+                        && content.iter().any(|part| matches!(
+                            part,
+                            ContentPart::Text { text } if text.contains("<runtime-context>")
+                        ))
+            )
+        });
+        request.metadata.insert(
+            "test_after_runtime_context_seen".to_string(),
+            serde_json::json!(runtime_context_seen),
+        );
+        Ok(messages)
     }
 }
 
@@ -240,6 +282,44 @@ async fn before_request_rewrites_update_compact_restore_user_prompt() {
         metadata_content.lock().unwrap().as_deref(),
         Some(expected.as_slice()),
     );
+}
+
+#[tokio::test]
+async fn runtime_context_is_builtin_canonical_capability() {
+    let model = Arc::new(TestModel::with_text("ok"));
+    let mut context = AgentContext::default();
+
+    let result = Agent::new(model.clone())
+        .with_capability(Arc::new(AfterRuntimeContextMarker))
+        .run_with_context("hello", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "ok");
+    let captured = model.captured_messages();
+    assert_eq!(captured.len(), 1);
+    let request = captured[0]
+        .iter()
+        .find_map(|message| match message {
+            ModelMessage::Request(request) => Some(request),
+            ModelMessage::Response(_) => None,
+        })
+        .unwrap();
+    assert_eq!(
+        request.metadata.get("test_after_runtime_context_seen"),
+        Some(&serde_json::json!(true)),
+    );
+    assert!(request.parts.iter().any(|part| matches!(
+        part,
+        ModelRequestPart::UserPrompt { content, metadata, .. }
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT))
+                && content.iter().any(|part| matches!(
+                    part,
+                    ContentPart::Text { text } if text.contains("<runtime-context>")
+                ))
+    )));
+    assert_eq!(context.message_history.first(), captured[0].first());
 }
 
 #[tokio::test]

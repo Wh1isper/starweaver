@@ -1,39 +1,73 @@
-//! Runtime context instruction injection helpers.
+//! Runtime-owned context instruction capability.
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use starweaver_context::AgentContext;
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestPart, INSTRUCTION_ORIGIN_METADATA,
     INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
 
-use crate::agent::{runtime_helpers::request_instruction_end_index, Agent};
+use crate::{
+    agent::runtime_helpers::request_instruction_end_index,
+    capability::{
+        AgentCapability, CapabilityResult, CapabilitySpec, RUNTIME_CONTEXT_CAPABILITY_ID,
+    },
+    run::AgentRunState,
+};
 
-impl Agent {
-    pub(in crate::agent) fn inject_runtime_context(
-        context: &AgentContext,
-        messages: &mut Vec<ModelMessage>,
-    ) {
-        let is_user_prompt = latest_request(messages)
-            .map_or(true, |request| !request_has_tool_return_or_retry(request))
-            || metadata_bool(&context.metadata, "starweaver_force_inject_instructions");
-        let Some(text) = context.inject_runtime_context(is_user_prompt) else {
-            return;
-        };
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            INSTRUCTION_ORIGIN_METADATA.to_string(),
-            serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT),
-        );
-        insert_context_into_latest_request(
-            messages,
-            ModelRequestPart::UserPrompt {
-                content: vec![ContentPart::Text { text }],
-                name: None,
-                metadata,
-            },
-        );
+/// Runtime-owned capability that appends current `AgentContext` state to canonical history.
+#[derive(Clone, Debug, Default)]
+pub(in crate::agent) struct RuntimeContextCapability;
+
+/// Return the built-in runtime context capability.
+#[must_use]
+pub(in crate::agent) fn runtime_context_capability() -> Arc<dyn AgentCapability> {
+    Arc::new(RuntimeContextCapability)
+}
+
+#[async_trait]
+impl AgentCapability for RuntimeContextCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new(RUNTIME_CONTEXT_CAPABILITY_ID).with_description(
+            "Injects runtime-owned AgentContext instructions into canonical model-message history.",
+        )
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        mut messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        inject_runtime_context(context, &mut messages);
+        Ok(messages)
     }
 }
+
+fn inject_runtime_context(context: &AgentContext, messages: &mut Vec<ModelMessage>) {
+    let is_user_prompt = latest_request(messages)
+        .map_or(true, |request| !request_has_tool_return_or_retry(request))
+        || metadata_bool(&context.metadata, "starweaver_force_inject_instructions");
+    let Some(text) = context.inject_runtime_context(is_user_prompt) else {
+        return;
+    };
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        INSTRUCTION_ORIGIN_METADATA.to_string(),
+        serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT),
+    );
+    insert_context_into_latest_request(
+        messages,
+        ModelRequestPart::UserPrompt {
+            content: vec![ContentPart::Text { text }],
+            name: None,
+            metadata,
+        },
+    );
+}
+
 fn latest_request(messages: &[ModelMessage]) -> Option<&ModelRequest> {
     messages.iter().rev().find_map(|message| match message {
         ModelMessage::Request(request) => Some(request),
