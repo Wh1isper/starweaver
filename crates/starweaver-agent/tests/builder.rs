@@ -351,6 +351,14 @@ async fn multi_run_session_preserves_previous_model_request_prefix() {
     assert_eq!(captured[0].len(), 1);
     assert!(captured[1].len() >= 3);
     assert_eq!(captured[0][0], captured[1][0]);
+    assert_eq!(
+        context_origin_count(&captured[1], INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT),
+        1
+    );
+    assert_eq!(
+        context_origin_count(&captured[1], INSTRUCTION_ORIGIN_RUNTIME_CONTEXT),
+        2
+    );
 
     let first_wire =
         OpenAiResponsesAdapter::build_request("gpt-5.5", &captured[0], None, &[], &[]).unwrap();
@@ -360,6 +368,24 @@ async fn multi_run_session_preserves_previous_model_request_prefix() {
     let second_input = second_wire["input"].as_array().unwrap();
     assert!(second_input.len() > first_input.len());
     assert_eq!(first_input.as_slice(), &second_input[..first_input.len()]);
+}
+
+fn context_origin_count(messages: &[ModelMessage], origin: &str) -> usize {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ModelMessage::Request(request) => Some(request),
+            ModelMessage::Response(_) => None,
+        })
+        .flat_map(|request| request.parts.iter())
+        .filter(|part| {
+            matches!(
+                part,
+                ModelRequestPart::UserPrompt { metadata, .. }
+                    if metadata.get(INSTRUCTION_ORIGIN_METADATA) == Some(&serde_json::json!(origin))
+            )
+        })
+        .count()
 }
 
 #[tokio::test]

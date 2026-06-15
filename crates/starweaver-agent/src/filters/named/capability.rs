@@ -18,8 +18,8 @@ use crate::filters::{
 use super::{
     context_injection::{
         auto_load_files_filter, background_shell_filter, bus_message_filter, cold_start_filter,
-        inject_instruction_from_metadata, system_prompt_filter, ENVIRONMENT_INSTRUCTIONS_METADATA,
-        HANDOFF_METADATA, RUNTIME_INSTRUCTIONS_METADATA,
+        handoff_filter, inject_instruction_from_metadata, system_prompt_filter,
+        ENVIRONMENT_INSTRUCTIONS_METADATA, RUNTIME_INSTRUCTIONS_METADATA,
     },
     ordering::{filter_capability_id, filter_capability_ordering},
     reasoning::reasoning_normalize_filter,
@@ -90,12 +90,10 @@ impl AgentCapability for NamedFilterCapability {
             "media_upload" => {
                 media_upload_filter(state, context, messages, self.uploader.as_ref()).await
             }
-            "handoff" => {
-                inject_instruction_from_metadata(state, messages, HANDOFF_METADATA, "handoff")
-            }
-            "auto_load_files" => auto_load_files_filter(state, messages),
+            "handoff" => handoff_filter(state, context, messages),
+            "auto_load_files" => auto_load_files_filter(state, context, messages).await,
             "background_shell" => background_shell_filter(state, messages),
-            "bus_message" => bus_message_filter(state, messages),
+            "bus_message" => bus_message_filter(state, context, messages),
             "environment_instructions" => inject_instruction_from_metadata(
                 state,
                 messages,

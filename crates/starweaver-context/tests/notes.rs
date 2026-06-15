@@ -59,14 +59,16 @@ fn note_store_exports_and_restores() {
 #[test]
 fn notes_round_trip_through_resumable_state() {
     let mut state = ResumableState::default();
-    state.notes.set("lang", "Chinese");
-    state.notes.set("os", "macOS");
+    state
+        .notes
+        .insert("lang".to_string(), "Chinese".to_string());
+    state.notes.insert("os".to_string(), "macOS".to_string());
 
     let encoded = serde_json::to_string(&state).unwrap();
     let restored: ResumableState = serde_json::from_str(&encoded).unwrap();
 
-    assert_eq!(restored.notes.get("lang"), Some("Chinese"));
-    assert_eq!(restored.notes.get("os"), Some("macOS"));
+    assert_eq!(restored.notes.get("lang"), Some(&"Chinese".to_string()));
+    assert_eq!(restored.notes.get("os"), Some(&"macOS".to_string()));
 }
 
 #[test]

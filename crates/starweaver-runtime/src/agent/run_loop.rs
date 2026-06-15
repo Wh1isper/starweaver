@@ -3,9 +3,10 @@
 use std::collections::BTreeMap;
 
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
-use starweaver_core::{RunId, Usage};
+use starweaver_core::Usage;
 use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
+    ModelSettings,
 };
 use starweaver_tools::ToolContext;
 
@@ -32,6 +33,29 @@ use crate::{
 };
 
 impl Agent {
+    fn merge_context_model_headers(
+        &self,
+        context: &AgentContext,
+        settings: &mut Option<ModelSettings>,
+    ) {
+        let should_add_headers = self.model.provider_name() == Some("codex")
+            || context.provider_session_id.is_some()
+            || context.provider_thread_id.is_some();
+        if !should_add_headers {
+            return;
+        }
+        let headers = context.get_model_extra_headers();
+        if headers.values().all(std::string::String::is_empty) {
+            return;
+        }
+        let settings = settings.get_or_insert_with(ModelSettings::default);
+        for (key, value) in headers {
+            if !value.is_empty() {
+                settings.extra_headers.entry(key).or_insert(value);
+            }
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn run_with_context_inner(
         &self,
@@ -77,6 +101,7 @@ impl Agent {
                 preserve_pending_tool_returns_for_resume($state);
                 context.message_history.clone_from(&$state.message_history);
                 context.usage.clone_from(&$state.usage);
+                context.finish_run();
                 context.publish_event(AgentEvent::new(
                     "run_failed",
                     serde_json::json!({
@@ -135,6 +160,7 @@ impl Agent {
                             status: $state.status,
                         }
                     );
+                    context.finish_run();
                     return Err(AgentError::ExecutionSuspended { node, reason });
                 }
                 stream_event!(
@@ -149,6 +175,7 @@ impl Agent {
         }
 
         let initial_prompt = prompt.into();
+        context.prepare_new_run();
         let run_span = self.trace_recorder.start_span(
             SpanSpec::new("gen_ai.invoke_agent")
                 .with_attribute("gen_ai.operation.name", serde_json::json!("invoke_agent")),
@@ -156,11 +183,8 @@ impl Agent {
         );
         let previous_trace_context = context.trace_context.clone();
         context.trace_context = run_span.context().clone();
-        let run_id = RunId::new();
+        let run_id = context.run_id.clone().unwrap_or_default();
         context.run_id = Some(run_id.clone());
-        if !context.metadata.contains_key("parent_agent_id") {
-            context.usage_snapshot_entries.clear();
-        }
         if let Some(model_config) = self.model_config.clone() {
             context.merge_model_config(model_config);
         }
@@ -174,7 +198,6 @@ impl Agent {
         }]);
         context.previous_assistant_response_reference =
             Self::previous_assistant_response_reference(&context.message_history);
-        context.steering_messages.clear();
         let mut state = AgentRunState::new(run_id.clone(), conversation_id.clone());
         state.message_history = context.message_history.clone();
         state.usage = context.usage.clone();
@@ -245,6 +268,7 @@ impl Agent {
                     .splice(insert_at..insert_at, dynamic_instruction_parts);
             }
             let mut settings = self.effective_settings();
+            self.merge_context_model_headers(context, &mut settings);
             let skipped_response = self
                 .call_before_model_request(&mut state, context, &mut request, &mut settings)
                 .await?;
@@ -253,7 +277,6 @@ impl Agent {
                 Self::sync_compact_context_metadata(context, &mut state);
             }
             if skipped_response.is_none() {
-                Self::apply_steering_messages(context, &mut request);
                 Self::sync_compact_context_metadata(context, &mut state);
                 stream_context_events!(&state, context_event_cursor);
             }
@@ -279,12 +302,24 @@ impl Agent {
             } else {
                 self.check_before_request(&state)?;
                 let mut messages = self.prepare_model_messages(&mut state, context).await?;
+                context.tool_id_wrapper.wrap_messages(&mut messages);
                 Self::validate_model_request_messages(&messages)?;
                 self.inject_missing_static_instructions(&run_id, &conversation_id, &mut messages);
                 let params = self.effective_request_params(&state, context).await?;
                 messages = Self::attach_prepared_request_instructions(messages, &params);
                 for message in &mut messages {
                     Self::fill_message_metadata(message, &run_id, &conversation_id);
+                }
+                if Self::has_pending_steering_messages(context) {
+                    if let Some(ModelMessage::Request(request)) = messages
+                        .iter_mut()
+                        .rev()
+                        .find(|message| matches!(message, ModelMessage::Request(_)))
+                    {
+                        Self::apply_runtime_steering_messages(context, request);
+                        Self::sync_compact_context_metadata(context, &mut state);
+                        stream_context_events!(&state, context_event_cursor);
+                    }
                 }
                 Self::validate_model_request_messages(&messages)?;
                 state.message_history.clone_from(&messages);
@@ -373,10 +408,17 @@ impl Agent {
                         Err(error) => recover_model_error!(error),
                     };
                     while let Some(model_event) = model_stream.recv().await {
-                        let model_event = match model_event {
+                        let mut model_event = match model_event {
                             Ok(event) => event,
                             Err(error) => recover_model_error!(error),
                         };
+                        if let ModelResponseStreamEvent::FinalResult(final_response) =
+                            &mut model_event
+                        {
+                            for part in &mut final_response.parts {
+                                context.tool_id_wrapper.wrap_response_part(part);
+                            }
+                        }
                         stream_event!(
                             &state,
                             AgentStreamEvent::ModelStream {
@@ -441,6 +483,9 @@ impl Agent {
                 .conversation_id
                 .get_or_insert_with(|| conversation_id.clone());
             response.timestamp.get_or_insert_with(chrono::Utc::now);
+            for part in &mut response.parts {
+                context.tool_id_wrapper.wrap_response_part(part);
+            }
             state.run_step += 1;
             let response_usage = response.usage.clone();
             stream_event!(
@@ -541,6 +586,7 @@ impl Agent {
                         );
                         self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
                         self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                        context.finish_run();
                         context.trace_context = previous_trace_context;
                         return Ok(AgentResult {
                             output,
@@ -872,6 +918,7 @@ impl Agent {
                     checkpoint!(AgentExecutionNode::ToolReturn, &state, context_event_cursor);
                     self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
                     self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                    context.finish_run();
                     context.trace_context = previous_trace_context;
                     return Ok(AgentResult {
                         output: String::new(),
@@ -933,6 +980,7 @@ impl Agent {
                     );
                     self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
                     self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                    context.finish_run();
                     context.trace_context = previous_trace_context;
                     return Ok(AgentResult {
                         output,

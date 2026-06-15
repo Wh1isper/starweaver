@@ -108,15 +108,16 @@ fn dedupe_instruction_parts(parts: Vec<ModelRequestPart>) -> Vec<ModelRequestPar
 }
 
 fn trim_instruction_text_for_replay(text: &str) -> Option<String> {
-    trim_instruction_text(text, MAX_COMPACT_REPLAY_INSTRUCTION_CHARS)
+    trim_instruction_text(text, MAX_COMPACT_REPLAY_INSTRUCTION_CHARS, &[])
 }
 
-fn trim_instruction_text_for_compact(text: &str) -> Option<String> {
-    trim_instruction_text(text, MAX_COMPACT_INSTRUCTION_CHARS)
+fn trim_instruction_text_for_compact(text: &str, injected_tags: &[String]) -> Option<String> {
+    trim_instruction_text(text, MAX_COMPACT_INSTRUCTION_CHARS, injected_tags)
 }
 
-fn trim_instruction_text(text: &str, max_chars: usize) -> Option<String> {
-    strip_injected_context_text(text).map(|text| truncate_compact_chars(&text, max_chars))
+fn trim_instruction_text(text: &str, max_chars: usize, injected_tags: &[String]) -> Option<String> {
+    strip_injected_context_text(text, injected_tags)
+        .map(|text| truncate_compact_chars(&text, max_chars))
 }
 
 fn truncate_compact_chars(text: &str, max_chars: usize) -> String {
@@ -157,7 +158,9 @@ pub(super) fn build_trimmed_compact_messages(
         messages
             .iter()
             .skip(messages.len().saturating_sub(keep))
-            .filter_map(|message| trim_message_for_compact(message.clone())),
+            .filter_map(|message| {
+                trim_message_for_compact(message.clone(), &context.injected_context_tags)
+            }),
     );
 
     if !has_context_restored_marker(&compacted) {
@@ -167,7 +170,10 @@ pub(super) fn build_trimmed_compact_messages(
     compacted
 }
 
-pub(super) fn trim_message_for_compact(message: ModelMessage) -> Option<ModelMessage> {
+pub(super) fn trim_message_for_compact(
+    message: ModelMessage,
+    injected_tags: &[String],
+) -> Option<ModelMessage> {
     match message {
         ModelMessage::Response(_) => Some(message),
         ModelMessage::Request(mut request) => {
@@ -185,7 +191,7 @@ pub(super) fn trim_message_for_compact(message: ModelMessage) -> Option<ModelMes
                     } => {
                         let content = content
                             .into_iter()
-                            .filter_map(trim_content_for_compact)
+                            .filter_map(|content| trim_content_for_compact(content, injected_tags))
                             .collect::<Vec<_>>();
                         if !content.is_empty() {
                             parts.push(ModelRequestPart::UserPrompt {
@@ -196,12 +202,14 @@ pub(super) fn trim_message_for_compact(message: ModelMessage) -> Option<ModelMes
                         }
                     }
                     ModelRequestPart::SystemPrompt { text, metadata } => {
-                        if let Some(text) = trim_instruction_text_for_compact(&text) {
+                        if let Some(text) = trim_instruction_text_for_compact(&text, injected_tags)
+                        {
                             parts.push(ModelRequestPart::SystemPrompt { text, metadata });
                         }
                     }
                     ModelRequestPart::Instruction { text, metadata } => {
-                        if let Some(text) = trim_instruction_text_for_compact(&text) {
+                        if let Some(text) = trim_instruction_text_for_compact(&text, injected_tags)
+                        {
                             parts.push(ModelRequestPart::Instruction { text, metadata });
                         }
                     }
@@ -217,10 +225,10 @@ pub(super) fn trim_message_for_compact(message: ModelMessage) -> Option<ModelMes
     }
 }
 
-fn trim_content_for_compact(content: ContentPart) -> Option<ContentPart> {
+fn trim_content_for_compact(content: ContentPart, injected_tags: &[String]) -> Option<ContentPart> {
     match content {
         ContentPart::Text { text } => {
-            strip_injected_context_text(&text).map(|text| ContentPart::Text { text })
+            strip_injected_context_text(&text, injected_tags).map(|text| ContentPart::Text { text })
         }
         ContentPart::ImageUrl { url } => Some(ContentPart::Text {
             text: format!("[image: {url}]"),
@@ -236,18 +244,28 @@ fn trim_content_for_compact(content: ContentPart) -> Option<ContentPart> {
     }
 }
 
-fn strip_injected_context_text(text: &str) -> Option<String> {
+fn strip_injected_context_text(text: &str, injected_tags: &[String]) -> Option<String> {
     let mut cleaned = text.to_string();
-    for tag in [
-        "runtime-context",
-        "environment-context",
-        PROJECT_GUIDANCE_TAG,
-        USER_RULES_TAG,
-    ] {
-        cleaned = strip_xml_tag_blocks(&cleaned, tag);
+    for tag in default_and_context_tags(injected_tags) {
+        cleaned = strip_xml_tag_blocks(&cleaned, &tag);
     }
     let cleaned = cleaned.trim().to_string();
     (!cleaned.is_empty()).then_some(cleaned)
+}
+
+fn default_and_context_tags(injected_tags: &[String]) -> Vec<String> {
+    let mut tags = vec![
+        "runtime-context".to_string(),
+        "environment-context".to_string(),
+        PROJECT_GUIDANCE_TAG.to_string(),
+        USER_RULES_TAG.to_string(),
+    ];
+    for tag in injected_tags {
+        if !tag.trim().is_empty() && !tags.iter().any(|existing| existing == tag) {
+            tags.push(tag.clone());
+        }
+    }
+    tags
 }
 
 fn strip_xml_tag_blocks(text: &str, tag: &str) -> String {

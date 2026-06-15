@@ -343,8 +343,9 @@ async fn agent_run_updates_context_history_usage_and_events() {
     assert_eq!(context.events.events()[0].kind, "run_start");
     assert_eq!(context.events.events()[1].kind, "steering_received");
     assert_eq!(context.events.events()[2].kind, "run_complete");
-    assert_eq!(context.messages.len(), 0);
-    let exported = context.export_state();
+    assert_eq!(context.messages.len(), 1);
+    assert!(!context.messages.has_pending(context.agent_id.as_str()));
+    let exported = context.export_full_state();
     assert_eq!(exported.message_history.len(), 2);
     assert_eq!(exported.agent_id.as_str(), "main");
 }
@@ -389,7 +390,8 @@ async fn steering_messages_are_drained_into_model_requests_and_stream_ack() {
             ContentPart::Text { text } if text.contains("focus on scroll behavior")
         ))
     )));
-    assert_eq!(context.messages.len(), 1);
+    assert_eq!(context.messages.len(), 2);
+    assert!(context.messages.has_pending(context.agent_id.as_str()));
     let ack = context
         .events
         .events()
@@ -482,7 +484,7 @@ async fn agent_can_resume_from_exported_context_state() {
         .await
         .unwrap();
 
-    let state = context.export_state();
+    let state = context.export_full_state();
     let mut restored = AgentContext::from_state(state);
     let result = Agent::new(Arc::new(ContextModel))
         .run_with_context("second", &mut restored)

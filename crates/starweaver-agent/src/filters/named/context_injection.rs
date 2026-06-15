@@ -10,9 +10,10 @@ use starweaver_runtime::AgentRunState;
 use crate::filters::{
     compact::instruction_parts,
     message::{
-        build_restored_request_parts, insert_context_part_after_control_parts,
-        insert_context_parts_after_control_parts, insert_request_part_after_control_parts,
-        metadata_text, push_user_text, request_metadata_mut,
+        build_handoff_request_parts, build_restored_request_parts,
+        insert_context_part_after_control_parts, insert_context_parts_after_control_parts,
+        insert_request_part_after_control_parts, metadata_text, push_user_text,
+        request_metadata_mut,
     },
 };
 
@@ -137,35 +138,151 @@ pub(super) fn inject_instruction_from_metadata(
     messages
 }
 
-pub(super) fn auto_load_files_filter(
+pub(super) fn handoff_filter(
     state: &AgentRunState,
+    context: &mut starweaver_context::AgentContext,
     mut messages: Vec<ModelMessage>,
 ) -> Vec<ModelMessage> {
-    let Some(files) = state
+    // Match ya-mono: the handoff processor owns this flag and clears it at the start
+    // of every filter pipeline pass, then sets it again only after a handoff restore.
+    context.force_inject_instructions = false;
+
+    let handoff_message = context
+        .handoff_message
+        .clone()
+        .filter(|message| !message.trim().is_empty())
+        .or_else(|| metadata_text(&state.metadata, HANDOFF_METADATA));
+    let Some(handoff_message) = handoff_message else {
+        return messages;
+    };
+
+    if handoff_message.contains("<context-restored>") {
+        context.handoff_message = None;
+        context.force_inject_instructions = true;
+        return inject_instruction_text(messages, handoff_message, "handoff");
+    }
+
+    let original_request = context
+        .user_prompts
+        .clone()
+        .filter(|content| !content.is_empty());
+    let previous_reference = context
+        .previous_assistant_response_reference
+        .as_deref()
+        .filter(|reference| !reference.trim().is_empty());
+    let steering_messages = context.steering_messages.clone();
+    let mut parts = instruction_parts(&messages);
+    parts.extend(build_handoff_request_parts(
+        handoff_message,
+        original_request,
+        previous_reference,
+        steering_messages,
+    ));
+    let origin = instruction_origin("handoff");
+    annotate_context_parts(&mut parts, "handoff", &origin);
+
+    messages = vec![ModelMessage::Request(ModelRequest {
+        parts,
+        timestamp: None,
+        instructions: None,
+        run_id: Some(state.run_id.clone()),
+        conversation_id: Some(state.conversation_id.clone()),
+        metadata: Map::from_iter([("keep".to_string(), json!("handoff"))]),
+    })];
+
+    context.handoff_message = None;
+    context.steering_messages.clear();
+    context.force_inject_instructions = true;
+    messages
+}
+
+pub(super) fn inject_instruction_text(
+    mut messages: Vec<ModelMessage>,
+    text: String,
+    instruction_type: &str,
+) -> Vec<ModelMessage> {
+    let origin = instruction_origin(instruction_type);
+    let mut metadata = Map::from_iter([
+        (
+            "starweaver_instruction_type".to_string(),
+            json!(instruction_type),
+        ),
+        (
+            INSTRUCTION_ORIGIN_METADATA.to_string(),
+            json!(origin.as_str()),
+        ),
+    ]);
+    if instruction_is_context(&origin) {
+        insert_context_part_after_control_parts(
+            &mut messages,
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text { text }],
+                name: None,
+                metadata,
+            },
+        );
+        return messages;
+    }
+    metadata.insert(
+        INSTRUCTION_DYNAMIC_METADATA.to_string(),
+        json!(instruction_is_dynamic(&origin)),
+    );
+    insert_request_part_after_control_parts(
+        &mut messages,
+        ModelRequestPart::Instruction { text, metadata },
+    );
+    messages
+}
+
+pub(super) async fn auto_load_files_filter(
+    state: &AgentRunState,
+    context: &mut starweaver_context::AgentContext,
+    mut messages: Vec<ModelMessage>,
+) -> Vec<ModelMessage> {
+    let mut loaded = Vec::new();
+    if let Some(files) = state
         .metadata
         .get(AUTO_LOAD_METADATA)
         .and_then(Value::as_array)
-    else {
-        return messages;
-    };
-    let mut loaded = Vec::new();
-    for file in files {
-        let path = file
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let content = file
-            .get("content")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        loaded.push(format!("## {path}\n{content}"));
+    {
+        for file in files {
+            let path = file
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let file_text = file
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            loaded.push(format!("### `{path}`\n\n```\n{file_text}\n```"));
+        }
     }
+
+    if !context.auto_load_files.is_empty() {
+        if let Some(environment) = context
+            .dependencies
+            .get::<crate::bundles::EnvironmentHandle>()
+        {
+            let files_to_load = context.auto_load_files.clone();
+            for path in &files_to_load {
+                match environment.provider().read_text(path).await {
+                    Ok(file_text) => loaded.push(format!("### `{path}`\n\n```\n{file_text}\n```")),
+                    Err(error) => loaded.push(format!("### `{path}`\n\n[Failed to load: {error}]")),
+                }
+            }
+            context.auto_load_files.clear();
+        }
+    }
+
     if loaded.is_empty() {
         return messages;
     }
-    push_user_text(
+    append_user_text_to_last_request(
         &mut messages,
-        format!("Auto-loaded files:\n{}", loaded.join("\n\n")),
+        format!(
+            "<auto-loaded-files>\n\n{}\n\n</auto-loaded-files>",
+            loaded.join("\n\n")
+        ),
         "auto_load_files",
     );
     messages
@@ -198,27 +315,83 @@ pub(super) fn background_shell_filter(
 
 pub(super) fn bus_message_filter(
     state: &AgentRunState,
+    context: &mut starweaver_context::AgentContext,
     mut messages: Vec<ModelMessage>,
 ) -> Vec<ModelMessage> {
-    let Some(bus_messages) = state
+    let mut rendered = Vec::new();
+    if let Some(bus_messages) = state
         .metadata
         .get(BUS_MESSAGE_METADATA)
         .and_then(Value::as_array)
-    else {
-        return messages;
-    };
-    if bus_messages.is_empty() {
+    {
+        for message in bus_messages {
+            rendered.push(message.to_string());
+        }
+    }
+
+    let pending = context.consume_messages();
+    for message in pending {
+        let rendered_text = message.render_text();
+        context.publish_event(starweaver_context::AgentEvent::new(
+            "message_received",
+            serde_json::json!({
+                "id": message.id,
+                "source": message.source,
+                "target": message.target,
+                "content_text": message.content_text(),
+            }),
+        ));
+        if message.source == "user" || message.topic == "steering" {
+            context.publish_event(starweaver_context::AgentEvent::new(
+                "steering_received",
+                serde_json::json!({"id": message.id, "text": rendered_text}),
+            ));
+            context.steering_messages.push(rendered_text.clone());
+        }
+        rendered.push(format!(
+            "<bus-message source=\"{}\">\n{}\n</bus-message>",
+            escape_xml_attr(&message.source),
+            rendered_text
+        ));
+    }
+
+    if rendered.is_empty() {
         return messages;
     }
-    push_user_text(
-        &mut messages,
-        format!(
-            "Message bus updates: {}",
-            Value::Array(bus_messages.clone())
-        ),
-        "bus_message",
-    );
+    append_user_text_to_last_request(&mut messages, rendered.join("\n\n"), "bus_message");
     messages
+}
+
+fn append_user_text_to_last_request(messages: &mut Vec<ModelMessage>, text: String, source: &str) {
+    let mut metadata = Map::new();
+    metadata.insert("starweaver_filter_source".to_string(), json!(source));
+    let part = ModelRequestPart::UserPrompt {
+        content: vec![ContentPart::Text { text }],
+        name: None,
+        metadata,
+    };
+    for message in messages.iter_mut().rev() {
+        if let ModelMessage::Request(request) = message {
+            request.parts.push(part);
+            return;
+        }
+    }
+    messages.push(ModelMessage::Request(ModelRequest {
+        parts: vec![part],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    }));
+}
+
+fn escape_xml_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn annotate_context_parts(parts: &mut [ModelRequestPart], instruction_type: &str, origin: &str) {

@@ -178,3 +178,41 @@ async fn sdk_subagent_child_context_keeps_parent_messages_isolated() {
     assert_eq!(context.messages.len(), 1);
     assert!(context.message_history.is_empty());
 }
+
+#[tokio::test]
+async fn sdk_subagent_uses_distinct_agent_id_and_restores_subagent_history() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
+    let registry = SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child));
+    let mut context = AgentContext {
+        run_id: Some(starweaver_core::RunId::from_string("parent-run")),
+        ..AgentContext::default()
+    };
+    context.subagent_history.insert(
+        "child-stable".to_string(),
+        vec![starweaver_model::ModelMessage::Request(
+            starweaver_model::ModelRequest::user_text("previous child prompt"),
+        )],
+    );
+    let task = SubagentTask::new("next child prompt")
+        .with_id(TaskId::from_string("task-history"))
+        .with_metadata(serde_json::json!({"agent_id": "child-stable"}));
+
+    let envelope = registry
+        .delegate_task("child", task, &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(envelope.output(), "child output");
+    assert_eq!(context.agent_registry["child-stable"].agent_name, "child");
+    assert_eq!(
+        context.agent_registry["child-stable"]
+            .parent_agent_id
+            .as_deref(),
+        Some("main")
+    );
+    let history = context.subagent_history.get("child-stable").unwrap();
+    assert!(history.len() >= 3);
+    assert!(format!("{history:?}").contains("previous child prompt"));
+    assert!(format!("{history:?}").contains("next child prompt"));
+    assert_eq!(context.build_usage_snapshot().run_id, "parent-run");
+}

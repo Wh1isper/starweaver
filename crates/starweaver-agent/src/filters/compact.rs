@@ -123,12 +123,14 @@ impl CacheFriendlyCompactCapability {
         context
             .metadata
             .insert(COMPACT_DEPTH_METADATA.to_string(), json!(1));
+        context.lifecycle.compact_depth = context.lifecycle.compact_depth.saturating_add(1);
         let event_id = format!("{}-{}", state.run_id.as_str(), state.run_step);
         context.publish_event(AgentEvent::new(
             "compact_start",
             json!({"event_id": event_id, "message_count": messages.len()}),
         ));
-        let compact_messages = build_compact_summary_request(messages);
+        let compact_messages =
+            build_compact_summary_request(messages, &context.injected_context_tags);
         let request_context =
             ModelRequestContext::new(state.run_id.clone(), state.conversation_id.clone())
                 .with_trace_context(context.trace_context.clone());
@@ -144,6 +146,7 @@ impl CacheFriendlyCompactCapability {
             Ok(response) => response,
             Err(error) => {
                 context.metadata.remove(COMPACT_DEPTH_METADATA);
+                context.lifecycle.compact_depth = context.lifecycle.compact_depth.saturating_sub(1);
                 context.publish_event(AgentEvent::new(
                     "compact_failed",
                     json!({"event_id": event_id, "message": error.to_string()}),
@@ -152,9 +155,11 @@ impl CacheFriendlyCompactCapability {
             }
         };
         context.metadata.remove(COMPACT_DEPTH_METADATA);
+        context.lifecycle.compact_depth = context.lifecycle.compact_depth.saturating_sub(1);
         context.add_usage(&response.usage);
         let summary = response.text_output();
         let compacted = build_cache_friendly_compacted_messages(state, context, messages, &summary);
+        context.force_inject_instructions = true;
         context.publish_event(AgentEvent::new(
             "compact_complete",
             json!({

@@ -317,6 +317,26 @@ pub(super) fn build_restored_request_parts(
     parts
 }
 
+pub(super) fn build_handoff_request_parts(
+    summary: String,
+    original_request: Option<Vec<ContentPart>>,
+    previous_assistant_reference: Option<&str>,
+    steering_messages: Vec<String>,
+) -> Vec<ModelRequestPart> {
+    let mut parts = Vec::new();
+    parts.extend(build_previous_assistant_reference_parts(
+        previous_assistant_reference,
+    ));
+    parts.extend(build_original_request_parts(original_request));
+    parts.push(text_user_part(summary));
+    parts.extend(build_steering_parts(steering_messages));
+    parts.push(build_context_restored_part());
+    parts.push(text_user_part(
+        "<system-reminder><item>The summarize tool has already completed this handoff. Continue work directly from the restored context summary, original request, and any user steering messages.</item></system-reminder>",
+    ));
+    parts
+}
+
 pub(super) fn insert_context_parts_after_control_parts(
     messages: &mut Vec<ModelMessage>,
     parts: Vec<ModelRequestPart>,

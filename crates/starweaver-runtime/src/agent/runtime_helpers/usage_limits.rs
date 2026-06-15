@@ -37,7 +37,39 @@ impl Agent {
         state.usage = usage;
         context.notes.clone_from(&snapshot.notes);
         context.state.clone_from(&snapshot.state);
+        context.task_manager.clone_from(&snapshot.task_manager);
         context.events.clone_from(&snapshot.events);
+        context.messages.clone_from(&snapshot.messages);
+        context.metadata.clone_from(&snapshot.metadata);
+        context
+            .deferred_tool_metadata
+            .clone_from(&snapshot.deferred_tool_metadata);
+        context.agent_registry.clone_from(&snapshot.agent_registry);
+        context
+            .subagent_history
+            .clone_from(&snapshot.subagent_history);
+        context
+            .auto_load_files
+            .clone_from(&snapshot.auto_load_files);
+        context
+            .need_user_approve_tools
+            .clone_from(&snapshot.need_user_approve_tools);
+        context
+            .need_user_approve_mcps
+            .clone_from(&snapshot.need_user_approve_mcps);
+        context
+            .tool_search_loaded_tools
+            .clone_from(&snapshot.tool_search_loaded_tools);
+        context
+            .tool_search_loaded_namespaces
+            .clone_from(&snapshot.tool_search_loaded_namespaces);
+        context
+            .context_manage_tool_names
+            .clone_from(&snapshot.context_manage_tool_names);
+        context.tool_tags.clone_from(&snapshot.tool_tags);
+        context
+            .wrapper_metadata
+            .clone_from(&snapshot.wrapper_metadata);
         snapshot
             .message_history
             .clone_from(&context.message_history);

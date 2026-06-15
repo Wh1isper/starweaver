@@ -1,9 +1,7 @@
 //! Task tool operations.
 
-use std::collections::BTreeSet;
-
 use serde_json::Value;
-use starweaver_context::{AgentContextHandle, Task};
+use starweaver_context::{AgentContextHandle, Task, TaskStatus};
 use starweaver_core::Metadata;
 use starweaver_tools::{EmptyToolArgs, ToolContext, ToolError, ToolResult};
 
@@ -24,14 +22,12 @@ pub(super) async fn task_create(
 
     if let Some(handle) = handle {
         handle.update(|agent_context| {
-            let mut tasks = agent_context.tasks();
-            let id = next_task_id(&tasks);
-            let mut task = Task::new(id, subject, description);
-            task.active_form = active_form;
-            task.metadata = metadata;
-            created = Some(task.clone());
-            tasks.push(task);
-            agent_context.set_tasks(tasks);
+            let task =
+                agent_context
+                    .task_manager
+                    .create(subject, description, active_form, metadata);
+            created = Some(task);
+            sync_task_snapshot(agent_context);
             snapshot = agent_context.tasks();
             agent_context.publish_task_snapshot_event();
         });
@@ -85,18 +81,38 @@ pub(super) async fn task_update(
     let mut updated = None;
     let mut snapshot = Vec::new();
     let update_metadata = value_to_metadata(arguments.metadata.clone());
+    let parsed_status = match arguments
+        .status
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(status) => {
+            Some(
+                TaskStatus::parse(status).ok_or_else(|| ToolError::InvalidArguments {
+                    tool: "task_update".to_string(),
+                    message: format!(
+                "invalid task status '{status}'; expected one of: pending, in_progress, completed"
+            ),
+                })?,
+            )
+        }
+        None => None,
+    };
 
     if let Some(handle) = handle {
         handle.update(|agent_context| {
-            let mut tasks = agent_context.tasks();
-            if let Some(index) = tasks
-                .iter()
-                .position(|task| normalize_task_id(&task.id) == requested_id)
-            {
-                apply_task_update(&mut tasks, index, &arguments, &update_metadata);
-                updated = tasks.get(index).cloned();
-                agent_context.set_tasks(tasks);
-            }
+            updated = agent_context.task_manager.update(
+                &requested_id,
+                parsed_status.clone(),
+                arguments.subject.clone(),
+                arguments.description.clone(),
+                arguments.active_form.clone().map(Some),
+                arguments.owner.clone().map(Some),
+                arguments.add_blocks.as_deref(),
+                arguments.add_blocked_by.as_deref(),
+                Some(&update_metadata),
+            );
+            sync_task_snapshot(agent_context);
             snapshot = agent_context.tasks();
             agent_context.publish_task_snapshot_event();
         });
@@ -139,18 +155,13 @@ fn with_task_snapshot_event(context: &ToolContext) -> Vec<Task> {
     tasks
 }
 
-fn normalize_task_id(id: &str) -> String {
-    id.trim().trim_start_matches('#').to_string()
+fn sync_task_snapshot(agent_context: &mut starweaver_context::AgentContext) {
+    let tasks = agent_context.task_manager.list_all();
+    agent_context.set_tasks(tasks);
 }
 
-fn next_task_id(tasks: &[Task]) -> String {
-    let next = tasks
-        .iter()
-        .filter_map(|task| normalize_task_id(&task.id).parse::<u64>().ok())
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    next.to_string()
+fn normalize_task_id(id: &str) -> String {
+    id.trim().trim_start_matches('#').to_string()
 }
 
 fn value_to_metadata(value: Option<Value>) -> Metadata {
@@ -162,85 +173,5 @@ fn value_to_metadata(value: Option<Value>) -> Metadata {
             metadata
         }
         _ => Metadata::default(),
-    }
-}
-
-fn apply_task_update(
-    tasks: &mut [Task],
-    index: usize,
-    arguments: &TaskUpdateArgs,
-    metadata: &Metadata,
-) {
-    let task_id = normalize_task_id(&tasks[index].id);
-    if let Some(status) = arguments
-        .status
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        tasks[index].status = status.to_string();
-    }
-    if let Some(subject) = arguments
-        .subject
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        tasks[index].subject = subject.to_string();
-    }
-    if let Some(description) = arguments
-        .description
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        tasks[index].description = description.to_string();
-    }
-    if arguments.active_form.is_some() {
-        tasks[index].active_form.clone_from(&arguments.active_form);
-    }
-    if arguments.owner.is_some() {
-        tasks[index].owner.clone_from(&arguments.owner);
-    }
-    extend_unique(&mut tasks[index].blocks, arguments.add_blocks.as_deref());
-    extend_unique(
-        &mut tasks[index].blocked_by,
-        arguments.add_blocked_by.as_deref(),
-    );
-    for (key, value) in metadata {
-        tasks[index].metadata.insert(key.clone(), value.clone());
-    }
-    let blocks = arguments.add_blocks.clone().unwrap_or_default();
-    let blocked_by = arguments.add_blocked_by.clone().unwrap_or_default();
-    for blocked_task_id in blocks {
-        let blocked_task_id = normalize_task_id(&blocked_task_id);
-        if let Some(blocked_task) = tasks
-            .iter_mut()
-            .find(|task| normalize_task_id(&task.id) == blocked_task_id)
-        {
-            extend_unique(
-                &mut blocked_task.blocked_by,
-                Some(std::slice::from_ref(&task_id)),
-            );
-        }
-    }
-    for blocker_id in blocked_by {
-        let blocker_id = normalize_task_id(&blocker_id);
-        if let Some(blocker) = tasks
-            .iter_mut()
-            .find(|task| normalize_task_id(&task.id) == blocker_id)
-        {
-            extend_unique(&mut blocker.blocks, Some(std::slice::from_ref(&task_id)));
-        }
-    }
-}
-
-fn extend_unique(target: &mut Vec<String>, values: Option<&[String]>) {
-    let Some(values) = values else {
-        return;
-    };
-    let mut seen = target.iter().cloned().collect::<BTreeSet<_>>();
-    for value in values {
-        let normalized = normalize_task_id(value);
-        if !normalized.is_empty() && seen.insert(normalized.clone()) {
-            target.push(normalized);
-        }
     }
 }

@@ -2,6 +2,7 @@
 
 use starweaver_context::{
     AgentContext, AgentEvent, AgentId, BusMessage, ModelConfig, PerThousandRatio, ResumableState,
+    TaskStatus,
 };
 use starweaver_core::{TraceContext, Usage};
 use starweaver_model::{ContentPart, ModelMessage, ModelRequest, ModelResponse};
@@ -29,7 +30,7 @@ fn context_exports_and_restores_state() {
             .with_trace_state("state-main"),
     );
 
-    let exported = context.export_state();
+    let exported = context.export_full_state();
     let restored = AgentContext::from_state(exported);
 
     assert_eq!(restored.agent_id.as_str(), "main");
@@ -119,7 +120,7 @@ fn dependencies_are_not_serialized_in_resumable_state() {
         city: "Paris".to_string(),
     });
 
-    let restored = AgentContext::from_state(context.export_state());
+    let restored = AgentContext::from_state(context.export_full_state());
 
     assert!(restored.dependency::<WeatherService>().is_none());
 }
@@ -179,7 +180,7 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
     assert!(child.user_prompts.is_none());
     assert!(child.previous_assistant_response_reference.is_none());
     assert!(child.steering_messages.is_empty());
-    assert!(child.messages.is_empty());
+    assert_eq!(child.messages.len(), context.messages.len());
     assert!(child.events.events().is_empty());
 }
 
@@ -284,10 +285,10 @@ fn runtime_context_includes_active_tasks_with_user_prompt_details() {
     let mut pending = starweaver_context::Task::new("1", "Plan work", "Plan the implementation");
     pending.blocked_by.push("2".to_string());
     let mut in_progress = starweaver_context::Task::new("2", "Implement changes", "Edit code");
-    in_progress.status = "in_progress".to_string();
+    in_progress.status = TaskStatus::InProgress;
     in_progress.active_form = Some("Implementing changes".to_string());
     let mut completed = starweaver_context::Task::new("3", "Done", "Completed task");
-    completed.status = "completed".to_string();
+    completed.status = TaskStatus::Completed;
     context.set_tasks(vec![pending, in_progress, completed]);
 
     let injected = context.inject_runtime_context(true).unwrap();
@@ -357,5 +358,6 @@ fn parent_absorbs_subagent_usage_and_notes_after_success() {
     assert_eq!(parent.notes.get("lang"), Some("English"));
     assert_eq!(parent.notes.get("debug"), Some("enabled"));
     assert!(parent.message_history.is_empty());
-    assert!(parent.messages.is_empty());
+    assert_eq!(parent.messages.len(), 1);
+    assert_eq!(parent.subagent_history["debugger"].len(), 1);
 }

@@ -226,7 +226,7 @@ pub fn execute_agent_session_with_channels(
                 )
             }
         };
-    let mut state = session.export_state();
+    let mut state = session.export_full_state();
     state
         .metadata
         .insert("cli.run_id".to_string(), json!(run.run_id.as_str()));
@@ -985,7 +985,7 @@ mod tests {
             assert_eq!(first_input.as_slice(), &second_input[..first_input.len()]);
             drop(captured);
         }
-        let persisted = serde_json::to_string(&session.export_state().message_history)
+        let persisted = serde_json::to_string(&session.export_full_state().message_history)
             .expect("message history should serialize");
         assert!(persisted.contains("project-guidance"));
         assert!(persisted.contains("Use cargo test."));

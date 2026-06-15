@@ -30,7 +30,7 @@ fn config_round_trips_through_resumable_state() {
     context.tool_config.view_relaxed_text_patterns = vec!["AGENTS.md".to_string()];
     context.tool_config.view_relaxed_line_limit = 6000;
 
-    let restored = AgentContext::from_state(context.export_state());
+    let restored = AgentContext::from_state(context.export_full_state());
 
     assert_eq!(restored.model_config.context_window, Some(1_000_000));
     assert!(restored.model_config.has_vision());

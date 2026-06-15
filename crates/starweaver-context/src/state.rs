@@ -34,6 +34,12 @@ impl StateStore {
         self.domains.remove(key)
     }
 
+    /// Return whether the store has no domains.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.domains.is_empty()
+    }
+
     /// Return all domains.
     #[must_use]
     #[allow(clippy::missing_const_for_fn)]

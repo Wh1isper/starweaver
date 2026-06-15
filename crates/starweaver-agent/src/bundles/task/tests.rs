@@ -46,7 +46,7 @@ async fn task_tools_mutate_context_and_emit_snapshots() {
     let tasks = context.tasks();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].subject, "ship");
-    assert_eq!(tasks[0].status, "in_progress");
+    assert_eq!(tasks[0].status_str(), "in_progress");
     assert!(context
         .events
         .events()
@@ -101,4 +101,38 @@ async fn failed_task_update_still_emits_current_snapshot() {
         context.events.events().last().unwrap().payload["tasks"][0]["id"],
         "1"
     );
+}
+
+#[tokio::test]
+async fn task_update_rejects_unknown_status() {
+    let handle = AgentContextHandle::new(AgentContext::new(AgentId::from_string("agent")));
+    let toolset = task_tools();
+    let create = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "task_create")
+        .unwrap();
+    let update = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "task_update")
+        .unwrap();
+    create
+        .call(
+            context_with_handle(&handle),
+            json!({"subject": "ship", "description": "Ship release"}),
+        )
+        .await
+        .unwrap();
+
+    let error = update
+        .call(
+            context_with_handle(&handle),
+            json!({"task_id": "1", "status": "blocked"}),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("invalid task status"));
+    assert_eq!(handle.snapshot().tasks()[0].status_str(), "pending");
 }

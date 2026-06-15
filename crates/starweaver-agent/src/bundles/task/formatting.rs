@@ -3,7 +3,7 @@
 use std::{collections::BTreeSet, fmt::Write};
 
 use serde_json::Value;
-use starweaver_context::Task;
+use starweaver_context::{Task, TaskStatus};
 use starweaver_tools::ToolResult;
 
 pub(super) fn task_result(name: &str, payload: Value, user_content: String) -> ToolResult {
@@ -15,8 +15,9 @@ pub(super) fn task_result(name: &str, payload: Value, user_content: String) -> T
 
 pub(super) fn task_update_summary(task: &Task) -> String {
     let mut summary = String::new();
-    if !task.status.is_empty() {
-        let _ = write!(summary, "status -> {}", task.status);
+    let status = task.status.to_string();
+    if !status.is_empty() {
+        let _ = write!(summary, "status -> {status}");
     }
     if summary.is_empty() {
         summary.push_str(&task.subject);
@@ -57,18 +58,18 @@ pub(super) fn task_detail_text(task: &Task) -> String {
 }
 
 fn task_summary_line(task: &Task, all_tasks: &[Task]) -> String {
-    let status = if task.status == "in_progress" {
+    let status = if task.status == TaskStatus::InProgress {
         task.active_form.as_ref().map_or_else(
             || "in_progress".to_string(),
             |active| format!("in_progress: {active}"),
         )
     } else {
-        task.status.clone()
+        task.status.to_string()
     };
     let mut line = format!("#{} [{}] {}", task.id, status, task.subject);
     let completed = all_tasks
         .iter()
-        .filter(|candidate| candidate.status == "completed")
+        .filter(|candidate| candidate.status == TaskStatus::Completed)
         .map(|candidate| candidate.id.as_str())
         .collect::<BTreeSet<_>>();
     let active_blockers = task

@@ -254,7 +254,13 @@ impl SubagentRegistry {
             .tool_inheritance
             .resolve(&inherited_tools)
             .map_err(|error| AgentError::Capability(error.to_string()))?;
-        let mut child_context = parent_context.subagent_context(name);
+        let child_agent_id = task
+            .metadata
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(|| format!("{}-{}", name, task.id.as_str()), str::to_string);
+        let mut child_context = parent_context.subagent_context_with_agent_id(name, child_agent_id);
         push_subagent_stack(&mut child_context, name);
         let child_agent = subagent
             .agent

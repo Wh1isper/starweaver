@@ -58,6 +58,154 @@ async fn environment_context_capability_injects_provider_context_as_user_prompt(
 }
 
 #[tokio::test]
+async fn environment_context_capability_skips_unchanged_context_on_later_turn() {
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_file("README.md", "hello")
+            .with_file("src/lib.rs", "pub fn hello() {}\n"),
+    );
+    let mut context = AgentContext::default();
+    attach_environment(&mut context, provider);
+    let mut state =
+        starweaver_agent::AgentRunState::new(RunId::default(), ConversationId::default());
+
+    let mut messages = EnvironmentContextCapability
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![starweaver_model::ModelMessage::Request(
+                ModelRequest::user_text("inspect workspace"),
+            )],
+        )
+        .await
+        .unwrap();
+    messages.push(starweaver_model::ModelMessage::Response(
+        ModelResponse::text("ok"),
+    ));
+    messages.push(starweaver_model::ModelMessage::Request(
+        ModelRequest::user_text("continue"),
+    ));
+
+    let messages = EnvironmentContextCapability
+        .prepare_model_messages_with_context(&mut state, &mut context, messages)
+        .await
+        .unwrap();
+
+    assert_eq!(environment_context_part_count(&messages), 1);
+    let starweaver_model::ModelMessage::Request(request) = messages.last().unwrap() else {
+        panic!("expected latest request");
+    };
+    assert!(matches!(
+        request.parts.first(),
+        Some(ModelRequestPart::UserPrompt { content, metadata, .. })
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA).is_none()
+                && matches!(&content[0], ContentPart::Text { text } if text == "continue")
+    ));
+}
+
+#[tokio::test]
+async fn environment_context_capability_force_reinjects_unchanged_context() {
+    let provider =
+        Arc::new(VirtualEnvironmentProvider::new("test").with_file("README.md", "hello"));
+    let mut context = AgentContext::default();
+    attach_environment(&mut context, provider);
+    let mut state =
+        starweaver_agent::AgentRunState::new(RunId::default(), ConversationId::default());
+
+    let mut messages = EnvironmentContextCapability
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![starweaver_model::ModelMessage::Request(
+                ModelRequest::user_text("inspect workspace"),
+            )],
+        )
+        .await
+        .unwrap();
+    context.force_inject_instructions = true;
+    messages.push(starweaver_model::ModelMessage::Response(
+        ModelResponse::text("ok"),
+    ));
+    messages.push(starweaver_model::ModelMessage::Request(
+        ModelRequest::user_text("continue"),
+    ));
+
+    let messages = EnvironmentContextCapability
+        .prepare_model_messages_with_context(&mut state, &mut context, messages)
+        .await
+        .unwrap();
+
+    assert_eq!(environment_context_part_count(&messages), 2);
+}
+
+#[tokio::test]
+async fn environment_context_capability_reinjects_changed_context_on_later_turn() {
+    let provider =
+        Arc::new(VirtualEnvironmentProvider::new("test").with_file("README.md", "hello"));
+    let mut context = AgentContext::default();
+    attach_environment(&mut context, provider.clone());
+    let mut state =
+        starweaver_agent::AgentRunState::new(RunId::default(), ConversationId::default());
+
+    let mut messages = EnvironmentContextCapability
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![starweaver_model::ModelMessage::Request(
+                ModelRequest::user_text("inspect workspace"),
+            )],
+        )
+        .await
+        .unwrap();
+    provider
+        .write_text("src/lib.rs", "pub fn hello() {}\n")
+        .await
+        .unwrap();
+    messages.push(starweaver_model::ModelMessage::Response(
+        ModelResponse::text("ok"),
+    ));
+    messages.push(starweaver_model::ModelMessage::Request(
+        ModelRequest::user_text("continue"),
+    ));
+
+    let messages = EnvironmentContextCapability
+        .prepare_model_messages_with_context(&mut state, &mut context, messages)
+        .await
+        .unwrap();
+
+    assert_eq!(environment_context_part_count(&messages), 2);
+    let starweaver_model::ModelMessage::Request(request) = messages.last().unwrap() else {
+        panic!("expected latest request");
+    };
+    assert!(matches!(
+        request.parts.first(),
+        Some(ModelRequestPart::UserPrompt { content, metadata, .. })
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+                && matches!(&content[0], ContentPart::Text { text } if text.contains("src/lib.rs"))
+    ));
+}
+
+fn environment_context_part_count(messages: &[starweaver_model::ModelMessage]) -> usize {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            starweaver_model::ModelMessage::Request(request) => Some(request),
+            starweaver_model::ModelMessage::Response(_) => None,
+        })
+        .flat_map(|request| request.parts.iter())
+        .filter(|part| {
+            matches!(
+                part,
+                ModelRequestPart::UserPrompt { metadata, .. }
+                    if metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                        == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+            )
+        })
+        .count()
+}
+
+#[tokio::test]
 async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
     let provider = Arc::new(
         VirtualEnvironmentProvider::new("test")
@@ -72,12 +220,27 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
                     stderr: String::new(),
                     metadata: Metadata::default(),
                 },
+            )
+            .with_shell_output(
+                "env-check",
+                ShellOutput {
+                    status: 0,
+                    stdout: "ctx\noverride\n".to_string(),
+                    stderr: String::new(),
+                    metadata: Metadata::default(),
+                },
             ),
     );
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&filesystem_tools());
     registry.insert_toolset(&shell_tools());
     let mut agent_context = AgentContext::default();
+    agent_context
+        .shell_env
+        .insert("STARWEAVER_CONTEXT_ENV".to_string(), "ctx".to_string());
+    agent_context
+        .shell_env
+        .insert("STARWEAVER_OVERRIDE_ENV".to_string(), "ctx".to_string());
     attach_environment(&mut agent_context, provider.clone());
     let mut dependencies = agent_context.dependencies.clone();
     dependencies.insert(agent_context.clone());
@@ -209,6 +372,20 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             },
         )
         .await;
+    let shell_with_env = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "shell-env".to_string(),
+                name: "shell_exec".to_string(),
+                arguments: serde_json::json!({
+                    "command": "env-check",
+                    "environment": {"STARWEAVER_OVERRIDE_ENV": "override"},
+                })
+                .into(),
+            },
+        )
+        .await;
     let empty_shell = registry
         .execute_call(
             context.clone(),
@@ -267,6 +444,15 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
         .unwrap()
         .contains("old_string must be non-empty"));
     assert_eq!(shell.content["stdout"], "ok\n");
+    assert_eq!(
+        shell_with_env.content["environment"]["STARWEAVER_CONTEXT_ENV"],
+        "ctx"
+    );
+    assert_eq!(
+        shell_with_env.content["environment"]["STARWEAVER_OVERRIDE_ENV"],
+        "override"
+    );
+    assert_eq!(shell_with_env.content["stdout"], "ctx\noverride\n");
     assert_eq!(empty_shell.content["return_code"], 1);
     assert_eq!(empty_shell.content["stdout"], "");
     assert_eq!(empty_shell.content["stderr"], "");

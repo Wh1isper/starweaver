@@ -50,7 +50,8 @@ impl AgentCapability for EnvironmentContextCapability {
             ModelMessage::Request(request) => request_has_tool_return_or_retry(request),
             ModelMessage::Response(_) => false,
         };
-        if has_control_part && !force_inject_instructions(state, context) {
+        let force_inject = force_inject_instructions(state, context);
+        if has_control_part && !force_inject {
             return Ok(messages);
         }
 
@@ -65,6 +66,12 @@ impl AgentCapability for EnvironmentContextCapability {
         else {
             return Ok(messages);
         };
+        if !force_inject
+            && latest_context_user_prompt_text(&messages, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT)
+                == Some(text.as_str())
+        {
+            return Ok(messages);
+        }
         let mut metadata = serde_json::Map::new();
         metadata.insert(
             INSTRUCTION_ORIGIN_METADATA.to_string(),
@@ -161,8 +168,49 @@ fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
     }
 }
 
+fn latest_context_user_prompt_text<'a>(
+    messages: &'a [ModelMessage],
+    expected_origin: &str,
+) -> Option<&'a str> {
+    messages.iter().rev().find_map(|message| {
+        let ModelMessage::Request(request) = message else {
+            return None;
+        };
+        request.parts.iter().rev().find_map(|part| match part {
+            ModelRequestPart::UserPrompt {
+                content, metadata, ..
+            } if metadata
+                .get(INSTRUCTION_ORIGIN_METADATA)
+                .and_then(serde_json::Value::as_str)
+                == Some(expected_origin) =>
+            {
+                single_text_content(content)
+            }
+            ModelRequestPart::SystemPrompt { .. }
+            | ModelRequestPart::UserPrompt { .. }
+            | ModelRequestPart::ToolReturn(_)
+            | ModelRequestPart::RetryPrompt { .. }
+            | ModelRequestPart::Instruction { .. } => None,
+        })
+    })
+}
+
+fn single_text_content(content: &[ContentPart]) -> Option<&str> {
+    match content {
+        [ContentPart::Text { text }] => Some(text.as_str()),
+        [ContentPart::ImageUrl { .. }
+        | ContentPart::FileUrl { .. }
+        | ContentPart::Binary { .. }
+        | ContentPart::ResourceRef { .. }
+        | ContentPart::DataUrl { .. }]
+        | []
+        | [_, _, ..] => None,
+    }
+}
+
 fn force_inject_instructions(state: &AgentRunState, context: &AgentContext) -> bool {
-    metadata_bool(&state.metadata, "starweaver_force_inject_instructions")
+    context.force_inject_instructions
+        || metadata_bool(&state.metadata, "starweaver_force_inject_instructions")
         || metadata_bool(&context.metadata, "starweaver_force_inject_instructions")
 }
 

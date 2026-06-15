@@ -49,6 +49,7 @@ impl AgentCapability for RuntimeContextCapability {
 fn inject_runtime_context(context: &AgentContext, messages: &mut Vec<ModelMessage>) {
     let is_user_prompt = latest_request(messages)
         .map_or(true, |request| !request_has_tool_return_or_retry(request))
+        || context.force_inject_instructions
         || metadata_bool(&context.metadata, "starweaver_force_inject_instructions");
     let Some(text) = context.inject_runtime_context(is_user_prompt) else {
         return;

@@ -117,7 +117,7 @@ async fn shell_exec(
             "error": "Shell command must not be empty",
         })));
     }
-    let environment = arguments.environment.clone().unwrap_or_default();
+    let environment = merged_shell_environment(&context, arguments.environment.clone());
     let shell_command = ShellCommand {
         command: arguments.command.clone(),
         timeout_seconds: Some(arguments.timeout_seconds),
@@ -184,6 +184,21 @@ async fn shell_exec(
         result["stderr_file_path"] = serde_json::json!(path);
     }
     Ok(ToolResult::new(result))
+}
+
+fn merged_shell_environment(
+    context: &ToolContext,
+    per_call: Option<std::collections::BTreeMap<String, String>>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut environment = context
+        .dependency::<AgentContext>()
+        .map_or_else(std::collections::BTreeMap::new, |agent_context| {
+            agent_context.shell_env.clone()
+        });
+    if let Some(per_call) = per_call {
+        environment.extend(per_call);
+    }
+    environment
 }
 
 async fn shell_wait(

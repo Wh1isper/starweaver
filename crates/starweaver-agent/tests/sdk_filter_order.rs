@@ -143,10 +143,16 @@ async fn handoff_filter_uses_shared_restored_request_builder(
         serde_json::json!("Resume the delegated implementation plan."),
     );
 
+    let mut context = AgentContext {
+        user_prompts: Some(vec![ContentPart::Text {
+            text: "Original request".to_string(),
+        }]),
+        ..AgentContext::default()
+    };
     let messages = NamedFilterCapability::new("handoff")
         .prepare_model_messages_with_context(
             &mut state,
-            &mut AgentContext::default(),
+            &mut context,
             vec![ModelMessage::Request(request)],
         )
         .await?;
@@ -1052,6 +1058,130 @@ async fn filters_repair_and_normalize_provider_aware_response_parts(
                 && signature.as_deref() == Some("encrypted-only")
                 && provider.id.as_deref() == Some("rs_encrypted")
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn bus_message_filter_consumes_user_messages_as_rendered_bus_messages_and_steering(
+) -> starweaver_agent::CapabilityResult<()> {
+    let request = user_request(vec![ContentPart::Text {
+        text: "hello".to_string(),
+    }]);
+    let mut state = AgentRunState::new(RunId::from_string("run_bus"), ConversationId::new());
+    let mut context = AgentContext::default();
+    context.send_message(
+        starweaver_context::BusMessage::text("please continue", "user")
+            .with_id("user-msg")
+            .with_template("[urgent] {{ content }}"),
+    );
+
+    let messages = NamedFilterCapability::new("bus_message")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+
+    let text = request_text_parts(messages.last().expect("request")).join("\n");
+    assert!(text.contains("<bus-message source=\"user\">"));
+    assert!(text.contains("[urgent] please continue"));
+    assert_eq!(
+        context.steering_messages,
+        vec!["[urgent] please continue".to_string()]
+    );
+    assert!(!context.messages.has_pending(context.agent_id.as_str()));
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "message_received"));
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "steering_received"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn handoff_filter_consumes_prebuilt_context_restored_message(
+) -> starweaver_agent::CapabilityResult<()> {
+    let request = user_request(vec![ContentPart::Text {
+        text: "hello".to_string(),
+    }]);
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_handoff_prebuilt"),
+        ConversationId::new(),
+    );
+    let mut context = AgentContext {
+        handoff_message: Some("<context-restored>already restored</context-restored>".to_string()),
+        ..AgentContext::default()
+    };
+
+    let messages = NamedFilterCapability::new("handoff")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+
+    let text = request_text_parts(messages.last().expect("request")).join("\n");
+    assert!(text.contains("already restored"));
+    assert!(context.handoff_message.is_none());
+    assert!(context.force_inject_instructions);
+    Ok(())
+}
+
+#[tokio::test]
+async fn compact_filter_strips_context_configured_injected_tags(
+) -> starweaver_agent::CapabilityResult<()> {
+    let messages = vec![
+        ModelMessage::Response(ModelResponse::text("old")),
+        ModelMessage::Request(ModelRequest {
+            parts: vec![ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "keep\n<custom-context>stale</custom-context>".to_string(),
+                }],
+                name: None,
+                metadata: serde_json::Map::new(),
+            }],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        }),
+        ModelMessage::Response(ModelResponse::text("ok")),
+    ];
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_compact_tags"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_compact_keep_messages".to_string(),
+        serde_json::json!(2),
+    );
+    state.message_history = messages.clone();
+    let mut context = AgentContext::default();
+    context
+        .injected_context_tags
+        .push("custom-context".to_string());
+    context.message_history = messages.clone();
+
+    let compacted = CacheFriendlyCompactCapability::new(None)
+        .prepare_model_messages_with_context(&mut state, &mut context, messages)
+        .await?;
+
+    let text = compacted
+        .iter()
+        .flat_map(request_text_parts)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("keep"));
+    assert!(!text.contains("custom-context"));
+    assert!(!text.contains("stale"));
     Ok(())
 }
 

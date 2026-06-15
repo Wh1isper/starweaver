@@ -3,7 +3,7 @@
 use chrono::Utc;
 use starweaver_core::XmlWriter;
 
-use crate::AgentContext;
+use crate::{AgentContext, TaskStatus};
 
 /// Render runtime context instructions for model-facing requests.
 #[must_use]
@@ -32,6 +32,7 @@ pub fn render_runtime_context(context: &AgentContext, is_user_prompt: bool) -> O
             .close("token-usage");
     }
 
+    append_known_subagents(&mut xml, context);
     append_active_tasks(&mut xml, context, is_user_prompt);
 
     if is_user_prompt && !context.notes.is_empty() {
@@ -58,11 +59,42 @@ pub fn render_runtime_context(context: &AgentContext, is_user_prompt: bool) -> O
     Some(output)
 }
 
+fn append_known_subagents(xml: &mut XmlWriter, context: &AgentContext) {
+    let subagents = context
+        .agent_registry
+        .values()
+        .filter(|agent| agent.agent_id != context.agent_id.as_str())
+        .collect::<Vec<_>>();
+    if subagents.is_empty() {
+        return;
+    }
+    xml.open_attrs(
+        "known-subagents",
+        [("hint", "Use subagent_info tool for more details")],
+    );
+    for agent in subagents {
+        let mut attrs = vec![
+            ("id".to_string(), agent.agent_id.clone()),
+            ("name".to_string(), agent.agent_name.clone()),
+        ];
+        if let Some(parent) = &agent.parent_agent_id {
+            attrs.push(("parent-agent-id".to_string(), parent.clone()));
+        }
+        xml.empty_element_attrs(
+            "agent",
+            attrs
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        );
+    }
+    xml.close("known-subagents");
+}
+
 fn append_active_tasks(xml: &mut XmlWriter, context: &AgentContext, detailed: bool) {
     let tasks = context
         .tasks()
         .into_iter()
-        .filter(|task| task.status != "completed")
+        .filter(|task| task.status != TaskStatus::Completed)
         .collect::<Vec<_>>();
     if tasks.is_empty() {
         return;
@@ -82,14 +114,14 @@ fn append_active_tasks(xml: &mut XmlWriter, context: &AgentContext, detailed: bo
             .iter()
             .filter(|blocked_by| {
                 tasks.iter().any(|candidate| {
-                    &candidate.id == *blocked_by && candidate.status != "completed"
+                    &candidate.id == *blocked_by && candidate.status != TaskStatus::Completed
                 })
             })
             .map(String::as_str)
             .collect::<Vec<_>>();
         let mut attrs = vec![
             ("id".to_string(), task.id.clone()),
-            ("status".to_string(), task.status.clone()),
+            ("status".to_string(), task.status.to_string()),
         ];
         if !active_blockers.is_empty() {
             attrs.push(("blocked-by".to_string(), active_blockers.join(",")));
@@ -103,7 +135,7 @@ fn append_active_tasks(xml: &mut XmlWriter, context: &AgentContext, detailed: bo
                     .map(|(key, value)| (key.as_str(), value.as_str())),
             )
             .text_element("subject", &task.subject);
-            if task.status == "in_progress" {
+            if task.status == TaskStatus::InProgress {
                 if let Some(active_form) = &task.active_form {
                     xml.text_element("active-form", active_form);
                 }
@@ -147,6 +179,11 @@ fn context_pressure_reminder(
         format_u64_with_commas(total_tokens),
         format_u64_with_commas(context_window),
     );
+    if !context.context_manage_tool_names.is_empty() {
+        reminder.push_str(" Available context management tools: ");
+        reminder.push_str(&context.context_manage_tool_names.join(", "));
+        reminder.push('.');
+    }
     if !context.notes.is_empty() {
         reminder.push_str(
             " Review note keys, read needed values, and delete stale or oversized notes before summarizing.",

@@ -1796,6 +1796,7 @@ dependencies = [
  "serde_json",
  "starweaver-core",
  "starweaver-model",
+ "uuid",
 ]
 
 [[package]]

@@ -7,6 +7,7 @@ mod dependency;
 mod event;
 mod message_bus;
 mod notes;
+mod parity;
 mod resumable_state;
 mod runtime_context;
 mod state;
@@ -22,7 +23,11 @@ pub use dependency::DependencyStore;
 pub use event::{AgentEvent, EventBus};
 pub use message_bus::{BusMessage, MessageBus};
 pub use notes::NoteStore;
-pub use resumable_state::ResumableState;
+pub use parity::{
+    AgentInfo, AgentStreamQueueRegistry, ContextLifecycleState, DeferredToolMetadata,
+    ModelWrapperMetadata, ToolIdWrapper, ToolSearchState, WrapperMetadata,
+};
+pub use resumable_state::{ResumableExportOptions, ResumableState};
 pub use starweaver_core::AgentId;
 pub use state::StateStore;
-pub use task::{Task, TaskSnapshot, TASK_SNAPSHOT_EVENT_KIND};
+pub use task::{Task, TaskManager, TaskSnapshot, TaskStatus, TASK_SNAPSHOT_EVENT_KIND};
