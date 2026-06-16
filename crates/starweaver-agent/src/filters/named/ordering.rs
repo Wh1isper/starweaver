@@ -2,21 +2,23 @@ use starweaver_runtime::CapabilityOrdering;
 
 /// Ordered default filter names for SDK request preparation.
 pub const DEFAULT_FILTER_ORDER: &[&str] = &[
-    "cold_start",
-    "capability",
-    "media_preflight",
+    "reasoning_normalize",
+    "media_split",
     "media_compress",
+    "media_preflight",
     "media_upload",
-    "compact",
+    "tool_args",
     "handoff",
     "auto_load_files",
-    "background_shell",
+    "capability",
     "bus_message",
+    "background_shell",
+    "compact",
+    "cold_start",
     "environment_context",
+    "auto_load_files_after_compact",
     "runtime_context",
     "system_prompt",
-    "tool_args",
-    "reasoning_normalize",
 ];
 
 pub(super) fn filter_capability_id(name: &str) -> String {

@@ -464,9 +464,12 @@ fn current_guidance_parts(guidance_text_parts: &[String]) -> Vec<GuidancePart> {
         .collect()
 }
 
-fn sync_cli_guidance_history(messages: &mut Vec<ModelMessage>, current_guidance: &[GuidancePart]) {
+fn sync_cli_guidance_history(messages: &mut [ModelMessage], current_guidance: &[GuidancePart]) {
+    let latest_request_index = messages
+        .iter()
+        .rposition(|message| matches!(message, ModelMessage::Request(_)));
     let mut retained_keys = HashSet::new();
-    for message in messages {
+    for (index, message) in messages.iter_mut().enumerate() {
         let ModelMessage::Request(request) = message else {
             continue;
         };
@@ -487,7 +490,9 @@ fn sync_cli_guidance_history(messages: &mut Vec<ModelMessage>, current_guidance:
                 let is_current = current_guidance.iter().any(|guidance| {
                     guidance.key == existing_key && guidance.text == part_text(part)
                 });
-                is_current && retained_keys.insert(existing_key)
+                is_current
+                    && Some(index) == latest_request_index
+                    && retained_keys.insert(existing_key)
             })
         });
     }
@@ -665,9 +670,10 @@ mod tests {
     use starweaver_stream::DisplayMessageKind;
 
     use super::{
-        cancelled_display_projection, interrupted_partial_response, start_steering_collector,
-        sync_run_request_metadata, CliGuidanceAdapter, CliPromptContentAdapter, CliRunPolicy,
-        CliSteeringMessage, CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN,
+        cancelled_display_projection, cli_guidance_key, interrupted_partial_response,
+        start_steering_collector, sync_run_request_metadata, CliGuidanceAdapter,
+        CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage, CLI_GUIDANCE_KEY_METADATA,
+        CLI_GUIDANCE_ORIGIN,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
 
@@ -1030,6 +1036,56 @@ mod tests {
     }
 
     #[test]
+    fn cli_guidance_keeps_openai_responses_instruction_order_stable_for_tool_loops() {
+        let guidance =
+            "<project-guidance name=AGENTS.md>\nUse cargo test.\n</project-guidance>".to_string();
+        let adapter = CliGuidanceAdapter {
+            guidance_text_parts: vec![guidance.clone()],
+        };
+        let mut state = AgentRunState::new(
+            RunId::from_string("run_guidance_tool_loop"),
+            ConversationId::from_string("conversation_guidance_tool_loop"),
+        );
+        let mut context = AgentContext::default();
+        let first_messages = prepare_guidance_messages(
+            &adapter,
+            &mut state,
+            &mut context,
+            first_guidance_messages(),
+        );
+        let first_wire = openai_responses_wire(&first_messages);
+        assert_eq!(
+            first_wire["instructions"],
+            format!("stable agent\n\n{guidance}")
+        );
+
+        let mut second_messages = first_messages;
+        second_messages.push(ModelMessage::Response(ModelResponse::text("assistant")));
+        second_messages.push(ModelMessage::Request(ModelRequest {
+            parts: vec![
+                ModelRequestPart::ToolReturn(starweaver_model::ToolReturnPart::new(
+                    "call_1",
+                    "lookup",
+                    serde_json::json!({"ok": true}),
+                )),
+                stable_agent_instruction(),
+            ],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        }));
+        let second_messages =
+            prepare_guidance_messages(&adapter, &mut state, &mut context, second_messages);
+        assert_eq!(count_guidance_in_messages(&second_messages, &guidance), 1);
+        assert_first_request_has_no_guidance(&second_messages);
+        assert_latest_request_has_stable_agent_then_guidance(&second_messages, &guidance);
+        let second_wire = openai_responses_wire(&second_messages);
+        assert_eq!(second_wire["instructions"], first_wire["instructions"]);
+    }
+
+    #[test]
     fn cli_guidance_is_cacheable_and_deduped_in_session_history() {
         let captured_messages = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
         let model_captured = Arc::clone(&captured_messages);
@@ -1084,6 +1140,94 @@ mod tests {
             .expect("message history should serialize");
         assert!(persisted.contains("project-guidance"));
         assert!(persisted.contains("Use cargo test."));
+    }
+
+    fn stable_agent_instruction() -> ModelRequestPart {
+        ModelRequestPart::Instruction {
+            text: "stable agent".to_string(),
+            metadata: serde_json::Map::from_iter([
+                (
+                    INSTRUCTION_ORIGIN_METADATA.to_string(),
+                    serde_json::json!("agent_instruction"),
+                ),
+                (
+                    INSTRUCTION_DYNAMIC_METADATA.to_string(),
+                    serde_json::json!(false),
+                ),
+            ]),
+        }
+    }
+
+    fn first_guidance_messages() -> Vec<ModelMessage> {
+        vec![ModelMessage::Request(ModelRequest {
+            parts: vec![
+                stable_agent_instruction(),
+                ModelRequestPart::UserPrompt {
+                    content: vec![ContentPart::Text {
+                        text: "first".to_string(),
+                    }],
+                    name: None,
+                    metadata: serde_json::Map::new(),
+                },
+            ],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        })]
+    }
+
+    fn prepare_guidance_messages(
+        adapter: &CliGuidanceAdapter,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> Vec<ModelMessage> {
+        tokio::runtime::Runtime::new()
+            .expect("runtime should start")
+            .block_on(adapter.prepare_model_messages_with_context(state, context, messages))
+            .expect("messages should prepare")
+    }
+
+    fn openai_responses_wire(messages: &[ModelMessage]) -> serde_json::Value {
+        OpenAiResponsesAdapter::build_request("gpt-5.5", messages, None, &[], &[])
+            .expect("wire request should build")
+    }
+
+    fn assert_first_request_has_no_guidance(messages: &[ModelMessage]) {
+        let ModelMessage::Request(first_request) = &messages[0] else {
+            panic!("expected first request");
+        };
+        assert!(!first_request
+            .parts
+            .iter()
+            .any(|part| cli_guidance_key(part).is_some()));
+    }
+
+    fn assert_latest_request_has_stable_agent_then_guidance(
+        messages: &[ModelMessage],
+        guidance: &str,
+    ) {
+        let latest_request = messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                ModelMessage::Request(request) => Some(request),
+                ModelMessage::Response(_) => None,
+            })
+            .expect("latest request");
+        assert!(matches!(
+            &latest_request.parts[1],
+            ModelRequestPart::Instruction { text, .. } if text == "stable agent"
+        ));
+        assert!(matches!(
+            &latest_request.parts[2],
+            ModelRequestPart::SystemPrompt { text, metadata }
+                if text == guidance
+                    && metadata.get(INSTRUCTION_ORIGIN_METADATA)
+                        == Some(&serde_json::json!(CLI_GUIDANCE_ORIGIN))
+        ));
     }
 
     fn stable_wire_input_items(wire: &serde_json::Value) -> Vec<serde_json::Value> {

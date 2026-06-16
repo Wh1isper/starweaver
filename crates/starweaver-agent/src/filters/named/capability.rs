@@ -9,8 +9,8 @@ use starweaver_runtime::{
 
 use crate::filters::{
     media::{
-        capability_filter, media_compress_filter, media_preflight_filter, media_upload_filter,
-        MediaUploader,
+        capability_filter, media_compress_filter, media_preflight_filter, media_split_filter,
+        media_upload_filter, MediaUploader,
     },
     message::record_filter_order,
 };
@@ -83,16 +83,19 @@ impl AgentCapability for NamedFilterCapability {
         messages: Vec<ModelMessage>,
     ) -> CapabilityResult<Vec<ModelMessage>> {
         let mut messages = match self.name {
-            "cold_start" => cold_start_filter(state, messages),
+            "cold_start" => cold_start_filter(state, context, messages),
             "capability" => capability_filter(state, context, messages),
+            "media_split" => media_split_filter(state, context, messages),
             "media_preflight" => media_preflight_filter(state, context, messages),
             "media_compress" => media_compress_filter(state, context, messages),
             "media_upload" => {
                 media_upload_filter(state, context, messages, self.uploader.as_ref()).await
             }
             "handoff" => handoff_filter(state, context, messages),
-            "auto_load_files" => auto_load_files_filter(state, context, messages).await,
-            "background_shell" => background_shell_filter(state, messages),
+            "auto_load_files" | "auto_load_files_after_compact" => {
+                auto_load_files_filter(state, context, messages).await
+            }
+            "background_shell" => background_shell_filter(state, context, messages).await,
             "bus_message" => bus_message_filter(state, context, messages),
             "environment_context" => inject_instruction_from_metadata(
                 state,

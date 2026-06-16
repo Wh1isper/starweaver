@@ -9,9 +9,9 @@ pub mod session;
 pub mod subagent;
 pub mod subagent_config;
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
-use starweaver_model::{ModelAdapter, ToolDefinition};
+use starweaver_model::{ModelAdapter, ModelProfile, ToolDefinition};
 use starweaver_runtime::Agent as RuntimeAgent;
 
 pub use bundles::{
@@ -121,6 +121,7 @@ pub struct AgentBuilder {
     capability_bundles: Vec<Arc<dyn CapabilityBundle>>,
     subagents: SubagentRegistry,
     trace_recorder: Option<starweaver_runtime::DynTraceRecorder>,
+    media_uploader: Option<Arc<dyn MediaUploader>>,
     policy: AgentRuntimePolicy,
 }
 
@@ -147,6 +148,7 @@ impl AgentBuilder {
             capability_bundles: Vec::new(),
             subagents: SubagentRegistry::new(),
             trace_recorder: None,
+            media_uploader: None,
             policy: AgentRuntimePolicy::default(),
         }
     }
@@ -314,6 +316,13 @@ impl AgentBuilder {
         self
     }
 
+    /// Set the media uploader used by the default `media_upload` filter.
+    #[must_use]
+    pub fn media_uploader(mut self, uploader: Arc<dyn MediaUploader>) -> Self {
+        self.media_uploader = Some(uploader);
+        self
+    }
+
     /// Set runtime policy.
     #[must_use]
     pub const fn policy(mut self, policy: AgentRuntimePolicy) -> Self {
@@ -337,6 +346,22 @@ impl AgentBuilder {
     /// Build a reusable runtime agent.
     #[must_use]
     pub fn build(self) -> RuntimeAgent {
+        let model_profile_capabilities = model_capabilities_from_profile(self.model.profile());
+        let mut configured_model_config = self.model_config;
+        if !model_profile_capabilities.is_empty() {
+            match &mut configured_model_config {
+                Some(model_config) if model_config.capabilities.is_empty() => {
+                    model_config.capabilities = model_profile_capabilities;
+                }
+                None => {
+                    configured_model_config = Some(ModelConfig {
+                        capabilities: model_profile_capabilities,
+                        ..ModelConfig::default()
+                    });
+                }
+                Some(_) => {}
+            }
+        }
         let media_capabilities = HostMediaCapabilities::from_model_profile(
             Some(self.model.model_name().to_string()),
             self.model.profile(),
@@ -378,7 +403,7 @@ impl AgentBuilder {
         if let Some(limits) = self.usage_limits {
             agent = agent.with_usage_limits(limits);
         }
-        if let Some(model_config) = self.model_config {
+        if let Some(model_config) = configured_model_config {
             agent = agent.with_model_config(model_config);
         }
         if let Some(tool_config) = self.tool_config {
@@ -387,10 +412,11 @@ impl AgentBuilder {
         if let Some(context_window) = self.context_window {
             agent = agent.with_context_window(context_window);
         }
-        for capability in crate::filters::default_filter_capabilities_with_config(
+        for capability in crate::filters::default_filter_capabilities_with_media_uploader(
             Some(&model),
             compact_model_settings.as_ref(),
             Some(&compact_request_params),
+            self.media_uploader.as_ref(),
         ) {
             agent = agent.with_capability(capability);
         }
@@ -421,6 +447,23 @@ impl AgentBuilder {
 #[must_use]
 pub fn agent(model: Arc<dyn ModelAdapter>) -> AgentBuilder {
     AgentBuilder::new(model)
+}
+
+fn model_capabilities_from_profile(profile: &ModelProfile) -> BTreeSet<ModelCapability> {
+    let mut capabilities = BTreeSet::new();
+    if profile.supports_image_input {
+        capabilities.insert(ModelCapability::Vision);
+    }
+    if profile.supports_video_input {
+        capabilities.insert(ModelCapability::VideoUnderstanding);
+    }
+    if profile.supports_audio_input {
+        capabilities.insert(ModelCapability::AudioUnderstanding);
+    }
+    if profile.supports_document_input {
+        capabilities.insert(ModelCapability::DocumentUnderstanding);
+    }
+    capabilities
 }
 
 #[derive(Clone)]

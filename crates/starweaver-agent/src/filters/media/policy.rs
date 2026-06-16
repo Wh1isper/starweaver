@@ -49,33 +49,3 @@ pub(super) fn is_video_content(item: &ContentPart) -> bool {
         ContentPart::ImageUrl { .. } | ContentPart::Text { .. } => false,
     }
 }
-
-pub(super) fn content_policy_reason(item: &ContentPart, policy: &MediaPolicy) -> Option<String> {
-    match item {
-        ContentPart::ImageUrl { .. } if !policy.allow_images => {
-            Some("image media is disabled".to_string())
-        }
-        ContentPart::FileUrl { media_type, .. }
-        | ContentPart::ResourceRef { media_type, .. }
-        | ContentPart::DataUrl { media_type, .. }
-        | ContentPart::Binary { media_type, .. } => {
-            if media_type.starts_with("image/") && !policy.allow_images {
-                Some("image media is disabled".to_string())
-            } else if media_type.starts_with("video/") && !policy.allow_videos {
-                Some("video media is disabled".to_string())
-            } else if !media_type.starts_with("image/")
-                && !media_type.starts_with("video/")
-                && !policy.allow_documents
-            {
-                Some("document media is disabled".to_string())
-            } else if media_type == "image/gif" && !policy.allow_gif {
-                Some("gif media is disabled".to_string())
-            } else if media_type == "image/webp" && !policy.allow_webp {
-                Some("webp media is disabled".to_string())
-            } else {
-                None
-            }
-        }
-        ContentPart::Text { .. } | ContentPart::ImageUrl { .. } => None,
-    }
-}

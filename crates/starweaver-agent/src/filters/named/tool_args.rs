@@ -3,6 +3,9 @@ use starweaver_model::{ModelMessage, ModelResponsePart, ToolArguments};
 
 use crate::filters::message::request_metadata_mut;
 
+const INVALID_TOOL_ARGS_MESSAGE: &str =
+    "This tool's args is not a valid JSON. Please refer the return value of the tool to try again.";
+
 pub(super) fn tool_args_filter(mut messages: Vec<ModelMessage>) -> Vec<ModelMessage> {
     let mut repaired = 0usize;
     for message in &mut messages {
@@ -30,27 +33,24 @@ pub(super) fn tool_args_filter(mut messages: Vec<ModelMessage>) -> Vec<ModelMess
 
 fn repair_tool_arguments(arguments: &ToolArguments) -> Option<ToolArguments> {
     match arguments {
-        ToolArguments::RawJsonString(text) => serde_json::from_str::<Value>(text)
-            .ok()
-            .map(ToolArguments::parsed),
-        ToolArguments::Invalid { raw, .. } => Some(ToolArguments::parsed(json!({
-            "starweaver_argument_repair": "invalid_json_string",
-            "raw": raw,
-        }))),
-        ToolArguments::Parsed(Value::String(text)) => serde_json::from_str::<Value>(text)
-            .ok()
-            .map(ToolArguments::parsed)
-            .or_else(|| {
-                Some(ToolArguments::parsed(json!({
-                    "starweaver_argument_repair": "invalid_json_string",
-                    "raw": text,
-                })))
-            }),
-        ToolArguments::Parsed(Value::Null) => Some(ToolArguments::parsed(json!({}))),
-        ToolArguments::Parsed(Value::Object(_)) => None,
-        ToolArguments::Parsed(other) => Some(ToolArguments::parsed(json!({
-            "starweaver_argument_repair": "non_object_arguments",
-            "value": other,
-        }))),
+        ToolArguments::Invalid { raw, .. } if !raw.is_empty() => {
+            Some(invalid_tool_args_placeholder())
+        }
+        ToolArguments::RawJsonString(text) | ToolArguments::Parsed(Value::String(text)) => {
+            invalid_placeholder_if_json_is_invalid(text)
+        }
+        ToolArguments::Invalid { .. } | ToolArguments::Parsed(_) => None,
     }
+}
+
+fn invalid_placeholder_if_json_is_invalid(text: &str) -> Option<ToolArguments> {
+    if text.is_empty() || serde_json::from_str::<Value>(text).is_ok() {
+        None
+    } else {
+        Some(invalid_tool_args_placeholder())
+    }
+}
+
+fn invalid_tool_args_placeholder() -> ToolArguments {
+    ToolArguments::parsed(json!({ "system": INVALID_TOOL_ARGS_MESSAGE }))
 }

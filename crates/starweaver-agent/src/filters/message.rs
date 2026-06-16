@@ -1,9 +1,8 @@
 //! Shared message and request metadata helpers for SDK filters.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use starweaver_model::{
     context_origin_metadata, ContentPart, ModelMessage, ModelRequest, ModelRequestPart,
-    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
     CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, INSTRUCTION_DYNAMIC_METADATA,
 };
 
@@ -22,22 +21,6 @@ pub(super) fn metadata_text(metadata: &Map<String, Value>, key: &str) -> Option<
         other => Some(other.to_string()),
     }
     .filter(|text| !text.trim().is_empty())
-}
-
-pub(super) fn push_user_text(messages: &mut Vec<ModelMessage>, text: String, source: &str) {
-    let request = ModelRequest {
-        parts: vec![ModelRequestPart::UserPrompt {
-            content: vec![ContentPart::Text { text }],
-            name: None,
-            metadata: Map::from_iter([("starweaver_filter_source".to_string(), json!(source))]),
-        }],
-        timestamp: None,
-        instructions: None,
-        run_id: None,
-        conversation_id: None,
-        metadata: Map::new(),
-    };
-    messages.push(ModelMessage::Request(request));
 }
 
 pub(super) fn insert_request_part_after_control_parts(
@@ -62,7 +45,7 @@ pub(super) fn insert_request_part_after_control_parts(
 }
 
 pub(super) fn insert_context_part_after_control_parts(
-    messages: &mut Vec<ModelMessage>,
+    messages: &mut [ModelMessage],
     part: ModelRequestPart,
 ) {
     for message in messages.iter_mut().rev() {
@@ -72,14 +55,6 @@ pub(super) fn insert_context_part_after_control_parts(
             return;
         }
     }
-    messages.push(ModelMessage::Request(ModelRequest {
-        parts: vec![part],
-        timestamp: None,
-        instructions: None,
-        run_id: None,
-        conversation_id: None,
-        metadata: Map::new(),
-    }));
 }
 
 fn request_instruction_insert_index(request: &ModelRequest) -> usize {
@@ -92,12 +67,7 @@ fn request_instruction_insert_index(request: &ModelRequest) -> usize {
 }
 
 fn request_context_insert_index(request: &ModelRequest) -> usize {
-    let instruction_end = request_instruction_end_index(request);
-    instruction_end
-        + request.parts[instruction_end..]
-            .iter()
-            .take_while(|part| is_context_user_prompt(part) || is_user_prompt(part))
-            .count()
+    request_instruction_end_index(request)
 }
 
 fn request_instruction_end_index(request: &ModelRequest) -> usize {
@@ -144,28 +114,6 @@ const fn is_instruction_prefix_part(part: &ModelRequestPart) -> bool {
         part,
         ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. }
     )
-}
-
-fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
-    match part {
-        ModelRequestPart::UserPrompt { metadata, .. } => context_origin_metadata(metadata)
-            .is_some_and(|origin| {
-                matches!(
-                    origin,
-                    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT
-                        | CONTEXT_ORIGIN_RUNTIME_CONTEXT
-                        | CONTEXT_ORIGIN_HANDOFF
-                )
-            }),
-        ModelRequestPart::SystemPrompt { .. }
-        | ModelRequestPart::Instruction { .. }
-        | ModelRequestPart::ToolReturn(_)
-        | ModelRequestPart::RetryPrompt { .. } => false,
-    }
-}
-
-const fn is_user_prompt(part: &ModelRequestPart) -> bool {
-    matches!(part, ModelRequestPart::UserPrompt { .. })
 }
 
 pub(super) fn request_metadata_mut(messages: &mut Vec<ModelMessage>) -> &mut Map<String, Value> {

@@ -7,7 +7,9 @@ use starweaver_model::{
 };
 use starweaver_runtime::AgentRunState;
 
-use crate::filters::message::request_metadata_mut;
+use crate::{
+    filters::message::request_metadata_mut, media_compression::data_url as encode_data_url,
+};
 
 use super::policy::{is_image_content, is_video_content, media_policy_from_state_and_context};
 
@@ -92,6 +94,9 @@ fn preflight_content_part(item: &mut ContentPart, policy: &MediaPolicy) -> Prefl
                 );
                 let report = preflight_report(&preflight);
                 if let Some(corrected) = preflight.corrected_media_type.clone() {
+                    if parsed.media_type != corrected {
+                        *data_url = encode_data_url(&corrected, &parsed.data);
+                    }
                     *media_type = corrected;
                 }
                 if preflight.corrupt || !preflight.allowed_by_policy {
@@ -126,8 +131,12 @@ fn preflight_tool_value(value: &mut Value, policy: &MediaPolicy) -> PreflightOut
             }
         }
         Value::Object(object) => {
-            if let Some(data_url) = object.get("data_url").and_then(Value::as_str) {
-                match parse_data_url(data_url) {
+            if let Some(data_url) = object
+                .get("data_url")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+            {
+                match parse_data_url(&data_url) {
                     Ok(parsed) => {
                         let preflight = MediaPreflight::inspect_with_policy(
                             &parsed.data,
@@ -139,6 +148,12 @@ fn preflight_tool_value(value: &mut Value, policy: &MediaPolicy) -> PreflightOut
                         );
                         outcome.reports.push(preflight_report(&preflight));
                         if let Some(media_type) = preflight.corrected_media_type.clone() {
+                            if parsed.media_type != media_type {
+                                object.insert(
+                                    "data_url".to_string(),
+                                    json!(encode_data_url(&media_type, &parsed.data)),
+                                );
+                            }
                             object.insert("media_type".to_string(), json!(media_type));
                         }
                         if preflight.corrupt || !preflight.allowed_by_policy {
@@ -173,19 +188,23 @@ fn enforce_media_count_limits(messages: &mut [ModelMessage], policy: &MediaPolic
                     for item in content.iter_mut().rev() {
                         if is_image_content(item) {
                             image_count += 1;
-                            if policy.max_images.is_some_and(|limit| image_count > limit) {
-                                *item = ContentPart::Text {
-                                    text: "System reminder: older image omitted because the model image count limit was reached.".to_string(),
-                                };
-                                replaced += 1;
+                            if let Some(limit) = policy.max_images {
+                                if image_count > limit {
+                                    *item = ContentPart::Text {
+                                        text: image_count_limit_message(limit),
+                                    };
+                                    replaced += 1;
+                                }
                             }
                         } else if is_video_content(item) {
                             video_count += 1;
-                            if policy.max_videos.is_some_and(|limit| video_count > limit) {
-                                *item = ContentPart::Text {
-                                    text: "System reminder: older video omitted because the model video count limit was reached.".to_string(),
-                                };
-                                replaced += 1;
+                            if let Some(limit) = policy.max_videos {
+                                if video_count > limit {
+                                    *item = ContentPart::Text {
+                                        text: video_count_limit_message(limit),
+                                    };
+                                    replaced += 1;
+                                }
                             }
                         }
                     }
@@ -194,6 +213,18 @@ fn enforce_media_count_limits(messages: &mut [ModelMessage], policy: &MediaPolic
         }
     }
     replaced
+}
+
+fn image_count_limit_message(limit: usize) -> String {
+    format!(
+        "<system-reminder>This image content has been dropped as it exceeds the maximum allowed images (max_images={limit}).</system-reminder>"
+    )
+}
+
+fn video_count_limit_message(limit: usize) -> String {
+    format!(
+        "<system-reminder>This video content has been dropped as it exceeds the maximum allowed videos (max_videos={limit}).</system-reminder>"
+    )
 }
 
 fn preflight_report(preflight: &MediaPreflight) -> Value {

@@ -41,6 +41,20 @@ pub fn default_filter_capabilities_with_config(
     compact_model_settings: Option<&ModelSettings>,
     compact_request_params: Option<&ModelRequestParameters>,
 ) -> Vec<Arc<dyn AgentCapability>> {
+    default_filter_capabilities_with_media_uploader(
+        compact_model,
+        compact_model_settings,
+        compact_request_params,
+        None,
+    )
+}
+
+pub(super) fn default_filter_capabilities_with_media_uploader(
+    compact_model: Option<&Arc<dyn ModelAdapter>>,
+    compact_model_settings: Option<&ModelSettings>,
+    compact_request_params: Option<&ModelRequestParameters>,
+    media_uploader: Option<&Arc<dyn super::media::MediaUploader>>,
+) -> Vec<Arc<dyn AgentCapability>> {
     DEFAULT_FILTER_ORDER
         .iter()
         .map(|name| {
@@ -53,6 +67,14 @@ pub fn default_filter_capabilities_with_config(
                     capability = capability.with_request_params(params);
                 }
                 Arc::new(capability) as Arc<dyn AgentCapability>
+            } else if *name == "media_upload" {
+                media_uploader.map_or_else(
+                    || Arc::new(NamedFilterCapability::new(name)) as Arc<dyn AgentCapability>,
+                    |uploader| {
+                        Arc::new(NamedFilterCapability::media_upload(Arc::clone(uploader)))
+                            as Arc<dyn AgentCapability>
+                    },
+                )
             } else {
                 Arc::new(NamedFilterCapability::new(name)) as Arc<dyn AgentCapability>
             }

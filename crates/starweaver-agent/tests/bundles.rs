@@ -52,15 +52,15 @@ async fn environment_context_capability_injects_provider_context_as_user_prompt(
     assert!(matches!(
         request.parts.first(),
         Some(ModelRequestPart::UserPrompt { content, metadata, .. })
-            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
-                && matches!(&content[0], ContentPart::Text { text } if text == "inspect workspace")
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
+                && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>"))
     ));
     assert!(matches!(
         request.parts.get(1),
         Some(ModelRequestPart::UserPrompt { content, metadata, .. })
-            if metadata.get(CONTEXT_ORIGIN_METADATA)
-                == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
-                && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>"))
+            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
+                && matches!(&content[0], ContentPart::Text { text } if text == "inspect workspace")
     ));
 }
 

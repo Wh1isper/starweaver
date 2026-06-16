@@ -12,17 +12,17 @@ use starweaver_agent::{
     attach_environment, AgentBuilder, AgentCapability, AgentContext, AgentRunState, AgentSession,
     CapabilityOrdering, CapabilityResult, CapabilitySpec, FunctionDynamicInstruction,
     FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
-    FunctionTool, OutputFunctionDefinition, OutputSchema, OutputValue, StaticCapabilityBundle,
-    StaticToolset, TestModel, ToolContext, ToolRegistry, ToolResult, UsageLimits,
-    DEFAULT_FILTER_ORDER,
+    FunctionTool, MediaUploadRequest, MediaUploader, ModelCapability, ModelConfig,
+    OutputFunctionDefinition, OutputSchema, OutputValue, StaticCapabilityBundle, StaticToolset,
+    TestModel, ToolContext, ToolRegistry, ToolResult, UsageLimits, DEFAULT_FILTER_ORDER,
 };
 use starweaver_environment::{
     EnvironmentPolicy, FilePolicy, ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
-    providers::openai_responses::OpenAiResponsesAdapter, ModelAdapter, ModelError, ModelMessage,
-    ModelProfile, ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ModelSettings, ProtocolFamily, ToolCallPart,
+    providers::openai_responses::OpenAiResponsesAdapter, ContentPart, ModelAdapter, ModelError,
+    ModelMessage, ModelProfile, ModelRequestContext, ModelRequestParameters, ModelRequestPart,
+    ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily, ToolCallPart,
     CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
 };
 
@@ -36,6 +36,80 @@ struct CustomFilterCapability;
 #[derive(Clone)]
 struct MessageCaptureModel {
     captured_messages: Arc<Mutex<Vec<Vec<ModelMessage>>>>,
+}
+
+struct ModelConfigCaptureCapability {
+    captured_configs: Arc<Mutex<Vec<ModelConfig>>>,
+}
+
+struct InlineImageCapability;
+
+struct FakeUploader;
+
+#[async_trait]
+impl MediaUploader for FakeUploader {
+    async fn upload(&self, request: MediaUploadRequest) -> Result<ContentPart, String> {
+        Ok(ContentPart::ResourceRef {
+            uri: "resource://builder-upload/image".to_string(),
+            media_type: request.media_type,
+            resource_type: "image".to_string(),
+            metadata: serde_json::Map::new(),
+        })
+    }
+}
+
+#[async_trait]
+impl AgentCapability for ModelConfigCaptureCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new("test.model_config_capture")
+            .with_ordering(CapabilityOrdering::default().after("starweaver.filter.capability"))
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        self.captured_configs
+            .lock()
+            .unwrap()
+            .push(context.model_config.clone());
+        Ok(messages)
+    }
+}
+
+#[async_trait]
+impl AgentCapability for InlineImageCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new("test.inline_image_capability").with_ordering(
+            CapabilityOrdering::default().before("starweaver.filter.reasoning_normalize"),
+        )
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        mut messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        context
+            .model_config
+            .capabilities
+            .insert(ModelCapability::ImageUrl);
+        let Some(ModelMessage::Request(request)) = messages.last_mut() else {
+            panic!("last message should be a request");
+        };
+        request.parts.push(ModelRequestPart::UserPrompt {
+            content: vec![ContentPart::Binary {
+                data: tiny_png_bytes(1, 1),
+                media_type: "image/png".to_string(),
+            }],
+            name: None,
+            metadata: serde_json::Map::new(),
+        });
+        Ok(messages)
+    }
 }
 
 #[async_trait]
@@ -269,6 +343,131 @@ async fn builder_installs_default_filter_capabilities_before_custom_capabilities
 }
 
 #[tokio::test]
+async fn builder_default_media_upload_filter_uses_configured_uploader_without_duplicate_id() {
+    let model = FunctionModel::new(
+        |messages: Vec<ModelMessage>,
+         _settings: Option<ModelSettings>,
+         _info: FunctionModelInfo| {
+            let content = messages
+                .iter()
+                .rev()
+                .find_map(|message| match message {
+                    ModelMessage::Request(request) => {
+                        request.parts.iter().rev().find_map(|part| match part {
+                            ModelRequestPart::UserPrompt { content, .. } => Some(content),
+                            ModelRequestPart::SystemPrompt { .. }
+                            | ModelRequestPart::Instruction { .. }
+                            | ModelRequestPart::ToolReturn(_)
+                            | ModelRequestPart::RetryPrompt { .. } => None,
+                        })
+                    }
+                    ModelMessage::Response(_) => None,
+                })
+                .expect("uploaded content");
+            assert!(content.iter().any(|part| matches!(
+                part,
+                ContentPart::ResourceRef { uri, media_type, resource_type, .. }
+                    if uri == "resource://builder-upload/image"
+                        && media_type == "image/png"
+                        && resource_type == "image"
+            )));
+            let order = messages
+                .iter()
+                .rev()
+                .find_map(|message| match message {
+                    ModelMessage::Request(request) => {
+                        request.metadata.get("starweaver_filter_order")
+                    }
+                    ModelMessage::Response(_) => None,
+                })
+                .and_then(serde_json::Value::as_array)
+                .expect("filter order");
+            assert_eq!(
+                order
+                    .iter()
+                    .filter(|name| name.as_str() == Some("media_upload"))
+                    .count(),
+                1
+            );
+            Ok(ModelResponse::text("uploaded"))
+        },
+    );
+
+    let result = AgentBuilder::new(Arc::new(model))
+        .media_uploader(Arc::new(FakeUploader))
+        .capability(Arc::new(InlineImageCapability))
+        .build()
+        .run("upload inline image")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "uploaded");
+}
+
+#[tokio::test]
+async fn builder_derives_model_context_capabilities_from_profile_without_overriding_explicit_config(
+) {
+    let captured_configs = Arc::new(Mutex::new(Vec::new()));
+    let derived_model = FunctionModel::new(
+        |_messages: Vec<ModelMessage>,
+         _settings: Option<ModelSettings>,
+         _info: FunctionModelInfo| { Ok(ModelResponse::text("ok")) },
+    )
+    .with_profile(ModelProfile::for_protocol(
+        ProtocolFamily::GeminiGenerateContent,
+    ));
+
+    let result = AgentBuilder::new(Arc::new(derived_model))
+        .capability(Arc::new(ModelConfigCaptureCapability {
+            captured_configs: Arc::clone(&captured_configs),
+        }))
+        .build()
+        .run("hello")
+        .await
+        .unwrap();
+    assert_eq!(result.output, "ok");
+    let derived = captured_configs.lock().unwrap()[0].clone();
+    assert!(derived.capabilities.contains(&ModelCapability::Vision));
+    assert!(derived
+        .capabilities
+        .contains(&ModelCapability::VideoUnderstanding));
+    assert!(!derived.capabilities.contains(&ModelCapability::ImageUrl));
+    assert!(!derived.capabilities.contains(&ModelCapability::VideoUrl));
+    assert!(derived
+        .capabilities
+        .contains(&ModelCapability::AudioUnderstanding));
+    assert!(derived
+        .capabilities
+        .contains(&ModelCapability::DocumentUnderstanding));
+
+    let captured_configs = Arc::new(Mutex::new(Vec::new()));
+    let explicit_model = FunctionModel::new(
+        |_messages: Vec<ModelMessage>,
+         _settings: Option<ModelSettings>,
+         _info: FunctionModelInfo| { Ok(ModelResponse::text("ok")) },
+    )
+    .with_profile(ModelProfile::for_protocol(
+        ProtocolFamily::GeminiGenerateContent,
+    ));
+    let mut explicit_config = ModelConfig::default();
+    explicit_config.capabilities.insert(ModelCapability::Vision);
+
+    let result = AgentBuilder::new(Arc::new(explicit_model))
+        .model_config(explicit_config)
+        .capability(Arc::new(ModelConfigCaptureCapability {
+            captured_configs: Arc::clone(&captured_configs),
+        }))
+        .build()
+        .run("hello")
+        .await
+        .unwrap();
+    assert_eq!(result.output, "ok");
+    let explicit = captured_configs.lock().unwrap()[0].clone();
+    assert_eq!(explicit.capabilities.len(), 1);
+    assert!(explicit.capabilities.contains(&ModelCapability::Vision));
+}
+
+#[tokio::test]
 async fn builder_persists_environment_and_runtime_context_for_prefix_stability() {
     let captured_messages = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(MessageCaptureModel {
@@ -299,8 +498,9 @@ async fn builder_persists_environment_and_runtime_context_for_prefix_stability()
     assert!(matches!(
         &request.parts[0],
         ModelRequestPart::UserPrompt { content, metadata, .. }
-            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
-                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text == "inspect workspace")
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_RUNTIME_CONTEXT))
+                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text.contains("<runtime-context>"))
     ));
     assert!(matches!(
         &request.parts[1],
@@ -312,9 +512,8 @@ async fn builder_persists_environment_and_runtime_context_for_prefix_stability()
     assert!(matches!(
         &request.parts[2],
         ModelRequestPart::UserPrompt { content, metadata, .. }
-            if metadata.get(CONTEXT_ORIGIN_METADATA)
-                == Some(&serde_json::json!(CONTEXT_ORIGIN_RUNTIME_CONTEXT))
-                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text.contains("<runtime-context>"))
+            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
+                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text == "inspect workspace")
     ));
 
     let durable_history =
@@ -369,8 +568,23 @@ async fn multi_run_session_preserves_previous_model_request_prefix() {
     let first_input = first_wire["input"].as_array().unwrap();
     let second_input = second_wire["input"].as_array().unwrap();
     assert!(second_input.len() > first_input.len());
-    assert_eq!(first_input[0], second_input[0]);
-    assert_eq!(first_input[1], second_input[1]);
+    assert_eq!(first_input[1], second_input[0]);
+    assert_eq!(first_input[2], second_input[1]);
+}
+
+fn tiny_png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    bytes.extend_from_slice(&13u32.to_be_bytes());
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 2, 0, 0, 0]);
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes.extend_from_slice(b"IEND");
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes
 }
 
 fn context_origin_count(messages: &[ModelMessage], origin: &str) -> usize {

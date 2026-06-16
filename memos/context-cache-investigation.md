@@ -311,3 +311,96 @@ Observed usage:
 |    4 |       18,725 |        18,432 |    98.4% |
 
 This does not make prompt caching deterministic, because OpenAI caching remains best-effort and load-balanced. It does, however, align Starweaver with OpenAI's documented cache-routing control and removes the avoidable dependence on implicit routing for multi-turn CLI sessions.
+
+## Follow-up: active-run cache prefix instability in `session_c56f3ffe-5eae-4fe2-b153-2e6a5fd3f34d`
+
+The later CLI validation session `session_c56f3ffe-5eae-4fe2-b153-2e6a5fd3f34d` still reported an aggregate cache hit rate in the low 60% range. The local SQLite store showed this was not another routing failure:
+
+- The session had one completed CLI run with 10 model requests and 10 model responses.
+- The first request was cold: `18,789` input tokens and `0` cached tokens.
+- Requests 2 through 10 all returned exactly `16,384` cached tokens.
+- Aggregate usage was `245,369` input tokens and `147,456` cache-read tokens, about `60.1%`.
+
+Per-response evidence:
+
+| Response | Input tokens | Cached tokens | Note                 |
+| -------: | -----------: | ------------: | -------------------- |
+|        1 |       18,789 |             0 | cold request         |
+|        2 |       19,491 |        16,384 | stable cached prefix |
+|        3 |       20,030 |        16,384 | stable cached prefix |
+|        4 |       25,578 |        16,384 | stable cached prefix |
+|        5 |       22,177 |        16,384 | stable cached prefix |
+|        6 |       26,631 |        16,384 | stable cached prefix |
+|        7 |       21,948 |        16,384 | stable cached prefix |
+|        8 |       23,327 |        16,384 | stable cached prefix |
+|        9 |       22,677 |        16,384 | stable cached prefix |
+|       10 |       22,749 |        16,384 | stable cached prefix |
+
+A provider-shape review found one confirmed local cache-shape risk and one initially suspected risk that was corrected against the ya-agent-sdk reference:
+
+1. **CLI guidance instruction order shifted after the first model request.**
+
+   - First request top-level OpenAI Responses `instructions` were ordered as: agent instruction, CLI guidance (`AGENTS.md` / `RULES.md`), then toolset instructions.
+   - Subsequent tool-loop requests lifted historical `SystemPrompt` guidance before the current request's agent instruction, producing: CLI guidance, agent instruction, then toolset instructions.
+   - OpenAI prompt caching is exact-prefix sensitive, so this order shift can stop reuse at or near the provider's cached instruction-prefix boundary even when all text is still present.
+
+2. **Cold-start trimming must follow ya-agent-sdk idle-threshold semantics.**
+
+   - The correct behavior is not first-step-only trimming.
+   - The filter should run only after the latest `ModelResponse.timestamp` is older than `ModelConfig.cold_start_trim_seconds`.
+   - When it does run, it should trim historical tool returns before the latest model response while preserving pending tool returns after that response.
+
+Implemented fixes and filter parity updates:
+
+- `crates/starweaver-cli/src/runner.rs`
+
+  - `CliGuidanceAdapter` now keeps current CLI guidance on the latest request rather than leaving it on the first historical request.
+  - This preserves stable OpenAI Responses instruction order across tool-loop requests: agent instruction, CLI guidance, then toolset instructions.
+  - Added `cli_guidance_keeps_openai_responses_instruction_order_stable_for_tool_loops` regression coverage.
+
+- `crates/starweaver-agent/src/filters/named/context_injection.rs`
+
+  - `cold_start_filter` now follows the ya-agent-sdk idle-threshold model using the latest `ModelResponse.timestamp` and `context.model_config.cold_start_trim_seconds`.
+  - Cold-start trimming preserves current pending tool returns after the latest response.
+  - `auto_load_files`, `bus_message`, and `background_shell` now no-op unless the latest message is a request.
+  - The default pipeline no longer injects metadata-backed auto-loaded files twice when both `auto_load_files` and `auto_load_files_after_compact` run without compact rewriting the request. The first pass marks the latest request only after state metadata is included; if compact rewrites the request, the after-compact pass can still re-inject the metadata into the replacement request.
+  - `bus_message` consumes only non-steering bus messages and leaves `topic == "steering"` or `source == "user"` messages for runtime steering, preserving `steering_received` events and compact/handoff continuity.
+  - `system_prompt` removes stale system prompts and reinjects the canonical first prompt.
+
+- `crates/starweaver-agent/src/filters/named/ordering.rs`
+
+  - Default named filter order now matches the reference ordering more closely, including media split/compress/preflight/upload, tool args repair, handoff, bus/background, compact/cold-start, environment/runtime context, auto-load-after-compact, and system prompt reinjection.
+
+- `crates/starweaver-agent/src/filters/media/*` and `crates/starweaver-agent/src/media_compression.rs`
+
+  - Added `media_split` for tall image segmentation before compression.
+  - Media preflight corrects binary/data URL MIME drift, traverses nested tool returns, and reports media limits with explicit `max_images=N` / `max_videos=N` reminders.
+  - Capability filtering uses explicit `AgentContext.model_config.capabilities` for URL/understanding support instead of inferring URL support from generic profile booleans.
+  - Media upload respects URL capabilities and can be activated from `AgentBuilder.media_uploader(...)` without duplicate `media_upload` capability IDs.
+
+- `crates/starweaver-agent/src/filters/named/tool_args.rs`
+
+  - Tool-argument repair now matches the reference behavior: only non-empty invalid JSON string arguments are replaced with the retry placeholder.
+  - Valid raw/string JSON is preserved instead of parsed and reserialized, reducing replay/cache shape churn.
+
+- `crates/starweaver-agent/src/lib.rs`
+
+  - `AgentBuilder` now accepts a `MediaUploader` for the default `media_upload` filter slot.
+  - Model profile capability derivation now records semantic understanding capabilities (`Vision`, `VideoUnderstanding`, `AudioUnderstanding`, `DocumentUnderstanding`) only; URL capabilities must be configured explicitly or by a capability hook.
+
+Validation commands run successfully:
+
+```bash
+cargo fmt --all
+cargo check -p starweaver-agent
+cargo test -p starweaver-agent --test builder
+cargo test -p starweaver-agent --test sdk_filter_order
+cargo test -p starweaver-agent --test sdk_filter_order default_filter_capabilities_do_not_duplicate_metadata_auto_loaded_files -- --nocapture
+cargo test -p starweaver-agent --test bundles environment_context_capability
+cargo test -p starweaver-agent --test process_shell
+make check
+make test
+git diff --check
+```
+
+Expected effect: future active CLI runs should keep OpenAI Responses `instructions` and `input` closer to exact append-only prefixes, while idle resumed runs can still trim large historical tool returns in the same way as the reference implementation. The user's `session_c56f3ffe-5eae-4fe2-b153-2e6a5fd3f34d` already showed a stable `16,384` cached-token prefix after the cold first request, so its low aggregate hit rate is mostly a denominator effect plus provider cache plateau rather than total cache-routing failure. The provider can still return best-effort cache results, so these are request-shape and parity fixes rather than deterministic cache-hit guarantees.

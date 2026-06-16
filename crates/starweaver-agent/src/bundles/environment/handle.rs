@@ -3,8 +3,8 @@ use starweaver_context::AgentContext;
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
 use starweaver_model::{
     context_origin_metadata, ContentPart, ModelMessage, ModelRequest, ModelRequestPart,
-    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
-    CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, CONTEXT_TYPE_METADATA,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    CONTEXT_TYPE_METADATA,
 };
 use starweaver_runtime::{
     AgentCapability, AgentRunState, CapabilityError, CapabilityOrdering, CapabilityResult,
@@ -71,7 +71,7 @@ impl AgentCapability for EnvironmentContextCapability {
 
 async fn inject_environment_context(
     context: &AgentContext,
-    messages: &mut Vec<ModelMessage>,
+    messages: &mut [ModelMessage],
 ) -> CapabilityResult<()> {
     let force_inject = context.force_inject_context;
     if latest_request(messages).is_some_and(request_has_tool_return_or_retry) && !force_inject {
@@ -159,7 +159,7 @@ fn request_has_tool_return_or_retry(request: &ModelRequest) -> bool {
     })
 }
 
-fn insert_context_into_latest_request(messages: &mut Vec<ModelMessage>, part: ModelRequestPart) {
+fn insert_context_into_latest_request(messages: &mut [ModelMessage], part: ModelRequestPart) {
     for message in messages.iter_mut().rev() {
         if let ModelMessage::Request(request) = message {
             let insert_at = request_context_insert_index(request);
@@ -167,23 +167,10 @@ fn insert_context_into_latest_request(messages: &mut Vec<ModelMessage>, part: Mo
             return;
         }
     }
-    messages.push(ModelMessage::Request(ModelRequest {
-        parts: vec![part],
-        timestamp: None,
-        instructions: None,
-        run_id: None,
-        conversation_id: None,
-        metadata: serde_json::Map::new(),
-    }));
 }
 
 fn request_context_insert_index(request: &ModelRequest) -> usize {
-    let instruction_end = request_instruction_end_index(request);
-    instruction_end
-        + request.parts[instruction_end..]
-            .iter()
-            .take_while(|part| is_context_user_prompt(part) || is_user_prompt(part))
-            .count()
+    request_instruction_end_index(request)
 }
 
 fn request_instruction_end_index(request: &ModelRequest) -> usize {
@@ -217,28 +204,6 @@ const fn is_instruction_prefix_part(part: &ModelRequestPart) -> bool {
         part,
         ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. }
     )
-}
-
-fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
-    match part {
-        ModelRequestPart::UserPrompt { metadata, .. } => context_origin_metadata(metadata)
-            .is_some_and(|origin| {
-                matches!(
-                    origin,
-                    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT
-                        | CONTEXT_ORIGIN_RUNTIME_CONTEXT
-                        | CONTEXT_ORIGIN_HANDOFF
-                )
-            }),
-        ModelRequestPart::SystemPrompt { .. }
-        | ModelRequestPart::Instruction { .. }
-        | ModelRequestPart::ToolReturn(_)
-        | ModelRequestPart::RetryPrompt { .. } => false,
-    }
-}
-
-const fn is_user_prompt(part: &ModelRequestPart) -> bool {
-    matches!(part, ModelRequestPart::UserPrompt { .. })
 }
 
 /// Attach the active environment to an `AgentContext`.

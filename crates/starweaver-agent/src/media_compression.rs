@@ -1,12 +1,23 @@
 //! Media compression helpers used by SDK filters and first-party tools.
 
+use std::io::Cursor;
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, RgbImage};
+use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, ImageFormat, RgbImage};
 use serde_json::{json, Value};
 use starweaver_model::{detect_media_kind, raw_budget_from_base64_limit, MediaKind};
 
 const JPEG_QUALITIES: &[u8] = &[95, 85, 75, 60, 45, 30, 20];
 const RESIZE_PASSES: usize = 5;
+
+/// Result of an image split segment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageSegment {
+    /// Segment image bytes.
+    pub data: Vec<u8>,
+    /// Segment media type.
+    pub media_type: String,
+}
 
 /// Result of an image compression attempt.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +38,52 @@ pub const fn raw_budget_for_encoded_limit(max_encoded_bytes: usize) -> usize {
 /// Encode a data URL for an inline media payload.
 pub fn data_url(media_type: &str, data: &[u8]) -> String {
     format!("data:{media_type};base64,{}", STANDARD.encode(data))
+}
+
+/// Split a tall image into vertical segments with overlap.
+pub fn split_image_data(
+    image_bytes: &[u8],
+    max_height: usize,
+    overlap: usize,
+    media_type: &str,
+) -> Result<Vec<ImageSegment>, String> {
+    let image = image::load_from_memory(image_bytes)
+        .map_err(|error| format!("failed to decode image for splitting: {error}"))?;
+    let width = image.width();
+    let height = usize::try_from(image.height()).unwrap_or(usize::MAX);
+    let normalized_media_type = normalized_image_media_type(image_bytes, media_type);
+    if max_height == 0 || height <= max_height {
+        return Ok(vec![ImageSegment {
+            data: image_bytes.to_vec(),
+            media_type: normalized_media_type,
+        }]);
+    }
+
+    let format = image_format_for_media_type(&normalized_media_type).unwrap_or(ImageFormat::Png);
+    let output_media_type = media_type_for_image_format(format).to_string();
+    let step = max_height.saturating_sub(overlap).max(1);
+    let mut segments = Vec::new();
+    let mut y = 0usize;
+    while y < height {
+        let segment_height = max_height.min(height.saturating_sub(y));
+        let segment = image.crop_imm(
+            0,
+            u32::try_from(y).map_err(|_| "image segment y offset exceeds u32".to_string())?,
+            width,
+            u32::try_from(segment_height)
+                .map_err(|_| "image segment height exceeds u32".to_string())?,
+        );
+        let encoded = encode_segment(&segment, format)?;
+        segments.push(ImageSegment {
+            data: encoded,
+            media_type: output_media_type.clone(),
+        });
+        y = y.saturating_add(step);
+        if y.saturating_add(overlap) >= height {
+            break;
+        }
+    }
+    Ok(segments)
 }
 
 /// Compress image bytes so the raw payload fits the provided byte budget.
@@ -175,6 +232,38 @@ pub fn normalized_image_media_type(image_bytes: &[u8], declared: &str) -> String
         .filter(|media_type| media_type.starts_with("image/"))
         .unwrap_or(declared)
         .to_string()
+}
+
+const fn image_format_for_media_type(media_type: &str) -> Option<ImageFormat> {
+    match media_type.as_bytes() {
+        b"image/png" => Some(ImageFormat::Png),
+        b"image/jpeg" | b"image/jpg" => Some(ImageFormat::Jpeg),
+        b"image/gif" => Some(ImageFormat::Gif),
+        b"image/webp" => Some(ImageFormat::WebP),
+        _ => None,
+    }
+}
+
+const fn media_type_for_image_format(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Jpeg => "image/jpeg",
+        ImageFormat::Gif => "image/gif",
+        ImageFormat::WebP => "image/webp",
+        _ => "image/png",
+    }
+}
+
+fn encode_segment(segment: &DynamicImage, format: ImageFormat) -> Result<Vec<u8>, String> {
+    let mut output = Cursor::new(Vec::new());
+    match format {
+        ImageFormat::Jpeg => DynamicImage::ImageRgb8(segment.to_rgb8())
+            .write_to(&mut output, format)
+            .map_err(|error| format!("failed to encode jpeg image segment: {error}"))?,
+        _ => segment
+            .write_to(&mut output, format)
+            .map_err(|error| format!("failed to encode image segment: {error}"))?,
+    }
+    Ok(output.into_inner())
 }
 
 fn decode_image_as_white_composited_rgb(image_bytes: &[u8]) -> Result<RgbImage, String> {

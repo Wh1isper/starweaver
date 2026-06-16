@@ -4,7 +4,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use starweaver_context::AgentContext;
+use starweaver_context::{AgentContext, ModelCapability};
 use starweaver_model::{
     parse_data_url, ContentPart, MediaPolicy, MediaPreflight, ModelMessage, ModelRequestPart,
 };
@@ -46,6 +46,11 @@ pub(in crate::filters) async fn media_upload_filter(
     let Some(media_uploader) = uploader else {
         return messages;
     };
+    let targets = UploadTargets::from_context(context);
+    if !targets.any() {
+        return messages;
+    }
+
     let policy = media_policy_from_state_and_context(state, context);
     let mut upload_count = 0usize;
     let mut failures = Vec::new();
@@ -55,7 +60,8 @@ pub(in crate::filters) async fn media_upload_filter(
                 match part {
                     ModelRequestPart::UserPrompt { content, .. } => {
                         for item in content {
-                            match upload_content_part(item, &policy, media_uploader).await {
+                            match upload_content_part(item, &policy, targets, media_uploader).await
+                            {
                                 UploadOutcome::Uploaded(replacement) => {
                                     *item = replacement;
                                     upload_count += 1;
@@ -66,9 +72,13 @@ pub(in crate::filters) async fn media_upload_filter(
                         }
                     }
                     ModelRequestPart::ToolReturn(tool_return) => {
-                        let outcome =
-                            upload_tool_value(&mut tool_return.content, &policy, media_uploader)
-                                .await;
+                        let outcome = upload_tool_value(
+                            &mut tool_return.content,
+                            &policy,
+                            targets,
+                            media_uploader,
+                        )
+                        .await;
                         upload_count += outcome.uploaded;
                         failures.extend(outcome.failures);
                     }
@@ -95,13 +105,15 @@ pub(in crate::filters) async fn media_upload_filter(
 async fn upload_content_part(
     item: &ContentPart,
     policy: &MediaPolicy,
+    targets: UploadTargets,
     uploader: &Arc<dyn MediaUploader>,
 ) -> UploadOutcome {
     match item {
         ContentPart::Binary { data, media_type } => {
             let preflight = MediaPreflight::inspect_with_policy(data, Some(media_type), policy);
-            if should_upload(&preflight) {
-                upload_payload(data.clone(), media_type.clone(), preflight, uploader).await
+            if should_upload(&preflight, media_type, targets) {
+                let upload_media_type = upload_media_type(&preflight, media_type);
+                upload_payload(data.clone(), upload_media_type, preflight, uploader).await
             } else {
                 UploadOutcome::Skipped
             }
@@ -113,8 +125,9 @@ async fn upload_content_part(
             Ok(parsed) => {
                 let preflight =
                     MediaPreflight::inspect_with_policy(&parsed.data, Some(media_type), policy);
-                if should_upload(&preflight) {
-                    upload_payload(parsed.data, media_type.clone(), preflight, uploader).await
+                if should_upload(&preflight, media_type, targets) {
+                    let upload_media_type = upload_media_type(&preflight, media_type);
+                    upload_payload(parsed.data, upload_media_type, preflight, uploader).await
                 } else {
                     UploadOutcome::Skipped
                 }
@@ -131,6 +144,7 @@ async fn upload_content_part(
 fn upload_tool_value<'a>(
     value: &'a mut Value,
     policy: &'a MediaPolicy,
+    targets: UploadTargets,
     uploader: &'a Arc<dyn MediaUploader>,
 ) -> Pin<Box<dyn Future<Output = ToolUploadOutcome> + Send + 'a>> {
     Box::pin(async move {
@@ -138,7 +152,7 @@ fn upload_tool_value<'a>(
         match value {
             Value::Array(items) => {
                 for item in items {
-                    outcome.merge(upload_tool_value(item, policy, uploader).await);
+                    outcome.merge(upload_tool_value(item, policy, targets, uploader).await);
                 }
             }
             Value::Object(object) => {
@@ -155,9 +169,15 @@ fn upload_tool_value<'a>(
                                 Some(media_type.as_str()),
                                 policy,
                             );
-                            if should_upload(&preflight) {
-                                match upload_payload(parsed.data, media_type, preflight, uploader)
-                                    .await
+                            if should_upload(&preflight, &media_type, targets) {
+                                let upload_media_type = upload_media_type(&preflight, &media_type);
+                                match upload_payload(
+                                    parsed.data,
+                                    upload_media_type,
+                                    preflight,
+                                    uploader,
+                                )
+                                .await
                                 {
                                     UploadOutcome::Uploaded(part) => {
                                         *value = content_part_json(&part);
@@ -175,7 +195,7 @@ fn upload_tool_value<'a>(
                     return outcome;
                 }
                 for item in object.values_mut() {
-                    outcome.merge(upload_tool_value(item, policy, uploader).await);
+                    outcome.merge(upload_tool_value(item, policy, targets, uploader).await);
                 }
             }
             Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
@@ -203,12 +223,53 @@ async fn upload_payload(
     }
 }
 
-const fn should_upload(preflight: &MediaPreflight) -> bool {
-    preflight.over_base64_budget || preflight.detected_kind.is_video()
+fn should_upload(
+    preflight: &MediaPreflight,
+    declared_media_type: &str,
+    targets: UploadTargets,
+) -> bool {
+    let media_type = preflight
+        .corrected_media_type
+        .as_deref()
+        .unwrap_or(declared_media_type);
+    (targets.images && media_type.starts_with("image/"))
+        || (targets.videos && media_type.starts_with("video/"))
+}
+
+fn upload_media_type(preflight: &MediaPreflight, fallback: &str) -> String {
+    preflight
+        .corrected_media_type
+        .clone()
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn content_part_json(part: &ContentPart) -> Value {
     serde_json::to_value(part).unwrap_or_else(|_| json!({}))
+}
+
+#[derive(Clone, Copy)]
+struct UploadTargets {
+    images: bool,
+    videos: bool,
+}
+
+impl UploadTargets {
+    fn from_context(context: &AgentContext) -> Self {
+        Self {
+            images: context
+                .model_config
+                .capabilities
+                .contains(&ModelCapability::ImageUrl),
+            videos: context
+                .model_config
+                .capabilities
+                .contains(&ModelCapability::VideoUrl),
+        }
+    }
+
+    const fn any(self) -> bool {
+        self.images || self.videos
+    }
 }
 
 enum UploadOutcome {

@@ -5,19 +5,23 @@
 use std::{io::Cursor, sync::Arc};
 
 use async_trait::async_trait;
+use chrono::{Duration, Utc};
 use image::{ImageBuffer, ImageFormat, Rgba};
 use starweaver_agent::{
-    default_filter_capabilities, default_filter_capabilities_with_config, AgentCapability,
-    AgentContext, AgentRunState, CacheFriendlyCompactCapability, ConversationId, FunctionModel,
-    FunctionModelInfo, MediaUploadRequest, MediaUploader, ModelConfig, NamedFilterCapability,
-    PerThousandRatio, RunId, Usage, DEFAULT_FILTER_ORDER,
+    attach_environment, default_filter_capabilities, default_filter_capabilities_with_config,
+    AgentCapability, AgentContext, AgentRunState, CacheFriendlyCompactCapability, ConversationId,
+    FunctionModel, FunctionModelInfo, MediaUploadRequest, MediaUploader, ModelCapability,
+    ModelConfig, NamedFilterCapability, PerThousandRatio, RunId, ShellProcessSnapshot,
+    ShellProcessStatus, Usage, DEFAULT_FILTER_ORDER,
 };
+use starweaver_core::Metadata;
+use starweaver_environment::VirtualEnvironmentProvider;
 use starweaver_model::{
     ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderPartInfo,
-    ToolCallPart, ToolDefinition, ToolReturnPart, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT,
-    CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
-    CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
 };
 
 #[tokio::test]
@@ -49,6 +53,43 @@ async fn default_filter_capabilities_record_order() -> starweaver_agent::Capabil
         .filter_map(serde_json::Value::as_str)
         .collect::<Vec<_>>();
     assert_eq!(observed, DEFAULT_FILTER_ORDER);
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_filter_capabilities_do_not_duplicate_metadata_auto_loaded_files(
+) -> starweaver_agent::CapabilityResult<()> {
+    let request = user_request(vec![ContentPart::Text {
+        text: "hello".to_string(),
+    }]);
+    let mut messages = vec![ModelMessage::Request(request)];
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_auto_load_once"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_auto_load_files".to_string(),
+        serde_json::json!([{ "path": "README.md", "content": "Loaded evidence" }]),
+    );
+    let mut context = AgentContext::default();
+
+    for processor in default_filter_capabilities(None) {
+        messages = processor
+            .prepare_model_messages_with_context(&mut state, &mut context, messages)
+            .await?;
+    }
+
+    let text_parts = request_text_parts(messages.last().expect("latest request"));
+    let auto_loaded_blocks = text_parts
+        .iter()
+        .filter(|text| text.contains("<auto-loaded-files>"))
+        .collect::<Vec<_>>();
+    assert_eq!(auto_loaded_blocks.len(), 1);
+    assert_eq!(auto_loaded_blocks[0].matches("Loaded evidence").count(), 1);
+    assert_eq!(
+        latest_request_metadata(&messages)["starweaver_auto_load_state_metadata_injected"],
+        serde_json::json!(true)
+    );
     Ok(())
 }
 
@@ -180,6 +221,116 @@ async fn handoff_filter_uses_shared_restored_request_builder(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn system_prompt_filter_removes_stale_prompts_and_reinjects_canonical_first_prompt(
+) -> starweaver_agent::CapabilityResult<()> {
+    let canonical_request = ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "canonical system".to_string(),
+                metadata: serde_json::Map::from_iter([(
+                    "source".to_string(),
+                    serde_json::json!("canonical"),
+                )]),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "first".to_string(),
+                }],
+                name: None,
+                metadata: serde_json::Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+    let stale_first_request = ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "stale first".to_string(),
+                metadata: serde_json::Map::new(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string(),
+                }],
+                name: None,
+                metadata: serde_json::Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+    let stale_second_request = ModelRequest {
+        parts: vec![
+            ModelRequestPart::SystemPrompt {
+                text: "stale second".to_string(),
+                metadata: serde_json::Map::new(),
+            },
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text {
+                    text: "continue".to_string(),
+                }],
+                name: None,
+                metadata: serde_json::Map::new(),
+            },
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_system_prompt"),
+        ConversationId::new(),
+    );
+    state.message_history = vec![ModelMessage::Request(canonical_request)];
+
+    let messages = NamedFilterCapability::new("system_prompt")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![
+                ModelMessage::Request(stale_first_request),
+                ModelMessage::Response(ModelResponse::text("ok")),
+                ModelMessage::Request(stale_second_request),
+            ],
+        )
+        .await?;
+
+    let system_prompts = messages
+        .iter()
+        .filter_map(|message| match message {
+            ModelMessage::Request(request) => Some(
+                request
+                    .parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        ModelRequestPart::SystemPrompt { text, metadata } => {
+                            Some((text.clone(), metadata.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            ModelMessage::Response(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(system_prompts[0].len(), 1);
+    assert_eq!(system_prompts[0][0].0, "canonical system");
+    assert_eq!(system_prompts[0][0].1["source"], "canonical");
+    assert!(system_prompts[1].is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix(
 ) -> starweaver_agent::CapabilityResult<()> {
     let request = ModelRequest {
@@ -229,15 +380,15 @@ async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix(
     assert!(matches!(
         &request.parts[1],
         ModelRequestPart::UserPrompt { content, metadata, .. }
-            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
-                && matches!(&content[0], ContentPart::Text { text } if text == "hello")
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
+                && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>fresh</environment-context>"))
     ));
     assert!(matches!(
         &request.parts[2],
         ModelRequestPart::UserPrompt { content, metadata, .. }
-            if metadata.get(CONTEXT_ORIGIN_METADATA)
-                == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
-                && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>fresh</environment-context>"))
+            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
+                && matches!(&content[0], ContentPart::Text { text } if text == "hello")
     ));
     Ok(())
 }
@@ -315,10 +466,153 @@ async fn media_preflight_limits_newest_images() -> starweaver_agent::CapabilityR
         )
         .await?;
     let content = latest_user_content(&messages);
-    assert!(
-        matches!(&content[0], ContentPart::Text { text } if text.contains("image count limit"))
-    );
+    assert!(matches!(&content[0], ContentPart::Text { text } if text.contains("max_images=1")));
     assert!(matches!(&content[1], ContentPart::ImageUrl { url } if url.ends_with("new.png")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn media_preflight_limits_newest_videos() -> starweaver_agent::CapabilityResult<()> {
+    let request = user_request(vec![
+        ContentPart::FileUrl {
+            url: "https://example.test/old.mp4".to_string(),
+            media_type: "video/mp4".to_string(),
+        },
+        ContentPart::FileUrl {
+            url: "https://example.test/new.mp4".to_string(),
+            media_type: "video/mp4".to_string(),
+        },
+    ]);
+    let mut state =
+        AgentRunState::new(RunId::from_string("run_video_limit"), ConversationId::new());
+    state.metadata.insert(
+        "starweaver_media_policy".to_string(),
+        serde_json::to_value(MediaPolicy {
+            max_videos: Some(1),
+            ..MediaPolicy::default()
+        })
+        .expect("media policy"),
+    );
+
+    let messages = NamedFilterCapability::new("media_preflight")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+    let content = latest_user_content(&messages);
+    assert!(matches!(&content[0], ContentPart::Text { text } if text.contains("max_videos=1")));
+    assert!(matches!(&content[1], ContentPart::FileUrl { url, .. } if url.ends_with("new.mp4")));
+    Ok(())
+}
+
+#[tokio::test]
+async fn media_preflight_corrects_data_url_prefixes() -> starweaver_agent::CapabilityResult<()> {
+    let image = valid_noisy_png(2, 1);
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &image);
+    let jpeg_prefixed_png = format!("data:image/jpeg;base64,{encoded}");
+    let request = ModelRequest {
+        parts: vec![
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::DataUrl {
+                    data_url: jpeg_prefixed_png.clone(),
+                    media_type: "image/jpeg".to_string(),
+                }],
+                name: None,
+                metadata: serde_json::Map::new(),
+            },
+            ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                "call_media_prefix",
+                "browser_capture",
+                serde_json::json!({
+                    "media": {
+                        "data_url": jpeg_prefixed_png,
+                        "media_type": "image/jpeg"
+                    }
+                }),
+            )),
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+
+    let messages = NamedFilterCapability::new("media_preflight")
+        .prepare_model_messages_with_context(
+            &mut AgentRunState::new(
+                RunId::from_string("run_data_url_prefix"),
+                ConversationId::new(),
+            ),
+            &mut AgentContext::default(),
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+
+    let content = latest_user_content(&messages);
+    let ContentPart::DataUrl {
+        data_url,
+        media_type,
+    } = &content[0]
+    else {
+        panic!("expected corrected data URL content");
+    };
+    assert_eq!(media_type, "image/png");
+    let parsed = starweaver_model::parse_data_url(data_url).expect("parse corrected user data URL");
+    assert_eq!(parsed.media_type, "image/png");
+
+    let tool_content = messages
+        .iter()
+        .find_map(|message| match message {
+            ModelMessage::Request(request) => request.parts.iter().find_map(|part| match part {
+                ModelRequestPart::ToolReturn(tool_return) => Some(&tool_return.content),
+                _ => None,
+            }),
+            ModelMessage::Response(_) => None,
+        })
+        .expect("tool content");
+    assert_eq!(
+        tool_content["media"]["media_type"],
+        serde_json::json!("image/png")
+    );
+    let corrected_tool_data_url = tool_content["media"]["data_url"]
+        .as_str()
+        .expect("corrected tool data URL");
+    assert!(corrected_tool_data_url.starts_with("data:image/png;base64,"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn media_split_segments_tall_binary_images_before_compression(
+) -> starweaver_agent::CapabilityResult<()> {
+    let image = valid_noisy_png(16, 32);
+    let request = user_request(vec![ContentPart::Binary {
+        data: image,
+        media_type: "image/png".to_string(),
+    }]);
+    let mut context = AgentContext::default();
+    context.model_config.image_split_max_height = 12;
+    context.model_config.image_split_overlap = 2;
+
+    let messages = NamedFilterCapability::new("media_split")
+        .prepare_model_messages_with_context(
+            &mut AgentRunState::new(RunId::from_string("run_media_split"), ConversationId::new()),
+            &mut context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+
+    let split_content = latest_user_content(&messages);
+    assert_eq!(split_content.len(), 3);
+    assert!(split_content.iter().all(|part| {
+        matches!(part, ContentPart::Binary { data, media_type } if media_type == "image/png" && !data.is_empty())
+    }));
+    assert_eq!(
+        latest_request_metadata(&messages)["starweaver_media_split"],
+        serde_json::json!({"images": 1, "segments": 3})
+    );
     Ok(())
 }
 
@@ -821,33 +1115,147 @@ async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_s
 }
 
 #[tokio::test]
-async fn media_upload_replaces_oversized_binary_with_resource_ref(
+async fn capability_filter_uses_model_capabilities_for_user_and_tool_media(
+) -> starweaver_agent::CapabilityResult<()> {
+    let request = ModelRequest {
+        parts: vec![
+            ModelRequestPart::UserPrompt {
+                content: vec![
+                    ContentPart::Text {
+                        text: "inspect".to_string(),
+                    },
+                    ContentPart::ImageUrl {
+                        url: "https://example.test/image.png".to_string(),
+                    },
+                    ContentPart::Binary {
+                        data: vec![0, 1, 2, 3],
+                        media_type: "video/mp4".to_string(),
+                    },
+                    ContentPart::FileUrl {
+                        url: "https://example.test/file.pdf".to_string(),
+                        media_type: "application/pdf".to_string(),
+                    },
+                ],
+                name: None,
+                metadata: serde_json::Map::new(),
+            },
+            ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                "call_media",
+                "media_tool",
+                serde_json::json!([
+                    ContentPart::ImageUrl {
+                        url: "https://example.test/tool-image.png".to_string(),
+                    },
+                    ContentPart::DataUrl {
+                        data_url: "data:video/mp4;base64,AAAA".to_string(),
+                        media_type: "video/mp4".to_string(),
+                    },
+                    ContentPart::FileUrl {
+                        url: "https://example.test/tool-file.pdf".to_string(),
+                        media_type: "application/pdf".to_string(),
+                    },
+                ]),
+            )),
+        ],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    };
+    let mut context = AgentContext::default();
+    context
+        .model_config
+        .capabilities
+        .insert(ModelCapability::Vision);
+
+    let messages = NamedFilterCapability::new("capability")
+        .prepare_model_messages_with_context(
+            &mut AgentRunState::new(
+                RunId::from_string("run_capability_filter"),
+                ConversationId::new(),
+            ),
+            &mut context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+
+    let filtered_content = latest_user_content(&messages);
+    assert_eq!(filtered_content.len(), 4);
+    assert!(matches!(&filtered_content[0], ContentPart::Text { text } if text == "inspect"));
+    assert!(
+        matches!(&filtered_content[1], ContentPart::ImageUrl { url } if url.ends_with("image.png"))
+    );
+    assert!(
+        matches!(&filtered_content[2], ContentPart::Text { text } if text.contains("type='video'"))
+    );
+    assert!(
+        matches!(&filtered_content[3], ContentPart::Text { text } if text.contains("type='document'"))
+    );
+
+    let tool_content = messages
+        .iter()
+        .find_map(|message| match message {
+            ModelMessage::Request(request) => request.parts.iter().find_map(|part| match part {
+                ModelRequestPart::ToolReturn(tool_return) => tool_return.content.as_array(),
+                _ => None,
+            }),
+            ModelMessage::Response(_) => None,
+        })
+        .expect("tool return array");
+    assert_eq!(tool_content.len(), 3);
+    assert_eq!(tool_content[0]["kind"], "image_url");
+    assert!(tool_content[1]
+        .as_str()
+        .is_some_and(|text| text.contains("type='video'")));
+    assert!(tool_content[2]
+        .as_str()
+        .is_some_and(|text| text.contains("type='document'")));
+    assert_eq!(
+        latest_request_metadata(&messages)["starweaver_capability_replacements"],
+        serde_json::json!(4)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn media_upload_respects_url_capabilities_and_uploads_inline_media(
 ) -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Binary {
         data: png_bytes(1, 1),
         media_type: "image/png".to_string(),
     }]);
-    let mut state = AgentRunState::new(RunId::from_string("run_upload"), ConversationId::new());
-    state.metadata.insert(
-        "starweaver_media_policy".to_string(),
-        serde_json::to_value(MediaPolicy {
-            max_inline_base64_bytes: Some(4),
-            ..MediaPolicy::default()
-        })
-        .expect("media policy"),
-    );
-
     let processor = NamedFilterCapability::media_upload(Arc::new(FakeUploader));
+    let mut state =
+        AgentRunState::new(RunId::from_string("run_upload_skip"), ConversationId::new());
     let messages = processor
         .prepare_model_messages_with_context(
             &mut state,
             &mut AgentContext::default(),
+            vec![ModelMessage::Request(request.clone())],
+        )
+        .await?;
+    assert!(matches!(
+        &latest_user_content(&messages)[0],
+        ContentPart::Binary { media_type, .. } if media_type == "image/png"
+    ));
+    assert!(!latest_request_metadata(&messages).contains_key("starweaver_media_uploaded"));
+
+    let mut context = AgentContext::default();
+    context
+        .model_config
+        .capabilities
+        .insert(ModelCapability::ImageUrl);
+    let messages = processor
+        .prepare_model_messages_with_context(
+            &mut AgentRunState::new(RunId::from_string("run_upload"), ConversationId::new()),
+            &mut context,
             vec![ModelMessage::Request(request)],
         )
         .await?;
-    let content = latest_user_content(&messages);
+    let uploaded_content = latest_user_content(&messages);
     assert!(matches!(
-        &content[0],
+        &uploaded_content[0],
         ContentPart::ResourceRef { uri, media_type, resource_type, .. }
             if uri == "resource://uploaded/image" && media_type == "image/png" && resource_type == "image"
     ));
@@ -906,7 +1314,7 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
             model_name: None,
             provider: None,
             finish_reason: None,
-            timestamp: None,
+            timestamp: Some(Utc::now() - Duration::seconds(7200)),
             run_id: None,
             conversation_id: None,
             metadata: serde_json::Map::new(),
@@ -977,12 +1385,226 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
         .expect("response");
     assert!(matches!(
         &response.parts[0],
-        ModelResponsePart::ToolCall(call) if call.arguments == serde_json::json!({"ok": true})
+        ModelResponsePart::ToolCall(call)
+            if matches!(
+                &call.arguments,
+                ToolArguments::Parsed(serde_json::Value::String(text)) if text == "{\"ok\":true}"
+            )
     ));
     assert!(matches!(
         &response.parts[1],
         ModelResponsePart::Thinking { text, signature } if text == "keep reasoning" && signature.is_none()
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn cold_start_filter_trims_only_after_idle_threshold_and_preserves_pending_tool_results(
+) -> starweaver_agent::CapabilityResult<()> {
+    let old_tool_content = "abcdefghijklmnopqrstuvwxyz";
+    let current_tool_content = "zyxwvutsrqponmlkjihgfedcba";
+    let cold_messages = vec![
+        ModelMessage::Request(ModelRequest {
+            parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                "call_old",
+                "old_tool",
+                serde_json::json!(old_tool_content),
+            ))],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        }),
+        ModelMessage::Response(ModelResponse {
+            timestamp: Some(Utc::now() - Duration::seconds(7200)),
+            ..ModelResponse::text("previous response")
+        }),
+        ModelMessage::Request(ModelRequest {
+            parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                "call_current",
+                "current_tool",
+                serde_json::json!(current_tool_content),
+            ))],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        }),
+    ];
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_active_cold_start"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_cold_start_tool_return_limit".to_string(),
+        serde_json::json!(16),
+    );
+
+    let cold_output = NamedFilterCapability::new("cold_start")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            cold_messages.clone(),
+        )
+        .await?;
+    let cold_tool_returns = tool_return_texts(&cold_output);
+    assert!(cold_tool_returns[0].contains("chars truncated"));
+    assert_eq!(cold_tool_returns[1], current_tool_content);
+    assert_eq!(
+        latest_request_metadata(&cold_output)["starweaver_cold_start_truncated_tool_returns"],
+        serde_json::json!(1)
+    );
+
+    let mut warm_messages = cold_messages;
+    if let ModelMessage::Response(response) = &mut warm_messages[1] {
+        response.timestamp = Some(Utc::now() - Duration::seconds(30));
+    }
+    let warm_output = NamedFilterCapability::new("cold_start")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut AgentContext::default(),
+            warm_messages,
+        )
+        .await?;
+    assert_eq!(
+        tool_return_texts(&warm_output),
+        [
+            old_tool_content.to_string(),
+            current_tool_content.to_string()
+        ]
+    );
+    assert!(latest_request_metadata(&warm_output)
+        .get("starweaver_cold_start_truncated_tool_returns")
+        .is_none());
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn tool_args_filter_uses_retry_placeholder_for_invalid_non_empty_json(
+) -> starweaver_agent::CapabilityResult<()> {
+    let messages = vec![ModelMessage::Response(ModelResponse {
+        parts: vec![
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_invalid_parsed".to_string(),
+                name: "json_tool".to_string(),
+                arguments: serde_json::json!("not-json").into(),
+            }),
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_invalid_raw".to_string(),
+                name: "json_tool".to_string(),
+                arguments: ToolArguments::raw_json_string("{bad"),
+            }),
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_valid_raw".to_string(),
+                name: "json_tool".to_string(),
+                arguments: ToolArguments::raw_json_string("{\"ok\":true}"),
+            }),
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_empty_invalid".to_string(),
+                name: "json_tool".to_string(),
+                arguments: ToolArguments::invalid("", "EOF while parsing"),
+            }),
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_parsed_null".to_string(),
+                name: "json_tool".to_string(),
+                arguments: ToolArguments::parsed(serde_json::Value::Null),
+            }),
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_parsed_array".to_string(),
+                name: "json_tool".to_string(),
+                arguments: ToolArguments::parsed(serde_json::json!(["keep"])),
+            }),
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_parsed_number".to_string(),
+                name: "json_tool".to_string(),
+                arguments: ToolArguments::parsed(serde_json::json!(7)),
+            }),
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_parsed_bool".to_string(),
+                name: "json_tool".to_string(),
+                arguments: ToolArguments::parsed(serde_json::json!(true)),
+            }),
+            ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_parsed_object".to_string(),
+                name: "json_tool".to_string(),
+                arguments: ToolArguments::parsed(serde_json::json!({"keep": true})),
+            }),
+        ],
+        usage: starweaver_agent::Usage::default(),
+        model_name: None,
+        provider: None,
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    })];
+
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_invalid_tool_args"),
+        ConversationId::new(),
+    );
+    let output = NamedFilterCapability::new("tool_args")
+        .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), messages)
+        .await?;
+    let response = output
+        .iter()
+        .find_map(|message| match message {
+            ModelMessage::Response(response) => Some(response),
+            ModelMessage::Request(_) => None,
+        })
+        .expect("response");
+    let retry_placeholder = serde_json::json!({
+        "system": "This tool's args is not a valid JSON. Please refer the return value of the tool to try again."
+    });
+    assert!(matches!(
+        &response.parts[0],
+        ModelResponsePart::ToolCall(call) if call.arguments == retry_placeholder
+    ));
+    assert!(matches!(
+        &response.parts[1],
+        ModelResponsePart::ToolCall(call) if call.arguments == retry_placeholder
+    ));
+    assert!(matches!(
+        &response.parts[2],
+        ModelResponsePart::ToolCall(call)
+            if matches!(&call.arguments, ToolArguments::RawJsonString(raw) if raw == "{\"ok\":true}")
+    ));
+    assert!(matches!(
+        &response.parts[3],
+        ModelResponsePart::ToolCall(call) if matches!(&call.arguments, ToolArguments::Invalid { raw, .. } if raw.is_empty())
+    ));
+    assert!(matches!(
+        &response.parts[4],
+        ModelResponsePart::ToolCall(call) if matches!(&call.arguments, ToolArguments::Parsed(serde_json::Value::Null))
+    ));
+    assert!(matches!(
+        &response.parts[5],
+        ModelResponsePart::ToolCall(call)
+            if matches!(&call.arguments, ToolArguments::Parsed(value) if value == &serde_json::json!(["keep"]))
+    ));
+    assert!(matches!(
+        &response.parts[6],
+        ModelResponsePart::ToolCall(call)
+            if matches!(&call.arguments, ToolArguments::Parsed(value) if value == &serde_json::json!(7))
+    ));
+    assert!(matches!(
+        &response.parts[7],
+        ModelResponsePart::ToolCall(call)
+            if matches!(&call.arguments, ToolArguments::Parsed(value) if value == &serde_json::json!(true))
+    ));
+    assert!(matches!(
+        &response.parts[8],
+        ModelResponsePart::ToolCall(call)
+            if matches!(&call.arguments, ToolArguments::Parsed(value) if value == &serde_json::json!({"keep": true}))
+    ));
+    assert_eq!(
+        latest_request_metadata(&output)["starweaver_tool_args_repaired"],
+        serde_json::json!(2)
+    );
     Ok(())
 }
 
@@ -1048,8 +1670,10 @@ async fn filters_repair_and_normalize_provider_aware_response_parts(
     assert!(matches!(
         &response.parts[0],
         ModelResponsePart::ProviderToolCall { call, provider }
-            if call.arguments == serde_json::json!({"ok": true})
-                && provider.id.as_deref() == Some("fc_provider")
+            if matches!(
+                &call.arguments,
+                ToolArguments::Parsed(serde_json::Value::String(text)) if text == "{\"ok\":true}"
+            ) && provider.id.as_deref() == Some("fc_provider")
     ));
     assert!(matches!(
         &response.parts[1],
@@ -1069,7 +1693,61 @@ async fn filters_repair_and_normalize_provider_aware_response_parts(
 }
 
 #[tokio::test]
-async fn bus_message_filter_consumes_user_messages_as_rendered_bus_messages_and_steering(
+async fn background_shell_filter_injects_completed_results_once_and_status_summary(
+) -> starweaver_agent::CapabilityResult<()> {
+    let request = user_request(vec![ContentPart::Text {
+        text: "hello".to_string(),
+    }]);
+    let provider = Arc::new(VirtualEnvironmentProvider::new("process").with_process(
+        ShellProcessSnapshot {
+            process_id: "process_1".to_string(),
+            command: "echo ready".to_string(),
+            status: ShellProcessStatus::Completed,
+            stdout: "ready & done".to_string(),
+            stderr: String::new(),
+            return_code: Some(0),
+            metadata: Metadata::default(),
+        },
+    ));
+    let mut context = AgentContext::default();
+    attach_environment(&mut context, provider);
+
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_background_shell"),
+        ConversationId::new(),
+    );
+    let messages = NamedFilterCapability::new("background_shell")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![ModelMessage::Request(request.clone())],
+        )
+        .await?;
+    let text = request_text_parts(messages.last().expect("request")).join("\n");
+    assert!(text.contains("<background-result process-id=\"process_1\""));
+    assert!(text.contains("<stdout>ready &amp; done</stdout>"));
+    assert!(text.contains("<background-status>"));
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "background_shell_complete"));
+
+    let messages = NamedFilterCapability::new("background_shell")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+    let text = request_text_parts(messages.last().expect("request")).join("\n");
+    assert!(!text.contains("<background-result process-id=\"process_1\""));
+    assert!(text.contains("<background-status>"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn bus_message_filter_leaves_user_steering_for_runtime_and_consumes_subagent_messages(
 ) -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
@@ -1081,6 +1759,9 @@ async fn bus_message_filter_consumes_user_messages_as_rendered_bus_messages_and_
             .with_id("user-msg")
             .with_template("[urgent] {{ content }}"),
     );
+    context.send_message(
+        starweaver_context::BusMessage::text("worker update", "subagent").with_id("worker-msg"),
+    );
 
     let messages = NamedFilterCapability::new("bus_message")
         .prepare_model_messages_with_context(
@@ -1090,20 +1771,39 @@ async fn bus_message_filter_consumes_user_messages_as_rendered_bus_messages_and_
         )
         .await?;
 
-    let text = request_text_parts(messages.last().expect("request")).join("\n");
-    assert!(text.contains("<bus-message source=\"user\">"));
-    assert!(text.contains("[urgent] please continue"));
+    let text_parts = request_text_parts(messages.last().expect("request"));
+    let text = text_parts.join("\n");
     assert_eq!(
-        context.steering_messages,
-        vec!["[urgent] please continue".to_string()]
+        text_parts
+            .iter()
+            .filter(|text| text.contains("<bus-message"))
+            .count(),
+        1
     );
-    assert!(!context.messages.has_pending(context.agent_id.as_str()));
-    assert!(context
+    assert!(!text.contains("<bus-message source=\"user\">"));
+    assert!(!text.contains("[urgent] please continue"));
+    assert!(text.contains("<bus-message source=\"subagent\">"));
+    assert!(text.contains("worker update"));
+    assert!(context.steering_messages.is_empty());
+    assert!(context.messages.has_pending(context.agent_id.as_str()));
+    assert_eq!(
+        context.messages.peek(context.agent_id.as_str())[0].id,
+        "user-msg"
+    );
+    let message_received = context
         .events
         .events()
         .iter()
-        .any(|event| event.kind == "message_received"));
-    assert!(context
+        .find(|event| event.kind == "message_received")
+        .expect("message received event");
+    assert_eq!(
+        message_received.payload["messages"]
+            .as_array()
+            .expect("message_received payload should contain messages array")
+            .len(),
+        1
+    );
+    assert!(!context
         .events
         .events()
         .iter()
@@ -1294,6 +1994,25 @@ fn latest_user_content(messages: &[ModelMessage]) -> Vec<ContentPart> {
             ModelMessage::Response(_) => None,
         })
         .expect("user content")
+}
+
+fn tool_return_texts(messages: &[ModelMessage]) -> Vec<String> {
+    messages
+        .iter()
+        .flat_map(|message| match message {
+            ModelMessage::Request(request) => request
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    ModelRequestPart::ToolReturn(tool_return) => {
+                        tool_return.content.as_str().map(ToString::to_string)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            ModelMessage::Response(_) => Vec::new(),
+        })
+        .collect()
 }
 
 fn latest_request_metadata(
