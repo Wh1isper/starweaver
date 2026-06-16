@@ -30,6 +30,7 @@ starweaver-environment.workspace = true
 starweaver-model.workspace = true
 starweaver-oauth-provider.workspace = true
 starweaver-runtime.workspace = true
+starweaver-usage = { workspace = true, features = ["pricing"] }
 starweaver-tools.workspace = true
 tokio.workspace = true
 

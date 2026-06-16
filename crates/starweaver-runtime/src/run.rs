@@ -3,8 +3,9 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_core::{ConversationId, Metadata, RunId, Usage};
+use starweaver_core::{ConversationId, Metadata, RunId};
 use starweaver_model::{ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart};
+use starweaver_usage::Usage;
 
 /// Runtime status for an agent run.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

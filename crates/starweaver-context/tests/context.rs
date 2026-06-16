@@ -4,8 +4,9 @@ use starweaver_context::{
     AgentContext, AgentEvent, AgentId, BusMessage, ModelConfig, PerThousandRatio, ResumableState,
     TaskStatus,
 };
-use starweaver_core::{TraceContext, Usage};
+use starweaver_core::TraceContext;
 use starweaver_model::{ContentPart, ModelMessage, ModelRequest, ModelResponse};
+use starweaver_usage::Usage;
 
 #[test]
 fn context_exports_and_restores_state() {

@@ -3,7 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
-use starweaver_core::{ConversationId, RunId, Usage};
+use starweaver_core::{ConversationId, RunId};
+use starweaver_usage::Usage;
 
 use super::{
     ContentPart, FinishReason, Metadata, ModelRequestPart, ModelResponsePart, ProviderInfo,
@@ -31,7 +32,7 @@ pub struct ModelRequest {
     /// Optional request-level instructions for the current model call.
     ///
     /// Provider mappers apply request-level instructions from the current instruction-bearing
-    /// request, mirroring Pydantic AI's `instruction_parts` behavior. Use
+    /// request, using Starweaver's request-level instruction behavior. Use
     /// `ModelRequestPart::SystemPrompt` for durable static system prompts, and use
     /// `ModelRequestPart::Instruction` metadata for structured instruction parts that need
     /// origin or dynamic-cache-boundary information, such as dynamic agent or toolset guidance.

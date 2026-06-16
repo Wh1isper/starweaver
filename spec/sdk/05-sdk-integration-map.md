@@ -1,6 +1,6 @@
 # SDK Integration Map
 
-This spec maps application-facing agent concepts into Starweaver's first-party SDK architecture. It reflects current implementation status after the Pydantic AI and ya-mono parity audit.
+This spec maps application-facing agent concepts into Starweaver's first-party SDK architecture. It reflects current implementation status after the Starweaver boundary cleanup.
 
 ## Integration Principles
 
@@ -12,26 +12,26 @@ This spec maps application-facing agent concepts into Starweaver's first-party S
 
 ## Module Map
 
-| Feature family        | Target                                                     | Status         | Spec owner                             | Validation path                |
-| --------------------- | ---------------------------------------------------------- | -------------- | -------------------------------------- | ------------------------------ |
-| agent construction    | `AgentBuilder`, `AgentApp`, `AgentSession`                 | landed         | `sdk/01-agent-sdk-app.md`              | SDK session and builder tests  |
-| lifecycle hooks       | runtime hooks and capability lifecycle                     | landed/partial | `core/03-tools-output-capabilities.md` | capability tests               |
-| capability middleware | ordered wrappers, IDs, per-run instances                   | pending        | `core/03-tools-output-capabilities.md` | capability ordering tests      |
-| context compaction    | ordered message-preparation capabilities and context state | partial        | `core/04-context-state-executor.md`    | capability/filter tests        |
-| policy guards         | request guards, approval/deferred metadata                 | partial        | `core/03-tools-output-capabilities.md` | guard/control-flow tests       |
-| streaming             | runtime stream records and service/CLI adapters            | partial        | `core/01`, `ops/03`, `ops/04`          | stream/replay tests            |
-| context stores        | notes, message bus, state, tasks, usage                    | landed/partial | `core/04-context-state-executor.md`    | context and bundle tests       |
-| environment           | provider families and policy                               | partial        | `sdk/02-environment-provider.md`       | fake/local/process tests       |
-| filters               | named parity filter capabilities                           | landed/partial | this spec and `ops/07`                 | SDK filter order tests         |
-| toolsets              | first-party bundles, MCP, proxy                            | partial        | `sdk/03-first-party-tool-bundles.md`   | toolset/proxy/MCP tests        |
-| toolset wrappers      | filtered/prepared/renamed/approval/dynamic/deferred        | pending        | `core/03-tools-output-capabilities.md` | wrapper tests                  |
-| deferred tools        | SDK requests/results and inline handlers                   | partial        | `ops/03`, `core/03`                    | control-flow and service tests |
-| subagents             | specs, registry, inherited tools, lifecycle                | partial        | `sdk/04-subagents-skills.md`           | subagent tests                 |
-| skills                | fileops-loaded skills and tool summaries                   | partial        | `sdk/04-subagents-skills.md`           | skill tests                    |
-| media                 | binary/resource/data-url parts and preflight               | partial        | `sdk/03-first-party-tool-bundles.md`   | media/preflight/provider tests |
-| config/specs          | AgentSpec, presets, host handles                           | partial        | `sdk/01-agent-sdk-app.md`              | spec/profile tests             |
-| UI adapters           | AG-UI/Vercel request adapters and sanitizers               | pending        | `ops/04`, future platform spec         | adapter conformance tests      |
-| model wrappers        | fallback/concurrency/instrumentation/provider lifecycle    | pending        | `core/05-pydantic-ai-feature-map.md`   | model wrapper tests            |
+| Feature family        | Target                                                     | Status         | Spec owner                                | Validation path                |
+| --------------------- | ---------------------------------------------------------- | -------------- | ----------------------------------------- | ------------------------------ |
+| agent construction    | `AgentBuilder`, `AgentApp`, `AgentSession`                 | landed         | `sdk/01-agent-sdk-app.md`                 | SDK session and builder tests  |
+| lifecycle hooks       | runtime hooks and capability lifecycle                     | landed/partial | `core/03-tools-output-capabilities.md`    | capability tests               |
+| capability middleware | ordered wrappers, IDs, per-run instances                   | pending        | `core/03-tools-output-capabilities.md`    | capability ordering tests      |
+| context compaction    | ordered message-preparation capabilities and context state | partial        | `core/04-context-state-executor.md`       | capability/filter tests        |
+| policy guards         | request guards, approval/deferred metadata                 | partial        | `core/03-tools-output-capabilities.md`    | guard/control-flow tests       |
+| streaming             | runtime stream records and service/CLI adapters            | partial        | `core/01`, `ops/03`, `ops/04`             | stream/replay tests            |
+| context stores        | notes, message bus, state, tasks, usage                    | landed/partial | `core/04-context-state-executor.md`       | context and bundle tests       |
+| environment           | provider families and policy                               | partial        | `sdk/02-environment-provider.md`          | fake/local/process tests       |
+| filters               | named policy filter capabilities                           | landed/partial | this spec and `ops/07`                    | SDK filter order tests         |
+| toolsets              | first-party bundles, MCP, proxy                            | partial        | `sdk/03-first-party-tool-bundles.md`      | toolset/proxy/MCP tests        |
+| toolset wrappers      | filtered/prepared/renamed/approval/dynamic/deferred        | pending        | `core/03-tools-output-capabilities.md`    | wrapper tests                  |
+| deferred tools        | SDK requests/results and inline handlers                   | partial        | `ops/03`, `core/03`                       | control-flow and service tests |
+| subagents             | specs, registry, inherited tools, lifecycle                | partial        | `sdk/04-subagents-skills.md`              | subagent tests                 |
+| skills                | fileops-loaded skills and tool summaries                   | partial        | `sdk/04-subagents-skills.md`              | skill tests                    |
+| media                 | binary/resource/data-url parts and preflight               | partial        | `sdk/03-first-party-tool-bundles.md`      | media/preflight/provider tests |
+| config/specs          | AgentSpec, presets, host handles                           | partial        | `sdk/01-agent-sdk-app.md`                 | spec/profile tests             |
+| UI adapters           | AG-UI/Vercel request adapters and sanitizers               | pending        | `ops/04`, future platform spec            | adapter conformance tests      |
+| model wrappers        | fallback/concurrency/instrumentation/provider lifecycle    | pending        | `core/05-agent-foundation-feature-map.md` | model wrapper tests            |
 
 ## Filters as Capabilities
 
@@ -51,7 +51,7 @@ flowchart TD
 
 ### Current Filter Status
 
-The first ya-agent-sdk filter parity slice is landed in `crates/starweaver-agent/src/filters.rs`:
+The first SDK filter capability slice is landed in `crates/starweaver-agent/src/filters.rs`:
 
 - `DEFAULT_FILTER_ORDER`
 - `default_filter_bundle()`
@@ -129,7 +129,7 @@ Skills load from configured roots through provider file operations. Current SDK 
 Remaining work:
 
 - CLI startup seeding for bundled skills and subagents.
-- Shared `~/.agents` discovery/import options for Starweaver parity.
+- Shared `~/.agents` discovery/import options for Starweaver compatibility.
 - Exact precedence tests for shared user, tool-specific user, shared project, and tool-specific project roots.
 - Public `list_skills`, `load_skill`, and `reload_skills` tools over the active provider-visible skill cache.
 - Hot reload at request boundaries in development profiles.
@@ -145,12 +145,12 @@ Remaining work:
 - Durable subagent polling through shared sessions/runs.
 - Cancellation/resume propagation through service runtime.
 - Worker mode behavior in CLI.
-- Subagent model/settings/config override parity with Starweaver config.
+- Subagent model/settings/config overrides aligned with Starweaver config.
 - Unified subagent tool schema with available-subagent descriptions and `subagent_info` style inspection.
 - Self-fork behavior for current-context child agents.
 - Lifecycle stream evidence for started, streamed, completed, failed, cancelled, and resumed subagent work.
 
-## Media Processing Parity
+## Media Processing
 
 Current landed media foundations:
 
@@ -159,7 +159,7 @@ Current landed media foundations:
 - Provider mapping tests for multimodal content.
 - SDK media preflight processor and upload adapter seam.
 
-Remaining media parity work:
+Remaining media migration work:
 
 - Base64-budget-aware compression for static images.
 - Alpha compositing before JPEG conversion.
@@ -170,9 +170,9 @@ Remaining media parity work:
 - Binary/resource download integration with `EnvironmentProvider` resource traits.
 - Concrete fallback media understanding clients with usage accounting.
 
-## Pydantic AI Borrowing Map
+## Agent Framework Design Map
 
-| Borrowed design           | Starweaver shape                                                                                                                           |
+| Design area               | Starweaver shape                                                                                                                           |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | capability middleware     | `AgentCapability` IDs, ordering, wrappers, per-run instances, deferred/on-demand loading                                                   |
 | deferred tools            | SDK request/result records layered over durable approval/deferred storage                                                                  |

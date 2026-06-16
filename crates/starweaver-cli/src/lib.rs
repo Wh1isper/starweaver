@@ -177,14 +177,14 @@ mod tests {
             OsString::from("--worktree"),
             OsString::from("feature"),
             OsString::from("--branch"),
-            OsString::from("feature/parity"),
+            OsString::from("feature/work"),
         ])
         .unwrap();
         assert_eq!(parsed.session.as_deref(), Some("session_test"));
         assert_eq!(parsed.profile.as_deref(), Some("coding"));
         assert_eq!(parsed.worker.as_deref(), Some("off"));
         assert_eq!(parsed.worktree.as_deref(), Some("feature"));
-        assert_eq!(parsed.branch.as_deref(), Some("feature/parity"));
+        assert_eq!(parsed.branch.as_deref(), Some("feature/work"));
 
         let parsed = args::parse_os([
             OsString::from("starweaver-cli"),

@@ -3,11 +3,11 @@
 mod agent_context;
 mod config;
 mod context_handle;
+mod context_protocol;
 mod dependency;
 mod event;
 mod message_bus;
 mod notes;
-mod parity;
 mod resumable_state;
 mod runtime_context;
 mod state;
@@ -19,14 +19,14 @@ pub use config::{
     ShellReviewConfig, ShellReviewRiskLevel, ToolConfig,
 };
 pub use context_handle::AgentContextHandle;
+pub use context_protocol::{
+    AgentInfo, AgentStreamQueueRegistry, ContextLifecycleState, DeferredToolMetadata,
+    ModelWrapperMetadata, ToolIdWrapper, ToolSearchState, WrapperMetadata,
+};
 pub use dependency::DependencyStore;
 pub use event::{AgentEvent, EventBus};
 pub use message_bus::{BusMessage, MessageBus};
 pub use notes::NoteStore;
-pub use parity::{
-    AgentInfo, AgentStreamQueueRegistry, ContextLifecycleState, DeferredToolMetadata,
-    ModelWrapperMetadata, ToolIdWrapper, ToolSearchState, WrapperMetadata,
-};
 pub use resumable_state::{ResumableExportOptions, ResumableState};
 pub use starweaver_core::AgentId;
 pub use state::StateStore;

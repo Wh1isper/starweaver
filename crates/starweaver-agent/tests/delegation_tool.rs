@@ -6,10 +6,11 @@ use starweaver_agent::{
     AgentBuilder, AgentContext, AgentContextHandle, AgentRuntimePolicy, SubagentConfig,
     SubagentRegistry, TestModel, ToolContext,
 };
-use starweaver_core::{ConversationId, RunId, Usage};
+use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
 };
+use starweaver_usage::Usage;
 
 #[tokio::test]
 async fn subagent_registry_exports_typed_delegate_tool() {

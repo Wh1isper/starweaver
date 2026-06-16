@@ -32,7 +32,7 @@ pub(super) fn instruction_parts(messages: &[ModelMessage]) -> Vec<ModelRequestPa
     messages::instruction_parts(messages)
 }
 
-/// Cache-friendly compaction capability that mirrors ya-mono automatic compaction.
+/// Cache-friendly compaction capability for automatic compaction.
 #[derive(Clone)]
 pub struct CacheFriendlyCompactCapability {
     model: Option<Arc<dyn ModelAdapter>>,

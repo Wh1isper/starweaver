@@ -1,4 +1,4 @@
-//! SDK filter parity order and concrete behavior tests.
+//! SDK filter order and concrete behavior tests.
 
 #![allow(clippy::expect_used)]
 

@@ -8,12 +8,13 @@ use starweaver_agent::{
     StaticToolset, SubagentConfig, SubagentParentTools, SubagentRegistry,
     SubagentToolInheritancePolicy, TestModel, ToolContext, ToolRegistry, ToolResult,
 };
-use starweaver_core::{ConversationId, RunId, TaskId, Usage};
+use starweaver_core::{ConversationId, RunId, TaskId};
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelResponse, ModelResponseStreamEvent, ModelSettings, PartDelta,
     PartEnd, PartStart, ProtocolFamily,
 };
+use starweaver_usage::Usage;
 
 #[derive(Clone, Default)]
 struct CapturedStreamRequest {

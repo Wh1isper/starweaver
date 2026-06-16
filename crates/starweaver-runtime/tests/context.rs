@@ -5,7 +5,6 @@ use std::sync::{Arc, LazyLock, Mutex};
 use async_trait::async_trait;
 use serde_json::Map;
 use starweaver_context::{AgentContext, AgentId, BusMessage};
-use starweaver_core::Usage;
 use starweaver_model::{
     ContentPart, ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
@@ -15,6 +14,7 @@ use starweaver_runtime::{
     Agent, AgentCapability, AgentRunState, AgentRuntimePolicy, AgentStreamEvent, CapabilityError,
     CapabilityOrdering, CapabilityResult, CapabilitySpec, RUNTIME_CONTEXT_CAPABILITY_ID,
 };
+use starweaver_usage::Usage;
 
 struct ContextModel;
 

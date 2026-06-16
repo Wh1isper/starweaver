@@ -1,4 +1,4 @@
-//! ya-mono parity support types carried by [`crate::AgentContext`].
+//! Context protocol support types carried by [`crate::AgentContext`].
 
 use std::collections::BTreeMap;
 
@@ -45,7 +45,7 @@ pub type DeferredToolMetadata = Metadata;
 /// Runtime wrapper metadata passed to model/subagent wrapper equivalents.
 pub type WrapperMetadata = Metadata;
 
-/// Context lifecycle fields aligned with ya-mono's enter/exit state.
+/// Context lifecycle fields for enter, exit, streaming, and compaction state.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ContextLifecycleState {
     /// Whether the context has been entered.
@@ -187,7 +187,7 @@ impl ToolIdWrapper {
     }
 }
 
-/// Runtime-only queue placeholder for ya-mono agent stream queue parity.
+/// Runtime-only stream queue registry placeholder.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentStreamQueueRegistry {
     /// Queue names/ids known to the context. Actual async queues live outside serializable state.
@@ -226,5 +226,5 @@ impl ToolSearchState {
 pub type ModelWrapperMetadata = Value;
 
 fn default_tool_id_prefix() -> String {
-    "ya-".to_string()
+    "sw-tool-".to_string()
 }

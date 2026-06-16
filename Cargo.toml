@@ -13,6 +13,7 @@ members = [
     "crates/starweaver-session",
     "crates/starweaver-stream",
     "crates/starweaver-storage",
+    "crates/starweaver-usage",
     "xtask",
 ]
 resolver = "2"
@@ -39,6 +40,7 @@ starweaver-oauth = { path = "crates/starweaver-oauth", version = "0.1.0" }
 starweaver-oauth-provider = { path = "crates/starweaver-oauth-provider", version = "0.1.0" }
 starweaver-runtime = { path = "crates/starweaver-runtime", version = "0.1.0" }
 starweaver-tools = { path = "crates/starweaver-tools", version = "0.1.0" }
+starweaver-usage = { path = "crates/starweaver-usage", version = "0.1.0" }
 starweaver-environment = { path = "crates/starweaver-environment", version = "0.1.0" }
 starweaver-session = { path = "crates/starweaver-session", version = "0.1.0" }
 starweaver-stream = { path = "crates/starweaver-stream", version = "0.1.0" }

@@ -21,6 +21,7 @@ starweaver-context.workspace = true
 starweaver-core.workspace = true
 starweaver-model.workspace = true
 starweaver-tools.workspace = true
+starweaver-usage = { workspace = true, features = ["pricing"] }
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true

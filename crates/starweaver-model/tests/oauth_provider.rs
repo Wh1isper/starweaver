@@ -176,7 +176,7 @@ fn patch_codex_responses_body_matches_path_with_query_or_trailing_slash() {
 }
 
 #[test]
-fn patch_codex_responses_body_matches_ya_mono_instruction_truthiness() {
+fn patch_codex_responses_body_matches_instruction_truthiness() {
     let falsy_values = [
         json!(null),
         json!(""),

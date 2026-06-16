@@ -19,14 +19,14 @@ pub use ordering::DEFAULT_FILTER_ORDER;
 /// Build the default named filter bundle.
 #[must_use]
 pub fn default_filter_bundle() -> StaticCapabilityBundle {
-    let mut bundle = StaticCapabilityBundle::new("ya-agent-sdk-filter-parity");
+    let mut bundle = StaticCapabilityBundle::new("starweaver-default-filters");
     for capability in default_filter_capabilities(None) {
         bundle = bundle.with_hook(capability);
     }
     bundle
 }
 
-/// Build named filter capabilities in default parity order.
+/// Build named filter capabilities in default order.
 #[must_use]
 pub fn default_filter_capabilities(
     compact_model: Option<&Arc<dyn ModelAdapter>>,

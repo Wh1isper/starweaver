@@ -11,9 +11,10 @@ Core foundation:
 - `core/02-model-provider-replay.md` — provider-neutral model protocol, replay fixtures, transport, settings, profiles, and CI gates
 - `core/03-tools-output-capabilities.md` — tool schema, tool loop, structured output, output functions, validators, hooks, and capability bundles
 - `core/04-context-state-executor.md` — AgentContext, StateStore, events, messages, notes, usage, checkpoints, and executor preparation
-- `core/05-pydantic-ai-feature-map.md` — Pydantic AI feature coverage map across agents, providers, tools, output, streaming, and testing
-- `core/06-message-request-abstractions.md` — Pydantic AI-informed message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
-- `core/07-pydantic-ai-maturity-roadmap.md` — capability middleware, deferred tools, toolset combinators, AgentSpec v2, output modes, model wrappers, and UI adapter maturity roadmap
+- `core/05-agent-foundation-feature-map.md` — Agent foundation feature coverage map across agents, providers, tools, output, streaming, and testing
+- `core/06-message-request-abstractions.md` — Starweaver-native message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
+- `core/07-agent-foundation-maturity-roadmap.md` — capability middleware, deferred tools, toolset combinators, AgentSpec v2, output modes, model wrappers, and UI adapter maturity roadmap
+- `core/08-boundaries-and-usage.md` — runtime/context/SDK/usage boundaries, usage snapshot pricing contract, and cleanup acceptance gates
 
 SDK layer:
 
@@ -32,7 +33,7 @@ Operations and products:
 - `ops/03-durable-service-runtime.md` — durable sessions, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
 - `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, launcher dispatch, and GitHub install/update flow
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
-- `ops/07-ya-mono-parity-migration.md` — foundation and CLI parity reference map with CLI audit postponed
+- `ops/07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
 - `ops/09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
 ## Architecture Shape
@@ -40,6 +41,7 @@ Operations and products:
 ```mermaid
 flowchart TD
     core[starweaver-core]
+    usage[starweaver-usage]
     model[starweaver-model]
     tools[starweaver-tools]
     context[starweaver-context]
@@ -52,6 +54,11 @@ flowchart TD
     cli[starweaver-cli]
     platform[future platform adapters]
 
+    usage --> model
+    usage --> context
+    usage --> runtime
+    usage --> agent
+    usage --> cli
     core --> model
     core --> tools
     core --> context
@@ -74,7 +81,8 @@ flowchart TD
 ## Design Rules
 
 - Core crates stay provider-neutral and product-neutral.
-- Runtime contracts expose stable stream records, checkpoints, usage, traces, and capability hooks.
+- `starweaver-usage` is a leaf accounting crate; usage data and optional pricing are not owned by `starweaver-core` or `starweaver-runtime`.
+- Runtime contracts expose stable stream records, checkpoints, usage snapshot events, traces, and capability hooks.
 - SDK ergonomics live in `starweaver-agent`; concrete environment resources live in `starweaver-environment`.
 - Durable state is split between `starweaver-session`, `starweaver-stream`, and `starweaver-storage`.
 - CLI is the current product surface and stays focused on local/headless execution.
@@ -83,5 +91,5 @@ flowchart TD
 ## Current Priorities
 
 - Finish foundation crates: model, tools, context, runtime, agent, environment, session, stream, and storage.
-- Keep CLI parity audit postponed until foundation work is stable.
+- Keep CLI migration audit postponed until foundation work is stable.
 - Keep service and platform adapters in specs until concrete product ownership is ready.

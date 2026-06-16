@@ -2,9 +2,9 @@ use std::{fmt::Write as _, path::Path};
 
 use serde_json::Value;
 use starweaver_context::TASK_SNAPSHOT_EVENT_KIND;
-use starweaver_core::Usage;
 use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
+use starweaver_usage::Usage;
 
 use super::{
     ModelChoice, StreamingPartKind, StreamingToolCallState, TaskPanelItem, SHELL_OUTPUT_MAX_LINES,

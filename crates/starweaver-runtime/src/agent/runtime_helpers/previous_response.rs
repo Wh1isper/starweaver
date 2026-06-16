@@ -69,8 +69,8 @@ fn truncate_previous_assistant_response_reference(text: &str) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use serde_json::Map;
-    use starweaver_core::Usage;
     use starweaver_model::{ModelRequest, ModelResponse, ModelResponsePart, ToolCallPart};
+    use starweaver_usage::Usage;
 
     use super::*;
 

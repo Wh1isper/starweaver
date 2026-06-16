@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use starweaver_runtime::{AgentRuntimePolicy, CapabilitySpec, UsageLimits};
+use starweaver_runtime::{AgentRuntimePolicy, CapabilitySpec};
+use starweaver_usage::UsageLimits;
 
 use super::{
     is_false, ApprovalPolicyPreset, DurabilityPolicyPreset, EnvironmentPolicyPreset,

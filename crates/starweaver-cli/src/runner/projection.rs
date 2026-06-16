@@ -498,7 +498,7 @@ pub(super) fn interrupted_partial_response(
     }
     let mut response = ModelResponse {
         parts: response_parts,
-        usage: starweaver_core::Usage::default(),
+        usage: starweaver_usage::Usage::default(),
         model_name: None,
         provider: None,
         finish_reason: Some(FinishReason::Unknown),

@@ -74,13 +74,13 @@ fn app_builds_sessions_from_context_and_exported_state() {
         Some(&serde_json::json!("v"))
     );
 
-    let restored = app.session_from_state(session.export_state());
+    let restored = app.session_from_state(session.export_full_state());
     assert_eq!(
         restored.context().state.get("k"),
         Some(&serde_json::json!("v"))
     );
 
-    let direct = AgentSession::from_state(app.agent().clone(), restored.export_state());
+    let direct = AgentSession::from_state(app.agent().clone(), restored.export_full_state());
     assert_eq!(
         direct.context().state.get("k"),
         Some(&serde_json::json!("v"))

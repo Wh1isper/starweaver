@@ -147,7 +147,7 @@ fn sanitizer_accepts_matching_tool_return_after_prior_tool_call() {
                 name: "lookup".to_string(),
                 arguments: ToolArguments::parsed(json!({})),
             })],
-            usage: starweaver_core::Usage::default(),
+            usage: starweaver_usage::Usage::default(),
             model_name: None,
             provider: None,
             finish_reason: None,

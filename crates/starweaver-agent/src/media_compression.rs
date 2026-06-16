@@ -31,7 +31,7 @@ pub fn data_url(media_type: &str, data: &[u8]) -> String {
 
 /// Compress image bytes so the raw payload fits the provided byte budget.
 ///
-/// The behavior mirrors ya-mono: small images are passed through with corrected
+/// Small images are passed through with corrected
 /// media type, oversized images are converted to JPEG, JPEG quality is reduced
 /// progressively, and dimensions are halved when quality reduction alone is not
 /// enough. Alpha images are composited onto a white background before JPEG output.

@@ -34,7 +34,7 @@ pub(crate) fn is_dynamic_instruction_metadata(metadata: &Metadata) -> bool {
 
 /// Return the request whose instruction material should be applied to the current model call.
 ///
-/// This mirrors Pydantic AI's separation between durable message history and current
+/// This mirrors Starweaver's separation between durable message history and current
 /// request `instruction_parts`: instruction material in older requests remains part of
 /// the session history but is not re-applied as current system/developer instructions.
 /// If the newest request only carries tool returns/retry prompts and has no instruction
@@ -166,5 +166,5 @@ impl PreparedInstruction {
     }
 }
 
-/// Pydantic AI-compatible alias for structured instruction parts.
+/// Alias for structured instruction parts.
 pub type InstructionPart = PreparedInstruction;

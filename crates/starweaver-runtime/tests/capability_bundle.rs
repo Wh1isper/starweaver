@@ -9,9 +9,10 @@ use starweaver_model::{
 use starweaver_runtime::{
     resolve_capability_order, Agent, AgentCapability, CapabilityOrderError, CapabilityOrdering,
     CapabilityResult, CapabilitySpec, OutputValidationError, OutputValidationResult,
-    OutputValidator, OutputValue, StaticCapabilityBundle, UsageLimits,
+    OutputValidator, OutputValue, StaticCapabilityBundle,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolResult};
+use starweaver_usage::UsageLimits;
 
 struct CompleteRecorder {
     completed: Arc<Mutex<bool>>,

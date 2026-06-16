@@ -77,8 +77,8 @@ Provider replay coverage is accepted when:
 
 The TODO memo owns the working matrix for:
 
-- Pydantic AI docs features
-- Pydantic AI provider tests
+- agent framework docs features
+- provider behavior tests
 - first-party SDK modules and tests
 - Starweaver specs
 - current implementation status
@@ -92,7 +92,7 @@ Before a release candidate:
 - coverage gate passes
 - script smoke tests pass
 - docs examples pass
-- feature matrix has status for every Pydantic AI core docs page
+- feature matrix has status for every agent foundation docs page
 - feature matrix has status for every first-party SDK module family
 - replay matrix includes supported provider families and known gaps
 - specs reflect all public crate boundaries

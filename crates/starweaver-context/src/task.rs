@@ -27,7 +27,7 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
-    /// Parse a strict ya-mono task status string.
+    /// Parse a strict task status string.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim() {

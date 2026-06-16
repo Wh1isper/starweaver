@@ -1,7 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use serde_json::{json, Map};
-use starweaver_core::Usage;
 use starweaver_model::{
     providers::{
         anthropic::AnthropicMessagesAdapter, bedrock::BedrockConverseAdapter,
@@ -13,6 +12,7 @@ use starweaver_model::{
     INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_METADATA,
     INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
+use starweaver_usage::Usage;
 
 fn lookup_tool() -> ToolDefinition {
     ToolDefinition {

@@ -7,8 +7,9 @@ use starweaver_agent::{
     ToolContext, ToolRegistry, ToolResult,
 };
 use starweaver_context::{AgentContext, BusMessage};
-use starweaver_core::{TaskId, Usage};
+use starweaver_core::TaskId;
 use starweaver_model::{tool_call_response, ModelResponse};
+use starweaver_usage::Usage;
 
 fn response_with_usage(text: &str, usage: Usage) -> ModelResponse {
     ModelResponse {

@@ -3,12 +3,12 @@
 use std::collections::BTreeMap;
 
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
-use starweaver_core::Usage;
 use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
     ModelSettings,
 };
 use starweaver_tools::ToolContext;
+use starweaver_usage::pricing::estimate_pricing_for_model;
 
 const DEFAULT_MODEL_ERROR_RETRIES: usize = 2;
 
@@ -500,16 +500,26 @@ impl Agent {
             if !response_usage.is_empty() {
                 let agent_id = context.agent_id.as_str().to_string();
                 let ledger_key = agent_id.clone();
-                let mut agent_usage = context
-                    .usage_snapshot_entries
-                    .get(&ledger_key)
-                    .map_or_else(Usage::default, |entry| entry.usage.clone());
-                agent_usage.add_assign(&response_usage);
+                let agent_usage = context.usage_snapshot_entries.get(&ledger_key).map_or_else(
+                    || state.usage.clone(),
+                    |entry| {
+                        let mut usage = entry.usage.clone();
+                        usage.add_assign(&response_usage);
+                        usage
+                    },
+                );
+                let model_id = self.usage_model_id(&response);
+                let estimate_pricing = self
+                    .usage_limits
+                    .as_ref()
+                    .and_then(|limits| limits.estimate_pricing(&agent_usage))
+                    .or_else(|| estimate_pricing_for_model(&model_id, &agent_usage));
                 let mut snapshot = context.update_usage_snapshot_entry(
                     agent_id.clone(),
                     agent_id.clone(),
-                    self.usage_model_id(&response),
+                    model_id,
                     agent_usage,
+                    estimate_pricing,
                     Some(format!("{}:{agent_id}", run_id.as_str())),
                     "model_request",
                     Some(ledger_key),

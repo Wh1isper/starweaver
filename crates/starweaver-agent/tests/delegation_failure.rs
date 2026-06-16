@@ -7,11 +7,12 @@ use starweaver_agent::{
     FunctionOutputValidator, OutputValidationError, OutputValidationResult, OutputValue,
     SubagentConfig, SubagentRegistry, TestModel, ToolContext,
 };
-use starweaver_core::{ConversationId, RunId, Usage};
+use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
 };
 use starweaver_runtime::AgentRunState;
+use starweaver_usage::Usage;
 
 fn failing_validator(
     _state: &mut AgentRunState,

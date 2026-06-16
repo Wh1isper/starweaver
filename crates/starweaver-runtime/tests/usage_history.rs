@@ -4,16 +4,16 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use starweaver_context::AgentContext;
-use starweaver_core::Usage;
 use starweaver_model::{
     FunctionModel, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart,
     TestModel, ToolCallPart, ToolReturnPart,
 };
 use starweaver_runtime::{
     Agent, AgentCapability, AgentError, AgentRunState, AgentStreamEvent, CapabilityError,
-    CapabilityResult, CostBudget, UsageLimitError, UsageLimits,
+    CapabilityResult,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
+use starweaver_usage::{pricing::CostBudget, Usage, UsageLimitError, UsageLimits, UsageTokenKind};
 
 struct KeepLatestMessageCapability;
 
@@ -175,7 +175,7 @@ async fn usage_limits_check_accumulated_tokens_after_response() {
     assert!(matches!(
         error,
         AgentError::UsageLimit(UsageLimitError::Token {
-            kind: "total_tokens",
+            kind: UsageTokenKind::TotalTokens,
             limit: 5,
             actual: 6
         })
@@ -218,11 +218,80 @@ async fn usage_limits_include_existing_context_usage() {
     assert!(matches!(
         error,
         AgentError::UsageLimit(UsageLimitError::Token {
-            kind: "total_tokens",
+            kind: UsageTokenKind::TotalTokens,
             limit: 6,
             actual: 7
         })
     ));
+}
+
+#[tokio::test]
+async fn usage_snapshot_includes_existing_context_usage() {
+    let model = Arc::new(TestModel::with_responses(vec![response_with_usage(
+        "ok",
+        Usage {
+            requests: 1,
+            input_tokens: 1,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 1,
+            total_tokens: 2,
+            tool_calls: 0,
+        },
+    )]));
+    let mut context = AgentContext {
+        usage: Usage {
+            requests: 1,
+            input_tokens: 3,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 2,
+            total_tokens: 5,
+            tool_calls: 0,
+        },
+        ..AgentContext::default()
+    };
+    let mut events = Vec::new();
+
+    Agent::new(model)
+        .with_usage_limits(
+            UsageLimits::new().with_cost_budget(
+                CostBudget::new()
+                    .with_request_micros(100)
+                    .with_input_micros_per_million_tokens(1_000_000)
+                    .with_output_micros_per_million_tokens(2_000_000),
+            ),
+        )
+        .run_with_context_and_stream_events("hello", &mut context, &mut events)
+        .await
+        .unwrap();
+
+    let snapshots = events
+        .iter()
+        .filter_map(|record| match &record.event {
+            AgentStreamEvent::Custom { event } if event.kind == "usage_snapshot" => Some(
+                serde_json::from_value::<starweaver_usage::UsageSnapshot>(event.payload.clone())
+                    .unwrap(),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].latest_usage.as_ref().unwrap().total_tokens, 2);
+    assert_eq!(snapshots[0].total_usage.requests, 2);
+    assert_eq!(snapshots[0].total_usage.input_tokens, 4);
+    assert_eq!(snapshots[0].total_usage.output_tokens, 3);
+    assert_eq!(snapshots[0].total_usage.total_tokens, 7);
+    assert_eq!(snapshots[0].agent_usages["main"].usage.total_tokens, 7);
+    assert_eq!(
+        snapshots[0]
+            .estimate_pricing
+            .as_ref()
+            .unwrap()
+            .amount_micros_usd,
+        210
+    );
 }
 
 #[tokio::test]
@@ -260,6 +329,14 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
     ]));
     let result = Agent::new(model)
         .with_tools(echo_registry())
+        .with_usage_limits(
+            UsageLimits::new().with_cost_budget(
+                CostBudget::new()
+                    .with_request_micros(100)
+                    .with_input_micros_per_million_tokens(1_000_000)
+                    .with_output_micros_per_million_tokens(2_000_000),
+            ),
+        )
         .run_stream("hello")
         .await
         .unwrap();
@@ -269,7 +346,7 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
         .iter()
         .filter_map(|record| match &record.event {
             AgentStreamEvent::Custom { event } if event.kind == "usage_snapshot" => Some(
-                serde_json::from_value::<starweaver_core::UsageSnapshot>(event.payload.clone())
+                serde_json::from_value::<starweaver_usage::UsageSnapshot>(event.payload.clone())
                     .unwrap(),
             ),
             _ => None,
@@ -296,6 +373,26 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
     assert_eq!(snapshots[1].total_usage.total_tokens, 18);
     assert_eq!(snapshots[1].agent_usages["main"].usage.requests, 2);
     assert_eq!(snapshots[1].model_usages["test:test"].total_tokens, 18);
+    assert_eq!(
+        snapshots[1]
+            .estimate_pricing
+            .as_ref()
+            .unwrap()
+            .amount_micros_usd,
+        228
+    );
+    assert_eq!(
+        snapshots[1].agent_usages["main"]
+            .estimate_pricing
+            .as_ref()
+            .unwrap()
+            .amount_micros_usd,
+        228
+    );
+    assert_eq!(
+        snapshots[1].model_estimate_pricing["test:test"].amount_micros_usd,
+        228
+    );
 }
 
 #[tokio::test]
@@ -411,15 +508,19 @@ async fn provider_messages_keep_closed_tool_call_history() {
     assert_eq!(result.output, "continued");
     let provider_messages = captured.lock().unwrap()[0].clone();
     assert_eq!(provider_messages.len(), 5);
-    assert!(provider_messages.iter().any(|message| matches!(
-        message,
-        ModelMessage::Response(response)
-            if response.tool_calls().iter().any(|call| call.id == "call_done")
-    )));
+    let Some(wrapped_call_id) = provider_messages.iter().find_map(|message| {
+        let ModelMessage::Response(response) = message else {
+            return None;
+        };
+        response.tool_calls().first().map(|call| call.id.clone())
+    }) else {
+        panic!("closed tool call should stay in provider history");
+    };
+    assert!(wrapped_call_id.starts_with("sw-tool-"));
     assert!(provider_messages.iter().any(|message| matches!(
         message,
         ModelMessage::Request(request)
-            if request.parts.iter().any(|part| matches!(part, ModelRequestPart::ToolReturn(tool_return) if tool_return.tool_call_id == "call_done"))
+            if request.parts.iter().any(|part| matches!(part, ModelRequestPart::ToolReturn(tool_return) if tool_return.tool_call_id == wrapped_call_id))
     )));
 }
 

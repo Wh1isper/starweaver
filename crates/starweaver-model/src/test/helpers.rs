@@ -1,5 +1,5 @@
 use serde_json::Value;
-use starweaver_core::Usage;
+use starweaver_usage::Usage;
 
 use crate::message::{
     ContentPart, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,

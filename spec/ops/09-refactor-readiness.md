@@ -1,6 +1,6 @@
 # Refactor Readiness
 
-This spec records planned refactors discovered during the June 2026 pydantic-ai, ya-mono, and repository implementation audit. Current active work focuses on foundation crates and product-neutral contracts.
+This spec records planned refactors discovered during the June 2026 boundary and repository implementation audit. Current active work focuses on foundation crates and product-neutral contracts.
 
 ## Current Hotspots
 

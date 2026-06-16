@@ -1,16 +1,17 @@
 # Core Agent Foundation
 
-The core layer is the Rust-native foundation for model-driven agent execution. It carries the concepts that Pydantic AI treats as core: reusable agents, provider abstractions, typed dependencies, tools, structured output, retries, streaming, model history, capabilities, and testing.
+The core layer is the Rust-native foundation for model-driven agent execution. It carries reusable agents, provider abstractions, typed dependencies, tools, structured output, retries, streaming, model history, capabilities, usage accounting, and testing.
 
 The core layer is designed for library authors and runtime implementers. It defines durable contracts while application tools and product policy live in SDK and operations layers.
 
-Detailed Pydantic AI maturity work is tracked in `07-pydantic-ai-maturity-roadmap.md`; the coverage matrix remains in `05-pydantic-ai-feature-map.md`.
+Detailed maturity work is tracked in `07-agent-foundation-maturity-roadmap.md`; the coverage matrix remains in `05-agent-foundation-feature-map.md`; native boundary rules and usage extraction are tracked in `08-boundaries-and-usage.md`.
 
 ## Crate Ownership
 
 ```mermaid
 flowchart TD
     core[starweaver-core]
+    usage[starweaver-usage]
     model[starweaver-model]
     context[starweaver-context]
     tools[starweaver-tools]
@@ -19,7 +20,10 @@ flowchart TD
     runtime --> model
     runtime --> tools
     runtime --> context
+    runtime --> usage
     runtime --> core
+    model --> usage
+    context --> usage
     model --> core
     tools --> core
     tools --> model
@@ -27,11 +31,12 @@ flowchart TD
     context --> core
 ```
 
-- `starweaver-core`: shared identifiers, metadata, usage, capability status, serializable cross-layer envelopes.
+- `starweaver-core`: shared identifiers, metadata, trace context, subagent specs, and XML helpers.
 - `starweaver-model`: canonical message/request/response ASTs, model request preparation, settings, profiles, provider mappers, transport, replay fixtures, test models, request guard.
 - `starweaver-tools`: tool definitions, dynamic tool execution, toolsets, MCP foundations, metadata, retry and control-flow envelopes.
-- `starweaver-context`: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, notes, usage, resumable state.
-- `starweaver-runtime`: deterministic run loop, tool loop, output loop, hooks, budgets, stream records, checkpoints.
+- `starweaver-context`: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, notes, usage ledger, resumable state.
+- `starweaver-runtime`: deterministic run loop, tool loop, output loop, hooks, usage-limit enforcement, usage snapshot publication, stream records, checkpoints.
+- `starweaver-usage`: usage data, usage limits, snapshot contracts, and optional USD pricing helpers.
 
 ## Feature Coverage Contract
 
@@ -48,6 +53,7 @@ Core Starweaver should cover these feature families before broader SDK expansion
 | Capabilities and hooks | composable runtime extensions                                         | capability bundle and hook tests                   |
 | Message history        | all/new messages, processors, reinjection                             | message history tests                              |
 | Streaming              | run events, part events, tool events                                  | stream tests                                       |
+| Usage                  | accounting, limits, snapshot events, optional pricing estimates       | usage, runtime, context, and CLI cost tests        |
 | Testing                | deterministic models and request guard                                | model and runtime test suites                      |
 | Durability seam        | context export and checkpoints                                        | executor/context tests                             |
 
@@ -69,7 +75,7 @@ sequenceDiagram
     Runtime->>Model: canonical messages, settings, request parameters, context
     Model->>Model: profile-driven request preparation and message normalization
     Model-->>Runtime: canonical response
-    Runtime->>Context: append response, usage, events
+    Runtime->>Context: append response, usage ledger entry, events
     alt tool calls
         Runtime->>Tools: execute tool calls with ToolContext
         Tools-->>Runtime: tool returns or control-flow metadata

@@ -1,6 +1,6 @@
 # Reference Parity and Migration Notes
 
-This spec records the current Starweaver reference-parity boundary against `Wh1isper/ya-mono`. The active Starweaver roadmap keeps the shared agent SDK foundations primary and postpones CLI parity audit until foundation gates stay stable.
+This spec records the current Starweaver migration boundary against `legacy CLI implementation`. The active Starweaver roadmap keeps the shared agent SDK foundations primary and postpones CLI migration audit until foundation gates stay stable.
 
 ## Current Scope
 
@@ -18,7 +18,7 @@ Active foundation work:
 
 Postponed work:
 
-- CLI parity audit and `.starweaver` import/export behavior
+- CLI migration audit and `.starweaver` import/export behavior
 - additional product surfaces beyond CLI
 - distributed service transports and remote execution adapters
 
@@ -39,7 +39,7 @@ Expected CLI audit areas:
 
 - live stdout streaming for headless output
 - AGUI-compatible top-level event adapter coverage
-- slash command parity
+- slash command migration coverage
 - TUI model/session/cost/task/HITL/media workflows
 - startup asset seeding and config import
 - shell environment isolation and review flows

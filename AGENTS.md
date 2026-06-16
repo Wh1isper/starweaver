@@ -4,19 +4,20 @@
 
 `starweaver-agent-sdk` is a Rust workspace for building Starweaver, an agent SDK with CLI tooling and planned runtime/platform capabilities.
 
-Primary design references:
+Implementation boundary rule:
 
-- `https://github.com/pydantic/pydantic-ai` — core agent concepts, model abstraction, tool schema, output validation, retries, capabilities, and testing patterns
-- `https://github.com/Wh1isper/ya-mono` — application runtime, context, tool implementations, interruption, resumable execution, and service patterns
+- Code, tests, public symbols, module names, and observable IDs should use Starweaver-native names instead of reference-project names.
+- `starweaver-runtime` owns the agentic loop; `starweaver-context` owns neutral run/session evidence; `starweaver-agent` owns SDK ergonomics and first-party bundles; `starweaver-usage` owns usage accounting, limits, snapshots, and optional USD pricing estimates.
 
 Current workspace members:
 
-- `crates/starweaver-core` — shared SDK identity, IDs, metadata, and usage primitives
+- `crates/starweaver-core` — shared SDK identity, IDs, metadata, trace context, subagent specs, and XML helpers
+- `crates/starweaver-usage` — usage accounting, snapshot contracts, usage limits, and optional USD pricing estimates
 - `crates/starweaver-model` — provider-neutral model messages, settings, profiles, native tool request definitions, protocol clients, injectable HTTP transport, deterministic test models, production-request guard, model wrappers, OAuth-backed provider model adapters, and replay tests
 - `crates/starweaver-oauth` — OAuth credential storage under `~/.starweaver`, Codex device login, token refresh, JWT metadata extraction, and store-backed token sources
 - `crates/starweaver-oauth-provider` — OAuth-backed provider helpers, Codex model construction helpers, and refresh supervisor utilities
 - `crates/starweaver-context` — AgentContext, typed dependencies, resumable state, state store, event bus, message bus, and usage ledger
-- `crates/starweaver-runtime` — core agent loop, graph state machine, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage/tool-call/cost budgets, typed stream events, scoped overrides, context integration, capability hooks, capability bundles, trace recording, and durable executor checkpoints
+- `crates/starweaver-runtime` — core agent loop, graph state machine, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage-limit enforcement, typed usage snapshot events, typed stream events, scoped overrides, context integration, capability hooks, capability bundles, trace recording, and durable executor checkpoints
 - `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, toolset combinators, and execution primitives
 - `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, first-party tool bundles, spec presets, session helpers, media/filter helpers, and application-facing helpers
 - `crates/starweaver-environment` — `EnvironmentProvider`, virtual and local provider foundations, file and shell policies, resource references, and environment state snapshots
@@ -31,11 +32,12 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 
 ## Layering Rules
 
+- `starweaver-usage`: leaf crate for usage accounting, usage snapshot contracts, usage limits, and optional `pricing` feature helpers. Pricing estimates use fixed-point micro USD in `PricingEstimate::amount_micros_usd`.
 - `starweaver-model`: provider-neutral model protocol, settings, profiles, transports, model wrappers, provider request mapping, and OAuth-backed provider adapters.
 - `starweaver-oauth`: OAuth auth file storage, Codex device-code login, token refresh, and store-backed token sources. Default auth path is `~/.starweaver/auth.json`.
 - `starweaver-oauth-provider`: OAuth provider construction helpers and proactive refresh supervision.
 - `starweaver-tools`: tool schema, toolsets, metadata, tool context, combinators, and protocol-level tool execution primitives.
-- `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage limits, streaming events, trace spans, and executor checkpoints.
+- `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage-limit enforcement, usage snapshot publication, streaming events, trace spans, and executor checkpoints.
 - `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, filters, media helpers, and policy presets.
 - `starweaver-environment`: environment provider contracts, file/shell policy, resource references, and resumable environment state snapshots.
 - `starweaver-session`: shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
@@ -90,9 +92,10 @@ Current specs:
 - `spec/core/02-model-provider-replay.md` — provider-neutral model protocol, replay fixtures, transport, settings, profiles, and CI gates
 - `spec/core/03-tools-output-capabilities.md` — tool schema, tool loop, structured output, output functions, validators, hooks, and capability bundles
 - `spec/core/04-context-state-executor.md` — AgentContext, StateStore, events, messages, notes, usage, checkpoints, and executor preparation
-- `spec/core/05-pydantic-ai-feature-map.md` — Pydantic AI feature coverage map across agents, providers, tools, output, streaming, and testing
-- `spec/core/06-message-request-abstractions.md` — Pydantic AI-informed message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
-- `spec/core/07-pydantic-ai-maturity-roadmap.md` — capability middleware, deferred tools, toolset combinators, AgentSpec v2, output modes, model wrappers, and UI adapter maturity roadmap
+- `spec/core/05-agent-foundation-feature-map.md` — Agent foundation feature coverage map across agents, providers, tools, output, streaming, and testing
+- `spec/core/06-message-request-abstractions.md` — Starweaver-native message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
+- `spec/core/07-agent-foundation-maturity-roadmap.md` — capability middleware, deferred tools, toolset combinators, AgentSpec v2, output modes, model wrappers, and UI adapter maturity roadmap
+- `spec/core/08-boundaries-and-usage.md` — native runtime/context/SDK/usage boundaries, usage snapshot pricing contract, and cleanup acceptance gates
 - `spec/sdk/README.md` — SDK product boundary and application-facing contract
 - `spec/sdk/01-agent-sdk-app.md` — AgentBuilder, AgentApp, AgentSession, policy presets, app composition, and docs surface
 - `spec/sdk/02-environment-provider.md` — EnvironmentProvider, filesystem, shell, resources, environment state, policies, and sandbox mapping
@@ -105,7 +108,7 @@ Current specs:
 - `spec/ops/03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
 - `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI compatibility adapters, launcher dispatch, and GitHub install/update flow
 - `spec/ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
-- `spec/ops/07-ya-mono-parity-migration.md` — foundation and CLI parity reference map with CLI audit postponed
+- `spec/ops/07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
 - `spec/ops/09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
 Use `memos/` for working notes, design comparisons, implementation evidence, and release-preparation reminders. The current detailed implementation roadmap is `memos/implementation-todo.md`.

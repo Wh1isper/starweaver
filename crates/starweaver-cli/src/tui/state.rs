@@ -7,9 +7,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_core::UsageSnapshot;
 use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
+use starweaver_usage::UsageSnapshot;
 
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
 const MAX_STEERING_ITEMS: usize = 5;

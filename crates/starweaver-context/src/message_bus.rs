@@ -24,7 +24,7 @@ pub struct BusMessage {
     /// Recipient agent id. `None` means broadcast to all subscribers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// Optional template string. Minimal Rust parity stores the value; rendering is caller-owned.
+    /// Optional template string. The Rust context stores the value; rendering is caller-owned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
     /// Message creation time.
@@ -59,7 +59,7 @@ impl BusMessage {
         }
     }
 
-    /// Create a ya-mono-style text message.
+    /// Create a text bus message.
     #[must_use]
     pub fn text(content: impl Into<String>, source: impl Into<String>) -> Self {
         let content = content.into();

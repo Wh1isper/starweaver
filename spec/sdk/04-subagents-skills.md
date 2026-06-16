@@ -91,7 +91,7 @@ The SDK should support a unified parent-facing delegation tool that lets the mod
 
 ## Skills
 
-Skills are reusable packages of instructions, examples, assets, references, and optional tools. Starweaver uses the ya-mono fileops-loaded design: the skill loader scans the active `EnvironmentProvider` file roots, reads `SKILL.md` through provider file operations, and keeps skill assets in the same provider-visible path space used by filesystem and shell tools.
+Skills are reusable packages of instructions, examples, assets, references, and optional tools. Starweaver uses the environment-backed fileops-loaded design: the skill loader scans the active `EnvironmentProvider` file roots, reads `SKILL.md` through provider file operations, and keeps skill assets in the same provider-visible path space used by filesystem and shell tools.
 
 Skill package format:
 

@@ -1,6 +1,6 @@
 # Agent Loop and Runtime Kernel
 
-The runtime kernel turns a prompt, context, model adapter, tool registry, output policy, and capability bundle into a deterministic run. It is the Rust equivalent of the core Pydantic AI agent loop, with explicit graph states and checkpoint seams for durable execution.
+The runtime kernel turns a prompt, context, model adapter, tool registry, output policy, and capability bundle into a deterministic run. It is the Rust equivalent of the core Starweaver agent loop, with explicit graph states and checkpoint seams for durable execution.
 
 ## Responsibilities
 

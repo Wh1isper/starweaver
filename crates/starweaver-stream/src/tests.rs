@@ -619,7 +619,7 @@ async fn default_projector_maps_thinking_and_tool_calls_from_model_response() {
                 provider: ProviderPartInfo::new("openai").with_id("msg_1"),
             },
         ],
-        usage: starweaver_core::Usage::default(),
+        usage: starweaver_usage::Usage::default(),
         model_name: None,
         provider: None,
         finish_reason: None,

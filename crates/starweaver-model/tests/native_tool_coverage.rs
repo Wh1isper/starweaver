@@ -11,7 +11,7 @@ use starweaver_model::{
 };
 
 #[test]
-fn openai_responses_maps_pydantic_ai_native_tool_kinds() {
+fn openai_responses_maps_native_tool_kinds() {
     let native_tools = [
         native_tool(
             "web_search_preview",

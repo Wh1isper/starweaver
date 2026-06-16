@@ -5,13 +5,14 @@ use std::sync::Arc;
 use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
 use starweaver_tools::{DynTool, DynToolset, ToolRegistry};
 
+use starweaver_usage::UsageLimits;
+
 use crate::{
     agent::{Agent, AgentRuntimePolicy},
     capability::{AgentCapability, CapabilityBundle},
     executor::DynAgentExecutor,
     instructions::DynDynamicInstruction,
     output::{DynOutputFunction, OutputSchema, OutputValidator},
-    usage::UsageLimits,
 };
 
 /// Scoped agent override builder.

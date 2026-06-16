@@ -7,9 +7,7 @@ use crossterm::event::{
 };
 use serde_json::json;
 use starweaver_context::{AgentEvent, TASK_SNAPSHOT_EVENT_KIND};
-use starweaver_core::{
-    ConversationId, Metadata, RunId, SessionId, Usage, UsageAgentTotal, UsageSnapshot,
-};
+use starweaver_core::{ConversationId, Metadata, RunId, SessionId};
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
     ProviderPartInfo, StreamDelta, ToolCallPart, ToolReturnPart,
@@ -17,6 +15,7 @@ use starweaver_model::{
 use starweaver_runtime::{AgentExecutionNode, AgentStreamEvent, AgentStreamRecord, RunStatus};
 use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
+use starweaver_usage::{PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot};
 
 use crate::{prompt_input::PromptAttachment, slash_commands::SlashCommandDefinition};
 
@@ -816,7 +815,7 @@ fn summarize_tool_return_renders_summary_handoff() {
                 json!({
                     "operation": "summarize",
                     "payload": {
-                        "content": "Implemented compact rendering parity.\nNext: run tests.",
+                        "content": "Implemented compact rendering behavior.\nNext: run tests.",
                         "auto_load_files": ["AGENTS.md", "crates/starweaver-cli/src/tui/state.rs"]
                     }
                 }),
@@ -831,7 +830,7 @@ fn summarize_tool_return_renders_summary_handoff() {
     ));
     assert!(body_has_line(
         &state,
-        "    │ Implemented compact rendering parity."
+        "    │ Implemented compact rendering behavior."
     ));
     assert!(body_has_line(
         &state,
@@ -1754,7 +1753,7 @@ fn tool_call_from_model_response_and_tool_event_renders_once() {
             step: 0,
             response: ModelResponse {
                 parts: vec![ModelResponsePart::ToolCall(call.clone())],
-                usage: starweaver_core::Usage::default(),
+                usage: starweaver_usage::Usage::default(),
                 model_name: None,
                 provider: None,
                 finish_reason: None,
@@ -1848,7 +1847,7 @@ fn streaming_tool_call_delta_is_visible_and_deduped_by_final_call() {
             step: 0,
             event: ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse {
                 parts: vec![ModelResponsePart::ToolCall(final_call.clone())],
-                usage: starweaver_core::Usage::default(),
+                usage: starweaver_usage::Usage::default(),
                 model_name: None,
                 provider: None,
                 finish_reason: None,
@@ -1937,7 +1936,7 @@ fn consecutive_streamed_tool_calls_with_same_name_do_not_reuse_first_line() {
                     ModelResponsePart::ToolCall(first_call.clone()),
                     ModelResponsePart::ToolCall(second_call.clone()),
                 ],
-                usage: starweaver_core::Usage::default(),
+                usage: starweaver_usage::Usage::default(),
                 model_name: None,
                 provider: None,
                 finish_reason: None,
@@ -2251,9 +2250,11 @@ fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
                         total_tokens: 3_000,
                         tool_calls: 0,
                     },
+                    estimate_pricing: Some(PricingEstimate::from_micros_usd(1_000_000)),
                     entries: Vec::new(),
                     agent_usages: BTreeMap::new(),
                     model_usages: BTreeMap::new(),
+                    model_estimate_pricing: BTreeMap::new(),
                 })
                 .unwrap(),
             ),
@@ -2313,9 +2314,11 @@ fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
                         total_tokens: 3_200,
                         tool_calls: 0,
                     },
+                    estimate_pricing: Some(PricingEstimate::from_micros_usd(2_000_000)),
                     entries: Vec::new(),
                     agent_usages: BTreeMap::new(),
                     model_usages: BTreeMap::new(),
+                    model_estimate_pricing: BTreeMap::new(),
                 })
                 .unwrap(),
             ),
@@ -2356,6 +2359,7 @@ fn cost_command_shows_accumulated_usage_snapshots() {
                         total_tokens: 1_500,
                         tool_calls: 0,
                     },
+                    estimate_pricing: None,
                     entries: Vec::new(),
                     agent_usages: BTreeMap::from([(
                         "main".to_string(),
@@ -2371,9 +2375,14 @@ fn cost_command_shows_accumulated_usage_snapshots() {
                                 total_tokens: 1_500,
                                 tool_calls: 0,
                             },
+                            estimate_pricing: Some(PricingEstimate::from_micros_usd(1_000_000)),
                             usage_id: None,
                             source: "model_request".to_string(),
                         },
+                    )]),
+                    model_estimate_pricing: BTreeMap::from([(
+                        "test:test".to_string(),
+                        PricingEstimate::from_micros_usd(1_000_000),
                     )]),
                     model_usages: BTreeMap::from([(
                         "test:test".to_string(),
@@ -2409,6 +2418,7 @@ fn cost_command_shows_accumulated_usage_snapshots() {
                         total_tokens: 2_700,
                         tool_calls: 0,
                     },
+                    estimate_pricing: None,
                     entries: Vec::new(),
                     agent_usages: BTreeMap::from([(
                         "debugger".to_string(),
@@ -2424,9 +2434,14 @@ fn cost_command_shows_accumulated_usage_snapshots() {
                                 total_tokens: 2_700,
                                 tool_calls: 0,
                             },
+                            estimate_pricing: Some(PricingEstimate::from_micros_usd(2_000_000)),
                             usage_id: None,
                             source: "model_request".to_string(),
                         },
+                    )]),
+                    model_estimate_pricing: BTreeMap::from([(
+                        "test:test".to_string(),
+                        PricingEstimate::from_micros_usd(2_000_000),
                     )]),
                     model_usages: BTreeMap::from([(
                         "test:test".to_string(),
@@ -2458,6 +2473,14 @@ fn cost_command_shows_accumulated_usage_snapshots() {
     assert!(body_has_line(&state, "[SYS]   Cache Read:  600 tokens"));
     assert!(body_has_line(&state, "[SYS]   Total:  4,200 tokens"));
     assert!(body_has_line(&state, "[SYS]   Requests: 3"));
+    assert!(body_has_line(
+        &state,
+        "[SYS]   Estimated pricing: $3.000000 USD"
+    ));
+    assert!(body_has_line(
+        &state,
+        "[SYS]     Estimated pricing: $3.000000 USD"
+    ));
     assert!(body_has_line(&state, "[SYS]   main:"));
     assert!(body_has_line(&state, "[SYS]   debugger:"));
 }
@@ -2491,7 +2514,7 @@ fn interactive_state_covers_model_response_finish_and_failure() {
                         provider: ProviderPartInfo::new("openai").with_id("fc_1"),
                     },
                 ],
-                usage: starweaver_core::Usage {
+                usage: starweaver_usage::Usage {
                     requests: 1,
                     input_tokens: 1_000,
                     cache_write_tokens: 0,
@@ -2521,7 +2544,7 @@ fn interactive_state_covers_model_response_finish_and_failure() {
             step: 1,
             response: ModelResponse {
                 parts: Vec::new(),
-                usage: starweaver_core::Usage {
+                usage: starweaver_usage::Usage {
                     requests: 1,
                     input_tokens: 6_000,
                     cache_write_tokens: 0,
@@ -2567,9 +2590,11 @@ fn interactive_state_covers_model_response_finish_and_failure() {
                         total_tokens: 8_000,
                         tool_calls: 0,
                     },
+                    estimate_pricing: None,
                     entries: Vec::new(),
                     agent_usages: BTreeMap::new(),
                     model_usages: BTreeMap::new(),
+                    model_estimate_pricing: BTreeMap::new(),
                 })
                 .unwrap(),
             ),
@@ -3780,7 +3805,7 @@ fn model_response_thinking_and_tool_call_are_visible() {
                         text: "done".to_string(),
                     },
                 ],
-                usage: starweaver_core::Usage::default(),
+                usage: starweaver_usage::Usage::default(),
                 model_name: None,
                 provider: None,
                 finish_reason: None,

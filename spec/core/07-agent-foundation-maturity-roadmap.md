@@ -1,6 +1,6 @@
-# Pydantic AI Maturity Roadmap
+# Agent Foundation Maturity Roadmap
 
-This roadmap tracks foundation maturity work inspired by Pydantic AI. The current focus is core/model/context/runtime/tools/agent/environment/session/stream/storage. CLI parity work is postponed until foundation gates stay stable.
+This roadmap tracks foundation maturity work for Starweaver-native agent foundations. The current focus is core/model/context/runtime/tools/agent/environment/session/stream/storage. CLI migration work is postponed until foundation gates stay stable.
 
 ## Landed Foundation Slices
 
@@ -103,4 +103,4 @@ make docs-check
 
 ## Postponed Work
 
-CLI parity and evaluation framework work resume after foundation storage, stream, model wrapper, toolset, capability, and SDK profile gates stay stable.
+CLI migration and evaluation framework work resume after foundation storage, stream, model wrapper, toolset, capability, and SDK profile gates stay stable.

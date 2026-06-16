@@ -26,7 +26,7 @@ use super::{
     tool_args::tool_args_filter,
 };
 
-/// Named SDK filter capability with concrete parity behavior.
+/// Named SDK filter capability with concrete behavior.
 #[derive(Clone)]
 pub struct NamedFilterCapability {
     name: &'static str,

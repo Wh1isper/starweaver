@@ -1,6 +1,6 @@
-# Pydantic AI Feature Map
+# Agent Foundation Feature Map
 
-This map tracks Starweaver foundation coverage against Pydantic AI concepts. Product surfaces consume these foundations through `starweaver-agent`, `starweaver-session`, `starweaver-stream`, `starweaver-storage`, and `starweaver-cli`.
+This map tracks Starweaver foundation coverage against agent runtime concepts. Product surfaces consume these foundations through `starweaver-agent`, `starweaver-session`, `starweaver-stream`, `starweaver-storage`, and `starweaver-cli`.
 
 ## Scope
 
@@ -56,5 +56,5 @@ make docs-check
 | toolset composition     | active    | keep combinators small and deterministic                                                                              |
 | durable storage         | active    | keep SQLite schema focused on shared session, run, checkpoint, approval, deferred, replay, and stream archive records |
 | UI protocol adapters    | active    | map `DisplayMessage` into external wire formats through explicit adapters                                             |
-| CLI parity audit        | postponed | resume after foundation gates stay stable                                                                             |
+| CLI migration audit     | postponed | resume after foundation gates stay stable                                                                             |
 | evals                   | postponed | add dataset, evaluator, and reporting layers after SDK and CLI behavior stabilize                                     |

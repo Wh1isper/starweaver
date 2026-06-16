@@ -5,7 +5,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
 use starweaver_context::AgentContext;
-use starweaver_core::Usage;
 use starweaver_model::{
     ContentPart, FunctionModel, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
     ModelSettings, TestModel,
@@ -14,6 +13,7 @@ use starweaver_runtime::{
     Agent, AgentCapability, AgentRunState, CapabilityResult, InMemoryTraceRecorder, TraceLevel,
     TraceRecorder,
 };
+use starweaver_usage::Usage;
 
 #[tokio::test]
 async fn model_trace_events_capture_canonical_request_stream_and_response() {

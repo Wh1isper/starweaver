@@ -1,14 +1,15 @@
 # Starweaver
 
-Starweaver is a Rust agent SDK with provider-neutral model protocols, a checkpointable runtime, reusable tool schema, and an application-facing SDK layer.
+Starweaver is a Rust agent SDK with provider-neutral model protocols, a checkpointable runtime, reusable tool schema, standalone usage accounting, and an application-facing SDK layer.
 
-The project borrows proven agent ideas from Pydantic AI and runtime patterns from ya-mono, then keeps Rust crate boundaries explicit:
+The project keeps Rust crate boundaries explicit:
 
 ```mermaid
 flowchart TD
     app[Application]
     sdk[starweaver-agent]
     runtime[starweaver-runtime]
+    usage[starweaver-usage]
     model[starweaver-model]
     tools[starweaver-tools]
     context[starweaver-context]
@@ -20,15 +21,19 @@ flowchart TD
     runtime --> model
     runtime --> tools
     runtime --> context
+    runtime --> usage
+    model --> usage
+    context --> usage
     platform --> sdk
     platform --> runtime
 ```
 
 ## Current foundation
 
+- `starweaver-usage` provides usage accounting, usage limits, snapshot contracts, and optional USD pricing estimates.
 - `starweaver-model` provides canonical messages, provider profiles, request settings, protocol clients, replay-tested provider mappers, and deterministic test models.
 - `starweaver-tools` provides tool definitions, function tools, toolsets, prefixed toolsets, registries, retry metadata, approval/deferred metadata, and MCP foundations.
-- `starweaver-runtime` provides the core agent loop, output validation, tool loop, usage budgets, stream records, capability hooks, context integration, and executor checkpoints.
+- `starweaver-runtime` provides the core agent loop, output validation, tool loop, usage-limit enforcement, usage snapshot events, stream records, capability hooks, context integration, and executor checkpoints.
 - `starweaver-agent` provides the SDK builder, app wrapper, facade re-exports, and SDK-level subagent registry.
 
 ## First run

@@ -2,12 +2,12 @@
 
 use serde_json::{Map, Value};
 use starweaver_context::{AgentContext, AgentContextHandle};
-use starweaver_core::Usage;
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestContext, ModelRequestParameters,
     ModelRequestPart, ModelResponse, OutputMode,
 };
 use starweaver_tools::{ToolApprovalState, ToolContext, ToolError, ToolResult};
+use starweaver_usage::Usage;
 
 use crate::bundles::helpers::tool_execution_error;
 

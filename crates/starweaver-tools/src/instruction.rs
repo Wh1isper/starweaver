@@ -33,7 +33,7 @@ impl ToolInstruction {
         self
     }
 
-    /// Render this instruction block in the ya-agent-sdk tool-instruction XML shape.
+    /// Render this instruction block in the tool-instruction XML shape.
     #[must_use]
     pub fn render_xml(&self) -> String {
         let mut xml = XmlWriter::new();

@@ -2,7 +2,7 @@
 
 use super::*;
 use serde_json::{json, Value};
-use starweaver_core::Usage;
+use starweaver_usage::Usage;
 
 use crate::{
     message::Metadata, ModelError, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,

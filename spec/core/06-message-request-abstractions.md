@@ -1,10 +1,10 @@
 # Message and Model Request Abstractions
 
-This spec captures the message and model-request design lessons from the Pydantic AI reference review. The goal is a compact Rust-native conversation AST and a request-preparation contract that remain durable, replayable, and provider-neutral.
+This spec captures the message and model-request design lessons from the agent framework reference review. The goal is a compact Rust-native conversation AST and a request-preparation contract that remain durable, replayable, and provider-neutral.
 
 ## Reference Findings
 
-Pydantic AI uses a typed part-based message tree centered on `ModelRequest`, `ModelResponse`, request parts, response parts, content parts, tool-call parts, provider metadata, model profiles, and structured stream events. The most useful concepts for Starweaver are:
+Mature agent frameworks use a typed part-based message tree centered on `ModelRequest`, `ModelResponse`, request parts, response parts, content parts, tool-call parts, provider metadata, model profiles, and structured stream events. The most useful concepts for Starweaver are:
 
 - conversation history as typed request and response items
 - separate request-side and response-side part unions
@@ -76,7 +76,7 @@ Provider-sticky data such as thinking signatures, native tool payloads, uploaded
 
 ## Tool Call Arguments
 
-Pydantic AI preserves malformed tool-call JSON so retry flows can show the model the exact issue. Starweaver should represent tool arguments with three states:
+Robust agent runtimes preserve malformed tool-call JSON so retry flows can show the model the exact issue. Starweaver should represent tool arguments with three states:
 
 | State           | Shape                                                 | Use                                                            |
 | --------------- | ----------------------------------------------------- | -------------------------------------------------------------- |

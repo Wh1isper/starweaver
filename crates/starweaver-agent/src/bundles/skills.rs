@@ -45,7 +45,7 @@ pub struct SkillSourceScope {
 }
 
 impl SkillSourceScope {
-    /// Build a scope with ya-mono-compatible directories.
+    /// Build a scope with Starweaver-compatible directories.
     #[must_use]
     pub fn new(root: impl Into<String>) -> Self {
         Self {

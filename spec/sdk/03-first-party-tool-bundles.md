@@ -128,7 +128,7 @@ Backed by `AgentContext` task state or an SDK host task service. Notes and arbit
 
 ### Skill Bundle
 
-The skill bundle follows the ya-mono `SkillToolset` design and loads skills through the active `EnvironmentProvider` file operations. Skills are markdown packages with a `SKILL.md` entrypoint and YAML frontmatter. The SDK scans provider-visible skill directories, loads frontmatter for prompt summaries, and loads full markdown content when a skill is activated.
+The skill bundle follows the environment-backed `SkillToolset` design and loads skills through the active `EnvironmentProvider` file operations. Skills are markdown packages with a `SKILL.md` entrypoint and YAML frontmatter. The SDK scans provider-visible skill directories, loads frontmatter for prompt summaries, and loads full markdown content when a skill is activated.
 
 Tools and bundle APIs:
 
@@ -138,7 +138,7 @@ Tools and bundle APIs:
 - expose skill-contributed toolsets through the SDK registry when a skill declares tool requirements or packaged tools
 - expose skill instructions through grouped toolset instructions so prompt injection stays deduplicated
 
-Discovery paths are derived from configured provider roots and preserve ya-mono precedence:
+Discovery paths are derived from configured provider roots and preserve Starweaver precedence:
 
 1. shared user skills: `.agents/skills/`
 2. tool-specific user skills: `skills/`

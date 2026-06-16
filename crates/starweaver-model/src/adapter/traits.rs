@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use starweaver_core::Usage;
+use starweaver_usage::Usage;
 
 use crate::{
     message::ModelMessage, profile::ModelProfile, settings::ModelSettings,

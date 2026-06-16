@@ -4,11 +4,12 @@ use starweaver_context::{
     AgentContext, AgentId, BusMessage, MessageBus, ModelConfig, PerThousandRatio, TaskManager,
     TaskStatus, ToolIdWrapper,
 };
-use starweaver_core::{Metadata, RunId, Usage};
+use starweaver_core::{Metadata, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ToolArguments,
     ToolCallPart, ToolReturnPart,
 };
+use starweaver_usage::Usage;
 
 #[test]
 fn message_bus_supports_subscribers_targets_idempotency_and_matching() {
@@ -88,7 +89,7 @@ fn task_manager_completion_unblocks_dependent_tasks() {
 }
 
 #[test]
-fn curated_export_keeps_ya_mono_fields_and_omits_starweaver_extensions() {
+fn curated_export_keeps_portable_fields_and_omits_runtime_extensions() {
     let mut context = AgentContext::new(AgentId::from_string("main"));
     context.run_id = Some(RunId::from_string("run-1"));
     context.push_message(ModelMessage::Request(ModelRequest::user_text("hello")));
@@ -195,12 +196,12 @@ fn tool_id_wrapper_normalizes_tool_ids_across_history_and_payloads() {
         panic!("response");
     };
     let wrapped_function_id = response.parts[0].tool_call().unwrap().id.clone();
-    assert!(wrapped_function_id.starts_with("ya-"));
+    assert!(wrapped_function_id.starts_with("sw-tool-"));
     let ModelResponsePart::NativeToolCall { payload, .. } = &response.parts[1] else {
         panic!("native");
     };
     let wrapped_native_id = payload["call_id"].as_str().unwrap().to_string();
-    assert!(wrapped_native_id.starts_with("ya-"));
+    assert!(wrapped_native_id.starts_with("sw-tool-"));
 
     let ModelMessage::Request(request) = &messages[1] else {
         panic!("request");
@@ -276,6 +277,7 @@ fn usage_snapshot_uses_parent_run_id_for_subagent_contexts() {
             total_tokens: 5,
             tool_calls: 0,
         },
+        None,
         None,
         "subagent",
         None,

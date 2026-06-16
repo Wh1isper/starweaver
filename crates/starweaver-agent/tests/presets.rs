@@ -6,8 +6,8 @@ use starweaver_agent::{
     get_model_config, get_model_settings, model_runtime_preset, AgentSpec, AgentSpecRegistry,
     FunctionModel, FunctionModelInfo, ModelSettings, TestModel,
 };
-use starweaver_core::Usage;
 use starweaver_model::{ModelMessage, ModelResponse};
+use starweaver_usage::Usage;
 
 #[tokio::test]
 async fn agent_spec_loads_yaml_and_builds_agent() {

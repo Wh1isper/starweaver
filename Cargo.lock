@@ -1746,6 +1746,7 @@ dependencies = [
  "starweaver-oauth-provider",
  "starweaver-runtime",
  "starweaver-tools",
+ "starweaver-usage",
  "thiserror",
  "tokio",
  "uuid",
@@ -1779,6 +1780,7 @@ dependencies = [
  "starweaver-session",
  "starweaver-stream",
  "starweaver-tools",
+ "starweaver-usage",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1796,6 +1798,7 @@ dependencies = [
  "serde_json",
  "starweaver-core",
  "starweaver-model",
+ "starweaver-usage",
  "uuid",
 ]
 
@@ -1839,6 +1842,7 @@ dependencies = [
  "serde_json",
  "starweaver-core",
  "starweaver-oauth",
+ "starweaver-usage",
  "thiserror",
  "tokio",
 ]
@@ -1886,6 +1890,7 @@ dependencies = [
  "starweaver-core",
  "starweaver-model",
  "starweaver-tools",
+ "starweaver-usage",
  "thiserror",
  "tokio",
  "uuid",
@@ -1937,6 +1942,7 @@ dependencies = [
  "starweaver-core",
  "starweaver-model",
  "starweaver-runtime",
+ "starweaver-usage",
  "thiserror",
  "tokio",
 ]
@@ -1954,6 +1960,15 @@ dependencies = [
  "starweaver-model",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "starweaver-usage"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

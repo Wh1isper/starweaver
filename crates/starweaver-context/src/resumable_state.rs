@@ -5,21 +5,20 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_core::{
-    AgentId, ConversationId, Metadata, RunId, TraceContext, Usage, UsageSnapshotEntry,
-};
+use starweaver_core::{AgentId, ConversationId, Metadata, RunId, TraceContext};
 use starweaver_model::{ContentPart, ModelMessage};
+use starweaver_usage::{Usage, UsageSnapshotEntry};
 
 use crate::{AgentInfo, MessageBus, ModelConfig, SecurityConfig, StateStore, ToolConfig};
 
 /// Baseline export profile for context restoration state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ResumableExportMode {
-    /// ya-mono-style curated export behavior.
+    /// Curated portable export behavior for session restoration.
     #[default]
-    YaMonoCurated,
-    /// Legacy Starweaver full-state export behavior.
-    StarweaverLegacy,
+    Curated,
+    /// Full Starweaver runtime state export behavior.
+    Full,
 }
 
 /// Export options for context restoration state.
@@ -34,26 +33,26 @@ pub struct ResumableExportOptions {
 
 impl Default for ResumableExportOptions {
     fn default() -> Self {
-        Self::ya_mono_curated()
+        Self::curated()
     }
 }
 
 impl ResumableExportOptions {
-    /// Legacy Starweaver export behavior.
+    /// Full Starweaver runtime state export behavior.
     #[must_use]
-    pub const fn starweaver_legacy() -> Self {
+    pub const fn full() -> Self {
         Self {
-            mode: ResumableExportMode::StarweaverLegacy,
+            mode: ResumableExportMode::Full,
             include_subagent: true,
             include_usage_ledger: true,
         }
     }
 
-    /// ya-mono-style curated export behavior.
+    /// Curated portable export behavior for session restoration.
     #[must_use]
-    pub const fn ya_mono_curated() -> Self {
+    pub const fn curated() -> Self {
         Self {
-            mode: ResumableExportMode::YaMonoCurated,
+            mode: ResumableExportMode::Curated,
             include_subagent: true,
             include_usage_ledger: false,
         }
@@ -88,13 +87,13 @@ impl ResumableExportOptions {
     /// Return whether Starweaver runtime extensions are included.
     #[must_use]
     pub const fn include_starweaver_extensions(self) -> bool {
-        matches!(self.mode, ResumableExportMode::StarweaverLegacy)
+        matches!(self.mode, ResumableExportMode::Full)
     }
 
     /// Return whether runtime config and security policy are included.
     #[must_use]
     pub const fn include_runtime_policy(self) -> bool {
-        matches!(self.mode, ResumableExportMode::StarweaverLegacy)
+        matches!(self.mode, ResumableExportMode::Full)
     }
 }
 

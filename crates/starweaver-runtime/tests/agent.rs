@@ -7,7 +7,6 @@ use std::sync::{
 
 use async_trait::async_trait;
 use starweaver_context::AgentContext;
-use starweaver_core::Usage;
 use starweaver_model::{
     ContentPart, ModelAdapter, ModelError, ModelMessage, ModelRequest, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponseEventStream,
@@ -17,6 +16,7 @@ use starweaver_runtime::{
     Agent, AgentCapability, AgentError, AgentRuntimePolicy, CapabilityError, CapabilityResult,
     RetryEventKind,
 };
+use starweaver_usage::Usage;
 
 #[derive(Clone)]
 struct ScriptedModel {

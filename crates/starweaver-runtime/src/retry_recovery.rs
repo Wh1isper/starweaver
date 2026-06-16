@@ -1,7 +1,6 @@
 //! Error-aware retry recovery for model request retries.
 //!
-//! These helpers mirror the durable recovery behavior used by ya-agent-sdk's
-//! `stream_agent(..., resume_on_error=True)`: before a higher-level retry sends
+//! These helpers implement durable model-error recovery: before a higher-level retry sends
 //! repaired history back to a provider, we remove provider-stale references and
 //! aggressively reduce payloads that commonly trigger context overflow errors.
 
@@ -204,7 +203,7 @@ mod tests {
                     provider: ProviderPartInfo::new("anthropic").with_id("anthropic_item_1"),
                 },
             ],
-            usage: starweaver_core::Usage::default(),
+            usage: starweaver_usage::Usage::default(),
             model_name: None,
             provider: Some(ProviderInfo {
                 name: "anthropic".to_string(),
@@ -275,7 +274,7 @@ mod tests {
                         details
                     }),
             }],
-            usage: starweaver_core::Usage::default(),
+            usage: starweaver_usage::Usage::default(),
             model_name: None,
             provider: None,
             finish_reason: None,
@@ -323,7 +322,7 @@ mod tests {
                     name: "lookup".to_string(),
                     arguments: Value::Null.into(),
                 })],
-                usage: starweaver_core::Usage::default(),
+                usage: starweaver_usage::Usage::default(),
                 model_name: None,
                 provider: Some(ProviderInfo {
                     name: "openai".to_string(),

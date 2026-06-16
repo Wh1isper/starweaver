@@ -8,13 +8,11 @@ pub type Metadata = Map<String, Value>;
 mod ids;
 mod subagent;
 mod trace;
-mod usage;
 mod xml;
 
 pub use ids::{AgentId, CheckpointId, ConversationId, RunId, SessionId, TaskId};
 pub use subagent::{SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec};
 pub use trace::TraceContext;
-pub use usage::{Usage, UsageAgentTotal, UsageSnapshot, UsageSnapshotEntry};
 pub use xml::{escape_xml_attribute, escape_xml_text, XmlWriter};
 
 /// Workspace-wide SDK identity.
@@ -90,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_subagent_specs_lifecycle_events_and_usage() {
+    fn builds_subagent_specs_lifecycle_events() {
         let spec = SubagentSpec::new("research", "Research helper", "Find facts")
             .with_tools(vec!["search".to_string()])
             .with_optional_tools(vec!["browser".to_string()]);
@@ -112,32 +110,5 @@ mod tests {
         assert_eq!(event.task_id.as_str(), "task-1");
         assert_eq!(event.run_id.as_ref().map(RunId::as_str), Some("run-1"));
         assert_eq!(event.metadata["ok"], true);
-
-        let mut usage = Usage {
-            requests: 1,
-            input_tokens: 2,
-            cache_write_tokens: 7,
-            cache_read_tokens: 11,
-            output_tokens: 3,
-            total_tokens: 5,
-            tool_calls: 1,
-        };
-        usage.add_assign(&Usage {
-            requests: 2,
-            input_tokens: 4,
-            cache_write_tokens: 13,
-            cache_read_tokens: 17,
-            output_tokens: 6,
-            total_tokens: 10,
-            tool_calls: 3,
-        });
-        assert_eq!(usage.requests, 3);
-        assert_eq!(usage.input_tokens, 6);
-        assert_eq!(usage.cache_write_tokens, 20);
-        assert_eq!(usage.cache_read_tokens, 28);
-        assert_eq!(usage.output_tokens, 9);
-        assert_eq!(usage.total_tokens, 15);
-        assert_eq!(usage.tool_calls, 4);
-        assert_eq!(usage.with_additional_tool_calls(2).tool_calls, 6);
     }
 }

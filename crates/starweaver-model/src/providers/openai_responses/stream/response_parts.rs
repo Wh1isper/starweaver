@@ -1,7 +1,7 @@
 //! Response assembly from streamed `OpenAI` Responses parts.
 
 use serde_json::{json, Value};
-use starweaver_core::Usage;
+use starweaver_usage::Usage;
 
 use crate::{
     message::{

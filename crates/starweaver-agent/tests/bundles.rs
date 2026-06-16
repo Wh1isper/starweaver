@@ -13,7 +13,7 @@ use starweaver_agent::{
     ToolResult,
 };
 use starweaver_context::ToolConfig;
-use starweaver_core::{ConversationId, Metadata, RunId, Usage};
+use starweaver_core::{ConversationId, Metadata, RunId};
 use starweaver_environment::{
     EnvironmentPolicy, EnvironmentProvider, FilePolicy, LocalEnvironmentProvider, ShellOutput,
     ShellPolicy, VirtualEnvironmentProvider,
@@ -22,6 +22,7 @@ use starweaver_model::{
     tool_call_response, ContentPart, ModelProfile, ModelRequest, ModelRequestPart, ModelResponse,
     ProtocolFamily, TestModel, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_METADATA,
 };
+use starweaver_usage::Usage;
 
 #[tokio::test]
 async fn environment_context_capability_injects_provider_context_as_user_prompt() {

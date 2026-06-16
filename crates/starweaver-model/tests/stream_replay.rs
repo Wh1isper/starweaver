@@ -57,7 +57,7 @@ fn replays_cross_provider_streaming_delta_and_usage_at_end_fixtures() {
     let providers = ["openai_responses", "anthropic", "gemini", "bedrock"];
     for provider in providers {
         let final_result = ModelResponse {
-            usage: starweaver_core::Usage {
+            usage: starweaver_usage::Usage {
                 requests: 1,
                 input_tokens: 10,
                 cache_write_tokens: 0,

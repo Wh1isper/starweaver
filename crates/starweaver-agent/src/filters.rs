@@ -1,4 +1,4 @@
-//! Named SDK history filter presets for ya-agent-sdk parity.
+//! Named SDK history filter presets for Starweaver.
 
 mod compact;
 mod media;

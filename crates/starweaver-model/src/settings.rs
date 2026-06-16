@@ -22,8 +22,8 @@ pub struct ModelSettings {
     pub top_k: Option<u32>,
     /// Request timeout in milliseconds.
     ///
-    /// This is the Rust transport-friendly representation of Pydantic AI's
-    /// cross-provider `timeout` model setting.
+    /// This is the Rust transport-friendly representation of a cross-provider
+    /// `timeout` model setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     /// Allow multiple tool calls in one response.

@@ -6,6 +6,8 @@ use starweaver_context::{ModelConfig, ToolConfig};
 use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
 use starweaver_tools::ToolRegistry;
 
+use starweaver_usage::UsageLimits;
+
 use crate::{
     agent::helpers::merge_request_params,
     capability::{resolve_capability_order, AgentCapability, CapabilityBundle},
@@ -14,7 +16,6 @@ use crate::{
     instructions::DynDynamicInstruction,
     output::{DynOutputFunction, OutputPolicy, OutputSchema, OutputValidator},
     trace::{DynTraceRecorder, NoopTraceRecorder},
-    usage::UsageLimits,
 };
 
 mod helpers;

@@ -39,6 +39,7 @@ serde_yaml.workspace = true
 starweaver-agent.workspace = true
 starweaver-context.workspace = true
 starweaver-core.workspace = true
+starweaver-usage.workspace = true
 starweaver-environment.workspace = true
 starweaver-model.workspace = true
 starweaver-oauth.workspace = true

@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use starweaver_core::{CheckpointId, ConversationId, Metadata, RunId, TraceContext, Usage};
+use starweaver_core::{CheckpointId, ConversationId, Metadata, RunId, TraceContext};
+use starweaver_usage::Usage;
 use thiserror::Error;
 
 use crate::run::{AgentRunState, RunStatus};

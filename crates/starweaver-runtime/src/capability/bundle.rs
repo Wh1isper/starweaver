@@ -5,10 +5,11 @@ use std::sync::Arc;
 use starweaver_model::{ModelRequestParameters, ModelSettings};
 use starweaver_tools::{DynTool, DynToolset, ToolRegistry};
 
+use starweaver_usage::UsageLimits;
+
 use crate::{
     instructions::DynDynamicInstruction,
     output::{DynOutputFunction, OutputValidator},
-    usage::UsageLimits,
 };
 
 use super::{AgentCapability, CapabilitySpec};

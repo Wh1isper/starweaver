@@ -1,6 +1,6 @@
 # Model Providers, Transport, and Replay
 
-The model layer is the compatibility boundary between Starweaver's canonical agent protocol and provider APIs. It mirrors Pydantic AI's provider discipline: provider-specific request shaping, response normalization, settings/profile behavior, deterministic test models, production request guards, and replay-driven compatibility tests.
+The model layer is the compatibility boundary between Starweaver's canonical agent protocol and provider APIs. It mirrors provider-neutral agent framework discipline: provider-specific request shaping, response normalization, settings/profile behavior, deterministic test models, production request guards, and replay-driven compatibility tests.
 
 ## Model Layer Responsibilities
 
@@ -164,7 +164,7 @@ cargo test -p starweaver-model --test replay --test request_parameters --locked
 - Compare canonicalized JSON for map-order-independent assertions.
 - Assert usage, provider metadata, finish reason, and tool call parts in every response replay.
 - Store provider quirks in mapper tests first, then promote stable behavior into docs/spec.
-- Record unsupported Pydantic AI replay categories in `memos/implementation-todo.md`.
+- Record unsupported provider replay categories in `memos/implementation-todo.md`.
 - Add typed stream-delta fixtures before widening model stream event variants.
 
 ## Provider Mapper Boundaries

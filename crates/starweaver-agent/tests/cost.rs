@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use starweaver_agent::{AgentBuilder, CostBudget, TestModel, UsageLimits};
-use starweaver_core::Usage;
 use starweaver_model::ModelResponse;
+use starweaver_usage::Usage;
 
 #[tokio::test]
 async fn builder_applies_cost_budget_usage_limits() {

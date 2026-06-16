@@ -55,7 +55,7 @@ Serde remains the execution-time validation contract. Use `#[serde(default)]`, a
 
 ## Tools with context dependencies
 
-`ToolContext` carries execution metadata such as run ids, retry counters, trace context, and typed dependencies. Inside the agent runtime, the active `AgentContext` is injected as a typed dependency, matching the pydantic-ai `RunContext.deps` pattern.
+`ToolContext` carries execution metadata such as run ids, retry counters, trace context, and typed dependencies. Inside the agent runtime, the active `AgentContext` is injected as a typed dependency, matching the typed run-context dependency pattern.
 
 ```rust
 use std::sync::Arc;

@@ -83,7 +83,7 @@ assert!(stream.events().iter().any(|record| matches!(
 
 ## Built-in model presets
 
-`starweaver-model` includes built-in presets for common provider settings and model capability profiles. The preset names mirror the SDK-facing ya-mono style: provider defaults such as `anthropic`, effort presets such as `openai_responses_high`, and capability presets such as `claude_1m` or `gpt5_270k`.
+`starweaver-model` includes built-in presets for common provider settings and model capability profiles. The preset names mirror the SDK-facing Starweaver style: provider defaults such as `anthropic`, effort presets such as `openai_responses_high`, and capability presets such as `claude_1m` or `gpt5_270k`.
 
 ```rust
 use starweaver_agent::{get_model_config, get_model_settings};

@@ -1,12 +1,12 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::{collections::BTreeMap, sync::Mutex};
+use std::{collections::BTreeMap, sync::Arc, sync::Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use starweaver_core::{
     sdk_name, AgentId, CheckpointId, ConversationId, Metadata, RunId, SessionId,
-    SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext, Usage,
+    SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext,
 };
 use starweaver_model::transport::{
     build_http_request, is_retryable_status, merge_extra_body, send_with_retries,
@@ -22,8 +22,10 @@ use starweaver_model::{
     MediaKind, MediaPolicy, MediaPreflight, ModelAdapter, ModelError, ModelHttpClient,
     ModelProfile, ModelRequestContext, ModelRequestParameters, ModelResponse,
     ModelResponseEventStream, ModelResponsePart, ModelResponseStreamEvent, ModelSettings,
-    ModelSleeper, NoopSleeper, PartDelta, ProtocolFamily, RetryPolicy, ServiceTier,
+    ModelSleeper, NoopSleeper, PartDelta, ProtocolFamily, ProtocolModelClient, RetryPolicy,
+    ServiceTier,
 };
+use starweaver_usage::Usage;
 
 #[derive(Default)]
 struct SequenceHttpClient {
@@ -353,6 +355,66 @@ fn media_helpers_cover_policy_data_url_webp_and_corruption_edges() {
     assert!(MediaPreflight::inspect(b"", None).corrupt);
     assert!(MediaPreflight::inspect(b"\xff\xd8\xff", Some("image/jpeg")).corrupt);
     assert!(MediaPreflight::inspect(b"RIFF\0\0\0\0WEBPxxxx", Some("image/webp")).corrupt);
+}
+
+#[tokio::test]
+async fn protocol_client_merges_extra_headers_into_http_request() {
+    let _guard = allow_real_model_requests_guard();
+    let response_body = json!({
+        "id": "chatcmpl_headers",
+        "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    });
+    let http_client = Arc::new(SequenceHttpClient::new(vec![Ok(HttpResponse::ok(
+        response_body,
+    ))]));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-test",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        openai_chat_http_config("token"),
+        http_client.clone(),
+    );
+    let mut settings = ModelSettings::default();
+    settings
+        .extra_headers
+        .insert("session_id".to_string(), "session_http_header".to_string());
+    settings
+        .extra_headers
+        .insert("session-id".to_string(), "session_http_header".to_string());
+    settings.extra_headers.insert(
+        "x-client-request-id".to_string(),
+        "run_http_header".to_string(),
+    );
+
+    let response = client
+        .request(
+            vec![starweaver_model::ModelMessage::Request(
+                starweaver_model::ModelRequest::user_text("hello"),
+            )],
+            Some(settings),
+            ModelRequestParameters::default(),
+            ModelRequestContext::new(
+                RunId::from_string("run_http_header"),
+                ConversationId::from_string("conversation_http_header"),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        &response.parts[0],
+        ModelResponsePart::Text { text } if text == "ok"
+    ));
+    let requests = http_client.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].headers["session_id"], "session_http_header");
+    assert_eq!(requests[0].headers["session-id"], "session_http_header");
+    assert_eq!(
+        requests[0].headers["x-client-request-id"],
+        "run_http_header"
+    );
+    assert_eq!(requests[0].headers["authorization"], "Bearer token");
 }
 
 #[test]

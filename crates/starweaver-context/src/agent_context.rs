@@ -2,11 +2,12 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use starweaver_core::{
-    AgentId, ConversationId, Metadata, RunId, TraceContext, Usage, UsageAgentTotal, UsageSnapshot,
+use starweaver_core::{AgentId, ConversationId, Metadata, RunId, TraceContext};
+use starweaver_model::{ContentPart, ModelMessage};
+use starweaver_usage::{
+    add_optional_pricing, PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot,
     UsageSnapshotEntry,
 };
-use starweaver_model::{ContentPart, ModelMessage};
 
 use crate::{
     runtime_context, task::TASK_STATE_DOMAIN, AgentEvent, AgentInfo, AgentStreamQueueRegistry,
@@ -251,19 +252,19 @@ impl AgentContext {
         context
     }
 
-    /// Export ya-mono-style curated context state for session restoration.
+    /// Export curated portable context state for session restoration.
     #[must_use]
     pub fn export_state(&self) -> ResumableState {
-        self.export_state_with_options(ResumableExportOptions::ya_mono_curated())
+        self.export_state_with_options(ResumableExportOptions::curated())
     }
 
-    /// Export legacy Starweaver full context state.
+    /// Export full Starweaver runtime context state.
     #[must_use]
     pub fn export_full_state(&self) -> ResumableState {
-        self.export_state_with_options(ResumableExportOptions::starweaver_legacy())
+        self.export_state_with_options(ResumableExportOptions::full())
     }
 
-    /// Export context state with explicit parity options.
+    /// Export context state with explicit export options.
     #[must_use]
     pub fn export_state_with_options(&self, options: ResumableExportOptions) -> ResumableState {
         ResumableState {
@@ -365,8 +366,8 @@ impl AgentContext {
         let security = self.security.clone();
         *self = Self::from_state(state);
         self.dependencies = dependencies;
-        // Match ya-mono restore semantics: current runtime security wins unless caller explicitly
-        // constructs a context from state with `from_state`.
+        // Current runtime security wins unless caller explicitly constructs a context from state
+        // with `from_state`.
         self.security = security;
     }
 
@@ -516,6 +517,7 @@ impl AgentContext {
         agent_name: impl Into<String>,
         model_id: impl Into<String>,
         usage: Usage,
+        estimate_pricing: Option<PricingEstimate>,
         usage_id: Option<String>,
         source: impl Into<String>,
         ledger_key: Option<String>,
@@ -526,6 +528,7 @@ impl AgentContext {
             agent_name: agent_name.into(),
             model_id: model_id.into(),
             usage,
+            estimate_pricing,
             usage_id,
             source: source.into(),
         };
@@ -538,8 +541,10 @@ impl AgentContext {
     #[must_use]
     pub fn build_usage_snapshot(&self) -> UsageSnapshot {
         let mut total_usage = Usage::default();
+        let mut estimate_pricing = None;
         let mut agent_usages = BTreeMap::<String, UsageAgentTotal>::new();
         let mut model_usages = BTreeMap::<String, Usage>::new();
+        let mut model_estimate_pricing = BTreeMap::<String, PricingEstimate>::new();
         let mut entries = self
             .usage_snapshot_entries
             .values()
@@ -548,6 +553,13 @@ impl AgentContext {
         entries.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
         for entry in &entries {
             total_usage.add_assign(&entry.usage);
+            add_optional_pricing(&mut estimate_pricing, entry.estimate_pricing.as_ref());
+            if let Some(pricing) = &entry.estimate_pricing {
+                model_estimate_pricing
+                    .entry(entry.model_id.clone())
+                    .or_default()
+                    .add_assign(pricing);
+            }
             if let Some(agent_total) = agent_usages.get_mut(&entry.agent_id) {
                 agent_total.usage.add_assign(&entry.usage);
                 if agent_total.model_id != entry.model_id {
@@ -556,6 +568,10 @@ impl AgentContext {
                 if agent_total.usage_id != entry.usage_id {
                     agent_total.usage_id = None;
                 }
+                add_optional_pricing(
+                    &mut agent_total.estimate_pricing,
+                    entry.estimate_pricing.as_ref(),
+                );
             } else {
                 agent_usages.insert(
                     entry.agent_id.clone(),
@@ -563,6 +579,7 @@ impl AgentContext {
                         agent_name: entry.agent_name.clone(),
                         model_id: entry.model_id.clone(),
                         usage: entry.usage.clone(),
+                        estimate_pricing: entry.estimate_pricing.clone(),
                         usage_id: entry.usage_id.clone(),
                         source: entry.source.clone(),
                     },
@@ -581,9 +598,11 @@ impl AgentContext {
                 .map_or_else(String::new, |run_id| run_id.as_str().to_string()),
             latest_usage: None,
             total_usage,
+            estimate_pricing,
             entries,
             agent_usages,
             model_usages,
+            model_estimate_pricing,
         }
     }
 
@@ -647,7 +666,7 @@ impl AgentContext {
         self.messages.enqueue(message);
     }
 
-    /// Send a ya-mono-style bus message idempotently.
+    /// Send a bus message idempotently.
     pub fn send_message(&mut self, message: BusMessage) -> BusMessage {
         self.messages.send(message)
     }

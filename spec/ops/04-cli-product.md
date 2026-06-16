@@ -86,14 +86,14 @@ Current implementation shape for headless execution:
 - `LocalStore` persists sessions, runs, raw stream records, display messages, approvals, deferred calls, context state, environment state, checkpoints, replay snapshots, and current-session state
 - JSON-RPC runtime can reuse current session selection, run assembly, TUI streaming channels, cancellation channels, and steering channels while extracting live display projection and event-sink persistence into a shared runtime coordinator
 
-Primary postponed parity gaps:
+Primary postponed migration gaps:
 
 - live JSON-RPC active-run notifications and non-blocking active run control
 - shared runtime coordinator used by RPC, TUI, and CLI commands
 - normalized JSON output for CLI management subsets
 - live stdout streaming for one-shot headless output
 - Starweaver/AGUI top-level event compatibility mode
-- slash command parity
+- slash command migration coverage
 - deeper TUI session/task/HITL/media workflows
 - startup asset seeding and config import
 - shell environment isolation, shell review, media config, browser config, and OAuth refresh settings
@@ -413,7 +413,7 @@ flowchart TD
     archive --> restore
 ```
 
-The CLI headless renderer should write `DisplayMessage` records as they arrive and flush each JSONL line. Service transports can wrap the same records in transport frames. TUI and restore views consume the same records into renderer-specific view state. The current implementation persists and replays display messages, while live headless stdout streaming remains a parity work item.
+The CLI headless renderer should write `DisplayMessage` records as they arrive and flush each JSONL line. Service transports can wrap the same records in transport frames. TUI and restore views consume the same records into renderer-specific view state. The current implementation persists and replays display messages, while live headless stdout streaming remains a migration work item.
 
 ## Session Restore from Display Messages
 

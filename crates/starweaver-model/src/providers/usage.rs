@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-pub fn usage_from_openai(value: &Value) -> starweaver_core::Usage {
+pub fn usage_from_openai(value: &Value) -> starweaver_usage::Usage {
     let usage = value.get("usage");
     let input_tokens = usage
         .and_then(|u| u.get("prompt_tokens").or_else(|| u.get("input_tokens")))
@@ -18,7 +18,7 @@ pub fn usage_from_openai(value: &Value) -> starweaver_core::Usage {
         .and_then(Value::as_u64)
         .unwrap_or_default();
     let computed_total = input_tokens.saturating_add(output_tokens);
-    starweaver_core::Usage {
+    starweaver_usage::Usage {
         requests: 1,
         input_tokens,
         cache_write_tokens,
@@ -34,7 +34,7 @@ pub fn usage_from_openai(value: &Value) -> starweaver_core::Usage {
 }
 
 #[cfg(test)]
-pub fn usage_from_named(value: &Value, input: &str, output: &str) -> starweaver_core::Usage {
+pub fn usage_from_named(value: &Value, input: &str, output: &str) -> starweaver_usage::Usage {
     usage_from_named_with_options(value, input, output, false, &[])
 }
 
@@ -42,7 +42,7 @@ pub fn usage_from_named_including_cache_input(
     value: &Value,
     input: &str,
     output: &str,
-) -> starweaver_core::Usage {
+) -> starweaver_usage::Usage {
     usage_from_named_with_options(value, input, output, true, &[])
 }
 
@@ -51,7 +51,7 @@ pub fn usage_from_named_with_output_extras(
     input: &str,
     output: &str,
     output_extras: &[&str],
-) -> starweaver_core::Usage {
+) -> starweaver_usage::Usage {
     usage_from_named_with_options(value, input, output, false, output_extras)
 }
 
@@ -61,7 +61,7 @@ fn usage_from_named_with_options(
     output: &str,
     add_cache_to_input: bool,
     output_extras: &[&str],
-) -> starweaver_core::Usage {
+) -> starweaver_usage::Usage {
     let usage = value.get("usage").or_else(|| value.get("usageMetadata"));
     let input_base = usage
         .and_then(|u| u.get(input))
@@ -87,7 +87,7 @@ fn usage_from_named_with_options(
         .and_then(Value::as_u64)
         .unwrap_or(computed_total)
         .max(computed_total);
-    starweaver_core::Usage {
+    starweaver_usage::Usage {
         requests: 1,
         input_tokens,
         cache_write_tokens,

@@ -154,13 +154,13 @@ impl AgentSession {
         &mut self.context
     }
 
-    /// Export ya-mono-style curated session state for later restoration.
+    /// Export curated portable session state for later restoration.
     #[must_use]
     pub fn export_state(&self) -> ResumableState {
         self.context.export_state()
     }
 
-    /// Export legacy Starweaver full session state for product persistence.
+    /// Export full Starweaver session state for product persistence.
     #[must_use]
     pub fn export_full_state(&self) -> ResumableState {
         self.context.export_full_state()

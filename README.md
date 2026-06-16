@@ -4,11 +4,12 @@ Starweaver is a Rust agent SDK for building provider-neutral AI agents with a so
 
 The project focuses on these workspace layers:
 
+- `starweaver-usage`: usage accounting, usage limits, snapshot events, and optional USD pricing estimates.
 - `starweaver-model`: provider-neutral model messages, settings, profiles, transport, replay-tested provider mappings, and OAuth-backed provider model adapters.
 - `starweaver-oauth`: OAuth credential storage under `~/.starweaver`, Codex device login, token refresh, JWT metadata extraction, and store-backed token sources.
 - `starweaver-oauth-provider`: OAuth-backed provider helpers, Codex model construction helpers, and refresh supervisor utilities.
 - `starweaver-tools`: function tools, toolsets, MCP foundations, tool metadata, approval/deferred markers, and execution primitives.
-- `starweaver-runtime`: deterministic agent loop, tool loop, output validation, retries, stream records, capability hooks, trace recording, and executor checkpoints.
+- `starweaver-runtime`: deterministic agent loop, tool loop, output validation, retries, usage-limit enforcement, stream records, capability hooks, trace recording, and executor checkpoints.
 - `starweaver-agent`: public SDK facade with `AgentBuilder`, `AgentApp`, SDK sessions, spec presets, first-party tool bundles, subagents, and application-facing helpers.
 - `starweaver-environment`: filesystem, shell, resources, policy, state snapshots, virtual provider tests, and local provider foundations.
 - `starweaver-session`: durable session contracts for input parts, `SessionStore`, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
@@ -20,12 +21,14 @@ Planned layers are specified before public API graduation:
 
 - `starweaver-platform`: hosted orchestration and external protocol adapters.
 
-## Design References
+## Design Boundary
 
-Starweaver builds on ideas proven in two reference projects:
+Starweaver keeps its implementation boundaries native:
 
-- [Pydantic AI](https://github.com/pydantic/pydantic-ai) for core agent concepts, model abstraction, tool schema, output validation, retries, capabilities, and testing patterns.
-- [ya-mono](https://github.com/Wh1isper/ya-mono) for application runtime, context, tool implementations, interruption, resumable execution, and service patterns.
+- `starweaver-runtime` owns the agentic loop.
+- `starweaver-context` owns neutral run and session evidence.
+- `starweaver-agent` owns SDK ergonomics and first-party bundles.
+- `starweaver-usage` owns usage accounting, limits, snapshots, and optional USD pricing estimates.
 
 ## CLI install
 
@@ -62,7 +65,8 @@ Useful starting points:
 - [docs/session-stream.md](docs/session-stream.md)
 - [docs/release.md](docs/release.md)
 - [spec/README.md](spec/README.md)
-- [spec/core/07-pydantic-ai-maturity-roadmap.md](spec/core/07-pydantic-ai-maturity-roadmap.md)
+- [spec/core/08-boundaries-and-usage.md](spec/core/08-boundaries-and-usage.md)
+- [spec/core/07-agent-foundation-maturity-roadmap.md](spec/core/07-agent-foundation-maturity-roadmap.md)
 - [spec/ops/02-shared-execution-components.md](spec/ops/02-shared-execution-components.md)
 - [spec/ops/03-durable-service-runtime.md](spec/ops/03-durable-service-runtime.md)
 - [spec/ops/04-cli-product.md](spec/ops/04-cli-product.md)

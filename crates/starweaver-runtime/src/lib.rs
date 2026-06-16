@@ -12,7 +12,6 @@ pub mod retry_recovery;
 pub mod run;
 pub mod stream;
 pub mod trace;
-pub mod usage;
 
 pub use agent::{Agent, AgentError, AgentOverride, AgentResult, AgentRuntimePolicy};
 pub use capability::{
@@ -50,4 +49,3 @@ pub use trace::{
     AdapterTraceRecorder, DynTraceRecorder, InMemoryTraceRecorder, NoopTraceRecorder, RecordedSpan,
     SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus, TraceLevel, TraceRecorder,
 };
-pub use usage::{CostBudget, UsageLimitError, UsageLimits};

@@ -1,5 +1,5 @@
 [package]
-name = "starweaver-stream"
+name = "starweaver-usage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,23 +7,19 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Display and replay stream contracts for Starweaver"
+description = "Usage accounting, limits, and optional pricing primitives for Starweaver"
 readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+pricing = []
+
 [dependencies]
-async-trait.workspace = true
-chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-starweaver-context.workspace = true
-starweaver-core.workspace = true
-starweaver-model.workspace = true
-starweaver-runtime.workspace = true
-starweaver-usage.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "time"] }
 
 [lints]
 workspace = true

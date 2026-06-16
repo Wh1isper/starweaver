@@ -143,7 +143,7 @@ pub(super) fn handoff_filter(
     context: &mut starweaver_context::AgentContext,
     mut messages: Vec<ModelMessage>,
 ) -> Vec<ModelMessage> {
-    // Match ya-mono: the handoff processor owns this flag and clears it at the start
+    // The handoff processor owns this flag and clears it at the start
     // of every filter pipeline pass, then sets it again only after a handoff restore.
     context.force_inject_instructions = false;
 

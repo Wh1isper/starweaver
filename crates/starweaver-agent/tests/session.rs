@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use starweaver_agent::{
     AgentBuilder, AgentContext, AgentSession, AgentStreamEvent, FunctionModel, TraceContext,
 };
-use starweaver_core::{AgentId, Usage};
+use starweaver_core::AgentId;
 use starweaver_model::ModelResponse;
+use starweaver_usage::Usage;
 
 fn reusable_text_model(text: &'static str) -> FunctionModel {
     FunctionModel::new(move |_messages, _settings, _info| {
@@ -44,7 +45,7 @@ async fn session_exports_and_restores_state() {
         .state
         .set("preference", serde_json::json!({"language": "Chinese"}));
 
-    let state = session.export_state();
+    let state = session.export_full_state();
     let mut restored = app.session_from_state(state);
     let result = restored.run("again").await.unwrap();
 

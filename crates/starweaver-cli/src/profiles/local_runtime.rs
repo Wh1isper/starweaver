@@ -53,7 +53,7 @@ pub(super) fn scripted_tool_model(tool_name: &'static str) -> FunctionModel {
                 name: tool_name.to_string(),
                 arguments: json!({"action": tool_name}).into(),
             })],
-            usage: starweaver_core::Usage::default(),
+            usage: starweaver_usage::Usage::default(),
             model_name: Some(tool_name.to_string()),
             provider: None,
             finish_reason: None,

@@ -1,6 +1,6 @@
 use starweaver_runtime::CapabilityOrdering;
 
-/// Ordered default filter names for ya-agent-sdk behavioral parity.
+/// Ordered default filter names for SDK request preparation.
 pub const DEFAULT_FILTER_ORDER: &[&str] = &[
     "cold_start",
     "capability",

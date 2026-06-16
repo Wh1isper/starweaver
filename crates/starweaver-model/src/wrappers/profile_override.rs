@@ -117,7 +117,7 @@ impl ModelAdapter for ProfileOverrideModel {
         messages: &[ModelMessage],
         settings: Option<&ModelSettings>,
         params: &ModelRequestParameters,
-    ) -> Result<starweaver_core::Usage, ModelError> {
+    ) -> Result<starweaver_usage::Usage, ModelError> {
         self.inner.count_tokens(messages, settings, params).await
     }
 }

@@ -144,5 +144,20 @@ async fn runtime_preserves_non_control_flow_tool_returns_when_hitl_waits() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(tool_return_ids, vec!["normal"]);
+    let normal_tool_call_ids = result
+        .messages
+        .iter()
+        .filter_map(|message| match message {
+            ModelMessage::Response(response) => Some(&response.parts),
+            ModelMessage::Request(_) => None,
+        })
+        .flat_map(|parts| parts.iter())
+        .filter_map(|part| match part {
+            ModelResponsePart::ToolCall(call) if call.name == "normal" => Some(call.id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(normal_tool_call_ids.len(), 1);
+    assert!(normal_tool_call_ids[0].starts_with("sw-tool-"));
+    assert_eq!(tool_return_ids, normal_tool_call_ids);
 }

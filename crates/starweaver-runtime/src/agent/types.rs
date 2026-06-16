@@ -4,11 +4,12 @@ use serde::{Deserialize, Serialize};
 use starweaver_model::{ModelError, ModelMessage};
 use thiserror::Error;
 
+use starweaver_usage::UsageLimitError;
+
 use crate::{
     capability::CapabilityOrderError,
     executor::{AgentExecutionNode, AgentExecutorError},
     run::{AgentRunResult, AgentRunState},
-    usage::UsageLimitError,
 };
 
 /// Runtime policy for bare agent runs.

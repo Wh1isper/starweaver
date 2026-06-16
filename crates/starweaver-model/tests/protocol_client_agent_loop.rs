@@ -4,13 +4,14 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
-use starweaver_core::{ConversationId, RunId, Usage};
+use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ContentPart, FinishReason, HttpModelConfig, HttpRequest, HttpResponse, ModelAdapter,
     ModelError, ModelHttpClient, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ProtocolFamily,
     ProtocolModelClient, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
 };
+use starweaver_usage::Usage;
 
 #[derive(Clone)]
 struct CaptureHttpClient {
