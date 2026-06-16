@@ -1,9 +1,9 @@
 use serde_json::{json, Map, Value};
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ToolReturnPart,
-    INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
-    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_HANDOFF,
-    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_TYPE_METADATA, INSTRUCTION_DYNAMIC_METADATA,
+    INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
 };
 use starweaver_runtime::AgentRunState;
 
@@ -20,8 +20,8 @@ use crate::filters::{
 pub(super) const AUTO_LOAD_METADATA: &str = "starweaver_auto_load_files";
 pub(super) const BACKGROUND_SHELL_METADATA: &str = "starweaver_background_shell";
 pub(super) const BUS_MESSAGE_METADATA: &str = "starweaver_bus_messages";
-pub(super) const ENVIRONMENT_INSTRUCTIONS_METADATA: &str = "starweaver_environment_instructions";
-pub(super) const RUNTIME_INSTRUCTIONS_METADATA: &str = "starweaver_runtime_instructions";
+pub(super) const ENVIRONMENT_CONTEXT_METADATA: &str = "starweaver_environment_context";
+pub(super) const RUNTIME_CONTEXT_METADATA: &str = "starweaver_runtime_context";
 pub(super) const HANDOFF_METADATA: &str = "starweaver_handoff";
 const COLD_START_TOOL_RETURN_LIMIT_METADATA: &str = "starweaver_cold_start_tool_return_limit";
 
@@ -103,14 +103,28 @@ pub(super) fn inject_instruction_from_metadata(
     let Some(text) = metadata_text(&state.metadata, metadata_key) else {
         return messages;
     };
-    let origin = instruction_origin(instruction_type);
-    if instruction_type == "handoff" && !text.contains("<context-restored>") {
-        let mut parts =
-            build_restored_request_parts(Some(vec![ContentPart::Text { text }]), None, Vec::new());
-        annotate_context_parts(&mut parts, instruction_type, &origin);
-        insert_context_parts_after_control_parts(&mut messages, parts);
+    if let Some(origin) = context_origin_for_type(instruction_type) {
+        if instruction_type == "handoff" && !text.contains("<context-restored>") {
+            let mut parts = build_restored_request_parts(
+                Some(vec![ContentPart::Text { text }]),
+                None,
+                Vec::new(),
+            );
+            annotate_context_parts(&mut parts, instruction_type, &origin);
+            insert_context_parts_after_control_parts(&mut messages, parts);
+            return messages;
+        }
+        insert_context_part_after_control_parts(
+            &mut messages,
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text { text }],
+                name: None,
+                metadata: context_metadata(instruction_type, &origin),
+            },
+        );
         return messages;
     }
+    let origin = instruction_origin(instruction_type);
     let mut metadata = Map::from_iter([
         (
             "starweaver_instruction_type".to_string(),
@@ -118,17 +132,6 @@ pub(super) fn inject_instruction_from_metadata(
         ),
         (INSTRUCTION_ORIGIN_METADATA.to_string(), json!(origin)),
     ]);
-    if instruction_is_context(&origin) {
-        insert_context_part_after_control_parts(
-            &mut messages,
-            ModelRequestPart::UserPrompt {
-                content: vec![ContentPart::Text { text }],
-                name: None,
-                metadata,
-            },
-        );
-        return messages;
-    }
     metadata.insert(
         INSTRUCTION_DYNAMIC_METADATA.to_string(),
         json!(instruction_is_dynamic(&origin)),
@@ -145,7 +148,7 @@ pub(super) fn handoff_filter(
 ) -> Vec<ModelMessage> {
     // The handoff processor owns this flag and clears it at the start
     // of every filter pipeline pass, then sets it again only after a handoff restore.
-    context.force_inject_instructions = false;
+    context.force_inject_context = false;
 
     let handoff_message = context
         .handoff_message
@@ -158,7 +161,7 @@ pub(super) fn handoff_filter(
 
     if handoff_message.contains("<context-restored>") {
         context.handoff_message = None;
-        context.force_inject_instructions = true;
+        context.force_inject_context = true;
         return inject_instruction_text(messages, handoff_message, "handoff");
     }
 
@@ -178,8 +181,9 @@ pub(super) fn handoff_filter(
         previous_reference,
         steering_messages,
     ));
-    let origin = instruction_origin("handoff");
-    annotate_context_parts(&mut parts, "handoff", &origin);
+    if let Some(origin) = context_origin_for_type("handoff") {
+        annotate_context_parts(&mut parts, "handoff", &origin);
+    }
 
     messages = vec![ModelMessage::Request(ModelRequest {
         parts,
@@ -192,7 +196,7 @@ pub(super) fn handoff_filter(
 
     context.handoff_message = None;
     context.steering_messages.clear();
-    context.force_inject_instructions = true;
+    context.force_inject_context = true;
     messages
 }
 
@@ -201,6 +205,17 @@ pub(super) fn inject_instruction_text(
     text: String,
     instruction_type: &str,
 ) -> Vec<ModelMessage> {
+    if let Some(origin) = context_origin_for_type(instruction_type) {
+        insert_context_part_after_control_parts(
+            &mut messages,
+            ModelRequestPart::UserPrompt {
+                content: vec![ContentPart::Text { text }],
+                name: None,
+                metadata: context_metadata(instruction_type, &origin),
+            },
+        );
+        return messages;
+    }
     let origin = instruction_origin(instruction_type);
     let mut metadata = Map::from_iter([
         (
@@ -212,17 +227,6 @@ pub(super) fn inject_instruction_text(
             json!(origin.as_str()),
         ),
     ]);
-    if instruction_is_context(&origin) {
-        insert_context_part_after_control_parts(
-            &mut messages,
-            ModelRequestPart::UserPrompt {
-                content: vec![ContentPart::Text { text }],
-                name: None,
-                metadata,
-            },
-        );
-        return messages;
-    }
     metadata.insert(
         INSTRUCTION_DYNAMIC_METADATA.to_string(),
         json!(instruction_is_dynamic(&origin)),
@@ -394,38 +398,37 @@ fn escape_xml_attr(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn annotate_context_parts(parts: &mut [ModelRequestPart], instruction_type: &str, origin: &str) {
+fn annotate_context_parts(parts: &mut [ModelRequestPart], context_type: &str, origin: &str) {
     for part in parts {
         if let ModelRequestPart::UserPrompt { metadata, .. } = part {
-            metadata.insert(
-                "starweaver_instruction_type".to_string(),
-                json!(instruction_type),
-            );
-            metadata.insert(INSTRUCTION_ORIGIN_METADATA.to_string(), json!(origin));
+            metadata.insert(CONTEXT_TYPE_METADATA.to_string(), json!(context_type));
+            metadata.insert(CONTEXT_ORIGIN_METADATA.to_string(), json!(origin));
         }
     }
 }
 
-fn instruction_origin(instruction_type: &str) -> String {
-    match instruction_type {
-        "environment" => INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT.to_string(),
-        "runtime" => INSTRUCTION_ORIGIN_RUNTIME_CONTEXT.to_string(),
-        "handoff" => INSTRUCTION_ORIGIN_HANDOFF.to_string(),
-        _ => instruction_type.to_string(),
+fn context_metadata(context_type: &str, origin: &str) -> Map<String, Value> {
+    Map::from_iter([
+        (CONTEXT_TYPE_METADATA.to_string(), json!(context_type)),
+        (CONTEXT_ORIGIN_METADATA.to_string(), json!(origin)),
+    ])
+}
+
+fn context_origin_for_type(context_type: &str) -> Option<String> {
+    match context_type {
+        "environment" => Some(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT.to_string()),
+        "runtime" => Some(CONTEXT_ORIGIN_RUNTIME_CONTEXT.to_string()),
+        "handoff" => Some(CONTEXT_ORIGIN_HANDOFF.to_string()),
+        _ => None,
     }
+}
+
+fn instruction_origin(instruction_type: &str) -> String {
+    instruction_type.to_string()
 }
 
 fn instruction_is_dynamic(origin: &str) -> bool {
     matches!(origin, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION)
-}
-
-fn instruction_is_context(origin: &str) -> bool {
-    matches!(
-        origin,
-        INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
-            | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
-            | INSTRUCTION_ORIGIN_HANDOFF
-    )
 }
 
 fn truncate_tool_return(tool_return: &mut ToolReturnPart, limit: usize) -> bool {

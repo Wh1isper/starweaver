@@ -613,7 +613,11 @@ async fn virtual_context_file_tree_matches_starweaver_sdk_semantics() {
             shell: ShellPolicy::default(),
         });
 
-    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(instructions.contains("<environment-context>"));
     assert!(instructions.contains("<file-system>"));
@@ -660,7 +664,11 @@ async fn local_context_file_tree_matches_starweaver_sdk_semantics() {
         files: FilePolicy::read_only(),
         shell: ShellPolicy::default(),
     });
-    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
 
     let tmp_dir = provider.tmp_dir_path().unwrap().display().to_string();
     assert!(instructions.contains(&format!("<tmp-directory>{tmp_dir}</tmp-directory>")));
@@ -767,7 +775,11 @@ async fn local_context_file_tree_includes_allowed_external_roots() {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
-    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(instructions.contains(&format!(
         "<default-directory>{}</default-directory>",
@@ -794,7 +806,11 @@ async fn local_context_file_tree_deduplicates_visible_nested_allowed_roots() {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
-    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
 
     assert_eq!(
         instructions
@@ -825,7 +841,11 @@ async fn local_context_file_tree_keeps_hidden_nested_allowed_roots() {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
-    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
     assert!(instructions.contains(&format!("<directory path=\"{}\">", allowed_root.display())));
@@ -848,7 +868,11 @@ async fn local_context_file_tree_keeps_gitignored_nested_allowed_roots() {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
-    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
     assert!(instructions.contains("ignored/ (gitignored)"));
@@ -871,7 +895,11 @@ async fn local_context_file_tree_keeps_deep_nested_allowed_roots() {
             files: FilePolicy::read_only(),
             shell: ShellPolicy::default(),
         });
-    let instructions = provider.get_context_instructions().await.unwrap().unwrap();
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
     assert!(instructions.contains(&format!("<directory path=\"{}\">", allowed_root.display())));

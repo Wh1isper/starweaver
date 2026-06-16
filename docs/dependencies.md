@@ -46,7 +46,7 @@ Dependencies are process-local and skipped during serialization. Service runtime
 
 ## Notes
 
-`AgentContext` also carries serializable notes for lightweight session memory. Notes round-trip through `ResumableState`; context instructions expose note keys while keeping note values out of model-facing prompt text.
+`AgentContext` also carries serializable notes for lightweight session memory. Notes round-trip through `ResumableState`; runtime context exposes note keys while keeping note values out of model-facing prompt text.
 
 ```rust
 use starweaver_agent::AgentContext;
@@ -58,7 +58,7 @@ context.notes.set("os", "macOS");
 let restored = AgentContext::from_state(context.export_state());
 assert_eq!(restored.notes.get("lang"), Some("Chinese"));
 
-let instructions = restored.context_instructions(true).unwrap();
-assert!(instructions.contains("key=\"lang\""));
-assert!(!instructions.contains("Chinese"));
+let runtime_context = restored.render_runtime_context(true).unwrap();
+assert!(runtime_context.contains("key=\"lang\""));
+assert!(!runtime_context.contains("Chinese"));
 ```

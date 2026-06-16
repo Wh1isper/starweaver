@@ -7,17 +7,26 @@ use crate::message::{Metadata, ModelMessage, ModelRequest, ModelRequestPart};
 pub const INSTRUCTION_DYNAMIC_METADATA: &str = "starweaver_instruction_dynamic";
 /// Metadata key describing the instruction source/origin.
 pub const INSTRUCTION_ORIGIN_METADATA: &str = "starweaver_instruction_origin";
+/// Metadata key describing SDK/context prompt source/origin.
+pub const CONTEXT_ORIGIN_METADATA: &str = "starweaver_context_origin";
+/// Metadata key describing SDK/context prompt type.
+pub const CONTEXT_TYPE_METADATA: &str = "starweaver_context_type";
 
-/// Runtime context instruction origin.
-pub const INSTRUCTION_ORIGIN_RUNTIME_CONTEXT: &str = "runtime_context";
-/// Environment context instruction origin.
-pub const INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT: &str = "environment_context";
+/// Static agent instruction origin.
+pub const INSTRUCTION_ORIGIN_AGENT: &str = "agent_instruction";
 /// Toolset instruction origin.
 pub const INSTRUCTION_ORIGIN_TOOLSET: &str = "toolset";
 /// Dynamic agent instruction origin.
 pub const INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION: &str = "dynamic_instruction";
-/// SDK handoff instruction origin.
-pub const INSTRUCTION_ORIGIN_HANDOFF: &str = "handoff";
+
+/// Runtime context origin.
+pub const CONTEXT_ORIGIN_RUNTIME_CONTEXT: &str = "runtime_context";
+/// Environment context origin.
+pub const CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT: &str = "environment_context";
+/// SDK handoff context origin.
+pub const CONTEXT_ORIGIN_HANDOFF: &str = "handoff";
+/// Tool-return media control prompt origin.
+pub const CONTEXT_ORIGIN_TOOL_RETURN_MEDIA: &str = "tool_return_media";
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
 const fn is_false(value: &bool) -> bool {
@@ -30,6 +39,14 @@ pub(crate) fn is_dynamic_instruction_metadata(metadata: &Metadata) -> bool {
         .get(INSTRUCTION_DYNAMIC_METADATA)
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Return SDK/context prompt origin metadata from a request part.
+#[must_use]
+pub fn context_origin_metadata(metadata: &Metadata) -> Option<&str> {
+    metadata
+        .get(CONTEXT_ORIGIN_METADATA)
+        .and_then(Value::as_str)
 }
 
 /// Return the request whose instruction material should be applied to the current model call.
@@ -74,16 +91,14 @@ fn request_is_control_only(request: &ModelRequest) -> bool {
     !request.parts.is_empty()
         && request.parts.iter().all(|part| match part {
             ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
-            ModelRequestPart::UserPrompt { metadata, .. } => metadata
-                .get(INSTRUCTION_ORIGIN_METADATA)
-                .and_then(Value::as_str)
+            ModelRequestPart::UserPrompt { metadata, .. } => context_origin_metadata(metadata)
                 .is_some_and(|origin| {
                     matches!(
                         origin,
-                        "tool_return_media"
-                            | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
-                            | INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
-                            | INSTRUCTION_ORIGIN_HANDOFF
+                        CONTEXT_ORIGIN_TOOL_RETURN_MEDIA
+                            | CONTEXT_ORIGIN_RUNTIME_CONTEXT
+                            | CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT
+                            | CONTEXT_ORIGIN_HANDOFF
                     )
                 }),
             ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,

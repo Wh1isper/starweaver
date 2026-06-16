@@ -8,7 +8,7 @@ use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     attach_prepared_instructions, ModelMessage, ModelRequest, ModelRequestParameters,
     ModelRequestPart, ModelSettings, PreparedInstruction, INSTRUCTION_DYNAMIC_METADATA,
-    INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
+    INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
     INSTRUCTION_ORIGIN_TOOLSET,
 };
 
@@ -16,7 +16,8 @@ use crate::{
     agent::{
         runtime_helpers::{
             history_sanitize::sanitize_incomplete_tool_call_history,
-            steering::is_steering_guard_prompt, tool_media::tool_return_media_prompt,
+            request_parts::request_instruction_insert_index, steering::is_steering_guard_prompt,
+            tool_media::tool_return_media_prompt,
         },
         Agent, AgentError,
     },
@@ -26,6 +27,19 @@ use crate::{
 };
 
 impl Agent {
+    fn attach_static_instruction_parts(&self, request: &mut ModelRequest) {
+        if self.instructions.is_empty() {
+            return;
+        }
+        let parts = self
+            .instructions
+            .iter()
+            .map(|instruction| static_agent_instruction_part(instruction))
+            .collect::<Vec<_>>();
+        let insert_at = request_instruction_insert_index(request);
+        request.parts.splice(insert_at..insert_at, parts);
+    }
+
     pub(in crate::agent) fn prepare_request(
         &self,
         state: &AgentRunState,
@@ -34,14 +48,6 @@ impl Agent {
         conversation_id: &ConversationId,
     ) -> ModelRequest {
         let mut parts = Vec::new();
-        if state.message_history.is_empty() {
-            parts.extend(self.instructions.iter().map(|instruction| {
-                ModelRequestPart::SystemPrompt {
-                    text: instruction.clone(),
-                    metadata: serde_json::Map::new(),
-                }
-            }));
-        }
         if !state.pending_tool_returns.is_empty() {
             for tool_return in &state.pending_tool_returns {
                 parts.push(ModelRequestPart::ToolReturn(tool_return.clone()));
@@ -84,14 +90,16 @@ impl Agent {
                 });
             }
         }
-        ModelRequest {
+        let mut request = ModelRequest {
             parts,
             timestamp: Some(Utc::now()),
             instructions: None,
             run_id: Some(run_id.clone()),
             conversation_id: Some(conversation_id.clone()),
             metadata: serde_json::Map::new(),
-        }
+        };
+        self.attach_static_instruction_parts(&mut request);
+        request
     }
 
     pub(in crate::agent) async fn dynamic_instructions(
@@ -116,29 +124,39 @@ impl Agent {
         conversation_id: &ConversationId,
         messages: &mut Vec<ModelMessage>,
     ) {
-        let missing = self
-            .instructions
-            .iter()
-            .filter(|instruction| !messages_contain_system_instruction(messages, instruction))
-            .map(|instruction| ModelRequestPart::SystemPrompt {
-                text: instruction.clone(),
-                metadata: serde_json::Map::new(),
-            })
-            .collect::<Vec<_>>();
-        if missing.is_empty() {
+        if self.instructions.is_empty() {
             return;
         }
-        messages.insert(
-            0,
-            ModelMessage::Request(ModelRequest {
-                parts: missing,
+        let latest_request = messages.iter_mut().rev().find_map(|message| match message {
+            ModelMessage::Request(request) => Some(request),
+            ModelMessage::Response(_) => None,
+        });
+        let Some(request) = latest_request else {
+            messages.push(ModelMessage::Request(ModelRequest {
+                parts: self
+                    .instructions
+                    .iter()
+                    .map(|instruction| static_agent_instruction_part(instruction))
+                    .collect(),
                 timestamp: Some(Utc::now()),
                 instructions: None,
                 run_id: Some(run_id.clone()),
                 conversation_id: Some(conversation_id.clone()),
                 metadata: serde_json::Map::new(),
-            }),
-        );
+            }));
+            return;
+        };
+        let missing = self
+            .instructions
+            .iter()
+            .filter(|instruction| !request_contains_instruction(request, instruction))
+            .map(|instruction| static_agent_instruction_part(instruction))
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return;
+        }
+        let insert_at = request_instruction_insert_index(request);
+        request.parts.splice(insert_at..insert_at, missing);
     }
 
     pub(in crate::agent) async fn dynamic_instruction_parts(
@@ -379,16 +397,27 @@ impl Agent {
     }
 }
 
-fn messages_contain_system_instruction(messages: &[ModelMessage], text: &str) -> bool {
-    messages.iter().any(|message| match message {
-        ModelMessage::Request(request) => {
-            request.instructions.as_deref() == Some(text)
-                || request.parts.iter().any(|part| match part {
-                    ModelRequestPart::SystemPrompt { text: existing, .. }
-                    | ModelRequestPart::Instruction { text: existing, .. } => existing == text,
-                    _ => false,
-                })
-        }
-        ModelMessage::Response(_) => false,
-    })
+fn static_agent_instruction_part(instruction: &str) -> ModelRequestPart {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        INSTRUCTION_DYNAMIC_METADATA.to_string(),
+        serde_json::json!(false),
+    );
+    metadata.insert(
+        INSTRUCTION_ORIGIN_METADATA.to_string(),
+        serde_json::json!(INSTRUCTION_ORIGIN_AGENT),
+    );
+    ModelRequestPart::Instruction {
+        text: instruction.to_string(),
+        metadata,
+    }
+}
+
+fn request_contains_instruction(request: &ModelRequest, text: &str) -> bool {
+    request.instructions.as_deref() == Some(text)
+        || request.parts.iter().any(|part| match part {
+            ModelRequestPart::SystemPrompt { text: existing, .. }
+            | ModelRequestPart::Instruction { text: existing, .. } => existing == text,
+            _ => false,
+        })
 }

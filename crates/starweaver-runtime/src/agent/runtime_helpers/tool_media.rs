@@ -1,6 +1,9 @@
 //! Tool return media request helpers.
 
-use starweaver_model::{ContentPart, ModelRequestPart, ToolReturnPart};
+use starweaver_model::{
+    ContentPart, ModelRequestPart, ToolReturnPart, CONTEXT_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+};
 
 pub(in crate::agent) fn tool_return_media_prompt(
     tool_return: &ToolReturnPart,
@@ -32,8 +35,8 @@ pub(in crate::agent) fn tool_return_media_prompt(
     content.append(&mut media_parts);
     let mut metadata = serde_json::Map::new();
     metadata.insert(
-        "starweaver_instruction_origin".to_string(),
-        serde_json::json!("tool_return_media"),
+        CONTEXT_ORIGIN_METADATA.to_string(),
+        serde_json::json!(CONTEXT_ORIGIN_TOOL_RETURN_MEDIA),
     );
     metadata.insert(
         "tool_call_id".to_string(),

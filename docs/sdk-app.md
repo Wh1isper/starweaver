@@ -111,7 +111,7 @@ let app = AgentBuilder::new(Arc::new(model)).build_app();
 let mut session = app.session();
 session.run("hello").await?;
 
-let state = session.export_state();
+let state = session.export_full_state();
 let mut restored = app.session_from_state(state);
 let result = restored.run("again").await?;
 

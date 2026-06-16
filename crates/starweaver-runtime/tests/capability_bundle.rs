@@ -171,7 +171,7 @@ async fn capability_bundle_contributes_runtime_components() {
     assert_eq!(result.output, r#"{"answer":"bundle"}"#);
     assert!(*completed.lock().unwrap());
     let provider_messages = captured_messages.lock().unwrap()[0].clone();
-    assert!(provider_messages.iter().any(|message| matches!(message, ModelMessage::Request(request) if request.parts.iter().any(|part| matches!(part, ModelRequestPart::SystemPrompt { text, .. } if text == "Use the bundle instruction.")))));
+    assert!(provider_messages.iter().any(|message| matches!(message, ModelMessage::Request(request) if request.parts.iter().any(|part| matches!(part, ModelRequestPart::Instruction { text, .. } if text == "Use the bundle instruction.")))));
     assert_eq!(
         captured_settings.lock().unwrap()[0]
             .as_ref()
@@ -186,7 +186,7 @@ async fn override_can_apply_capability_bundle() {
     let bundle = StaticCapabilityBundle::new("override-bundle")
         .with_instruction("Override bundle instruction.");
     let model = Arc::new(FunctionModel::new(|messages, _settings, _info| {
-        let has_instruction = messages.iter().any(|message| matches!(message, ModelMessage::Request(request) if request.parts.iter().any(|part| matches!(part, ModelRequestPart::SystemPrompt { text, .. } if text == "Override bundle instruction."))));
+        let has_instruction = messages.iter().any(|message| matches!(message, ModelMessage::Request(request) if request.parts.iter().any(|part| matches!(part, ModelRequestPart::Instruction { text, .. } if text == "Override bundle instruction."))));
         assert!(has_instruction);
         Ok(ModelResponse::text("ok"))
     }));

@@ -3,7 +3,8 @@ use std::sync::Arc;
 use serde_json::json;
 use starweaver_agent::{json_tool, FunctionModel, StaticToolset, ToolError, ToolResult};
 use starweaver_model::{
-    ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
+    context_origin_metadata, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
+    ToolCallPart,
 };
 
 pub(super) fn local_echo_model() -> FunctionModel {
@@ -68,7 +69,9 @@ pub(super) fn scripted_tool_model(tool_name: &'static str) -> FunctionModel {
 fn latest_user_prompt(messages: &[ModelMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         ModelMessage::Request(request) => request.parts.iter().rev().find_map(|part| match part {
-            ModelRequestPart::UserPrompt { content, .. } => {
+            ModelRequestPart::UserPrompt {
+                content, metadata, ..
+            } if context_origin_metadata(metadata).is_none() => {
                 content.iter().find_map(|part| match part {
                     starweaver_model::ContentPart::Text { text } => Some(text.clone()),
                     _ => None,

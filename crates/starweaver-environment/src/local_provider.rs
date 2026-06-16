@@ -472,7 +472,7 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         )
     }
 
-    async fn get_context_instructions(&self) -> EnvironmentResult<Option<String>> {
+    async fn render_environment_context(&self) -> EnvironmentResult<Option<String>> {
         let mut file_trees = Vec::new();
         for allowed_path in context_file_tree_roots(&self.allowed_paths) {
             let visible_root = self.logical_root_for_allowed_path(allowed_path);

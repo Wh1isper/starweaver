@@ -64,7 +64,7 @@ The first SDK filter capability slice is landed in `crates/starweaver-agent/src/
 - capability/media support filtering
 - compact keep-message behavior
 - handoff metadata support
-- auto-load/background/bus/environment/runtime instruction metadata injection
+- auto-load/background/bus metadata injection, environment/runtime context injection, and true instruction metadata injection
 - system prompt reinjection composition
 - tool-call argument repair
 - reasoning normalization
@@ -72,26 +72,26 @@ The first SDK filter capability slice is landed in `crates/starweaver-agent/src/
 Current order:
 
 ```text
-cold_start -> capability -> media_preflight -> media_upload -> compact -> handoff -> auto_load_files -> background_shell -> bus_message -> environment_instructions -> runtime_instructions -> system_prompt -> tool_args -> reasoning_normalize
+cold_start -> capability -> media_preflight -> media_compress -> media_upload -> compact -> handoff -> auto_load_files -> background_shell -> bus_message -> environment_context -> runtime_context -> system_prompt -> tool_args -> reasoning_normalize
 ```
 
 Remaining filter depth:
 
-| Filter family            | Current state                          | Remaining work                                                                                    |
-| ------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| auto-load files          | metadata-driven injection slice        | provider-backed reads, truncation files, focused request parts, local/virtual tests               |
-| background shell         | process provider substrate exists      | completed process injection, output spill files, lifecycle UI evidence                            |
-| bus messages             | context message bus exists             | consume-once request pipeline behavior and retry safety tests                                     |
-| cold start               | tool-return trimming slice             | idle-window heuristics and cache-friendly compaction evidence                                     |
-| environment instructions | metadata-driven injection              | provider summary, workspace policy, resource state, sandbox evidence                              |
-| handoff                  | metadata-driven slice                  | restored-history reconstruction with keep tags and steering parts                                 |
-| media preflight          | byte sniffing and policy checks landed | compression, alpha compositing, tall splitting, GIF policy, count limits across nested structures |
-| media upload             | adapter seam landed                    | S3/resource-store adapters and failure fallback fixtures                                          |
-| model switch             | profile presets exist                  | model-switch event normalization and history evidence                                             |
-| reasoning normalize      | first normalization slice              | provider-specific reasoning/thinking reconstruction fixtures                                      |
-| runtime instructions     | dynamic/static instructions exist      | reinjection after compact/handoff with ordered trace fixture                                      |
-| system prompt            | landed                                 | preserve coverage as capabilities evolve                                                          |
-| tool args                | repair slice landed                    | malformed/truncated argument fixture depth                                                        |
+| Filter family       | Current state                          | Remaining work                                                                                    |
+| ------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| auto-load files     | metadata-driven injection slice        | provider-backed reads, truncation files, focused request parts, local/virtual tests               |
+| background shell    | process provider substrate exists      | completed process injection, output spill files, lifecycle UI evidence                            |
+| bus messages        | context message bus exists             | consume-once request pipeline behavior and retry safety tests                                     |
+| cold start          | tool-return trimming slice             | idle-window heuristics and cache-friendly compaction evidence                                     |
+| environment context | metadata/provider-driven injection     | provider summary, workspace policy, resource state, sandbox evidence                              |
+| handoff             | metadata-driven slice                  | restored-history reconstruction with keep tags and steering parts                                 |
+| media preflight     | byte sniffing and policy checks landed | compression, alpha compositing, tall splitting, GIF policy, count limits across nested structures |
+| media upload        | adapter seam landed                    | S3/resource-store adapters and failure fallback fixtures                                          |
+| model switch        | profile presets exist                  | model-switch event normalization and history evidence                                             |
+| reasoning normalize | first normalization slice              | provider-specific reasoning/thinking reconstruction fixtures                                      |
+| runtime context     | SDK provider-bound injection exists    | refresh-after-tool-return and non-durable provider-message trace fixtures                         |
+| system prompt       | landed                                 | preserve coverage as capabilities evolve                                                          |
+| tool args           | repair slice landed                    | malformed/truncated argument fixture depth                                                        |
 
 ## Environment Integration
 

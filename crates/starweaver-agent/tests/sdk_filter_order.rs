@@ -15,8 +15,9 @@ use starweaver_agent::{
 use starweaver_model::{
     ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderPartInfo,
-    ToolCallPart, ToolDefinition, ToolReturnPart, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
-    INSTRUCTION_ORIGIN_HANDOFF, INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+    ToolCallPart, ToolDefinition, ToolReturnPart, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT,
+    CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
+    CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
 };
 
 #[tokio::test]
@@ -67,8 +68,8 @@ async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
                 }],
                 name: None,
                 metadata: serde_json::Map::from_iter([(
-                    "starweaver_instruction_origin".to_string(),
-                    serde_json::json!("tool_return_media"),
+                    CONTEXT_ORIGIN_METADATA.to_string(),
+                    serde_json::json!(CONTEXT_ORIGIN_TOOL_RETURN_MEDIA),
                 )]),
             },
         ],
@@ -83,11 +84,11 @@ async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
         ConversationId::new(),
     );
     state.metadata.insert(
-        "starweaver_environment_instructions".to_string(),
+        "starweaver_environment_context".to_string(),
         serde_json::json!("<environment-context>fresh</environment-context>"),
     );
 
-    let messages = NamedFilterCapability::new("environment_instructions")
+    let messages = NamedFilterCapability::new("environment_context")
         .prepare_model_messages_with_context(
             &mut state,
             &mut AgentContext::default(),
@@ -102,13 +103,13 @@ async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
     assert!(matches!(
         &request.parts[1],
         ModelRequestPart::UserPrompt { metadata, .. }
-            if metadata.get("starweaver_instruction_origin") == Some(&serde_json::json!("tool_return_media"))
+            if metadata.get(CONTEXT_ORIGIN_METADATA) == Some(&serde_json::json!(CONTEXT_ORIGIN_TOOL_RETURN_MEDIA))
     ));
     assert!(matches!(
         &request.parts[2],
         ModelRequestPart::UserPrompt { content, metadata, .. }
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
                 && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>fresh</environment-context>"))
     ));
     Ok(())
@@ -172,8 +173,8 @@ async fn handoff_filter_uses_shared_restored_request_builder(
     assert!(request.parts[1..].iter().any(|part| matches!(
         part,
         ModelRequestPart::UserPrompt { metadata, .. }
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_HANDOFF))
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_HANDOFF))
     )));
     Ok(())
 }
@@ -206,11 +207,11 @@ async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix(
         ConversationId::new(),
     );
     state.metadata.insert(
-        "starweaver_environment_instructions".to_string(),
+        "starweaver_environment_context".to_string(),
         serde_json::json!("<environment-context>fresh</environment-context>"),
     );
 
-    let messages = NamedFilterCapability::new("environment_instructions")
+    let messages = NamedFilterCapability::new("environment_context")
         .prepare_model_messages_with_context(
             &mut state,
             &mut AgentContext::default(),
@@ -228,8 +229,14 @@ async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix(
     assert!(matches!(
         &request.parts[1],
         ModelRequestPart::UserPrompt { content, metadata, .. }
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
+                && matches!(&content[0], ContentPart::Text { text } if text == "hello")
+    ));
+    assert!(matches!(
+        &request.parts[2],
+        ModelRequestPart::UserPrompt { content, metadata, .. }
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
                 && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>fresh</environment-context>"))
     ));
     Ok(())
@@ -857,7 +864,7 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
 ) -> starweaver_agent::CapabilityResult<()> {
     let mut state = AgentRunState::new(RunId::from_string("run_context"), ConversationId::new());
     state.metadata.insert(
-        "starweaver_runtime_instructions".to_string(),
+        "starweaver_runtime_context".to_string(),
         serde_json::json!("Prefer concise answers."),
     );
     state.metadata.insert(
@@ -912,7 +919,7 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
     output = NamedFilterCapability::new("auto_load_files")
         .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), output)
         .await?;
-    output = NamedFilterCapability::new("runtime_instructions")
+    output = NamedFilterCapability::new("runtime_context")
         .prepare_model_messages_with_context(&mut state, &mut AgentContext::default(), output)
         .await?;
     output = NamedFilterCapability::new("tool_args")
@@ -927,8 +934,8 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
             ModelRequestPart::UserPrompt {
                 content, metadata, ..
             } =>
-                metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                    == Some(&serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT))
+                metadata.get(CONTEXT_ORIGIN_METADATA)
+                    == Some(&serde_json::json!(CONTEXT_ORIGIN_RUNTIME_CONTEXT))
                     && content.iter().any(|part| matches!(
                         part,
                         ContentPart::Text { text } if text == "Prefer concise answers."
@@ -1130,7 +1137,7 @@ async fn handoff_filter_consumes_prebuilt_context_restored_message(
     let text = request_text_parts(messages.last().expect("request")).join("\n");
     assert!(text.contains("already restored"));
     assert!(context.handoff_message.is_none());
-    assert!(context.force_inject_instructions);
+    assert!(context.force_inject_context);
     Ok(())
 }
 

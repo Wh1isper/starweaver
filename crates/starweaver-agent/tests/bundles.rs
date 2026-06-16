@@ -20,7 +20,7 @@ use starweaver_environment::{
 };
 use starweaver_model::{
     tool_call_response, ContentPart, ModelProfile, ModelRequest, ModelRequestPart, ModelResponse,
-    ProtocolFamily, TestModel, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_METADATA,
+    ProtocolFamily, TestModel, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA,
 };
 use starweaver_usage::Usage;
 
@@ -52,8 +52,14 @@ async fn environment_context_capability_injects_provider_context_as_user_prompt(
     assert!(matches!(
         request.parts.first(),
         Some(ModelRequestPart::UserPrompt { content, metadata, .. })
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
+                && matches!(&content[0], ContentPart::Text { text } if text == "inspect workspace")
+    ));
+    assert!(matches!(
+        request.parts.get(1),
+        Some(ModelRequestPart::UserPrompt { content, metadata, .. })
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
                 && matches!(&content[0], ContentPart::Text { text } if text.contains("<environment-context>"))
     ));
 }
@@ -99,7 +105,7 @@ async fn environment_context_capability_skips_unchanged_context_on_later_turn() 
     assert!(matches!(
         request.parts.first(),
         Some(ModelRequestPart::UserPrompt { content, metadata, .. })
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA).is_none()
+            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
                 && matches!(&content[0], ContentPart::Text { text } if text == "continue")
     ));
 }
@@ -123,7 +129,7 @@ async fn environment_context_capability_force_reinjects_unchanged_context() {
         )
         .await
         .unwrap();
-    context.force_inject_instructions = true;
+    context.force_inject_context = true;
     messages.push(starweaver_model::ModelMessage::Response(
         ModelResponse::text("ok"),
     ));
@@ -182,7 +188,7 @@ async fn environment_context_capability_keeps_initial_context_on_later_turn_even
     assert!(matches!(
         request.parts.first(),
         Some(ModelRequestPart::UserPrompt { content, metadata, .. })
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA).is_none()
+            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
                 && matches!(&content[0], ContentPart::Text { text } if text == "continue")
     ));
 }
@@ -199,8 +205,8 @@ fn environment_context_part_count(messages: &[starweaver_model::ModelMessage]) -
             matches!(
                 part,
                 ModelRequestPart::UserPrompt { metadata, .. }
-                    if metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                        == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
+                    if metadata.get(CONTEXT_ORIGIN_METADATA)
+                        == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
             )
         })
         .count()

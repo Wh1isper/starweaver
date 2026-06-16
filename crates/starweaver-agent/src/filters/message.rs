@@ -2,13 +2,12 @@
 
 use serde_json::{json, Map, Value};
 use starweaver_model::{
-    ContentPart, ModelMessage, ModelRequest, ModelRequestPart, INSTRUCTION_DYNAMIC_METADATA,
-    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_HANDOFF,
-    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+    context_origin_metadata, ContentPart, ModelMessage, ModelRequest, ModelRequestPart,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
+    CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, INSTRUCTION_DYNAMIC_METADATA,
 };
 
 const FILTER_ORDER_METADATA: &str = "starweaver_filter_order";
-const TOOL_RETURN_MEDIA_ORIGIN: &str = "tool_return_media";
 
 pub(super) fn metadata_text(metadata: &Map<String, Value>, key: &str) -> Option<String> {
     match metadata.get(key)? {
@@ -97,7 +96,7 @@ fn request_context_insert_index(request: &ModelRequest) -> usize {
     instruction_end
         + request.parts[instruction_end..]
             .iter()
-            .take_while(|part| is_context_user_prompt(part))
+            .take_while(|part| is_context_user_prompt(part) || is_user_prompt(part))
             .count()
 }
 
@@ -121,10 +120,8 @@ fn request_control_prefix_len(request: &ModelRequest) -> usize {
 fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
     match part {
         ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
-        ModelRequestPart::UserPrompt { metadata, .. } => metadata
-            .get("starweaver_instruction_origin")
-            .and_then(Value::as_str)
-            .is_some_and(|origin| origin == TOOL_RETURN_MEDIA_ORIGIN),
+        ModelRequestPart::UserPrompt { metadata, .. } => context_origin_metadata(metadata)
+            .is_some_and(|origin| origin == CONTEXT_ORIGIN_TOOL_RETURN_MEDIA),
         ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,
     }
 }
@@ -151,15 +148,13 @@ const fn is_instruction_prefix_part(part: &ModelRequestPart) -> bool {
 
 fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
     match part {
-        ModelRequestPart::UserPrompt { metadata, .. } => metadata
-            .get(INSTRUCTION_ORIGIN_METADATA)
-            .and_then(Value::as_str)
+        ModelRequestPart::UserPrompt { metadata, .. } => context_origin_metadata(metadata)
             .is_some_and(|origin| {
                 matches!(
                     origin,
-                    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
-                        | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
-                        | INSTRUCTION_ORIGIN_HANDOFF
+                    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT
+                        | CONTEXT_ORIGIN_RUNTIME_CONTEXT
+                        | CONTEXT_ORIGIN_HANDOFF
                 )
             }),
         ModelRequestPart::SystemPrompt { .. }
@@ -167,6 +162,10 @@ fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
         | ModelRequestPart::ToolReturn(_)
         | ModelRequestPart::RetryPrompt { .. } => false,
     }
+}
+
+const fn is_user_prompt(part: &ModelRequestPart) -> bool {
+    matches!(part, ModelRequestPart::UserPrompt { .. })
 }
 
 pub(super) fn request_metadata_mut(messages: &mut Vec<ModelMessage>) -> &mut Map<String, Value> {

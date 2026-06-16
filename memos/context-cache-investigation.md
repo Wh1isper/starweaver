@@ -95,7 +95,7 @@ Regression coverage:
 
 Before this change:
 
-- `LocalEnvironmentProvider::get_context_instructions` rendered a file-tree block for every allowed path.
+- `LocalEnvironmentProvider::render_environment_context` renders a file-tree block for every allowed path.
 - Allowed paths can include nested roots, for example workspace plus a workspace subdirectory, or global config plus nested skill/subagent directories.
 
 Effect:

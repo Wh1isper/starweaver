@@ -7,7 +7,8 @@ use starweaver_usage::Usage;
 use crate::{
     message::Metadata, ModelError, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
     ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderInfo, ProviderPartInfo,
-    ProviderReplaySettings, StreamDelta, ThinkingSettings,
+    ProviderReplaySettings, StreamDelta, ThinkingSettings, CONTEXT_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_RUNTIME_CONTEXT,
 };
 
 fn final_response(events: &[ModelResponseStreamEvent]) -> &ModelResponse {
@@ -23,8 +24,8 @@ fn final_response(events: &[ModelResponseStreamEvent]) -> &ModelResponse {
 fn runtime_context_part(text: impl Into<String>) -> ModelRequestPart {
     let mut metadata = Metadata::default();
     metadata.insert(
-        "starweaver_instruction_origin".to_string(),
-        json!("runtime_context"),
+        CONTEXT_ORIGIN_METADATA.to_string(),
+        json!(CONTEXT_ORIGIN_RUNTIME_CONTEXT),
     );
     ModelRequestPart::UserPrompt {
         content: vec![crate::message::ContentPart::Text { text: text.into() }],

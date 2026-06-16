@@ -657,8 +657,8 @@ mod tests {
     use starweaver_model::{
         providers::openai_responses::OpenAiResponsesAdapter, ContentPart, ModelMessage,
         ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ModelResponseStreamEvent,
-        ModelSettings, PartDelta, PartEnd, PartStart, INSTRUCTION_DYNAMIC_METADATA,
-        INSTRUCTION_ORIGIN_METADATA,
+        ModelSettings, PartDelta, PartEnd, PartStart, CONTEXT_ORIGIN_METADATA,
+        CONTEXT_ORIGIN_RUNTIME_CONTEXT, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_METADATA,
     };
     use starweaver_runtime::{AgentCapability, AgentRunState, AgentStreamEvent, AgentStreamRecord};
     use starweaver_session::{RunRecord, RunStatus};
@@ -1074,8 +1074,8 @@ mod tests {
                     .expect("second wire request should build");
             assert_eq!(first_wire["instructions"], guidance);
             assert_eq!(second_wire["instructions"], first_wire["instructions"]);
-            let first_input = first_wire["input"].as_array().unwrap();
-            let second_input = second_wire["input"].as_array().unwrap();
+            let first_input = stable_wire_input_items(&first_wire);
+            let second_input = stable_wire_input_items(&second_wire);
             assert!(second_input.len() > first_input.len());
             assert_eq!(first_input.as_slice(), &second_input[..first_input.len()]);
             drop(captured);
@@ -1084,6 +1084,31 @@ mod tests {
             .expect("message history should serialize");
         assert!(persisted.contains("project-guidance"));
         assert!(persisted.contains("Use cargo test."));
+    }
+
+    fn stable_wire_input_items(wire: &serde_json::Value) -> Vec<serde_json::Value> {
+        wire["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| !is_runtime_context_wire_item(item))
+            .cloned()
+            .collect()
+    }
+
+    fn is_runtime_context_wire_item(item: &serde_json::Value) -> bool {
+        item.get("role").and_then(serde_json::Value::as_str) == Some("user")
+            && (item
+                .get(CONTEXT_ORIGIN_METADATA)
+                .and_then(serde_json::Value::as_str)
+                == Some(CONTEXT_ORIGIN_RUNTIME_CONTEXT)
+                || item["content"].as_array().is_some_and(|content| {
+                    content.iter().any(|part| {
+                        part.get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|text| text.starts_with("<runtime-context>"))
+                    })
+                }))
     }
 
     fn count_guidance_in_messages(messages: &[ModelMessage], guidance: &str) -> usize {

@@ -435,7 +435,7 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
             .ok_or(EnvironmentError::NotFound(command.command))
     }
 
-    async fn get_context_instructions(&self) -> EnvironmentResult<Option<String>> {
+    async fn render_environment_context(&self) -> EnvironmentResult<Option<String>> {
         let mut files = self
             .files
             .lock()

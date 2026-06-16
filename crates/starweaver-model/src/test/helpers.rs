@@ -1,8 +1,11 @@
 use serde_json::Value;
 use starweaver_usage::Usage;
 
-use crate::message::{
-    ContentPart, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
+use crate::{
+    message::{
+        ContentPart, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
+    },
+    request::context_origin_metadata,
 };
 
 /// Create a tool call response for tests.
@@ -34,11 +37,13 @@ pub fn tool_call_response(
 pub fn latest_user_text(messages: &[ModelMessage]) -> Option<String> {
     messages.iter().rev().find_map(|message| match message {
         ModelMessage::Request(request) => request.parts.iter().rev().find_map(|part| match part {
-            ModelRequestPart::UserPrompt { content, .. } => Some(text_from_content(content)),
+            ModelRequestPart::UserPrompt {
+                content, metadata, ..
+            } if context_origin_metadata(metadata).is_none() => Some(text_from_content(content)),
             ModelRequestPart::RetryPrompt { text, .. }
             | ModelRequestPart::Instruction { text, .. }
             | ModelRequestPart::SystemPrompt { text, .. } => Some(text.clone()),
-            ModelRequestPart::ToolReturn(_) => None,
+            ModelRequestPart::UserPrompt { .. } | ModelRequestPart::ToolReturn(_) => None,
         }),
         ModelMessage::Response(_) => None,
     })

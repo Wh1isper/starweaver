@@ -7,7 +7,7 @@ use starweaver_model::{
     prepare_messages, prepare_model_request, ContentPart, MessageNormalization, ModelMessage,
     ModelProfile, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings,
     NativeToolDefinition, OutputMode, PreparedInstruction, ProtocolFamily, StructuredOutputMode,
-    ThinkingSettings, ToolReturnPart,
+    ThinkingSettings, ToolReturnPart, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
 };
 
 fn request(parts: Vec<ModelRequestPart>) -> ModelMessage {
@@ -183,8 +183,8 @@ fn prepared_instructions_preserve_static_system_prompt_prefix() {
 fn prepared_instructions_preserve_tool_return_media_control_block() {
     let mut media_metadata = Map::new();
     media_metadata.insert(
-        "starweaver_instruction_origin".to_string(),
-        json!("tool_return_media"),
+        CONTEXT_ORIGIN_METADATA.to_string(),
+        json!(CONTEXT_ORIGIN_TOOL_RETURN_MEDIA),
     );
     let params = ModelRequestParameters {
         instructions: vec![PreparedInstruction::dynamic_text("dynamic instruction")],
@@ -223,7 +223,7 @@ fn prepared_instructions_preserve_tool_return_media_control_block() {
     assert!(matches!(
         request.parts.get(1),
         Some(ModelRequestPart::UserPrompt { metadata, .. })
-            if metadata.get("starweaver_instruction_origin") == Some(&json!("tool_return_media"))
+            if metadata.get(CONTEXT_ORIGIN_METADATA) == Some(&json!(CONTEXT_ORIGIN_TOOL_RETURN_MEDIA))
     ));
     assert!(matches!(
         request.parts.get(2),

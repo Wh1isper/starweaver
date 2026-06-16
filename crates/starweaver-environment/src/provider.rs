@@ -188,8 +188,8 @@ pub trait EnvironmentProvider: Send + Sync {
         ShellReviewEnvironmentContext::default()
     }
 
-    /// Render model-facing context instructions for this environment.
-    async fn get_context_instructions(&self) -> EnvironmentResult<Option<String>> {
+    /// Render model-facing environment context.
+    async fn render_environment_context(&self) -> EnvironmentResult<Option<String>> {
         Ok(None)
     }
 

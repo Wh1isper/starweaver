@@ -21,12 +21,12 @@ pub use bundles::{
     shell_tools, skill_tools, task_tools, EnvironmentContextCapability, EnvironmentHandle,
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
-    MediaUnderstandingRequest, MediaUnderstandingResponse, ProcessShellHandle, ScrapeRequest,
-    ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem, ShellReviewAction,
-    ShellReviewConfig, ShellReviewContextSnapshot, ShellReviewDecision, ShellReviewHandle,
-    ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
-    SkillError, SkillPackage, SkillRegistry, SkillSourceScope, ToolProxyNamePrefixError,
-    ToolProxyToolset, DEFAULT_SHELL_REVIEW_PROMPT,
+    MediaUnderstandingRequest, MediaUnderstandingResponse, ProcessShellHandle,
+    RuntimeContextCapability, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
+    SearchResultItem, ShellReviewAction, ShellReviewConfig, ShellReviewContextSnapshot,
+    ShellReviewDecision, ShellReviewHandle, ShellReviewPreviousDecision, ShellReviewRecord,
+    ShellReviewRequest, ShellReviewRiskLevel, SkillError, SkillPackage, SkillRegistry,
+    SkillSourceScope, ToolProxyNamePrefixError, ToolProxyToolset, DEFAULT_SHELL_REVIEW_PROMPT,
 };
 pub use filters::{
     default_filter_bundle, default_filter_capabilities, default_filter_capabilities_with_config,
@@ -354,6 +354,7 @@ impl AgentBuilder {
         let compact_model_settings = self.model_settings.clone();
         let parent_tools_hook = Arc::new(ParentToolsCapabilityHook { parent_tools });
         let environment_context_hook = Arc::new(EnvironmentContextCapability);
+        let runtime_context_hook = Arc::new(RuntimeContextCapability);
         let model = self.model.clone();
         let mut agent = RuntimeAgent::new(self.model)
             .with_request_params(self.request_params)
@@ -402,6 +403,7 @@ impl AgentBuilder {
         agent = agent.with_capability(media_capability_hook);
         agent = agent.with_capability(parent_tools_hook);
         agent = agent.with_capability(environment_context_hook);
+        agent = agent.with_capability(runtime_context_hook);
         for capability in self.capabilities {
             agent = agent.with_capability(capability);
         }

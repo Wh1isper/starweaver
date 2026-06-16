@@ -1,8 +1,9 @@
 //! Request part ordering helpers.
 
-use starweaver_model::{ModelRequest, ModelRequestPart, INSTRUCTION_DYNAMIC_METADATA};
-
-const TOOL_RETURN_MEDIA_ORIGIN: &str = "tool_return_media";
+use starweaver_model::{
+    context_origin_metadata, ModelRequest, ModelRequestPart, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    INSTRUCTION_DYNAMIC_METADATA,
+};
 
 pub(in crate::agent) fn request_control_prefix_len(request: &ModelRequest) -> usize {
     request
@@ -33,10 +34,8 @@ pub(in crate::agent) fn request_instruction_end_index(request: &ModelRequest) ->
 fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
     match part {
         ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
-        ModelRequestPart::UserPrompt { metadata, .. } => metadata
-            .get("starweaver_instruction_origin")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|origin| origin == TOOL_RETURN_MEDIA_ORIGIN),
+        ModelRequestPart::UserPrompt { metadata, .. } => context_origin_metadata(metadata)
+            .is_some_and(|origin| origin == CONTEXT_ORIGIN_TOOL_RETURN_MEDIA),
         ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,
     }
 }

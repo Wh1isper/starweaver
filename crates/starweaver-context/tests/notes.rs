@@ -84,41 +84,41 @@ fn context_export_and_restore_includes_notes() {
 }
 
 #[test]
-fn context_instructions_include_note_keys_for_user_prompts() {
+fn runtime_context_includes_note_keys_for_user_prompts() {
     let mut context = AgentContext::default();
     context.notes.set("lang", "Chinese");
     context.notes.set("os", "macOS");
 
-    let instructions = context.context_instructions(true).unwrap();
+    let runtime_context = context.render_runtime_context(true).unwrap();
 
-    assert!(instructions.contains("<notes "));
-    assert!(instructions.contains("key=\"lang\""));
-    assert!(instructions.contains("key=\"os\""));
-    assert!(!instructions.contains("Chinese"));
-    assert!(!instructions.contains("macOS"));
+    assert!(runtime_context.contains("<notes "));
+    assert!(runtime_context.contains("key=\"lang\""));
+    assert!(runtime_context.contains("key=\"os\""));
+    assert!(!runtime_context.contains("Chinese"));
+    assert!(!runtime_context.contains("macOS"));
 }
 
 #[test]
-fn context_instructions_escape_note_keys() {
+fn runtime_context_escapes_note_keys() {
     let mut context = AgentContext::default();
     context.notes.set("evil\"'><tag>&", "hidden");
 
-    let instructions = context.context_instructions(true).unwrap();
+    let runtime_context = context.render_runtime_context(true).unwrap();
 
-    assert!(instructions.contains("evil&quot;&apos;&gt;&lt;tag&gt;&amp;"));
-    assert!(!instructions.contains("evil\"'><tag>&"));
+    assert!(runtime_context.contains("evil&quot;&apos;&gt;&lt;tag&gt;&amp;"));
+    assert!(!runtime_context.contains("evil\"'><tag>&"));
 }
 
 #[test]
-fn context_instructions_include_runtime_context_without_leaking_tool_response_notes() {
+fn runtime_context_excludes_notes_for_tool_responses() {
     let mut context = AgentContext::default();
-    let empty_user_context = context.context_instructions(true).unwrap();
+    let empty_user_context = context.render_runtime_context(true).unwrap();
     assert!(empty_user_context.contains("<runtime-context>"));
     assert!(empty_user_context.contains("<current-time>"));
     assert!(!empty_user_context.contains("<notes "));
 
     context.notes.set("lang", "Chinese");
-    let tool_context = context.context_instructions(false).unwrap();
+    let tool_context = context.render_runtime_context(false).unwrap();
     assert!(tool_context.contains("<runtime-context>"));
     assert!(!tool_context.contains("<notes "));
     assert!(!tool_context.contains("lang"));

@@ -9,8 +9,7 @@ use starweaver_model::{
     },
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
     ModelResponsePart, ModelSettings, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
-    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_METADATA,
-    INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
 };
 use starweaver_usage::Usage;
 
@@ -91,7 +90,7 @@ fn tool_calls(response: &ModelResponse) -> Vec<ToolCallPart> {
 
 fn context_metadata(origin: &str) -> Map<String, serde_json::Value> {
     let mut metadata = Map::new();
-    metadata.insert(INSTRUCTION_ORIGIN_METADATA.to_string(), json!(origin));
+    metadata.insert(CONTEXT_ORIGIN_METADATA.to_string(), json!(origin));
     metadata
 }
 
@@ -104,11 +103,11 @@ fn context_user_prompt(text: impl Into<String>, origin: &str) -> ModelRequestPar
 }
 
 fn runtime_context_part(text: impl Into<String>) -> ModelRequestPart {
-    context_user_prompt(text, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT)
+    context_user_prompt(text, CONTEXT_ORIGIN_RUNTIME_CONTEXT)
 }
 
 fn environment_context_part(text: impl Into<String>) -> ModelRequestPart {
-    context_user_prompt(text, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT)
+    context_user_prompt(text, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT)
 }
 
 fn cache_shape_first_turn() -> Vec<ModelMessage> {
@@ -210,6 +209,19 @@ fn dynamic_only_turn() -> Vec<ModelMessage> {
     })]
 }
 
+fn environment_only_turn() -> Vec<ModelMessage> {
+    vec![ModelMessage::Request(ModelRequest {
+        parts: vec![environment_context_part(
+            "<environment-context><default-directory>/workspace</default-directory></environment-context>",
+        )],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Map::new(),
+    })]
+}
+
 #[test]
 fn openai_chat_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
     let first = OpenAiChatAdapter::build_request(
@@ -268,6 +280,25 @@ fn openai_chat_cache_shape_keeps_durable_body_append_only_with_runtime_context()
     assert_eq!(second_body[3]["content"], "second user");
     assert_eq!(first_body[1], second_body[0]);
     assert_eq!(first["tools"], second["tools"]);
+}
+
+#[test]
+fn openai_chat_environment_context_only_request_maps_context_to_user_content() {
+    let request = OpenAiChatAdapter::build_request(
+        "gpt-test",
+        &environment_only_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    let messages = request["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("environment-context"));
 }
 
 #[test]
@@ -663,6 +694,26 @@ fn anthropic_runtime_context_only_request_maps_context_to_user_content() {
 }
 
 #[test]
+fn anthropic_environment_context_only_request_maps_context_to_user_content() {
+    let request = AnthropicMessagesAdapter::build_request(
+        "claude-test",
+        &environment_only_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    assert!(request.get("system").is_none());
+    let messages = request["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("environment-context"));
+}
+
+#[test]
 fn anthropic_preserves_agent_loop_boundaries() {
     let request = AnthropicMessagesAdapter::build_request(
         "claude-test",
@@ -866,6 +917,25 @@ fn gemini_runtime_context_only_request_maps_context_to_user_content() {
 }
 
 #[test]
+fn gemini_environment_context_only_request_maps_context_to_user_content() {
+    let request = GeminiGenerateContentAdapter::build_request(
+        &environment_only_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    assert!(request.get("systemInstruction").is_none());
+    let contents = request["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 1);
+    assert_eq!(contents[0]["role"], "user");
+    assert!(contents[0]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("environment-context"));
+}
+
+#[test]
 fn gemini_preserves_agent_loop_boundaries() {
     let request =
         GeminiGenerateContentAdapter::build_request(&agent_loop_history(), None, &[lookup_tool()])
@@ -995,6 +1065,26 @@ fn bedrock_runtime_context_only_request_maps_context_to_user_content() {
         .as_str()
         .unwrap()
         .contains("runtime-context"));
+}
+
+#[test]
+fn bedrock_environment_context_only_request_maps_context_to_user_content() {
+    let request = BedrockConverseAdapter::build_request(
+        "anthropic.claude-test",
+        &environment_only_turn(),
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    assert!(request.get("system").is_none());
+    let messages = request["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("environment-context"));
 }
 
 #[test]

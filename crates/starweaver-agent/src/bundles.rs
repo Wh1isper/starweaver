@@ -3,6 +3,7 @@
 mod environment;
 mod external;
 mod helpers;
+mod runtime_context;
 mod skills;
 mod task;
 
@@ -26,6 +27,7 @@ pub use external::{
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
     ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem,
 };
+pub use runtime_context::RuntimeContextCapability;
 pub use skills::{
     parse_skill_markdown, skill_tools, SkillError, SkillPackage, SkillRegistry, SkillSourceScope,
 };

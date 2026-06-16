@@ -48,11 +48,12 @@ pub use profile::{
 pub use providers::client::ProtocolModelClient;
 pub use registry::{ProviderAlias, ProviderAliasRegistry};
 pub use request::{
-    attach_prepared_instructions, prepare_messages, prepare_model_request, InstructionPart,
-    OutputMode, PreparedInstruction, PreparedModelRequest, INSTRUCTION_DYNAMIC_METADATA,
-    INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
-    INSTRUCTION_ORIGIN_HANDOFF, INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
-    INSTRUCTION_ORIGIN_TOOLSET,
+    attach_prepared_instructions, context_origin_metadata, prepare_messages, prepare_model_request,
+    InstructionPart, OutputMode, PreparedInstruction, PreparedModelRequest,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, CONTEXT_TYPE_METADATA,
+    INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
+    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_TOOLSET,
 };
 pub use settings::{
     ModelSettings, ProviderReplaySettings, ServiceTier, ThinkingSettings, ToolChoice,

@@ -204,14 +204,7 @@ impl Agent {
     }
 
     pub(super) fn ordered_capabilities(&self) -> Result<Vec<Arc<dyn AgentCapability>>, AgentError> {
-        resolve_capability_order(&self.capabilities_with_runtime_context())
-            .map_err(AgentError::from)
-    }
-
-    fn capabilities_with_runtime_context(&self) -> Vec<Arc<dyn AgentCapability>> {
-        let mut capabilities = self.capabilities.clone();
-        capabilities.push(runtime_helpers::runtime_context_capability());
-        capabilities
+        resolve_capability_order(&self.capabilities).map_err(AgentError::from)
     }
 
     pub(super) fn ordered_stream_observers(
@@ -223,7 +216,7 @@ impl Agent {
     pub(super) fn ordered_capabilities_for_validation(
         &self,
     ) -> Result<Vec<Arc<dyn AgentCapability>>, crate::capability::CapabilityError> {
-        resolve_capability_order(&self.capabilities_with_runtime_context())
+        resolve_capability_order(&self.capabilities)
             .map_err(|error| crate::capability::CapabilityError::Failed(error.to_string()))
     }
 

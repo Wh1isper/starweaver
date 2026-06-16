@@ -7,7 +7,9 @@ use serde_json::{json, Map};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ContentPart, FunctionModel, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ToolDefinition, INSTRUCTION_ORIGIN_TOOLSET,
+    ToolDefinition, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_METADATA,
+    INSTRUCTION_ORIGIN_TOOLSET,
 };
 use starweaver_runtime::{
     Agent, AgentCapability, AgentError, AgentRunState, FunctionDynamicInstruction,
@@ -281,7 +283,10 @@ async fn dynamic_instructions_preserve_static_system_prompt_prefix() {
         .unwrap();
     assert!(matches!(
         latest_request.parts.first(),
-        Some(ModelRequestPart::SystemPrompt { text, .. }) if text == "static policy"
+        Some(ModelRequestPart::Instruction { text, metadata })
+            if text == "static policy"
+                && metadata.get(INSTRUCTION_ORIGIN_METADATA) == Some(&json!(INSTRUCTION_ORIGIN_AGENT))
+                && metadata.get(INSTRUCTION_DYNAMIC_METADATA) == Some(&json!(false))
     ));
     let Some(dynamic_index) = latest_request.parts.iter().position(|part| {
         matches!(part, ModelRequestPart::Instruction { text, metadata }
@@ -342,7 +347,7 @@ async fn dynamic_instructions_do_not_split_tool_return_media_control_block() {
     assert!(matches!(
         second_latest_request.parts.get(1),
         Some(ModelRequestPart::UserPrompt { content, metadata, .. })
-            if metadata.get("starweaver_instruction_origin") == Some(&json!("tool_return_media"))
+            if metadata.get(CONTEXT_ORIGIN_METADATA) == Some(&json!(CONTEXT_ORIGIN_TOOL_RETURN_MEDIA))
                 && content.iter().any(|part| matches!(part, ContentPart::ImageUrl { .. }))
     ));
     assert!(second_latest_request.parts.iter().skip(2).any(|part| {
@@ -477,11 +482,23 @@ async fn static_instructions_are_reinjected_for_provider_request_and_current_ses
         .unwrap();
 
     let provider_messages = captured.lock().unwrap()[0].clone();
-    assert!(matches!(
-        &provider_messages[0],
-        ModelMessage::Request(request)
-            if request.parts.iter().any(|part| matches!(part, ModelRequestPart::SystemPrompt { text, .. } if text == "stable server policy"))
-    ));
+    let Some(latest_request) = provider_messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            ModelMessage::Request(request) => Some(request),
+            ModelMessage::Response(_) => None,
+        })
+    else {
+        panic!("latest provider request");
+    };
+    assert!(latest_request.parts.iter().any(|part| matches!(
+        part,
+        ModelRequestPart::Instruction { text, metadata }
+            if text == "stable server policy"
+                && metadata.get(INSTRUCTION_ORIGIN_METADATA) == Some(&json!(INSTRUCTION_ORIGIN_AGENT))
+                && metadata.get(INSTRUCTION_DYNAMIC_METADATA) == Some(&json!(false))
+    )));
     assert!(format!("{provider_messages:?}").contains("stable server policy"));
     assert!(format!("{:?}", result.messages).contains("stable server policy"));
 }

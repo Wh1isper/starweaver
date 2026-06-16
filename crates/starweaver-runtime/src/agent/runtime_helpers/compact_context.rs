@@ -2,10 +2,7 @@
 
 use serde_json::{Map, Value};
 use starweaver_context::AgentContext;
-use starweaver_model::{
-    ContentPart, ModelRequest, ModelRequestPart, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
-    INSTRUCTION_ORIGIN_HANDOFF, INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
-};
+use starweaver_model::{context_origin_metadata, ContentPart, ModelRequest, ModelRequestPart};
 
 use crate::run::AgentRunState;
 
@@ -96,15 +93,5 @@ fn effective_user_prompt_content(request: &ModelRequest) -> Option<Vec<ContentPa
 }
 
 fn is_context_user_prompt(metadata: &Map<String, Value>) -> bool {
-    metadata
-        .get(INSTRUCTION_ORIGIN_METADATA)
-        .and_then(Value::as_str)
-        .is_some_and(|origin| {
-            matches!(
-                origin,
-                INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT
-                    | INSTRUCTION_ORIGIN_RUNTIME_CONTEXT
-                    | INSTRUCTION_ORIGIN_HANDOFF
-            )
-        })
+    context_origin_metadata(metadata).is_some()
 }

@@ -48,9 +48,9 @@ pub struct AgentContext {
     /// Rendered handoff message for post-compact or post-handoff restore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_message: Option<String>,
-    /// Force environment/runtime instruction injection on the next filter pass.
+    /// Force environment/runtime context injection on the next filter pass.
     #[serde(default)]
-    pub force_inject_instructions: bool,
+    pub force_inject_context: bool,
     /// Extra environment variables for shell command execution.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub shell_env: BTreeMap<String, String>,
@@ -165,7 +165,7 @@ impl AgentContext {
             previous_assistant_response_reference: None,
             steering_messages: Vec::new(),
             handoff_message: None,
-            force_inject_instructions: false,
+            force_inject_context: false,
             shell_env: BTreeMap::new(),
             deferred_tool_metadata: BTreeMap::new(),
             agent_registry,
@@ -377,7 +377,7 @@ impl AgentContext {
             self.usage_snapshot_entries.clear();
         }
         self.deferred_tool_metadata.clear();
-        self.force_inject_instructions = false;
+        self.force_inject_context = false;
         self.previous_assistant_response_reference = None;
         self.messages.subscribe(self.agent_id.as_str());
     }
@@ -773,16 +773,10 @@ impl AgentContext {
         self.tool_config = tool_config;
     }
 
-    /// Render runtime context instructions for model-facing requests.
+    /// Render runtime context for model-facing requests.
     #[must_use]
-    pub fn inject_runtime_context(&self, is_user_prompt: bool) -> Option<String> {
+    pub fn render_runtime_context(&self, is_user_prompt: bool) -> Option<String> {
         runtime_context::render_runtime_context(self, is_user_prompt)
-    }
-
-    /// Render context instructions for model-facing user prompts.
-    #[must_use]
-    pub fn context_instructions(&self, is_user_prompt: bool) -> Option<String> {
-        self.inject_runtime_context(is_user_prompt)
     }
 }
 

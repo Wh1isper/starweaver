@@ -838,7 +838,7 @@ async fn restore_instructions_capability_restores_filtered_instructions() {
     assert!(matches!(
         &provider_messages[0],
         ModelMessage::Request(request)
-            if matches!(&request.parts[0], ModelRequestPart::SystemPrompt { text, .. } if text == "System policy")
+            if matches!(&request.parts[0], ModelRequestPart::Instruction { text, .. } if text == "System policy")
     ));
 }
 
@@ -865,7 +865,7 @@ async fn restore_instructions_capability_keeps_existing_instructions_once() {
             ModelMessage::Request(request) => request.parts.iter().collect::<Vec<_>>(),
             ModelMessage::Response(_) => Vec::new(),
         })
-        .filter(|part| matches!(part, ModelRequestPart::SystemPrompt { text, .. } if text == "System policy"))
+        .filter(|part| matches!(part, ModelRequestPart::Instruction { text, .. } if text == "System policy"))
         .count();
     assert_eq!(instruction_count, 1);
 }

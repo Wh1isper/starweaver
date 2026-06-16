@@ -23,8 +23,7 @@ use starweaver_model::{
     providers::openai_responses::OpenAiResponsesAdapter, ModelAdapter, ModelError, ModelMessage,
     ModelProfile, ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelResponse,
     ModelResponsePart, ModelSettings, ProtocolFamily, ToolCallPart,
-    INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_METADATA,
-    INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
 };
 
 #[derive(Clone)]
@@ -300,27 +299,28 @@ async fn builder_persists_environment_and_runtime_context_for_prefix_stability()
     assert!(matches!(
         &request.parts[0],
         ModelRequestPart::UserPrompt { content, metadata, .. }
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
-                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text.contains("<environment-context>"))
+            if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
+                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text == "inspect workspace")
     ));
     assert!(matches!(
         &request.parts[1],
         ModelRequestPart::UserPrompt { content, metadata, .. }
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_RUNTIME_CONTEXT))
-                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text.contains("<runtime-context>"))
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT))
+                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text.contains("<environment-context>"))
     ));
     assert!(matches!(
         &request.parts[2],
-        ModelRequestPart::UserPrompt { content, .. }
-            if matches!(&content[0], starweaver_model::ContentPart::Text { text } if text == "inspect workspace")
+        ModelRequestPart::UserPrompt { content, metadata, .. }
+            if metadata.get(CONTEXT_ORIGIN_METADATA)
+                == Some(&serde_json::json!(CONTEXT_ORIGIN_RUNTIME_CONTEXT))
+                && matches!(&content[0], starweaver_model::ContentPart::Text { text } if text.contains("<runtime-context>"))
     ));
 
     let durable_history =
         serde_json::to_string(&context.message_history).expect("message history should serialize");
     assert!(durable_history.contains("<environment-context>"));
-    assert!(durable_history.contains("<runtime-context>"));
+    assert!(!durable_history.contains("<runtime-context>"));
 }
 
 #[tokio::test]
@@ -350,15 +350,17 @@ async fn multi_run_session_preserves_previous_model_request_prefix() {
     assert_eq!(captured.len(), 2);
     assert_eq!(captured[0].len(), 1);
     assert!(captured[1].len() >= 3);
-    assert_eq!(captured[0][0], captured[1][0]);
     assert_eq!(
-        context_origin_count(&captured[1], INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT),
+        context_origin_count(&captured[1], CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT),
         1
     );
     assert_eq!(
-        context_origin_count(&captured[1], INSTRUCTION_ORIGIN_RUNTIME_CONTEXT),
-        2
+        context_origin_count(&captured[1], CONTEXT_ORIGIN_RUNTIME_CONTEXT),
+        1
     );
+    let first_history = serde_json::to_string(&captured[1][0]).unwrap();
+    assert!(first_history.contains("<environment-context>"));
+    assert!(!first_history.contains("<runtime-context>"));
 
     let first_wire =
         OpenAiResponsesAdapter::build_request("gpt-5.5", &captured[0], None, &[], &[]).unwrap();
@@ -367,7 +369,8 @@ async fn multi_run_session_preserves_previous_model_request_prefix() {
     let first_input = first_wire["input"].as_array().unwrap();
     let second_input = second_wire["input"].as_array().unwrap();
     assert!(second_input.len() > first_input.len());
-    assert_eq!(first_input.as_slice(), &second_input[..first_input.len()]);
+    assert_eq!(first_input[0], second_input[0]);
+    assert_eq!(first_input[1], second_input[1]);
 }
 
 fn context_origin_count(messages: &[ModelMessage], origin: &str) -> usize {
@@ -382,7 +385,7 @@ fn context_origin_count(messages: &[ModelMessage], origin: &str) -> usize {
             matches!(
                 part,
                 ModelRequestPart::UserPrompt { metadata, .. }
-                    if metadata.get(INSTRUCTION_ORIGIN_METADATA) == Some(&serde_json::json!(origin))
+                    if metadata.get(CONTEXT_ORIGIN_METADATA) == Some(&serde_json::json!(origin))
             )
         })
         .count()

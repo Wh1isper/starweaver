@@ -222,7 +222,7 @@ fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
     context.push_message(ModelMessage::Response(first));
     context.push_message(ModelMessage::Response(second));
 
-    let injected = context.inject_runtime_context(true).unwrap();
+    let injected = context.render_runtime_context(true).unwrap();
 
     assert_eq!(context.latest_request_total_tokens(), Some(50));
     assert!(injected.contains("<total-tokens>50</total-tokens>"));
@@ -272,7 +272,7 @@ fn runtime_context_adds_proactive_context_pressure_reminder_from_latest_request_
     context.push_message(ModelMessage::Response(first));
     context.push_message(ModelMessage::Response(second));
 
-    let injected = context.inject_runtime_context(true).unwrap();
+    let injected = context.render_runtime_context(true).unwrap();
 
     assert!(injected.contains("<system-reminder>"));
     assert!(injected.contains("Context usage is at 60% (60 / 100 tokens)"));
@@ -292,7 +292,7 @@ fn runtime_context_includes_active_tasks_with_user_prompt_details() {
     completed.status = TaskStatus::Completed;
     context.set_tasks(vec![pending, in_progress, completed]);
 
-    let injected = context.inject_runtime_context(true).unwrap();
+    let injected = context.render_runtime_context(true).unwrap();
 
     assert!(injected.contains("<active-tasks hint=\"Update status with task_update tool\">"));
     assert!(injected.contains("<task id=\"1\" status=\"pending\" blocked-by=\"2\">"));
@@ -310,7 +310,7 @@ fn runtime_context_includes_compact_active_tasks_for_tool_turns() {
         "Plan the implementation",
     )]);
 
-    let injected = context.inject_runtime_context(false).unwrap();
+    let injected = context.render_runtime_context(false).unwrap();
 
     assert!(injected.contains("<active-tasks>"));
     assert!(injected.contains("<task id=\"1\" status=\"pending\">Plan work</task>"));

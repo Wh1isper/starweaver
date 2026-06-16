@@ -1,12 +1,13 @@
 use serde_json::{Map, Value};
 
-const TOOL_RETURN_MEDIA_ORIGIN: &str = "tool_return_media";
-
 use crate::{
     adapter::ModelRequestParameters,
     message::{ModelMessage, ModelRequest, ModelRequestPart},
     profile::{ModelProfile, NativeToolKind},
-    request::INSTRUCTION_DYNAMIC_METADATA,
+    request::{
+        context_origin_metadata, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, INSTRUCTION_DYNAMIC_METADATA,
+        INSTRUCTION_ORIGIN_METADATA,
+    },
     settings::ModelSettings,
 };
 
@@ -212,7 +213,7 @@ fn attach_structured_output_instruction(
     }
     let mut metadata = Map::new();
     metadata.insert(
-        "starweaver_instruction_origin".to_string(),
+        INSTRUCTION_ORIGIN_METADATA.to_string(),
         serde_json::json!(if output_mode == OutputMode::Prompted {
             "prompted_output"
         } else {
@@ -299,10 +300,8 @@ fn request_instruction_insert_index(request: &ModelRequest) -> usize {
 fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
     match part {
         ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
-        ModelRequestPart::UserPrompt { metadata, .. } => metadata
-            .get("starweaver_instruction_origin")
-            .and_then(Value::as_str)
-            .is_some_and(|origin| origin == TOOL_RETURN_MEDIA_ORIGIN),
+        ModelRequestPart::UserPrompt { metadata, .. } => context_origin_metadata(metadata)
+            .is_some_and(|origin| origin == CONTEXT_ORIGIN_TOOL_RETURN_MEDIA),
         ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,
     }
 }

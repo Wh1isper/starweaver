@@ -159,7 +159,7 @@ impl CacheFriendlyCompactCapability {
         context.add_usage(&response.usage);
         let summary = response.text_output();
         let compacted = build_cache_friendly_compacted_messages(state, context, messages, &summary);
-        context.force_inject_instructions = true;
+        context.force_inject_context = true;
         context.publish_event(AgentEvent::new(
             "compact_complete",
             json!({
