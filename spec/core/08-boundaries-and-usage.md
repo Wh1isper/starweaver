@@ -101,10 +101,15 @@ The optional `pricing` feature owns USD estimate helpers:
 
 - `pricing::CostBudget`
 - `pricing::ModelPricing`
+- `pricing::ModelPricingDetails`
+- `pricing::ModelPricingProfile`
+- `pricing::ModelPricingTier`
 - `pricing::known_model_pricing()`
+- `pricing::known_model_pricing_details()`
+- `pricing::known_model_pricing_profile()`
 - `pricing::estimate_pricing_for_model()`
 
-Pricing estimates use fixed-point micro USD through `PricingEstimate::amount_micros_usd`, avoiding floats in serialized runtime events.
+Pricing estimates use fixed-point micro USD through `PricingEstimate::amount_micros_usd`, avoiding floats in serialized runtime events. Built-in catalog pricing is best-effort standard direct API pricing. Cache-aware estimates assume `Usage::input_tokens` includes provider-reported cache write/read subtotals and subtract those subtotals before applying cache-specific rates. Context-length tiers are request-scoped: runtime snapshots should add per-request estimates for tiered built-in profiles instead of repricing cumulative run usage.
 
 ## Usage Event Contract
 

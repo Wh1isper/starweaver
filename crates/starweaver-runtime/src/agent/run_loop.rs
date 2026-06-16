@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
-    ModelSettings,
 };
 use starweaver_tools::ToolContext;
 use starweaver_usage::pricing::estimate_pricing_for_model;
@@ -33,29 +32,6 @@ use crate::{
 };
 
 impl Agent {
-    fn merge_context_model_headers(
-        &self,
-        context: &AgentContext,
-        settings: &mut Option<ModelSettings>,
-    ) {
-        let should_add_headers = self.model.provider_name() == Some("codex")
-            || context.provider_session_id.is_some()
-            || context.provider_thread_id.is_some();
-        if !should_add_headers {
-            return;
-        }
-        let headers = context.get_model_extra_headers();
-        if headers.values().all(std::string::String::is_empty) {
-            return;
-        }
-        let settings = settings.get_or_insert_with(ModelSettings::default);
-        for (key, value) in headers {
-            if !value.is_empty() {
-                settings.extra_headers.entry(key).or_insert(value);
-            }
-        }
-    }
-
     #[allow(clippy::too_many_lines)]
     async fn run_with_context_inner(
         &self,
@@ -268,7 +244,6 @@ impl Agent {
                     .splice(insert_at..insert_at, dynamic_instruction_parts);
             }
             let mut settings = self.effective_settings();
-            self.merge_context_model_headers(context, &mut settings);
             let skipped_response = self
                 .call_before_model_request(&mut state, context, &mut request, &mut settings)
                 .await?;
@@ -345,7 +320,8 @@ impl Agent {
                 self.record_model_request_event(&model_span, &messages, settings.as_ref(), &params);
                 let request_context =
                     ModelRequestContext::new(run_id.clone(), conversation_id.clone())
-                        .with_trace_context(model_span.context().clone());
+                        .with_trace_context(model_span.context().clone())
+                        .with_llm_trace_metadata(context.metadata.clone());
                 macro_rules! recover_model_error {
                     ($error:expr) => {{
                         let error = $error;

@@ -14,6 +14,11 @@ pub struct Usage {
     /// Number of provider requests.
     pub requests: u64,
     /// Input or prompt tokens.
+    ///
+    /// Provider adapters should normalize this as total provider-billed input
+    /// tokens for the request, including cache-write and cache-read tokens when
+    /// those subtotals are present. Pricing helpers subtract the cache subtotals
+    /// before applying cache-specific rates.
     pub input_tokens: u64,
     /// Tokens written to a provider prompt cache.
     #[serde(default)]

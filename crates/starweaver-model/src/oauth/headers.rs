@@ -91,8 +91,14 @@ pub(super) fn validate_safe_extra_headers(
 }
 
 pub(super) fn trace_session_headers(request: &HttpRequest) -> BTreeMap<String, String> {
-    let session_id = metadata_string(request, "starweaver.conversation_id");
-    let thread_id = metadata_string(request, "starweaver.run_id")
+    let session_id = metadata_string(request, "provider.codex.session_id")
+        .or_else(|| metadata_string(request, "starweaver.session_id"))
+        .or_else(|| metadata_string(request, "cli.session_id"))
+        .or_else(|| metadata_string(request, "starweaver.conversation_id"));
+    let thread_id = metadata_string(request, "provider.codex.thread_id")
+        .or_else(|| metadata_string(request, "starweaver.durable_run_id"))
+        .or_else(|| metadata_string(request, "cli.run_id"))
+        .or_else(|| metadata_string(request, "starweaver.run_id"))
         .or_else(|| metadata_string(request, "starweaver.conversation_id"));
     build_session_headers(session_id.as_deref(), thread_id.as_deref())
 }

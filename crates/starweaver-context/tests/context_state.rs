@@ -215,10 +215,8 @@ fn tool_id_wrapper_normalizes_tool_ids_across_history_and_payloads() {
 }
 
 #[test]
-fn context_run_helpers_prepare_headers_and_wrapper_metadata() {
+fn context_run_helpers_prepare_lifecycle_and_wrapper_metadata() {
     let mut context = AgentContext::new(AgentId::from_string("main"));
-    context.provider_session_id = Some("session-1".to_string());
-    context.provider_thread_id = Some("thread-1".to_string());
     context.parent_run_id = Some(RunId::from_string("parent-run"));
     context
         .wrapper_metadata
@@ -228,11 +226,6 @@ fn context_run_helpers_prepare_headers_and_wrapper_metadata() {
     assert!(context.run_id.is_some());
     assert!(context.lifecycle.entered);
     assert!(context.ended_at.is_none());
-    assert_eq!(context.get_model_extra_headers()["session_id"], "session-1");
-    assert_eq!(
-        context.get_model_extra_headers()["x-client-request-id"],
-        "thread-1"
-    );
 
     let metadata = context.get_wrapper_metadata();
     assert_eq!(metadata["agent_id"], "main");

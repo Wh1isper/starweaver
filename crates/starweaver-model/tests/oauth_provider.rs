@@ -82,8 +82,15 @@ fn codex_request() -> HttpRequest {
         body: json!({"model": "gpt-5.5", "instructions": null}),
         timeout: None,
         metadata: serde_json::Map::from_iter([
-            ("starweaver.conversation_id".to_string(), json!("session-1")),
-            ("starweaver.run_id".to_string(), json!("run-1")),
+            ("starweaver.session_id".to_string(), json!("session-1")),
+            ("starweaver.durable_run_id".to_string(), json!("run-1")),
+            ("cli.session_id".to_string(), json!("cli-session-1")),
+            ("cli.run_id".to_string(), json!("cli-run-1")),
+            (
+                "starweaver.conversation_id".to_string(),
+                json!("conversation-1"),
+            ),
+            ("starweaver.run_id".to_string(), json!("runtime-run-1")),
         ]),
     }
 }
@@ -207,6 +214,33 @@ fn patch_codex_responses_body_matches_instruction_truthiness() {
     patch_codex_responses_body(&mut non_empty);
     assert_eq!(non_empty.body["instructions"], "keep");
     assert_eq!(non_empty.body["store"], false);
+}
+
+#[tokio::test]
+async fn codex_oauth_headers_prefer_provider_specific_metadata() {
+    let token_source = Arc::new(FakeTokenSource::default());
+    let http_client = Arc::new(RecordingHttpClient::default());
+    let client =
+        OAuthBearerHttpClient::new(http_client.clone(), token_source, "codex", BTreeMap::new())
+            .unwrap();
+    let mut request = codex_request();
+    request.metadata.insert(
+        "provider.codex.session_id".to_string(),
+        json!("codex-session"),
+    );
+    request.metadata.insert(
+        "provider.codex.thread_id".to_string(),
+        json!("codex-thread"),
+    );
+
+    let _ = client.send(request).await;
+
+    let seen = http_client.seen.lock().await;
+    assert_eq!(seen[0].headers["session_id"], "codex-session");
+    assert_eq!(seen[0].headers["session-id"], "codex-session");
+    assert_eq!(seen[0].headers["thread_id"], "codex-thread");
+    assert_eq!(seen[0].headers["thread-id"], "codex-thread");
+    assert_eq!(seen[0].headers["x-client-request-id"], "codex-thread");
 }
 
 #[tokio::test]

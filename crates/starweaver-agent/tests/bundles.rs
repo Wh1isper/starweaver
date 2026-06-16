@@ -140,7 +140,8 @@ async fn environment_context_capability_force_reinjects_unchanged_context() {
 }
 
 #[tokio::test]
-async fn environment_context_capability_reinjects_changed_context_on_later_turn() {
+async fn environment_context_capability_keeps_initial_context_on_later_turn_even_if_environment_changes(
+) {
     let provider =
         Arc::new(VirtualEnvironmentProvider::new("test").with_file("README.md", "hello"));
     let mut context = AgentContext::default();
@@ -174,16 +175,15 @@ async fn environment_context_capability_reinjects_changed_context_on_later_turn(
         .await
         .unwrap();
 
-    assert_eq!(environment_context_part_count(&messages), 2);
+    assert_eq!(environment_context_part_count(&messages), 1);
     let starweaver_model::ModelMessage::Request(request) = messages.last().unwrap() else {
         panic!("expected latest request");
     };
     assert!(matches!(
         request.parts.first(),
         Some(ModelRequestPart::UserPrompt { content, metadata, .. })
-            if metadata.get(INSTRUCTION_ORIGIN_METADATA)
-                == Some(&serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT))
-                && matches!(&content[0], ContentPart::Text { text } if text.contains("src/lib.rs"))
+            if metadata.get(INSTRUCTION_ORIGIN_METADATA).is_none()
+                && matches!(&content[0], ContentPart::Text { text } if text == "continue")
     ));
 }
 

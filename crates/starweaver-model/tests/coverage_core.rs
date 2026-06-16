@@ -358,7 +358,7 @@ fn media_helpers_cover_policy_data_url_webp_and_corruption_edges() {
 }
 
 #[tokio::test]
-async fn protocol_client_merges_extra_headers_into_http_request() {
+async fn protocol_client_keeps_explicit_headers_and_request_metadata_separate() {
     let _guard = allow_real_model_requests_guard();
     let response_body = json!({
         "id": "chatcmpl_headers",
@@ -376,16 +376,25 @@ async fn protocol_client_merges_extra_headers_into_http_request() {
         http_client.clone(),
     );
     let mut settings = ModelSettings::default();
-    settings
-        .extra_headers
-        .insert("session_id".to_string(), "session_http_header".to_string());
-    settings
-        .extra_headers
-        .insert("session-id".to_string(), "session_http_header".to_string());
     settings.extra_headers.insert(
-        "x-client-request-id".to_string(),
-        "run_http_header".to_string(),
+        "x-request-correlation".to_string(),
+        "request_header".to_string(),
     );
+    let mut params = ModelRequestParameters::default();
+    params.metadata.insert(
+        "starweaver.session_id".to_string(),
+        json!("session_http_metadata"),
+    );
+    params.metadata.insert(
+        "starweaver.durable_run_id".to_string(),
+        json!("run_http_metadata"),
+    );
+    params
+        .metadata
+        .insert("cli.session_id".to_string(), json!("session_http_metadata"));
+    params
+        .metadata
+        .insert("cli.run_id".to_string(), json!("run_http_metadata"));
 
     let response = client
         .request(
@@ -393,7 +402,7 @@ async fn protocol_client_merges_extra_headers_into_http_request() {
                 starweaver_model::ModelRequest::user_text("hello"),
             )],
             Some(settings),
-            ModelRequestParameters::default(),
+            params,
             ModelRequestContext::new(
                 RunId::from_string("run_http_header"),
                 ConversationId::from_string("conversation_http_header"),
@@ -408,13 +417,28 @@ async fn protocol_client_merges_extra_headers_into_http_request() {
     ));
     let requests = http_client.requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].headers["session_id"], "session_http_header");
-    assert_eq!(requests[0].headers["session-id"], "session_http_header");
     assert_eq!(
-        requests[0].headers["x-client-request-id"],
-        "run_http_header"
+        requests[0].headers["x-request-correlation"],
+        "request_header"
     );
     assert_eq!(requests[0].headers["authorization"], "Bearer token");
+    assert!(!requests[0].headers.contains_key("session_id"));
+    assert!(!requests[0].headers.contains_key("session-id"));
+    assert!(!requests[0].headers.contains_key("x-client-request-id"));
+    assert_eq!(
+        requests[0].metadata["starweaver.session_id"],
+        "session_http_metadata"
+    );
+    assert_eq!(
+        requests[0].metadata["starweaver.durable_run_id"],
+        "run_http_metadata"
+    );
+    assert_eq!(
+        requests[0].metadata["cli.session_id"],
+        "session_http_metadata"
+    );
+    assert_eq!(requests[0].metadata["cli.run_id"], "run_http_metadata");
+    assert_eq!(requests[0].metadata["starweaver.run_id"], "run_http_header");
 }
 
 #[test]

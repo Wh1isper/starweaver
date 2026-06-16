@@ -6,7 +6,10 @@ use starweaver_model::{
     INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT, INSTRUCTION_ORIGIN_HANDOFF,
     INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_RUNTIME_CONTEXT,
 };
-use starweaver_runtime::{AgentCapability, AgentRunState, CapabilityError, CapabilityResult};
+use starweaver_runtime::{
+    AgentCapability, AgentRunState, CapabilityError, CapabilityOrdering, CapabilityResult,
+    CapabilitySpec, RUNTIME_CONTEXT_CAPABILITY_ID,
+};
 use starweaver_tools::{ToolContext, ToolError};
 
 use crate::bundles::helpers::tool_execution_error;
@@ -37,64 +40,120 @@ pub struct EnvironmentContextCapability;
 
 #[async_trait]
 impl AgentCapability for EnvironmentContextCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new("starweaver.environment.context")
+            .with_description(
+                "Injects provider-supplied environment context into the initial model request.",
+            )
+            .with_ordering(CapabilityOrdering::default().before(RUNTIME_CONTEXT_CAPABILITY_ID))
+    }
+
     async fn prepare_model_messages_with_context(
         &self,
-        state: &mut AgentRunState,
+        _state: &mut AgentRunState,
         context: &mut AgentContext,
         mut messages: Vec<ModelMessage>,
     ) -> CapabilityResult<Vec<ModelMessage>> {
-        let Some(request_index) = latest_request_index(&messages) else {
-            return Ok(messages);
-        };
-        let has_control_part = match &messages[request_index] {
-            ModelMessage::Request(request) => request_has_tool_return_or_retry(request),
-            ModelMessage::Response(_) => false,
-        };
-        let force_inject = force_inject_instructions(state, context);
-        if has_control_part && !force_inject {
-            return Ok(messages);
-        }
-
-        let Some(environment) = context.dependencies.get::<EnvironmentHandle>() else {
-            return Ok(messages);
-        };
-        let Some(text) = environment
-            .provider()
-            .get_context_instructions()
-            .await
-            .map_err(|error| CapabilityError::Failed(error.to_string()))?
-        else {
-            return Ok(messages);
-        };
-        if !force_inject
-            && latest_context_user_prompt_text(&messages, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT)
-                == Some(text.as_str())
-        {
-            return Ok(messages);
-        }
-        let mut metadata = serde_json::Map::new();
-        metadata.insert(
-            INSTRUCTION_ORIGIN_METADATA.to_string(),
-            serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT),
+        strip_context_origin_from_latest_request(
+            &mut messages,
+            INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT,
         );
-        if let ModelMessage::Request(request) = &mut messages[request_index] {
-            insert_context_part_after_control_parts(
-                request,
-                ModelRequestPart::UserPrompt {
-                    content: vec![ContentPart::Text { text }],
-                    name: None,
-                    metadata,
-                },
-            );
-        }
+        inject_environment_context(context, &mut messages).await?;
+        Ok(messages)
+    }
+
+    async fn prepare_provider_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
         Ok(messages)
     }
 }
 
-fn latest_request_index(messages: &[ModelMessage]) -> Option<usize> {
-    messages
-        .iter()
-        .rposition(|message| matches!(message, ModelMessage::Request(_)))
+async fn inject_environment_context(
+    context: &AgentContext,
+    messages: &mut Vec<ModelMessage>,
+) -> CapabilityResult<()> {
+    let force_inject = context.force_inject_instructions
+        || metadata_bool(&context.metadata, "starweaver_force_inject_instructions");
+    if latest_request(messages).is_some_and(request_has_tool_return_or_retry) && !force_inject {
+        return Ok(());
+    }
+    if has_context_origin(messages, INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT) && !force_inject {
+        return Ok(());
+    }
+    let Some(environment) = context.dependencies.get::<EnvironmentHandle>() else {
+        return Ok(());
+    };
+    let Some(text) = environment
+        .provider()
+        .get_context_instructions()
+        .await
+        .map_err(|error| CapabilityError::Failed(error.to_string()))?
+        .filter(|text| !text.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        "starweaver_instruction_type".to_string(),
+        serde_json::json!("environment"),
+    );
+    metadata.insert(
+        INSTRUCTION_ORIGIN_METADATA.to_string(),
+        serde_json::json!(INSTRUCTION_ORIGIN_ENVIRONMENT_CONTEXT),
+    );
+    insert_context_into_latest_request(
+        messages,
+        ModelRequestPart::UserPrompt {
+            content: vec![ContentPart::Text { text }],
+            name: None,
+            metadata,
+        },
+    );
+    Ok(())
+}
+
+fn strip_context_origin_from_latest_request(messages: &mut [ModelMessage], origin: &str) {
+    let Some(request) = messages.iter_mut().rev().find_map(|message| match message {
+        ModelMessage::Request(request) => Some(request),
+        ModelMessage::Response(_) => None,
+    }) else {
+        return;
+    };
+    request
+        .parts
+        .retain(|part| part_context_origin(part) != Some(origin));
+}
+
+fn has_context_origin(messages: &[ModelMessage], origin: &str) -> bool {
+    messages.iter().any(|message| match message {
+        ModelMessage::Request(request) => request
+            .parts
+            .iter()
+            .any(|part| part_context_origin(part) == Some(origin)),
+        ModelMessage::Response(_) => false,
+    })
+}
+
+fn part_context_origin(part: &ModelRequestPart) -> Option<&str> {
+    match part {
+        ModelRequestPart::SystemPrompt { metadata, .. }
+        | ModelRequestPart::UserPrompt { metadata, .. }
+        | ModelRequestPart::Instruction { metadata, .. } => metadata
+            .get(INSTRUCTION_ORIGIN_METADATA)
+            .and_then(serde_json::Value::as_str),
+        ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => None,
+    }
+}
+
+fn latest_request(messages: &[ModelMessage]) -> Option<&ModelRequest> {
+    messages.iter().rev().find_map(|message| match message {
+        ModelMessage::Request(request) => Some(request),
+        ModelMessage::Response(_) => None,
+    })
 }
 
 fn request_has_tool_return_or_retry(request: &ModelRequest) -> bool {
@@ -106,23 +165,42 @@ fn request_has_tool_return_or_retry(request: &ModelRequest) -> bool {
     })
 }
 
-fn insert_context_part_after_control_parts(request: &mut ModelRequest, part: ModelRequestPart) {
+fn metadata_bool(metadata: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    metadata
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn insert_context_into_latest_request(messages: &mut Vec<ModelMessage>, part: ModelRequestPart) {
+    for message in messages.iter_mut().rev() {
+        if let ModelMessage::Request(request) = message {
+            let insert_at = request_context_insert_index(request);
+            request.parts.insert(insert_at, part);
+            return;
+        }
+    }
+    messages.push(ModelMessage::Request(ModelRequest {
+        parts: vec![part],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    }));
+}
+
+fn request_context_insert_index(request: &ModelRequest) -> usize {
     let instruction_end = request_instruction_end_index(request);
-    let context_prefix_len = request.parts[instruction_end..]
-        .iter()
-        .take_while(|part| is_context_user_prompt(part))
-        .count();
-    request
-        .parts
-        .insert(instruction_end + context_prefix_len, part);
+    instruction_end
+        + request.parts[instruction_end..]
+            .iter()
+            .take_while(|part| is_context_user_prompt(part))
+            .count()
 }
 
 fn request_instruction_end_index(request: &ModelRequest) -> usize {
-    let control_prefix_len = request
-        .parts
-        .iter()
-        .take_while(|part| is_control_prefix_part(part))
-        .count();
+    let control_prefix_len = request_control_prefix_len(request);
     control_prefix_len
         + request.parts[control_prefix_len..]
             .iter()
@@ -130,11 +208,19 @@ fn request_instruction_end_index(request: &ModelRequest) -> usize {
             .count()
 }
 
+fn request_control_prefix_len(request: &ModelRequest) -> usize {
+    request
+        .parts
+        .iter()
+        .take_while(|part| is_control_prefix_part(part))
+        .count()
+}
+
 fn is_control_prefix_part(part: &ModelRequestPart) -> bool {
     match part {
         ModelRequestPart::ToolReturn(_) | ModelRequestPart::RetryPrompt { .. } => true,
         ModelRequestPart::UserPrompt { metadata, .. } => metadata
-            .get("starweaver_instruction_origin")
+            .get(INSTRUCTION_ORIGIN_METADATA)
             .and_then(serde_json::Value::as_str)
             .is_some_and(|origin| origin == "tool_return_media"),
         ModelRequestPart::SystemPrompt { .. } | ModelRequestPart::Instruction { .. } => false,
@@ -166,59 +252,6 @@ fn is_context_user_prompt(part: &ModelRequestPart) -> bool {
         | ModelRequestPart::ToolReturn(_)
         | ModelRequestPart::RetryPrompt { .. } => false,
     }
-}
-
-fn latest_context_user_prompt_text<'a>(
-    messages: &'a [ModelMessage],
-    expected_origin: &str,
-) -> Option<&'a str> {
-    messages.iter().rev().find_map(|message| {
-        let ModelMessage::Request(request) = message else {
-            return None;
-        };
-        request.parts.iter().rev().find_map(|part| match part {
-            ModelRequestPart::UserPrompt {
-                content, metadata, ..
-            } if metadata
-                .get(INSTRUCTION_ORIGIN_METADATA)
-                .and_then(serde_json::Value::as_str)
-                == Some(expected_origin) =>
-            {
-                single_text_content(content)
-            }
-            ModelRequestPart::SystemPrompt { .. }
-            | ModelRequestPart::UserPrompt { .. }
-            | ModelRequestPart::ToolReturn(_)
-            | ModelRequestPart::RetryPrompt { .. }
-            | ModelRequestPart::Instruction { .. } => None,
-        })
-    })
-}
-
-fn single_text_content(content: &[ContentPart]) -> Option<&str> {
-    match content {
-        [ContentPart::Text { text }] => Some(text.as_str()),
-        [ContentPart::ImageUrl { .. }
-        | ContentPart::FileUrl { .. }
-        | ContentPart::Binary { .. }
-        | ContentPart::ResourceRef { .. }
-        | ContentPart::DataUrl { .. }]
-        | []
-        | [_, _, ..] => None,
-    }
-}
-
-fn force_inject_instructions(state: &AgentRunState, context: &AgentContext) -> bool {
-    context.force_inject_instructions
-        || metadata_bool(&state.metadata, "starweaver_force_inject_instructions")
-        || metadata_bool(&context.metadata, "starweaver_force_inject_instructions")
-}
-
-fn metadata_bool(metadata: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
-    metadata
-        .get(key)
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
 }
 
 /// Attach the active environment to an `AgentContext`.

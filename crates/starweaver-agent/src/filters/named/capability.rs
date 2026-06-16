@@ -118,4 +118,13 @@ impl AgentCapability for NamedFilterCapability {
         record_filter_order(&mut messages, self.name);
         Ok(messages)
     }
+
+    async fn prepare_provider_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+    ) -> CapabilityResult<Vec<ModelMessage>> {
+        Ok(messages)
+    }
 }

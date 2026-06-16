@@ -21,6 +21,7 @@ impl ProtocolModelClient {
             options.timeout_ms = options.timeout_ms.or(settings.timeout_ms);
         }
         options.extra_body.extend(params.extra_body.clone());
+        options.metadata.extend(params.metadata.clone());
         options.metadata.extend(context.llm_trace_metadata.clone());
         options.metadata.insert(
             "starweaver.run_id".to_string(),

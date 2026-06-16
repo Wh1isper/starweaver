@@ -28,12 +28,6 @@ pub struct AgentContext {
     /// Parent run identifier if this context belongs to a subagent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<RunId>,
-    /// Provider-facing session identifier for model request headers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_session_id: Option<String>,
-    /// Provider-facing thread identifier for model request headers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_thread_id: Option<String>,
     /// Conversation identifier.
     pub conversation_id: ConversationId,
     /// Canonical message history.
@@ -164,8 +158,6 @@ impl AgentContext {
             agent_id,
             run_id: None,
             parent_run_id: None,
-            provider_session_id: None,
-            provider_thread_id: None,
             conversation_id: ConversationId::new(),
             message_history: Vec::new(),
             subagent_history: BTreeMap::new(),
@@ -693,32 +685,6 @@ impl AgentContext {
     /// Subscribe the current agent to the message bus.
     pub fn subscribe_messages(&mut self) {
         self.messages.subscribe(self.agent_id.as_str());
-    }
-
-    /// Return stable provider headers for model construction.
-    #[must_use]
-    pub fn get_model_extra_headers(&self) -> BTreeMap<String, String> {
-        let session_id = self
-            .provider_session_id
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .or_else(|| self.run_id.as_ref().map(RunId::as_str))
-            .unwrap_or_default()
-            .to_string();
-        let thread_id = self
-            .provider_thread_id
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .or_else(|| self.run_id.as_ref().map(RunId::as_str))
-            .unwrap_or_default()
-            .to_string();
-        BTreeMap::from([
-            ("session_id".to_string(), session_id.clone()),
-            ("session-id".to_string(), session_id),
-            ("thread_id".to_string(), thread_id.clone()),
-            ("thread-id".to_string(), thread_id.clone()),
-            ("x-client-request-id".to_string(), thread_id),
-        ])
     }
 
     /// Return wrapper metadata with built-in context fields and user overrides.

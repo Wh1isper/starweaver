@@ -164,7 +164,7 @@ pub fn execute_agent_session_with_channels(
     if let Some(shell_review) = profile.shell_review.as_ref() {
         attach_shell_review_handle(session.context_mut(), shell_review.clone());
     }
-    sync_provider_request_ids(&mut session, run);
+    sync_run_request_metadata(&mut session, run);
     session.set_metadata("cli.profile", json!(profile.name));
     session.set_metadata("cli.profile_source", json!(profile.source.kind()));
     if let Some(path) = profile.source.path() {
@@ -276,10 +276,11 @@ enum SessionRunOutcome {
     Failed(String),
 }
 
-fn sync_provider_request_ids(session: &mut AgentSession, run: &RunRecord) {
-    let context = session.context_mut();
-    context.provider_session_id = Some(run.session_id.as_str().to_string());
-    context.provider_thread_id = Some(run.run_id.as_str().to_string());
+fn sync_run_request_metadata(session: &mut AgentSession, run: &RunRecord) {
+    session.set_metadata("starweaver.session_id", json!(run.session_id.as_str()));
+    session.set_metadata("starweaver.durable_run_id", json!(run.run_id.as_str()));
+    session.set_metadata("cli.session_id", json!(run.session_id.as_str()));
+    session.set_metadata("cli.run_id", json!(run.run_id.as_str()));
 }
 
 fn run_session_stream(
@@ -665,13 +666,13 @@ mod tests {
 
     use super::{
         cancelled_display_projection, interrupted_partial_response, start_steering_collector,
-        sync_provider_request_ids, CliGuidanceAdapter, CliPromptContentAdapter, CliRunPolicy,
+        sync_run_request_metadata, CliGuidanceAdapter, CliPromptContentAdapter, CliRunPolicy,
         CliSteeringMessage, CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
 
     #[test]
-    fn sync_provider_request_ids_sets_durable_session_and_run_headers() {
+    fn sync_run_request_metadata_sets_durable_session_and_run_metadata() {
         let agent = AgentBuilder::new(Arc::new(FunctionModel::new(
             |_messages: Vec<ModelMessage>,
              _settings: Option<ModelSettings>,
@@ -685,32 +686,40 @@ mod tests {
             ConversationId::from_string("conversation_cli_header"),
         );
 
-        sync_provider_request_ids(&mut session, &run);
+        sync_run_request_metadata(&mut session, &run);
 
         assert_eq!(
-            session.context().provider_session_id.as_deref(),
-            Some("session_cli_header")
+            session.context().metadata["starweaver.session_id"],
+            "session_cli_header"
         );
         assert_eq!(
-            session.context().provider_thread_id.as_deref(),
-            Some("run_cli_header")
+            session.context().metadata["starweaver.durable_run_id"],
+            "run_cli_header"
         );
-        let headers = session.context().get_model_extra_headers();
-        assert_eq!(headers["session_id"], "session_cli_header");
-        assert_eq!(headers["session-id"], "session_cli_header");
-        assert_eq!(headers["thread_id"], "run_cli_header");
-        assert_eq!(headers["x-client-request-id"], "run_cli_header");
+        assert_eq!(
+            session.context().metadata["cli.session_id"],
+            "session_cli_header"
+        );
+        assert_eq!(session.context().metadata["cli.run_id"], "run_cli_header");
     }
 
     #[test]
-    fn agent_session_passes_provider_request_ids_to_model_settings_headers() {
+    fn agent_session_passes_cli_run_ids_as_model_request_metadata() {
         let captured_settings = Arc::new(Mutex::new(Vec::<Option<ModelSettings>>::new()));
+        let captured_metadata = Arc::new(Mutex::new(Vec::<
+            serde_json::Map<String, serde_json::Value>,
+        >::new()));
         let model_settings = Arc::clone(&captured_settings);
+        let model_metadata = Arc::clone(&captured_metadata);
         let model = FunctionModel::new(
             move |_messages: Vec<ModelMessage>,
                   settings: Option<ModelSettings>,
-                  _info: FunctionModelInfo| {
+                  info: FunctionModelInfo| {
                 model_settings.lock().unwrap().push(settings);
+                model_metadata
+                    .lock()
+                    .unwrap()
+                    .push(info.context.llm_trace_metadata);
                 Ok(ModelResponse::text("ok"))
             },
         );
@@ -721,34 +730,32 @@ mod tests {
             RunId::from_string("run_runtime_header"),
             ConversationId::from_string("conversation_runtime_header"),
         );
-        sync_provider_request_ids(&mut session, &run);
+        sync_run_request_metadata(&mut session, &run);
 
         tokio::runtime::Runtime::new()
             .expect("runtime should start")
             .block_on(session.run_stream("hello"))
             .expect("run should succeed");
 
-        let settings = {
+        let (captured_len, captured_has_empty_headers) = {
             let captured = captured_settings.lock().unwrap();
-            assert_eq!(captured.len(), 1);
-            captured[0]
-                .clone()
-                .expect("settings should include headers")
+            (
+                captured.len(),
+                captured[0]
+                    .as_ref()
+                    .is_none_or(|settings| settings.extra_headers.is_empty()),
+            )
         };
-        assert_eq!(
-            settings.extra_headers["session_id"],
-            "session_runtime_header"
-        );
-        assert_eq!(
-            settings.extra_headers["session-id"],
-            "session_runtime_header"
-        );
-        assert_eq!(settings.extra_headers["thread_id"], "run_runtime_header");
-        assert_eq!(settings.extra_headers["thread-id"], "run_runtime_header");
-        assert_eq!(
-            settings.extra_headers["x-client-request-id"],
-            "run_runtime_header"
-        );
+        assert_eq!(captured_len, 1);
+        assert!(captured_has_empty_headers);
+        let metadata = {
+            let metadata = captured_metadata.lock().unwrap();
+            metadata[0].clone()
+        };
+        assert_eq!(metadata["starweaver.session_id"], "session_runtime_header");
+        assert_eq!(metadata["starweaver.durable_run_id"], "run_runtime_header");
+        assert_eq!(metadata["cli.session_id"], "session_runtime_header");
+        assert_eq!(metadata["cli.run_id"], "run_runtime_header");
     }
 
     #[test]
