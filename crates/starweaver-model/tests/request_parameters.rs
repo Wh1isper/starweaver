@@ -98,6 +98,10 @@ fn context() -> ModelRequestContext {
     )
 }
 
+fn context_with_metadata(metadata: Map<String, Value>) -> ModelRequestContext {
+    context().with_llm_trace_metadata(metadata)
+}
+
 const fn text_response(body: Value) -> HttpResponse {
     HttpResponse::ok(body)
 }
@@ -312,6 +316,218 @@ async fn protocol_client_merges_default_and_request_settings_into_wire_request()
     assert_eq!(request.body["request_body"], true);
     assert_eq!(request.headers["x-default"], "yes");
     assert_eq!(request.headers["x-request"], "yes");
+}
+
+#[tokio::test]
+async fn protocol_client_adds_openai_prompt_cache_routing_from_session_metadata() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "resp_cache",
+        "model": "gpt-5.5",
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        HttpModelConfig::new("https://api.openai.test/v1", "responses"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                provider_options: Some(json!({
+                    "store": false,
+                    "openai_include_encrypted_reasoning": true
+                })),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context_with_metadata(Map::from_iter([
+                (
+                    "starweaver.session_id".to_string(),
+                    json!("session_143a9ff4-285b-4fe7-ad79-b1b291bbac44"),
+                ),
+                (
+                    "starweaver.prompt_cache_retention".to_string(),
+                    json!("24h"),
+                ),
+            ])),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(
+        request.body["prompt_cache_key"],
+        "sw_session_143a9ff4-285b-4fe7-ad79-b1b291bbac44"
+    );
+    assert_eq!(request.body["prompt_cache_retention"], "24h");
+    assert_eq!(request.body["store"], false);
+    assert!(request
+        .body
+        .get("openai_include_encrypted_reasoning")
+        .is_none());
+}
+
+#[tokio::test]
+async fn protocol_client_preserves_config_level_openai_prompt_cache_settings() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "resp_cache_config_explicit",
+        "model": "gpt-5.5",
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+    })));
+    let mut config = HttpModelConfig::new("https://api.openai.test/v1", "responses");
+    config
+        .extra_body
+        .insert("prompt_cache_key".to_string(), json!("config-level-key"));
+    config
+        .extra_body
+        .insert("prompt_cache_retention".to_string(), json!("24h"));
+    config.extra_body.insert(
+        "openai_include_encrypted_reasoning".to_string(),
+        json!(true),
+    );
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        config,
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            None,
+            ModelRequestParameters::default(),
+            context_with_metadata(Map::from_iter([(
+                "starweaver.session_id".to_string(),
+                json!("session_should_not_override_config"),
+            )])),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["prompt_cache_key"], "config-level-key");
+    assert_eq!(request.body["prompt_cache_retention"], "24h");
+    assert!(request
+        .body
+        .get("openai_include_encrypted_reasoning")
+        .is_none());
+}
+
+#[tokio::test]
+async fn protocol_client_preserves_explicit_openai_prompt_cache_settings() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "resp_cache_explicit",
+        "model": "gpt-5.5",
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        HttpModelConfig::new("https://api.openai.test/v1", "responses"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                extra_body: Map::from_iter([
+                    ("prompt_cache_key".to_string(), json!("custom-key")),
+                    ("prompt_cache_retention".to_string(), json!("24h")),
+                ]),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context_with_metadata(Map::from_iter([(
+                "starweaver.session_id".to_string(),
+                json!("session_should_not_override"),
+            )])),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["prompt_cache_key"], "custom-key");
+    assert_eq!(request.body["prompt_cache_retention"], "24h");
+}
+
+#[tokio::test]
+async fn protocol_client_adds_openai_chat_prompt_cache_routing_from_session_metadata() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_cache",
+        "model": "gpt-4.1-mini",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-4.1-mini",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        HttpModelConfig::new("https://api.openai.test/v1", "chat/completions"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            None,
+            ModelRequestParameters::default(),
+            context_with_metadata(Map::from_iter([(
+                "cli.session_id".to_string(),
+                json!("session_chat_cache"),
+            )])),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["prompt_cache_key"], "sw_session_chat_cache");
+}
+
+#[tokio::test]
+async fn protocol_client_does_not_add_session_prompt_cache_key_for_openai_compatible_models() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_compatible",
+        "model": "mimo-v2.5-pro",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "mimo-v2.5-pro",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        HttpModelConfig::new("https://gateway.example.test/v1", "chat/completions"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            None,
+            ModelRequestParameters::default(),
+            context_with_metadata(Map::from_iter([(
+                "cli.session_id".to_string(),
+                json!("session_compatible"),
+            )])),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert!(request.body.get("prompt_cache_key").is_none());
 }
 
 #[tokio::test]

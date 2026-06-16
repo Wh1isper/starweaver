@@ -128,6 +128,14 @@ assert_eq!(alias.alias, "claude-sonnet");
 # }
 ```
 
+## OpenAI prompt cache routing
+
+OpenAI prompt caching is automatic for long prompts, but cache hits are still routing-sensitive. Starweaver keeps stable instructions, tool definitions, and append-only conversation history at the front of provider requests, and for OpenAI GPT-family Chat Completions or Responses requests it derives a stable `prompt_cache_key` from the Starweaver session id when the request body does not already provide one.
+
+Explicit request settings still win. Applications can set `prompt_cache_key` or `prompt_cache_retention` through `ModelSettings.extra_body`, request `extra_body`, provider HTTP `extra_body`, or request metadata keys such as `starweaver.prompt_cache_key` and `starweaver.prompt_cache_retention`. Starweaver does not automatically add this OpenAI-specific key for Codex OAuth requests or OpenAI-compatible non-GPT model names.
+
+`store=false` is independent from prompt caching. It disables provider-side response/conversation storage, not OpenAI's automatic prompt cache. Measure actual prompt-cache reuse with `Usage.cache_read_tokens`, which is populated from OpenAI `cached_tokens` usage details.
+
 ## Production request guard
 
 Use the global guard in tests to prevent production HTTP requests:

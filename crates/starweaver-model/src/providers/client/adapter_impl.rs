@@ -50,8 +50,9 @@ impl ModelAdapter for ProtocolModelClient {
             prepared.settings.as_ref(),
             &prepared.params,
         )?;
-        let options = Self::request_options(&context, prepared.settings.as_ref(), &prepared.params);
-        let request = build_http_request(&self.http_config, &options, wire_body);
+        let options = self.request_options(&context, prepared.settings.as_ref(), &prepared.params);
+        let mut request = build_http_request(&self.http_config, &options, wire_body);
+        self.finalize_http_request(&mut request);
         if !allow_real_model_requests() {
             return Err(ModelError::RealModelRequestBlocked { url: request.url });
         }
@@ -114,8 +115,9 @@ impl ModelAdapter for ProtocolModelClient {
         if let Some(object) = wire_body.as_object_mut() {
             object.insert("stream".to_string(), Value::Bool(true));
         }
-        let options = Self::request_options(&context, prepared.settings.as_ref(), &prepared.params);
-        let request = build_http_request(&self.http_config, &options, wire_body);
+        let options = self.request_options(&context, prepared.settings.as_ref(), &prepared.params);
+        let mut request = build_http_request(&self.http_config, &options, wire_body);
+        self.finalize_http_request(&mut request);
         if !allow_real_model_requests() {
             return Err(ModelError::RealModelRequestBlocked { url: request.url });
         }

@@ -52,7 +52,8 @@ Implemented fix:
 - The adapter injects guidance as current-request `ModelRequestPart::Instruction` with:
   - `starweaver_instruction_origin = "cli_guidance"`
   - `starweaver_instruction_dynamic = false`
-- Guidance is inserted after control parts and existing static instruction prefix, before dynamic/environment/runtime context and before the user prompt.
+- Guidance is inserted after control parts and the existing static instruction prefix, before dynamic instruction material and before conversation/context prompt parts.
+- Environment and runtime context remain SDK context prompts, not instruction/system material.
 - `CliPromptContentAdapter` remains responsible only for actual prompt content parts: user text attachments and explicit extra text parts.
 
 Regression coverage:
@@ -77,19 +78,21 @@ Effect:
 Implemented fix:
 
 - Added `request_instruction_end_index` in `crates/starweaver-runtime/src/agent/runtime_helpers/request_parts.rs`.
-- Runtime context now inserts after the existing instruction/context prefix and before the user prompt or continuation control payload.
-- Environment context insertion in `crates/starweaver-agent/src/bundles/environment/handle.rs` keeps environment context after stable instructions but before the user prompt.
-- The resulting order is:
-  1. provider/control continuation parts,
+- Runtime context is injected by the SDK `RuntimeContextCapability` only for the current provider request, as a context `UserPrompt` part after the latest user/environment/handoff context. Tool-return/retry control parts remain in the control prefix.
+- Environment context insertion in `crates/starweaver-agent/src/bundles/environment/handle.rs` keeps environment context after the first user prompt, is skipped for tool-return/retry requests unless forced, and is not treated as instruction/system material.
+- The resulting user-facing request order is:
+  1. provider/control continuation parts when present,
   2. stable system/static instructions,
-  3. CLI guidance,
-  4. toolset/dynamic/environment instructions,
-  5. runtime context,
-  6. user prompt / retry / tool continuation.
+  3. CLI guidance and other static instruction material,
+  4. toolset/dynamic instruction material,
+  5. user prompt / retry / tool continuation payload,
+  6. initial environment context on the first user-facing request,
+  7. current runtime context on the provider request.
 
 Regression coverage:
 
-- `builder_injects_environment_context_before_runtime_context_and_user_prompt` asserts environment context precedes runtime context and both precede the user prompt.
+- `builder_persists_environment_and_runtime_context_for_prefix_stability` asserts the first request order is user prompt, environment context, then runtime context; it also asserts environment context is durable initial context while runtime context is not persisted.
+- `multi_run_session_preserves_previous_model_request_prefix` asserts the second OpenAI Responses request preserves the first request's input prefix while adding only the current runtime context.
 
 ### 3. Local environment context duplicated nested allowed roots
 
@@ -130,7 +133,8 @@ Commands run successfully:
 cargo fmt --all --check
 cargo test -p starweaver-cli runner::tests
 cargo test -p starweaver-cli service::tests
-cargo test -p starweaver-agent builder_injects_environment_context_before_runtime_context_and_user_prompt
+cargo test -p starweaver-agent builder_persists_environment_and_runtime_context_for_prefix_stability
+cargo test -p starweaver-agent multi_run_session_preserves_previous_model_request_prefix
 cargo test -p starweaver-environment local_context_file_tree
 cargo check --workspace
 make fmt-check && make check && make test
@@ -228,3 +232,82 @@ Implemented follow-up fix, corrected to match Pydantic AI instruction semantics:
   - Bedrock: dynamic instructions remain in `system`, and `cachePoint` lands after the static instruction boundary; tool-definition cache points are also covered.
 
 This does not prove provider-side cache counters for APIs that were not available, but it proves the request-shape invariant needed for Pydantic AI-style cache placement: stable instructions precede dynamic instructions, dynamic instruction material is current-request rather than durable history, and provider conversation bodies remain append-only.
+
+## Corrected OpenAI Prompt Cache Routing Follow-up
+
+A later audit corrected an important interpretation error: OpenAI `store=false` is not a prompt-cache disable switch. It only controls response/conversation storage. Prompt caching remains automatic for sufficiently long prompts and is measured through `usage.input_tokens_details.cached_tokens`, which Starweaver maps to `Usage.cache_read_tokens`.
+
+### Real TUI session evidence
+
+The user-reported TUI session `session_143a9ff4-285b-4fe7-ad79-b1b291bbac44` was inspected from the local Starweaver SQLite store. The final state contained 22 history messages and 11 model responses. Aggregate usage was:
+
+- `input_tokens = 248,480`
+- `cache_read_tokens = 150,016`
+- aggregate cache hit rate about `60.37%`
+
+Per response cached tokens were:
+
+| Response | Input tokens | Cached tokens | Hit rate |
+| -------: | -----------: | ------------: | -------: |
+|        1 |       18,790 |             0 |     0.0% |
+|        2 |       19,853 |        16,384 |    82.5% |
+|        3 |       21,362 |        16,384 |    76.7% |
+|        4 |       26,557 |        16,384 |    61.7% |
+|        5 |       22,144 |         2,560 |    11.6% |
+|        6 |       23,542 |        16,384 |    69.6% |
+|        7 |       22,550 |        16,384 |    72.7% |
+|        8 |       22,260 |        16,384 |    73.6% |
+|        9 |       24,673 |        16,384 |    66.4% |
+|       10 |       23,206 |        16,384 |    70.6% |
+|       11 |       23,543 |        16,384 |    69.6% |
+
+The low aggregate rate is mostly explained by the cold first request plus response 5 only receiving a 2,560-token cache hit. Responses after that returned to the same 16,384-token cached prefix, so the stable prefix was still cacheable.
+
+The same session also persisted OpenAI provider reasoning replay evidence for responses 1 through 9: each had a `provider_thinking` part with an OpenAI reasoning item id and encrypted content/signature. Current request construction maps these parts back to OpenAI Responses `type: "reasoning"` replay items and requests `include: ["reasoning.encrypted_content"]` when thinking is enabled. Therefore the 60% aggregate cache rate is not explained by total absence of reasoning replay.
+
+### Root cause refinement
+
+The corrected root-cause assessment is:
+
+- `store=false` did not disable prompt caching.
+- Starweaver usage accounting for OpenAI cached tokens was already correct.
+- Current OpenAI Responses history reconstruction preserves encrypted reasoning replay items when available.
+- The anomalous 2,560-token cache hit is most consistent with OpenAI best-effort cache routing or cache-shard instability, not with unstable top-level instructions or missing reasoning replay.
+- OpenAI prompt caching is exact-prefix and routing-sensitive. The provider routes by a prefix hash, and `prompt_cache_key` can improve routing stickiness but does not guarantee a cache hit.
+
+### Implemented routing hardening
+
+OpenAI-specific request finalization now supports prompt-cache routing without moving session identity into generic headers:
+
+- `crates/starweaver-model/src/providers/client/request_options.rs` finalizes OpenAI Chat Completions and OpenAI Responses HTTP bodies after all settings, request params, and HTTP config `extra_body` values have been merged.
+- For OpenAI GPT-family model names, if the final request body does not already contain `prompt_cache_key`, Starweaver derives a stable key from runtime metadata `starweaver.session_id` or `cli.session_id` as `sw_<session-id>`, truncated to the OpenAI key length budget.
+- Explicit `prompt_cache_key` and `prompt_cache_retention` values from `ModelSettings.extra_body`, request params, HTTP config `extra_body`, or metadata override the derived session key.
+- Internal Starweaver/OpenAI replay aliases such as `openai_include_encrypted_reasoning` are stripped from the final OpenAI Responses body after all body overlays, so they cannot leak through HTTP config `extra_body`.
+- Codex OAuth Responses requests are excluded from the automatic derived key path because Codex has its own body patching and policy constraints.
+- OpenAI-compatible non-OpenAI model names such as `mimo-v2.5-pro` do not receive an automatic derived `prompt_cache_key`; callers can still set explicit provider body fields if their gateway supports them.
+
+Regression coverage in `crates/starweaver-model/tests/request_parameters.rs` asserts:
+
+- OpenAI Responses derives `prompt_cache_key` from session metadata.
+- OpenAI Chat Completions derives `prompt_cache_key` from session metadata.
+- Explicit request-level and config-level `prompt_cache_key` values are preserved.
+- `prompt_cache_retention` can be forwarded explicitly.
+- OpenAI-compatible non-GPT model names do not receive an automatic session-derived key.
+- OpenAI Responses replay aliases are stripped from the final body.
+
+### Real validation after routing hardening
+
+A fresh real session using the configured `~/.starweaver/config.toml` default profile (`homelab@openai-responses:gpt-5.5` with `openai_responses_high`) completed four headless turns successfully, proving the current gateway accepts the final request shape with `prompt_cache_key`.
+
+Validation session: `session_0cfe24ef-482f-4e56-ae21-d36c705c406b`.
+
+Observed usage:
+
+| Turn | Input tokens | Cached tokens | Hit rate |
+| ---: | -----------: | ------------: | -------: |
+|    1 |       18,603 |         2,560 |    13.8% |
+|    2 |       18,659 |        16,384 |    87.8% |
+|    3 |       18,692 |        16,384 |    87.7% |
+|    4 |       18,725 |        18,432 |    98.4% |
+
+This does not make prompt caching deterministic, because OpenAI caching remains best-effort and load-balanced. It does, however, align Starweaver with OpenAI's documented cache-routing control and removes the avoidable dependence on implicit routing for multi-turn CLI sessions.
