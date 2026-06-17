@@ -128,6 +128,8 @@ fn codex_style_shortcut_overlay_matches_footer_model() {
     assert!(text.contains("Attach image from system clipboard"));
     assert!(text.contains("Key Bindings"));
     assert!(text.contains("Ctrl+C"));
+    assert!(text.contains("Alt+Left/Right"));
+    assert!(text.contains("Command+Left/Right"));
     assert!(text.contains("Scroll transcript"));
     assert!(text.contains("Mouse wheel"));
 }
@@ -360,6 +362,80 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     );
     assert_eq!(state.status, "INTERRUPT");
     assert!(state.cancel_requested);
+
+    let mut cursor_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    cursor_state.input = "alpha beta\ngamma_delta".to_string();
+    assert_eq!(
+        handle_key_event(
+            &mut cursor_state,
+            key_code_modified(KeyCode::Left, KeyModifiers::ALT),
+        ),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), "alpha beta\n".len());
+    assert_eq!(
+        handle_key_event(
+            &mut cursor_state,
+            key_code_modified(KeyCode::Left, KeyModifiers::CONTROL),
+        ),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), "alpha ".len());
+    assert_eq!(
+        handle_key_event(
+            &mut cursor_state,
+            key_code_modified(KeyCode::Right, KeyModifiers::ALT),
+        ),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), "alpha beta".len());
+    assert_eq!(
+        handle_key_event(
+            &mut cursor_state,
+            key_code_modified(KeyCode::Left, KeyModifiers::SUPER),
+        ),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), 0);
+    assert_eq!(
+        handle_key_event(
+            &mut cursor_state,
+            key_code_modified(KeyCode::Right, KeyModifiers::META),
+        ),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), "alpha beta".len());
+    assert_eq!(
+        handle_key_event(&mut cursor_state, key_modified('e', KeyModifiers::CONTROL),),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), "alpha beta".len());
+    assert_eq!(
+        handle_key_event(
+            &mut cursor_state,
+            key_code_modified(KeyCode::Right, KeyModifiers::CONTROL),
+        ),
+        None
+    );
+    assert_eq!(
+        cursor_state.composer_cursor_byte(),
+        "alpha beta\ngamma_delta".len()
+    );
+    assert_eq!(
+        handle_key_event(&mut cursor_state, key_modified('a', KeyModifiers::CONTROL),),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), "alpha beta\n".len());
+    assert_eq!(
+        handle_key_event(&mut cursor_state, key_modified('b', KeyModifiers::ALT),),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), "alpha ".len());
+    assert_eq!(
+        handle_key_event(&mut cursor_state, key_modified('f', KeyModifiers::ALT),),
+        None
+    );
+    assert_eq!(cursor_state.composer_cursor_byte(), "alpha beta".len());
 
     let mut running_overlay_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     running_overlay_state.begin_run("long running prompt");

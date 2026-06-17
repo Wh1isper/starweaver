@@ -3,6 +3,10 @@ use super::{
     LocalCommandOutcome, PromptAttachment, PromptInput, SteeringSubmission, SubmissionKind,
 };
 
+fn is_composer_word_char(ch: char) -> bool {
+    ch.is_alphanumeric() || ch == '_'
+}
+
 impl InteractiveTuiState {
     pub(in crate::tui) fn apply_paste(&mut self, text: &str) {
         self.footer_mode = FooterMode::Context;
@@ -241,6 +245,63 @@ impl InteractiveTuiState {
             .next()
             .map_or(self.input.len(), |ch| cursor + ch.len_utf8());
         self.input_cursor = next;
+        self.input_cursor_input_len = self.input.len();
+        self.reset_composer_scroll();
+    }
+
+    pub(in crate::tui) fn move_composer_cursor_word_left(&mut self) {
+        let cursor = self.composer_cursor_byte();
+        if cursor == 0 {
+            return;
+        }
+
+        let mut target = cursor;
+        let mut chars = self.input[..cursor].char_indices().rev().peekable();
+        while let Some(&(index, ch)) = chars.peek() {
+            if is_composer_word_char(ch) {
+                break;
+            }
+            target = index;
+            chars.next();
+        }
+        while let Some(&(index, ch)) = chars.peek() {
+            if !is_composer_word_char(ch) {
+                break;
+            }
+            target = index;
+            chars.next();
+        }
+
+        self.input_cursor = target;
+        self.input_cursor_input_len = self.input.len();
+        self.reset_composer_scroll();
+    }
+
+    pub(in crate::tui) fn move_composer_cursor_word_right(&mut self) {
+        let cursor = self.composer_cursor_byte();
+        if cursor >= self.input.len() {
+            self.move_composer_cursor_to_end();
+            return;
+        }
+
+        let mut target = cursor;
+        let mut chars = self.input[cursor..].char_indices().peekable();
+        while let Some(&(offset, ch)) = chars.peek() {
+            if is_composer_word_char(ch) {
+                break;
+            }
+            target = cursor + offset + ch.len_utf8();
+            chars.next();
+        }
+        while let Some(&(offset, ch)) = chars.peek() {
+            if !is_composer_word_char(ch) {
+                break;
+            }
+            target = cursor + offset + ch.len_utf8();
+            chars.next();
+        }
+
+        self.input_cursor = target;
         self.input_cursor_input_len = self.input.len();
         self.reset_composer_scroll();
     }

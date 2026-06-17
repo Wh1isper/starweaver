@@ -13,6 +13,11 @@ use crossterm::{
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
+#[cfg(unix)]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
+
 use crate::{prompt_input::PromptInput, CliResult};
 
 use super::{
@@ -52,6 +57,7 @@ pub struct InteractiveTui {
     stdout: io::Stdout,
     active: bool,
     mouse_capture_enabled: bool,
+    keyboard_enhancements_enabled: bool,
 }
 
 impl InteractiveTui {
@@ -69,10 +75,12 @@ impl InteractiveTui {
             let _ = terminal::disable_raw_mode();
             return Err(terminal_error(error));
         }
+        let keyboard_enhancements_enabled = enable_keyboard_enhancements(&mut stdout);
         Ok(Self {
             stdout,
             active: true,
             mouse_capture_enabled: true,
+            keyboard_enhancements_enabled,
         })
     }
 
@@ -259,6 +267,29 @@ pub(super) fn visible_body_bounds(
     (visible_start, visible_end)
 }
 
+fn command_modifier(modifiers: KeyModifiers) -> bool {
+    modifiers.intersects(KeyModifiers::SUPER | KeyModifiers::META)
+}
+
+fn word_modifier(modifiers: KeyModifiers) -> bool {
+    modifiers.intersects(KeyModifiers::ALT | KeyModifiers::CONTROL)
+}
+
+#[cfg(unix)]
+fn enable_keyboard_enhancements(stdout: &mut io::Stdout) -> bool {
+    execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )
+    .is_ok()
+}
+
+#[cfg(not(unix))]
+fn enable_keyboard_enhancements(stdout: &mut io::Stdout) -> bool {
+    let _ = stdout;
+    false
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) fn handle_key_event(
     state: &mut InteractiveTuiState,
@@ -377,6 +408,24 @@ pub(super) fn handle_key_event(
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.clear_composer();
         }
+        KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.move_composer_cursor_to_line_start();
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.move_composer_cursor_to_line_end();
+        }
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.move_composer_cursor_left();
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.move_composer_cursor_right();
+        }
+        KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+            state.move_composer_cursor_word_left();
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+            state.move_composer_cursor_word_right();
+        }
         KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
             state.scroll_composer_up(1);
         }
@@ -444,6 +493,18 @@ pub(super) fn handle_key_event(
         KeyCode::Backspace => {
             state.backspace_composer();
         }
+        KeyCode::Left if command_modifier(key.modifiers) => {
+            state.move_composer_cursor_to_line_start();
+        }
+        KeyCode::Right if command_modifier(key.modifiers) => {
+            state.move_composer_cursor_to_line_end();
+        }
+        KeyCode::Left if word_modifier(key.modifiers) => {
+            state.move_composer_cursor_word_left();
+        }
+        KeyCode::Right if word_modifier(key.modifiers) => {
+            state.move_composer_cursor_word_right();
+        }
         KeyCode::Left => {
             state.move_composer_cursor_left();
         }
@@ -481,6 +542,10 @@ pub(super) fn handle_key_event(
 impl Drop for InteractiveTui {
     fn drop(&mut self) {
         if self.active {
+            if self.keyboard_enhancements_enabled {
+                #[cfg(unix)]
+                let _ = execute!(self.stdout, PopKeyboardEnhancementFlags);
+            }
             let _ = execute!(
                 self.stdout,
                 Show,
