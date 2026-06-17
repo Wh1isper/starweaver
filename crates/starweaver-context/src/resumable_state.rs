@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_core::{AgentId, ConversationId, Metadata, RunId, TraceContext};
+use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TraceContext};
 use starweaver_model::{ContentPart, ModelMessage};
 use starweaver_usage::{Usage, UsageSnapshotEntry};
 
@@ -105,6 +105,9 @@ pub struct ResumableState {
     /// Current run identifier when exported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
+    /// Stable logical session affinity identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
     /// Conversation identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<ConversationId>,

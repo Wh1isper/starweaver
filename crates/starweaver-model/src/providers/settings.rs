@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 
 use crate::{transport::MaxTokensParameter, ModelSettings};
 
+#[cfg(test)]
 pub fn apply_common_settings(
     target: &mut serde_json::Map<String, Value>,
     settings: Option<&ModelSettings>,
@@ -16,18 +17,37 @@ pub fn apply_common_settings_with_max_tokens(
     settings: Option<&ModelSettings>,
     max_tokens_parameter: MaxTokensParameter,
 ) {
+    apply_common_settings_with_options(target, settings, max_tokens_parameter, true);
+}
+
+pub fn apply_common_settings_without_seed(
+    target: &mut serde_json::Map<String, Value>,
+    settings: Option<&ModelSettings>,
+    max_tokens_parameter: MaxTokensParameter,
+) {
+    apply_common_settings_with_options(target, settings, max_tokens_parameter, false);
+}
+
+fn apply_common_settings_with_options(
+    target: &mut serde_json::Map<String, Value>,
+    settings: Option<&ModelSettings>,
+    max_tokens_parameter: MaxTokensParameter,
+    include_seed: bool,
+) {
     let max_tokens_key = match max_tokens_parameter {
         MaxTokensParameter::Default | MaxTokensParameter::MaxTokens => Some("max_tokens"),
         MaxTokensParameter::MaxOutputTokens => Some("max_output_tokens"),
+        MaxTokensParameter::MaxCompletionTokens => Some("max_completion_tokens"),
         MaxTokensParameter::Omit => None,
     };
-    apply_common_settings_inner(target, settings, max_tokens_key);
+    apply_common_settings_inner(target, settings, max_tokens_key, include_seed);
 }
 
-pub fn apply_common_settings_inner(
+fn apply_common_settings_inner(
     target: &mut serde_json::Map<String, Value>,
     settings: Option<&ModelSettings>,
     max_tokens_key: Option<&str>,
+    include_seed: bool,
 ) {
     if let Some(settings) = settings {
         if let (Some(key), Some(max_tokens)) = (max_tokens_key, settings.max_tokens) {
@@ -50,6 +70,9 @@ pub fn apply_common_settings_inner(
         }
         if !settings.stop_sequences.is_empty() {
             target.insert("stop".to_string(), json!(settings.stop_sequences));
+        }
+        if let Some(seed) = settings.seed.filter(|_| include_seed) {
+            target.insert("seed".to_string(), json!(seed));
         }
         if let Some(parallel_tool_calls) = settings.parallel_tool_calls {
             target.insert(

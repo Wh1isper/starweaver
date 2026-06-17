@@ -66,6 +66,8 @@ pub enum MaxTokensParameter {
     MaxTokens,
     /// Emit `max_output_tokens`.
     MaxOutputTokens,
+    /// Emit `max_completion_tokens`.
+    MaxCompletionTokens,
     /// Omit provider max-token fields.
     Omit,
 }

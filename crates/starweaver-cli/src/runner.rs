@@ -15,6 +15,7 @@ use starweaver_agent::{
     ResumableState,
 };
 use starweaver_context::{AgentContext, BusMessage};
+use starweaver_core::SessionId;
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
 use starweaver_model::{
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
@@ -165,6 +166,7 @@ pub fn execute_agent_session_with_channels(
         attach_shell_review_handle(session.context_mut(), shell_review.clone());
     }
     sync_run_request_metadata(&mut session, run);
+    sync_run_session_affinity(&mut session, run);
     session.set_metadata("cli.profile", json!(profile.name));
     session.set_metadata("cli.profile_source", json!(profile.source.kind()));
     if let Some(path) = profile.source.path() {
@@ -277,10 +279,28 @@ enum SessionRunOutcome {
 }
 
 fn sync_run_request_metadata(session: &mut AgentSession, run: &RunRecord) {
+    session.set_metadata(
+        "starweaver.durable_session_id",
+        json!(run.session_id.as_str()),
+    );
+    // Compatibility fallback while provider routing moves to typed ModelSettings.
     session.set_metadata("starweaver.session_id", json!(run.session_id.as_str()));
     session.set_metadata("starweaver.durable_run_id", json!(run.run_id.as_str()));
     session.set_metadata("cli.session_id", json!(run.session_id.as_str()));
     session.set_metadata("cli.run_id", json!(run.run_id.as_str()));
+}
+
+fn sync_run_session_affinity(session: &mut AgentSession, run: &RunRecord) {
+    if let Some(affinity_id) = run
+        .metadata
+        .get("starweaver.session_affinity_id")
+        .and_then(Value::as_str)
+        .map(SessionId::from_string)
+    {
+        session.set_session_id(affinity_id);
+    } else if session.context().session_id().is_none() {
+        session.set_session_id(run.session_id.clone());
+    }
 }
 
 fn run_session_stream(
@@ -671,9 +691,9 @@ mod tests {
 
     use super::{
         cancelled_display_projection, cli_guidance_key, interrupted_partial_response,
-        start_steering_collector, sync_run_request_metadata, CliGuidanceAdapter,
-        CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage, CLI_GUIDANCE_KEY_METADATA,
-        CLI_GUIDANCE_ORIGIN,
+        start_steering_collector, sync_run_request_metadata, sync_run_session_affinity,
+        CliGuidanceAdapter, CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage,
+        CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
 
@@ -707,6 +727,57 @@ mod tests {
             "session_cli_header"
         );
         assert_eq!(session.context().metadata["cli.run_id"], "run_cli_header");
+    }
+
+    #[test]
+    fn sync_run_session_affinity_prefers_explicit_affinity_metadata() {
+        let agent = AgentBuilder::new(Arc::new(FunctionModel::new(
+            |_messages: Vec<ModelMessage>,
+             _settings: Option<ModelSettings>,
+             _info: FunctionModelInfo| { Ok(ModelResponse::text("ok")) },
+        )))
+        .build();
+        let mut session = AgentSession::new(agent);
+        let mut run = RunRecord::new(
+            SessionId::from_string("session_durable"),
+            RunId::from_string("run_affinity"),
+            ConversationId::from_string("conversation_affinity"),
+        );
+        run.metadata.insert(
+            "starweaver.session_affinity_id".to_string(),
+            serde_json::json!("session_process_affinity"),
+        );
+
+        sync_run_session_affinity(&mut session, &run);
+
+        assert_eq!(
+            session.context().session_id().map(SessionId::as_str),
+            Some("session_process_affinity")
+        );
+    }
+
+    #[test]
+    fn sync_run_session_affinity_uses_durable_session_only_when_context_has_no_session_id() {
+        let agent = AgentBuilder::new(Arc::new(FunctionModel::new(
+            |_messages: Vec<ModelMessage>,
+             _settings: Option<ModelSettings>,
+             _info: FunctionModelInfo| { Ok(ModelResponse::text("ok")) },
+        )))
+        .build();
+        let mut session = AgentSession::new(agent);
+        session.set_session_id(SessionId::from_string("session_restored_affinity"));
+        let run = RunRecord::new(
+            SessionId::from_string("session_durable"),
+            RunId::from_string("run_affinity"),
+            ConversationId::from_string("conversation_affinity"),
+        );
+
+        sync_run_session_affinity(&mut session, &run);
+
+        assert_eq!(
+            session.context().session_id().map(SessionId::as_str),
+            Some("session_restored_affinity")
+        );
     }
 
     #[test]

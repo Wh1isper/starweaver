@@ -91,6 +91,9 @@ pub(super) fn validate_safe_extra_headers(
 }
 
 pub(super) fn trace_session_headers(request: &HttpRequest) -> BTreeMap<String, String> {
+    // Compatibility fallback only. Runtime/provider settings should populate
+    // provider.codex.* metadata from typed CodexSettings before OAuth headers
+    // are finalized; durable Starweaver session ids are not generic headers.
     let session_id = metadata_string(request, "provider.codex.session_id")
         .or_else(|| metadata_string(request, "starweaver.session_id"))
         .or_else(|| metadata_string(request, "cli.session_id"))

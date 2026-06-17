@@ -111,6 +111,17 @@ pub fn merge_extra_body(mut body: Value, extra: &Map<String, Value>) -> Value {
     body
 }
 
+/// Extend HTTP headers using case-insensitive header-name replacement.
+pub fn extend_headers_case_insensitive(
+    headers: &mut BTreeMap<String, String>,
+    overlay: impl IntoIterator<Item = (String, String)>,
+) {
+    for (key, value) in overlay {
+        headers.retain(|existing, _| !existing.eq_ignore_ascii_case(&key));
+        headers.insert(key, value);
+    }
+}
+
 fn merge_metadata(config: &HttpModelConfig, options: &HttpRequestOptions) -> Map<String, Value> {
     let mut metadata = config.metadata.clone();
     metadata.extend(options.metadata.clone());
@@ -131,19 +142,22 @@ pub fn build_http_request(
 
     match &config.auth {
         Some(AuthConfig::Bearer { token }) => {
-            headers.insert(
-                AUTHORIZATION.as_str().to_string(),
-                format!("Bearer {token}"),
+            extend_headers_case_insensitive(
+                &mut headers,
+                [(
+                    AUTHORIZATION.as_str().to_string(),
+                    format!("Bearer {token}"),
+                )],
             );
         }
         Some(AuthConfig::Header { name, value }) => {
-            headers.insert(name.clone(), value.clone());
+            extend_headers_case_insensitive(&mut headers, [(name.clone(), value.clone())]);
         }
         None => {}
     }
 
-    headers.extend(config.headers.clone());
-    headers.extend(options.headers.clone());
+    extend_headers_case_insensitive(&mut headers, config.headers.clone());
+    extend_headers_case_insensitive(&mut headers, options.headers.clone());
 
     let body = merge_extra_body(
         merge_extra_body(body, &config.extra_body),

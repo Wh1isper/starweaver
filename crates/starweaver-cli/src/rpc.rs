@@ -293,6 +293,7 @@ fn run_prompt(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
             .get("hitl")
             .and_then(Value::as_str)
             .and_then(parse_hitl),
+        session_affinity_id: None,
     };
     let cli = cli_for_command(CliCommand::Run(command));
     let output = CliService::open(config.clone())

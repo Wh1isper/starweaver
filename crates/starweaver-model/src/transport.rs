@@ -1,13 +1,14 @@
 //! HTTP transport boundary for production model adapters.
 
 mod client;
-mod config;
+pub(crate) mod config;
 mod reqwest_client;
 mod retry;
 mod sse;
 mod types;
 
 pub use client::{DynHttpClient, ModelEventStream, ModelHttpClient};
+pub(crate) use config::extend_headers_case_insensitive;
 pub use config::{
     build_http_request, merge_extra_body, AuthConfig, HttpModelConfig, HttpRequestOptions,
 };

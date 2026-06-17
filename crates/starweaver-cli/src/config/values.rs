@@ -302,6 +302,7 @@ const fn max_tokens_parameter_name(parameter: MaxTokensParameter) -> &'static st
         MaxTokensParameter::Default => "default",
         MaxTokensParameter::MaxTokens => "max_tokens",
         MaxTokensParameter::MaxOutputTokens => "max_output_tokens",
+        MaxTokensParameter::MaxCompletionTokens => "max_completion_tokens",
         MaxTokensParameter::Omit => "omit",
     }
 }
@@ -311,9 +312,10 @@ fn validated_max_tokens_parameter(value: &str) -> CliResult<MaxTokensParameter> 
         "default" => Ok(MaxTokensParameter::Default),
         "max_tokens" => Ok(MaxTokensParameter::MaxTokens),
         "max_output_tokens" => Ok(MaxTokensParameter::MaxOutputTokens),
+        "max_completion_tokens" => Ok(MaxTokensParameter::MaxCompletionTokens),
         "omit" => Ok(MaxTokensParameter::Omit),
         other => Err(CliError::Usage(format!(
-            "invalid max_tokens_parameter: {other}; expected default, max_tokens, max_output_tokens, or omit"
+            "invalid max_tokens_parameter: {other}; expected default, max_tokens, max_output_tokens, max_completion_tokens, or omit"
         ))),
     }
 }

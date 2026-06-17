@@ -279,19 +279,22 @@ The corrected root-cause assessment is:
 
 OpenAI-specific request finalization now supports prompt-cache routing without moving session identity into generic headers:
 
-- `crates/starweaver-model/src/providers/client/request_options.rs` finalizes OpenAI Chat Completions and OpenAI Responses HTTP bodies after all settings, request params, and HTTP config `extra_body` values have been merged.
-- For OpenAI GPT-family model names, if the final request body does not already contain `prompt_cache_key`, Starweaver derives a stable key from runtime metadata `starweaver.session_id` or `cli.session_id` as `sw_<session-id>`, truncated to the OpenAI key length budget.
-- Explicit `prompt_cache_key` and `prompt_cache_retention` values from `ModelSettings.extra_body`, request params, HTTP config `extra_body`, or metadata override the derived session key.
+- `AgentContext.session_id` is the stable logical affinity source. Runtime request building converts it into a low-priority typed `ModelSettings.provider_settings.openai_chat.prompt_cache_key` or `provider_settings.openai_responses.prompt_cache_key` overlay when the selected OpenAI model supports automatic prompt-cache keys.
+- `crates/starweaver-model/src/providers/client/request_options.rs` still finalizes OpenAI Chat Completions and OpenAI Responses HTTP bodies after all settings, request params, and HTTP config `extra_body` values have been merged.
+- For OpenAI GPT-family model names, the typed overlay uses `sw_<session-id>`, truncated to the OpenAI key length budget.
+- Explicit typed provider settings and raw `extra_body["prompt_cache_key"]` / `extra_body["prompt_cache_retention"]` override the derived session-affinity key.
+- Metadata keys such as `starweaver.prompt_cache_key`, `openai.prompt_cache_key`, `starweaver.session_id`, and `cli.session_id` remain compatibility fallbacks only when no typed or raw request value has set the field.
 - Internal Starweaver/OpenAI replay aliases such as `openai_include_encrypted_reasoning` are stripped from the final OpenAI Responses body after all body overlays, so they cannot leak through HTTP config `extra_body`.
-- Codex OAuth Responses requests are excluded from the automatic derived key path because Codex has its own body patching and policy constraints.
+- Codex OAuth Responses requests are excluded from the automatic OpenAI prompt-cache key path because Codex has typed session/thread routing through OAuth headers.
 - OpenAI-compatible non-OpenAI model names such as `mimo-v2.5-pro` do not receive an automatic derived `prompt_cache_key`; callers can still set explicit provider body fields if their gateway supports them.
 
-Regression coverage in `crates/starweaver-model/tests/request_parameters.rs` asserts:
+Regression coverage in `crates/starweaver-model/tests/request_parameters.rs` and `crates/starweaver-runtime/tests/session_affinity.rs` asserts:
 
-- OpenAI Responses derives `prompt_cache_key` from session metadata.
-- OpenAI Chat Completions derives `prompt_cache_key` from session metadata.
+- OpenAI Responses and OpenAI Chat support typed prompt-cache settings.
+- Runtime session affinity injects typed OpenAI prompt-cache keys for supported models.
 - Explicit request-level and config-level `prompt_cache_key` values are preserved.
 - `prompt_cache_retention` can be forwarded explicitly.
+- Legacy metadata-derived prompt-cache keys remain as compatibility fallback.
 - OpenAI-compatible non-GPT model names do not receive an automatic session-derived key.
 - OpenAI Responses replay aliases are stripped from the final body.
 

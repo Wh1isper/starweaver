@@ -6,10 +6,12 @@ use chrono::Utc;
 use starweaver_context::AgentContext;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
-    attach_prepared_instructions, ModelMessage, ModelRequest, ModelRequestParameters,
-    ModelRequestPart, ModelSettings, PreparedInstruction, INSTRUCTION_DYNAMIC_METADATA,
-    INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
-    INSTRUCTION_ORIGIN_TOOLSET,
+    attach_prepared_instructions, format_openai_prompt_cache_key,
+    supports_automatic_openai_prompt_cache_key, CodexSettings, GatewaySettings, ModelMessage,
+    ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings, OpenAiChatSettings,
+    OpenAiResponsesSettings, PreparedInstruction, ProtocolFamily, ProviderSettings,
+    INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
+    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_TOOLSET,
 };
 
 use crate::{
@@ -185,12 +187,75 @@ impl Agent {
             .collect())
     }
 
-    pub(in crate::agent) fn effective_settings(&self) -> Option<ModelSettings> {
-        match (self.model.default_settings(), &self.model_settings) {
-            (Some(defaults), Some(settings)) => Some(defaults.merge(settings)),
-            (Some(defaults), None) => Some(defaults.clone()),
-            (None, Some(settings)) => Some(settings.clone()),
-            (None, None) => None,
+    pub(in crate::agent) fn effective_settings(
+        &self,
+        context: &AgentContext,
+    ) -> Option<ModelSettings> {
+        merge_settings_layers([
+            self.session_affinity_settings(context),
+            self.model.default_settings().cloned(),
+            self.model_settings.clone(),
+        ])
+    }
+
+    fn session_affinity_settings(&self, context: &AgentContext) -> Option<ModelSettings> {
+        let session_id = context.session_id()?.as_str();
+        let provider_name = self.model.provider_name();
+        let mut provider_settings = ProviderSettings::default();
+        match self.model.profile().protocol {
+            ProtocolFamily::OpenAiChatCompletions if provider_name != Some("codex") => {
+                if let Some(prompt_cache_key) =
+                    supports_automatic_openai_prompt_cache_key(self.model.model_name())
+                        .then(|| format_openai_prompt_cache_key(session_id))
+                        .flatten()
+                {
+                    provider_settings.openai_chat = Some(OpenAiChatSettings {
+                        prompt_cache_key: Some(prompt_cache_key),
+                        ..OpenAiChatSettings::default()
+                    });
+                }
+            }
+            ProtocolFamily::OpenAiResponses if provider_name == Some("codex") => {
+                provider_settings.codex = Some(CodexSettings {
+                    session_id: Some(session_id.to_string()),
+                    thread_id: context
+                        .run_id
+                        .as_ref()
+                        .map(|run_id| run_id.as_str().to_string()),
+                });
+            }
+            ProtocolFamily::OpenAiResponses => {
+                if let Some(prompt_cache_key) =
+                    supports_automatic_openai_prompt_cache_key(self.model.model_name())
+                        .then(|| format_openai_prompt_cache_key(session_id))
+                        .flatten()
+                {
+                    provider_settings.openai_responses = Some(OpenAiResponsesSettings {
+                        prompt_cache_key: Some(prompt_cache_key),
+                        ..OpenAiResponsesSettings::default()
+                    });
+                }
+            }
+            ProtocolFamily::GeminiGenerateContent | ProtocolFamily::BedrockConverse
+                if gateway_affinity_enabled(context) =>
+            {
+                provider_settings.gateway = Some(GatewaySettings {
+                    x_session_id: Some(session_id.to_string()),
+                    ..GatewaySettings::default()
+                });
+            }
+            ProtocolFamily::OpenAiChatCompletions
+            | ProtocolFamily::AnthropicMessages
+            | ProtocolFamily::GeminiGenerateContent
+            | ProtocolFamily::BedrockConverse => {}
+        }
+        if provider_settings.is_empty() {
+            None
+        } else {
+            Some(ModelSettings {
+                provider_settings,
+                ..ModelSettings::default()
+            })
         }
     }
 
@@ -395,6 +460,27 @@ impl Agent {
         }
         Ok(())
     }
+}
+
+fn merge_settings_layers(
+    layers: impl IntoIterator<Item = Option<ModelSettings>>,
+) -> Option<ModelSettings> {
+    let mut merged = None::<ModelSettings>;
+    for layer in layers.into_iter().flatten() {
+        merged = Some(match merged {
+            Some(current) => current.merge(&layer),
+            None => layer,
+        });
+    }
+    merged
+}
+
+fn gateway_affinity_enabled(context: &AgentContext) -> bool {
+    context
+        .metadata
+        .get("starweaver.gateway_session_affinity")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 fn static_agent_instruction_part(instruction: &str) -> ModelRequestPart {

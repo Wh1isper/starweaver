@@ -75,7 +75,7 @@ Current landed CLI foundations:
 - headless prompt runs, local SQLite sessions/runs, display JSONL replay, approval/deferred commands, resume, trim, current-session pointer, and retained TUI renderer
 - config parser for global/project roots, model profiles, selected environment values, tools/MCP metadata, skill/subagent directories, and compatibility metadata
 - global config bootstrap under `~/.starweaver`, including `skills`, `subagents`, `tui`, and `desktop` state directories
-- TUI state/render/terminal modules, active-run steering, `/help`, `/clear`, `/cost`, `/model`, `/goal`, shell passthrough, streamed tool-call rendering, and model choice persistence under `~/.starweaver/tui/state.json`
+- TUI state/render/terminal modules, active-run steering, `/help`, `/clear`, `/cost`, `/model`, `/goal`, shell passthrough, streamed tool-call rendering, process-level provider session affinity, and model choice persistence under `~/.starweaver/tui/state.json`
 - JSON-RPC stdio MVP with `initialize`, `shutdown`, `profile.*`, `model.*`, `config.get`, `diagnostics.get`, session management, replay, and blocking `run.start`/`run.prompt`
 - partial worktree parsing and run metadata support
 
@@ -140,6 +140,18 @@ JSON-RPC stdio is the complete local runtime API. It covers both management oper
 
 Model choice is client state. `~/.starweaver/config.toml` defines shared model profiles and provider settings, while `~/.starweaver/tui/state.json` and `~/.starweaver/desktop/state.json` store the selected profile for each frontend. Headless CLI runs can still pass `--profile`; RPC `run.start` can pass an explicit `profile`/`modelProfile` or fall back to the selected profile for the supplied `client`.
 
+## Session Affinity and Durable Sessions
+
+The CLI separates durable local sessions from provider-routing affinity:
+
+- Durable local session ids identify persisted `SessionStore` records, display replay, restore snapshots, approvals, deferred tools, and current-session pointers.
+- Request metadata uses `starweaver.durable_session_id`, `starweaver.durable_run_id`, `cli.session_id`, and `cli.run_id` for durable trace/session correlation. `starweaver.session_id` remains a compatibility fallback only.
+- `AgentContext.session_id` is the logical provider-affinity source consumed by runtime request building.
+- TUI creates a process-level `session_affinity_id` at startup and passes it through run metadata as `starweaver.session_affinity_id` for each run.
+- TUI `/clear`, durable session selection, and snapshot restore do not mutate `session_affinity_id`; they affect local transcript/history state only.
+- Headless CLI runs set `AgentContext.session_id` from explicit `starweaver.session_affinity_id` metadata when present. If no explicit affinity exists and no restored context affinity exists, the durable session id is used as a compatibility fallback.
+- Provider-specific routing is resolved through typed `ModelSettings` overlays: OpenAI prompt-cache keys, Codex OAuth session/thread headers, and opt-in Gateway `x-session-id`.
+
 ## JSON-RPC Stdio Runtime Surface
 
 The preferred host integration surface is a long-lived JSON-RPC 2.0 server over stdin/stdout:
@@ -154,17 +166,17 @@ A host process starts the CLI runtime, sends JSON-RPC requests on stdin, receive
 
 Local state roots:
 
-| Path                               | Owner                     | Purpose                                                                                |
-| ---------------------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
-| `~/.starweaver/config.toml`        | shared CLI/runtime config | default profile, provider settings, config-backed model profiles, output/HITL defaults |
-| `~/.starweaver/tools.toml`         | shared CLI/runtime config | tool policy metadata                                                                   |
-| `~/.starweaver/mcp.json`           | shared CLI/runtime config | MCP server metadata                                                                    |
-| `~/.starweaver/skills`             | shared catalog            | global skill definitions                                                               |
-| `~/.starweaver/subagents`          | shared catalog            | global subagent definitions                                                            |
-| `~/.starweaver/tui/state.json`     | TUI client                | selected profile and future terminal UI state                                          |
-| `~/.starweaver/desktop/state.json` | Desktop client            | selected profile and future desktop UI state                                           |
-| `.starweaver/config.toml`          | project config            | workspace-specific environment, trim, provider, and profile overrides                  |
-| `.starweaver/state.json`           | project runtime state     | current session pointer                                                                |
+| Path                               | Owner                     | Purpose                                                                                        |
+| ---------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `~/.starweaver/config.toml`        | shared CLI/runtime config | default profile, provider settings, config-backed model profiles, output/HITL defaults         |
+| `~/.starweaver/tools.toml`         | shared CLI/runtime config | tool policy metadata                                                                           |
+| `~/.starweaver/mcp.json`           | shared CLI/runtime config | MCP server metadata                                                                            |
+| `~/.starweaver/skills`             | shared catalog            | global skill definitions                                                                       |
+| `~/.starweaver/subagents`          | shared catalog            | global subagent definitions                                                                    |
+| `~/.starweaver/tui/state.json`     | TUI client                | selected profile and durable terminal UI state; process-level affinity is generated at startup |
+| `~/.starweaver/desktop/state.json` | Desktop client            | selected profile and future desktop UI state                                                   |
+| `.starweaver/config.toml`          | project config            | workspace-specific environment, trim, provider, and profile overrides                          |
+| `.starweaver/state.json`           | project runtime state     | current session pointer                                                                        |
 
 RPC is the superset API:
 

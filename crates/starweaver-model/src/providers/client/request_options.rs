@@ -3,8 +3,10 @@ use serde_json::{json, Map, Value};
 use crate::{
     adapter::{ModelRequestContext, ModelRequestParameters},
     profile::ProtocolFamily,
-    settings::ModelSettings,
-    transport::{HttpRequest, HttpRequestOptions},
+    settings::{
+        format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key, ModelSettings,
+    },
+    transport::{extend_headers_case_insensitive, HttpRequest, HttpRequestOptions},
 };
 
 use super::ProtocolModelClient;
@@ -15,8 +17,6 @@ const OPENAI_REPLAY_ALIASES: &[&str] = &[
     "openai_send_reasoning_ids",
     "openai_include_encrypted_reasoning",
 ];
-const OPENAI_PROMPT_CACHE_KEY_LIMIT: usize = 64;
-
 impl ProtocolModelClient {
     pub(super) fn request_options(
         &self,
@@ -24,12 +24,38 @@ impl ProtocolModelClient {
         settings: Option<&ModelSettings>,
         params: &ModelRequestParameters,
     ) -> HttpRequestOptions {
-        let mut options = params.http.clone();
+        let mut options = HttpRequestOptions::default();
         if let Some(settings) = settings {
-            options.headers.extend(settings.extra_headers.clone());
+            if matches!(self.profile.protocol, ProtocolFamily::AnthropicMessages) {
+                if let Some(anthropic) = &settings.provider_settings.anthropic {
+                    if !anthropic.betas.is_empty() {
+                        options
+                            .headers
+                            .insert("anthropic-beta".to_string(), anthropic.betas.join(","));
+                    }
+                }
+            }
+            if let Some(gateway) = &settings.provider_settings.gateway {
+                if let Some(x_session_id) = &gateway.x_session_id {
+                    extend_headers_case_insensitive(
+                        &mut options.headers,
+                        [("x-session-id".to_string(), x_session_id.clone())],
+                    );
+                }
+                extend_headers_case_insensitive(
+                    &mut options.headers,
+                    gateway.extra_headers.clone(),
+                );
+            }
+            extend_headers_case_insensitive(&mut options.headers, settings.extra_headers.clone());
             options.extra_body.extend(settings.extra_body.clone());
-            options.timeout_ms = options.timeout_ms.or(settings.timeout_ms);
+            options.timeout_ms = settings.timeout_ms;
         }
+        extend_headers_case_insensitive(&mut options.headers, params.http.headers.clone());
+        options.extra_body.extend(params.http.extra_body.clone());
+        options.endpoint_url.clone_from(&params.http.endpoint_url);
+        options.timeout_ms = params.http.timeout_ms.or(options.timeout_ms);
+        options.metadata.extend(params.http.metadata.clone());
         options.extra_body.extend(params.extra_body.clone());
         options.metadata.extend(params.metadata.clone());
         options.metadata.extend(context.llm_trace_metadata.clone());
@@ -41,6 +67,19 @@ impl ProtocolModelClient {
             "starweaver.conversation_id".to_string(),
             json!(context.conversation_id.as_str()),
         );
+        if let Some(codex) = settings.and_then(|settings| settings.provider_settings.codex.as_ref())
+        {
+            if let Some(session_id) = &codex.session_id {
+                options
+                    .metadata
+                    .insert("provider.codex.session_id".to_string(), json!(session_id));
+            }
+            if let Some(thread_id) = &codex.thread_id {
+                options
+                    .metadata
+                    .insert("provider.codex.thread_id".to_string(), json!(thread_id));
+            }
+        }
         self.apply_protocol_request_options(context, &mut options);
         options
     }
@@ -89,6 +128,8 @@ fn apply_openai_prompt_cache_metadata(
     extra_body: &mut Map<String, Value>,
     auto_session_key: bool,
 ) {
+    // Compatibility fallback only. New runtime routing should set prompt-cache
+    // keys through typed OpenAI provider settings before this finalizer runs.
     if !extra_body.contains_key("prompt_cache_key") {
         if let Some(key) = metadata_string(
             metadata,
@@ -98,7 +139,7 @@ fn apply_openai_prompt_cache_metadata(
         } else if auto_session_key {
             if let Some(session_id) =
                 metadata_string(metadata, &["starweaver.session_id", "cli.session_id"])
-                    .and_then(session_prompt_cache_key)
+                    .and_then(format_openai_prompt_cache_key)
             {
                 extra_body.insert("prompt_cache_key".to_string(), json!(session_id));
             }
@@ -122,30 +163,4 @@ fn metadata_string<'a>(metadata: &'a Map<String, Value>, keys: &[&str]) -> Optio
         .find_map(|key| metadata.get(*key).and_then(Value::as_str))
         .map(str::trim)
         .filter(|value| !value.is_empty())
-}
-
-fn supports_automatic_openai_prompt_cache_key(model_name: &str) -> bool {
-    let model = model_name.trim().to_ascii_lowercase();
-    model.starts_with("gpt-")
-        || model.starts_with("chatgpt-")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-}
-
-fn session_prompt_cache_key(session_id: &str) -> Option<String> {
-    let mut key = String::from("sw_");
-    for ch in session_id.trim().chars() {
-        if key.len() >= OPENAI_PROMPT_CACHE_KEY_LIMIT {
-            break;
-        }
-        key.push(
-            if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
-                ch
-            } else {
-                '_'
-            },
-        );
-    }
-    (key.len() > "sw_".len()).then_some(key)
 }

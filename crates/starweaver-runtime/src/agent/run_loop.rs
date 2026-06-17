@@ -243,7 +243,7 @@ impl Agent {
                     .parts
                     .splice(insert_at..insert_at, dynamic_instruction_parts);
             }
-            let mut settings = self.effective_settings();
+            let mut settings = self.effective_settings(context);
             let skipped_response = self
                 .call_before_model_request(&mut state, context, &mut request, &mut settings)
                 .await?;

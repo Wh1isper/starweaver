@@ -4,13 +4,15 @@
 
 ## Executive summary
 
-Starweaver already has a solid foundation for provider-neutral settings and profile-driven request preparation. Its `ModelSettings` covers nearly the same generic settings baseline as Pydantic AI: token limits, sampling controls, tool choice, timeouts, thinking, service tier, headers, and extra body. However, Pydantic AI has three alignment layers that Starweaver currently only partially models:
+Status update: the current implementation slice has landed typed provider settings, high-confidence provider parameter mappings, session-affinity routing, and focused regression coverage. The detailed gap matrix below remains useful as the original baseline and follow-up tracker; the "Current implementation status" section records what has moved from gap to implemented behavior.
+
+Historical baseline before this slice: Starweaver already had a solid foundation for provider-neutral settings and profile-driven request preparation. Its `ModelSettings` covered nearly the same generic settings baseline as Pydantic AI: token limits, sampling controls, tool choice, timeouts, thinking, service tier, headers, and extra body. However, Pydantic AI had three alignment layers that Starweaver only partially modeled:
 
 1. Provider-specific typed settings, such as `openai_store`, `openai_text_verbosity`, `anthropic_metadata`, `google_safety_settings`, and `bedrock_guardrail_config`.
 2. Provider/model-specific profile flags, such as OpenAI `max_completion_tokens` support, Anthropic adaptive thinking support, Gemini tool-combination support, and Bedrock top-k/thinking variants.
 3. Explicit unsupported-settings behavior, including warn-and-drop, omit, downgrade, or hard error.
 
-The largest confirmed gaps are:
+The largest confirmed baseline gaps were:
 
 - Starweaver defines `seed` but does not map it for OpenAI Chat or Gemini.
 - OpenAI Chat maps `max_tokens` to legacy `max_tokens`; Pydantic AI maps it to `max_completion_tokens` when the model profile supports it.
@@ -23,7 +25,53 @@ The largest confirmed gaps are:
 - `provider_options` semantics differ by provider and are not typed or validated.
 - `ModelProfile` is currently mostly protocol-level; it lacks the provider/model-family knobs that Pydantic AI uses to avoid bad requests.
 
-Recommendation: proceed in phases. First add contract tests and profile policy fields, then fix high-confidence OpenAI and Anthropic gaps, then address Gemini/Bedrock model-family variants and schema transformers.
+Recommendation at baseline was to proceed in phases. The current slice completed the high-confidence typed-settings, profile policy, request-mapping, session-affinity, and regression-test phases while preserving the follow-up tracker below for remaining model-family/schema work.
+
+## Current implementation status
+
+Implemented in the current slice:
+
+- `ModelSettings.provider_settings` with typed nested settings for OpenAI Chat, OpenAI Responses, Anthropic, Google/Gemini, Bedrock, Codex OAuth routing, and Gateway sticky routing.
+- Field-level merge semantics for nested provider settings, while keeping `provider_options`, `extra_body`, and `extra_headers` as raw escape hatches.
+- OpenAI Chat mapping for official OpenAI `max_completion_tokens` by default, OpenAI-compatible `max_tokens` compatibility defaults, `seed`, `user`, `store`, `logprobs`, `top_logprobs`, `prediction`, `prompt_cache_key`, and `prompt_cache_retention`.
+- OpenAI Responses mapping for `max_output_tokens` by default, `store`, `user`, `truncation`, `text.verbosity`, `context_management`, `include`, `prompt_cache_key`, `prompt_cache_retention`, and `thinking` as top-level `reasoning`; generic `seed` is intentionally omitted because Responses support is not confirmed.
+- Profile policy `drop_sampling_parameters_when_reasoning` and mapper-level dropping of `temperature`, `top_p`, `top_k`, penalties, and `logit_bias` only when reasoning/thinking is active for OpenAI Chat, OpenAI Responses, and Anthropic defaults.
+- Anthropic mapping for `tool_choice`, `parallel_tool_calls=false` through `disable_parallel_tool_use`, native JSON schema output via `output_config.format`, adaptive thinking effort, typed `metadata`, `betas` to `anthropic-beta`, `context_management`, `container`, and service tier.
+- Gemini mapping for `seed`, typed `safetySettings`, `cachedContent`, `labels`, `responseLogprobs`, `logprobs`, and `serviceTier`.
+- Bedrock mapping for `ToolChoice::None` by omitting `toolConfig`, Anthropic-family `top_k` and `thinking` passthrough, service tier, guardrails, performance config, request metadata, additional response paths, prompt variables, additional request fields, and inference profile routing through `modelId`.
+- Output-schema mapping for `NativeJsonSchema` and `NativeJsonObject` across OpenAI Chat, OpenAI Responses, and Gemini; Anthropic native JSON schema maps to `output_config.format`.
+- Profile/native-tool contract cleanup: OpenAI Chat and Anthropic default profiles no longer advertise native tools that the mappers do not consume.
+- Session-affinity routing via `AgentContext.session_id` and low-priority typed `ModelSettings` overlays for OpenAI prompt cache, Codex OAuth session/thread IDs, and opt-in Gateway `x-session-id`.
+
+Focused validation completed:
+
+```bash
+cargo check -p starweaver-cli --locked
+cargo test -p starweaver-model --test request_parameters --locked
+cargo test -p starweaver-model --test oauth_provider --locked
+cargo test -p starweaver-model --test replay --locked
+cargo test -p starweaver-runtime --test session_affinity --locked
+cargo test -p starweaver-context --test context --locked
+cargo test -p starweaver-cli --locked
+```
+
+Final repository validation completed:
+
+```bash
+make fmt-check
+make check
+make replay-check
+make test
+```
+
+Remaining follow-ups after this slice:
+
+- Add provider/model-family-specific profile extension structs for unsupported-setting policies beyond the current reasoning sampling-drop flag.
+- Expand provider-specific JSON schema transformers for strict OpenAI, Gemini subsets, Bedrock subsets, and Anthropic limits.
+- Add typed helper constructors for provider-native tools while keeping `NativeToolDefinition` for fast-moving provider features.
+- Add Bedrock Nova-family and non-Anthropic-family top-k/thinking variants once profiles identify the target model family.
+- Add cached-content stripping semantics for Gemini if `cachedContent` is used with system/tool content that providers require to be omitted.
+- Migrate more parameter assertions into replay fixture JSON when the prepared-request fixture migration is complete.
 
 ## Evidence sources
 
@@ -120,9 +168,11 @@ Important design choices to borrow:
 - JSON schema transformation is provider-specific and model-aware.
 - Native tools and structured output combinations are profile-gated before the request is sent.
 
-## Starweaver current state
+## Starweaver baseline state before this implementation slice
 
-Starweaver has a strong generic layer:
+The following table is the original baseline captured before the current provider-alignment implementation slice. For the landed status, use the "Current implementation status" section above.
+
+Starweaver had a strong generic layer:
 
 | Generic setting       | Starweaver support         | Current mapping status                                                                                |
 | --------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -147,7 +197,7 @@ Starweaver has a strong generic layer:
 
 The largest structural gap is that Starweaver uses raw `provider_options` and `extra_body` for most provider-specific parameters, while Pydantic AI exposes typed provider settings and profile gates.
 
-## Detailed gap matrix
+## Detailed baseline gap matrix
 
 ### Cross-cutting settings and profiles
 
@@ -246,7 +296,7 @@ Result: Starweaver covers the generic baseline. Confirmed gaps are not missing g
 
 Compared Pydantic AI provider-specific settings classes with Starweaver's `provider_options` and provider mappers.
 
-Result: Starweaver does not have typed provider-specific settings. Most provider-specific params can only be expressed as raw JSON through `provider_options` or `extra_body`, and the behavior differs per provider. This is the largest documentation and validation gap.
+Historical result: Starweaver did not have typed provider-specific settings. Most provider-specific params could only be expressed as raw JSON through `provider_options` or `extra_body`, and the behavior differed per provider. The current implementation slice added `ModelSettings.provider_settings` with typed nested provider settings while preserving raw escape hatches.
 
 ### Review pass 3: Profile capability consistency
 
@@ -351,7 +401,7 @@ Bedrock tasks:
 
 1. Add Bedrock profile fields: `supports_tool_choice`, `top_k_variant`, `thinking_variant`, `supports_adaptive_thinking`, `supports_effort`, `supports_prompt_caching`, `supports_tool_caching`.
 2. Map `top_k`, `thinking`, and `service_tier` by profile.
-3. Add typed Bedrock settings for guardrails, performance, request metadata, additional response fields, prompt variables, additional request fields, and inference profile.
+3. Add remaining typed Bedrock settings and model-family gates beyond landed guardrails, performance, request metadata, additional response fields, prompt variables, additional request fields, and inference profile routing.
 4. Add message cache point support or stop filtering cache-message options.
 
 Acceptance:
@@ -479,7 +529,7 @@ Design rules:
 
 ## Immediate next pull request proposal
 
-The first implementation PR should be small and high-confidence:
+The first implementation PR proposal was:
 
 1. Add provider parameter matrix tests and documentation comments.
 2. Fix profile/mapper native tool mismatch by removing native tools from OpenAI Chat and Anthropic default profiles, unless we choose to implement mapper support immediately.

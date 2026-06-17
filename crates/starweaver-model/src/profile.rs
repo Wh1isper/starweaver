@@ -207,6 +207,9 @@ pub struct ModelProfile {
     pub supports_inline_system_prompts: bool,
     /// Configurable thinking support.
     pub supports_thinking: bool,
+    /// Drop sampling settings such as temperature/top-p/top-k/penalties/logit-bias when reasoning is enabled.
+    #[serde(default)]
+    pub drop_sampling_parameters_when_reasoning: bool,
     /// Reasoning is always enabled.
     pub thinking_always_enabled: bool,
     /// Tags used by text-stream adapters to split thinking parts from text.
@@ -249,6 +252,7 @@ impl ModelProfile {
             supports_document_input: false,
             supports_inline_system_prompts: false,
             supports_thinking: false,
+            drop_sampling_parameters_when_reasoning: false,
             thinking_always_enabled: false,
             thinking_tags: default_thinking_tags(),
             ignore_streamed_leading_whitespace: false,
@@ -266,17 +270,9 @@ impl ModelProfile {
                 supports_image_input: true,
                 supports_inline_system_prompts: true,
                 supports_thinking: true,
+                drop_sampling_parameters_when_reasoning: true,
                 default_structured_output_mode: StructuredOutputMode::NativeJsonSchema,
-                supported_native_tools: [
-                    NativeToolKind::WebSearch,
-                    NativeToolKind::CodeExecution,
-                    NativeToolKind::FileSearch,
-                    NativeToolKind::ImageGeneration,
-                    NativeToolKind::McpServer,
-                    NativeToolKind::ToolSearch,
-                ]
-                .into_iter()
-                .collect(),
+                supported_native_tools: no_native_tools(),
                 message_normalization: MessageNormalization::MergeAdjacentSameRole,
                 ..base
             },
@@ -286,6 +282,7 @@ impl ModelProfile {
                 supports_image_input: true,
                 supports_inline_system_prompts: true,
                 supports_thinking: true,
+                drop_sampling_parameters_when_reasoning: true,
                 default_structured_output_mode: StructuredOutputMode::NativeJsonSchema,
                 supported_native_tools: [
                     NativeToolKind::WebSearch,
@@ -301,13 +298,14 @@ impl ModelProfile {
                 ..base
             },
             ProtocolFamily::AnthropicMessages => Self {
-                supports_json_schema_output: false,
+                supports_json_schema_output: true,
                 supports_json_object_output: false,
                 supports_image_input: true,
                 supports_document_input: true,
                 supports_thinking: true,
-                default_structured_output_mode: StructuredOutputMode::Tool,
-                supported_native_tools: std::iter::once(NativeToolKind::CodeExecution).collect(),
+                drop_sampling_parameters_when_reasoning: true,
+                default_structured_output_mode: StructuredOutputMode::NativeJsonSchema,
+                supported_native_tools: no_native_tools(),
                 message_normalization: MessageNormalization::SystemField,
                 ..base
             },

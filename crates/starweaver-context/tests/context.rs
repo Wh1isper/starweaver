@@ -4,7 +4,7 @@ use starweaver_context::{
     AgentContext, AgentEvent, AgentId, BusMessage, ModelConfig, PerThousandRatio, ResumableState,
     TaskStatus,
 };
-use starweaver_core::TraceContext;
+use starweaver_core::{SessionId, TraceContext};
 use starweaver_model::{ContentPart, ModelMessage, ModelRequest, ModelResponse};
 use starweaver_usage::Usage;
 
@@ -66,6 +66,33 @@ fn context_exports_and_restores_state() {
         restored.trace_context.trace_state.as_deref(),
         Some("state-main")
     );
+}
+
+#[test]
+fn context_exports_and_restores_session_affinity_id() {
+    let mut context = AgentContext::new(AgentId::from_string("main"));
+    context.set_session_id(SessionId::from_string("session_affinity_context"));
+
+    let curated = context.export_state();
+    let full = context.export_full_state();
+
+    assert_eq!(
+        curated.session_id.as_ref().map(SessionId::as_str),
+        Some("session_affinity_context")
+    );
+    assert_eq!(
+        full.session_id.as_ref().map(SessionId::as_str),
+        Some("session_affinity_context")
+    );
+    assert_eq!(
+        AgentContext::from_state(curated)
+            .session_id()
+            .map(SessionId::as_str),
+        Some("session_affinity_context")
+    );
+    assert!(AgentContext::from_state(ResumableState::default())
+        .session_id()
+        .is_none());
 }
 
 #[test]

@@ -5,9 +5,9 @@ The model layer is the compatibility boundary between Starweaver's canonical age
 ## Model Layer Responsibilities
 
 - Define canonical messages, request parts, response parts, content parts, tool-call arguments, usage, finish reasons, response lifecycle state, and provider metadata.
-- Define `ModelSettings`, `ModelRequestParameters`, `ModelRequestContext`, `ModelProfile`, protocol families, and built-in model presets.
-- Prepare requests by merging settings, resolving profile-driven output/thinking/native-tool behavior, normalizing messages, and producing prepared request snapshots.
-- Translate canonical history into provider wire requests.
+- Define `ModelSettings`, typed nested provider settings, `ModelRequestParameters`, `ModelRequestContext`, `ModelProfile`, protocol families, and built-in model presets.
+- Prepare requests by merging settings, resolving profile-driven output/thinking/native-tool behavior, applying provider/profile request policy, normalizing messages, and producing prepared request snapshots.
+- Translate canonical history into provider wire requests, including typed provider settings and raw escape hatches.
 - Parse provider responses into canonical `ModelResponse` values.
 - Support injectable HTTP clients, endpoint overrides, headers, extra body fields, retry policy, and gateway routing.
 - Provide deterministic `TestModel` and `FunctionModel` for application and runtime tests.
@@ -23,6 +23,24 @@ The model layer owns provider-neutral preset data so SDK apps and service profil
 - runtime preset assembly that combines a model id, provider/model names, settings preset, config preset, and HTTP config into a `ProviderAlias`
 
 Provider mappers consume these presets through the same `ModelSettings`, `ModelProfile`, `HttpModelConfig`, and `ProviderAlias` contracts used by handwritten configuration.
+
+## Typed Provider Settings and Routing
+
+`ModelSettings` keeps generic settings provider-neutral while exposing typed nested provider settings for official provider-specific fields:
+
+| Provider settings struct  | Purpose                                                                                                                                                                    |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OpenAiChatSettings`      | Chat-specific `user`, `store`, logprobs, prediction, and prompt-cache controls                                                                                             |
+| `OpenAiResponsesSettings` | Responses-specific `store`, `user`, truncation, text verbosity, context management, include list, and prompt-cache controls                                                |
+| `AnthropicSettings`       | Messages metadata, `anthropic-beta` betas, context management, container, and service tier                                                                                 |
+| `GoogleSettings`          | Gemini safety settings, cached content, labels, logprobs, and service tier                                                                                                 |
+| `BedrockSettings`         | Converse guardrails, performance config, request metadata, additional response paths, prompt variables, additional request fields, and inference profile `modelId` routing |
+| `CodexSettings`           | Codex OAuth session/thread routing IDs                                                                                                                                     |
+| `GatewaySettings`         | Gateway sticky `x-session-id` and gateway-scoped extra headers                                                                                                             |
+
+Provider-specific typed settings should be the primary alignment surface. `provider_options`, `extra_body`, and `extra_headers` remain raw escape hatches; final raw body/header overlays intentionally win over typed settings.
+
+Session-affinity routing uses `AgentContext.session_id` as a logical affinity source. Runtime request building converts that value into a low-priority typed `ModelSettings` overlay for OpenAI prompt-cache keys, Codex OAuth session/thread IDs, or opt-in Gateway sticky routing. Durable local session IDs remain trace/session metadata and are not generic model HTTP headers. `starweaver.session_id` is retained only as a legacy compatibility fallback; `starweaver.durable_session_id` is the canonical durable local session metadata key.
 
 ## Provider Families
 
@@ -50,14 +68,15 @@ The model protocol uses a typed conversation AST defined in `06-message-request-
 
 Before provider wire mapping, the model layer should:
 
-1. merge model defaults, agent settings, scoped overrides, and run settings
+1. merge low-priority runtime routing overlays, model defaults, agent settings, scoped overrides, and run settings
 2. customize tool and output schemas through profile-specific schema transforms
 3. resolve default output mode and validate output/media support
-4. resolve thinking/reasoning settings from unified model settings into request parameters
-5. deduplicate native tools and resolve native-tool/function-tool fallback policy
-6. append prompted-output instructions to instruction parts when the selected output mode requires them
-7. normalize message history according to the active `ModelProfile`
-8. emit a prepared request snapshot for traces and replay fixtures
+4. resolve thinking/reasoning settings from unified model settings into provider-specific request shapes
+5. apply profile/provider request policy, including dropping sampling parameters only when reasoning profiles require it and reasoning is active
+6. deduplicate native tools and resolve native-tool/function-tool fallback policy
+7. append prompted-output instructions to instruction parts when the selected output mode requires them
+8. normalize message history according to the active `ModelProfile`
+9. emit a prepared request snapshot for traces and replay fixtures
 
 Normalization policies include preserving canonical items, merging adjacent provider roles, lifting system prompts into a top-level system field or system instruction object, and wrapping later system fragments as tagged user content for providers with top-level-only system support.
 
@@ -118,30 +137,35 @@ Request-only fixtures omit provider response and expected canonical response. Th
 
 Current fixture-driven coverage includes:
 
-| Area                                       | Covered                                                                                              |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| OpenAI Chat text                           | yes                                                                                                  |
-| OpenAI Chat tool call                      | yes                                                                                                  |
-| OpenAI Chat tool return history            | yes                                                                                                  |
-| OpenAI Responses text                      | yes                                                                                                  |
-| OpenAI Responses function call             | yes                                                                                                  |
-| OpenAI Responses native web search request | yes                                                                                                  |
-| OpenAI Responses native MCP request        | yes                                                                                                  |
-| Anthropic text                             | yes                                                                                                  |
-| Anthropic tool use                         | yes                                                                                                  |
-| Anthropic tool result history              | yes                                                                                                  |
-| Gemini text                                | yes                                                                                                  |
-| Gemini function call                       | yes                                                                                                  |
-| Gemini function response history           | yes                                                                                                  |
-| Bedrock text                               | yes                                                                                                  |
-| Bedrock tool use                           | yes                                                                                                  |
-| Bedrock tool result history                | yes                                                                                                  |
-| Request parameters serialization           | yes                                                                                                  |
-| Prepared request snapshots                 | model-layer snapshot type and preparation tests landed; per-provider fixture fields remain follow-up |
-| Typed tool-argument preservation           | yes                                                                                                  |
-| Settings merge precedence                  | yes                                                                                                  |
-| Profile capability contracts               | yes                                                                                                  |
-| Structured output request mapping          | OpenAI Chat, OpenAI Responses, Gemini                                                                |
+| Area                                       | Covered                                                                                                                                   |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenAI Chat text                           | yes                                                                                                                                       |
+| OpenAI Chat tool call                      | yes                                                                                                                                       |
+| OpenAI Chat tool return history            | yes                                                                                                                                       |
+| OpenAI Responses text                      | yes                                                                                                                                       |
+| OpenAI Responses function call             | yes                                                                                                                                       |
+| OpenAI Responses native web search request | yes                                                                                                                                       |
+| OpenAI Responses native MCP request        | yes                                                                                                                                       |
+| Anthropic text                             | yes                                                                                                                                       |
+| Anthropic tool use                         | yes                                                                                                                                       |
+| Anthropic tool result history              | yes                                                                                                                                       |
+| Gemini text                                | yes                                                                                                                                       |
+| Gemini function call                       | yes                                                                                                                                       |
+| Gemini function response history           | yes                                                                                                                                       |
+| Bedrock text                               | yes                                                                                                                                       |
+| Bedrock tool use                           | yes                                                                                                                                       |
+| Bedrock tool result history                | yes                                                                                                                                       |
+| Request parameters serialization           | yes                                                                                                                                       |
+| Prepared request snapshots                 | model-layer snapshot type and preparation tests landed; per-provider fixture fields remain follow-up                                      |
+| Typed tool-argument preservation           | yes                                                                                                                                       |
+| Settings merge precedence                  | yes, including nested typed provider settings                                                                                             |
+| Profile capability contracts               | yes, including native-tool mapper consistency and active-reasoning sampling-drop policy                                                   |
+| OpenAI typed parameter mapping             | Chat/Responses prompt cache, official/compatible max-token variants, seed, user/store/logprobs/truncation/includes                        |
+| Anthropic typed parameter mapping          | tool choice, parallel-tool disable, native JSON schema output, betas, metadata/context/container/service tier                             |
+| Gemini typed parameter mapping             | seed, safety settings, cached content, labels, logprobs, service tier                                                                     |
+| Bedrock typed parameter mapping            | `ToolChoice::None`, top-k/thinking passthrough, service tier, guardrail/performance/request metadata, inference-profile `modelId` routing |
+| Session-affinity routing                   | OpenAI prompt cache, Codex OAuth headers, opt-in Gateway `x-session-id`                                                                   |
+| Structured output request mapping          | OpenAI Chat, OpenAI Responses, Gemini, Anthropic JSON schema; Bedrock native output remains follow-up                                     |
 
 ## CI Gate
 
@@ -197,10 +221,10 @@ Remaining replay families are tracked in `memos/implementation-todo.md`:
 - streaming chunk and delta fixtures
 - provider status and malformed response fixtures
 - refusal/content-filter fixtures
-- Anthropic thinking block fixtures
-- OpenAI Responses reasoning item fixtures
-- Gemini safety block fixtures
-- Bedrock strict tool-choice and Converse edge cases
+- additional Anthropic thinking/signature block fixtures beyond current request-parameter coverage
+- OpenAI Responses reasoning item fixtures beyond current request mapping tests
+- Gemini safety response block fixtures beyond typed request-parameter coverage
+- Bedrock strict tool-choice, Nova-family variants, and Converse edge cases beyond current Anthropic-family request mapping
 - multimodal input and tool return fixtures
-- provider-specific model setting aliases
+- broader provider-specific model setting alias coverage
 - cassette import/scrub utility for real recordings

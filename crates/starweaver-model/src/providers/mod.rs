@@ -23,7 +23,11 @@ pub(crate) use openai_common::{
     finish_reason_openai, openai_chat_tool_choice, openai_responses_tool_choice,
     parse_tool_call_arguments,
 };
-pub(crate) use settings::{apply_common_settings, apply_common_settings_with_max_tokens};
+#[cfg(test)]
+pub(crate) use settings::apply_common_settings;
+pub(crate) use settings::{
+    apply_common_settings_with_max_tokens, apply_common_settings_without_seed,
+};
 pub(crate) use system::{
     collect_system_and_non_system, collect_system_parts_and_non_system, SystemInstructionPart,
 };

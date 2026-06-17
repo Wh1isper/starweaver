@@ -9,10 +9,11 @@ use crate::{
         ToolCallPart,
     },
     providers::{
-        apply_common_settings, collect_system_parts_and_non_system, finish_reason_openai,
-        insert_nonempty_description, openai_chat_content, parse_tool_call_arguments,
-        provider_tool_schema_without_meta, usage_from_openai,
+        apply_common_settings_with_max_tokens, collect_system_parts_and_non_system,
+        finish_reason_openai, insert_nonempty_description, openai_chat_content,
+        parse_tool_call_arguments, provider_tool_schema_without_meta, usage_from_openai,
     },
+    transport::MaxTokensParameter,
     ModelError, ModelSettings,
 };
 
@@ -31,6 +32,28 @@ impl OpenAiChatAdapter {
         messages: &[ModelMessage],
         settings: Option<&ModelSettings>,
         tools: &[ToolDefinition],
+    ) -> Result<Value, ModelError> {
+        Self::build_request_with_options(
+            model,
+            messages,
+            settings,
+            tools,
+            MaxTokensParameter::MaxTokens,
+        )
+    }
+
+    /// Build a provider wire request with explicit max-token parameter mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when canonical history cannot be mapped into chat messages.
+    #[allow(clippy::too_many_lines)]
+    pub fn build_request_with_options(
+        model: &str,
+        messages: &[ModelMessage],
+        settings: Option<&ModelSettings>,
+        tools: &[ToolDefinition],
+        max_tokens_parameter: MaxTokensParameter,
     ) -> Result<Value, ModelError> {
         let (system, rest) = collect_system_parts_and_non_system(messages);
         let mut system_messages = system
@@ -111,7 +134,35 @@ impl OpenAiChatAdapter {
         let mut request = serde_json::Map::new();
         request.insert("model".to_string(), json!(model));
         request.insert("messages".to_string(), json!(wire_messages));
-        apply_common_settings(&mut request, settings);
+        apply_common_settings_with_max_tokens(&mut request, settings, max_tokens_parameter);
+        if let Some(openai) =
+            settings.and_then(|settings| settings.provider_settings.openai_chat.as_ref())
+        {
+            if let Some(user) = &openai.user {
+                request.insert("user".to_string(), json!(user));
+            }
+            if let Some(store) = openai.store {
+                request.insert("store".to_string(), json!(store));
+            }
+            if let Some(logprobs) = openai.logprobs {
+                request.insert("logprobs".to_string(), json!(logprobs));
+            }
+            if let Some(top_logprobs) = openai.top_logprobs {
+                request.insert("top_logprobs".to_string(), json!(top_logprobs));
+            }
+            if let Some(prediction) = &openai.prediction {
+                request.insert("prediction".to_string(), prediction.clone());
+            }
+            if let Some(prompt_cache_key) = &openai.prompt_cache_key {
+                request.insert("prompt_cache_key".to_string(), json!(prompt_cache_key));
+            }
+            if let Some(prompt_cache_retention) = &openai.prompt_cache_retention {
+                request.insert(
+                    "prompt_cache_retention".to_string(),
+                    json!(prompt_cache_retention),
+                );
+            }
+        }
         if let Some(tool_choice) = settings.and_then(|settings| settings.tool_choice.as_ref()) {
             request.insert(
                 "tool_choice".to_string(),

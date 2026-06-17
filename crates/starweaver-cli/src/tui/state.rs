@@ -7,6 +7,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use starweaver_core::SessionId;
 use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
 use starweaver_usage::UsageSnapshot;
@@ -224,8 +225,10 @@ pub struct InteractiveTuiState {
     pub config_dir: String,
     /// Workspace directory displayed in the startup card.
     pub workspace_dir: String,
-    /// Current session id, when one exists.
+    /// Current durable session id, when one exists.
     pub session_id: Option<String>,
+    /// Stable provider-routing affinity id for this TUI process.
+    pub session_affinity_id: String,
     /// Main scrollback body.
     pub body: Vec<String>,
     /// Status line.
@@ -308,6 +311,7 @@ impl InteractiveTuiState {
             workspace_dir: env::current_dir()
                 .map_or_else(|_| ".".to_string(), |path| path.display().to_string()),
             session_id: None,
+            session_affinity_id: SessionId::new().as_str().to_string(),
             body: Vec::new(),
             status: "IDLE".to_string(),
             input: String::new(),

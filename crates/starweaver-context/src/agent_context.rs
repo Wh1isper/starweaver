@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use starweaver_core::{AgentId, ConversationId, Metadata, RunId, TraceContext};
+use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TraceContext};
 use starweaver_model::{ContentPart, ModelMessage};
 use starweaver_usage::{
     add_optional_pricing, PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot,
@@ -25,6 +25,9 @@ pub struct AgentContext {
     /// Current run identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
+    /// Stable logical session affinity identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<SessionId>,
     /// Parent run identifier if this context belongs to a subagent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<RunId>,
@@ -157,6 +160,7 @@ impl AgentContext {
         Self {
             agent_id,
             run_id: None,
+            session_id: None,
             parent_run_id: None,
             conversation_id: ConversationId::new(),
             message_history: Vec::new(),
@@ -207,6 +211,7 @@ impl AgentContext {
     pub fn from_state(state: ResumableState) -> Self {
         let mut context = Self::new(state.agent_id.clone());
         context.run_id = state.run_id;
+        context.session_id = state.session_id;
         context.conversation_id = state.conversation_id.unwrap_or_default();
         context.message_history = state.message_history;
         context.subagent_history = state.subagent_history;
@@ -265,6 +270,7 @@ impl AgentContext {
                 .include_starweaver_extensions()
                 .then(|| self.run_id.clone())
                 .flatten(),
+            session_id: self.session_id.clone(),
             conversation_id: options
                 .include_starweaver_extensions()
                 .then(|| self.conversation_id.clone()),
@@ -361,6 +367,17 @@ impl AgentContext {
         // Current runtime security wins unless caller explicitly constructs a context from state
         // with `from_state`.
         self.security = security;
+    }
+
+    /// Set the stable logical session affinity identifier.
+    pub fn set_session_id(&mut self, session_id: SessionId) {
+        self.session_id = Some(session_id);
+    }
+
+    /// Return the stable logical session affinity identifier.
+    #[must_use]
+    pub const fn session_id(&self) -> Option<&SessionId> {
+        self.session_id.as_ref()
     }
 
     /// Prepare context for a new run.

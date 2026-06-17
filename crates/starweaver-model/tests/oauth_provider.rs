@@ -244,6 +244,114 @@ async fn codex_oauth_headers_prefer_provider_specific_metadata() {
 }
 
 #[tokio::test]
+async fn codex_oauth_preserves_explicit_request_routing_headers_over_metadata() {
+    let token_source = Arc::new(FakeTokenSource::default());
+    let http_client = Arc::new(RecordingHttpClient::default());
+    let client =
+        OAuthBearerHttpClient::new(http_client.clone(), token_source, "codex", BTreeMap::new())
+            .unwrap();
+    let mut request = codex_request();
+    request.headers.extend(BTreeMap::from([
+        (
+            "session_id".to_string(),
+            "explicit-session-underscore".to_string(),
+        ),
+        (
+            "session-id".to_string(),
+            "explicit-session-hyphen".to_string(),
+        ),
+        (
+            "thread_id".to_string(),
+            "explicit-thread-underscore".to_string(),
+        ),
+        (
+            "thread-id".to_string(),
+            "explicit-thread-hyphen".to_string(),
+        ),
+        (
+            "x-client-request-id".to_string(),
+            "explicit-client-request".to_string(),
+        ),
+    ]));
+
+    let _ = client.send(request).await;
+
+    let seen = http_client.seen.lock().await;
+    assert_eq!(seen[0].headers["session_id"], "explicit-session-underscore");
+    assert_eq!(seen[0].headers["session-id"], "explicit-session-hyphen");
+    assert_eq!(seen[0].headers["thread_id"], "explicit-thread-underscore");
+    assert_eq!(seen[0].headers["thread-id"], "explicit-thread-hyphen");
+    assert_eq!(
+        seen[0].headers["x-client-request-id"],
+        "explicit-client-request"
+    );
+}
+
+#[tokio::test]
+async fn codex_oauth_single_explicit_alias_removes_generated_alias_group() {
+    let token_source = Arc::new(FakeTokenSource::default());
+    let http_client = Arc::new(RecordingHttpClient::default());
+    let client =
+        OAuthBearerHttpClient::new(http_client.clone(), token_source, "codex", BTreeMap::new())
+            .unwrap();
+    let mut request = codex_request();
+    request.headers.insert(
+        "session_id".to_string(),
+        "explicit-session-only".to_string(),
+    );
+    request
+        .headers
+        .insert("thread-id".to_string(), "explicit-thread-only".to_string());
+    request.metadata.insert(
+        "provider.codex.session_id".to_string(),
+        json!("metadata-session"),
+    );
+    request.metadata.insert(
+        "provider.codex.thread_id".to_string(),
+        json!("metadata-thread"),
+    );
+
+    let _ = client.send(request).await;
+
+    let seen = http_client.seen.lock().await;
+    assert_eq!(seen[0].headers["session_id"], "explicit-session-only");
+    assert!(!seen[0].headers.contains_key("session-id"));
+    assert_eq!(seen[0].headers["thread-id"], "explicit-thread-only");
+    assert!(!seen[0].headers.contains_key("thread_id"));
+    assert!(!seen[0].headers.contains_key("x-client-request-id"));
+}
+
+#[tokio::test]
+async fn codex_oauth_extra_header_alias_removes_generated_alias_group() {
+    let token_source = Arc::new(FakeTokenSource::default());
+    let http_client = Arc::new(RecordingHttpClient::default());
+    let client = OAuthBearerHttpClient::new(
+        http_client.clone(),
+        token_source,
+        "codex",
+        BTreeMap::from([
+            ("Session-ID".to_string(), "extra-session-only".to_string()),
+            (
+                "X-CLIENT-REQUEST-ID".to_string(),
+                "extra-thread-only".to_string(),
+            ),
+        ]),
+    )
+    .unwrap();
+
+    let _ = client.send(codex_request()).await;
+
+    let seen = http_client.seen.lock().await;
+    assert_eq!(seen[0].headers["Session-ID"], "extra-session-only");
+    assert!(!seen[0].headers.contains_key("session_id"));
+    assert!(!seen[0].headers.contains_key("session-id"));
+    assert_eq!(seen[0].headers["X-CLIENT-REQUEST-ID"], "extra-thread-only");
+    assert!(!seen[0].headers.contains_key("thread_id"));
+    assert!(!seen[0].headers.contains_key("thread-id"));
+    assert!(!seen[0].headers.contains_key("x-client-request-id"));
+}
+
+#[tokio::test]
 async fn oauth_bearer_http_client_refreshes_once_on_401() {
     let token_source = Arc::new(FakeTokenSource::default());
     let http_client = Arc::new(RecordingHttpClient::default());

@@ -116,6 +116,7 @@ impl GeminiGenerateContentAdapter {
             );
         }
         append_gemini_generation_config(&mut request, settings);
+        append_gemini_typed_request_fields(&mut request, settings);
         append_gemini_tools(&mut request, settings, tools, native_tools);
         Ok(Value::Object(request))
     }
@@ -214,6 +215,9 @@ fn append_gemini_generation_config(
     if let Some(top_k) = settings.top_k {
         generation_config.insert("topK".to_string(), json!(top_k));
     }
+    if let Some(seed) = settings.seed {
+        generation_config.insert("seed".to_string(), json!(seed));
+    }
     if let Some(presence_penalty) = settings.presence_penalty {
         generation_config.insert("presencePenalty".to_string(), json!(presence_penalty));
     }
@@ -239,6 +243,14 @@ fn append_gemini_generation_config(
         }
         generation_config.insert("thinkingConfig".to_string(), Value::Object(thinking_config));
     }
+    if let Some(google) = &settings.provider_settings.google {
+        if let Some(response_logprobs) = google.response_logprobs {
+            generation_config.insert("responseLogprobs".to_string(), json!(response_logprobs));
+        }
+        if let Some(logprobs) = google.logprobs {
+            generation_config.insert("logprobs".to_string(), json!(logprobs));
+        }
+    }
     if let Some(options) = settings
         .provider_options
         .as_ref()
@@ -254,6 +266,28 @@ fn append_gemini_generation_config(
             "generationConfig".to_string(),
             Value::Object(generation_config),
         );
+    }
+}
+
+fn append_gemini_typed_request_fields(
+    request: &mut serde_json::Map<String, Value>,
+    settings: Option<&ModelSettings>,
+) {
+    let Some(google) = settings.and_then(|settings| settings.provider_settings.google.as_ref())
+    else {
+        return;
+    };
+    if let Some(safety_settings) = &google.safety_settings {
+        request.insert("safetySettings".to_string(), safety_settings.clone());
+    }
+    if let Some(cached_content) = &google.cached_content {
+        request.insert("cachedContent".to_string(), json!(cached_content));
+    }
+    if let Some(labels) = &google.labels {
+        request.insert("labels".to_string(), labels.clone());
+    }
+    if let Some(service_tier) = &google.service_tier {
+        request.insert("serviceTier".to_string(), json!(service_tier));
     }
 }
 

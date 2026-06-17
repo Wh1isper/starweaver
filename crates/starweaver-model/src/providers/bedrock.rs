@@ -102,7 +102,11 @@ impl BedrockConverseAdapter {
         }
 
         let mut request = serde_json::Map::new();
-        request.insert("modelId".to_string(), json!(model));
+        let model_id = settings
+            .and_then(|settings| settings.provider_settings.bedrock.as_ref())
+            .and_then(|bedrock| bedrock.inference_profile.as_deref())
+            .unwrap_or(model);
+        request.insert("modelId".to_string(), json!(model_id));
         request.insert("messages".to_string(), json!(wire_messages));
         if let Some(system) = bedrock_system_value(&system, settings) {
             request.insert("system".to_string(), system);
@@ -128,23 +132,7 @@ impl BedrockConverseAdapter {
                     Value::Object(inference_config),
                 );
             }
-            if let Some(options) = settings
-                .provider_options
-                .as_ref()
-                .and_then(Value::as_object)
-            {
-                let additional_model_request_fields = options
-                    .iter()
-                    .filter(|(key, _)| !is_internal_bedrock_option(key))
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect::<serde_json::Map<_, _>>();
-                if !additional_model_request_fields.is_empty() {
-                    request.insert(
-                        "additionalModelRequestFields".to_string(),
-                        Value::Object(additional_model_request_fields),
-                    );
-                }
-            }
+            append_bedrock_typed_fields(&mut request, model, settings);
             if let Some(fields) = settings.extra_body.get("additionalModelResponseFieldPaths") {
                 request.insert(
                     "additionalModelResponseFieldPaths".to_string(),
@@ -152,7 +140,11 @@ impl BedrockConverseAdapter {
                 );
             }
         }
-        if !tools.is_empty() {
+        let tools_disabled = matches!(
+            settings.and_then(|settings| settings.tool_choice.as_ref()),
+            Some(crate::settings::ToolChoice::None)
+        );
+        if !tools.is_empty() && !tools_disabled {
             let mut tool_definitions = tools
                 .iter()
                 .map(|tool| {
@@ -255,6 +247,94 @@ impl BedrockConverseAdapter {
             conversation_id: None,
             metadata: bedrock_metadata(value),
         })
+    }
+}
+
+fn append_bedrock_typed_fields(
+    request: &mut serde_json::Map<String, Value>,
+    model: &str,
+    settings: &ModelSettings,
+) {
+    let mut additional_model_request_fields = settings
+        .provider_options
+        .as_ref()
+        .and_then(Value::as_object)
+        .map(|options| {
+            options
+                .iter()
+                .filter(|(key, _)| !is_internal_bedrock_option(key))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<serde_json::Map<_, _>>()
+        })
+        .unwrap_or_default();
+
+    if let Some(top_k) = settings.top_k {
+        if bedrock_uses_anthropic_passthrough(model) {
+            additional_model_request_fields.insert("top_k".to_string(), json!(top_k));
+        }
+    }
+    if let Some(thinking) = &settings.thinking {
+        if bedrock_uses_anthropic_passthrough(model) {
+            let mut payload = serde_json::Map::new();
+            payload.insert(
+                "type".to_string(),
+                json!(thinking.mode.as_deref().unwrap_or("enabled")),
+            );
+            if let Some(budget_tokens) = thinking.budget_tokens {
+                payload.insert("budget_tokens".to_string(), json!(budget_tokens));
+            }
+            additional_model_request_fields.insert("thinking".to_string(), Value::Object(payload));
+        }
+    }
+    if let Some(bedrock) = &settings.provider_settings.bedrock {
+        if let Some(fields) = &bedrock.additional_model_request_fields {
+            if let Some(fields) = fields.as_object() {
+                additional_model_request_fields.extend(fields.clone());
+            }
+        }
+        if let Some(guardrail_config) = &bedrock.guardrail_config {
+            request.insert("guardrailConfig".to_string(), guardrail_config.clone());
+        }
+        if let Some(performance_config) = &bedrock.performance_config {
+            request.insert("performanceConfig".to_string(), performance_config.clone());
+        }
+        if let Some(request_metadata) = &bedrock.request_metadata {
+            request.insert("requestMetadata".to_string(), request_metadata.clone());
+        }
+        if !bedrock.additional_model_response_field_paths.is_empty() {
+            request.insert(
+                "additionalModelResponseFieldPaths".to_string(),
+                json!(bedrock.additional_model_response_field_paths),
+            );
+        }
+        if let Some(prompt_variables) = &bedrock.prompt_variables {
+            request.insert("promptVariables".to_string(), prompt_variables.clone());
+        }
+    }
+    if let Some(service_tier) = bedrock_service_tier(settings.service_tier.as_ref()) {
+        request.insert("serviceTier".to_string(), json!({"type": service_tier}));
+    }
+    if !additional_model_request_fields.is_empty() {
+        request.insert(
+            "additionalModelRequestFields".to_string(),
+            Value::Object(additional_model_request_fields),
+        );
+    }
+}
+
+fn bedrock_uses_anthropic_passthrough(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("anthropic")
+        || model.to_ascii_lowercase().contains("claude")
+}
+
+const fn bedrock_service_tier(
+    service_tier: Option<&crate::settings::ServiceTier>,
+) -> Option<&'static str> {
+    match service_tier {
+        Some(crate::settings::ServiceTier::Default) => Some("default"),
+        Some(crate::settings::ServiceTier::Flex) => Some("flex"),
+        Some(crate::settings::ServiceTier::Priority) => Some("priority"),
+        Some(crate::settings::ServiceTier::Auto) | None => None,
     }
 }
 

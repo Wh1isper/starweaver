@@ -1576,6 +1576,7 @@ fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
 fn clear_command_clears_transcript_and_emits_context_event() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.session_id = Some("session_clear".to_string());
+    let session_affinity_id = state.session_affinity_id.clone();
     state.context_tokens = Some(42);
     state.body.push("old transcript".to_string());
     state.input = "/clear".to_string();
@@ -1589,6 +1590,7 @@ fn clear_command_clears_transcript_and_emits_context_event() {
     assert_eq!(state.context_tokens, None);
     assert_eq!(state.phase, "cleared");
     assert_eq!(state.input_status_text(), "context cleared");
+    assert_eq!(state.session_affinity_id, session_affinity_id);
 }
 
 #[test]
@@ -3267,7 +3269,9 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     assert!(text.contains("- submitted:try another path"));
 
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let session_affinity_id = state.session_affinity_id.clone();
     state.set_snapshot(&snapshot);
+    assert_eq!(state.session_affinity_id, session_affinity_id);
     assert_eq!(state.status, "CANCELLED");
     assert_eq!(state.phase, "replay");
     let assistant_index = state

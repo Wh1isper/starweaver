@@ -113,6 +113,7 @@ mod tests {
             worktree: None,
             worktree_name: None,
             branch: None,
+            session_affinity_id: None,
         };
         assert_eq!(run.prompt_text().unwrap(), " explicit ");
 
@@ -132,6 +133,7 @@ mod tests {
             worktree: None,
             worktree_name: None,
             branch: None,
+            session_affinity_id: None,
         };
         assert_eq!(joined.prompt_text().unwrap(), "hello world");
 
@@ -151,6 +153,7 @@ mod tests {
             worktree: None,
             worktree_name: None,
             branch: None,
+            session_affinity_id: None,
         };
         assert!(
             matches!(empty.prompt_text(), Err(CliError::Usage(message)) if message.contains("run -p"))

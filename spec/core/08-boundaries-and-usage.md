@@ -53,7 +53,7 @@ The runtime should not own SDK product behavior such as first-party environment 
 
 `starweaver-context` owns neutral run and session evidence:
 
-- agent, run, parent run, and conversation identifiers
+- agent, run, parent run, conversation, and optional logical session-affinity identifiers
 - canonical model history
 - typed dependencies
 - state, notes, events, and message bus
@@ -61,7 +61,9 @@ The runtime should not own SDK product behavior such as first-party environment 
 - subagent history and agent registry metadata
 - resumable state export/import profiles
 - usage ledger entries and snapshot aggregation
-- trace context and provider correlation fields
+- trace context and neutral provider correlation fields
+
+Context may carry `AgentContext.session_id` as a logical affinity value, but provider wire-format routing belongs to `starweaver-model` typed `ModelSettings` and provider mappers. Durable local session ids belong to `starweaver-session`/CLI storage metadata; they are not generic model HTTP headers.
 
 Context exports use neutral profiles:
 

@@ -7,7 +7,7 @@ use starweaver_model::{ModelRequestParameters, ModelSettings};
 use starweaver_tools::{DynTool, DynToolset, ToolRegistry};
 
 use crate::attach_environment;
-use starweaver_core::TraceContext;
+use starweaver_core::{SessionId, TraceContext};
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentError, AgentIterResult, AgentResult, AgentStreamRecord,
     AgentStreamResult,
@@ -185,6 +185,11 @@ impl AgentSession {
     /// Attach session metadata.
     pub fn set_metadata(&mut self, key: impl Into<String>, value: Value) {
         self.context.metadata.insert(key.into(), value);
+    }
+
+    /// Set the stable logical session affinity identifier.
+    pub fn set_session_id(&mut self, session_id: SessionId) {
+        self.context.set_session_id(session_id);
     }
 
     /// Attach the active environment provider to the session context.

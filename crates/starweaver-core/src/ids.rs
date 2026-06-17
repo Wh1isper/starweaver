@@ -30,6 +30,12 @@ impl Default for AgentId {
 pub struct SessionId(String);
 
 impl SessionId {
+    /// Create a new random session identifier.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(format!("session_{}", Uuid::new_v4()))
+    }
+
     /// Create an identifier from a caller-provided string.
     #[must_use]
     pub fn from_string(value: impl Into<String>) -> Self {
@@ -40,6 +46,12 @@ impl SessionId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl Default for SessionId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

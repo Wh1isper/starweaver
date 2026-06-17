@@ -4,7 +4,7 @@
 
 ## Context Responsibilities
 
-- Identify the active agent, run, and conversation.
+- Identify the active agent, run, conversation, and optional logical session-affinity id.
 - Store canonical model history.
 - Store explicit compact-restore inputs for the current run: user prompt content, previous assistant reference text, and user steering messages.
 - Track usage across runs and subagent delegation.
@@ -25,6 +25,7 @@ classDiagram
         AgentId agent_id
         RunId? run_id
         ConversationId conversation_id
+        SessionId? session_id
         Vec~ModelMessage~ message_history
         Option~Vec~ContentPart~~ user_prompts
         Option~String~ previous_assistant_response_reference
@@ -43,6 +44,7 @@ classDiagram
         AgentId agent_id
         RunId? run_id
         ConversationId conversation_id
+        SessionId? session_id
         Vec~ModelMessage~ message_history
         Option~Vec~ContentPart~~ user_prompts
         Option~String~ previous_assistant_response_reference
@@ -59,6 +61,14 @@ classDiagram
 ```
 
 Compact restore uses these explicit fields instead of reconstructing intent from history. The runtime records the effective current prompt in `user_prompts`, captures visible text from the assistant response immediately before the prompt in `previous_assistant_response_reference`, and appends drained sideband steering text to `steering_messages`. The compact and handoff filters share restored-request builders that emit blocks in this order: `<context-restored>`, `<previous-assistant-reference>`, `<original-request>`, then `<user-steering>`.
+
+## Session Affinity Boundary
+
+`AgentContext.session_id` is an optional logical affinity id that can survive resumable state export/import. It is not a provider wire-format field. Runtime request building may convert it into a low-priority typed `ModelSettings` overlay, and provider mappers then translate typed settings into protocol-specific bodies or headers.
+
+Durable local session ids remain `SessionStore`/CLI concerns. CLI metadata uses `starweaver.durable_session_id` and `starweaver.durable_run_id` as canonical durable identifiers, with `cli.session_id` / `cli.run_id` aliases for CLI consumers. `starweaver.session_id` is retained only as a compatibility fallback for older routing/trace consumers.
+
+Provider-specific routing headers are not generic context metadata. Codex OAuth owns `session_id`, `session-id`, `thread_id`, `thread-id`, and `x-client-request-id` headers through typed `CodexSettings`; Gateway sticky routing owns `x-session-id` through typed `GatewaySettings` or explicit raw headers.
 
 ## State Domains
 
@@ -213,7 +223,7 @@ These tests are the acceptance boundary for splitting request preparation, model
 
 ## Acceptance Gates
 
-- context export/restore tests
+- context export/restore tests, including `AgentContext.session_id`
 - note export/restore tests
 - dependency access tests
 - message bus tests

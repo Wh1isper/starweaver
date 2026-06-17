@@ -231,6 +231,7 @@ impl CliService {
                                         &self.config,
                                         command,
                                         state.session_id.clone(),
+                                        Some(state.session_affinity_id.clone()),
                                         PromptInput::text(prompt),
                                         Some(state.profile.clone()),
                                     ));
@@ -244,6 +245,7 @@ impl CliService {
                                             &self.config,
                                             command,
                                             state.session_id.clone(),
+                                            Some(state.session_affinity_id.clone()),
                                             prompt,
                                             Some(state.profile.clone()),
                                         ));
@@ -382,6 +384,7 @@ impl CliService {
                         &self.config,
                         command,
                         state.session_id.clone(),
+                        Some(state.session_affinity_id.clone()),
                         prompt,
                         Some(state.profile.clone()),
                     ));
@@ -400,6 +403,7 @@ fn spawn_tui_run(
     config: &CliConfig,
     command: &TuiCommand,
     session_id: Option<String>,
+    session_affinity_id: Option<String>,
     prompt_input: PromptInput,
     profile: Option<String>,
 ) -> ActiveTuiRun {
@@ -439,6 +443,7 @@ fn spawn_tui_run(
                 worktree: None,
                 worktree_name: None,
                 branch: None,
+                session_affinity_id,
             };
             service.run_prompt_streaming_with_steering(
                 &run_command,

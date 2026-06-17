@@ -8,7 +8,7 @@ Implementation boundary rule:
 
 - Code, tests, public symbols, module names, and observable IDs should use Starweaver-native names instead of reference-project names.
 - `starweaver-runtime` owns the agentic loop; `starweaver-context` owns neutral run/session evidence; `starweaver-agent` owns SDK ergonomics and first-party bundles; `starweaver-usage` owns usage accounting, limits, snapshots, and optional USD pricing estimates.
-- Durable session/run IDs are generic request metadata (`starweaver.session_id`, `starweaver.durable_run_id`, plus CLI-scoped aliases), not generic model HTTP headers. Provider-specific headers such as `session_id`, `session-id`, `thread_id`, `thread-id`, and `x-client-request-id` belong in Codex/OpenAI subscription OAuth code only.
+- Durable session/run IDs are generic request metadata (`starweaver.durable_session_id`, `starweaver.durable_run_id`, plus CLI-scoped aliases). `starweaver.session_id` is a legacy compatibility fallback, not the canonical durable key. Stable provider-routing affinity lives in `AgentContext.session_id` and typed `ModelSettings` provider settings, not generic model HTTP headers. Provider-specific headers such as `session_id`, `session-id`, `thread_id`, `thread-id`, and `x-client-request-id` belong in Codex/OpenAI subscription OAuth code only.
 
 Current workspace members:
 

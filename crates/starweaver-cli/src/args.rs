@@ -79,6 +79,7 @@ pub struct Cli {
 }
 
 /// CLI command families.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Subcommand)]
 pub enum CliCommand {
     /// Print SDK identity.
@@ -216,6 +217,9 @@ pub struct RunCommand {
     /// Headless human-in-the-loop policy.
     #[arg(long)]
     pub hitl: Option<HitlPolicy>,
+    /// Internal stable provider-routing affinity id.
+    #[arg(skip)]
+    pub session_affinity_id: Option<String>,
 }
 
 impl RunCommand {

@@ -9,11 +9,14 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
-    get_model_settings, ContentPart, HttpModelConfig, HttpRequest, HttpRequestOptions,
+    get_model_settings, AnthropicSettings, BedrockSettings, CodexSettings, ContentPart,
+    GatewaySettings, GoogleSettings, HttpModelConfig, HttpRequest, HttpRequestOptions,
     HttpResponse, MessageNormalization, ModelAdapter, ModelError, ModelEventStream,
     ModelHttpClient, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
-    ModelRequestParameters, ModelRequestPart, ModelSettings, NativeToolDefinition, OutputMode,
-    ProtocolFamily, ProtocolModelClient, StructuredOutputMode, ToolChoice, ToolDefinition,
+    ModelRequestParameters, ModelRequestPart, ModelSettings, NativeToolDefinition,
+    OpenAiChatSettings, OpenAiResponsesSettings, OutputMode, ProtocolFamily, ProtocolModelClient,
+    ProviderSettings, ServiceTier, StructuredOutputMode, ThinkingSettings, ToolChoice,
+    ToolDefinition,
 };
 
 #[derive(Clone, Default)]
@@ -216,6 +219,7 @@ fn profile_defaults_encode_provider_capability_contracts() {
     assert!(openai_chat.supports_tools);
     assert!(openai_chat.supports_json_schema_output);
     assert!(openai_chat.supports_image_input);
+    assert!(openai_chat.drop_sampling_parameters_when_reasoning);
 
     let openai_responses = ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses);
     assert_eq!(
@@ -227,18 +231,21 @@ fn profile_defaults_encode_provider_capability_contracts() {
         MessageNormalization::PreserveItems
     );
     assert!(openai_responses.supports_thinking);
+    assert!(openai_responses.drop_sampling_parameters_when_reasoning);
     assert!(openai_responses.supports_image_input);
 
     let anthropic = ModelProfile::for_protocol(ProtocolFamily::AnthropicMessages);
     assert_eq!(
         anthropic.default_structured_output_mode,
-        StructuredOutputMode::Tool
+        StructuredOutputMode::NativeJsonSchema
     );
+    assert!(anthropic.supports_json_schema_output);
     assert_eq!(
         anthropic.message_normalization,
         MessageNormalization::SystemField
     );
     assert!(anthropic.supports_thinking);
+    assert!(anthropic.drop_sampling_parameters_when_reasoning);
     assert!(anthropic.supports_image_input);
     assert!(anthropic.supports_document_input);
 
@@ -309,7 +316,8 @@ async fn protocol_client_merges_default_and_request_settings_into_wire_request()
 
     assert_eq!(response.text_output(), "4");
     let request = http.last_request();
-    assert_eq!(request.body["max_tokens"], 128);
+    assert_eq!(request.body["max_completion_tokens"], 128);
+    assert!(request.body.get("max_tokens").is_none());
     assert_eq!(request.body["temperature"], 0.7);
     assert_eq!(request.body["top_p"], 0.9);
     assert_eq!(request.body["default_body"], true);
@@ -964,4 +972,826 @@ async fn openai_tool_choice_allowlists_and_none_are_prepared_for_wire_requests()
     let request = http.last_request();
     assert!(request.body.get("tools").is_none());
     assert_eq!(request.body["tool_choice"], "none");
+}
+
+#[test]
+fn provider_settings_merge_is_field_level_and_preserves_raw_overrides() {
+    let base = ModelSettings {
+        provider_settings: ProviderSettings {
+            openai_chat: Some(OpenAiChatSettings {
+                user: Some("base-user".to_string()),
+                store: Some(false),
+                prompt_cache_key: Some("base-cache".to_string()),
+                ..OpenAiChatSettings::default()
+            }),
+            gateway: Some(GatewaySettings {
+                x_session_id: Some("base-gateway".to_string()),
+                extra_headers: BTreeMap::from([("x-base".to_string(), "yes".to_string())]),
+            }),
+            ..ProviderSettings::default()
+        },
+        ..ModelSettings::default()
+    };
+    let overlay = ModelSettings {
+        provider_settings: ProviderSettings {
+            openai_chat: Some(OpenAiChatSettings {
+                logprobs: Some(true),
+                prompt_cache_key: Some("overlay-cache".to_string()),
+                ..OpenAiChatSettings::default()
+            }),
+            gateway: Some(GatewaySettings {
+                x_session_id: None,
+                extra_headers: BTreeMap::from([("x-overlay".to_string(), "yes".to_string())]),
+            }),
+            ..ProviderSettings::default()
+        },
+        ..ModelSettings::default()
+    };
+
+    let merged = base.merge(&overlay);
+    let openai = merged.provider_settings.openai_chat.unwrap();
+    assert_eq!(openai.user.as_deref(), Some("base-user"));
+    assert_eq!(openai.store, Some(false));
+    assert_eq!(openai.logprobs, Some(true));
+    assert_eq!(openai.prompt_cache_key.as_deref(), Some("overlay-cache"));
+    let gateway = merged.provider_settings.gateway.unwrap();
+    assert_eq!(gateway.x_session_id.as_deref(), Some("base-gateway"));
+    assert_eq!(gateway.extra_headers["x-base"], "yes");
+    assert_eq!(gateway.extra_headers["x-overlay"], "yes");
+}
+
+#[test]
+fn protocol_profiles_only_advertise_native_tools_consumed_by_mappers() {
+    let openai_chat = ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions);
+    assert!(openai_chat.supported_native_tools.is_empty());
+
+    let openai_responses = ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses);
+    assert!(!openai_responses.supported_native_tools.is_empty());
+
+    let anthropic = ModelProfile::for_protocol(ProtocolFamily::AnthropicMessages);
+    assert!(anthropic.supported_native_tools.is_empty());
+    assert!(anthropic.supports_json_schema_output);
+    assert_eq!(
+        anthropic.default_structured_output_mode,
+        StructuredOutputMode::NativeJsonSchema
+    );
+}
+
+#[tokio::test]
+async fn openai_chat_uses_max_completion_tokens_seed_and_typed_settings() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_typed",
+        "model": "gpt-4.1-mini",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-4.1-mini",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        HttpModelConfig::new("https://api.openai.test/v1", "chat/completions"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                max_tokens: Some(64),
+                seed: Some(42),
+                provider_settings: ProviderSettings {
+                    openai_chat: Some(OpenAiChatSettings {
+                        user: Some("user-1".to_string()),
+                        store: Some(false),
+                        logprobs: Some(true),
+                        top_logprobs: Some(2),
+                        prompt_cache_key: Some("typed-cache".to_string()),
+                        prompt_cache_retention: Some("24h".to_string()),
+                        ..OpenAiChatSettings::default()
+                    }),
+                    ..ProviderSettings::default()
+                },
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context_with_metadata(Map::from_iter([(
+                "cli.session_id".to_string(),
+                json!("legacy-session"),
+            )])),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["max_completion_tokens"], 64);
+    assert!(request.body.get("max_tokens").is_none());
+    assert_eq!(request.body["seed"], 42);
+    assert_eq!(request.body["user"], "user-1");
+    assert_eq!(request.body["store"], false);
+    assert_eq!(request.body["logprobs"], true);
+    assert_eq!(request.body["top_logprobs"], 2);
+    assert_eq!(request.body["prompt_cache_key"], "typed-cache");
+    assert_eq!(request.body["prompt_cache_retention"], "24h");
+}
+
+#[tokio::test]
+async fn openai_chat_drops_sampling_parameters_when_reasoning_policy_requires_it() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_reasoning",
+        "model": "gpt-4.1-mini",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-4.1-mini",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        HttpModelConfig::new("https://api.openai.test/v1", "chat/completions"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                max_tokens: Some(64),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                presence_penalty: Some(0.1),
+                frequency_penalty: Some(0.2),
+                logit_bias: BTreeMap::from([("42".to_string(), 1)]),
+                thinking: Some(ThinkingSettings {
+                    effort: "high".to_string(),
+                    budget_tokens: None,
+                    mode: None,
+                    include_thoughts: None,
+                    summary: None,
+                }),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["max_completion_tokens"], 64);
+    assert_eq!(request.body["reasoning_effort"], "high");
+    assert!(request.body.get("temperature").is_none());
+    assert!(request.body.get("top_p").is_none());
+    assert!(request.body.get("presence_penalty").is_none());
+    assert!(request.body.get("frequency_penalty").is_none());
+    assert!(request.body.get("logit_bias").is_none());
+}
+
+#[tokio::test]
+async fn openai_compatible_chat_provider_defaults_to_legacy_max_tokens() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_gateway",
+        "model": "gateway-model",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    })));
+    let client = ProtocolModelClient::new(
+        "gateway-openai",
+        "gateway-model",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        HttpModelConfig::new("https://gateway.example.test/v1", "chat/completions"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                max_tokens: Some(64),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["max_tokens"], 64);
+    assert!(request.body.get("max_completion_tokens").is_none());
+}
+
+#[tokio::test]
+async fn openai_responses_maps_typed_settings_and_preserves_raw_override() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "resp_typed",
+        "model": "gpt-5.5",
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        HttpModelConfig::new("https://api.openai.test/v1", "responses"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                seed: Some(42),
+                provider_settings: ProviderSettings {
+                    openai_responses: Some(OpenAiResponsesSettings {
+                        store: Some(false),
+                        user: Some("user-2".to_string()),
+                        truncation: Some("auto".to_string()),
+                        text_verbosity: Some("low".to_string()),
+                        context_management: Some(json!({"strategy": "retain"})),
+                        include: vec!["reasoning.encrypted_content".to_string()],
+                        prompt_cache_key: Some("typed-resp-cache".to_string()),
+                        prompt_cache_retention: Some("24h".to_string()),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                extra_body: Map::from_iter([("prompt_cache_key".to_string(), json!("raw-cache"))]),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["store"], false);
+    assert_eq!(request.body["user"], "user-2");
+    assert_eq!(request.body["truncation"], "auto");
+    assert_eq!(request.body["text"]["verbosity"], "low");
+    assert_eq!(request.body["context_management"]["strategy"], "retain");
+    assert_eq!(request.body["include"][0], "reasoning.encrypted_content");
+    assert_eq!(request.body["prompt_cache_key"], "raw-cache");
+    assert_eq!(request.body["prompt_cache_retention"], "24h");
+    assert!(request.body.get("seed").is_none());
+}
+
+#[tokio::test]
+async fn openai_responses_drops_sampling_parameters_when_reasoning_policy_requires_it() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "resp_reasoning",
+        "model": "gpt-5.5",
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        HttpModelConfig::new("https://api.openai.test/v1", "responses"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                max_tokens: Some(64),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                presence_penalty: Some(0.1),
+                frequency_penalty: Some(0.2),
+                logit_bias: BTreeMap::from([("42".to_string(), 1)]),
+                thinking: Some(ThinkingSettings {
+                    effort: "high".to_string(),
+                    budget_tokens: None,
+                    mode: None,
+                    include_thoughts: None,
+                    summary: Some("auto".to_string()),
+                }),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["max_output_tokens"], 64);
+    assert_eq!(request.body["reasoning"]["effort"], "high");
+    assert_eq!(request.body["reasoning"]["summary"], "auto");
+    assert!(request.body.get("temperature").is_none());
+    assert!(request.body.get("top_p").is_none());
+    assert!(request.body.get("presence_penalty").is_none());
+    assert!(request.body.get("frequency_penalty").is_none());
+    assert!(request.body.get("logit_bias").is_none());
+}
+
+#[tokio::test]
+async fn gateway_and_codex_typed_routing_settings_drive_headers_and_metadata() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "resp_gateway",
+        "model": "gpt-5.5",
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    })));
+    let mut config = HttpModelConfig::new("https://gateway.example.test/v1", "responses");
+    config
+        .headers
+        .insert("X-Session-ID".to_string(), "config-sticky".to_string());
+    let client = ProtocolModelClient::new(
+        "gateway-openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        config,
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                provider_settings: ProviderSettings {
+                    gateway: Some(GatewaySettings {
+                        x_session_id: Some("sticky-1".to_string()),
+                        extra_headers: BTreeMap::from([(
+                            "x-gateway-route".to_string(),
+                            "route-a".to_string(),
+                        )]),
+                    }),
+                    codex: Some(CodexSettings {
+                        session_id: Some("typed-codex-session".to_string()),
+                        thread_id: Some("typed-codex-thread".to_string()),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                extra_headers: BTreeMap::from([(
+                    "X-Session-ID".to_string(),
+                    "raw-sticky".to_string(),
+                )]),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters {
+                http: HttpRequestOptions {
+                    headers: BTreeMap::from([
+                        ("x-session-id".to_string(), "request-sticky".to_string()),
+                        ("x-request-route".to_string(), "request-route".to_string()),
+                    ]),
+                    ..HttpRequestOptions::default()
+                },
+                ..ModelRequestParameters::default()
+            },
+            context_with_metadata(Map::from_iter([
+                (
+                    "provider.codex.session_id".to_string(),
+                    json!("legacy-session"),
+                ),
+                (
+                    "provider.codex.thread_id".to_string(),
+                    json!("legacy-thread"),
+                ),
+            ])),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.headers["x-session-id"], "request-sticky");
+    assert!(!request.headers.contains_key("X-Session-ID"));
+    assert_eq!(request.headers["x-gateway-route"], "route-a");
+    assert_eq!(request.headers["x-request-route"], "request-route");
+    assert_eq!(
+        request.metadata["provider.codex.session_id"],
+        "typed-codex-session"
+    );
+    assert_eq!(
+        request.metadata["provider.codex.thread_id"],
+        "typed-codex-thread"
+    );
+}
+
+#[tokio::test]
+async fn gateway_header_layers_override_case_insensitively_without_request_header() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "resp_gateway_layers",
+        "model": "gpt-5.5",
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+    })));
+    let mut config = HttpModelConfig::new("https://gateway.example.test/v1", "responses");
+    config
+        .headers
+        .insert("X-Session-ID".to_string(), "config-sticky".to_string());
+    let client = ProtocolModelClient::new(
+        "gateway-openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        config,
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                provider_settings: ProviderSettings {
+                    gateway: Some(GatewaySettings {
+                        x_session_id: Some("typed-sticky".to_string()),
+                        extra_headers: BTreeMap::new(),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+    let request = http.last_request();
+    assert_eq!(request.headers["x-session-id"], "typed-sticky");
+    assert!(!request.headers.contains_key("X-Session-ID"));
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                provider_settings: ProviderSettings {
+                    gateway: Some(GatewaySettings {
+                        x_session_id: Some("typed-sticky".to_string()),
+                        extra_headers: BTreeMap::from([(
+                            "X-SESSION-ID".to_string(),
+                            "gateway-extra-sticky".to_string(),
+                        )]),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+    let request = http.last_request();
+    assert_eq!(request.headers["X-SESSION-ID"], "gateway-extra-sticky");
+    assert!(!request.headers.contains_key("x-session-id"));
+    assert!(!request.headers.contains_key("X-Session-ID"));
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                provider_settings: ProviderSettings {
+                    gateway: Some(GatewaySettings {
+                        x_session_id: Some("typed-sticky".to_string()),
+                        extra_headers: BTreeMap::from([(
+                            "X-SESSION-ID".to_string(),
+                            "gateway-extra-sticky".to_string(),
+                        )]),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                extra_headers: BTreeMap::from([(
+                    "x-session-id".to_string(),
+                    "settings-sticky".to_string(),
+                )]),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+    let request = http.last_request();
+    assert_eq!(request.headers["x-session-id"], "settings-sticky");
+    assert!(!request.headers.contains_key("X-SESSION-ID"));
+    assert!(!request.headers.contains_key("X-Session-ID"));
+}
+
+#[tokio::test]
+async fn anthropic_maps_tool_choice_parallel_tools_and_native_structured_output() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "msg_typed",
+        "model": "claude-sonnet",
+        "content": [{"type": "text", "text": "{\"answer\":\"4\"}"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    })));
+    let client = ProtocolModelClient::new(
+        "anthropic",
+        "claude-sonnet",
+        ModelProfile::for_protocol(ProtocolFamily::AnthropicMessages),
+        HttpModelConfig::new("https://api.anthropic.test/v1", "messages"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                tool_choice: Some(ToolChoice::Tool {
+                    name: "lookup".to_string(),
+                }),
+                parallel_tool_calls: Some(false),
+                thinking: Some(ThinkingSettings {
+                    effort: "high".to_string(),
+                    budget_tokens: None,
+                    mode: Some("adaptive".to_string()),
+                    include_thoughts: None,
+                    summary: None,
+                }),
+                provider_settings: ProviderSettings {
+                    anthropic: Some(AnthropicSettings {
+                        metadata: Some(json!({"tenant": "default"})),
+                        betas: vec!["fine-grained-tool-streaming-2025-05-14".to_string()],
+                        service_tier: Some("priority".to_string()),
+                        context_management: Some(json!({"edits": []})),
+                        ..AnthropicSettings::default()
+                    }),
+                    ..ProviderSettings::default()
+                },
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters {
+                tools: vec![ToolDefinition {
+                    name: "lookup".to_string(),
+                    description: None,
+                    parameters: json!({"type": "object"}),
+                    metadata: Map::new(),
+                }],
+                output_schema: Some(json!({
+                    "schema": {"type": "object", "required": ["answer"]}
+                })),
+                ..ModelRequestParameters::default()
+            },
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["tool_choice"]["type"], "tool");
+    assert_eq!(request.body["tool_choice"]["name"], "lookup");
+    assert_eq!(
+        request.body["tool_choice"]["disable_parallel_tool_use"],
+        true
+    );
+    assert_eq!(request.body["output_config"]["effort"], "high");
+    assert_eq!(
+        request.body["output_config"]["format"]["type"],
+        "json_schema"
+    );
+    assert_eq!(
+        request.body["output_config"]["format"]["schema"]["required"],
+        json!(["answer"])
+    );
+    assert_eq!(request.body["metadata"]["tenant"], "default");
+    assert_eq!(
+        request.headers["anthropic-beta"],
+        "fine-grained-tool-streaming-2025-05-14"
+    );
+    assert_eq!(request.body["service_tier"], "priority");
+    assert_eq!(request.body["context_management"]["edits"], json!([]));
+}
+
+#[tokio::test]
+async fn anthropic_drops_sampling_parameters_when_thinking_policy_requires_it() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "msg_reasoning",
+        "model": "claude-sonnet",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    })));
+    let client = ProtocolModelClient::new(
+        "anthropic",
+        "claude-sonnet",
+        ModelProfile::for_protocol(ProtocolFamily::AnthropicMessages),
+        HttpModelConfig::new("https://api.anthropic.test/v1", "messages"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                max_tokens: Some(64),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                top_k: Some(50),
+                thinking: Some(ThinkingSettings {
+                    effort: "high".to_string(),
+                    budget_tokens: Some(1024),
+                    mode: Some("enabled".to_string()),
+                    include_thoughts: None,
+                    summary: None,
+                }),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["max_tokens"], 64);
+    assert_eq!(request.body["thinking"]["type"], "enabled");
+    assert_eq!(request.body["thinking"]["budget_tokens"], 1024);
+    assert!(request.body.get("temperature").is_none());
+    assert!(request.body.get("top_p").is_none());
+    assert!(request.body.get("top_k").is_none());
+}
+
+#[tokio::test]
+async fn anthropic_preserves_sampling_parameters_when_thinking_is_disabled() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "msg_reasoning_disabled",
+        "model": "claude-sonnet",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    })));
+    let client = ProtocolModelClient::new(
+        "anthropic",
+        "claude-sonnet",
+        ModelProfile::for_protocol(ProtocolFamily::AnthropicMessages),
+        HttpModelConfig::new("https://api.anthropic.test/v1", "messages"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                top_k: Some(50),
+                thinking: Some(ThinkingSettings {
+                    effort: "off".to_string(),
+                    budget_tokens: None,
+                    mode: Some("disabled".to_string()),
+                    include_thoughts: None,
+                    summary: None,
+                }),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["thinking"]["type"], "disabled");
+    assert_eq!(request.body["temperature"], 0.2);
+    assert_eq!(request.body["top_p"], 0.9);
+    assert_eq!(request.body["top_k"], 50);
+}
+
+#[tokio::test]
+async fn gemini_maps_seed_and_typed_google_settings() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "candidates": [{
+            "content": {"parts": [{"text": "ok"}]},
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+    })));
+    let client = ProtocolModelClient::new(
+        "gemini",
+        "gemini-2.5-flash",
+        ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent),
+        HttpModelConfig::new(
+            "https://generativelanguage.googleapis.com/v1beta",
+            "models/gemini-2.5-flash:generateContent",
+        ),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                seed: Some(12345),
+                provider_settings: ProviderSettings {
+                    google: Some(GoogleSettings {
+                        safety_settings: Some(json!([{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"}])),
+                        cached_content: Some("cachedContents/cache-1".to_string()),
+                        labels: Some(json!({"app": "starweaver"})),
+                        response_logprobs: Some(true),
+                        logprobs: Some(3),
+                        service_tier: Some("priority".to_string()),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["generationConfig"]["seed"], 12345);
+    assert_eq!(request.body["generationConfig"]["responseLogprobs"], true);
+    assert_eq!(request.body["generationConfig"]["logprobs"], 3);
+    assert_eq!(
+        request.body["safetySettings"][0]["threshold"],
+        "BLOCK_ONLY_HIGH"
+    );
+    assert_eq!(request.body["cachedContent"], "cachedContents/cache-1");
+    assert_eq!(request.body["labels"]["app"], "starweaver");
+    assert_eq!(request.body["serviceTier"], "priority");
+}
+
+#[tokio::test]
+async fn bedrock_maps_typed_fields_and_omits_tools_when_tool_choice_none() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "output": {"message": {"content": [{"text": "ok"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
+    })));
+    let client = ProtocolModelClient::new(
+        "bedrock",
+        "anthropic.claude-sonnet-4-v1:0",
+        ModelProfile::for_protocol(ProtocolFamily::BedrockConverse),
+        HttpModelConfig::new("https://bedrock-runtime.test", "model/converse"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                top_k: Some(200),
+                tool_choice: Some(ToolChoice::None),
+                service_tier: Some(ServiceTier::Priority),
+                thinking: Some(ThinkingSettings {
+                    effort: "high".to_string(),
+                    budget_tokens: Some(4000),
+                    mode: Some("enabled".to_string()),
+                    include_thoughts: None,
+                    summary: None,
+                }),
+                provider_settings: ProviderSettings {
+                    bedrock: Some(BedrockSettings {
+                        guardrail_config: Some(json!({"guardrailIdentifier": "gr-1"})),
+                        performance_config: Some(json!({"latency": "optimized"})),
+                        request_metadata: Some(json!({"tenant": "default"})),
+                        additional_model_response_field_paths: vec!["/stop_sequence".to_string()],
+                        prompt_variables: Some(json!({"topic": {"text": "math"}})),
+                        additional_model_request_fields: Some(
+                            json!({"anthropic_version": "bedrock-2023-05-31"}),
+                        ),
+                        inference_profile: Some("profile-1".to_string()),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters {
+                tools: vec![ToolDefinition {
+                    name: "lookup".to_string(),
+                    description: None,
+                    parameters: json!({"type": "object"}),
+                    metadata: Map::new(),
+                }],
+                ..ModelRequestParameters::default()
+            },
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert!(request.body.get("toolConfig").is_none());
+    assert_eq!(request.body["additionalModelRequestFields"]["top_k"], 200);
+    assert_eq!(
+        request.body["additionalModelRequestFields"]["thinking"]["budget_tokens"],
+        4000
+    );
+    assert_eq!(
+        request.body["additionalModelRequestFields"]["anthropic_version"],
+        "bedrock-2023-05-31"
+    );
+    assert_eq!(request.body["serviceTier"]["type"], "priority");
+    assert_eq!(
+        request.body["guardrailConfig"]["guardrailIdentifier"],
+        "gr-1"
+    );
+    assert_eq!(request.body["performanceConfig"]["latency"], "optimized");
+    assert_eq!(request.body["requestMetadata"]["tenant"], "default");
+    assert_eq!(
+        request.body["additionalModelResponseFieldPaths"],
+        json!(["/stop_sequence"])
+    );
+    assert_eq!(request.body["promptVariables"]["topic"]["text"], "math");
+    assert_eq!(request.body["modelId"], "profile-1");
+    assert!(request.body.get("inferenceProfile").is_none());
 }

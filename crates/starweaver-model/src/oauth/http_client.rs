@@ -12,8 +12,8 @@ use crate::{
         validate_safe_extra_headers, CODEX_USER_AGENT_HEADER,
     },
     transport::{
-        DynHttpClient, HttpRequest, HttpResponse, ModelEventStream, ModelHttpClient,
-        ReqwestHttpClient,
+        extend_headers_case_insensitive, DynHttpClient, HttpRequest, HttpResponse,
+        ModelEventStream, ModelHttpClient, ReqwestHttpClient,
     },
     ModelError,
 };
@@ -70,6 +70,11 @@ impl OAuthBearerHttpClient {
         mut request: HttpRequest,
         snapshot: &starweaver_oauth::TokenSnapshot,
     ) -> Result<HttpRequest, ModelError> {
+        let explicit_codex_routing_headers = if self.provider_name == "codex" {
+            extract_case_insensitive_headers(&request.headers, CODEX_ROUTING_HEADER_NAMES)
+        } else {
+            BTreeMap::new()
+        };
         request.headers.insert(
             "Authorization".to_string(),
             format!("Bearer {}", snapshot.access_token),
@@ -80,15 +85,19 @@ impl OAuthBearerHttpClient {
                 CODEX_USER_AGENT_HEADER,
                 codex_user_agent(),
             );
-            let mut extra_headers = self.extra_headers.clone();
-            extra_headers.extend(trace_session_headers(&request));
-            request.headers.extend(build_codex_headers(
-                &snapshot.account,
-                Some(&extra_headers),
-            )?);
+            let explicit_extra_routing_headers =
+                extract_case_insensitive_headers(&self.extra_headers, CODEX_ROUTING_HEADER_NAMES);
+            let mut extra_headers = trace_session_headers(&request);
+            extend_headers_case_insensitive(&mut extra_headers, self.extra_headers.clone());
+            restore_case_insensitive_headers(&mut extra_headers, explicit_extra_routing_headers);
+            extend_headers_case_insensitive(
+                &mut request.headers,
+                build_codex_headers(&snapshot.account, Some(&extra_headers))?,
+            );
+            restore_case_insensitive_headers(&mut request.headers, explicit_codex_routing_headers);
             patch_codex_responses_body(&mut request);
         } else {
-            request.headers.extend(self.extra_headers.clone());
+            extend_headers_case_insensitive(&mut request.headers, self.extra_headers.clone());
         }
         Ok(request)
     }
@@ -178,6 +187,17 @@ fn codex_user_agent() -> String {
     )
 }
 
+const CODEX_SESSION_ROUTING_HEADER_NAMES: &[&str] = &["session_id", "session-id"];
+const CODEX_THREAD_ROUTING_HEADER_NAMES: &[&str] =
+    &["thread_id", "thread-id", "x-client-request-id"];
+const CODEX_ROUTING_HEADER_NAMES: &[&str] = &[
+    "session_id",
+    "session-id",
+    "thread_id",
+    "thread-id",
+    "x-client-request-id",
+];
+
 fn insert_header_if_absent_case_insensitive(
     headers: &mut BTreeMap<String, String>,
     name: &str,
@@ -186,4 +206,45 @@ fn insert_header_if_absent_case_insensitive(
     if !headers.keys().any(|key| key.eq_ignore_ascii_case(name)) {
         headers.insert(name.to_string(), value);
     }
+}
+
+fn extract_case_insensitive_headers(
+    headers: &BTreeMap<String, String>,
+    names: &[&str],
+) -> BTreeMap<String, String> {
+    headers
+        .iter()
+        .filter(|(key, _)| names.iter().any(|name| key.eq_ignore_ascii_case(name)))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn restore_case_insensitive_headers(
+    headers: &mut BTreeMap<String, String>,
+    explicit_headers: BTreeMap<String, String>,
+) {
+    if explicit_headers
+        .keys()
+        .any(|key| key_matches_any(key, CODEX_SESSION_ROUTING_HEADER_NAMES))
+    {
+        remove_case_insensitive_headers(headers, CODEX_SESSION_ROUTING_HEADER_NAMES);
+    }
+    if explicit_headers
+        .keys()
+        .any(|key| key_matches_any(key, CODEX_THREAD_ROUTING_HEADER_NAMES))
+    {
+        remove_case_insensitive_headers(headers, CODEX_THREAD_ROUTING_HEADER_NAMES);
+    }
+    for (explicit_key, explicit_value) in explicit_headers {
+        headers.retain(|key, _| !key.eq_ignore_ascii_case(&explicit_key));
+        headers.insert(explicit_key, explicit_value);
+    }
+}
+
+fn remove_case_insensitive_headers(headers: &mut BTreeMap<String, String>, names: &[&str]) {
+    headers.retain(|key, _| !key_matches_any(key, names));
+}
+
+fn key_matches_any(key: &str, names: &[&str]) -> bool {
+    names.iter().any(|name| key.eq_ignore_ascii_case(name))
 }

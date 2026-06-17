@@ -28,10 +28,12 @@ pub(super) fn apply_anthropic_settings(
         if thinking_mode == "adaptive" {
             payload.insert("display".to_string(), json!("summarized"));
             if !thinking.effort.is_empty() {
-                request.insert(
-                    "output_config".to_string(),
-                    json!({"effort": thinking.effort}),
-                );
+                let output_config = request
+                    .entry("output_config".to_string())
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if let Some(output_config) = output_config.as_object_mut() {
+                    output_config.insert("effort".to_string(), json!(thinking.effort));
+                }
             }
         }
         request.insert("thinking".to_string(), Value::Object(payload));
@@ -47,6 +49,36 @@ pub(super) fn apply_anthropic_settings(
     }
     if !settings.stop_sequences.is_empty() {
         request.insert("stop_sequences".to_string(), json!(settings.stop_sequences));
+    }
+    if let Some(anthropic) = &settings.provider_settings.anthropic {
+        if let Some(metadata) = &anthropic.metadata {
+            request.insert("metadata".to_string(), metadata.clone());
+        }
+        if let Some(context_management) = &anthropic.context_management {
+            request.insert("context_management".to_string(), context_management.clone());
+        }
+        if let Some(container) = &anthropic.container {
+            request.insert("container".to_string(), json!(container));
+        }
+        if let Some(service_tier) = &anthropic.service_tier {
+            request.insert("service_tier".to_string(), json!(service_tier));
+        }
+    }
+    if let Some(tool_choice) = settings.tool_choice.as_ref() {
+        let mut choice = anthropic_tool_choice(tool_choice);
+        if settings.parallel_tool_calls == Some(false)
+            && !matches!(tool_choice, crate::settings::ToolChoice::None)
+        {
+            if let Some(choice) = choice.as_object_mut() {
+                choice.insert("disable_parallel_tool_use".to_string(), json!(true));
+            }
+        }
+        request.insert("tool_choice".to_string(), choice);
+    } else if settings.parallel_tool_calls == Some(false) {
+        request.insert(
+            "tool_choice".to_string(),
+            json!({"type": "auto", "disable_parallel_tool_use": true}),
+        );
     }
     if let Some(options) = settings
         .provider_options
@@ -89,6 +121,19 @@ pub(super) fn append_anthropic_tools(
         }
     }
     request.insert("tools".to_string(), Value::Array(definitions));
+}
+
+fn anthropic_tool_choice(choice: &crate::settings::ToolChoice) -> Value {
+    match choice {
+        crate::settings::ToolChoice::Auto | crate::settings::ToolChoice::ToolOrOutput { .. } => {
+            json!({"type": "auto"})
+        }
+        crate::settings::ToolChoice::None => json!({"type": "none"}),
+        crate::settings::ToolChoice::Required | crate::settings::ToolChoice::Tools { .. } => {
+            json!({"type": "any"})
+        }
+        crate::settings::ToolChoice::Tool { name } => json!({"type": "tool", "name": name}),
+    }
 }
 
 pub(super) fn anthropic_cache_ttl(

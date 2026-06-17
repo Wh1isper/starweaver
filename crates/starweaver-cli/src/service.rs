@@ -154,6 +154,7 @@ impl CliService {
                 worktree: cli.worktree.clone(),
                 worktree_name: cli.worktree_name.clone(),
                 branch: cli.branch,
+                session_affinity_id: None,
             };
             return self.run_prompt(&command);
         }
@@ -295,6 +296,12 @@ impl CliService {
             worktree.as_ref(),
             slash_expansion.as_ref(),
         );
+        if let Some(session_affinity_id) = command.session_affinity_id.as_deref() {
+            run.metadata.insert(
+                "starweaver.session_affinity_id".to_string(),
+                json!(session_affinity_id),
+            );
+        }
         write_current_session(&self.config, &session_id)?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
         let output_mode = command.output.unwrap_or(self.config.default_output);
@@ -571,6 +578,7 @@ impl CliService {
             worktree: None,
             worktree_name: None,
             branch: None,
+            session_affinity_id: None,
         };
         self.run_prompt(&run_command)
     }

@@ -56,7 +56,10 @@ pub use request::{
     INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_TOOLSET,
 };
 pub use settings::{
-    ModelSettings, ProviderReplaySettings, ServiceTier, ThinkingSettings, ToolChoice,
+    format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key, AnthropicSettings,
+    BedrockSettings, CodexSettings, GatewaySettings, GoogleSettings, ModelSettings,
+    OpenAiChatSettings, OpenAiResponsesSettings, ProviderReplaySettings, ProviderSettings,
+    ServiceTier, ThinkingSettings, ToolChoice,
 };
 pub use stream::{
     ModelResponseStreamEvent, ModelStreamState, PartDelta, PartEnd, PartStart, StreamDelta,
