@@ -9,10 +9,12 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::json;
+use starweaver_core::CancellationToken;
 use starweaver_model::{
     build_codex_headers, build_session_headers, patch_codex_responses_body, transport::HttpMethod,
-    HttpModelConfig, HttpRequest, HttpResponse, ModelAdapter, ModelError, ModelHttpClient,
-    ModelRequestContext, ModelRequestParameters, OAuthBearerHttpClient,
+    CodexOAuthResponsesModel, CodexSettings, HttpModelConfig, HttpRequest, HttpResponse,
+    ModelAdapter, ModelError, ModelEventStream, ModelHttpClient, ModelRequestContext,
+    ModelRequestParameters, ModelSettings, OAuthBearerHttpClient, ProviderSettings,
 };
 use starweaver_oauth::{OAuthAccount, OAuthResult, OAuthTokenSource, TokenSnapshot};
 use tokio::sync::Mutex;
@@ -72,6 +74,42 @@ impl ModelHttpClient for RecordingHttpClient {
         }
         Ok(HttpResponse::ok(json!({"ok": true})))
     }
+
+    async fn send_event_stream_incremental(
+        &self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        self.seen.lock().await.push(request);
+        let (sender, receiver) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            for event in [
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_codex_stream", "status": "in_progress"}
+                }),
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_codex_stream",
+                        "status": "completed",
+                        "model": "gpt-5.5",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [{"type": "output_text", "text": "ok"}]
+                            }
+                        ],
+                        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                    }
+                }),
+            ] {
+                if sender.send(Ok(event)).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(ModelEventStream::new(receiver))
+    }
 }
 
 fn codex_request() -> HttpRequest {
@@ -82,7 +120,18 @@ fn codex_request() -> HttpRequest {
         body: json!({"model": "gpt-5.5", "instructions": null}),
         timeout: None,
         metadata: serde_json::Map::from_iter([
-            ("starweaver.session_id".to_string(), json!("session-1")),
+            (
+                "provider.codex.session_id".to_string(),
+                json!("provider-session-1"),
+            ),
+            (
+                "provider.codex.thread_id".to_string(),
+                json!("provider-thread-1"),
+            ),
+            (
+                "starweaver.durable_session_id".to_string(),
+                json!("session-1"),
+            ),
             ("starweaver.durable_run_id".to_string(), json!("run-1")),
             ("cli.session_id".to_string(), json!("cli-session-1")),
             ("cli.run_id".to_string(), json!("cli-run-1")),
@@ -92,6 +141,7 @@ fn codex_request() -> HttpRequest {
             ),
             ("starweaver.run_id".to_string(), json!("runtime-run-1")),
         ]),
+        cancellation_token: CancellationToken::default(),
     }
 }
 
@@ -214,6 +264,78 @@ fn patch_codex_responses_body_matches_instruction_truthiness() {
     patch_codex_responses_body(&mut non_empty);
     assert_eq!(non_empty.body["instructions"], "keep");
     assert_eq!(non_empty.body["store"], false);
+}
+
+#[tokio::test]
+async fn codex_oauth_streaming_model_builds_subscription_request_shape() {
+    let token_source = Arc::new(FakeTokenSource::default());
+    let http_client = Arc::new(RecordingHttpClient::default());
+    let model = CodexOAuthResponsesModel::with_http_client(
+        "gpt-5.5",
+        HttpModelConfig::new("https://chatgpt.com/backend-api/codex", "responses"),
+        token_source,
+        BTreeMap::new(),
+        http_client.clone(),
+    )
+    .unwrap();
+
+    let events = model
+        .request_stream(
+            vec![starweaver_model::ModelMessage::Request(
+                starweaver_model::ModelRequest::user_text("hello"),
+            )],
+            Some(ModelSettings {
+                provider_settings: ProviderSettings {
+                    codex: Some(CodexSettings {
+                        session_id: Some("typed-session".to_string()),
+                        thread_id: Some("typed-thread".to_string()),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            ModelRequestContext::new(
+                starweaver_core::RunId::from_string("run_codex_stream"),
+                starweaver_core::ConversationId::from_string("conv_codex_stream"),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert!(events.iter().any(|event| matches!(
+        event,
+        starweaver_model::ModelResponseStreamEvent::FinalResult(response)
+            if response.text_output() == "ok"
+    )));
+    let seen = http_client.seen.lock().await;
+    assert_eq!(seen.len(), 1);
+    let request = &seen[0];
+    assert_eq!(
+        request.url,
+        "https://chatgpt.com/backend-api/codex/responses"
+    );
+    assert_eq!(request.headers["Authorization"], "Bearer access-old");
+    assert_eq!(request.headers["originator"], "starweaver");
+    assert!(request.headers["User-Agent"].starts_with("starweaver-agent-sdk/"));
+    assert_eq!(request.headers["ChatGPT-Account-ID"], "acct_123");
+    assert_eq!(request.headers["X-OpenAI-Fedramp"], "true");
+    assert_eq!(request.headers["session_id"], "typed-session");
+    assert_eq!(request.headers["session-id"], "typed-session");
+    assert_eq!(request.headers["thread_id"], "typed-thread");
+    assert_eq!(request.headers["thread-id"], "typed-thread");
+    assert_eq!(request.headers["x-client-request-id"], "typed-thread");
+    assert!(!request.headers.contains_key("version"));
+    assert_eq!(request.body["model"], "gpt-5.5");
+    assert_eq!(request.body["stream"], true);
+    assert_eq!(request.body["instructions"], "");
+    assert_eq!(request.body["store"], false);
+    assert_eq!(request.body["input"][0]["content"][0]["text"], "hello");
+    assert_eq!(
+        request.metadata["provider.codex.session_id"],
+        "typed-session"
+    );
+    assert_eq!(request.metadata["provider.codex.thread_id"], "typed-thread");
 }
 
 #[tokio::test]
@@ -380,11 +502,11 @@ async fn oauth_bearer_http_client_refreshes_once_on_401() {
     assert!(seen[0].headers["User-Agent"].starts_with("starweaver-agent-sdk/"));
     assert_eq!(seen[0].body["instructions"], "");
     assert_eq!(seen[0].body["store"], false);
-    assert_eq!(seen[0].headers["session_id"], "session-1");
-    assert_eq!(seen[0].headers["session-id"], "session-1");
-    assert_eq!(seen[0].headers["thread_id"], "run-1");
-    assert_eq!(seen[0].headers["thread-id"], "run-1");
-    assert_eq!(seen[0].headers["x-client-request-id"], "run-1");
+    assert_eq!(seen[0].headers["session_id"], "provider-session-1");
+    assert_eq!(seen[0].headers["session-id"], "provider-session-1");
+    assert_eq!(seen[0].headers["thread_id"], "provider-thread-1");
+    assert_eq!(seen[0].headers["thread-id"], "provider-thread-1");
+    assert_eq!(seen[0].headers["x-client-request-id"], "provider-thread-1");
 }
 
 #[test]

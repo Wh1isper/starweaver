@@ -2,9 +2,23 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Runtime policy for tools hidden by context-aware availability predicates.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAvailabilityPolicy {
+    /// Skip unavailable tools and publish diagnostics.
+    #[default]
+    SkipAndReport,
+    /// Fail the run before the model request when any configured tool is unavailable.
+    FailRun,
+}
+
 /// Tool-level configuration stored on [`crate::AgentContext`].
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ToolConfig {
+    /// Runtime behavior when a registered tool is unavailable for the current context.
+    #[serde(default)]
+    pub unavailable_tool_policy: ToolAvailabilityPolicy,
     /// Skip SSRF URL verification for URL-fetching tools.
     #[serde(default = "default_true")]
     pub skip_url_verification: bool,
@@ -112,6 +126,7 @@ pub struct ToolConfig {
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
+            unavailable_tool_policy: ToolAvailabilityPolicy::SkipAndReport,
             skip_url_verification: true,
             enable_load_document: false,
             image_understanding_model: None,

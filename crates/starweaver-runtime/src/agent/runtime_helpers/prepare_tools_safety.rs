@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use starweaver_model::ToolDefinition;
+use starweaver_tools::{tool_metadata_kind, ToolKind};
 
 use crate::agent::AgentError;
 
@@ -20,7 +21,9 @@ pub(in crate::agent) fn validate_prepared_tools(
         .map(|tool| tool.name.as_str())
         .collect::<BTreeSet<_>>();
     for tool in original {
-        if tool_kind(tool) == Some("output") && !prepared_names.contains(tool.name.as_str()) {
+        if tool_metadata_kind(&tool.metadata) == Some(ToolKind::Output)
+            && !prepared_names.contains(tool.name.as_str())
+        {
             return Err(AgentError::Capability(format!(
                 "prepare_tools cannot remove output tool {:?}",
                 tool.name
@@ -42,7 +45,7 @@ pub(in crate::agent) fn validate_prepared_tools(
                 tool.name
             )));
         };
-        if tool_kind(original_tool) != tool_kind(tool) {
+        if tool_metadata_kind(&original_tool.metadata) != tool_metadata_kind(&tool.metadata) {
             return Err(AgentError::Capability(format!(
                 "prepare_tools cannot change tool kind for {:?}",
                 tool.name
@@ -61,10 +64,4 @@ pub(in crate::agent) fn validate_prepared_tools(
         }
     }
     Ok(stable)
-}
-
-fn tool_kind(tool: &ToolDefinition) -> Option<&str> {
-    tool.metadata
-        .get("starweaver_tool_kind")
-        .and_then(serde_json::Value::as_str)
 }

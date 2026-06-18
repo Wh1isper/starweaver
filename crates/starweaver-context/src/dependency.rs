@@ -28,14 +28,30 @@ impl DependencyStore {
         self.insert_named(std::any::type_name::<T>(), value);
     }
 
+    /// Insert an already shared dependency using its Rust type as the lookup key.
+    pub fn insert_arc<T>(&mut self, value: Arc<T>)
+    where
+        T: Send + Sync + 'static,
+    {
+        self.insert_named_arc(std::any::type_name::<T>(), value);
+    }
+
     /// Insert a dependency with a caller-provided stable name.
     pub fn insert_named<T>(&mut self, name: impl Into<String>, value: T)
     where
         T: Send + Sync + 'static,
     {
+        self.insert_named_arc(name, Arc::new(value));
+    }
+
+    /// Insert an already shared dependency with a caller-provided stable name.
+    pub fn insert_named_arc<T>(&mut self, name: impl Into<String>, value: Arc<T>)
+    where
+        T: Send + Sync + 'static,
+    {
         let name = name.into();
         self.type_keys.insert(TypeId::of::<T>(), name.clone());
-        self.values.insert(name, Arc::new(value));
+        self.values.insert(name, value);
     }
 
     /// Get a dependency by Rust type.

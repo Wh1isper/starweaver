@@ -3,7 +3,12 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
+use starweaver_tools::{
+    set_tool_metadata_kind, tool_metadata_hidden_by_tags, tool_metadata_kind, tool_metadata_tags,
+    EmptyToolArgs, FunctionTool, Tool, ToolContext, ToolKind, ToolRegistry, ToolResult,
+    TypedFunctionTool, TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY,
+    TOOL_METADATA_TAGS_KEY,
+};
 
 #[test]
 fn function_tool_metadata_is_exposed_on_tool_definition() {
@@ -24,6 +29,153 @@ fn function_tool_metadata_is_exposed_on_tool_definition() {
         .remove(0);
 
     assert_eq!(definition.metadata, metadata);
+}
+
+#[test]
+fn function_tool_return_schema_is_exposed_on_tool_definition() {
+    let return_schema = json!({
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"]
+    });
+    let tool = FunctionTool::new(
+        "status",
+        Some("Return status".to_string()),
+        json!({"type": "object"}),
+        |_ctx: ToolContext, _args| async move { Ok(ToolResult::new(json!({"ok": true}))) },
+    )
+    .with_return_schema(return_schema.clone())
+    .with_strict_schema(true)
+    .with_sequential(true);
+
+    let definition = ToolRegistry::new()
+        .with_tool(Arc::new(tool))
+        .definitions()
+        .remove(0);
+
+    assert_eq!(definition.return_schema, Some(return_schema));
+    assert_eq!(definition.strict, Some(true));
+    assert_eq!(definition.sequential, Some(true));
+}
+
+#[test]
+fn function_tool_tags_are_normalized_on_tool_definition_metadata() {
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        TOOL_METADATA_TAGS_KEY.to_string(),
+        json!(["existing", "existing", "", 42]),
+    );
+    metadata.insert(
+        TOOL_METADATA_HIDDEN_BY_TAGS_KEY.to_string(),
+        json!("not-a-list"),
+    );
+
+    let tool = FunctionTool::new(
+        "search_files",
+        Some("Search files".to_string()),
+        json!({"type": "object"}),
+        |_ctx: ToolContext, args| async move { Ok(ToolResult::new(args)) },
+    )
+    .with_metadata(metadata)
+    .with_tags([" read ", "read", "write", ""])
+    .with_tag("workspace")
+    .with_hidden_by_tags([" remote-search ", "remote-search", ""])
+    .with_hidden_by_tag("remote-edit");
+
+    let definition = tool.definition();
+
+    assert_eq!(
+        definition.metadata[TOOL_METADATA_TAGS_KEY],
+        json!(["existing", "read", "write", "workspace"])
+    );
+    assert_eq!(
+        definition.metadata[TOOL_METADATA_HIDDEN_BY_TAGS_KEY],
+        json!(["remote-search", "remote-edit"])
+    );
+    assert_eq!(
+        tool_metadata_tags(&definition.metadata),
+        vec![
+            "existing".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+            "workspace".to_string()
+        ]
+    );
+    assert_eq!(
+        tool_metadata_hidden_by_tags(&definition.metadata),
+        vec!["remote-search".to_string(), "remote-edit".to_string()]
+    );
+}
+
+#[test]
+fn typed_function_tool_tags_are_exposed_on_tool_definition_metadata() {
+    let tool = TypedFunctionTool::<EmptyToolArgs, _>::new(
+        "summarize",
+        Some("Summarize context".to_string()),
+        |_ctx: ToolContext, _args: EmptyToolArgs| async move {
+            Ok(ToolResult::new(json!({"ok": true})))
+        },
+    )
+    .with_tag("context")
+    .with_tags(["workspace", "context"])
+    .with_hidden_by_tag("compact-summary");
+
+    let definition = tool.definition();
+
+    assert_eq!(
+        definition.metadata[TOOL_METADATA_TAGS_KEY],
+        json!(["context", "workspace"])
+    );
+    assert_eq!(
+        definition.metadata[TOOL_METADATA_HIDDEN_BY_TAGS_KEY],
+        json!(["compact-summary"])
+    );
+}
+
+#[test]
+fn tool_kind_taxonomy_is_exposed_on_tool_definition_metadata() {
+    let tool = FunctionTool::new(
+        "external_search",
+        Some("Search externally".to_string()),
+        json!({"type": "object"}),
+        |_ctx: ToolContext, args| async move { Ok(ToolResult::new(args)) },
+    )
+    .with_kind(ToolKind::External);
+
+    let definition = tool.definition();
+
+    assert_eq!(
+        definition.metadata[TOOL_METADATA_KIND_KEY],
+        json!("external")
+    );
+    assert_eq!(
+        tool_metadata_kind(&definition.metadata),
+        Some(ToolKind::External)
+    );
+
+    let typed = TypedFunctionTool::<EmptyToolArgs, _>::new(
+        "approval_gate",
+        Some("Ask for approval".to_string()),
+        |_ctx: ToolContext, _args: EmptyToolArgs| async move {
+            Ok(ToolResult::new(json!({"ok": true})))
+        },
+    )
+    .with_kind(ToolKind::Unapproved);
+
+    assert_eq!(
+        tool_metadata_kind(&typed.definition().metadata),
+        Some(ToolKind::Unapproved)
+    );
+
+    let mut metadata = serde_json::Map::new();
+    set_tool_metadata_kind(&mut metadata, ToolKind::Deferred);
+    assert_eq!(tool_metadata_kind(&metadata), Some(ToolKind::Deferred));
+    assert_eq!(ToolKind::Output.as_str(), "output");
+    assert_eq!(
+        ToolKind::from_metadata_value("function"),
+        Some(ToolKind::Function)
+    );
+    assert_eq!(ToolKind::from_metadata_value("unknown"), None);
 }
 
 #[tokio::test]

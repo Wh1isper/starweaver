@@ -16,7 +16,7 @@ Prioritize the CLI as the bootstrap product for Starweaver:
 - display-protocol-first rendering
 - persisted `DisplayMessage` records as the session restore source
 - TUI renderers, Desktop renderers, and CLI JSONL over the same Starweaver `DisplayMessage` stream
-- protocol adapters for Starweaver/AGUI event compatibility
+- protocol adapters for Starweaver/AGUI event projection
 - launcher-based command dispatch through `starweaver`
 - short alias through `sw`
 - GitHub release based install and update flow
@@ -73,7 +73,7 @@ Current landed CLI foundations:
 
 - `clap` command surface, launcher dispatch, `sw` alias, installer/update paths, diagnostics, setup templates, auth status/logout, profile and catalog commands
 - headless prompt runs, local SQLite sessions/runs, display JSONL replay, approval/deferred commands, resume, trim, current-session pointer, and retained TUI renderer
-- config parser for global/project roots, model profiles, selected environment values, tools/MCP metadata, skill/subagent directories, and compatibility metadata
+- config parser for global/project roots, model profiles, selected environment values, tools/MCP metadata, skill/subagent directories, and unmapped metadata
 - global config bootstrap under `~/.starweaver`, including `skills`, `subagents`, `tui`, and `desktop` state directories
 - TUI state/render/terminal modules, active-run steering, `/help`, `/clear`, `/cost`, `/model`, `/goal`, shell passthrough, streamed tool-call rendering, process-level provider session affinity, and model choice persistence under `~/.starweaver/tui/state.json`
 - JSON-RPC stdio MVP with `initialize`, `shutdown`, `profile.*`, `model.*`, `config.get`, `diagnostics.get`, session management, replay, and blocking `run.start`/`run.prompt`
@@ -92,7 +92,7 @@ Primary postponed migration gaps:
 - shared runtime coordinator used by RPC, TUI, and CLI commands
 - normalized JSON output for CLI management subsets
 - live stdout streaming for one-shot headless output
-- Starweaver/AGUI top-level event compatibility mode
+- Starweaver/AGUI top-level event projection mode
 - slash command migration coverage
 - deeper TUI session/task/HITL/media workflows
 - startup asset seeding and config import
@@ -127,14 +127,14 @@ Session selection rules for `-p/--prompt`:
 
 Headless output modes:
 
-| Mode            | Flag                                        | Output contract                                                                    |
-| --------------- | ------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `display-jsonl` | default / `--output display-jsonl`          | one Starweaver `DisplayMessage` JSON object per line                               |
-| `agui-jsonl`    | `--output agui-jsonl` or compatibility mode | Starweaver/AGUI top-level event objects mapped from `DisplayMessage`               |
-| `json`          | `--output json`                             | final run summary with session id, run id, status, output preview, and cursor refs |
-| `silent`        | `--output silent`                           | persist session/display records and print compact final status                     |
+| Mode            | Flag                               | Output contract                                                                    |
+| --------------- | ---------------------------------- | ---------------------------------------------------------------------------------- |
+| `display-jsonl` | default / `--output display-jsonl` | one Starweaver `DisplayMessage` JSON object per line                               |
+| `agui-jsonl`    | `--output agui-jsonl`              | Starweaver/AGUI top-level event objects mapped from `DisplayMessage`               |
+| `json`          | `--output json`                    | final run summary with session id, run id, status, output preview, and cursor refs |
+| `silent`        | `--output silent`                  | persist session/display records and print compact final status                     |
 
-`display-jsonl` is the Starweaver-native automation format for live output. `json` is the compact command-result format for hosts that only need the final run summary. `DisplayMessage` is the durable Starweaver wire event used by CLI output, replay archives, and restore views. `agui-jsonl` is the compatibility format for consumers that expect Starweaver/AGUI top-level event objects.
+`display-jsonl` is the Starweaver-native automation format for live output. `json` is the compact command-result format for hosts that only need the final run summary. `DisplayMessage` is the durable Starweaver wire event used by CLI output, replay archives, and restore views. `agui-jsonl` is the adapter format for consumers that expect Starweaver/AGUI top-level event objects.
 
 JSON-RPC stdio is the complete local runtime API. It covers both management operations and active agent execution. CLI commands are the shell-friendly subset over the same service handlers, and TUI is a terminal client over the same runtime surface. Desktop applications can use the same RPC protocol as a desktop client.
 
@@ -145,11 +145,11 @@ Model choice is client state. `~/.starweaver/config.toml` defines shared model p
 The CLI separates durable local sessions from provider-routing affinity:
 
 - Durable local session ids identify persisted `SessionStore` records, display replay, restore snapshots, approvals, deferred tools, and current-session pointers.
-- Request metadata uses `starweaver.durable_session_id`, `starweaver.durable_run_id`, `cli.session_id`, and `cli.run_id` for durable trace/session correlation. `starweaver.session_id` remains a compatibility fallback only.
+- Request metadata uses `starweaver.durable_session_id`, `starweaver.durable_run_id`, `cli.session_id`, and `cli.run_id` for durable trace/session correlation. Provider routing affinity is not inferred from these durable metadata keys; it must flow through `AgentContext.session_id` and typed provider settings.
 - `AgentContext.session_id` is the logical provider-affinity source consumed by runtime request building.
 - TUI creates a process-level `session_affinity_id` at startup and passes it through run metadata as `starweaver.session_affinity_id` for each run.
 - TUI `/clear`, durable session selection, and snapshot restore do not mutate `session_affinity_id`; they affect local transcript/history state only.
-- Headless CLI runs set `AgentContext.session_id` from explicit `starweaver.session_affinity_id` metadata when present. If no explicit affinity exists and no restored context affinity exists, the durable session id is used as a compatibility fallback.
+- Headless CLI runs set `AgentContext.session_id` from explicit `starweaver.session_affinity_id` metadata when present. If no explicit affinity exists and no restored context affinity exists, the durable session id is used only as the runtime context affinity, not as generic provider HTTP metadata.
 - Provider-specific routing is resolved through typed `ModelSettings` overlays: OpenAI prompt-cache keys, Codex OAuth session/thread headers, and opt-in Gateway `x-session-id`.
 
 ## JSON-RPC Stdio Runtime Surface
@@ -450,7 +450,7 @@ sw cli session replay <session-id> --run <run-id> --output display-jsonl
 
 ## AGUI Compatibility Path
 
-`DisplayMessage` is the Starweaver wire event. It carries AGUI-style lifecycle event names in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads. Exact Starweaver/AGUI compatibility is an adapter that maps `DisplayMessage` into top-level protocol events such as `RUN_STARTED`, `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_CHUNK`, and `TOOL_CALL_RESULT`.
+`DisplayMessage` is the Starweaver wire event. It carries AGUI-style lifecycle event names in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads. Starweaver/AGUI projection is an adapter that maps `DisplayMessage` into top-level protocol events such as `RUN_STARTED`, `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_CHUNK`, and `TOOL_CALL_RESULT`.
 
 Starweaver mapping layers:
 

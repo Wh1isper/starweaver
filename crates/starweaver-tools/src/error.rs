@@ -6,7 +6,7 @@ use starweaver_model::{ToolCallPart, ToolReturnPart};
 use thiserror::Error;
 
 /// Function tool execution error.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum ToolError {
     /// Tool was not found.
     #[error("tool not found: {0}")]
@@ -26,6 +26,22 @@ pub enum ToolError {
         tool: String,
         /// Error message.
         message: String,
+    },
+    /// Tool execution exceeded its timeout.
+    #[error("tool {tool} timed out after {timeout_ms}ms")]
+    Timeout {
+        /// Tool name.
+        tool: String,
+        /// Timeout in milliseconds.
+        timeout_ms: u64,
+    },
+    /// Tool execution was cancelled by the owning run.
+    #[error("tool {tool} cancelled: {reason}")]
+    Cancelled {
+        /// Tool name.
+        tool: String,
+        /// Cancellation reason.
+        reason: String,
     },
     /// Tool asked the model to retry the call with corrected input.
     #[error("tool {tool} requested model retry: {message}")]
@@ -79,6 +95,11 @@ fn tool_error_metadata(error: &ToolError) -> (&'static str, Metadata) {
         ToolError::NotFound(_) => ("not_found", metadata),
         ToolError::InvalidArguments { .. } => ("invalid_arguments", metadata),
         ToolError::Execution { .. } => ("execution", metadata),
+        ToolError::Timeout { timeout_ms, .. } => {
+            metadata.insert("timeout_ms".to_string(), serde_json::json!(timeout_ms));
+            ("timeout", metadata)
+        }
+        ToolError::Cancelled { .. } => ("cancelled", metadata),
         ToolError::ModelRetry { .. } => ("model_retry", metadata),
         ToolError::ApprovalRequired {
             metadata: value, ..

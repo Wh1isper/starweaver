@@ -1,0 +1,64 @@
+{
+  "model": "gemini-2.5-pro",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Compare these inputs."
+            },
+            {
+              "kind": "file_url",
+              "url": "https://example.test/audio.wav",
+              "media_type": "audio/wav"
+            },
+            {
+              "kind": "file_url",
+              "url": "https://example.test/video.mp4",
+              "media_type": "video/mp4"
+            },
+            {
+              "kind": "file_url",
+              "url": "https://example.test/spec.pdf",
+              "media_type": "application/pdf"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Compare these inputs."
+          },
+          {
+            "fileData": {
+              "fileUri": "https://example.test/audio.wav",
+              "mimeType": "audio/wav"
+            }
+          },
+          {
+            "fileData": {
+              "fileUri": "https://example.test/video.mp4",
+              "mimeType": "video/mp4"
+            }
+          },
+          {
+            "fileData": {
+              "fileUri": "https://example.test/spec.pdf",
+              "mimeType": "application/pdf"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

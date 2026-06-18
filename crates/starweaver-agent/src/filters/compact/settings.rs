@@ -18,10 +18,10 @@ pub(super) fn compact_model_settings(
 fn strip_compact_model_settings(settings: &mut ModelSettings) {
     settings.max_tokens = Some(settings.max_tokens.unwrap_or(4096).min(4096));
     settings.thinking = None;
-    strip_compact_incompatible_body(&mut settings.extra_body);
-    strip_incompatible_beta_header(&mut settings.extra_headers);
+    strip_compact_unsupported_body(&mut settings.extra_body);
+    strip_unsupported_beta_header(&mut settings.extra_headers);
     if let Some(Value::Object(provider_options)) = &mut settings.provider_options {
-        strip_compact_incompatible_body(provider_options);
+        strip_compact_unsupported_body(provider_options);
     }
 }
 
@@ -31,13 +31,13 @@ pub(super) fn compact_request_params(inherited: &ModelRequestParameters) -> Mode
     params.output_mode = None;
     params.thinking = None;
     params.allow_text_output = Some(true);
-    strip_compact_incompatible_body(&mut params.extra_body);
-    strip_compact_incompatible_body(&mut params.http.extra_body);
-    strip_incompatible_beta_header(&mut params.http.headers);
+    strip_compact_unsupported_body(&mut params.extra_body);
+    strip_compact_unsupported_body(&mut params.http.extra_body);
+    strip_unsupported_beta_header(&mut params.http.headers);
     params
 }
 
-fn strip_compact_incompatible_body(body: &mut Map<String, Value>) {
+fn strip_compact_unsupported_body(body: &mut Map<String, Value>) {
     for key in [
         "anthropic_cache_tool_definitions",
         "anthropic_cache_instructions",
@@ -52,7 +52,7 @@ fn strip_compact_incompatible_body(body: &mut Map<String, Value>) {
     strip_clear_thinking_edits(body);
 }
 
-fn strip_incompatible_beta_header(headers: &mut std::collections::BTreeMap<String, String>) {
+fn strip_unsupported_beta_header(headers: &mut std::collections::BTreeMap<String, String>) {
     let Some(beta_header) = headers.get("anthropic-beta").cloned() else {
         return;
     };

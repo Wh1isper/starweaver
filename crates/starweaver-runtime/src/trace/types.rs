@@ -20,7 +20,7 @@ const fn is_default_trace_level(level: &TraceLevel) -> bool {
     matches!(level, TraceLevel::Info)
 }
 
-/// Span role compatible with OpenTelemetry span kinds.
+/// Span role mapped to OpenTelemetry span kinds.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SpanKind {

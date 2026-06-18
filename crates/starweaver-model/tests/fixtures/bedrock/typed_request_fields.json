@@ -1,0 +1,82 @@
+{
+  "model": "anthropic.claude-3-5-sonnet",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "provider_settings": {
+      "bedrock": {
+        "guardrail_config": {
+          "guardrailIdentifier": "gr-1"
+        },
+        "performance_config": {
+          "latency": "optimized"
+        },
+        "request_metadata": {
+          "tenant": "default"
+        },
+        "additional_model_response_field_paths": [
+          "/trace"
+        ],
+        "prompt_variables": {
+          "topic": {
+            "text": "math"
+          }
+        },
+        "inference_profile": "profile-1"
+      }
+    }
+  },
+  "expected_provider_request": {
+    "modelId": "profile-1",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "What is 2+2?"
+          }
+        ]
+      }
+    ],
+    "system": [
+      {
+        "text": "You are concise."
+      }
+    ],
+    "guardrailConfig": {
+      "guardrailIdentifier": "gr-1"
+    },
+    "performanceConfig": {
+      "latency": "optimized"
+    },
+    "requestMetadata": {
+      "tenant": "default"
+    },
+    "additionalModelResponseFieldPaths": [
+      "/trace"
+    ],
+    "promptVariables": {
+      "topic": {
+        "text": "math"
+      }
+    }
+  }
+}

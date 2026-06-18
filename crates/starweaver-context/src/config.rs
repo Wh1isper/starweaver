@@ -6,7 +6,7 @@ mod tool;
 use serde::{Deserialize, Serialize};
 
 pub use model::{ModelCapability, ModelConfig};
-pub use tool::ToolConfig;
+pub use tool::{ToolAvailabilityPolicy, ToolConfig};
 
 /// Fixed-point ratio stored as parts per thousand.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]

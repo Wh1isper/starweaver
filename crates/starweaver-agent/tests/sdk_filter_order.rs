@@ -1052,6 +1052,9 @@ async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_s
         name: "view".to_string(),
         description: Some("View file".to_string()),
         parameters: serde_json::json!({"type":"object"}),
+        return_schema: None,
+        strict: None,
+        sequential: None,
         metadata: serde_json::Map::new(),
     });
     params

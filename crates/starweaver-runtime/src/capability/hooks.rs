@@ -8,7 +8,9 @@ use starweaver_model::{
 };
 use starweaver_tools::ToolContext;
 
-use crate::{executor::AgentCheckpoint, run::AgentRunState, stream::AgentStreamRecord};
+use crate::{
+    agent::AgentInput, executor::AgentCheckpoint, run::AgentRunState, stream::AgentStreamRecord,
+};
 
 use super::{CapabilityResult, CapabilitySpec, RetryEventKind};
 
@@ -32,6 +34,25 @@ pub trait AgentCapability: Send + Sync {
         _context: &mut AgentContext,
     ) -> CapabilityResult<()> {
         self.on_run_start(state).await
+    }
+
+    /// Called after run state is initialized and before the first model request is built.
+    async fn prepare_run_input(
+        &self,
+        _state: &mut AgentRunState,
+        input: AgentInput,
+    ) -> CapabilityResult<AgentInput> {
+        Ok(input)
+    }
+
+    /// Context-aware run-input preparation hook.
+    async fn prepare_run_input_with_context(
+        &self,
+        state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        input: AgentInput,
+    ) -> CapabilityResult<AgentInput> {
+        self.prepare_run_input(state, input).await
     }
 
     /// Called after message history is assembled and before provider-bound preparation/model call.

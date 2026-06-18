@@ -74,7 +74,13 @@ fn load_fixture<T: DeserializeOwned>(path: &Path) -> T {
 }
 
 pub fn assert_json_eq(actual: &Value, expected: &Value) {
-    assert_eq!(canonical_json(actual), canonical_json(expected));
+    let actual = canonical_json(actual);
+    let expected = canonical_json(expected);
+    if actual != expected {
+        let actual = serde_json::to_string_pretty(&actual).unwrap();
+        let expected = serde_json::to_string_pretty(&expected).unwrap();
+        panic!("provider request mismatch\nexpected:\n{expected}\nactual:\n{actual}");
+    }
 }
 
 fn canonical_json(value: &Value) -> Value {

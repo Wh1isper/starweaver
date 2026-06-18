@@ -87,7 +87,7 @@ Implementation requirements:
 - `read_image`, `read_video`, and `read_audio` use configurable fallback models, account usage into the parent `AgentContext`, preserve trace correlation, and return structured text evidence with source URL, model id, and truncation metadata.
 - Media and download tools share protocol validation, host-network-policy delegation, streaming size limits, content-type sniffing, and deterministic fake clients.
 - Media preflight processors handle binary media before provider mapping: validate image bytes, detect actual image MIME type, correct mismatched declarations, account for base64 expansion, compress static images, split tall screenshots, apply GIF support policy, enforce image/video count limits while keeping newest media, and preserve clear system-reminder replacements for removed media.
-- Media upload processors run after local image processing and replace binary image/video content with URL parts when the active model profile supports URL media or when large videos should leave the request body. S3-compatible upload and provider resource-store upload adapters share one `MediaUploader` trait.
+- Media upload processors run after local image processing and replace binary image/video content with URL parts when the active model profile supports URL media or when large videos should leave the request body. S3 protocol upload and provider resource-store upload adapters share one `MediaUploader` trait.
 
 ### Search and Web Bundle
 
@@ -159,7 +159,7 @@ Skill state lives in a context state domain and SDK config.
 
 ### MCP Bundle
 
-The live MCP client should use the official Model Context Protocol Rust SDK at <https://github.com/modelcontextprotocol/rust-sdk> through the `rmcp` crate. Starweaver should wrap `rmcp` behind SDK toolset contracts so MCP tools, resources, prompts, sampling, roots, logging, completions, notifications, subscriptions, and long-running tasks can participate in Starweaver policy, context, tracing, and replay tests.
+The live MCP client uses the official Model Context Protocol Rust SDK at <https://github.com/modelcontextprotocol/rust-sdk> through the `rmcp` crate for stdio and streamable HTTP transports. Starweaver wraps `rmcp` behind SDK toolset contracts so MCP tools, resources, prompts, sampling, roots, logging, completions, notifications, subscriptions, and long-running tasks can participate in Starweaver policy, context, tracing, and replay tests. Streamable HTTP uses `rmcp` session reinitialization for expired sessions. The older standalone SSE transport is not exposed by `rmcp` 1.7 and should only be added through a separate host adapter if a product still requires that protocol.
 
 Responsibilities:
 
@@ -169,7 +169,7 @@ Responsibilities:
 - map MCP roots to `EnvironmentProvider` workspace bindings
 - route MCP sampling through configured Starweaver model adapters
 - preserve MCP progress/cancellation events in `AgentContext` events
-- test stdio and streamable HTTP transports with deterministic servers
+- test stdio, streamable HTTP, expired-session reinitialization, and required-task deferred behavior with deterministic servers
 
 ### Tool Proxy Bundle
 
@@ -226,6 +226,6 @@ Policies are represented as tool metadata and capability settings so runtime and
 - approval/deferred behavior tests
 - context state mutation tests
 - event emission tests
-- official `rmcp` client integration tests
+- stdio, streamable HTTP, expired-session reinitialization, and required-task deferred `rmcp` integration tests
 - skill discovery, precedence, reload, and full-content loading tests over virtual and local providers
 - docs examples for each public bundle

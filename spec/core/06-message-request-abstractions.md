@@ -136,7 +136,7 @@ sequenceDiagram
 - provider extra body fields
 - request metadata for replay, tracing, and audit
 
-`ModelRequestContext` should carry run id, conversation id, trace context, deployment metadata, redaction policy reference, and debug capture policy. Direct provider clients can use the same context for raw LLM-request evidence.
+`ModelRequestContext` carries run id, conversation id, trace context, cooperative cancellation token, deployment metadata, redaction policy reference, and debug capture policy. Direct provider clients can use the same context for raw LLM-request evidence.
 
 ## Request Preparation Rules
 
@@ -160,7 +160,7 @@ Profiles should select a normalization policy:
 | Policy                  | Behavior                                                                                            |
 | ----------------------- | --------------------------------------------------------------------------------------------------- |
 | `PreserveItems`         | keep canonical message boundaries                                                                   |
-| `MergeAdjacentSameRole` | merge adjacent compatible provider roles                                                            |
+| `MergeAdjacentSameRole` | merge adjacent mergeable provider roles                                                             |
 | `SystemField`           | lift leading system/developer instructions into a top-level system field                            |
 | `SystemInstruction`     | lift instructions into provider-specific system instruction objects                                 |
 | `WrapInlineSystem`      | wrap later system fragments into tagged user content for profiles with top-level-only system fields |

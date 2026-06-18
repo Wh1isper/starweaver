@@ -1,0 +1,94 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "What is 2+2?"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "response",
+      "parts": [
+        {
+          "kind": "provider_thinking",
+          "text": "Need arithmetic.",
+          "signature": "sig_replay_1",
+          "provider": {
+            "provider_name": "anthropic",
+            "id": "thinking_1"
+          }
+        },
+        {
+          "kind": "text",
+          "text": "4"
+        }
+      ]
+    },
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Continue from the same reasoning context."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "claude-3-5-sonnet-latest",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "What is 2+2?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Need arithmetic.",
+            "signature": "sig_replay_1"
+          },
+          {
+            "type": "text",
+            "text": "4"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Continue from the same reasoning context."
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024,
+    "system": "You are concise."
+  }
+}

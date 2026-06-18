@@ -25,6 +25,17 @@ SDK layer:
 - `sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
 - `sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
 
+Reference alignment:
+
+- `alignment/README.md` — alignment source snapshot, document map, and high-level findings
+- `alignment/01-pydantic-ai-core-abstractions.md` — Pydantic AI docs and implementation abstraction inventory
+- `alignment/02-agent-sdk-surface-parity.md` — ya-agent-sdk application API parity against Starweaver SDK surfaces
+- `alignment/03-runtime-context-session-streaming.md` — runtime, context, state, message bus, durable session, and streaming alignment
+- `alignment/04-tools-toolsets-hitl.md` — tools, toolsets, hooks, dynamic discovery, MCP, approval, and deferred execution
+- `alignment/05-models-output-provider-alignment.md` — model settings, profiles, provider mapping, output modes, usage, and replay gates
+- `alignment/06-subagents-environments-skills-media.md` — subagents, environments, resources, skills, media, tasks, notes, and host adapters
+- `alignment/07-gap-matrix-and-roadmap.md` — prioritized gap matrix and implementation roadmap
+
 Operations and products:
 
 - `ops/README.md` — operational layer scope and readiness model

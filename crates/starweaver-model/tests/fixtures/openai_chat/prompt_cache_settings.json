@@ -1,0 +1,46 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "Keep the reusable prefix stable."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Use the cached prefix."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "provider_settings": {
+      "openai_chat": {
+        "prompt_cache_key": "typed-chat-cache",
+        "prompt_cache_retention": "24h"
+      }
+    }
+  },
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "messages": [
+      {
+        "role": "system",
+        "content": "Keep the reusable prefix stable."
+      },
+      {
+        "role": "user",
+        "content": "Use the cached prefix."
+      }
+    ],
+    "prompt_cache_key": "typed-chat-cache",
+    "prompt_cache_retention": "24h"
+  }
+}

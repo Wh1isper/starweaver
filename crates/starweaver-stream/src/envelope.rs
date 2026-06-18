@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::replay::{ReplayCursor, ReplayEvent, ReplayEventKind, StreamTerminalMarker};
+use crate::replay::{ReplayCursor, ReplayEvent, ReplayEventKind};
 
 /// Generic replay transport envelope.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -93,11 +93,7 @@ const fn event_name(kind: &ReplayEventKind) -> &'static str {
         ReplayEventKind::Raw(_) => "raw",
         ReplayEventKind::Snapshot(_) => "snapshot",
         ReplayEventKind::Heartbeat => "heartbeat",
-        ReplayEventKind::Terminal(
-            StreamTerminalMarker::RunCompleted
-            | StreamTerminalMarker::RunFailed { .. }
-            | StreamTerminalMarker::RunCancelled { .. },
-        ) => "terminal",
+        ReplayEventKind::Terminal { .. } => "terminal",
     }
 }
 
@@ -111,6 +107,6 @@ fn event_data(kind: &ReplayEventKind) -> Value {
             serde_json::to_value(snapshot).unwrap_or(Value::Null)
         }
         ReplayEventKind::Heartbeat => Value::Null,
-        ReplayEventKind::Terminal(marker) => serde_json::to_value(marker).unwrap_or(Value::Null),
+        ReplayEventKind::Terminal { marker } => serde_json::to_value(marker).unwrap_or(Value::Null),
     }
 }

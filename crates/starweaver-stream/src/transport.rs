@@ -5,10 +5,7 @@ use async_trait::async_trait;
 use crate::{
     envelope::{JsonlEnvelope, ReplayEnvelope, SseEnvelope},
     error::{ReplayError, ReplayResult},
-    replay::{
-        ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog, ReplayScope,
-        StreamTerminalMarker,
-    },
+    replay::{ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog, ReplayScope},
 };
 
 /// Replay transport contract.
@@ -87,11 +84,7 @@ pub const fn replay_sse_event_name(kind: &ReplayEventKind) -> &'static str {
         ReplayEventKind::Raw(_) => "raw",
         ReplayEventKind::Snapshot(_) => "snapshot",
         ReplayEventKind::Heartbeat => "heartbeat",
-        ReplayEventKind::Terminal(
-            StreamTerminalMarker::RunCompleted
-            | StreamTerminalMarker::RunFailed { .. }
-            | StreamTerminalMarker::RunCancelled { .. },
-        ) => "terminal",
+        ReplayEventKind::Terminal { .. } => "terminal",
     }
 }
 

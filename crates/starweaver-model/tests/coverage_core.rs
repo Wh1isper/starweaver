@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc, sync::Mutex};
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use starweaver_core::{
-    sdk_name, AgentId, CheckpointId, ConversationId, Metadata, RunId, SessionId,
+    sdk_name, AgentId, CancellationToken, CheckpointId, ConversationId, Metadata, RunId, SessionId,
     SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext,
 };
 use starweaver_model::transport::{
@@ -19,8 +19,8 @@ use starweaver_model::{
     list_model_settings_presets, model_runtime_preset, openai_chat_http_config,
     openai_responses_http_config, parse_data_url, set_allow_real_model_requests, AuthConfig,
     ContentPart, FinishReason, HttpModelConfig, HttpRequest, HttpRequestOptions, HttpResponse,
-    MediaKind, MediaPolicy, MediaPreflight, ModelAdapter, ModelError, ModelHttpClient,
-    ModelProfile, ModelRequestContext, ModelRequestParameters, ModelResponse,
+    MediaKind, MediaPolicy, MediaPreflight, ModelAdapter, ModelError, ModelEventStream,
+    ModelHttpClient, ModelProfile, ModelRequestContext, ModelRequestParameters, ModelResponse,
     ModelResponseEventStream, ModelResponsePart, ModelResponseStreamEvent, ModelSettings,
     ModelSleeper, NoopSleeper, PartDelta, ProtocolFamily, ProtocolModelClient, RetryPolicy,
     ServiceTier,
@@ -115,6 +115,9 @@ fn presets_cover_all_builtin_settings_configs_and_errors() {
         match config.protocol {
             ProtocolFamily::AnthropicMessages => assert!(config.profile.supports_document_input),
             ProtocolFamily::GeminiGenerateContent => assert!(config.profile.supports_audio_input),
+            ProtocolFamily::OpenAiResponses if name.starts_with("gpt5_") => {
+                assert!(config.profile.supports_image_output);
+            }
             ProtocolFamily::OpenAiChatCompletions
             | ProtocolFamily::OpenAiResponses
             | ProtocolFamily::BedrockConverse => {}
@@ -248,7 +251,7 @@ async fn retry_policy_and_model_stream_helpers_cover_error_paths() {
         request,
         &RetryPolicy {
             max_attempts: 2,
-            ..policy
+            ..policy.clone()
         },
     )
     .await
@@ -272,6 +275,31 @@ async fn retry_policy_and_model_stream_helpers_cover_error_paths() {
         ModelResponseStreamEvent::PartDelta(_)
     ));
     assert!(stream.recv().await.is_none());
+
+    assert!(!should_retry_error(
+        &ModelError::Cancelled {
+            reason: "interrupted".to_string(),
+        },
+        &policy
+    ));
+
+    let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+    let token = CancellationToken::new();
+    let mut stream = ModelResponseEventStream::new_with_cancellation(receiver, token.clone());
+    token.cancel();
+    assert!(matches!(
+        stream.recv().await.unwrap().unwrap_err(),
+        ModelError::Cancelled { .. }
+    ));
+
+    let (_sender, receiver) = tokio::sync::mpsc::channel(1);
+    let token = CancellationToken::new();
+    let mut stream = ModelEventStream::new_with_cancellation(receiver, token.clone());
+    token.cancel();
+    assert!(matches!(
+        stream.recv().await.unwrap().unwrap_err(),
+        ModelError::Cancelled { .. }
+    ));
 }
 
 #[test]
@@ -382,7 +410,7 @@ async fn protocol_client_keeps_explicit_headers_and_request_metadata_separate() 
     );
     let mut params = ModelRequestParameters::default();
     params.metadata.insert(
-        "starweaver.session_id".to_string(),
+        "starweaver.durable_session_id".to_string(),
         json!("session_http_metadata"),
     );
     params.metadata.insert(
@@ -426,7 +454,7 @@ async fn protocol_client_keeps_explicit_headers_and_request_metadata_separate() 
     assert!(!requests[0].headers.contains_key("session-id"));
     assert!(!requests[0].headers.contains_key("x-client-request-id"));
     assert_eq!(
-        requests[0].metadata["starweaver.session_id"],
+        requests[0].metadata["starweaver.durable_session_id"],
         "session_http_metadata"
     );
     assert_eq!(

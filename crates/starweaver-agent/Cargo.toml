@@ -20,9 +20,10 @@ image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
-serde_yaml.workspace = true
+yaml_serde.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
+rmcp = { version = "1.7.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 uuid.workspace = true
 starweaver-context.workspace = true
 starweaver-core.workspace = true
@@ -30,6 +31,8 @@ starweaver-environment.workspace = true
 starweaver-model.workspace = true
 starweaver-oauth-provider.workspace = true
 starweaver-runtime.workspace = true
+starweaver-session.workspace = true
+starweaver-stream.workspace = true
 starweaver-usage = { workspace = true, features = ["pricing"] }
 starweaver-tools.workspace = true
 tokio.workspace = true

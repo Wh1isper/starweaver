@@ -10,11 +10,12 @@ use starweaver_context::AgentContext;
 use starweaver_model::{
     ContentPart, ModelAdapter, ModelError, ModelMessage, ModelRequest, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponseEventStream,
-    ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ToolCallPart, ToolReturnPart,
+    ModelResponsePart, ModelResponseStreamEvent, ModelSettings, PartDelta, ToolCallPart,
+    ToolReturnPart,
 };
 use starweaver_runtime::{
-    Agent, AgentCapability, AgentError, AgentRuntimePolicy, CapabilityError, CapabilityResult,
-    RetryEventKind,
+    Agent, AgentCapability, AgentError, AgentInput, AgentRuntimePolicy, CapabilityError,
+    CapabilityResult, RetryEventKind,
 };
 use starweaver_usage::Usage;
 
@@ -168,6 +169,69 @@ async fn bare_agent_runs_prompt_and_returns_output() {
 }
 
 #[tokio::test]
+async fn capability_can_prepare_run_input_before_first_request() {
+    let model = Arc::new(ScriptedModel::new(vec![ModelResponse::text("rewritten")]));
+    let agent = Agent::new(model.clone()).with_capability(Arc::new(RewriteRunInput));
+
+    let result = agent.run("original prompt").await.unwrap();
+
+    assert_eq!(result.output, "rewritten");
+    let captured = model.captured.lock().unwrap().clone();
+    assert!(captured[0].iter().any(|message| match message {
+        ModelMessage::Request(request) => request.parts.iter().any(|part| {
+            matches!(
+                part,
+                ModelRequestPart::UserPrompt { content, .. }
+                    if content.iter().any(|part| {
+                        matches!(part, ContentPart::Text { text } if text == "rewritten prompt")
+                    })
+            )
+        }),
+        ModelMessage::Response(_) => false,
+    }));
+}
+
+#[tokio::test]
+async fn capability_can_prepare_pending_tool_returns_before_first_request() {
+    let model = Arc::new(ScriptedModel::new(vec![ModelResponse::text("resumed")]));
+    let agent = Agent::new(model.clone()).with_capability(Arc::new(InjectPendingToolReturn));
+    let history = vec![ModelMessage::Response(ModelResponse {
+        parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+            id: "call_prepared".to_string(),
+            name: "external_worker".to_string(),
+            arguments: serde_json::json!({}).into(),
+        })],
+        ..ModelResponse::text("")
+    })];
+
+    let result = agent
+        .run_with_history("should not be sent", history)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "resumed");
+    let captured = model.captured.lock().unwrap().clone();
+    assert!(captured[0].iter().any(|message| match message {
+        ModelMessage::Request(request) => request.parts.iter().any(|part| {
+            matches!(
+                part,
+                ModelRequestPart::ToolReturn(tool_return)
+                    if tool_return.name == "external_worker"
+                        && tool_return.content["status"] == "ready"
+            )
+        }),
+        ModelMessage::Response(_) => false,
+    }));
+    assert!(!captured[0].iter().any(|message| match message {
+        ModelMessage::Request(request) => request
+            .parts
+            .iter()
+            .any(|part| matches!(part, ModelRequestPart::UserPrompt { .. })),
+        ModelMessage::Response(_) => false,
+    }));
+}
+
+#[tokio::test]
 async fn bare_agent_uses_streaming_model_request_without_external_stream_sink() {
     let model = Arc::new(StreamingOnlyModel::new("streamed"));
     let agent = Agent::new(model.clone()).with_instruction("Answer concisely.");
@@ -191,6 +255,7 @@ async fn step_limit_failure_preserves_context_state_and_failure_event() {
         .with_policy(AgentRuntimePolicy {
             max_steps: 1,
             output_retries: 2,
+            ..AgentRuntimePolicy::default()
         })
         .with_capability(Arc::new(RequireGoodOutput));
     let mut context = AgentContext::default();
@@ -233,6 +298,7 @@ async fn bare_agent_retries_output_validation() {
         .with_policy(AgentRuntimePolicy {
             max_steps: 4,
             output_retries: 1,
+            ..AgentRuntimePolicy::default()
         })
         .with_capability(Arc::new(RequireGoodOutput));
 
@@ -252,6 +318,7 @@ async fn bare_agent_enforces_output_retry_limit() {
         .with_policy(AgentRuntimePolicy {
             max_steps: 2,
             output_retries: 0,
+            ..AgentRuntimePolicy::default()
         })
         .with_capability(Arc::new(RequireGoodOutput));
 
@@ -305,6 +372,38 @@ async fn capability_hooks_can_mutate_response_and_record_lifecycle() {
         hook.events.lock().unwrap().as_slice(),
         ["start", "before", "after", "validate", "complete"]
     );
+}
+
+struct RewriteRunInput;
+
+#[async_trait]
+impl AgentCapability for RewriteRunInput {
+    async fn prepare_run_input(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        _input: AgentInput,
+    ) -> CapabilityResult<AgentInput> {
+        Ok(AgentInput::text("rewritten prompt"))
+    }
+}
+
+struct InjectPendingToolReturn;
+
+#[async_trait]
+impl AgentCapability for InjectPendingToolReturn {
+    async fn prepare_run_input_with_context(
+        &self,
+        state: &mut starweaver_runtime::AgentRunState,
+        _context: &mut AgentContext,
+        input: AgentInput,
+    ) -> CapabilityResult<AgentInput> {
+        state.pending_tool_returns.push(ToolReturnPart::new(
+            "call_prepared",
+            "external_worker",
+            serde_json::json!({"status": "ready"}),
+        ));
+        Ok(input)
+    }
 }
 
 struct RequireGoodOutput;
@@ -638,6 +737,212 @@ async fn model_error_retry_recovers_stream_context_overflow() {
         }),
         ModelMessage::Response(_) => false,
     }));
+}
+
+#[tokio::test]
+async fn provider_stream_transport_error_resumes_incremental_request() {
+    #[derive(Clone)]
+    struct StreamTransportErrorThenResponseModel {
+        calls: Arc<AtomicUsize>,
+        captured: Arc<Mutex<Vec<Vec<ModelMessage>>>>,
+    }
+
+    #[async_trait]
+    impl ModelAdapter for StreamTransportErrorThenResponseModel {
+        fn model_name(&self) -> &'static str {
+            "stream-transport-error-then-response"
+        }
+
+        fn provider_name(&self) -> Option<&str> {
+            Some("test")
+        }
+
+        fn profile(&self) -> &starweaver_model::ModelProfile {
+            static PROFILE: LazyLock<starweaver_model::ModelProfile> = LazyLock::new(|| {
+                starweaver_model::ModelProfile::for_protocol(
+                    starweaver_model::ProtocolFamily::OpenAiChatCompletions,
+                )
+            });
+            &PROFILE
+        }
+
+        fn default_settings(&self) -> Option<&ModelSettings> {
+            None
+        }
+
+        async fn request(
+            &self,
+            _messages: Vec<ModelMessage>,
+            _settings: Option<ModelSettings>,
+            _params: ModelRequestParameters,
+            _context: ModelRequestContext,
+        ) -> Result<ModelResponse, ModelError> {
+            Err(ModelError::Transport(
+                "non-stream request must not be used".to_string(),
+            ))
+        }
+
+        async fn request_stream_incremental(
+            &self,
+            messages: Vec<ModelMessage>,
+            _settings: Option<ModelSettings>,
+            _params: ModelRequestParameters,
+            _context: ModelRequestContext,
+        ) -> Result<ModelResponseEventStream, ModelError> {
+            self.captured.lock().unwrap().push(messages);
+            let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
+            let (sender, receiver) = tokio::sync::mpsc::channel(4);
+            if call_index == 0 {
+                sender
+                    .send(Ok(ModelResponseStreamEvent::PartDelta(PartDelta::text(
+                        0, "partial",
+                    ))))
+                    .await
+                    .unwrap();
+                sender
+                    .send(Err(ModelError::Transport(
+                        "server-sent event stream disconnected".to_string(),
+                    )))
+                    .await
+                    .unwrap();
+            } else {
+                sender
+                    .send(Ok(ModelResponseStreamEvent::FinalResult(Box::new(
+                        ModelResponse::text("stream resumed"),
+                    ))))
+                    .await
+                    .unwrap();
+            }
+            Ok(ModelResponseEventStream::new(receiver))
+        }
+    }
+
+    let model = Arc::new(StreamTransportErrorThenResponseModel {
+        calls: Arc::new(AtomicUsize::new(0)),
+        captured: Arc::new(Mutex::new(Vec::new())),
+    });
+    let mut context = AgentContext::default();
+    let mut events = Vec::new();
+
+    let result = Agent::new(model.clone())
+        .run_with_context_and_stream_events("continue", &mut context, &mut events)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "stream resumed");
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(model.captured.lock().unwrap().len(), 2);
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "model_stream_resume"));
+    assert!(events.iter().any(|record| matches!(
+        &record.event,
+        starweaver_runtime::AgentStreamEvent::Custom { event }
+            if event.kind == "model_stream_resume"
+    )));
+}
+
+#[tokio::test]
+async fn provider_stream_clean_close_without_final_resumes_incremental_request() {
+    #[derive(Clone)]
+    struct StreamCloseThenResponseModel {
+        calls: Arc<AtomicUsize>,
+        captured: Arc<Mutex<Vec<Vec<ModelMessage>>>>,
+    }
+
+    #[async_trait]
+    impl ModelAdapter for StreamCloseThenResponseModel {
+        fn model_name(&self) -> &'static str {
+            "stream-close-then-response"
+        }
+
+        fn provider_name(&self) -> Option<&str> {
+            Some("test")
+        }
+
+        fn profile(&self) -> &starweaver_model::ModelProfile {
+            static PROFILE: LazyLock<starweaver_model::ModelProfile> = LazyLock::new(|| {
+                starweaver_model::ModelProfile::for_protocol(
+                    starweaver_model::ProtocolFamily::OpenAiChatCompletions,
+                )
+            });
+            &PROFILE
+        }
+
+        fn default_settings(&self) -> Option<&ModelSettings> {
+            None
+        }
+
+        async fn request(
+            &self,
+            _messages: Vec<ModelMessage>,
+            _settings: Option<ModelSettings>,
+            _params: ModelRequestParameters,
+            _context: ModelRequestContext,
+        ) -> Result<ModelResponse, ModelError> {
+            Err(ModelError::Transport(
+                "non-stream request must not be used".to_string(),
+            ))
+        }
+
+        async fn request_stream_incremental(
+            &self,
+            messages: Vec<ModelMessage>,
+            _settings: Option<ModelSettings>,
+            _params: ModelRequestParameters,
+            _context: ModelRequestContext,
+        ) -> Result<ModelResponseEventStream, ModelError> {
+            self.captured.lock().unwrap().push(messages);
+            let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
+            let (sender, receiver) = tokio::sync::mpsc::channel(4);
+            if call_index == 0 {
+                sender
+                    .send(Ok(ModelResponseStreamEvent::PartDelta(PartDelta::text(
+                        0, "partial",
+                    ))))
+                    .await
+                    .unwrap();
+            } else {
+                sender
+                    .send(Ok(ModelResponseStreamEvent::FinalResult(Box::new(
+                        ModelResponse::text("stream resumed after close"),
+                    ))))
+                    .await
+                    .unwrap();
+            }
+            Ok(ModelResponseEventStream::new(receiver))
+        }
+    }
+
+    let model = Arc::new(StreamCloseThenResponseModel {
+        calls: Arc::new(AtomicUsize::new(0)),
+        captured: Arc::new(Mutex::new(Vec::new())),
+    });
+    let mut context = AgentContext::default();
+    let mut events = Vec::new();
+
+    let result = Agent::new(model.clone())
+        .run_with_context_and_stream_events("continue", &mut context, &mut events)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "stream resumed after close");
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(model.captured.lock().unwrap().len(), 2);
+    assert!(context.events.events().iter().any(|event| {
+        event.kind == "model_stream_resume"
+            && event
+                .payload
+                .get("error")
+                .is_some_and(|error| error == "model stream ended before final result")
+    }));
+    assert!(events.iter().any(|record| matches!(
+        &record.event,
+        starweaver_runtime::AgentStreamEvent::Custom { event }
+            if event.kind == "model_stream_resume"
+    )));
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 # Runtime, SDK, and Usage Boundaries
 
-This spec records Starweaver's native boundary after the reference-project cleanup. It separates the agentic loop, runtime context, SDK ergonomics, and usage accounting so code does not encode reference-project names or compatibility concepts.
+This spec records Starweaver's native boundary after the reference-project cleanup. It separates the agentic loop, runtime context, SDK ergonomics, and usage accounting so code does not encode reference-project names or migration concepts.
 
 ## Boundary Summary
 
@@ -113,6 +113,13 @@ The optional `pricing` feature owns USD estimate helpers:
 
 Pricing estimates use fixed-point micro USD through `PricingEstimate::amount_micros_usd`, avoiding floats in serialized runtime events. Built-in catalog pricing is best-effort standard direct API pricing. Cache-aware estimates assume `Usage::input_tokens` includes provider-reported cache write/read subtotals and subtract those subtotals before applying cache-specific rates. Context-length tiers are request-scoped: runtime snapshots should add per-request estimates for tiered built-in profiles instead of repricing cumulative run usage.
 
+Built-in pricing catalog ownership is release-bound: source URLs and the last
+checked date live next to the catalog entries, and catalog refreshes should be
+made as ordinary reviewed code changes. Applications that need contract,
+regional, promotional, batch, priority/flex, tax, or enterprise billing accuracy
+must provide explicit `PricingEstimate` values on usage snapshot entries or use
+their own `CostBudget`; Starweaver's built-in catalog is not an invoice source.
+
 ## Usage Event Contract
 
 Runtime emits context events with kind `usage_snapshot`. The payload is a `UsageSnapshot` where:
@@ -124,13 +131,19 @@ Runtime emits context events with kind `usage_snapshot`. The payload is a `Usage
 - `agent_usages[*].estimate_pricing` aggregates entry estimates by agent id.
 - `model_estimate_pricing[*]` aggregates entry estimates by model id.
 
+Host services can include non-model usage through
+`AgentContext::update_external_usage_snapshot_entry`. External entries use
+`source = "external"` and an idempotent ledger key derived from source id plus
+usage id, so repeated updates replace the cumulative external entry instead of
+double-counting it.
+
 Pricing is best-effort. Absence of `estimate_pricing` means no known model price and no explicit cost budget was configured.
 
 ## Acceptance Gates
 
 - `cargo check --workspace`
 - `cargo test --workspace --no-run`
-- focused `starweaver-usage` tests for usage arithmetic, serde compatibility, and pricing estimates
+- focused `starweaver-usage` tests for usage arithmetic, serde round trips, and pricing estimates
 - runtime tests for `usage_snapshot` payloads
 - CLI tests for token-only and pricing-aware `/cost` output
 - grep audit of `crates/` for reference-project names after cleanup

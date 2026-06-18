@@ -316,3 +316,64 @@ mod replay_tests {
         assert_eq!(event.sequence, 1);
     }
 }
+
+#[cfg(test)]
+mod agent_runtime_tests {
+    use std::sync::Arc;
+
+    use starweaver_agent::{AgentRuntimeBuilder, TestModel};
+    use starweaver_core::SessionId;
+    use starweaver_session::{RunStatus, SessionStore};
+    use starweaver_stream::{ReplayEventKind, ReplayEventLog, ReplayScope, StreamArchive};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn sqlite_storage_adapters_back_agent_runtime_facade() {
+        let store = Arc::new(SqliteSessionStore::in_memory().expect("session store"));
+        let archive = Arc::new(SqliteStreamArchive::in_memory().expect("stream archive"));
+        let replay = Arc::new(SqliteReplayEventLog::in_memory().expect("replay log"));
+        let session_id = SessionId::from_string("session_sqlite_runtime");
+        let mut runtime = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("ok")))
+            .durable_session_id(session_id.clone())
+            .session_store(store.clone())
+            .stream_archive(archive.clone())
+            .replay_event_log(replay.clone())
+            .build();
+
+        let result = runtime.run("hello sqlite").await.expect("run");
+        let run_id = result.state.run_id.clone();
+        let session = store.load_session(&session_id).await.expect("load session");
+        let run = store
+            .load_run(&session_id, &run_id)
+            .await
+            .expect("load run");
+
+        assert_eq!(session.head_success_run_id.as_ref(), Some(&run_id));
+        assert_eq!(run.status, RunStatus::Completed);
+        assert_eq!(run.input.len(), 1);
+        assert!(!store
+            .load_checkpoints(&session_id, &run_id)
+            .await
+            .expect("load checkpoints")
+            .is_empty());
+        assert!(!archive
+            .replay_raw_after(&session_id, &run_id, None)
+            .await
+            .expect("replay raw")
+            .is_empty());
+        let replay_events = replay
+            .replay_after(&ReplayScope::run(run_id.as_str()), None, None)
+            .await
+            .expect("replay events");
+        assert!(replay_events
+            .iter()
+            .any(|event| matches!(event.event, ReplayEventKind::Terminal { .. })));
+        let snapshot = runtime
+            .resume_snapshot(&session_id, &run_id)
+            .await
+            .expect("resume snapshot");
+        assert_eq!(snapshot.run.run_id, run_id);
+        assert!(snapshot.latest_checkpoint.is_some());
+    }
+}

@@ -97,6 +97,7 @@ pub fn should_retry_error(error: &ModelError, policy: &RetryPolicy) -> bool {
             status, retryable, ..
         } => *retryable || policy.retries_status(*status),
         ModelError::RetryExhausted { .. }
+        | ModelError::Cancelled { .. }
         | ModelError::RealModelRequestBlocked { .. }
         | ModelError::MessageMapping(_)
         | ModelError::ResponseParsing(_)

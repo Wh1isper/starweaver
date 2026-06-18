@@ -1609,22 +1609,6 @@ fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
     assert!(footer.contains("Work"));
 
     state.apply_stream_record(&AgentStreamRecord::new(
-        4,
-        AgentStreamEvent::Custom {
-            event: AgentEvent::new(
-                "task_panel",
-                json!([
-                    {"id": "legacy", "subject": "Legacy task", "description": "", "status": "pending"}
-                ]),
-            ),
-        },
-    ));
-    let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(footer.contains("Tasks"));
-    assert!(footer.contains("Progress: 0/1"));
-    assert!(footer.contains("Legacy task"));
-
-    state.apply_stream_record(&AgentStreamRecord::new(
         5,
         AgentStreamEvent::ToolReturn {
             step: 1,
@@ -3385,48 +3369,6 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     assert!(footer.contains("Tasks"));
     assert!(footer.contains("Replay task"));
     assert!(footer.contains("blocked by #2"));
-}
-
-#[test]
-fn tui_snapshot_accepts_legacy_task_panel_items_payload() {
-    let session_id = SessionId::from_string("session_legacy_task_panel");
-    let run_id = RunId::from_string("run_legacy_task_panel");
-    let messages = vec![
-        DisplayMessage::new(
-            0,
-            session_id.clone(),
-            run_id.clone(),
-            DisplayMessageKind::TaskSnapshot,
-        )
-        .with_payload(json!({
-            "items": [
-                {"id": "legacy", "subject": "Legacy task", "description": "", "status": "pending"}
-            ]
-        })),
-        DisplayMessage::new(1, session_id, run_id, DisplayMessageKind::ToolResult)
-            .with_payload(json!({
-                "tool_name": "task_list",
-                "content": {
-                    "operation": "task_list",
-                    "payload": {
-                        "tasks": [
-                            {"id": "tool", "subject": "Tool-return task", "description": "", "status": "completed"}
-                        ]
-                    }
-                }
-            })),
-    ];
-
-    let snapshot = super::snapshot::TuiSnapshot::from_parts(
-        "session_legacy_task_panel".to_string(),
-        messages,
-        &[],
-        &[],
-    );
-
-    assert_eq!(snapshot.tasks.len(), 1);
-    assert_eq!(snapshot.tasks[0].id, "tool");
-    assert_eq!(snapshot.tasks[0].subject, "Tool-return task");
 }
 
 #[test]

@@ -68,6 +68,16 @@ assert_eq!(loaded.session_id, session_id);
 
 Display messages are the stable Starweaver wire protocol. CLI output can print one message per JSONL line, service transports can wrap the same message in SSE or WebSocket frames, and replay archives can reconstruct visible state from persisted messages.
 
+Runtime stream records keep core run/model/tool events as typed `AgentStreamEvent` variants. Context sideband events are carried as `AgentStreamEvent::Custom`; known application event kinds can be classified with `AgentStreamEvent::sideband_event()` into stable `AgentSidebandEventCategory` values such as `tool_search`, `skill`, `hitl`, `task`, `subagent`, `usage`, and `compact`.
+
+The default display projector turns known sideband events into stable display-message kinds for renderer and replay clients. Covered sideband display events include `tools_unavailable`, `tool_search_loaded`, `tool_search_initialized`, `tool_search_refreshed`, `tool_search_invalidated`, `tool_search_failed`, `tool_search_no_match`, `skills_scanned`, `skill_activated`, `skills_reloaded`, `approval_requested`, `approval_resolved`, `hitl_resolved`, `hitl_decision_diagnostic`, `subagent_started`, `subagent_completed`, `subagent_failed`, compaction, handoff, steering, task snapshots, generic `task_*` events, `note_*` events, `file_*` events, `media_*` events, and `host_*` events. Generic sideband projections preserve the original context event kind in `metadata.starweaver_event_kind` so replay and UI adapters can route precise workflow events without parsing preview text.
+
+Usage sideband events use kind `usage_snapshot` and carry the typed
+`UsageSnapshot` payload. UI, replay, and transport clients should treat these
+field names as stable: `run_id`, `latest_usage`, `total_usage`,
+`estimate_pricing`, `entries`, `agent_usages`, `model_usages`, and
+`model_estimate_pricing`.
+
 ```rust
 use starweaver_core::{RunId, SessionId};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};

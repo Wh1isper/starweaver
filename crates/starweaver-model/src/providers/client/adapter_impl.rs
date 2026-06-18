@@ -52,7 +52,11 @@ impl ModelAdapter for ProtocolModelClient {
         )?;
         let options = self.request_options(&context, prepared.settings.as_ref(), &prepared.params);
         let mut request = build_http_request(&self.http_config, &options, wire_body);
+        request.cancellation_token = context.cancellation_token();
         self.finalize_http_request(&mut request);
+        if let Some(audit) = self.request_audit.as_ref() {
+            audit.record(&self.provider_name, &self.model_name, false, &request);
+        }
         if !allow_real_model_requests() {
             return Err(ModelError::RealModelRequestBlocked { url: request.url });
         }
@@ -90,6 +94,7 @@ impl ModelAdapter for ProtocolModelClient {
         params: ModelRequestParameters,
         context: ModelRequestContext,
     ) -> Result<ModelResponseEventStream, ModelError> {
+        let cancellation_token = context.cancellation_token();
         if self.profile.protocol != ProtocolFamily::OpenAiResponses {
             let response = self.request(messages, settings, params, context).await?;
             let (sender, receiver) = tokio::sync::mpsc::channel(1);
@@ -98,7 +103,10 @@ impl ModelAdapter for ProtocolModelClient {
                     response,
                 ))))
                 .await;
-            return Ok(ModelResponseEventStream::new(receiver));
+            return Ok(ModelResponseEventStream::new_with_cancellation(
+                receiver,
+                cancellation_token,
+            ));
         }
         let prepared = prepare_model_request(
             messages,
@@ -117,7 +125,11 @@ impl ModelAdapter for ProtocolModelClient {
         }
         let options = self.request_options(&context, prepared.settings.as_ref(), &prepared.params);
         let mut request = build_http_request(&self.http_config, &options, wire_body);
+        request.cancellation_token = cancellation_token.clone();
         self.finalize_http_request(&mut request);
+        if let Some(audit) = self.request_audit.as_ref() {
+            audit.record(&self.provider_name, &self.model_name, true, &request);
+        }
         if !allow_real_model_requests() {
             return Err(ModelError::RealModelRequestBlocked { url: request.url });
         }
@@ -130,7 +142,14 @@ impl ModelAdapter for ProtocolModelClient {
             let mut parser =
                 crate::providers::openai_responses::OpenAiResponsesStreamParser::default();
             while let Some(event) = events.recv().await {
-                let events = match event.and_then(|event| parser.push_event(&event)) {
+                let event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        let _ = sender.send(Err(error)).await;
+                        return;
+                    }
+                };
+                let events = match parser.push_event(&event) {
                     Ok(events) => events,
                     Err(error) => {
                         let _ = sender.send(Err(error)).await;
@@ -156,6 +175,9 @@ impl ModelAdapter for ProtocolModelClient {
                 }
             }
         });
-        Ok(ModelResponseEventStream::new(receiver))
+        Ok(ModelResponseEventStream::new_with_cancellation(
+            receiver,
+            cancellation_token,
+        ))
     }
 }

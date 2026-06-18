@@ -20,7 +20,9 @@ impl InMemorySessionStore {
                 &approval.run_id,
             )));
         }
-        inner.approvals.entry(key).or_default().push(approval);
+        let approvals = inner.approvals.entry(key).or_default();
+        approvals.retain(|existing| existing.approval_id != approval.approval_id);
+        approvals.push(approval);
         Ok(())
     }
 
@@ -49,7 +51,9 @@ impl InMemorySessionStore {
                 &record.run_id,
             )));
         }
-        inner.deferred_tools.entry(key).or_default().push(record);
+        let deferred_tools = inner.deferred_tools.entry(key).or_default();
+        deferred_tools.retain(|existing| existing.deferred_id != record.deferred_id);
+        deferred_tools.push(record);
         Ok(())
     }
 

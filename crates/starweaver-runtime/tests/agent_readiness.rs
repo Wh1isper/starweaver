@@ -9,6 +9,7 @@ use starweaver_model::{
     ProtocolFamily, ToolCallPart,
 };
 use starweaver_runtime::{Agent, AgentCapability, AgentError, CapabilityError, CapabilityResult};
+use starweaver_tools::{set_tool_metadata_kind, ToolKind};
 
 #[derive(Clone)]
 struct InspectingModel {
@@ -69,15 +70,15 @@ async fn bare_agent_passes_settings_and_request_params_to_model() {
         ..ModelSettings::default()
     };
     let mut tool_metadata = serde_json::Map::new();
-    tool_metadata.insert(
-        "starweaver_tool_kind".to_string(),
-        serde_json::json!("function"),
-    );
+    set_tool_metadata_kind(&mut tool_metadata, ToolKind::Function);
     let params = ModelRequestParameters {
         tools: vec![ToolDefinition {
             name: "placeholder".to_string(),
             description: Some("placeholder schema for future tools".to_string()),
             parameters: serde_json::json!({"type": "object"}),
+            return_schema: None,
+            strict: None,
+            sequential: None,
             metadata: tool_metadata,
         }],
         ..ModelRequestParameters::default()

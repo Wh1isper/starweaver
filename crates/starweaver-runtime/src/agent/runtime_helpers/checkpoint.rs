@@ -15,6 +15,7 @@ impl Agent {
         node: AgentExecutionNode,
         state: &AgentRunState,
         context: &AgentContext,
+        stream_cursor: Option<usize>,
     ) -> Result<AgentExecutionDecision, AgentError> {
         let checkpoint_span = self.trace_recorder.start_span(
             SpanSpec::new("starweaver.checkpoint")
@@ -22,6 +23,9 @@ impl Agent {
             &context.trace_context,
         );
         let mut checkpoint = AgentCheckpoint::new(node, state);
+        if let Some(stream_cursor) = stream_cursor {
+            checkpoint = checkpoint.with_stream_cursor(stream_cursor);
+        }
         checkpoint.resume.trace_context = checkpoint_span.context().clone();
         checkpoint.metadata.insert(
             "trace_id".to_string(),

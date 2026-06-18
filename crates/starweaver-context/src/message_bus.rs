@@ -30,32 +30,26 @@ pub struct BusMessage {
     /// Message creation time.
     #[serde(default = "Utc::now")]
     pub timestamp: DateTime<Utc>,
-    /// Backward-compatible Starweaver topic used by existing steering code.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub topic: String,
-    /// Backward-compatible Starweaver payload used by existing steering code.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub payload: Value,
     /// Additional message metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
 }
 
 impl BusMessage {
-    /// Create a backward-compatible topic/payload message.
+    /// Create a topic-scoped message.
     #[must_use]
     pub fn new(topic: impl Into<String>, payload: Value) -> Self {
         let topic = topic.into();
+        let mut metadata = Metadata::default();
+        metadata.insert("starweaver.topic".to_string(), Value::String(topic));
         Self {
             id: Uuid::new_v4().simple().to_string(),
-            content: payload.clone(),
+            content: payload,
             source: "system".to_string(),
             target: None,
             template: None,
             timestamp: Utc::now(),
-            topic,
-            payload,
-            metadata: Metadata::default(),
+            metadata,
         }
     }
 
@@ -65,13 +59,11 @@ impl BusMessage {
         let content = content.into();
         Self {
             id: Uuid::new_v4().simple().to_string(),
-            content: Value::String(content.clone()),
+            content: Value::String(content),
             source: source.into(),
             target: None,
             template: None,
             timestamp: Utc::now(),
-            topic: String::new(),
-            payload: Value::String(content),
             metadata: Metadata::default(),
         }
     }
@@ -110,10 +102,10 @@ impl BusMessage {
         if let Some(text) = self.content.as_str() {
             return text.to_string();
         }
-        if let Some(text) = self.payload.get("text").and_then(Value::as_str) {
+        if let Some(text) = self.content.get("text").and_then(Value::as_str) {
             return text.to_string();
         }
-        if let Some(text) = self.payload.as_str() {
+        if let Some(text) = self.content.get("message").and_then(Value::as_str) {
             return text.to_string();
         }
         self.content.to_string()
@@ -204,27 +196,6 @@ impl MessageBus {
         message
     }
 
-    /// Backward-compatible enqueue alias.
-    pub fn enqueue(&mut self, message: BusMessage) {
-        self.send(message);
-    }
-
-    /// Backward-compatible dequeue for old FIFO callers.
-    pub fn dequeue(&mut self) -> Option<BusMessage> {
-        if self.messages.is_empty() {
-            return None;
-        }
-        let message = self.messages.remove(0);
-        self.message_ids.remove(&message.id);
-        for cursor in self.cursors.values_mut() {
-            *cursor = cursor.saturating_sub(1);
-        }
-        for consumed in self.consumed_ids.values_mut() {
-            consumed.remove(&message.id);
-        }
-        Some(message)
-    }
-
     /// Consume unread messages for a subscriber.
     pub fn consume(&mut self, agent_id: impl Into<String>) -> Vec<BusMessage> {
         self.consume_matching(agent_id, |_| true)
@@ -292,7 +263,13 @@ impl MessageBus {
     /// Return whether any queued message has the provided topic.
     #[must_use]
     pub fn has_topic(&self, topic: &str) -> bool {
-        self.messages.iter().any(|message| message.topic == topic)
+        self.messages.iter().any(|message| {
+            message
+                .metadata
+                .get("starweaver.topic")
+                .and_then(Value::as_str)
+                == Some(topic)
+        })
     }
 
     /// Clear all messages and subscriber state.

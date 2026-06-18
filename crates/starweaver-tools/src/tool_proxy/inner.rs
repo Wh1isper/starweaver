@@ -1,13 +1,18 @@
 //! Tool proxy inner implementation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 
 use super::format::{format_search_results, format_tool_call_error, xml_escape, xml_result};
 use super::index::{score_entry, IndexedTool, SearchEntry, ToolProxyIndex};
+use super::publish_tool_search_query_event;
 use super::{CallToolArgs, SearchToolsArgs};
+use super::{ToolSearchInitializationReport, ToolSearchNamespaceReport, ToolSearchNamespaceStatus};
 use super::{
     CALL_TOOL_NAME, PREFIXED_CALL_TOOL_SUFFIX, PREFIXED_SEARCH_TOOL_SUFFIX, SEARCH_TOOLS_NAME,
-    TOOL_PROXY_INSTRUCTION_GROUP, TOOL_PROXY_NAME,
+    TOOL_PROXY_INSTRUCTION_GROUP, TOOL_PROXY_NAME, TOOL_SEARCH_FAILED_EVENT_KIND,
+    TOOL_SEARCH_NO_MATCH_EVENT_KIND,
 };
 use crate::{DynToolset, ToolContext, ToolError, ToolResult, Toolset};
 
@@ -69,6 +74,79 @@ impl ToolProxyInner {
         self.max_results = max_results;
     }
 
+    pub(super) fn initialization_report(
+        &self,
+        toolset_name: &str,
+        search_tool_name: &str,
+        context: Option<&AgentContext>,
+    ) -> ToolSearchInitializationReport {
+        let index = self.index_tools_with_extra_hidden_names(&[search_tool_name]);
+        let availability_checked = context.is_some();
+        let mut available_tools = 0usize;
+        let mut unavailable_tools = 0usize;
+        let mut loose_tools = Vec::new();
+
+        for tool in index.tools.values() {
+            if let Some(context) = context {
+                if tool.tool.is_available(context) {
+                    available_tools = available_tools.saturating_add(1);
+                } else {
+                    unavailable_tools = unavailable_tools.saturating_add(1);
+                }
+            }
+            if tool.namespace.is_none() {
+                loose_tools.push(tool.name.clone());
+            }
+        }
+        loose_tools.sort();
+
+        let mut namespaces = Vec::new();
+        for (namespace, tool_names) in &index.namespace_tools {
+            let mut tools = tool_names.clone();
+            tools.sort();
+            let (namespace_available, namespace_unavailable) = context.map_or((0, 0), |context| {
+                tools.iter().filter_map(|name| index.tools.get(name)).fold(
+                    (0usize, 0usize),
+                    |(available, unavailable), tool| {
+                        if tool.tool.is_available(context) {
+                            (available.saturating_add(1), unavailable)
+                        } else {
+                            (available, unavailable.saturating_add(1))
+                        }
+                    },
+                )
+            });
+            let status = if tools.is_empty() {
+                ToolSearchNamespaceStatus::Empty
+            } else if availability_checked && namespace_available == 0 {
+                ToolSearchNamespaceStatus::Unavailable
+            } else {
+                ToolSearchNamespaceStatus::Connected
+            };
+            namespaces.push(ToolSearchNamespaceReport {
+                namespace: namespace.clone(),
+                status,
+                total_tools: tools.len(),
+                tools,
+                available_tools: namespace_available,
+                unavailable_tools: namespace_unavailable,
+            });
+        }
+
+        ToolSearchInitializationReport {
+            toolset_name: toolset_name.to_string(),
+            search_tool_name: search_tool_name.to_string(),
+            total_tools: index.tools.len(),
+            total_namespaces: namespaces.len(),
+            loose_tools,
+            namespaces,
+            available_tools,
+            unavailable_tools,
+            availability_checked,
+            max_results: self.max_results,
+        }
+    }
+
     pub(super) fn set_prefix(&mut self, prefix: Option<String>) {
         self.prefix = prefix;
         self.name = TOOL_PROXY_NAME.to_string();
@@ -83,36 +161,37 @@ impl ToolProxyInner {
         }
     }
 
-    pub(super) fn search_tools(&self, arguments: &SearchToolsArgs) -> ToolResult {
+    pub(super) fn search_tools(
+        &self,
+        context: &ToolContext,
+        arguments: &SearchToolsArgs,
+    ) -> ToolResult {
         if arguments.query.trim().is_empty() {
+            publish_tool_search_query_event(
+                context,
+                TOOL_SEARCH_FAILED_EVENT_KIND,
+                &self.search_tool_name,
+                &arguments.query,
+                "empty_query",
+                "Parameter 'query' is required.",
+            );
             return xml_result("<error>Parameter 'query' is required.</error>");
         }
 
-        let index = self.index_tools();
-        let mut scored = index
-            .search_entries
-            .iter()
-            .filter_map(|entry| score_entry(&arguments.query, entry).map(|score| (score, entry)))
-            .collect::<Vec<_>>();
-        scored.sort_by(|(left_score, left), (right_score, right)| {
-            right_score
-                .cmp(left_score)
-                .then_with(|| left.name.cmp(&right.name))
-        });
+        let tools_to_show = self.search_matching_tools(&arguments.query, &[]);
 
-        let mut tools_to_show = BTreeMap::<String, IndexedTool>::new();
-        for (_, entry) in scored.into_iter().take(self.max_results) {
-            if entry.is_namespace_entry {
-                if let Some(namespace) = entry.namespace.as_deref() {
-                    for tool in index.tools_for_namespace(namespace) {
-                        tools_to_show.insert(tool.name.clone(), tool.clone());
-                    }
-                }
-            } else if let Some(tool) = index.tools.get(&entry.name) {
-                tools_to_show.insert(tool.name.clone(), tool.clone());
-            }
+        if tools_to_show.is_empty() {
+            publish_tool_search_query_event(
+                context,
+                TOOL_SEARCH_NO_MATCH_EVENT_KIND,
+                &self.search_tool_name,
+                &arguments.query,
+                "no_match",
+                "No tools matched the query.",
+            );
+        } else {
+            Self::record_loaded_tools(context, tools_to_show.values());
         }
-
         xml_result(format_search_results(
             &arguments.query,
             tools_to_show.values(),
@@ -137,8 +216,11 @@ impl ToolProxyInner {
             )));
         };
 
-        match tool.tool.call(context, arguments.arguments).await {
-            Ok(result) => Ok(result),
+        match tool.tool.call(context.clone(), arguments.arguments).await {
+            Ok(result) => {
+                Self::record_loaded_tools(&context, std::iter::once(tool));
+                Ok(result)
+            }
             Err(error @ (ToolError::ApprovalRequired { .. } | ToolError::CallDeferred { .. })) => {
                 Err(error)
             }
@@ -146,7 +228,46 @@ impl ToolProxyInner {
         }
     }
 
-    fn index_tools(&self) -> ToolProxyIndex {
+    pub(super) fn search_matching_tools(
+        &self,
+        query: &str,
+        extra_hidden_names: &[&str],
+    ) -> BTreeMap<String, IndexedTool> {
+        let index = self.index_tools_with_extra_hidden_names(extra_hidden_names);
+        let mut scored = index
+            .search_entries
+            .iter()
+            .filter_map(|entry| score_entry(query, entry).map(|score| (score, entry)))
+            .collect::<Vec<_>>();
+        scored.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+
+        let mut matched = BTreeMap::<String, IndexedTool>::new();
+        for (_, entry) in scored.into_iter().take(self.max_results) {
+            if entry.is_namespace_entry {
+                if let Some(namespace) = entry.namespace.as_deref() {
+                    for tool in index.tools_for_namespace(namespace) {
+                        matched.insert(tool.name.clone(), tool.clone());
+                    }
+                }
+            } else if let Some(tool) = index.tools.get(&entry.name) {
+                matched.insert(tool.name.clone(), tool.clone());
+            }
+        }
+        matched
+    }
+
+    pub(super) fn index_tools(&self) -> ToolProxyIndex {
+        self.index_tools_with_extra_hidden_names(&[])
+    }
+
+    pub(super) fn index_tools_with_extra_hidden_names(
+        &self,
+        extra_hidden_names: &[&str],
+    ) -> ToolProxyIndex {
         let mut tools = BTreeMap::new();
         let mut namespace_tools = BTreeMap::<String, Vec<String>>::new();
         let mut search_entries = Vec::new();
@@ -154,7 +275,9 @@ impl ToolProxyInner {
         for toolset in &self.toolsets {
             let namespace = toolset.id().map(str::to_string);
             for tool in toolset.get_tools() {
-                if self.is_visible_proxy_tool_name(tool.name()) {
+                if self.is_visible_proxy_tool_name(tool.name())
+                    || extra_hidden_names.contains(&tool.name())
+                {
                     continue;
                 }
                 let name = tool.name().to_string();
@@ -184,6 +307,33 @@ impl ToolProxyInner {
 
     fn is_visible_proxy_tool_name(&self, name: &str) -> bool {
         name == self.search_tool_name || name == self.call_tool_name
+    }
+
+    pub(super) fn record_loaded_tools<'a>(
+        context: &ToolContext,
+        tools: impl IntoIterator<Item = &'a IndexedTool>,
+    ) {
+        let Some(handle) = context.dependency::<AgentContextHandle>() else {
+            return;
+        };
+        let mut tool_names = Vec::new();
+        let mut namespaces = BTreeSet::new();
+        for tool in tools {
+            tool_names.push(tool.name.clone());
+            if let Some(namespace) = tool.namespace.as_ref() {
+                namespaces.insert(namespace.clone());
+            }
+        }
+        handle.update(|agent_context| {
+            agent_context.record_tool_search_loaded(tool_names.clone(), namespaces.clone());
+            agent_context.publish_event(AgentEvent::new(
+                "tool_search_loaded",
+                serde_json::json!({
+                    "loaded_tools": tool_names,
+                    "loaded_namespaces": namespaces,
+                }),
+            ));
+        });
     }
 
     fn namespace_description(&self, toolset: &dyn Toolset, namespace: &str) -> String {

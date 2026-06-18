@@ -45,7 +45,12 @@ pub(super) fn apply_output_schema(
                     serde_json::json!({"type": "json_object"}),
                 );
             }
-            OutputMode::Text | OutputMode::Tool | OutputMode::Prompted => {}
+            OutputMode::Auto
+            | OutputMode::Text
+            | OutputMode::Tool
+            | OutputMode::ToolOrText
+            | OutputMode::Prompted
+            | OutputMode::Image => {}
         },
         ProtocolFamily::OpenAiResponses => match output_mode {
             OutputMode::NativeJsonSchema => {
@@ -78,7 +83,12 @@ pub(super) fn apply_output_schema(
                     );
                 }
             }
-            OutputMode::Text | OutputMode::Tool | OutputMode::Prompted => {}
+            OutputMode::Auto
+            | OutputMode::Text
+            | OutputMode::Tool
+            | OutputMode::ToolOrText
+            | OutputMode::Prompted
+            | OutputMode::Image => {}
         },
         ProtocolFamily::GeminiGenerateContent => {
             let generation_config = object

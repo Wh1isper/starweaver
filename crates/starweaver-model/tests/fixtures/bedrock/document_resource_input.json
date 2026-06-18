@@ -1,0 +1,46 @@
+{
+  "model": "anthropic.claude-3-5-sonnet",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Summarize this document."
+            },
+            {
+              "kind": "resource_ref",
+              "uri": "resource://workspace/spec.pdf",
+              "media_type": "application/pdf",
+              "resource_type": "document"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "modelId": "anthropic.claude-3-5-sonnet",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Summarize this document."
+          },
+          {
+            "document": {
+              "format": "pdf",
+              "source": {
+                "bytes": "resource://workspace/spec.pdf"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

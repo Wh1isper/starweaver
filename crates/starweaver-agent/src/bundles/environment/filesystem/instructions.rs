@@ -134,7 +134,7 @@ Environment-backed content search with ripgrep-backed regex and glob semantics. 
 
 <semantics>
 - Traversal stays inside the active environment boundary.
-- Regex validation and matching use ripgrep-compatible semantics.
+- Regex validation and matching use ripgrep-style semantics.
 - File selection uses ripgrep-style glob semantics shared with the glob tool.
 - Bare include patterns like `*.py` match recursively at any depth.
 - `**/*.py` matches root-level and nested Python files.

@@ -7,7 +7,7 @@ use serde_json::Value;
 use starweaver_core::{AgentId, Metadata, RunId, SessionId, TraceContext};
 use starweaver_runtime::AgentStreamRecord;
 
-/// AGUI-compatible display event type consumed by product renderers and clients.
+/// Display event type consumed by product renderers and AGUI adapters.
 ///
 /// Starweaver keeps one wire event shape for CLI JSONL, service transports,
 /// replay archives, and terminal restore. The serialized event type follows AGUI lifecycle names
@@ -16,87 +16,151 @@ use starweaver_runtime::AgentStreamRecord;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum DisplayMessageKind {
     /// Run accepted and waiting for execution.
-    #[serde(rename = "RUN_QUEUED", alias = "run_queued")]
+    #[serde(rename = "RUN_QUEUED")]
     RunQueued,
     /// Execution started.
-    #[serde(rename = "RUN_STARTED", alias = "run_started")]
+    #[serde(rename = "RUN_STARTED")]
     RunStarted,
     /// Assistant text block started.
-    #[serde(rename = "TEXT_MESSAGE_START", alias = "assistant_text_start")]
+    #[serde(rename = "TEXT_MESSAGE_START")]
     AssistantTextStart,
     /// Assistant streaming text delta.
-    #[serde(rename = "TEXT_MESSAGE_CONTENT", alias = "assistant_text_delta")]
+    #[serde(rename = "TEXT_MESSAGE_CONTENT")]
     AssistantTextDelta,
     /// Assistant text block completed.
-    #[serde(rename = "TEXT_MESSAGE_END", alias = "assistant_text_end")]
+    #[serde(rename = "TEXT_MESSAGE_END")]
     AssistantTextEnd,
     /// Tool call started.
-    #[serde(rename = "TOOL_CALL_START", alias = "tool_call_start")]
+    #[serde(rename = "TOOL_CALL_START")]
     ToolCallStart,
     /// Tool call streaming arguments delta.
-    #[serde(rename = "TOOL_CALL_ARGS", alias = "tool_call_delta")]
+    #[serde(rename = "TOOL_CALL_ARGS")]
     ToolCallDelta,
     /// Tool call completed.
-    #[serde(rename = "TOOL_CALL_END", alias = "tool_call_end")]
+    #[serde(rename = "TOOL_CALL_END")]
     ToolCallEnd,
     /// Tool result or error preview.
-    #[serde(rename = "TOOL_CALL_RESULT", alias = "tool_result")]
+    #[serde(rename = "TOOL_CALL_RESULT")]
     ToolResult,
+    /// Tool availability filtering skipped one or more tools.
+    #[serde(rename = "TOOLS_UNAVAILABLE")]
+    ToolsUnavailable,
+    /// Dynamic tool-search loaded tools or namespaces for the next model turn.
+    #[serde(rename = "TOOL_SEARCH_LOADED")]
+    ToolSearchLoaded,
+    /// Dynamic tool-search initialization report.
+    #[serde(rename = "TOOL_SEARCH_INITIALIZED")]
+    ToolSearchInitialized,
+    /// Dynamic tool-search refresh report.
+    #[serde(rename = "TOOL_SEARCH_REFRESHED")]
+    ToolSearchRefreshed,
+    /// Dynamic tool-search loaded state was invalidated by host code.
+    #[serde(rename = "TOOL_SEARCH_INVALIDATED")]
+    ToolSearchInvalidated,
+    /// Dynamic tool-search query failed validation.
+    #[serde(rename = "TOOL_SEARCH_FAILED")]
+    ToolSearchFailed,
+    /// Dynamic tool-search query returned no matches.
+    #[serde(rename = "TOOL_SEARCH_NO_MATCH")]
+    ToolSearchNoMatch,
+    /// Toolset initialized for a runtime context.
+    #[serde(rename = "TOOLSET_INITIALIZED")]
+    ToolsetInitialized,
+    /// Toolset unavailable for a runtime context.
+    #[serde(rename = "TOOLSET_UNAVAILABLE")]
+    ToolsetUnavailable,
+    /// Toolset failed while preparing for a runtime context.
+    #[serde(rename = "TOOLSET_FAILED")]
+    ToolsetFailed,
+    /// Toolset refreshed its runtime-context inventory.
+    #[serde(rename = "TOOLSET_REFRESHED")]
+    ToolsetRefreshed,
+    /// Toolset exited a runtime context.
+    #[serde(rename = "TOOLSET_CLOSED")]
+    ToolsetClosed,
     /// Approval requested.
-    #[serde(rename = "APPROVAL_REQUESTED", alias = "approval_requested")]
+    #[serde(rename = "APPROVAL_REQUESTED")]
     ApprovalRequested,
     /// Approval decision recorded.
-    #[serde(rename = "APPROVAL_RESOLVED", alias = "approval_resolved")]
+    #[serde(rename = "APPROVAL_RESOLVED")]
     ApprovalResolved,
+    /// HITL decisions were resolved into tool returns.
+    #[serde(rename = "HITL_RESOLVED")]
+    HitlResolved,
+    /// HITL decision diagnostic emitted when supplied decisions cannot be applied.
+    #[serde(rename = "HITL_DIAGNOSTIC")]
+    HitlDiagnostic,
     /// Runtime checkpoint emitted.
-    #[serde(rename = "CHECKPOINT", alias = "checkpoint")]
+    #[serde(rename = "CHECKPOINT")]
     Checkpoint,
+    /// Skill scan report emitted.
+    #[serde(rename = "SKILLS_SCANNED")]
+    SkillsScanned,
+    /// Skill package activated.
+    #[serde(rename = "SKILL_ACTIVATED")]
+    SkillActivated,
+    /// Skill registry reload report emitted.
+    #[serde(rename = "SKILLS_RELOADED")]
+    SkillsReloaded,
     /// Subagent started.
-    #[serde(rename = "SUBAGENT_STARTED", alias = "subagent_started")]
+    #[serde(rename = "SUBAGENT_STARTED")]
     SubagentStarted,
     /// Subagent completed.
-    #[serde(rename = "SUBAGENT_COMPLETED", alias = "subagent_completed")]
+    #[serde(rename = "SUBAGENT_COMPLETED")]
     SubagentCompleted,
+    /// Subagent failed.
+    #[serde(rename = "SUBAGENT_FAILED")]
+    SubagentFailed,
     /// History or context compaction started.
-    #[serde(rename = "COMPACTION_STARTED", alias = "compaction_started")]
+    #[serde(rename = "COMPACTION_STARTED")]
     CompactionStarted,
     /// History or context compaction completed.
-    #[serde(rename = "COMPACTION_COMPLETED", alias = "compaction_completed")]
+    #[serde(rename = "COMPACTION_COMPLETED")]
     CompactionCompleted,
     /// History or context compaction failed.
-    #[serde(rename = "COMPACTION_FAILED", alias = "compaction_failed")]
+    #[serde(rename = "COMPACTION_FAILED")]
     CompactionFailed,
     /// Progress handoff summary started.
-    #[serde(rename = "HANDOFF_STARTED", alias = "handoff_started")]
+    #[serde(rename = "HANDOFF_STARTED")]
     HandoffStarted,
     /// Progress handoff summary completed.
-    #[serde(rename = "HANDOFF_COMPLETED", alias = "handoff_completed")]
+    #[serde(rename = "HANDOFF_COMPLETED")]
     HandoffCompleted,
     /// Progress handoff summary failed.
-    #[serde(rename = "HANDOFF_FAILED", alias = "handoff_failed")]
+    #[serde(rename = "HANDOFF_FAILED")]
     HandoffFailed,
     /// Steering message was submitted to a running agent.
-    #[serde(rename = "STEERING_SUBMITTED", alias = "steering_submitted")]
+    #[serde(rename = "STEERING_SUBMITTED")]
     SteeringSubmitted,
     /// Steering message was received by a running agent.
-    #[serde(rename = "STEERING_RECEIVED", alias = "steering_received")]
+    #[serde(rename = "STEERING_RECEIVED")]
     SteeringReceived,
     /// Full task board snapshot.
-    #[serde(
-        rename = "TASK_SNAPSHOT",
-        alias = "task_snapshot",
-        alias = "TASK_PANEL",
-        alias = "task_panel"
-    )]
+    #[serde(rename = "TASK_SNAPSHOT")]
     TaskSnapshot,
+    /// Task workflow event other than a full snapshot.
+    #[serde(rename = "TASK_EVENT")]
+    TaskEvent,
+    /// Note workflow event.
+    #[serde(rename = "NOTE_EVENT")]
+    NoteEvent,
+    /// File workflow event.
+    #[serde(rename = "FILE_EVENT")]
+    FileEvent,
+    /// Media workflow event.
+    #[serde(rename = "MEDIA_EVENT")]
+    MediaEvent,
+    /// Host operation workflow event.
+    #[serde(rename = "HOST_OPERATION")]
+    HostOperation,
     /// Run completed successfully.
-    #[serde(rename = "RUN_FINISHED", alias = "run_completed")]
+    #[serde(rename = "RUN_FINISHED")]
     RunCompleted,
     /// Run failed.
-    #[serde(rename = "RUN_ERROR", alias = "run_failed")]
+    #[serde(rename = "RUN_ERROR")]
     RunFailed,
     /// Run cancelled or interrupted.
-    #[serde(rename = "RUN_CANCELLED", alias = "run_cancelled")]
+    #[serde(rename = "RUN_CANCELLED")]
     RunCancelled,
 }
 
@@ -124,7 +188,7 @@ pub enum DisplayVisibility {
     Internal,
 }
 
-/// AGUI-compatible Starweaver display event.
+/// Starweaver display event with AGUI lifecycle event naming where applicable.
 ///
 /// This is the durable and transport-level display protocol. CLI headless mode
 /// writes one `DisplayMessage` JSON object per line. Service transports can wrap
@@ -152,8 +216,8 @@ pub struct DisplayMessage {
     /// Trace context.
     #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
     pub trace_context: TraceContext,
-    /// AGUI-compatible event type.
-    #[serde(rename = "type", alias = "kind")]
+    /// Display event type.
+    #[serde(rename = "type")]
     pub kind: DisplayMessageKind,
     /// Canonical structured event data.
     #[serde(default, skip_serializing_if = "Value::is_null")]

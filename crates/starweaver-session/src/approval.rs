@@ -7,6 +7,72 @@ use starweaver_core::{Metadata, RunId, SessionId, TraceContext};
 
 use crate::records::ExecutionStatus;
 
+/// Tool-return evidence used to derive durable HITL records without depending on model crates.
+pub struct ToolReturnRecordInput<'a> {
+    /// Session id that owns the tool return.
+    pub session_id: &'a SessionId,
+    /// Run id that owns the tool return.
+    pub run_id: &'a RunId,
+    /// Tool call id.
+    pub tool_call_id: &'a str,
+    /// Tool name.
+    pub tool_name: &'a str,
+    /// Tool return metadata.
+    pub metadata: &'a Metadata,
+    /// Trace context propagated by the run, when available.
+    pub trace_context: Option<&'a TraceContext>,
+    /// Optional host policy metadata to copy into created records.
+    pub policy: Option<Value>,
+}
+
+impl<'a> ToolReturnRecordInput<'a> {
+    /// Create record input from durable ids and tool-return fields.
+    #[must_use]
+    pub const fn new(
+        session_id: &'a SessionId,
+        run_id: &'a RunId,
+        tool_call_id: &'a str,
+        tool_name: &'a str,
+        metadata: &'a Metadata,
+    ) -> Self {
+        Self {
+            session_id,
+            run_id,
+            tool_call_id,
+            tool_name,
+            metadata,
+            trace_context: None,
+            policy: None,
+        }
+    }
+
+    /// Attach trace context to generated records.
+    #[must_use]
+    pub const fn with_trace_context(mut self, trace_context: &'a TraceContext) -> Self {
+        self.trace_context = Some(trace_context);
+        self
+    }
+
+    /// Attach host policy metadata to generated records.
+    #[must_use]
+    pub fn with_policy(mut self, policy: Value) -> Self {
+        self.policy = Some(policy);
+        self
+    }
+
+    fn control_flow(&self) -> Option<&str> {
+        self.metadata.get("control_flow").and_then(Value::as_str)
+    }
+
+    fn approval_id(&self) -> String {
+        format!("approval_{}_{}", self.run_id.as_str(), self.tool_call_id)
+    }
+
+    fn deferred_id(&self) -> String {
+        format!("deferred_{}_{}", self.run_id.as_str(), self.tool_call_id)
+    }
+}
+
 /// Durable approval status.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -101,6 +167,33 @@ impl ApprovalRecord {
             trace_context: TraceContext::default(),
             metadata: Metadata::default(),
         }
+    }
+
+    /// Build a durable approval record from an approval-required tool return.
+    #[must_use]
+    pub fn from_tool_return(input: &ToolReturnRecordInput<'_>) -> Option<Self> {
+        if input.control_flow() != Some("approval_required") {
+            return None;
+        }
+        let mut record = Self::new(
+            input.approval_id(),
+            input.session_id.clone(),
+            input.run_id.clone(),
+            input.tool_call_id,
+            input.tool_name,
+        );
+        record.request = input
+            .metadata
+            .get("approval")
+            .cloned()
+            .unwrap_or(Value::Null);
+        if let Some(trace_context) = input.trace_context {
+            record.trace_context = trace_context.clone();
+        }
+        if let Some(policy) = &input.policy {
+            record.metadata.insert("policy".to_string(), policy.clone());
+        }
+        Some(record)
     }
 }
 
@@ -274,6 +367,34 @@ impl DeferredToolRecord {
             metadata: Metadata::default(),
         }
     }
+
+    /// Build a durable deferred-tool record from a deferred tool return.
+    #[must_use]
+    pub fn from_tool_return(input: &ToolReturnRecordInput<'_>) -> Option<Self> {
+        if input.control_flow() != Some("call_deferred") {
+            return None;
+        }
+        let mut record = Self::new(
+            input.deferred_id(),
+            input.session_id.clone(),
+            input.run_id.clone(),
+            input.tool_call_id,
+            input.tool_name,
+        );
+        record.request = input
+            .metadata
+            .get("deferred")
+            .cloned()
+            .unwrap_or(Value::Null);
+        record.status = ExecutionStatus::Waiting;
+        if let Some(trace_context) = input.trace_context {
+            record.trace_context = trace_context.clone();
+        }
+        if let Some(policy) = &input.policy {
+            record.metadata.insert("policy".to_string(), policy.clone());
+        }
+        Some(record)
+    }
 }
 
 /// SDK-facing deferred tool request.
@@ -385,6 +506,35 @@ impl DeferredToolResult {
             response,
             metadata: Metadata::default(),
         }
+    }
+
+    /// Build a failed deferred result.
+    #[must_use]
+    pub fn failed(deferred_id: impl Into<String>, response: Value) -> Self {
+        Self {
+            deferred_id: deferred_id.into(),
+            status: ExecutionStatus::Failed,
+            response,
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Build a cancelled deferred result.
+    #[must_use]
+    pub fn cancelled(deferred_id: impl Into<String>, response: Value) -> Self {
+        Self {
+            deferred_id: deferred_id.into(),
+            status: ExecutionStatus::Cancelled,
+            response,
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Attach result metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     /// Apply this result to a durable deferred record.

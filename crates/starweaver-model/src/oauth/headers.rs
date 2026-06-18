@@ -25,7 +25,7 @@ pub const RESERVED_OAUTH_EXTRA_HEADERS: &[&str] = &[
     "version",
 ];
 
-/// Build Codex-compatible request headers without an Authorization header.
+/// Build Codex request headers without an Authorization header.
 ///
 /// # Errors
 ///
@@ -91,18 +91,8 @@ pub(super) fn validate_safe_extra_headers(
 }
 
 pub(super) fn trace_session_headers(request: &HttpRequest) -> BTreeMap<String, String> {
-    // Compatibility fallback only. Runtime/provider settings should populate
-    // provider.codex.* metadata from typed CodexSettings before OAuth headers
-    // are finalized; durable Starweaver session ids are not generic headers.
-    let session_id = metadata_string(request, "provider.codex.session_id")
-        .or_else(|| metadata_string(request, "starweaver.session_id"))
-        .or_else(|| metadata_string(request, "cli.session_id"))
-        .or_else(|| metadata_string(request, "starweaver.conversation_id"));
-    let thread_id = metadata_string(request, "provider.codex.thread_id")
-        .or_else(|| metadata_string(request, "starweaver.durable_run_id"))
-        .or_else(|| metadata_string(request, "cli.run_id"))
-        .or_else(|| metadata_string(request, "starweaver.run_id"))
-        .or_else(|| metadata_string(request, "starweaver.conversation_id"));
+    let session_id = metadata_string(request, "provider.codex.session_id");
+    let thread_id = metadata_string(request, "provider.codex.thread_id");
     build_session_headers(session_id.as_deref(), thread_id.as_deref())
 }
 

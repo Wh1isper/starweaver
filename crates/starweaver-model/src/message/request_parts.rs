@@ -99,3 +99,89 @@ pub enum ContentPart {
         media_type: String,
     },
 }
+
+impl ContentPart {
+    /// Build a plain text content part.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text { text: text.into() }
+    }
+
+    /// Build an image URL content part.
+    #[must_use]
+    pub fn image_url(url: impl Into<String>) -> Self {
+        Self::ImageUrl { url: url.into() }
+    }
+
+    /// Build a generic file URL content part with an explicit media type.
+    #[must_use]
+    pub fn file_url(url: impl Into<String>, media_type: impl Into<String>) -> Self {
+        Self::FileUrl {
+            url: url.into(),
+            media_type: media_type.into(),
+        }
+    }
+
+    /// Build an inline binary content part with an explicit media type.
+    #[must_use]
+    pub fn binary(data: impl Into<Vec<u8>>, media_type: impl Into<String>) -> Self {
+        Self::Binary {
+            data: data.into(),
+            media_type: media_type.into(),
+        }
+    }
+
+    /// Build an inline image content part.
+    #[must_use]
+    pub fn image_bytes(data: impl Into<Vec<u8>>, media_type: impl Into<String>) -> Self {
+        Self::binary(data, media_type)
+    }
+
+    /// Build an inline audio content part.
+    #[must_use]
+    pub fn audio_bytes(data: impl Into<Vec<u8>>, media_type: impl Into<String>) -> Self {
+        Self::binary(data, media_type)
+    }
+
+    /// Build an inline video content part.
+    #[must_use]
+    pub fn video_bytes(data: impl Into<Vec<u8>>, media_type: impl Into<String>) -> Self {
+        Self::binary(data, media_type)
+    }
+
+    /// Build an inline data URL content part with an explicit media type.
+    #[must_use]
+    pub fn data_url(data_url: impl Into<String>, media_type: impl Into<String>) -> Self {
+        Self::DataUrl {
+            data_url: data_url.into(),
+            media_type: media_type.into(),
+        }
+    }
+
+    /// Build a resource-backed media reference.
+    #[must_use]
+    pub fn resource_ref(
+        uri: impl Into<String>,
+        media_type: impl Into<String>,
+        resource_type: impl Into<String>,
+    ) -> Self {
+        Self::ResourceRef {
+            uri: uri.into(),
+            media_type: media_type.into(),
+            resource_type: resource_type.into(),
+            metadata: Metadata::new(),
+        }
+    }
+
+    /// Attach resource metadata to a resource-backed content part.
+    #[must_use]
+    pub fn with_resource_metadata(mut self, metadata: Metadata) -> Self {
+        if let Self::ResourceRef {
+            metadata: existing, ..
+        } = &mut self
+        {
+            *existing = metadata;
+        }
+        self
+    }
+}

@@ -12,7 +12,12 @@ pub(super) fn is_steering_guard_prompt(prompt: &str) -> bool {
 }
 
 fn is_steering_message(message: &BusMessage) -> bool {
-    message.topic == "steering" || message.source == "user"
+    message
+        .metadata
+        .get("starweaver.topic")
+        .and_then(serde_json::Value::as_str)
+        == Some("steering")
+        || message.source == "user"
 }
 
 struct SteeringMessage {
@@ -29,9 +34,9 @@ fn steering_message(message: &BusMessage) -> Option<SteeringMessage> {
         return None;
     }
     let id = message
-        .payload
+        .content
         .get("id")
-        .or_else(|| message.payload.get("message_id"))
+        .or_else(|| message.content.get("message_id"))
         .and_then(serde_json::Value::as_str)
         .map_or_else(|| Some(message.id.clone()), |id| Some(id.to_string()));
     Some(SteeringMessage { id, text })

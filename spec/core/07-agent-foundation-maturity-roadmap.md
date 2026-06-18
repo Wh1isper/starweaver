@@ -79,7 +79,7 @@ Acceptance:
 - wrapper order tests
 - request/response transform snapshots
 - instrumentation and fallback examples
-- replay fixture compatibility
+- replay fixture contract coverage
 
 ### UI Adapter Maturity
 

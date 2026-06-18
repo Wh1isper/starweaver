@@ -167,6 +167,9 @@ pub struct EnvironmentState {
     /// Resource references.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<ResourceRef>,
+    /// Background process snapshots.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<ShellProcessSnapshot>,
     /// Provider metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,

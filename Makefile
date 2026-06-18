@@ -80,7 +80,7 @@ build: ## Build the workspace
 	@cargo build --workspace --all-targets --all-features --locked
 
 .PHONY: replay-check
-replay-check: ## Run model replay and request-parameter compatibility tests
+replay-check: ## Run model replay and request-parameter contract tests
 	@echo "Checking model replay fixtures"
 	@cargo test -p starweaver-model --test fixture_schema --test replay --test replay_tooling --test request_parameters --test stream_replay --locked
 

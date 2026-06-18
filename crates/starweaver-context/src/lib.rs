@@ -16,12 +16,12 @@ mod task;
 pub use agent_context::AgentContext;
 pub use config::{
     ModelCapability, ModelConfig, PerThousandRatio, SecurityConfig, ShellReviewAction,
-    ShellReviewConfig, ShellReviewRiskLevel, ToolConfig,
+    ShellReviewConfig, ShellReviewRiskLevel, ToolAvailabilityPolicy, ToolConfig,
 };
 pub use context_handle::AgentContextHandle;
 pub use context_protocol::{
     AgentInfo, AgentStreamQueueRegistry, ContextLifecycleState, DeferredToolMetadata,
-    ModelWrapperMetadata, ToolIdWrapper, ToolSearchState, WrapperMetadata,
+    ModelWrapperMetadata, ToolIdWrapper, ToolSearchInvalidation, ToolSearchState, WrapperMetadata,
 };
 pub use dependency::DependencyStore;
 pub use event::{AgentEvent, EventBus};

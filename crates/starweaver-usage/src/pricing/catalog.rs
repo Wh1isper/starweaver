@@ -674,7 +674,7 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
         &["mimo-v2-flash"],
         with_cache(ModelPricingDetails::new(100_000, 300_000), 0, 10_000),
     ),
-    // DeepSeek. Legacy public names currently route to deepseek-v4-flash pricing.
+    // DeepSeek. Alternate public names currently route to deepseek-v4-flash pricing.
     PricingRecord::new(
         &["deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
         with_cache_read(ModelPricingDetails::new(140_000, 280_000), 2_800),

@@ -2,11 +2,13 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;
+use starweaver_context::AgentContext;
 use starweaver_core::Metadata;
+use starweaver_model::ToolDefinition;
 
 use crate::{
     DynTool, DynToolset, Tool, ToolApprovalState, ToolContext, ToolError, ToolInstruction,
-    ToolResult, Toolset,
+    ToolResult, ToolUserInputPreprocessResult, Toolset,
 };
 
 /// Toolset wrapper that marks and gates tools through approval control flow.
@@ -117,6 +119,21 @@ impl ApprovalRequiredTool {
                 .and_then(Value::as_str)
                 .is_some_and(|bundle| self.approval.contains(bundle))
     }
+
+    fn approval_request(&self, arguments: Value, reason: Value) -> Value {
+        let mut request = serde_json::Map::new();
+        request.insert("arguments".to_string(), arguments);
+        request.insert("reason".to_string(), reason);
+        request.insert(
+            "toolset".to_string(),
+            Value::String(self.toolset_key.clone()),
+        );
+        let tool_metadata = self.inner.metadata();
+        if !tool_metadata.is_empty() {
+            request.insert("tool_metadata".to_string(), Value::Object(tool_metadata));
+        }
+        Value::Object(request)
+    }
 }
 
 #[async_trait]
@@ -145,6 +162,34 @@ impl Tool for ApprovalRequiredTool {
         self.inner.max_retries()
     }
 
+    fn timeout_ms(&self) -> Option<u64> {
+        self.inner.timeout_ms()
+    }
+
+    fn return_schema(&self) -> Option<Value> {
+        self.inner.return_schema()
+    }
+
+    fn strict_schema(&self) -> Option<bool> {
+        self.inner.strict_schema()
+    }
+
+    fn sequential(&self) -> Option<bool> {
+        self.inner.sequential()
+    }
+
+    fn is_available(&self, context: &AgentContext) -> bool {
+        self.inner.is_available(context)
+    }
+
+    fn prepare_definition(
+        &self,
+        context: &AgentContext,
+        definition: ToolDefinition,
+    ) -> Option<ToolDefinition> {
+        self.inner.prepare_definition(context, definition)
+    }
+
     async fn call(&self, context: ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         if self.requires_approval() {
             let approval = context.approval.clone();
@@ -169,13 +214,11 @@ impl Tool for ApprovalRequiredTool {
                     return Ok(result);
                 }
                 Some(ToolApprovalState::Denied { reason, metadata }) => {
-                    let mut denial = serde_json::Map::new();
-                    denial.insert("arguments".to_string(), arguments);
-                    denial.insert("reason".to_string(), serde_json::json!(reason));
-                    denial.insert(
-                        "toolset".to_string(),
-                        Value::String(self.toolset_key.clone()),
-                    );
+                    let mut denial = self
+                        .approval_request(arguments, serde_json::json!(reason))
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default();
                     if !metadata.is_empty() {
                         denial.insert("metadata".to_string(), Value::Object(metadata));
                     }
@@ -187,15 +230,19 @@ impl Tool for ApprovalRequiredTool {
                 None => {
                     return Err(ToolError::ApprovalRequired {
                         tool: self.name().to_string(),
-                        metadata: serde_json::json!({
-                            "arguments": arguments,
-                            "reason": self.reason,
-                            "toolset": self.toolset_key,
-                        }),
+                        metadata: self.approval_request(arguments, serde_json::json!(self.reason)),
                     });
                 }
             }
         }
         self.inner.call(context, arguments).await
+    }
+
+    async fn preprocess_user_input(
+        &self,
+        context: ToolContext,
+        user_input: Value,
+    ) -> Result<ToolUserInputPreprocessResult, ToolError> {
+        self.inner.preprocess_user_input(context, user_input).await
     }
 }

@@ -4,10 +4,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
+use starweaver_context::AgentContext;
 use starweaver_core::Metadata;
+use starweaver_model::ToolDefinition;
 
 use crate::{
-    DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolResult, Toolset,
+    DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolResult,
+    ToolUserInputPreprocessResult, Toolset,
 };
 
 /// Tool wrapper that prefixes the exposed tool name and delegates execution to the wrapped tool.
@@ -62,8 +65,44 @@ impl Tool for PrefixedTool {
         self.tool.max_retries()
     }
 
+    fn timeout_ms(&self) -> Option<u64> {
+        self.tool.timeout_ms()
+    }
+
+    fn return_schema(&self) -> Option<Value> {
+        self.tool.return_schema()
+    }
+
+    fn strict_schema(&self) -> Option<bool> {
+        self.tool.strict_schema()
+    }
+
+    fn sequential(&self) -> Option<bool> {
+        self.tool.sequential()
+    }
+
+    fn is_available(&self, context: &AgentContext) -> bool {
+        self.tool.is_available(context)
+    }
+
+    fn prepare_definition(
+        &self,
+        context: &AgentContext,
+        definition: ToolDefinition,
+    ) -> Option<ToolDefinition> {
+        self.tool.prepare_definition(context, definition)
+    }
+
     async fn call(&self, context: ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         self.tool.call(context, arguments).await
+    }
+
+    async fn preprocess_user_input(
+        &self,
+        context: ToolContext,
+        user_input: Value,
+    ) -> Result<ToolUserInputPreprocessResult, ToolError> {
+        self.tool.preprocess_user_input(context, user_input).await
     }
 }
 
@@ -116,6 +155,10 @@ impl Toolset for PrefixedToolset {
 
     fn max_retries(&self) -> Option<usize> {
         self.toolset.max_retries()
+    }
+
+    fn timeout_ms(&self) -> Option<u64> {
+        self.toolset.timeout_ms()
     }
 
     fn id(&self) -> Option<&str> {

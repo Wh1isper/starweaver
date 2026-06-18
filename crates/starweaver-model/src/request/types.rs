@@ -43,6 +43,8 @@ impl PreparedModelRequest {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputMode {
+    /// Select the best available output strategy from model profile and schema.
+    Auto,
     /// Plain text output.
     Text,
     /// Provider-native JSON schema output.
@@ -51,8 +53,12 @@ pub enum OutputMode {
     NativeJsonObject,
     /// Tool/function output.
     Tool,
+    /// Tool/function output while allowing text fallback.
+    ToolOrText,
     /// Prompted output instructions.
     Prompted,
+    /// Provider-native image output.
+    Image,
 }
 
 impl OutputMode {

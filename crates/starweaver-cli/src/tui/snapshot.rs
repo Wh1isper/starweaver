@@ -356,6 +356,114 @@ fn display_message_to_stream_record(
                 tool_return,
             }
         }
+        DisplayMessageKind::ToolsUnavailable => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "tools_unavailable",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolSearchLoaded => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "tool_search_loaded",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolSearchInitialized => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "tool_search_initialized",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolSearchRefreshed => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "tool_search_refreshed",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolSearchInvalidated => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "tool_search_invalidated",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolSearchFailed => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "tool_search_failed",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolSearchNoMatch => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "tool_search_no_match",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolsetInitialized => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "toolset_initialized",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolsetUnavailable => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "toolset_unavailable",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolsetFailed => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("toolset_failed", message.payload.clone()),
+        },
+        DisplayMessageKind::ToolsetRefreshed => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "toolset_refreshed",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ToolsetClosed => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("toolset_closed", message.payload.clone()),
+        },
+        DisplayMessageKind::ApprovalRequested => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "approval_requested",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::ApprovalResolved => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "approval_resolved",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::HitlResolved => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("hitl_resolved", message.payload.clone()),
+        },
+        DisplayMessageKind::HitlDiagnostic => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "hitl_decision_diagnostic",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::SkillsScanned => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("skills_scanned", message.payload.clone()),
+        },
+        DisplayMessageKind::SkillActivated => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("skill_activated", message.payload.clone()),
+        },
+        DisplayMessageKind::SkillsReloaded => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("skills_reloaded", message.payload.clone()),
+        },
+        DisplayMessageKind::SubagentStarted => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("subagent_started", message.payload.clone()),
+        },
+        DisplayMessageKind::SubagentCompleted => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "subagent_completed",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::SubagentFailed => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("subagent_failed", message.payload.clone()),
+        },
         DisplayMessageKind::SteeringSubmitted => AgentStreamEvent::Custom {
             event: starweaver_context::AgentEvent::new(
                 "steering_submitted",
@@ -371,6 +479,36 @@ fn display_message_to_stream_record(
         DisplayMessageKind::TaskSnapshot => AgentStreamEvent::Custom {
             event: starweaver_context::AgentEvent::new(
                 TASK_SNAPSHOT_EVENT_KIND,
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::TaskEvent => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                original_display_event_kind(message, "task_event"),
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::NoteEvent => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                original_display_event_kind(message, "note_event"),
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::FileEvent => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                original_display_event_kind(message, "file_event"),
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::MediaEvent => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                original_display_event_kind(message, "media_event"),
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::HostOperation => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                original_display_event_kind(message, "host_operation"),
                 message.payload.clone(),
             ),
         },
@@ -419,13 +557,11 @@ fn task_snapshot_items(value: &Value) -> Option<&Vec<Value>> {
     let payload = value.get("payload").unwrap_or(value);
     payload
         .get("tasks")
-        .or_else(|| payload.get("items"))
         .and_then(Value::as_array)
         .or_else(|| payload.as_array())
         .or_else(|| {
             value
                 .get("tasks")
-                .or_else(|| value.get("items"))
                 .and_then(Value::as_array)
                 .or_else(|| value.as_array())
         })
@@ -540,6 +676,16 @@ fn string_payload(message: &DisplayMessage, key: &str) -> Option<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(ToString::to_string)
+}
+
+fn original_display_event_kind(message: &DisplayMessage, fallback: &str) -> String {
+    message
+        .metadata
+        .get("starweaver_event_kind")
+        .and_then(Value::as_str)
+        .filter(|kind| !kind.trim().is_empty())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 fn value_preview(value: &Value) -> String {

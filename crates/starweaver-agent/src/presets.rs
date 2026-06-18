@@ -4,7 +4,7 @@ mod registry;
 mod spec;
 mod types;
 
-pub use registry::AgentSpecRegistry;
+pub use registry::{AgentSpecRegistry, AgentSpecToolsetWrapperFactory};
 pub use types::{
     AgentSpec, AgentSpecError, AgentSpecHostPolicies, ApprovalPolicyPreset, DurabilityPolicyPreset,
     EnvironmentPolicyPreset, HostAdapterSpec, HostPolicySpec, McpServerSpec, ModelPreset,

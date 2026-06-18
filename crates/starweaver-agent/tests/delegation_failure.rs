@@ -5,7 +5,7 @@ use std::sync::Arc;
 use starweaver_agent::{
     AgentBuilder, AgentContext, AgentContextHandle, AgentRuntimePolicy, FunctionModel,
     FunctionOutputValidator, OutputValidationError, OutputValidationResult, OutputValue,
-    SubagentConfig, SubagentRegistry, TestModel, ToolContext,
+    SubagentConfig, SubagentRegistry, SubagentToolInheritancePolicy, TestModel, ToolContext,
 };
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
@@ -98,6 +98,36 @@ async fn runtime_delegate_tool_error_path_merges_failed_lifecycle_event() {
 }
 
 #[tokio::test]
+async fn subagent_required_tool_failure_publishes_diagnostic_event() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+    let registry = SubagentRegistry::new().with_subagent(
+        SubagentConfig::new("child", child).with_tool_inheritance(
+            SubagentToolInheritancePolicy::new(vec!["required_tool".to_string()], vec![]),
+        ),
+    );
+    let mut context = AgentContext::default();
+
+    let error = registry
+        .delegate("child", "help", &mut context)
+        .await
+        .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("required inherited tool is missing: required_tool"));
+    assert_eq!(context.events.events()[0].kind, "subagent_started");
+    assert_eq!(context.events.events()[1].kind, "subagent_failed");
+    assert_eq!(
+        context.events.events()[1].payload["metadata"]["error_kind"],
+        "missing_required_tool"
+    );
+    assert_eq!(
+        context.events.events()[1].payload["metadata"]["tool_name"],
+        "required_tool"
+    );
+}
+
+#[tokio::test]
 async fn failing_subagent_absorbs_usage_into_parent_context() {
     let child = Arc::new(
         AgentBuilder::new(Arc::new(TestModel::with_responses(vec![ModelResponse {
@@ -141,5 +171,9 @@ async fn failing_subagent_absorbs_usage_into_parent_context() {
     assert_eq!(context.usage.total_tokens, 26);
     assert_eq!(context.usage.tool_calls, 1);
     assert_eq!(context.events.events()[0].kind, "subagent_started");
-    assert_eq!(context.events.events()[1].kind, "subagent_failed");
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "subagent_failed"));
 }

@@ -13,6 +13,7 @@ mod trace;
 pub use approval::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, DeferredToolRequest,
     DeferredToolRequests, DeferredToolResult, DeferredToolResults, ToolApprovalDecision,
+    ToolReturnRecordInput,
 };
 pub use error::{SessionStoreError, SessionStoreResult};
 pub use input::{BinaryRef, FileRef, InputPart};

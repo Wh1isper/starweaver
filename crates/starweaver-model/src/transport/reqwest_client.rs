@@ -71,13 +71,34 @@ impl ReqwestHttpClient {
 #[async_trait]
 impl ModelHttpClient for ReqwestHttpClient {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ModelError> {
-        let response = self.send_request(&request).await?;
+        let cancellation_token = request.cancellation_token.clone();
+        if cancellation_token.is_cancelled() {
+            return Err(ModelError::Cancelled {
+                reason: "model HTTP request cancellation requested".to_string(),
+            });
+        }
+        let response = tokio::select! {
+            biased;
+            () = cancellation_token.cancelled() => {
+                return Err(ModelError::Cancelled {
+                    reason: "model HTTP request cancellation requested".to_string(),
+                });
+            }
+            response = self.send_request(&request) => response?,
+        };
         let status = response.status().as_u16();
         let headers = response_headers(&response);
-        let body = response
-            .json::<Value>()
-            .await
-            .map_err(|err| ModelError::Transport(err.to_string()))?;
+        let body = tokio::select! {
+            biased;
+            () = cancellation_token.cancelled() => {
+                return Err(ModelError::Cancelled {
+                    reason: "model HTTP request cancellation requested".to_string(),
+                });
+            }
+            body = response.json::<Value>() => {
+                body.map_err(|err| ModelError::Transport(err.to_string()))?
+            }
+        };
 
         if (200..300).contains(&status) {
             Ok(HttpResponse {
@@ -98,7 +119,21 @@ impl ModelHttpClient for ReqwestHttpClient {
         &self,
         request: HttpRequest,
     ) -> Result<ModelEventStream, ModelError> {
-        let response = self.send_request(&request).await?;
+        let cancellation_token = request.cancellation_token.clone();
+        if cancellation_token.is_cancelled() {
+            return Err(ModelError::Cancelled {
+                reason: "model event stream cancellation requested".to_string(),
+            });
+        }
+        let response = tokio::select! {
+            biased;
+            () = cancellation_token.cancelled() => {
+                return Err(ModelError::Cancelled {
+                    reason: "model event stream cancellation requested".to_string(),
+                });
+            }
+            response = self.send_request(&request) => response?,
+        };
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
             let text = response
@@ -113,11 +148,27 @@ impl ModelHttpClient for ReqwestHttpClient {
             });
         }
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        let worker_cancellation_token = cancellation_token.clone();
         tokio::spawn(async move {
             let mut parser = SseJsonParser::default();
             let mut bytes = response.bytes_stream();
             let mut utf8_buffer = Vec::new();
-            while let Some(chunk) = bytes.next().await {
+            loop {
+                let chunk = tokio::select! {
+                    biased;
+                    () = worker_cancellation_token.cancelled() => {
+                        let _ = sender
+                            .send(Err(ModelError::Cancelled {
+                                reason: "model event stream cancellation requested".to_string(),
+                            }))
+                            .await;
+                        return;
+                    }
+                    chunk = bytes.next() => chunk,
+                };
+                let Some(chunk) = chunk else {
+                    break;
+                };
                 match chunk {
                     Ok(bytes) => {
                         utf8_buffer.extend_from_slice(&bytes);
@@ -161,7 +212,10 @@ impl ModelHttpClient for ReqwestHttpClient {
             }
             let _ = send_sse_parser_events(&sender, parser.finish()).await;
         });
-        Ok(ModelEventStream::new(receiver))
+        Ok(ModelEventStream::new_with_cancellation(
+            receiver,
+            cancellation_token,
+        ))
     }
 }
 

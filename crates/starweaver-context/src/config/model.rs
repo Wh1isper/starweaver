@@ -23,7 +23,7 @@ pub enum ModelCapability {
     /// Provider requires reasoning content in assistant messages.
     ReasoningRequired,
     /// Provider rejects foreign-provider reasoning content.
-    ReasoningForeignIncompatible,
+    ReasoningForeignUnsupported,
 }
 
 /// Runtime model configuration stored on [`crate::AgentContext`].

@@ -3,9 +3,12 @@
 pub mod bundles;
 pub mod filters;
 pub mod mcp_live;
+pub mod mcp_rmcp;
 pub(crate) mod media_compression;
 pub mod presets;
+pub mod runtime;
 pub mod session;
+pub mod streaming;
 pub mod subagent;
 pub mod subagent_config;
 
@@ -25,8 +28,13 @@ pub use bundles::{
     RuntimeContextCapability, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
     SearchResultItem, ShellReviewAction, ShellReviewConfig, ShellReviewContextSnapshot,
     ShellReviewDecision, ShellReviewHandle, ShellReviewPreviousDecision, ShellReviewRecord,
-    ShellReviewRequest, ShellReviewRiskLevel, SkillError, SkillPackage, SkillRegistry,
-    SkillSourceScope, ToolProxyNamePrefixError, ToolProxyToolset, DEFAULT_SHELL_REVIEW_PROMPT,
+    ShellReviewRequest, ShellReviewRiskLevel, SkillDiscoveryCapability, SkillError, SkillPackage,
+    SkillRegistry, SkillReloadBinding, SkillReloadChange, SkillReloadChangeKind,
+    SkillReloadDecision, SkillReloadReason, SkillReloadReport, SkillReloadSchedule,
+    SkillReloadScheduleState, SkillScanDiagnostic, SkillScanDiagnosticKind, SkillScanReport,
+    SkillScheduledReloadResult, SkillSourceKind, SkillSourceScope, ToolProxyNamePrefixError,
+    ToolProxyToolset, DEFAULT_SHELL_REVIEW_PROMPT, SKILL_ACTIVATION_EVENT_KIND,
+    SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND,
 };
 pub use filters::{
     default_filter_bundle, default_filter_capabilities, default_filter_capabilities_with_config,
@@ -35,25 +43,36 @@ pub use filters::{
 };
 pub use mcp_live::{
     live_mcp_toolset, DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot,
+    LiveMcpToolset,
 };
+pub use mcp_rmcp::RmcpLiveMcpClient;
 pub use presets::{
     text_output_preset, AgentSpec, AgentSpecError, AgentSpecHostPolicies, AgentSpecRegistry,
-    ApprovalPolicyPreset, DurabilityPolicyPreset, EnvironmentPolicyPreset, HostAdapterSpec,
-    HostPolicySpec, McpServerSpec, ModelPreset, ObservabilityPolicyPreset, OutputSpec,
-    RetryPolicyPreset, SdkPreset, SkillBundleSpec, StreamingPolicyPreset, TemplateStringSpec,
-    ToolsetWrapperSpec, WorkspacePolicySpec,
+    AgentSpecToolsetWrapperFactory, ApprovalPolicyPreset, DurabilityPolicyPreset,
+    EnvironmentPolicyPreset, HostAdapterSpec, HostPolicySpec, McpServerSpec, ModelPreset,
+    ObservabilityPolicyPreset, OutputSpec, RetryPolicyPreset, SdkPreset, SkillBundleSpec,
+    StreamingPolicyPreset, TemplateStringSpec, ToolsetWrapperSpec, WorkspacePolicySpec,
 };
-pub use session::{AgentRunOptions, AgentSession};
+pub use runtime::{agent_runtime, AgentDurabilityError, AgentRuntime, AgentRuntimeBuilder};
+pub use session::{
+    AgentHitlError, AgentHitlResults, AgentHitlUserInteraction, AgentRunOptions, AgentSession,
+    ResolvedHitlToolReturns, HITL_DECISION_DIAGNOSTIC_EVENT_KIND,
+};
 pub use starweaver_context::{
     AgentContext, AgentContextHandle, ModelCapability, ModelConfig, PerThousandRatio,
-    ResumableState, SecurityConfig, ToolConfig,
+    ResumableState, SecurityConfig, ToolAvailabilityPolicy, ToolConfig,
 };
 pub use starweaver_core::{
-    AgentId, CheckpointId, ConversationId, RunId, SubagentLifecycleEvent, SubagentLifecycleKind,
-    SubagentSpec, TaskId, TraceContext,
+    AgentId, CheckpointId, ConversationId, RunId, SessionId, SubagentLifecycleEvent,
+    SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext,
 };
 pub use starweaver_environment::{
-    DynProcessShellProvider, ProcessShellProvider, ShellProcessSnapshot, ShellProcessStatus,
+    environment_provider_kind, resource_ref_kind, DynEnvironmentProviderFactory,
+    DynProcessShellProvider, DynResourceRestoreFactory, EnvironmentProviderFactory,
+    EnvironmentProviderFactoryRegistry, ProcessShellProvider, ResourceRestoreFactory,
+    ResourceRestoreFactoryRegistry, ShellProcessSnapshot, ShellProcessStatus,
+    TrustedLocalEnvironmentProviderFactory, VirtualEnvironmentProviderFactory,
+    ENVIRONMENT_PROVIDER_KIND_KEY, RESOURCE_REF_KIND_KEY,
 };
 pub use starweaver_model::{
     anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
@@ -62,48 +81,195 @@ pub use starweaver_model::{
     ModelConfigPresetData, ModelPresetError, ModelRuntimePreset, ModelSettingsPreset,
 };
 pub use starweaver_model::{
-    ConcurrencyLimitedModel, DynModelAdapter, FallbackModel, FunctionModel, FunctionModelInfo,
+    ConcurrencyLimitedModel, ContentPart, DynModelAdapter, DynModelExecutionHook, FallbackModel,
+    FunctionModel, FunctionModelInfo, HookedModel, ModelExecutionHook, ModelExecutionMetadata,
     ModelRequestParameters, ModelSettings, ProfileOverrideModel, ProtocolFamily, TestModel,
 };
 pub use starweaver_runtime::{
     model_request, model_request_stream, resolve_capability_order, tool_call, AdapterTraceRecorder,
-    AgentCapability, AgentCheckpoint, AgentError, AgentExecutionDecision, AgentExecutionNode,
-    AgentExecutor, AgentExecutorError, AgentGraphStep, AgentGraphTrace, AgentIterResult,
-    AgentIterationKind, AgentIterationStep, AgentIterationTrace, AgentNode, AgentOverride,
-    AgentResult, AgentResumeCursor, AgentResumeEvidence, AgentRunState, AgentRuntimePolicy,
-    AgentStreamEvent, AgentStreamRecord, AgentStreamResult, CapabilityBundle, CapabilityId,
-    CapabilityOrderError, CapabilityOrdering, CapabilityResult, CapabilitySpec, DirectModelRequest,
-    DynamicInstruction, DynamicInstructionError, DynamicInstructionResult,
-    FunctionDynamicInstruction, FunctionOutputFunction, FunctionOutputValidator, GraphError,
-    OutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputPolicy, OutputSchema,
+    AgentCapability, AgentCheckpoint, AgentEndStrategy, AgentError, AgentExecutionDecision,
+    AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentGraphStep, AgentGraphTrace,
+    AgentInput, AgentIterResult, AgentIterationKind, AgentIterationStep, AgentIterationTrace,
+    AgentNode, AgentOverride, AgentResult, AgentResumeCursor, AgentResumeEvidence, AgentRunState,
+    AgentRuntimePolicy, AgentSidebandEvent, AgentSidebandEventCategory, AgentStreamEvent,
+    AgentStreamRecord, AgentStreamResult, AgentStreamSink, AgentStreamSource,
+    AgentStreamSourceKind, CapabilityBundle, CapabilityError, CapabilityId, CapabilityOrderError,
+    CapabilityOrdering, CapabilityResult, CapabilitySpec, DirectModelRequest, DynamicInstruction,
+    DynamicInstructionError, DynamicInstructionResult, FunctionDynamicInstruction,
+    FunctionOutputFunction, FunctionOutputValidator, GraphError, OutputFunction,
+    OutputFunctionContext, OutputFunctionDefinition, OutputMedia, OutputPolicy, OutputSchema,
     OutputValidationError, OutputValidationResult, OutputValidator, OutputValue, RecordedSpan,
-    RetryEventKind, SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus, StaticCapabilityBundle,
-    TraceLevel, TraceRecorder, RUNTIME_CONTEXT_CAPABILITY_ID,
+    RetryEventKind, RunStatus, SchemaOutputFunction, SpanEvent, SpanHandle, SpanKind, SpanSpec,
+    SpanStatus, StaticCapabilityBundle, TraceLevel, TraceRecorder, RUNTIME_CONTEXT_CAPABILITY_ID,
+};
+pub use starweaver_session::{
+    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, DeferredToolRequest,
+    DeferredToolRequests, DeferredToolResult, DeferredToolResults, ExecutionStatus,
+    InMemorySessionStore, InputPart, RunRecord, RunStatus as SessionRunStatus, SessionFilter,
+    SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
+    SessionStoreExecutor, SessionStoreResult, StreamCursorRef, ToolApprovalDecision,
+    ToolReturnRecordInput,
+};
+pub use starweaver_stream::{
+    DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
+    DisplayProjectionContext, InMemoryReplayEventLog, InMemoryStreamArchive, ReplayCursor,
+    ReplayEvent, ReplayEventKind, ReplayEventLog, ReplayScope, ReplaySnapshot, ReplaySubscription,
+    StreamArchive, StreamTerminalMarker,
 };
 pub use starweaver_tools::{
-    dynamic_tool_proxy as tool_proxy_toolset, json_tool, json_tool as string_tool,
-    tool_definition_from_mcp_spec, typed_json_tool, typed_json_tool as typed_tool,
-    ApprovalRequiredToolset, DeferredLoadingToolset, DynTool, DynToolset, DynamicToolset,
-    EmptyToolArgs, FilteredToolset, FunctionTool, McpToolSpec, McpToolset, McpToolsetConfig,
-    McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset, PreparedToolset, RenamedToolset,
-    StaticToolset, Tool, ToolApprovalState, ToolContext, ToolError, ToolInstruction, ToolRegistry,
-    ToolResult, Toolset, TypedFunctionTool,
+    dynamic_tool_proxy as tool_proxy_toolset, dynamic_tool_search as tool_search_toolset,
+    extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, json_tool,
+    json_tool as string_tool, set_tool_metadata_kind, tool_definition_from_mcp_spec,
+    tool_metadata_hidden_by_tags, tool_metadata_kind, tool_metadata_tags, typed_json_tool,
+    typed_json_tool as typed_tool, ApprovalRequiredToolset, DeferredToolset, DynTool,
+    DynToolExecutionHook, DynToolset, DynamicToolset, EmptyToolArgs, FilteredToolset, FunctionTool,
+    LazyToolset, McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec,
+    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset,
+    PreparedToolset, RenamedToolset, StaticToolset, Tool, ToolApprovalState, ToolContext,
+    ToolError, ToolExecutionHook, ToolExecutionHooks, ToolExecutionOutcome, ToolInstruction,
+    ToolKind, ToolRegistry, ToolResult, ToolSearchInitializationReport,
+    ToolSearchInvalidationResult, ToolSearchLoadResult, ToolSearchNamespaceReport,
+    ToolSearchNamespaceStatus, ToolSearchRefreshBinding, ToolSearchRefreshDecision,
+    ToolSearchRefreshReason, ToolSearchRefreshResult, ToolSearchRefreshSchedule,
+    ToolSearchRefreshScheduleState, ToolSearchScheduledRefreshResult, ToolSearchToolset,
+    ToolUserInputPreprocessResult, Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy,
+    ToolsetLifecycleReport, ToolsetLifecycleState, ToolsetPreparation, TypedFunctionTool,
+    TOOLSET_CLOSED_EVENT_KIND, TOOLSET_FAILED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND,
+    TOOLSET_REFRESHED_EVENT_KIND, TOOLSET_UNAVAILABLE_EVENT_KIND, TOOL_METADATA_HIDDEN_BY_TAGS_KEY,
+    TOOL_METADATA_KIND_KEY, TOOL_METADATA_TAGS_KEY, TOOL_SEARCH_FAILED_EVENT_KIND,
+    TOOL_SEARCH_INVALIDATED_EVENT_KIND, TOOL_SEARCH_NO_MATCH_EVENT_KIND,
+    TOOL_SEARCH_REFRESHED_EVENT_KIND,
 };
 pub use starweaver_usage::{
     pricing::CostBudget, PricingEstimate, Usage, UsageAgentTotal, UsageLimitError, UsageLimits,
     UsageSnapshot, UsageSnapshotEntry, UsageTokenKind,
 };
+pub use streaming::{
+    AgentLiveStreamResult, AgentStreamCompletion, AgentStreamCurrentError, AgentStreamDropPolicy,
+    AgentStreamError, AgentStreamHandle, AgentStreamOptions, AgentStreamRunStatus,
+    AgentStreamStatus,
+};
 pub use subagent::{
-    AgentApp, SubagentConfig, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
+    AgentApp, DynSubagentExecutionHook, SubagentCapabilityInheritancePolicy, SubagentConfig,
+    SubagentExecutionHook, SubagentExecutionMetadata, SubagentExecutionOutcome,
+    SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
     SubagentToolInheritanceError, SubagentToolInheritancePolicy,
 };
 pub use subagent_config::{
-    load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown, SubagentConfigError,
+    load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown,
+    project_subagent_spec, SubagentConfigError, SubagentSpecProjection,
 };
+
+/// Error returned while rendering a static instruction template.
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+pub enum InstructionTemplateError {
+    /// Template variables could not be serialized to JSON.
+    #[error("instruction template variables could not be serialized: {0}")]
+    Serialize(String),
+    /// Template syntax is invalid.
+    #[error("invalid instruction template: {0}")]
+    InvalidTemplate(String),
+    /// Referenced variable was not present in the supplied data.
+    #[error("missing instruction template variable: {0}")]
+    MissingVariable(String),
+    /// Referenced variable is not a scalar value that can be rendered safely.
+    #[error("instruction template variable is not scalar: {0}")]
+    NonScalarVariable(String),
+}
+
+/// Render a static instruction template from serializable variables.
+///
+/// Placeholders use `{{path.to.value}}` syntax and resolve against the serialized JSON object.
+///
+/// # Errors
+///
+/// Returns an error when variables cannot be serialized, the template is malformed, a path is
+/// missing, or a resolved value is not a string, number, or boolean.
+pub fn render_instruction_template<T: serde::Serialize>(
+    template: &str,
+    variables: &T,
+) -> Result<String, InstructionTemplateError> {
+    let variables = serde_json::to_value(variables)
+        .map_err(|error| InstructionTemplateError::Serialize(error.to_string()))?;
+    render_instruction_template_value(template, &variables)
+}
+
+fn render_instruction_template_value(
+    template: &str,
+    variables: &serde_json::Value,
+) -> Result<String, InstructionTemplateError> {
+    let mut output = String::new();
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("}}") else {
+            return Err(InstructionTemplateError::InvalidTemplate(
+                "unclosed '{{' placeholder".to_string(),
+            ));
+        };
+        let variable = after_start[..end].trim();
+        validate_instruction_template_variable(variable)?;
+        output.push_str(&render_instruction_template_variable(variables, variable)?);
+        rest = &after_start[end + 2..];
+    }
+    if rest.contains("}}") {
+        return Err(InstructionTemplateError::InvalidTemplate(
+            "unopened '}}' placeholder".to_string(),
+        ));
+    }
+    output.push_str(rest);
+    Ok(output)
+}
+
+fn validate_instruction_template_variable(variable: &str) -> Result<(), InstructionTemplateError> {
+    if variable.is_empty() {
+        return Err(InstructionTemplateError::InvalidTemplate(
+            "empty placeholder".to_string(),
+        ));
+    }
+    if !variable
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' || ch == '-')
+    {
+        return Err(InstructionTemplateError::InvalidTemplate(format!(
+            "invalid placeholder name '{variable}'"
+        )));
+    }
+    Ok(())
+}
+
+fn render_instruction_template_variable(
+    variables: &serde_json::Value,
+    path: &str,
+) -> Result<String, InstructionTemplateError> {
+    let mut current = variables;
+    for segment in path.split('.') {
+        let Some(next) = current.as_object().and_then(|object| object.get(segment)) else {
+            return Err(InstructionTemplateError::MissingVariable(path.to_string()));
+        };
+        current = next;
+    }
+    match current {
+        serde_json::Value::String(value) => Ok(value.clone()),
+        serde_json::Value::Number(value) => Ok(value.to_string()),
+        serde_json::Value::Bool(value) => Ok(value.to_string()),
+        serde_json::Value::Null | serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            Err(InstructionTemplateError::NonScalarVariable(
+                path.to_string(),
+            ))
+        }
+    }
+}
 
 /// Builder for a reusable Starweaver agent.
 pub struct AgentBuilder {
+    agent_id: Option<AgentId>,
+    agent_name: Option<String>,
     model: Arc<dyn ModelAdapter>,
+    compact_model: Option<Arc<dyn ModelAdapter>>,
+    compact_model_settings: Option<ModelSettings>,
+    compact_request_params: Option<ModelRequestParameters>,
     instructions: Vec<String>,
     model_settings: Option<ModelSettings>,
     request_params: ModelRequestParameters,
@@ -117,9 +283,12 @@ pub struct AgentBuilder {
     tool_config: Option<ToolConfig>,
     context_window: Option<u64>,
     tools: ToolRegistry,
+    toolsets: Vec<DynToolset>,
+    approval_required_tools: BTreeSet<String>,
     capabilities: Vec<Arc<dyn AgentCapability>>,
     capability_bundles: Vec<Arc<dyn CapabilityBundle>>,
     subagents: SubagentRegistry,
+    executor: Option<starweaver_runtime::DynAgentExecutor>,
     trace_recorder: Option<starweaver_runtime::DynTraceRecorder>,
     media_uploader: Option<Arc<dyn MediaUploader>>,
     policy: AgentRuntimePolicy,
@@ -130,7 +299,12 @@ impl AgentBuilder {
     #[must_use]
     pub fn new(model: Arc<dyn ModelAdapter>) -> Self {
         Self {
+            agent_id: None,
+            agent_name: None,
             model,
+            compact_model: None,
+            compact_model_settings: None,
+            compact_request_params: None,
             instructions: Vec::new(),
             model_settings: None,
             request_params: ModelRequestParameters::default(),
@@ -144,13 +318,63 @@ impl AgentBuilder {
             tool_config: None,
             context_window: None,
             tools: ToolRegistry::new(),
+            toolsets: Vec::new(),
+            approval_required_tools: BTreeSet::new(),
             capabilities: Vec::new(),
             capability_bundles: Vec::new(),
             subagents: SubagentRegistry::new(),
+            executor: None,
             trace_recorder: None,
             media_uploader: None,
             policy: AgentRuntimePolicy::default(),
         }
+    }
+
+    /// Set the stable agent id used by default sessions and direct runs.
+    #[must_use]
+    pub fn agent_id(mut self, agent_id: impl Into<String>) -> Self {
+        self.agent_id = Some(AgentId::from_string(agent_id));
+        self
+    }
+
+    /// Set the human-readable agent name used by default sessions and direct runs.
+    #[must_use]
+    pub fn agent_name(mut self, agent_name: impl Into<String>) -> Self {
+        self.agent_name = Some(agent_name.into());
+        self
+    }
+
+    /// Set both the stable agent id and human-readable name.
+    #[must_use]
+    pub fn agent_identity(
+        mut self,
+        agent_id: impl Into<String>,
+        agent_name: impl Into<String>,
+    ) -> Self {
+        self.agent_id = Some(AgentId::from_string(agent_id));
+        self.agent_name = Some(agent_name.into());
+        self
+    }
+
+    /// Set the model used by the default compacting filter.
+    #[must_use]
+    pub fn compact_model(mut self, model: Arc<dyn ModelAdapter>) -> Self {
+        self.compact_model = Some(model);
+        self
+    }
+
+    /// Set model settings used by the default compacting filter.
+    #[must_use]
+    pub fn compact_model_settings(mut self, settings: ModelSettings) -> Self {
+        self.compact_model_settings = Some(settings);
+        self
+    }
+
+    /// Set request parameters used by the default compacting filter.
+    #[must_use]
+    pub fn compact_request_params(mut self, params: ModelRequestParameters) -> Self {
+        self.compact_request_params = Some(params);
+        self
     }
 
     /// Add a static instruction.
@@ -158,6 +382,22 @@ impl AgentBuilder {
     pub fn instruction(mut self, instruction: impl Into<String>) -> Self {
         self.instructions.push(instruction.into());
         self
+    }
+
+    /// Render a static instruction template and add it to the agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the template is malformed, variables cannot be serialized, a variable
+    /// path is missing, or a resolved value is not scalar.
+    pub fn try_instruction_template<T: serde::Serialize>(
+        mut self,
+        template: impl AsRef<str>,
+        variables: &T,
+    ) -> Result<Self, InstructionTemplateError> {
+        self.instructions
+            .push(render_instruction_template(template.as_ref(), variables)?);
+        Ok(self)
     }
 
     /// Set model settings.
@@ -247,7 +487,7 @@ impl AgentBuilder {
     /// Add one toolset.
     #[must_use]
     pub fn toolset(mut self, toolset: &DynToolset) -> Self {
-        self.tools.insert_toolset(toolset);
+        self.toolsets.push(toolset.clone());
         self
     }
 
@@ -255,8 +495,21 @@ impl AgentBuilder {
     #[must_use]
     pub fn toolsets(mut self, toolsets: impl IntoIterator<Item = DynToolset>) -> Self {
         for toolset in toolsets {
-            self.tools.insert_toolset(&toolset);
+            self.toolsets.push(toolset);
         }
+        self
+    }
+
+    /// Require HITL approval for matching tools in registered toolsets.
+    ///
+    /// Entries can match a tool name, toolset name/id, metadata `bundle`, or `*`.
+    #[must_use]
+    pub fn approval_required_tools(
+        mut self,
+        tools: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        self.approval_required_tools
+            .extend(tools.into_iter().map(Into::into));
         self
     }
 
@@ -271,6 +524,25 @@ impl AgentBuilder {
     #[must_use]
     pub fn tool_registry(mut self, tools: ToolRegistry) -> Self {
         self.tools = tools;
+        self.toolsets.clear();
+        self
+    }
+
+    /// Add a global execution hook around runtime tool calls.
+    #[must_use]
+    pub fn global_tool_execution_hook(mut self, hook: DynToolExecutionHook) -> Self {
+        self.tools.insert_global_execution_hook(hook);
+        self
+    }
+
+    /// Add a tool-specific execution hook around runtime tool calls.
+    #[must_use]
+    pub fn tool_execution_hook(
+        mut self,
+        tool: impl Into<String>,
+        hook: DynToolExecutionHook,
+    ) -> Self {
+        self.tools.insert_tool_execution_hook(tool, hook);
         self
     }
 
@@ -278,6 +550,26 @@ impl AgentBuilder {
     #[must_use]
     pub fn tool_retries(mut self, max_retries: usize) -> Self {
         self.tools.set_max_retries(max_retries);
+        self
+    }
+
+    /// Install scanned skill summaries and relaxed skill markdown discovery.
+    #[must_use]
+    pub fn skills(mut self, registry: SkillRegistry) -> Self {
+        let toolset = registry.toolset();
+        self.toolsets.push(toolset);
+        self.capabilities
+            .push(Arc::new(SkillDiscoveryCapability::new(registry)));
+        self
+    }
+
+    /// Install scanned skills from a lenient report and publish scan diagnostics at run start.
+    #[must_use]
+    pub fn skills_report(mut self, report: SkillScanReport) -> Self {
+        let toolset = report.registry.toolset();
+        self.toolsets.push(toolset);
+        self.capabilities
+            .push(Arc::new(SkillDiscoveryCapability::from_report(report)));
         self
     }
 
@@ -316,6 +608,13 @@ impl AgentBuilder {
         self
     }
 
+    /// Set durable execution checkpoint handler.
+    #[must_use]
+    pub fn executor(mut self, executor: starweaver_runtime::DynAgentExecutor) -> Self {
+        self.executor = Some(executor);
+        self
+    }
+
     /// Set the media uploader used by the default `media_upload` filter.
     #[must_use]
     pub fn media_uploader(mut self, uploader: Arc<dyn MediaUploader>) -> Self {
@@ -339,13 +638,21 @@ impl AgentBuilder {
     /// Build an SDK application wrapper with runtime agent and application-level protocols.
     #[must_use]
     pub fn build_app(self) -> AgentApp {
-        let subagents = self.subagents.clone();
+        let subagents = self.resolved_subagents();
         AgentApp::new(self.build()).with_subagents(subagents)
+    }
+
+    fn resolved_subagents(&self) -> SubagentRegistry {
+        self.subagents
+            .clone()
+            .with_resolved_capability_inheritance(&self.capabilities, &self.capability_bundles)
     }
 
     /// Build a reusable runtime agent.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn build(self) -> RuntimeAgent {
+        let subagents = self.resolved_subagents();
         let model_profile_capabilities = model_capabilities_from_profile(self.model.profile());
         let mut configured_model_config = self.model_config;
         if !model_profile_capabilities.is_empty() {
@@ -368,23 +675,43 @@ impl AgentBuilder {
         );
         let media_capability_hook = Arc::new(HostMediaCapabilityHook { media_capabilities });
         let mut tools = self.tools;
-        if !self.subagents.is_empty() {
-            let subagents = Arc::new(self.subagents.clone());
+        if !subagents.is_empty() {
+            let subagents = Arc::new(subagents);
             tools.insert(subagents.delegate_tool());
             tools.insert(subagents.subagent_info_tool());
         }
-        let parent_tools = tools.clone();
-        let mut compact_request_params = self.request_params.clone();
-        compact_request_params.tools = tools.definitions();
-        let compact_model_settings = self.model_settings.clone();
+        let toolsets = approval_wrapped_toolsets(self.toolsets, &self.approval_required_tools);
+        let mut tool_preview = tools.clone();
+        for toolset in &toolsets {
+            tool_preview.insert_toolset(toolset);
+        }
+        let parent_tools = tool_preview.clone();
+        let model = self.model.clone();
+        let compact_model = self.compact_model.unwrap_or_else(|| model.clone());
+        let compact_model_settings = self
+            .compact_model_settings
+            .or_else(|| self.model_settings.clone());
+        let compact_request_params_explicit = self.compact_request_params.is_some();
+        let mut compact_request_params = self
+            .compact_request_params
+            .unwrap_or_else(|| self.request_params.clone());
+        if !compact_request_params_explicit {
+            compact_request_params.tools = tool_preview.definitions();
+        }
         let parent_tools_hook = Arc::new(ParentToolsCapabilityHook { parent_tools });
         let environment_context_hook = Arc::new(EnvironmentContextCapability);
         let runtime_context_hook = Arc::new(RuntimeContextCapability);
-        let model = self.model.clone();
         let mut agent = RuntimeAgent::new(self.model)
             .with_request_params(self.request_params)
             .with_tools(tools)
+            .with_toolsets(toolsets)
             .with_policy(self.policy);
+        if let Some(agent_id) = self.agent_id {
+            agent = agent.with_agent_id(agent_id);
+        }
+        if let Some(agent_name) = self.agent_name {
+            agent = agent.with_agent_name(agent_name);
+        }
         for instruction in self.instructions {
             agent = agent.with_instruction(instruction);
         }
@@ -413,7 +740,7 @@ impl AgentBuilder {
             agent = agent.with_context_window(context_window);
         }
         for capability in crate::filters::default_filter_capabilities_with_media_uploader(
-            Some(&model),
+            Some(&compact_model),
             compact_model_settings.as_ref(),
             Some(&compact_request_params),
             self.media_uploader.as_ref(),
@@ -436,11 +763,30 @@ impl AgentBuilder {
         for bundle in self.capability_bundles {
             agent = agent.with_capability_bundle(bundle.as_ref());
         }
+        if let Some(executor) = self.executor {
+            agent = agent.with_executor(executor);
+        }
         if let Some(recorder) = self.trace_recorder {
             agent = agent.with_trace_recorder(recorder);
         }
         agent
     }
+}
+
+fn approval_wrapped_toolsets(
+    toolsets: Vec<DynToolset>,
+    approval_required_tools: &BTreeSet<String>,
+) -> Vec<DynToolset> {
+    if approval_required_tools.is_empty() {
+        return toolsets;
+    }
+    let approval = approval_required_tools.iter().cloned().collect::<Vec<_>>();
+    toolsets
+        .into_iter()
+        .map(|toolset| {
+            Arc::new(ApprovalRequiredToolset::new(toolset, approval.clone())) as DynToolset
+        })
+        .collect()
 }
 
 /// Create an agent builder from a model.

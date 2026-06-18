@@ -3,8 +3,9 @@
 use std::{fs, sync::Arc};
 
 use starweaver_agent::{
-    load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown, AgentBuilder,
-    SubagentConfigError, SubagentSpec, TestModel,
+    load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown,
+    project_subagent_spec, AgentBuilder, AgentContext, AgentSpecRegistry, SubagentConfig,
+    SubagentConfigError, SubagentRegistry, SubagentSpec, TestModel,
 };
 
 #[test]
@@ -21,6 +22,10 @@ tools:
 optional_tools: edit, shell
 denied_tools:
   - shell_kill
+inherit_hooks: true
+inherit_capabilities: true
+denied_capabilities:
+  - unsafe-trace
 model: anthropic:claude-sonnet-4
 model_settings:
   temperature: 0.2
@@ -46,6 +51,12 @@ You are a debugging expert.
         spec.metadata["denied_tools"],
         serde_json::json!(["shell_kill"])
     );
+    assert_eq!(spec.metadata["inherit_hooks"], true);
+    assert_eq!(spec.metadata["inherit_capabilities"], true);
+    assert_eq!(
+        spec.metadata["denied_capabilities"],
+        serde_json::json!(["unsafe-trace"])
+    );
     assert_eq!(spec.model.as_deref(), Some("anthropic:claude-sonnet-4"));
     assert_eq!(spec.model_settings.unwrap()["temperature"], 0.2);
     assert_eq!(spec.model_config.unwrap(), "claude_200k");
@@ -68,6 +79,127 @@ Find facts and sources.
 
     assert_eq!(spec.tools, vec!["search", "scrape", "fetch"]);
     assert!(spec.optional_tools.is_empty());
+}
+
+#[test]
+fn projects_subagent_spec_into_agent_spec_and_inheritance_policy() {
+    let spec = parse_subagent_markdown(
+        r"
+---
+name: debugger
+description: Debug code issues
+instruction: Use this agent for debugging tasks.
+tools:
+  - grep
+optional_tools: view, edit
+denied_tools:
+  - shell
+inherit_hooks: true
+inherit_capabilities: true
+denied_capabilities:
+  - pii-audit
+model: inherit
+model_settings:
+  temperature: 0.1
+model_config: claude
+---
+Debug carefully.
+",
+    )
+    .unwrap();
+
+    let projection = project_subagent_spec(&spec, Some("parent-model")).unwrap();
+
+    assert_eq!(projection.agent_spec.name, "debugger");
+    assert_eq!(
+        projection.agent_spec.description.as_deref(),
+        Some("Debug code issues")
+    );
+    assert_eq!(projection.agent_spec.instructions, vec!["Debug carefully."]);
+    let model = projection.agent_spec.model.as_ref().unwrap();
+    assert_eq!(model.model_id, "parent-model");
+    assert_eq!(model.settings.as_ref().unwrap().temperature, Some(0.1));
+    assert_eq!(model.config_preset.as_deref(), Some("claude"));
+    assert_eq!(
+        projection.agent_spec.metadata["subagent_instruction"],
+        "Use this agent for debugging tasks."
+    );
+    assert_eq!(
+        projection.tool_inheritance.required_tools,
+        vec!["grep".to_string()]
+    );
+    assert_eq!(
+        projection.tool_inheritance.optional_tools,
+        vec!["view".to_string(), "edit".to_string()]
+    );
+    assert_eq!(
+        projection.tool_inheritance.denied_tools,
+        vec!["shell".to_string()]
+    );
+    assert!(!projection.tool_inheritance.inherit_all_when_empty);
+    assert!(projection.capability_inheritance.hooks);
+    assert!(projection.capability_inheritance.capability_bundles);
+    assert_eq!(
+        projection.capability_inheritance.denied_capabilities,
+        vec!["pii-audit".to_string()]
+    );
+}
+
+#[test]
+fn subagent_spec_projection_requires_inherited_model_for_inherit() {
+    let spec = SubagentSpec::new("child", "Child", "Help");
+
+    let error = project_subagent_spec(&spec, None).unwrap_err();
+
+    assert!(matches!(error, SubagentConfigError::MissingInheritedModel));
+}
+
+#[test]
+fn subagent_spec_projection_inherits_all_tools_when_tool_lists_are_empty() {
+    let mut spec = SubagentSpec::new("child", "Child", "Help");
+    spec.model = Some("child-model".to_string());
+
+    let projection = project_subagent_spec(&spec, None).unwrap();
+
+    assert!(projection.tool_inheritance.inherit_all_when_empty);
+    assert!(!projection.capability_inheritance.hooks);
+    assert!(!projection.capability_inheritance.capability_bundles);
+}
+
+#[tokio::test]
+async fn projected_subagent_spec_materializes_runnable_subagent_config() {
+    let spec = parse_subagent_markdown(
+        r"
+---
+name: researcher
+description: Research specialist
+model: child-model
+---
+Gather facts.
+",
+    )
+    .unwrap();
+    let projection = project_subagent_spec(&spec, None).unwrap();
+    let registry = AgentSpecRegistry::new().with_model(
+        "child-model",
+        Arc::new(TestModel::with_text("child output")),
+    );
+    let config = SubagentConfig::from_agent_spec(
+        &projection.agent_spec,
+        &registry,
+        projection.tool_inheritance,
+    )
+    .unwrap();
+    let subagents = SubagentRegistry::new().with_subagent(config);
+    let mut context = AgentContext::default();
+
+    let result = subagents
+        .delegate("researcher", "collect facts", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "child output");
+    assert_eq!(context.subagent_history.len(), 1);
 }
 
 #[test]

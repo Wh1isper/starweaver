@@ -52,7 +52,7 @@ CLI configuration examples live in `examples/cli/`.
 
 Published docs: <https://starweaver.wh1isper.top>
 
-Repository docs live in `docs/` and are built with mdBook. Architecture and product decisions live in `spec/`. The detailed implementation roadmap lives in `memos/implementation-todo.md`.
+Repository docs live in `docs/` and are built with mdBook. Architecture and product decisions live in `spec/`. The detailed implementation roadmap lives in `spec/alignment/07-gap-matrix-and-roadmap.md`.
 
 Useful starting points:
 
@@ -70,7 +70,8 @@ Useful starting points:
 - [spec/ops/02-shared-execution-components.md](spec/ops/02-shared-execution-components.md)
 - [spec/ops/03-durable-service-runtime.md](spec/ops/03-durable-service-runtime.md)
 - [spec/ops/04-cli-product.md](spec/ops/04-cli-product.md)
-- [memos/implementation-todo.md](memos/implementation-todo.md)
+- [spec/alignment/README.md](spec/alignment/README.md)
+- [spec/alignment/07-gap-matrix-and-roadmap.md](spec/alignment/07-gap-matrix-and-roadmap.md)
 
 ## Quick Example
 

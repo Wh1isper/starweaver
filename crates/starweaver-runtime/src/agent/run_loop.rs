@@ -1,9 +1,10 @@
 //! Agent run loop entrypoints.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 use starweaver_model::{
+    transport::{should_retry_error, RetryPolicy},
     ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
 };
 use starweaver_tools::ToolContext;
@@ -21,21 +22,42 @@ use crate::{
         },
         run_loop_helpers::{agent_error_kind, preserve_pending_tool_returns_for_resume},
         runtime_helpers::{request_instruction_insert_index, tool_return_media_prompt},
-        Agent, AgentError, AgentResult,
+        Agent, AgentEndStrategy, AgentError, AgentInput, AgentResult,
     },
     capability::{CapabilityError, RetryEventKind},
     executor::{AgentExecutionDecision, AgentExecutionNode},
     retry_recovery::{recover_retry_message_history, DEFAULT_MODEL_ERROR_RESUME_PROMPT},
     run::{AgentRunState, RunStatus},
-    stream::{push_stream_event, AgentStreamEvent, AgentStreamRecord},
+    stream::{
+        push_stream_event, push_stream_record, AgentStreamEvent, AgentStreamRecord, AgentStreamSink,
+    },
     trace::{SpanEvent, SpanKind, SpanSpec, SpanStatus},
 };
 
+#[inline(never)]
+fn shared_context_dependency(context: &AgentContext) -> Arc<AgentContext> {
+    Arc::new(context.clone())
+}
+
+#[inline(never)]
+fn context_handle_snapshot(context: &AgentContext) -> AgentContextHandle {
+    AgentContextHandle::new(context.clone())
+}
+
+#[inline(never)]
+fn replace_context_handle_snapshot(handle: &AgentContextHandle, context: &AgentContext) {
+    handle.replace(context.clone());
+}
+
+fn should_resume_provider_stream(error: &starweaver_model::ModelError) -> bool {
+    should_retry_error(error, &RetryPolicy::default())
+}
+
 impl Agent {
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::large_stack_frames, clippy::too_many_lines)]
     async fn run_with_context_inner(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         context: &mut AgentContext,
         mut stream_events: Option<&mut Vec<AgentStreamRecord>>,
     ) -> Result<AgentResult, AgentError> {
@@ -43,6 +65,20 @@ impl Agent {
             ($state:expr, $event:expr) => {{
                 let event = $event;
                 push_stream_event(&mut stream_events, event);
+                if let Some(record) = stream_events
+                    .as_deref()
+                    .and_then(|events| events.last())
+                    .cloned()
+                {
+                    self.call_stream_observers($state, context, &record).await?;
+                }
+            }};
+        }
+
+        macro_rules! stream_record {
+            ($state:expr, $record:expr) => {{
+                let record = $record;
+                push_stream_record(&mut stream_events, record);
                 if let Some(record) = stream_events
                     .as_deref()
                     .and_then(|events| events.last())
@@ -68,6 +104,13 @@ impl Agent {
             }};
         }
 
+        macro_rules! close_run_toolsets {
+            ($state:expr, $cursor:expr) => {{
+                self.close_run_toolsets(context).await;
+                stream_context_events!($state, $cursor);
+            }};
+        }
+
         macro_rules! fail_run {
             ($state:expr, $run_id:expr, $event_cursor:expr, $previous_trace_context:expr, $error:expr) => {{
                 let error = $error;
@@ -77,6 +120,7 @@ impl Agent {
                 preserve_pending_tool_returns_for_resume($state);
                 context.message_history.clone_from(&$state.message_history);
                 context.usage.clone_from(&$state.usage);
+                close_run_toolsets!($state, $event_cursor);
                 context.finish_run();
                 context.publish_event(AgentEvent::new(
                     "run_failed",
@@ -111,7 +155,12 @@ impl Agent {
                         status: $state.status,
                     }
                 );
-                let decision = self.checkpoint(node, $state, context).await?;
+                let stream_cursor = stream_events
+                    .as_deref()
+                    .and_then(|events| events.last().map(|record| record.sequence));
+                let decision = self
+                    .checkpoint(node, $state, context, stream_cursor)
+                    .await?;
                 stream_context_events!($state, $event_cursor);
                 stream_event!(
                     $state,
@@ -136,6 +185,7 @@ impl Agent {
                             status: $state.status,
                         }
                     );
+                    close_run_toolsets!($state, $event_cursor);
                     context.finish_run();
                     return Err(AgentError::ExecutionSuspended { node, reason });
                 }
@@ -150,33 +200,41 @@ impl Agent {
             }};
         }
 
-        let initial_prompt = prompt.into();
+        let initial_input = prompt.into();
         context.prepare_new_run();
+        let run_id = context.run_id.clone().unwrap_or_default();
+        context.run_id = Some(run_id.clone());
+        let conversation_id = context.conversation_id.clone();
+        let agent_id = context.agent_id.as_str().to_string();
+        let agent_name = context
+            .agent_registry
+            .get(&agent_id)
+            .map_or_else(|| agent_id.clone(), |info| info.agent_name.clone());
         let run_span = self.trace_recorder.start_span(
             SpanSpec::new("gen_ai.invoke_agent")
-                .with_attribute("gen_ai.operation.name", serde_json::json!("invoke_agent")),
+                .with_attribute("gen_ai.operation.name", serde_json::json!("invoke_agent"))
+                .with_attribute("gen_ai.agent.id", serde_json::json!(agent_id))
+                .with_attribute("gen_ai.agent.name", serde_json::json!(agent_name))
+                .with_attribute(
+                    "gen_ai.conversation.id",
+                    serde_json::json!(conversation_id.as_str()),
+                )
+                .with_attribute("starweaver.run.id", serde_json::json!(run_id.as_str())),
             &context.trace_context,
         );
         let previous_trace_context = context.trace_context.clone();
         context.trace_context = run_span.context().clone();
-        let run_id = context.run_id.clone().unwrap_or_default();
-        context.run_id = Some(run_id.clone());
         if let Some(model_config) = self.model_config.clone() {
             context.merge_model_config(model_config);
         }
         if let Some(tool_config) = self.tool_config.clone() {
             context.merge_tool_config(tool_config);
         }
-        let conversation_id = context.conversation_id.clone();
         let history_len = context.message_history.len();
-        context.user_prompts = Some(vec![starweaver_model::ContentPart::Text {
-            text: initial_prompt.clone(),
-        }]);
-        context.previous_assistant_response_reference =
-            Self::previous_assistant_response_reference(&context.message_history);
         let mut state = AgentRunState::new(run_id.clone(), conversation_id.clone());
-        state.message_history = context.message_history.clone();
+        state.message_history.clone_from(&context.message_history);
         state.usage = context.usage.clone();
+        state.pending_tool_returns = std::mem::take(&mut context.pending_tool_returns);
         state.status = RunStatus::Running;
         Self::sync_compact_context_metadata(context, &mut state);
         let mut context_event_cursor = context.events.len();
@@ -191,7 +249,49 @@ impl Agent {
                 conversation_id: conversation_id.clone(),
             }
         );
+        let initial_input = match self
+            .prepare_run_input(&mut state, context, initial_input)
+            .await
+        {
+            Ok(input) => input,
+            Err(error) => {
+                fail_run!(
+                    &mut state,
+                    &run_id,
+                    context_event_cursor,
+                    previous_trace_context.clone(),
+                    error
+                );
+            }
+        };
+        let initial_prompt = initial_input.text_projection();
+        let initial_content = if initial_input.is_empty() {
+            vec![starweaver_model::ContentPart::text(initial_prompt.clone())]
+        } else {
+            initial_input.content
+        };
+        let has_pending_tool_returns = !state.pending_tool_returns.is_empty();
+        context.user_prompts = if has_pending_tool_returns {
+            None
+        } else {
+            Some(initial_content.clone())
+        };
+        context.previous_assistant_response_reference =
+            Self::previous_assistant_response_reference(&context.message_history);
+        Self::sync_compact_context_metadata(context, &mut state);
         self.call_run_start(&mut state, context).await?;
+        let run_tools = match self.prepare_run_tools(context).await {
+            Ok(tools) => tools,
+            Err(error) => {
+                fail_run!(
+                    &mut state,
+                    &run_id,
+                    context_event_cursor,
+                    previous_trace_context.clone(),
+                    error
+                );
+            }
+        };
         stream_context_events!(&state, context_event_cursor);
         checkpoint!(AgentExecutionNode::RunStart, &state, context_event_cursor);
 
@@ -236,7 +336,13 @@ impl Agent {
                 context_event_cursor
             );
             let dynamic_instruction_parts = self.dynamic_instruction_parts(&state).await?;
-            let mut request = self.prepare_request(&state, &next_prompt, &run_id, &conversation_id);
+            let mut request = self.prepare_request(
+                &state,
+                &next_prompt,
+                &initial_content,
+                &run_id,
+                &conversation_id,
+            );
             if !dynamic_instruction_parts.is_empty() {
                 let insert_at = request_instruction_insert_index(&request);
                 request
@@ -280,7 +386,9 @@ impl Agent {
                 context.tool_id_wrapper.wrap_messages(&mut messages);
                 Self::validate_model_request_messages(&messages)?;
                 self.inject_missing_static_instructions(&run_id, &conversation_id, &mut messages);
-                let params = self.effective_request_params(&state, context).await?;
+                let params = self
+                    .effective_request_params(&state, context, &run_tools)
+                    .await?;
                 messages = Self::attach_prepared_request_instructions(messages, &params);
                 for message in &mut messages {
                     Self::fill_message_metadata(message, &run_id, &conversation_id);
@@ -307,6 +415,15 @@ impl Agent {
                     .with_kind(SpanKind::Client)
                     .with_attribute("gen_ai.operation.name", serde_json::json!("chat"))
                     .with_attribute(
+                        "gen_ai.agent.id",
+                        serde_json::json!(context.agent_id.as_str()),
+                    )
+                    .with_attribute(
+                        "gen_ai.conversation.id",
+                        serde_json::json!(conversation_id.as_str()),
+                    )
+                    .with_attribute("starweaver.run.id", serde_json::json!(run_id.as_str()))
+                    .with_attribute(
                         "gen_ai.request.model",
                         serde_json::json!(self.model.model_name()),
                     );
@@ -322,92 +439,192 @@ impl Agent {
                     ModelRequestContext::new(run_id.clone(), conversation_id.clone())
                         .with_trace_context(model_span.context().clone())
                         .with_llm_trace_metadata(context.metadata.clone());
+                let request_context = if let Some(token) = self.cancellation_token.as_ref() {
+                    request_context.with_cancellation_token(token.clone())
+                } else {
+                    request_context
+                };
                 macro_rules! recover_model_error {
                     ($error:expr) => {{
                         let error = $error;
-                        self.trace_recorder.close_span(
-                            &model_span,
-                            SpanStatus::Error {
-                                error_type: "model_error".to_string(),
-                            },
-                        );
-                        let recovery = recover_retry_message_history(&error, &state.message_history);
-                        if recovery.reasons.is_empty()
-                            || model_error_retries_used >= DEFAULT_MODEL_ERROR_RETRIES
-                        {
-                            self.trace_recorder.close_span(
-                                &step_span,
-                                SpanStatus::Error {
-                                    error_type: "model_error".to_string(),
-                                },
-                            );
-                            self.trace_recorder.close_span(
-                                &run_span,
-                                SpanStatus::Error {
-                                    error_type: "model_error".to_string(),
-                                },
-                            );
-                            fail_run!(&mut state, &run_id, context_event_cursor, previous_trace_context.clone(), AgentError::Model(error));
+                        match error {
+                            starweaver_model::ModelError::Cancelled { reason } => {
+                                self.trace_recorder.close_span(
+                                    &model_span,
+                                    SpanStatus::Error {
+                                        error_type: "model_cancelled".to_string(),
+                                    },
+                                );
+                                self.trace_recorder.close_span(
+                                    &step_span,
+                                    SpanStatus::Error {
+                                        error_type: "model_cancelled".to_string(),
+                                    },
+                                );
+                                self.trace_recorder.close_span(
+                                    &run_span,
+                                    SpanStatus::Error {
+                                        error_type: "model_cancelled".to_string(),
+                                    },
+                                );
+                                fail_run!(
+                                    &mut state,
+                                    &run_id,
+                                    context_event_cursor,
+                                    previous_trace_context.clone(),
+                                    AgentError::Cancelled { reason }
+                                );
+                            }
+                            error => {
+                                self.trace_recorder.close_span(
+                                    &model_span,
+                                    SpanStatus::Error {
+                                        error_type: "model_error".to_string(),
+                                    },
+                                );
+                                let recovery =
+                                    recover_retry_message_history(&error, &state.message_history);
+                                if recovery.reasons.is_empty()
+                                    || model_error_retries_used >= DEFAULT_MODEL_ERROR_RETRIES
+                                {
+                                    self.trace_recorder.close_span(
+                                        &step_span,
+                                        SpanStatus::Error {
+                                            error_type: "model_error".to_string(),
+                                        },
+                                    );
+                                    self.trace_recorder.close_span(
+                                        &run_span,
+                                        SpanStatus::Error {
+                                            error_type: "model_error".to_string(),
+                                        },
+                                    );
+                                    fail_run!(&mut state, &run_id, context_event_cursor, previous_trace_context.clone(), AgentError::Model(error));
+                                }
+                                model_error_retries_used =
+                                    model_error_retries_used.saturating_add(1);
+                                let recovery_changed = recovery.changed;
+                                let recovery_reasons = recovery.reasons.clone();
+                                if recovery_changed {
+                                    state.message_history = recovery.history;
+                                    context.message_history.clone_from(&state.message_history);
+                                }
+                                context.publish_event(AgentEvent::new(
+                                    "model_error_retry",
+                                    serde_json::json!({
+                                        "run_id": run_id.as_str(),
+                                        "retry": model_error_retries_used,
+                                        "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
+                                        "error": error.to_string(),
+                                        "recovery_changed": recovery_changed,
+                                        "recovery_reasons": recovery_reasons,
+                                    }),
+                                ));
+                                stream_context_events!(&state, context_event_cursor);
+                                next_prompt = DEFAULT_MODEL_ERROR_RESUME_PROMPT.to_string();
+                                self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                                continue 'agent_loop;
+                            }
                         }
-                        model_error_retries_used = model_error_retries_used.saturating_add(1);
-                        let recovery_changed = recovery.changed;
-                        let recovery_reasons = recovery.reasons.clone();
-                        if recovery_changed {
-                            state.message_history = recovery.history;
-                            context.message_history.clone_from(&state.message_history);
-                        }
-                        context.publish_event(AgentEvent::new(
-                            "model_error_retry",
-                            serde_json::json!({
-                                "run_id": run_id.as_str(),
-                                "retry": model_error_retries_used,
-                                "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
-                                "error": error.to_string(),
-                                "recovery_changed": recovery_changed,
-                                "recovery_reasons": recovery_reasons,
-                            }),
-                        ));
-                        stream_context_events!(&state, context_event_cursor);
-                        next_prompt = DEFAULT_MODEL_ERROR_RESUME_PROMPT.to_string();
-                        self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
-                        continue 'agent_loop;
                     }};
                 }
                 if stream_events.is_some() {
-                    let mut response = None;
-                    let mut model_stream = match self
-                        .model
-                        .request_stream_incremental(messages, settings, params, request_context)
-                        .await
-                    {
-                        Ok(stream) => stream,
-                        Err(error) => recover_model_error!(error),
-                    };
-                    while let Some(model_event) = model_stream.recv().await {
-                        let mut model_event = match model_event {
-                            Ok(event) => event,
+                    let mut stream_resume_retries_used = 0usize;
+                    let response = 'model_stream_resume: loop {
+                        let mut response = None;
+                        let mut model_stream = match self
+                            .model
+                            .request_stream_incremental(
+                                messages.clone(),
+                                settings.clone(),
+                                params.clone(),
+                                request_context.clone(),
+                            )
+                            .await
+                        {
+                            Ok(stream) => stream,
+                            Err(error)
+                                if stream_resume_retries_used < DEFAULT_MODEL_ERROR_RETRIES
+                                    && should_resume_provider_stream(&error) =>
+                            {
+                                stream_resume_retries_used =
+                                    stream_resume_retries_used.saturating_add(1);
+                                context.publish_event(AgentEvent::new(
+                                    "model_stream_resume",
+                                    serde_json::json!({
+                                        "run_id": run_id.as_str(),
+                                        "retry": stream_resume_retries_used,
+                                        "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
+                                        "error": error.to_string(),
+                                    }),
+                                ));
+                                stream_context_events!(&state, context_event_cursor);
+                                continue 'model_stream_resume;
+                            }
                             Err(error) => recover_model_error!(error),
                         };
-                        if let ModelResponseStreamEvent::FinalResult(final_response) =
-                            &mut model_event
-                        {
-                            for part in &mut final_response.parts {
-                                context.tool_id_wrapper.wrap_response_part(part);
+                        while let Some(model_event) = model_stream.recv().await {
+                            let mut model_event = match model_event {
+                                Ok(event) => event,
+                                Err(error)
+                                    if stream_resume_retries_used < DEFAULT_MODEL_ERROR_RETRIES
+                                        && should_resume_provider_stream(&error) =>
+                                {
+                                    stream_resume_retries_used =
+                                        stream_resume_retries_used.saturating_add(1);
+                                    context.publish_event(AgentEvent::new(
+                                        "model_stream_resume",
+                                        serde_json::json!({
+                                            "run_id": run_id.as_str(),
+                                            "retry": stream_resume_retries_used,
+                                            "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
+                                            "error": error.to_string(),
+                                        }),
+                                    ));
+                                    stream_context_events!(&state, context_event_cursor);
+                                    continue 'model_stream_resume;
+                                }
+                                Err(error) => recover_model_error!(error),
+                            };
+                            if let ModelResponseStreamEvent::FinalResult(final_response) =
+                                &mut model_event
+                            {
+                                for part in &mut final_response.parts {
+                                    context.tool_id_wrapper.wrap_response_part(part);
+                                }
+                            }
+                            stream_event!(
+                                &state,
+                                AgentStreamEvent::ModelStream {
+                                    step: state.run_step,
+                                    event: model_event.clone(),
+                                }
+                            );
+                            self.record_model_stream_event(&model_span, &model_event);
+                            if let ModelResponseStreamEvent::FinalResult(final_response) =
+                                model_event
+                            {
+                                response = Some(*final_response);
                             }
                         }
-                        stream_event!(
-                            &state,
-                            AgentStreamEvent::ModelStream {
-                                step: state.run_step,
-                                event: model_event.clone(),
-                            }
-                        );
-                        self.record_model_stream_event(&model_span, &model_event);
-                        if let ModelResponseStreamEvent::FinalResult(final_response) = model_event {
-                            response = Some(*final_response);
+                        if let Some(response) = response {
+                            break response;
                         }
-                    }
-                    let Some(response) = response else {
+                        if stream_resume_retries_used < DEFAULT_MODEL_ERROR_RETRIES {
+                            stream_resume_retries_used =
+                                stream_resume_retries_used.saturating_add(1);
+                            context.publish_event(AgentEvent::new(
+                                "model_stream_resume",
+                                serde_json::json!({
+                                    "run_id": run_id.as_str(),
+                                    "retry": stream_resume_retries_used,
+                                    "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
+                                    "error": "model stream ended before final result",
+                                }),
+                            ));
+                            stream_context_events!(&state, context_event_cursor);
+                            continue 'model_stream_resume;
+                        }
                         self.trace_recorder.close_span(
                             &model_span,
                             SpanStatus::Error {
@@ -544,43 +761,62 @@ impl Agent {
             state.replace_latest_response(response.clone());
             context.message_history.clone_from(&state.message_history);
 
-            let tool_calls = response.tool_calls();
+            let mut tool_calls = response.tool_calls();
             if !tool_calls.is_empty() {
+                let mut final_output_after_tools = None;
                 match self.try_call_output_function(&state, &tool_calls).await {
                     Ok(Some((output, structured_output))) => {
+                        let ordinary_tool_calls = tool_calls
+                            .iter()
+                            .filter(|call| {
+                                !self
+                                    .output_functions
+                                    .iter()
+                                    .any(|function| function.definition().name == call.name)
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
                         state.output = Some(output.clone());
                         state.structured_output = structured_output;
-                        state.status = RunStatus::Completed;
-                        self.call_run_complete(&mut state, context).await?;
-                        checkpoint!(
-                            AgentExecutionNode::RunComplete,
-                            &state,
-                            context_event_cursor
-                        );
-                        context.message_history.clone_from(&state.message_history);
-                        context.publish_event(AgentEvent::new(
-                            "run_complete",
-                            serde_json::json!({"run_id": run_id.as_str()}),
-                        ));
-                        stream_context_events!(&state, context_event_cursor);
-                        stream_event!(
-                            &state,
-                            AgentStreamEvent::RunComplete {
-                                run_id: run_id.clone(),
-                                output: output.clone(),
-                            }
-                        );
-                        self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
-                        self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
-                        context.finish_run();
-                        context.trace_context = previous_trace_context;
-                        return Ok(AgentResult {
-                            output,
-                            structured_output: state.structured_output.clone(),
-                            messages: state.message_history.clone(),
-                            state,
-                            history_len,
-                        });
+                        if self.policy.end_strategy != AgentEndStrategy::Early
+                            && !ordinary_tool_calls.is_empty()
+                        {
+                            final_output_after_tools = Some(output);
+                            tool_calls = ordinary_tool_calls;
+                        } else {
+                            state.status = RunStatus::Completed;
+                            self.call_run_complete(&mut state, context).await?;
+                            checkpoint!(
+                                AgentExecutionNode::RunComplete,
+                                &state,
+                                context_event_cursor
+                            );
+                            context.message_history.clone_from(&state.message_history);
+                            close_run_toolsets!(&state, context_event_cursor);
+                            context.publish_event(AgentEvent::new(
+                                "run_complete",
+                                serde_json::json!({"run_id": run_id.as_str()}),
+                            ));
+                            stream_context_events!(&state, context_event_cursor);
+                            stream_event!(
+                                &state,
+                                AgentStreamEvent::RunComplete {
+                                    run_id: run_id.clone(),
+                                    output: output.clone(),
+                                }
+                            );
+                            self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                            self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                            context.finish_run();
+                            context.trace_context = previous_trace_context;
+                            return Ok(AgentResult {
+                                output,
+                                structured_output: state.structured_output.clone(),
+                                messages: state.message_history.clone(),
+                                state,
+                                history_len,
+                            });
+                        }
                     }
                     Ok(None) => {}
                     Err(CapabilityError::ModelRetry(message)) => {
@@ -649,7 +885,7 @@ impl Agent {
                         );
                     }
                 }
-                if self.tools.is_empty() {
+                if run_tools.is_empty() {
                     self.trace_recorder.close_span(
                         &step_span,
                         SpanStatus::Error {
@@ -670,10 +906,10 @@ impl Agent {
                         AgentError::ToolCallsRequireTools
                     );
                 }
-                state.pending_tool_calls = tool_calls.clone();
+                state.pending_tool_calls.clone_from(&tool_calls);
                 let projected_successful_tool_calls = tool_calls
                     .iter()
-                    .filter(|call| self.tools.get(&call.name).is_some())
+                    .filter(|call| run_tools.get(&call.name).is_some())
                     .count() as u64;
                 if let Err(error) = self.check_tool_calls(&state, projected_successful_tool_calls) {
                     self.trace_recorder.close_span(
@@ -706,9 +942,18 @@ impl Agent {
                         }
                     );
                     let tool_retry = *tool_retries.get(&call.name).unwrap_or(&0);
-                    let tool_max_retries = self.tools.max_retries_for(&call.name);
+                    let tool_max_retries = run_tools.max_retries_for(&call.name);
                     let tool_span = self.trace_recorder.start_span(
                         SpanSpec::new("gen_ai.execute_tool")
+                            .with_attribute(
+                                "gen_ai.agent.id",
+                                serde_json::json!(context.agent_id.as_str()),
+                            )
+                            .with_attribute(
+                                "gen_ai.conversation.id",
+                                serde_json::json!(conversation_id.as_str()),
+                            )
+                            .with_attribute("starweaver.run.id", serde_json::json!(run_id.as_str()))
                             .with_attribute(
                                 "gen_ai.tool.name",
                                 serde_json::json!(call.name.clone()),
@@ -719,10 +964,14 @@ impl Agent {
                             ),
                         step_span.context(),
                     );
-                    let context_handle = AgentContextHandle::new(context.clone());
+                    let context_handle = context_handle_snapshot(context);
                     let mut tool_dependencies = context.dependencies.clone();
-                    tool_dependencies.insert(context.clone());
+                    tool_dependencies.insert_arc(shared_context_dependency(context));
                     tool_dependencies.insert(context_handle.clone());
+                    let stream_sink = stream_events.as_ref().map(|_| AgentStreamSink::default());
+                    if let Some(stream_sink) = &stream_sink {
+                        tool_dependencies.insert(stream_sink.clone());
+                    }
                     let mut tool_context = ToolContext::new(
                         state.run_id.clone(),
                         state.conversation_id.clone(),
@@ -731,19 +980,29 @@ impl Agent {
                     .with_dependencies(tool_dependencies)
                     .with_trace_context(tool_span.context().clone())
                     .with_retry_budget(tool_retry, tool_max_retries);
+                    if let Some(token) = self.cancellation_token.as_ref() {
+                        tool_context = tool_context.with_cancellation_token(token.clone());
+                    }
                     self.call_before_tool_execution(&mut state, context, &mut tool_context, call)
                         .await?;
-                    context_handle.replace(context.clone());
-                    tool_context.dependencies.insert(context.clone());
+                    replace_context_handle_snapshot(&context_handle, context);
+                    tool_context
+                        .dependencies
+                        .insert_arc(shared_context_dependency(context));
                     self.trace_recorder.record_event(
                         &tool_span,
                         SpanEvent::new("starweaver.tool.call").with_attribute(
                             "gen_ai.tool.call.arguments",
-                            call.arguments.replay_value(),
+                            serde_json::json!({"redacted": true}),
                         ),
                     );
                     let tool_started_at = std::time::Instant::now();
-                    let mut tool_return = self.tools.execute_call(tool_context, call).await;
+                    let mut tool_return = run_tools.execute_call(tool_context, call).await;
+                    if let Some(stream_sink) = &stream_sink {
+                        for child_record in stream_sink.drain() {
+                            stream_record!(&state, child_record);
+                        }
+                    }
                     let tool_duration = tool_started_at.elapsed();
                     let duration_ms = u64::try_from(tool_duration.as_millis()).unwrap_or(u64::MAX);
                     tool_return
@@ -757,7 +1016,13 @@ impl Agent {
                     self.trace_recorder.record_event(
                         &tool_span,
                         SpanEvent::new("starweaver.tool.return")
-                            .with_attribute("gen_ai.tool.call.result", tool_return.content.clone())
+                            .with_attribute(
+                                "gen_ai.tool.call.result",
+                                serde_json::json!({
+                                    "redacted": true,
+                                    "is_error": tool_return.is_error,
+                                }),
+                            )
                             .with_attribute(
                                 "starweaver.tool.duration_ms",
                                 serde_json::json!(duration_ms),
@@ -902,6 +1167,7 @@ impl Agent {
                         }
                     );
                     checkpoint!(AgentExecutionNode::ToolReturn, &state, context_event_cursor);
+                    close_run_toolsets!(&state, context_event_cursor);
                     self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
                     self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
                     context.finish_run();
@@ -909,6 +1175,65 @@ impl Agent {
                     return Ok(AgentResult {
                         output: String::new(),
                         structured_output: None,
+                        messages: state.message_history.clone(),
+                        state,
+                        history_len,
+                    });
+                }
+                if let Some(output) = final_output_after_tools {
+                    if !state.pending_tool_returns.is_empty() {
+                        let mut parts = Vec::new();
+                        for tool_return in &state.pending_tool_returns {
+                            parts.push(ModelRequestPart::ToolReturn(tool_return.clone()));
+                            if let Some(media_prompt) = tool_return_media_prompt(tool_return) {
+                                parts.push(media_prompt);
+                            }
+                        }
+                        state
+                            .message_history
+                            .push(ModelMessage::Request(ModelRequest {
+                                parts,
+                                timestamp: Some(chrono::Utc::now()),
+                                instructions: None,
+                                run_id: Some(run_id.clone()),
+                                conversation_id: Some(conversation_id.clone()),
+                                metadata: serde_json::json!({
+                                    "starweaver.final_output_tool_returns": true,
+                                })
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
+                            }));
+                    }
+                    state.pending_tool_returns.clear();
+                    state.status = RunStatus::Completed;
+                    self.call_run_complete(&mut state, context).await?;
+                    checkpoint!(
+                        AgentExecutionNode::RunComplete,
+                        &state,
+                        context_event_cursor
+                    );
+                    context.message_history.clone_from(&state.message_history);
+                    close_run_toolsets!(&state, context_event_cursor);
+                    context.publish_event(AgentEvent::new(
+                        "run_complete",
+                        serde_json::json!({"run_id": run_id.as_str()}),
+                    ));
+                    stream_context_events!(&state, context_event_cursor);
+                    stream_event!(
+                        &state,
+                        AgentStreamEvent::RunComplete {
+                            run_id: run_id.clone(),
+                            output: output.clone(),
+                        }
+                    );
+                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                    self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                    context.finish_run();
+                    context.trace_context = previous_trace_context;
+                    return Ok(AgentResult {
+                        output,
+                        structured_output: state.structured_output.clone(),
                         messages: state.message_history.clone(),
                         state,
                         history_len,
@@ -953,6 +1278,7 @@ impl Agent {
                         context_event_cursor
                     );
                     context.message_history.clone_from(&state.message_history);
+                    close_run_toolsets!(&state, context_event_cursor);
                     context.publish_event(AgentEvent::new(
                         "run_complete",
                         serde_json::json!({"run_id": run_id.as_str()}),

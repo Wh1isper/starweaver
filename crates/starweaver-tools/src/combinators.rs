@@ -1,6 +1,7 @@
 //! Toolset combinators for filtering, renaming, approval policy, preparation, and loading.
 
 mod approval;
+mod deferred;
 mod renamed;
 
 use std::{
@@ -11,6 +12,7 @@ use std::{
 use crate::{DynTool, DynToolset, Tool, ToolInstruction, Toolset};
 
 pub use approval::ApprovalRequiredToolset;
+pub use deferred::DeferredToolset;
 pub use renamed::RenamedToolset;
 
 /// Predicate used by [`FilteredToolset`].
@@ -94,21 +96,25 @@ impl Toolset for FilteredToolset {
         self.inner.max_retries()
     }
 
+    fn timeout_ms(&self) -> Option<u64> {
+        self.inner.timeout_ms()
+    }
+
     fn get_instructions(&self) -> Vec<ToolInstruction> {
         self.inner.get_instructions()
     }
 }
 
 /// Lazily loaded toolset that materializes an inner toolset on first use.
-pub struct DeferredLoadingToolset {
+pub struct LazyToolset {
     name: String,
     id: Option<String>,
     load_toolset: Arc<dyn Fn() -> DynToolset + Send + Sync>,
     toolset: OnceLock<DynToolset>,
 }
 
-impl DeferredLoadingToolset {
-    /// Build a deferred-loading toolset.
+impl LazyToolset {
+    /// Build a lazily loaded toolset.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -134,7 +140,7 @@ impl DeferredLoadingToolset {
     }
 }
 
-impl Toolset for DeferredLoadingToolset {
+impl Toolset for LazyToolset {
     fn name(&self) -> &str {
         &self.name
     }
@@ -149,6 +155,10 @@ impl Toolset for DeferredLoadingToolset {
 
     fn max_retries(&self) -> Option<usize> {
         self.loaded_toolset().max_retries()
+    }
+
+    fn timeout_ms(&self) -> Option<u64> {
+        self.loaded_toolset().timeout_ms()
     }
 
     fn get_instructions(&self) -> Vec<ToolInstruction> {
@@ -221,6 +231,10 @@ impl Toolset for DynamicToolset {
 
     fn max_retries(&self) -> Option<usize> {
         self.max_retries
+    }
+
+    fn timeout_ms(&self) -> Option<u64> {
+        None
     }
 
     fn get_instructions(&self) -> Vec<ToolInstruction> {

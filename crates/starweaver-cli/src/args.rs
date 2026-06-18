@@ -24,12 +24,7 @@ pub struct Cli {
     )]
     pub session: Option<String>,
     /// Continue the latest local session.
-    #[arg(
-        long = "continue",
-        alias = "continue-session",
-        global = false,
-        conflicts_with = "new_session"
-    )]
+    #[arg(long = "continue", global = false, conflicts_with = "new_session")]
     pub continue_session: bool,
     /// Create a fresh session.
     #[arg(long, global = false)]
@@ -41,15 +36,15 @@ pub struct Cli {
     #[arg(long, global = false, conflicts_with = "run")]
     pub branch_from: Option<String>,
     /// Agent profile name or YAML path.
-    #[arg(long, alias = "model-profile", global = false)]
+    #[arg(long, global = false)]
     pub profile: Option<String>,
-    /// Enable worker mode or set an optional Starweaver-compatible worker label.
+    /// Enable worker mode or set an optional worker label.
     #[arg(long, global = false, num_args = 0..=1, default_missing_value = "true")]
     pub worker: Option<String>,
-    /// Explicit Starweaver-compatible worker label.
+    /// Explicit worker label.
     #[arg(long = "worker-label", global = false)]
     pub worker_label: Option<String>,
-    /// Enable a git worktree or set an optional Starweaver-compatible worktree name/path.
+    /// Enable a git worktree or set an optional worktree name/path.
     #[arg(
         short = 'w',
         long,
@@ -58,10 +53,10 @@ pub struct Cli {
         default_missing_value = "true"
     )]
     pub worktree: Option<String>,
-    /// Explicit Starweaver-compatible worktree name/path.
-    #[arg(long = "worktree-name", alias = "worktree-path", global = false)]
+    /// Explicit worktree name/path.
+    #[arg(long = "worktree-name", global = false)]
     pub worktree_name: Option<String>,
-    /// Git branch for Starweaver-compatible worktree metadata.
+    /// Git branch for worktree metadata.
     #[arg(long, global = false)]
     pub branch: Option<String>,
     /// Output mode.
@@ -87,7 +82,6 @@ pub enum CliCommand {
     /// Run a prompt.
     Run(RunCommand),
     /// Manage local sessions.
-    #[command(alias = "sessions")]
     Session {
         /// Session subcommand.
         #[command(subcommand)]
@@ -182,7 +176,7 @@ pub struct RunCommand {
     #[arg(short = 's', conflicts_with_all = ["new_session", "continue_session"], long)]
     pub session: Option<String>,
     /// Continue the latest local session.
-    #[arg(long, conflicts_with = "new_session")]
+    #[arg(long = "continue", conflicts_with = "new_session")]
     pub continue_session: bool,
     /// Create a fresh session.
     #[arg(long)]
@@ -194,21 +188,21 @@ pub struct RunCommand {
     #[arg(long, conflicts_with = "run")]
     pub branch_from: Option<String>,
     /// Agent profile name or YAML path.
-    #[arg(long, alias = "model-profile")]
+    #[arg(long)]
     pub profile: Option<String>,
-    /// Enable worker mode or set an optional Starweaver-compatible worker label.
+    /// Enable worker mode or set an optional worker label.
     #[arg(long, num_args = 0..=1, default_missing_value = "true")]
     pub worker: Option<String>,
-    /// Explicit Starweaver-compatible worker label.
+    /// Explicit worker label.
     #[arg(long = "worker-label")]
     pub worker_label: Option<String>,
-    /// Enable a git worktree or set an optional Starweaver-compatible worktree name/path.
+    /// Enable a git worktree or set an optional worktree name/path.
     #[arg(short = 'w', long, num_args = 0..=1, default_missing_value = "true")]
     pub worktree: Option<String>,
-    /// Explicit Starweaver-compatible worktree name/path.
-    #[arg(long = "worktree-name", alias = "worktree-path")]
+    /// Explicit worktree name/path.
+    #[arg(long = "worktree-name")]
     pub worktree_name: Option<String>,
-    /// Git branch for Starweaver-compatible worktree metadata.
+    /// Git branch for worktree metadata.
     #[arg(long)]
     pub branch: Option<String>,
     /// Output mode.
@@ -651,7 +645,7 @@ pub enum OutputMode {
     /// Starweaver durable `DisplayMessage` JSON lines.
     #[default]
     DisplayJsonl,
-    /// Starweaver AG-UI compatible top-level event JSON lines.
+    /// Starweaver/AGUI top-level event JSON lines.
     AguiJsonl,
     /// Compact JSON command result.
     Json,

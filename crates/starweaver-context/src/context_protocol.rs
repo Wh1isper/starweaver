@@ -67,7 +67,7 @@ impl ContextLifecycleState {
     }
 }
 
-/// Tool call ID normalizer for cross-provider compatibility.
+/// Tool call ID normalizer for cross-provider tool call matching.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ToolIdWrapper {
     /// Prefix for normalized tool call IDs.
@@ -219,6 +219,25 @@ impl ToolSearchState {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.loaded_tools.is_empty() && self.loaded_namespaces.is_empty()
+    }
+}
+
+/// Removed tool-search state after host invalidation or refresh.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ToolSearchInvalidation {
+    /// Tool names removed from loaded tool-search state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_tools: Vec<String>,
+    /// Namespace IDs removed from loaded tool-search state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_namespaces: Vec<String>,
+}
+
+impl ToolSearchInvalidation {
+    /// Return whether no loaded tool-search entries were removed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.removed_tools.is_empty() && self.removed_namespaces.is_empty()
     }
 }
 

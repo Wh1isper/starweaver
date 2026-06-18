@@ -121,3 +121,22 @@ async fn typed_tool_preserves_nested_schema_descriptions_and_required_fields() {
         .unwrap();
     assert_eq!(result.content["count"], 1);
 }
+
+#[test]
+fn typed_tool_accepts_return_schema() {
+    let return_schema = json!({
+        "type": "object",
+        "properties": {"count": {"type": "integer"}},
+        "required": ["count"]
+    });
+    let tool = typed_json_tool::<BatchArgs, _, _>(
+        "batch",
+        Some("Process entries.".to_string()),
+        |_context: ToolContext, arguments: BatchArgs| async move {
+            Ok(ToolResult::new(json!({"count": arguments.entries.len()})))
+        },
+    )
+    .with_return_schema(return_schema.clone());
+
+    assert_eq!(tool.definition().return_schema, Some(return_schema));
+}

@@ -9,7 +9,10 @@ mod wire;
 use crate::{
     profile::ModelProfile,
     settings::ModelSettings,
-    transport::{DynHttpClient, DynSleeper, HttpModelConfig, TokioSleeper},
+    transport::{
+        DynHttpClient, DynProviderRequestAuditRecorder, DynSleeper, HttpModelConfig,
+        ProviderRequestAuditCapture, ProviderRequestAuditPolicy, TokioSleeper,
+    },
 };
 
 /// Shared production model client for a supported wire protocol family.
@@ -21,6 +24,7 @@ pub struct ProtocolModelClient {
     http_config: HttpModelConfig,
     http_client: DynHttpClient,
     sleeper: DynSleeper,
+    request_audit: Option<ProviderRequestAuditCapture>,
 }
 
 impl ProtocolModelClient {
@@ -41,6 +45,7 @@ impl ProtocolModelClient {
             http_config,
             http_client,
             sleeper: std::sync::Arc::new(TokioSleeper),
+            request_audit: None,
         }
     }
 
@@ -62,6 +67,17 @@ impl ProtocolModelClient {
     #[must_use]
     pub fn with_sleeper(mut self, sleeper: DynSleeper) -> Self {
         self.sleeper = sleeper;
+        self
+    }
+
+    /// Record provider HTTP request audit snapshots outside redacted trace events.
+    #[must_use]
+    pub fn with_provider_request_audit(
+        mut self,
+        recorder: DynProviderRequestAuditRecorder,
+        policy: ProviderRequestAuditPolicy,
+    ) -> Self {
+        self.request_audit = Some(ProviderRequestAuditCapture::new(recorder, policy));
         self
     }
 }

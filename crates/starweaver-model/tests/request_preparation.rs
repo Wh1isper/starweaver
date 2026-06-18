@@ -103,6 +103,66 @@ fn prompted_output_mode_attaches_instruction_with_origin_metadata() {
 }
 
 #[test]
+fn unsupported_image_output_falls_back_to_text_with_diagnostic_metadata() {
+    let params = ModelRequestParameters {
+        output_mode: Some(OutputMode::Image),
+        allow_image_output: Some(true),
+        allow_text_output: Some(false),
+        ..ModelRequestParameters::default()
+    };
+
+    let prepared = prepare_model_request(
+        vec![ModelMessage::Request(ModelRequest::user_text("draw"))],
+        None,
+        None,
+        params,
+        &ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+    );
+
+    assert_eq!(prepared.output_mode, OutputMode::Text);
+    assert_eq!(prepared.params.output_mode, Some(OutputMode::Text));
+    assert_eq!(prepared.params.allow_image_output, Some(false));
+    assert_eq!(prepared.params.allow_text_output, Some(true));
+    assert_eq!(
+        prepared.metadata["image_output_fallback"]["reason"],
+        "unsupported_by_model_profile"
+    );
+}
+
+#[test]
+fn supported_openai_responses_image_output_adds_native_generation_tool() {
+    let profile = ModelProfile {
+        supports_image_output: true,
+        ..ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses)
+    };
+    let params = ModelRequestParameters {
+        output_mode: Some(OutputMode::Image),
+        allow_image_output: Some(true),
+        allow_text_output: Some(false),
+        ..ModelRequestParameters::default()
+    };
+
+    let prepared = prepare_model_request(
+        vec![ModelMessage::Request(ModelRequest::user_text("draw"))],
+        None,
+        None,
+        params,
+        &profile,
+    );
+
+    assert_eq!(prepared.output_mode, OutputMode::Image);
+    assert_eq!(prepared.params.output_mode, Some(OutputMode::Image));
+    assert_eq!(prepared.params.allow_image_output, Some(true));
+    assert_eq!(prepared.params.allow_text_output, Some(false));
+    assert_eq!(prepared.metadata["image_generation_tool_added"], true);
+    assert!(prepared
+        .params
+        .native_tools
+        .iter()
+        .any(|tool| tool.tool_type == "image_generation"));
+}
+
+#[test]
 fn prepared_instructions_are_sorted_and_attached_as_structured_parts() {
     let params = ModelRequestParameters {
         instructions: vec![

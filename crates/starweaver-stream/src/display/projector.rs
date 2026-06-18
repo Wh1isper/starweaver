@@ -58,6 +58,7 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
                 run_id,
                 &event.kind,
                 &event.payload,
+                &event.metadata,
             ),
             AgentStreamEvent::SteeringGuard { step, prompt } => {
                 vec![run::project_steering_guard(

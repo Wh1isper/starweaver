@@ -2,17 +2,25 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use starweaver_environment::DynEnvironmentProvider;
 use starweaver_model::ModelAdapter;
-use starweaver_runtime::CapabilitySpec;
+use starweaver_runtime::{CapabilityBundle, CapabilitySpec};
 use starweaver_tools::DynToolset;
 
-use crate::SubagentConfig;
+use crate::{SkillRegistry, SubagentConfig};
 
 use super::types::{
     AgentSpecError, ApprovalPolicyPreset, DurabilityPolicyPreset, EnvironmentPolicyPreset,
     HostAdapterSpec, McpServerSpec, ObservabilityPolicyPreset, RetryPolicyPreset,
-    StreamingPolicyPreset,
+    StreamingPolicyPreset, ToolsetWrapperSpec,
 };
+
+/// Host-provided materializer for custom `AgentSpec` toolset wrappers.
+pub type AgentSpecToolsetWrapperFactory = Arc<
+    dyn Fn(&ToolsetWrapperSpec, &AgentSpecRegistry) -> Result<DynToolset, AgentSpecError>
+        + Send
+        + Sync,
+>;
 
 /// Registry used to resolve spec references into runtime objects.
 #[derive(Clone, Default)]
@@ -31,6 +39,10 @@ pub struct AgentSpecRegistry {
     pub(super) host_adapters: BTreeMap<String, HostAdapterSpec>,
     pub(super) mcp_servers: BTreeMap<String, McpServerSpec>,
     pub(super) capabilities: BTreeMap<String, CapabilitySpec>,
+    pub(super) capability_bundles: BTreeMap<String, Arc<dyn CapabilityBundle>>,
+    pub(super) skill_registries: BTreeMap<String, SkillRegistry>,
+    pub(super) environment_providers: BTreeMap<String, DynEnvironmentProvider>,
+    pub(super) toolset_wrapper_factories: BTreeMap<String, AgentSpecToolsetWrapperFactory>,
 }
 
 impl AgentSpecRegistry {
@@ -61,6 +73,20 @@ impl AgentSpecRegistry {
         self.toolsets_by_key.insert(alias.into(), toolset.clone());
         self.register_toolset_keys(&toolset);
         self.toolsets.push(toolset);
+        self
+    }
+
+    /// Register a host-defined toolset wrapper materializer by wrapper kind.
+    #[must_use]
+    pub fn with_toolset_wrapper_factory<F>(mut self, kind: impl Into<String>, factory: F) -> Self
+    where
+        F: Fn(&ToolsetWrapperSpec, &Self) -> Result<DynToolset, AgentSpecError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.toolset_wrapper_factories
+            .insert(kind.into(), Arc::new(factory));
         self
     }
 
@@ -161,6 +187,37 @@ impl AgentSpecRegistry {
         self
     }
 
+    /// Register an executable capability bundle by stable id or alias.
+    #[must_use]
+    pub fn with_capability_bundle(
+        mut self,
+        name: impl Into<String>,
+        bundle: Arc<dyn CapabilityBundle>,
+    ) -> Self {
+        let name = name.into();
+        self.capabilities.insert(name.clone(), bundle.spec());
+        self.capability_bundles.insert(name, bundle);
+        self
+    }
+
+    /// Register a host-scanned skill registry by provider-visible root or stable alias.
+    #[must_use]
+    pub fn with_skill_registry(mut self, root: impl Into<String>, registry: SkillRegistry) -> Self {
+        self.skill_registries.insert(root.into(), registry);
+        self
+    }
+
+    /// Register a host-owned environment provider by stable profile name.
+    #[must_use]
+    pub fn with_environment_provider(
+        mut self,
+        name: impl Into<String>,
+        provider: DynEnvironmentProvider,
+    ) -> Self {
+        self.environment_providers.insert(name.into(), provider);
+        self
+    }
+
     pub(super) fn model(&self, id: &str) -> Result<Option<Arc<dyn ModelAdapter>>, AgentSpecError> {
         if let Some(model) = self.models.get(id).cloned() {
             return Ok(Some(model));
@@ -170,6 +227,12 @@ impl AgentSpecRegistry {
 
     pub(super) fn toolset(&self, key: &str) -> Option<DynToolset> {
         self.toolsets_by_key.get(key).cloned()
+    }
+
+    /// Resolve a registered toolset by id, name, or host alias.
+    #[must_use]
+    pub fn resolve_toolset(&self, key: &str) -> Option<DynToolset> {
+        self.toolset(key)
     }
 
     pub(super) fn subagent(&self, name: &str) -> Option<SubagentConfig> {

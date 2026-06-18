@@ -37,6 +37,12 @@ pub enum ModelError {
         /// Last error.
         source: Box<Self>,
     },
+    /// Request or stream was cancelled by the runtime.
+    #[error("model request cancelled: {reason}")]
+    Cancelled {
+        /// Cancellation reason.
+        reason: String,
+    },
     /// Provider returned an unsupported response shape.
     #[error("unsupported provider response: {0}")]
     UnsupportedResponse(String),

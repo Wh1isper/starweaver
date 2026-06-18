@@ -159,7 +159,7 @@ impl CliService {
             self.config.providers.openai.api_key_env.as_deref().unwrap_or_default(),
             self.config.providers.openai.base_url.as_deref().unwrap_or_default(),
             crate::oauth::OAuthStore::new(crate::oauth::OAuthStore::default_path())
-                .load_provider("codex")
+                .get_provider("codex")
                 .map_err(oauth_cli_error)?
                 .is_some(),
             self.config.providers.codex.base_url.as_deref().unwrap_or_default(),

@@ -4,7 +4,7 @@ use starweaver_context::AgentContext;
 use starweaver_model::{ModelRequest, ModelResponse, ModelSettings, ToolDefinition};
 
 use crate::{
-    agent::{runtime_helpers::validate_prepared_tools, Agent, AgentError},
+    agent::{runtime_helpers::validate_prepared_tools, Agent, AgentError, AgentInput},
     capability::{CapabilityError, RetryEventKind},
     run::AgentRunState,
 };
@@ -22,6 +22,21 @@ impl Agent {
                 .map_err(Self::capability_error)?;
         }
         Ok(())
+    }
+
+    pub(in crate::agent) async fn prepare_run_input(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        mut input: AgentInput,
+    ) -> Result<AgentInput, AgentError> {
+        for capability in &self.ordered_capabilities()? {
+            input = capability
+                .prepare_run_input_with_context(state, context, input)
+                .await
+                .map_err(Self::capability_error)?;
+        }
+        Ok(input)
     }
 
     pub(in crate::agent) async fn prepare_tools(

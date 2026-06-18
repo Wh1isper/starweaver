@@ -2,9 +2,9 @@ use super::{
     json, AgentContext, AgentStreamEvent, AgentStreamRecord, ApprovalDecision, ApprovalRecord,
     ApprovalStatus, CliRunPolicy, DefaultDisplayMessageProjector, DeferredToolRecord,
     DisplayMessage, DisplayMessageKind, DisplayMessageProjector, DisplayProjectionContext,
-    ExecutionStatus, FinishReason, HitlPolicy, ModelResponse, ModelResponsePart,
-    ModelResponseStreamEvent, RealtimeCompactionBuffer, ReplayScope, ReplaySnapshot, RunRecord,
-    RunStatus, StreamDelta, Utc, Value,
+    FinishReason, HitlPolicy, ModelResponse, ModelResponsePart, ModelResponseStreamEvent,
+    RealtimeCompactionBuffer, ReplayScope, ReplaySnapshot, RunRecord, RunStatus, StreamDelta,
+    ToolReturnRecordInput, Utc, Value,
 };
 
 pub(super) struct DisplayProjection {
@@ -194,26 +194,17 @@ fn apply_control_flow(
         .and_then(Value::as_str);
     match control_flow {
         Some("approval_required") => {
-            let approval_id = format!(
-                "approval_{}_{}",
-                run.run_id.as_str(),
-                tool_return.tool_call_id
-            );
-            let mut record = ApprovalRecord::new(
-                approval_id.clone(),
-                run.session_id.clone(),
-                run.run_id.clone(),
-                tool_return.tool_call_id.clone(),
-                tool_return.name.clone(),
-            );
-            record.request = tool_return
-                .metadata
-                .get("approval")
-                .cloned()
-                .unwrap_or(Value::Null);
-            record
-                .metadata
-                .insert("policy".to_string(), json!(policy.hitl));
+            let input = ToolReturnRecordInput::new(
+                &run.session_id,
+                &run.run_id,
+                &tool_return.tool_call_id,
+                &tool_return.name,
+                &tool_return.metadata,
+            )
+            .with_policy(json!(policy.hitl));
+            let Some(mut record) = ApprovalRecord::from_tool_return(&input) else {
+                return;
+            };
             display_messages.push(
                 DisplayMessage::new(
                     sequence,
@@ -222,10 +213,10 @@ fn apply_control_flow(
                     DisplayMessageKind::ApprovalRequested,
                 )
                 .with_payload(json!({
-                    "approval_id": approval_id,
+                    "approval_id": record.approval_id.clone(),
                     "tool_call_id": tool_return.tool_call_id,
                     "tool_name": tool_return.name,
-                    "request": record.request,
+                    "request": record.request.clone(),
                 }))
                 .with_preview(format!("approval requested for {}", tool_return.name)),
             );
@@ -233,27 +224,17 @@ fn apply_control_flow(
             approvals.push(record);
         }
         Some("call_deferred") => {
-            let deferred_id = format!(
-                "deferred_{}_{}",
-                run.run_id.as_str(),
-                tool_return.tool_call_id
-            );
-            let mut record = DeferredToolRecord::new(
-                deferred_id.clone(),
-                run.session_id.clone(),
-                run.run_id.clone(),
-                tool_return.tool_call_id.clone(),
-                tool_return.name.clone(),
-            );
-            record.request = tool_return
-                .metadata
-                .get("deferred")
-                .cloned()
-                .unwrap_or(Value::Null);
-            record.status = ExecutionStatus::Waiting;
-            record
-                .metadata
-                .insert("policy".to_string(), json!(policy.hitl));
+            let input = ToolReturnRecordInput::new(
+                &run.session_id,
+                &run.run_id,
+                &tool_return.tool_call_id,
+                &tool_return.name,
+                &tool_return.metadata,
+            )
+            .with_policy(json!(policy.hitl));
+            let Some(record) = DeferredToolRecord::from_tool_return(&input) else {
+                return;
+            };
             *status = RunStatus::Waiting;
             display_messages.push(
                 DisplayMessage::new(
@@ -263,10 +244,10 @@ fn apply_control_flow(
                     DisplayMessageKind::ApprovalRequested,
                 )
                 .with_payload(json!({
-                    "deferred_id": deferred_id,
+                    "deferred_id": &record.deferred_id,
                     "tool_call_id": tool_return.tool_call_id,
                     "tool_name": tool_return.name,
-                    "request": record.request,
+                    "request": &record.request,
                     "control_flow": "call_deferred",
                 }))
                 .with_preview(format!("tool call {} deferred", tool_return.name)),

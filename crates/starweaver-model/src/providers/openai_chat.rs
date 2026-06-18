@@ -135,28 +135,28 @@ impl OpenAiChatAdapter {
         request.insert("model".to_string(), json!(model));
         request.insert("messages".to_string(), json!(wire_messages));
         apply_common_settings_with_max_tokens(&mut request, settings, max_tokens_parameter);
-        if let Some(openai) =
+        if let Some(openai_settings) =
             settings.and_then(|settings| settings.provider_settings.openai_chat.as_ref())
         {
-            if let Some(user) = &openai.user {
+            if let Some(user) = &openai_settings.user {
                 request.insert("user".to_string(), json!(user));
             }
-            if let Some(store) = openai.store {
+            if let Some(store) = openai_settings.store {
                 request.insert("store".to_string(), json!(store));
             }
-            if let Some(logprobs) = openai.logprobs {
+            if let Some(logprobs) = openai_settings.logprobs {
                 request.insert("logprobs".to_string(), json!(logprobs));
             }
-            if let Some(top_logprobs) = openai.top_logprobs {
+            if let Some(top_logprobs) = openai_settings.top_logprobs {
                 request.insert("top_logprobs".to_string(), json!(top_logprobs));
             }
-            if let Some(prediction) = &openai.prediction {
+            if let Some(prediction) = &openai_settings.prediction {
                 request.insert("prediction".to_string(), prediction.clone());
             }
-            if let Some(prompt_cache_key) = &openai.prompt_cache_key {
+            if let Some(prompt_cache_key) = &openai_settings.prompt_cache_key {
                 request.insert("prompt_cache_key".to_string(), json!(prompt_cache_key));
             }
-            if let Some(prompt_cache_retention) = &openai.prompt_cache_retention {
+            if let Some(prompt_cache_retention) = &openai_settings.prompt_cache_retention {
                 request.insert(
                     "prompt_cache_retention".to_string(),
                     json!(prompt_cache_retention),
@@ -182,6 +182,9 @@ impl OpenAiChatAdapter {
                             "parameters".to_string(),
                             provider_tool_schema_without_meta(&tool.parameters),
                         );
+                        if let Some(strict) = tool.strict {
+                            function.insert("strict".to_string(), json!(strict));
+                        }
                         json!({
                             "type": "function",
                             "function": function,

@@ -65,7 +65,7 @@ fn tool_call_part_serializes_arguments_as_replay_value() {
 }
 
 #[test]
-fn parsed_tool_arguments_compare_to_json_values_for_compatibility() {
+fn parsed_tool_arguments_compare_to_json_values_for_equivalence() {
     let args = ToolArguments::parsed(json!({"ok": true}));
     let value: Value = json!({"ok": true});
 

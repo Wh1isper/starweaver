@@ -244,9 +244,27 @@ fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
         }
         DisplayMessageKind::ApprovalRequested
         | DisplayMessageKind::ApprovalResolved
+        | DisplayMessageKind::HitlResolved
+        | DisplayMessageKind::HitlDiagnostic
         | DisplayMessageKind::Checkpoint
+        | DisplayMessageKind::ToolsUnavailable
+        | DisplayMessageKind::ToolSearchLoaded
+        | DisplayMessageKind::ToolSearchInitialized
+        | DisplayMessageKind::ToolSearchRefreshed
+        | DisplayMessageKind::ToolSearchInvalidated
+        | DisplayMessageKind::ToolSearchFailed
+        | DisplayMessageKind::ToolSearchNoMatch
+        | DisplayMessageKind::ToolsetInitialized
+        | DisplayMessageKind::ToolsetUnavailable
+        | DisplayMessageKind::ToolsetFailed
+        | DisplayMessageKind::ToolsetRefreshed
+        | DisplayMessageKind::ToolsetClosed
+        | DisplayMessageKind::SkillsScanned
+        | DisplayMessageKind::SkillActivated
+        | DisplayMessageKind::SkillsReloaded
         | DisplayMessageKind::SubagentStarted
         | DisplayMessageKind::SubagentCompleted
+        | DisplayMessageKind::SubagentFailed
         | DisplayMessageKind::CompactionStarted
         | DisplayMessageKind::CompactionCompleted
         | DisplayMessageKind::CompactionFailed
@@ -255,7 +273,12 @@ fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
         | DisplayMessageKind::HandoffFailed
         | DisplayMessageKind::SteeringSubmitted
         | DisplayMessageKind::SteeringReceived
-        | DisplayMessageKind::TaskSnapshot => custom_agui_event(
+        | DisplayMessageKind::TaskSnapshot
+        | DisplayMessageKind::TaskEvent
+        | DisplayMessageKind::NoteEvent
+        | DisplayMessageKind::FileEvent
+        | DisplayMessageKind::MediaEvent
+        | DisplayMessageKind::HostOperation => custom_agui_event(
             display_extension_name(message.kind),
             message,
             &message.payload,
@@ -289,9 +312,27 @@ const fn display_extension_name(kind: DisplayMessageKind) -> &'static str {
     match kind {
         DisplayMessageKind::ApprovalRequested => "starweaver.approval_requested",
         DisplayMessageKind::ApprovalResolved => "starweaver.approval_resolved",
+        DisplayMessageKind::HitlResolved => "starweaver.hitl_resolved",
+        DisplayMessageKind::HitlDiagnostic => "starweaver.hitl_diagnostic",
         DisplayMessageKind::Checkpoint => "starweaver.checkpoint",
+        DisplayMessageKind::ToolsUnavailable => "starweaver.tools_unavailable",
+        DisplayMessageKind::ToolSearchLoaded => "starweaver.tool_search_loaded",
+        DisplayMessageKind::ToolSearchInitialized => "starweaver.tool_search_initialized",
+        DisplayMessageKind::ToolSearchRefreshed => "starweaver.tool_search_refreshed",
+        DisplayMessageKind::ToolSearchInvalidated => "starweaver.tool_search_invalidated",
+        DisplayMessageKind::ToolSearchFailed => "starweaver.tool_search_failed",
+        DisplayMessageKind::ToolSearchNoMatch => "starweaver.tool_search_no_match",
+        DisplayMessageKind::ToolsetInitialized => "starweaver.toolset_initialized",
+        DisplayMessageKind::ToolsetUnavailable => "starweaver.toolset_unavailable",
+        DisplayMessageKind::ToolsetFailed => "starweaver.toolset_failed",
+        DisplayMessageKind::ToolsetRefreshed => "starweaver.toolset_refreshed",
+        DisplayMessageKind::ToolsetClosed => "starweaver.toolset_closed",
+        DisplayMessageKind::SkillsScanned => "starweaver.skills_scanned",
+        DisplayMessageKind::SkillActivated => "starweaver.skill_activated",
+        DisplayMessageKind::SkillsReloaded => "starweaver.skills_reloaded",
         DisplayMessageKind::SubagentStarted => "starweaver.subagent_started",
         DisplayMessageKind::SubagentCompleted => "starweaver.subagent_completed",
+        DisplayMessageKind::SubagentFailed => "starweaver.subagent_failed",
         DisplayMessageKind::CompactionStarted => "starweaver.compaction_started",
         DisplayMessageKind::CompactionCompleted => "starweaver.compaction_completed",
         DisplayMessageKind::CompactionFailed => "starweaver.compaction_failed",
@@ -301,6 +342,11 @@ const fn display_extension_name(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::SteeringSubmitted => "starweaver.steering_submitted",
         DisplayMessageKind::SteeringReceived => "starweaver.steering_received",
         DisplayMessageKind::TaskSnapshot => "starweaver.task_snapshot",
+        DisplayMessageKind::TaskEvent => "starweaver.task_event",
+        DisplayMessageKind::NoteEvent => "starweaver.note_event",
+        DisplayMessageKind::FileEvent => "starweaver.file_event",
+        DisplayMessageKind::MediaEvent => "starweaver.media_event",
+        DisplayMessageKind::HostOperation => "starweaver.host_operation",
         _ => "starweaver.display_message",
     }
 }

@@ -36,6 +36,7 @@ impl Agent {
                 AgentError::Capability("unexpected skip model request".to_string())
             }
             CapabilityError::Failed(message) => AgentError::Capability(message),
+            CapabilityError::Cancelled { reason } => AgentError::Cancelled { reason },
         }
     }
 }

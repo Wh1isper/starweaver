@@ -7,9 +7,9 @@ use std::sync::{
 
 use starweaver_core::{ConversationId, Metadata, RunId};
 use starweaver_tools::{
-    ApprovalRequiredToolset, DeferredLoadingToolset, DynTool, DynToolset, DynamicToolset,
-    FilteredToolset, FunctionTool, PreparedToolset, RenamedToolset, StaticToolset,
-    ToolApprovalState, ToolContext, ToolInstruction, ToolRegistry, ToolResult, Toolset,
+    ApprovalRequiredToolset, DeferredToolset, DynTool, DynToolset, DynamicToolset, FilteredToolset,
+    FunctionTool, LazyToolset, PreparedToolset, RenamedToolset, StaticToolset, ToolApprovalState,
+    ToolContext, ToolInstruction, ToolRegistry, ToolResult, Toolset,
 };
 
 fn echo_tool(name: &str) -> DynTool {
@@ -126,8 +126,57 @@ async fn approval_required_toolset_marks_blocks_and_honors_inline_approval() {
     assert_eq!(approved.metadata["approval_state"], "approved");
 }
 
+#[tokio::test]
+async fn deferred_toolset_marks_defers_and_honors_inline_result() {
+    let mut metadata = Metadata::default();
+    metadata.insert("bundle".to_string(), serde_json::json!("filesystem"));
+    let write_tool = FunctionTool::new(
+        "write",
+        Some("Write".to_string()),
+        serde_json::json!({"type":"object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    )
+    .with_metadata(metadata);
+    let inner = Arc::new(StaticToolset::new("core").with_tool(Arc::new(write_tool)));
+    let deferred: DynToolset = Arc::new(DeferredToolset::new(inner, ["filesystem"]));
+    let registry = ToolRegistry::new().with_toolset(&deferred);
+
+    let definitions = registry.definitions();
+    assert_eq!(definitions[0].metadata["deferred_call"], true);
+    assert_eq!(definitions[0].metadata["starweaver_tool_kind"], "deferred");
+
+    let result = registry
+        .execute_call(
+            ToolContext::new(RunId::new(), ConversationId::new(), 0),
+            &starweaver_model::ToolCallPart {
+                id: "call_write".to_string(),
+                name: "write".to_string(),
+                arguments: serde_json::json!({"path": "file.txt"}).into(),
+            },
+        )
+        .await;
+    assert!(result.is_error);
+    assert_eq!(result.content["kind"], "call_deferred");
+    assert_eq!(result.metadata["deferred"]["toolset"], "core");
+
+    let completed = registry
+        .execute_call(
+            ToolContext::new(RunId::new(), ConversationId::new(), 0)
+                .with_deferred_result(serde_json::json!({"path": "ready.txt"})),
+            &starweaver_model::ToolCallPart {
+                id: "call_write_completed".to_string(),
+                name: "write".to_string(),
+                arguments: serde_json::json!({"path": "file.txt"}).into(),
+            },
+        )
+        .await;
+    assert!(!completed.is_error);
+    assert_eq!(completed.content["path"], "ready.txt");
+    assert_eq!(completed.metadata["deferred_state"], "completed");
+}
+
 #[test]
-fn prepared_dynamic_and_deferred_toolsets_materialize_tools() {
+fn prepared_dynamic_and_lazy_toolsets_materialize_tools() {
     let inner = Arc::new(
         StaticToolset::new("tools")
             .with_tool(echo_tool("first"))
@@ -154,12 +203,12 @@ fn prepared_dynamic_and_deferred_toolsets_materialize_tools() {
 
     let loads = Arc::new(AtomicUsize::new(0));
     let loads_for_loader = loads.clone();
-    let deferred = DeferredLoadingToolset::new("deferred", move || {
+    let lazy = LazyToolset::new("lazy", move || {
         loads_for_loader.fetch_add(1, Ordering::SeqCst);
         inner.clone()
     });
     assert_eq!(loads.load(Ordering::SeqCst), 0);
-    assert_eq!(deferred.get_tools().len(), 2);
-    assert_eq!(deferred.get_tools().len(), 2);
+    assert_eq!(lazy.get_tools().len(), 2);
+    assert_eq!(lazy.get_tools().len(), 2);
     assert_eq!(loads.load(Ordering::SeqCst), 1);
 }

@@ -1,6 +1,6 @@
 # Reference Parity and Migration Notes
 
-This spec records the current Starweaver migration boundary against `legacy CLI implementation`. The active Starweaver roadmap keeps the shared agent SDK foundations primary and postpones CLI migration audit until foundation gates stay stable.
+This spec records the current Starweaver CLI migration boundary. The active Starweaver roadmap keeps the shared agent SDK foundations primary and postpones CLI migration audit until foundation gates stay stable.
 
 ## Current Scope
 
@@ -38,7 +38,7 @@ CLI audit work remains tracked as a postponed product phase. It should resume af
 Expected CLI audit areas:
 
 - live stdout streaming for headless output
-- AGUI-compatible top-level event adapter coverage
+- AGUI top-level event adapter coverage
 - slash command migration coverage
 - TUI model/session/cost/task/HITL/media workflows
 - startup asset seeding and config import

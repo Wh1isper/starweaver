@@ -1,0 +1,77 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "old context"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "response",
+      "parts": [
+        {
+          "kind": "compaction",
+          "summary": "Old context was compacted."
+        }
+      ],
+      "provider": {
+        "name": "openai",
+        "response_id": "resp_compact",
+        "details": {
+          "compaction": true
+        }
+      }
+    },
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "new request"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "provider_replay": {
+      "previous_response_id": "auto"
+    }
+  },
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "old context"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "new request"
+          }
+        ]
+      }
+    ]
+  }
+}

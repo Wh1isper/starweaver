@@ -84,7 +84,7 @@ Tool execution rules:
 
 ## Output Boundary
 
-Output handling has four compatible modes:
+Output handling has four supported modes:
 
 - text output
 - structured JSON output

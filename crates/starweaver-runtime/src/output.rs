@@ -7,9 +7,10 @@ mod validation;
 
 pub use function::{
     FunctionOutputFunction, OutputFunction, OutputFunctionContext, OutputFunctionDefinition,
+    SchemaOutputFunction,
 };
 pub use policy::{DynOutputFunction, OutputPolicy};
-pub use types::{OutputSchema, OutputValue};
+pub use types::{OutputMedia, OutputSchema, OutputValue};
 pub use validation::{
     parse_output, FunctionOutputValidator, OutputValidationError, OutputValidationResult,
     OutputValidator,

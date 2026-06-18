@@ -9,7 +9,7 @@ use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ToolArguments,
     ToolCallPart, ToolReturnPart,
 };
-use starweaver_usage::Usage;
+use starweaver_usage::{PricingEstimate, Usage};
 
 #[test]
 fn message_bus_supports_subscribers_targets_idempotency_and_matching() {
@@ -238,15 +238,15 @@ fn context_run_helpers_prepare_lifecycle_and_wrapper_metadata() {
 }
 
 #[test]
-fn legacy_export_remains_available_for_starweaver_full_state() {
+fn full_export_includes_starweaver_runtime_state() {
     let mut context = AgentContext::new(AgentId::from_string("main"));
-    context.run_id = Some(RunId::from_string("run-legacy"));
+    context.run_id = Some(RunId::from_string("run-full-state"));
     context.push_message(ModelMessage::Request(ModelRequest::user_text("hello")));
     context.enqueue_message(BusMessage::text("queued", "system"));
 
     let exported = context.export_full_state();
 
-    assert_eq!(exported.run_id.as_ref().unwrap().as_str(), "run-legacy");
+    assert_eq!(exported.run_id.as_ref().unwrap().as_str(), "run-full-state");
     assert_eq!(exported.message_history.len(), 1);
     assert_eq!(exported.message_bus.len(), 1);
 }
@@ -277,6 +277,66 @@ fn usage_snapshot_uses_parent_run_id_for_subagent_contexts() {
     );
 
     assert_eq!(snapshot.run_id, "parent-run");
+}
+
+#[test]
+fn external_usage_snapshot_entries_are_idempotent_and_aggregated() {
+    let mut context = AgentContext::new(AgentId::from_string("main"));
+    context.run_id = Some(RunId::from_string("run-extra-usage"));
+
+    let first = context.update_external_usage_snapshot_entry(
+        "embedding-cache",
+        "Embedding cache",
+        "cache-model",
+        Usage {
+            requests: 1,
+            input_tokens: 5,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 5,
+            tool_calls: 0,
+        },
+        Some(PricingEstimate::from_micros_usd(7)),
+        Some("usage-cache-1".to_string()),
+    );
+    assert_eq!(first.entries.len(), 1);
+    assert_eq!(first.entries[0].source, "external");
+    assert_eq!(
+        first.agent_usages["embedding-cache"].agent_name,
+        "Embedding cache"
+    );
+    assert_eq!(first.model_usages["cache-model"].total_tokens, 5);
+
+    let second = context.update_external_usage_snapshot_entry(
+        "embedding-cache",
+        "Embedding cache",
+        "cache-model",
+        Usage {
+            requests: 2,
+            input_tokens: 8,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 8,
+            tool_calls: 0,
+        },
+        Some(PricingEstimate::from_micros_usd(11)),
+        Some("usage-cache-1".to_string()),
+    );
+
+    assert_eq!(second.run_id, "run-extra-usage");
+    assert_eq!(second.entries.len(), 1);
+    assert_eq!(second.total_usage.requests, 2);
+    assert_eq!(second.total_usage.total_tokens, 8);
+    assert_eq!(
+        second.estimate_pricing,
+        Some(PricingEstimate::from_micros_usd(11))
+    );
+    assert_eq!(
+        second.model_estimate_pricing["cache-model"],
+        PricingEstimate::from_micros_usd(11)
+    );
 }
 
 #[test]

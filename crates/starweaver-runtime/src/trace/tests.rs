@@ -101,3 +101,110 @@ fn in_memory_recorder_ignores_unknown_span_updates() {
     recorder.close_span(&unknown, SpanStatus::Ok);
     assert!(recorder.spans().is_empty());
 }
+
+#[test]
+fn policy_recorder_drops_debug_telemetry_by_default() {
+    let inner = std::sync::Arc::new(InMemoryTraceRecorder::new());
+    let recorder = PolicyTraceRecorder::new(inner.clone());
+    let root = TraceContext::from_trace_id("trace-policy");
+
+    let debug_span = recorder.start_span(SpanSpec::new("starweaver.debug").debug(), &root);
+    recorder.record_event(
+        &debug_span,
+        SpanEvent::new("starweaver.debug.event").debug(),
+    );
+    recorder.close_span(&debug_span, SpanStatus::Ok);
+
+    let info_span = recorder.start_span(SpanSpec::new("gen_ai.invoke_agent"), &root);
+    recorder.record_event(&info_span, SpanEvent::new("starweaver.info"));
+    recorder.record_event(&info_span, SpanEvent::new("starweaver.debug.event").debug());
+    recorder.close_span(&info_span, SpanStatus::Ok);
+
+    let spans = inner.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].name, "gen_ai.invoke_agent");
+    assert_eq!(spans[0].events.len(), 1);
+    assert_eq!(spans[0].events[0].name, "starweaver.info");
+}
+
+#[test]
+fn policy_recorder_redacts_debug_payloads_when_debug_is_redacted() {
+    let inner = std::sync::Arc::new(InMemoryTraceRecorder::new());
+    let recorder = PolicyTraceRecorder::with_policy(
+        inner.clone(),
+        TraceRedactionPolicy::debug_redacted().with_sensitive_key("x-api-key"),
+    );
+    let root = TraceContext::from_trace_id("trace-policy");
+    let span = recorder.start_span(
+        SpanSpec::new("starweaver.llm.request")
+            .debug()
+            .with_attribute(
+                "raw_request",
+                serde_json::json!({"messages": ["secret prompt"]}),
+            )
+            .with_attribute("x-api-key", serde_json::json!("secret")),
+        &root,
+    );
+    recorder.record_event(
+        &span,
+        SpanEvent::new("starweaver.llm.response")
+            .debug()
+            .with_attribute("payload", serde_json::json!({"content": "secret answer"}))
+            .with_attribute("authorization", serde_json::json!("Bearer token")),
+    );
+    recorder.close_span(&span, SpanStatus::Ok);
+
+    let spans = inner.spans();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].level, TraceLevel::Debug);
+    assert_eq!(
+        spans[0].attributes["raw_request"],
+        serde_json::json!({"redacted": true})
+    );
+    assert_eq!(
+        spans[0].attributes["x-api-key"],
+        serde_json::json!({"redacted": true})
+    );
+    assert_eq!(
+        spans[0].events[0].attributes["payload"],
+        serde_json::json!({"redacted": true})
+    );
+    assert_eq!(
+        spans[0].events[0].attributes["authorization"],
+        serde_json::json!({"redacted": true})
+    );
+}
+
+#[test]
+fn policy_recorder_full_payload_still_redacts_sensitive_fields() {
+    let inner = std::sync::Arc::new(InMemoryTraceRecorder::new());
+    let recorder = PolicyTraceRecorder::with_policy(
+        inner.clone(),
+        TraceRedactionPolicy::debug_full_payloads(),
+    );
+    let root = TraceContext::from_trace_id("trace-policy");
+    let span = recorder.start_span(SpanSpec::new("starweaver.llm.request").debug(), &root);
+    recorder.record_event(
+        &span,
+        SpanEvent::new("starweaver.llm.response")
+            .debug()
+            .with_attribute(
+                "payload",
+                serde_json::json!({
+                    "content": "kept for explicit debug",
+                    "token": "secret"
+                }),
+            ),
+    );
+    recorder.close_span(&span, SpanStatus::Ok);
+
+    let spans = inner.spans();
+    assert_eq!(
+        spans[0].events[0].attributes["payload"]["content"],
+        serde_json::json!("kept for explicit debug")
+    );
+    assert_eq!(
+        spans[0].events[0].attributes["payload"]["token"],
+        serde_json::json!({"redacted": true})
+    );
+}

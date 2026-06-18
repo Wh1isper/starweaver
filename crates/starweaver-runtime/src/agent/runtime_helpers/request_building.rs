@@ -3,16 +3,18 @@
 use std::collections::BTreeSet;
 
 use chrono::Utc;
-use starweaver_context::AgentContext;
+use starweaver_context::{AgentContext, AgentEvent, ToolAvailabilityPolicy};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     attach_prepared_instructions, format_openai_prompt_cache_key,
-    supports_automatic_openai_prompt_cache_key, CodexSettings, GatewaySettings, ModelMessage,
-    ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings, OpenAiChatSettings,
-    OpenAiResponsesSettings, PreparedInstruction, ProtocolFamily, ProviderSettings,
-    INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
-    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_TOOLSET,
+    supports_automatic_openai_prompt_cache_key, CodexSettings, ContentPart, GatewaySettings,
+    ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings,
+    OpenAiChatSettings, OpenAiResponsesSettings, PreparedInstruction, ProtocolFamily,
+    ProviderSettings, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT,
+    INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
+    INSTRUCTION_ORIGIN_TOOLSET,
 };
+use starweaver_tools::{set_tool_metadata_kind, ToolKind, ToolRegistry};
 
 use crate::{
     agent::{
@@ -46,6 +48,7 @@ impl Agent {
         &self,
         state: &AgentRunState,
         prompt: &str,
+        initial_content: &[ContentPart],
         run_id: &RunId,
         conversation_id: &ConversationId,
     ) -> ModelRequest {
@@ -59,9 +62,11 @@ impl Agent {
             }
         } else if state.run_step == 0 {
             parts.push(ModelRequestPart::UserPrompt {
-                content: vec![starweaver_model::ContentPart::Text {
-                    text: prompt.to_string(),
-                }],
+                content: if initial_content.is_empty() {
+                    vec![ContentPart::text(prompt)]
+                } else {
+                    initial_content.to_vec()
+                },
                 name: None,
                 metadata: serde_json::Map::new(),
             });
@@ -199,14 +204,14 @@ impl Agent {
     }
 
     fn session_affinity_settings(&self, context: &AgentContext) -> Option<ModelSettings> {
-        let session_id = context.session_id()?.as_str();
+        let affinity_id = context.session_id()?.as_str();
         let provider_name = self.model.provider_name();
         let mut provider_settings = ProviderSettings::default();
         match self.model.profile().protocol {
             ProtocolFamily::OpenAiChatCompletions if provider_name != Some("codex") => {
                 if let Some(prompt_cache_key) =
                     supports_automatic_openai_prompt_cache_key(self.model.model_name())
-                        .then(|| format_openai_prompt_cache_key(session_id))
+                        .then(|| format_openai_prompt_cache_key(affinity_id))
                         .flatten()
                 {
                     provider_settings.openai_chat = Some(OpenAiChatSettings {
@@ -217,7 +222,7 @@ impl Agent {
             }
             ProtocolFamily::OpenAiResponses if provider_name == Some("codex") => {
                 provider_settings.codex = Some(CodexSettings {
-                    session_id: Some(session_id.to_string()),
+                    session_id: Some(affinity_id.to_string()),
                     thread_id: context
                         .run_id
                         .as_ref()
@@ -227,7 +232,7 @@ impl Agent {
             ProtocolFamily::OpenAiResponses => {
                 if let Some(prompt_cache_key) =
                     supports_automatic_openai_prompt_cache_key(self.model.model_name())
-                        .then(|| format_openai_prompt_cache_key(session_id))
+                        .then(|| format_openai_prompt_cache_key(affinity_id))
                         .flatten()
                 {
                     provider_settings.openai_responses = Some(OpenAiResponsesSettings {
@@ -240,7 +245,7 @@ impl Agent {
                 if gateway_affinity_enabled(context) =>
             {
                 provider_settings.gateway = Some(GatewaySettings {
-                    x_session_id: Some(session_id.to_string()),
+                    x_session_id: Some(affinity_id.to_string()),
                     ..GatewaySettings::default()
                 });
             }
@@ -331,7 +336,8 @@ impl Agent {
     pub(in crate::agent) async fn effective_request_params(
         &self,
         state: &AgentRunState,
-        context: &AgentContext,
+        context: &mut AgentContext,
+        tools: &ToolRegistry,
     ) -> Result<ModelRequestParameters, AgentError> {
         let mut params = self.request_params.clone();
         if params.output_schema.is_none() {
@@ -361,38 +367,47 @@ impl Agent {
                     tool.name
                 )));
             }
-            tool.metadata.insert(
-                "starweaver_tool_kind".to_string(),
-                serde_json::json!("function"),
-            );
+            set_tool_metadata_kind(&mut tool.metadata, ToolKind::Function);
         }
         for function in &self.output_functions {
             let mut tool = function.definition().tool_definition();
-            tool.metadata.insert(
-                "starweaver_tool_kind".to_string(),
-                serde_json::json!("output"),
-            );
+            set_tool_metadata_kind(&mut tool.metadata, ToolKind::Output);
             if names.insert(tool.name.clone()) {
                 params.tools.push(tool);
             }
         }
-        for mut tool in self.tools.definitions() {
+        let (tool_definitions, availability_report) =
+            tools.definitions_and_availability_for_context(context);
+        if !availability_report.unavailable.is_empty() {
+            let unavailable = availability_report.unavailable.clone();
+            context.publish_event(AgentEvent::new(
+                "tools_unavailable",
+                serde_json::json!({
+                    "available": availability_report.available,
+                    "unavailable": availability_report.unavailable,
+                }),
+            ));
+            if context.tool_config.unavailable_tool_policy == ToolAvailabilityPolicy::FailRun {
+                return Err(AgentError::Capability(format!(
+                    "unavailable tools rejected by policy: {}",
+                    unavailable.join(", ")
+                )));
+            }
+        }
+        for mut tool in tool_definitions {
             if output_names.contains(&tool.name) {
                 return Err(AgentError::Capability(format!(
                     "output function name {:?} collides with runtime tool",
                     tool.name
                 )));
             }
-            tool.metadata.insert(
-                "starweaver_tool_kind".to_string(),
-                serde_json::json!("function"),
-            );
+            set_tool_metadata_kind(&mut tool.metadata, ToolKind::Function);
             if names.insert(tool.name.clone()) {
                 params.tools.push(tool);
             }
         }
         params.tools = self.prepare_tools(state, context, params.tools).await?;
-        for instruction in self.tools.instructions() {
+        for instruction in tools.instructions() {
             let mut metadata = serde_json::Map::new();
             metadata.insert(
                 INSTRUCTION_ORIGIN_METADATA.to_string(),

@@ -52,6 +52,7 @@ impl ClipboardImageReadResult {
 }
 
 /// Read an image from the system clipboard when available.
+#[allow(clippy::unnecessary_wraps)]
 pub fn read_clipboard_image(index: usize) -> CliResult<ClipboardImageReadResult> {
     #[cfg(target_os = "linux")]
     {

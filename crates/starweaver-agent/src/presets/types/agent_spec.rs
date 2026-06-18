@@ -34,6 +34,12 @@ pub struct AgentSpecHostPolicies {
     /// Workspace policy selected by this agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspacePolicySpec>,
+    /// Approval policy selected by this agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalPolicyPreset>,
+    /// Environment policy selected by this agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<EnvironmentPolicyPreset>,
     /// Durability policy selected by this agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub durability: Option<DurabilityPolicyPreset>,

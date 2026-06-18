@@ -56,10 +56,10 @@ fn build_request_does_not_replay_foreign_thinking_signature() {
 }
 
 #[test]
-fn build_request_does_not_replay_ambiguous_legacy_thinking_signature() {
+fn build_request_does_not_replay_ambiguous_thinking_signature() {
     let response = ModelMessage::Response(ModelResponse {
         parts: vec![ModelResponsePart::Thinking {
-            text: "legacy inspect".to_string(),
+            text: "inspect context".to_string(),
             signature: Some("ambiguous-signature".to_string()),
         }],
         usage: starweaver_usage::Usage::default(),
@@ -77,7 +77,7 @@ fn build_request_does_not_replay_ambiguous_legacy_thinking_signature() {
 
     let content = request["messages"][0]["content"].as_array().unwrap();
     assert_eq!(content[0]["type"], "text");
-    assert_eq!(content[0]["text"], "<think>\nlegacy inspect\n</think>");
+    assert_eq!(content[0]["text"], "<think>\ninspect context\n</think>");
     assert!(content[0].get("signature").is_none());
     assert!(!serde_json::to_string(&request)
         .unwrap()

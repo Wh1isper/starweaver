@@ -7,11 +7,11 @@ use serde_json::{Map, Value};
 
 const OPENAI_PROMPT_CACHE_KEY_LIMIT: usize = 64;
 
-/// Format a stable Starweaver session id for `OpenAI` prompt-cache routing.
+/// Format a stable affinity identifier for `OpenAI` prompt-cache routing.
 #[must_use]
-pub fn format_openai_prompt_cache_key(session_id: &str) -> Option<String> {
+pub fn format_openai_prompt_cache_key(affinity_id: &str) -> Option<String> {
     let mut key = String::from("sw_");
-    for ch in session_id.trim().chars() {
+    for ch in affinity_id.trim().chars() {
         if key.len() >= OPENAI_PROMPT_CACHE_KEY_LIMIT {
             break;
         }
@@ -433,18 +433,10 @@ pub struct OpenAiChatSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prediction: Option<Value>,
     /// Prompt cache key.
-    #[serde(
-        default,
-        alias = "openai_prompt_cache_key",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
     /// Prompt cache retention setting.
-    #[serde(
-        default,
-        alias = "openai_prompt_cache_retention",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<String>,
 }
 
@@ -470,18 +462,10 @@ pub struct OpenAiResponsesSettings {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<String>,
     /// Prompt cache key.
-    #[serde(
-        default,
-        alias = "openai_prompt_cache_key",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
     /// Prompt cache retention setting.
-    #[serde(
-        default,
-        alias = "openai_prompt_cache_retention",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<String>,
 }
 

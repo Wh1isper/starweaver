@@ -83,7 +83,7 @@ fn resolve_conversation_id<'a>(
 
 fn get_conversation_id_and_new_messages<'a>(
     messages: &'a [ModelMessage],
-    openai_conversation_id: Option<&str>,
+    expected_conversation_id: Option<&str>,
     active_conversation_id: Option<&str>,
 ) -> (Option<String>, Vec<&'a ModelMessage>) {
     let mut trimmed = Vec::new();
@@ -107,7 +107,7 @@ fn get_conversation_id_and_new_messages<'a>(
                     .and_then(|provider| provider.details.get("conversation_id"))
                     .and_then(Value::as_str)
                     .filter(|candidate| {
-                        openai_conversation_id.map_or(true, |expected| expected == *candidate)
+                        expected_conversation_id.map_or(true, |expected| expected == *candidate)
                     })
                 {
                     trimmed.reverse();

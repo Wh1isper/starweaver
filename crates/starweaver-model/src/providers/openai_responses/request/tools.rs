@@ -20,6 +20,9 @@ pub(super) fn response_tool_defs(
                 "parameters".to_string(),
                 provider_tool_schema_without_meta(&tool.parameters),
             );
+            if let Some(strict) = tool.strict {
+                definition.insert("strict".to_string(), json!(strict));
+            }
             Value::Object(definition)
         })
         .collect::<Vec<_>>();

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use starweaver_context::DependencyStore;
-use starweaver_core::{ConversationId, Metadata, RunId, TraceContext};
+use starweaver_core::{CancellationToken, ConversationId, Metadata, RunId, TraceContext};
 
 /// Inline approval state attached by runtime capability hooks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -55,6 +55,9 @@ pub struct ToolContext {
     /// Inline deferred result supplied by runtime capability hooks or hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deferred_result: Option<serde_json::Value>,
+    /// Cooperative cancellation token for long-running tool execution.
+    #[serde(skip, default)]
+    pub cancellation_token: CancellationToken,
     /// Typed dependencies, skipped from serialization.
     #[serde(skip)]
     pub dependencies: DependencyStore,
@@ -74,6 +77,7 @@ impl ToolContext {
             metadata: Metadata::default(),
             approval: None,
             deferred_result: None,
+            cancellation_token: CancellationToken::default(),
             dependencies: DependencyStore::new(),
         }
     }
@@ -136,6 +140,19 @@ impl ToolContext {
     pub fn with_deferred_result(mut self, result: serde_json::Value) -> Self {
         self.deferred_result = Some(result);
         self
+    }
+
+    /// Attach a cooperative cancellation token.
+    #[must_use]
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.cancellation_token = token;
+        self
+    }
+
+    /// Return the shared cancellation token.
+    #[must_use]
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
     }
 
     /// Return whether this execution is the final allowed attempt for this tool.

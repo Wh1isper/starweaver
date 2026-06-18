@@ -12,7 +12,7 @@ use crate::{
     capability::{AgentCapability, CapabilityBundle},
     executor::DynAgentExecutor,
     instructions::DynDynamicInstruction,
-    output::{DynOutputFunction, OutputSchema, OutputValidator},
+    output::{DynOutputFunction, OutputPolicy, OutputSchema, OutputValidator},
 };
 
 /// Scoped agent override builder.
@@ -50,6 +50,7 @@ impl AgentOverride {
     #[must_use]
     pub fn with_tools(mut self, tools: ToolRegistry) -> Self {
         self.agent.tools = tools;
+        self.agent.toolsets.clear();
         self
     }
 
@@ -63,7 +64,7 @@ impl AgentOverride {
     /// Add one runtime toolset to the overridden agent clone.
     #[must_use]
     pub fn toolset(mut self, toolset: &DynToolset) -> Self {
-        self.agent.tools.insert_toolset(toolset);
+        self.agent.toolsets.push(toolset.clone());
         self
     }
 
@@ -106,6 +107,13 @@ impl AgentOverride {
     #[must_use]
     pub fn output_schema(mut self, schema: Option<OutputSchema>) -> Self {
         self.agent.output_schema = schema;
+        self
+    }
+
+    /// Apply a complete output policy to the overridden agent clone.
+    #[must_use]
+    pub fn output_policy(mut self, policy: OutputPolicy) -> Self {
+        self.agent = self.agent.with_output_policy(policy);
         self
     }
 

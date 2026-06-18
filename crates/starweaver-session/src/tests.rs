@@ -64,6 +64,65 @@ fn deferred_tool_facades_round_trip_records_and_decisions() {
     assert_eq!(denied.reason.as_deref(), Some("unsafe"));
 }
 
+#[test]
+fn hitl_records_are_derived_from_tool_return_metadata() {
+    let session_id = SessionId::from_string("session-hitl");
+    let run_id = RunId::from_string("run-hitl");
+    let trace_context = TraceContext::from_trace_id("trace-hitl");
+    let mut approval_metadata = Metadata::default();
+    approval_metadata.insert("control_flow".to_string(), json!("approval_required"));
+    approval_metadata.insert("approval".to_string(), json!({"command":"rm -rf target"}));
+
+    let approval_input = ToolReturnRecordInput::new(
+        &session_id,
+        &run_id,
+        "call-approval",
+        "shell",
+        &approval_metadata,
+    )
+    .with_trace_context(&trace_context)
+    .with_policy(json!("defer"));
+    let approval = ApprovalRecord::from_tool_return(&approval_input).unwrap();
+    assert_eq!(approval.approval_id, "approval_run-hitl_call-approval");
+    assert_eq!(approval.action_name, "shell");
+    assert_eq!(approval.request["command"], "rm -rf target");
+    assert_eq!(approval.status, ApprovalStatus::Pending);
+    assert_eq!(approval.metadata["policy"], "defer");
+    assert_eq!(
+        approval.trace_context.trace_id.as_deref(),
+        Some("trace-hitl")
+    );
+
+    let mut deferred_metadata = Metadata::default();
+    deferred_metadata.insert("control_flow".to_string(), json!("call_deferred"));
+    deferred_metadata.insert("deferred".to_string(), json!({"url":"https://example.com"}));
+    let deferred_input = ToolReturnRecordInput::new(
+        &session_id,
+        &run_id,
+        "call-deferred",
+        "fetch",
+        &deferred_metadata,
+    )
+    .with_policy(json!("prompt"));
+    let deferred = DeferredToolRecord::from_tool_return(&deferred_input).unwrap();
+    assert_eq!(deferred.deferred_id, "deferred_run-hitl_call-deferred");
+    assert_eq!(deferred.tool_name, "fetch");
+    assert_eq!(deferred.request["url"], "https://example.com");
+    assert_eq!(deferred.status, ExecutionStatus::Waiting);
+    assert_eq!(deferred.metadata["policy"], "prompt");
+
+    let ignored_metadata = Metadata::default();
+    let ignored = ToolReturnRecordInput::new(
+        &session_id,
+        &run_id,
+        "call-normal",
+        "read",
+        &ignored_metadata,
+    );
+    assert!(ApprovalRecord::from_tool_return(&ignored).is_none());
+    assert!(DeferredToolRecord::from_tool_return(&ignored).is_none());
+}
+
 #[tokio::test]
 async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     let store = InMemorySessionStore::new();

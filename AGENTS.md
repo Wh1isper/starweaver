@@ -8,11 +8,11 @@ Implementation boundary rule:
 
 - Code, tests, public symbols, module names, and observable IDs should use Starweaver-native names instead of reference-project names.
 - `starweaver-runtime` owns the agentic loop; `starweaver-context` owns neutral run/session evidence; `starweaver-agent` owns SDK ergonomics and first-party bundles; `starweaver-usage` owns usage accounting, limits, snapshots, and optional USD pricing estimates.
-- Durable session/run IDs are generic request metadata (`starweaver.durable_session_id`, `starweaver.durable_run_id`, plus CLI-scoped aliases). `starweaver.session_id` is a legacy compatibility fallback, not the canonical durable key. Stable provider-routing affinity lives in `AgentContext.session_id` and typed `ModelSettings` provider settings, not generic model HTTP headers. Provider-specific headers such as `session_id`, `session-id`, `thread_id`, `thread-id`, and `x-client-request-id` belong in Codex/OpenAI subscription OAuth code only.
+- Durable session/run IDs are generic request metadata (`starweaver.durable_session_id`, `starweaver.durable_run_id`, plus CLI-scoped aliases). Stable provider-routing affinity lives in `AgentContext.session_id` and typed `ModelSettings` provider settings, not generic durable metadata or model HTTP headers. Provider-specific headers such as `session_id`, `session-id`, `thread_id`, `thread-id`, and `x-client-request-id` belong in Codex/OpenAI subscription OAuth code only and must be sourced from typed provider routing settings.
 
 Current workspace members:
 
-- `crates/starweaver-core` — shared SDK identity, IDs, metadata, trace context, subagent specs, and XML helpers
+- `crates/starweaver-core` — shared SDK identity, IDs, metadata, trace context, cooperative cancellation token, subagent specs, and XML helpers
 - `crates/starweaver-usage` — usage accounting, snapshot contracts, usage limits, and optional USD pricing estimates
 - `crates/starweaver-model` — provider-neutral model messages, settings, profiles, native tool request definitions, protocol clients, injectable HTTP transport, deterministic test models, production-request guard, model wrappers, OAuth-backed provider model adapters, and replay tests
 - `crates/starweaver-oauth` — OAuth credential storage under `~/.starweaver`, Codex device login, token refresh, JWT metadata extraction, and store-backed token sources
@@ -33,6 +33,7 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 
 ## Layering Rules
 
+- `starweaver-core`: shared SDK identity, IDs, metadata, trace context, cooperative cancellation token, subagent specs, and XML helpers.
 - `starweaver-usage`: leaf crate for usage accounting, usage snapshot contracts, usage limits, and optional `pricing` feature helpers. Pricing estimates use fixed-point micro USD in `PricingEstimate::amount_micros_usd`.
 - `starweaver-model`: provider-neutral model protocol, settings, profiles, transports, model wrappers, provider request mapping, and OAuth-backed provider adapters.
 - `starweaver-oauth`: OAuth auth file storage, Codex device-code login, token refresh, and store-backed token sources. Default auth path is `~/.starweaver/auth.json`.
@@ -83,7 +84,7 @@ Current docs:
 
 ## Spec Workflow
 
-Use `spec/` for product and architecture decisions before introducing new crates or public APIs. Use `memos/` for working notes, design comparisons, implementation evidence, and release-preparation reminders.
+Use `spec/` for product and architecture decisions before introducing new crates or public APIs. Use `spec/alignment/` for reference-project alignment, implementation evidence, and prioritized gap tracking.
 
 Current specs:
 
@@ -107,12 +108,12 @@ Current specs:
 - `spec/ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `spec/ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts
 - `spec/ops/03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
-- `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI compatibility adapters, launcher dispatch, and GitHub install/update flow
+- `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, and GitHub install/update flow
 - `spec/ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `spec/ops/07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
 - `spec/ops/09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
-Use `memos/` for working notes, design comparisons, implementation evidence, and release-preparation reminders. The current detailed implementation roadmap is `memos/implementation-todo.md`.
+Use `spec/alignment/` for working alignment notes, design comparisons, implementation evidence, and roadmap reminders. The current detailed implementation roadmap is `spec/alignment/07-gap-matrix-and-roadmap.md`.
 
 After changing repository structure, workspace boundaries, command behavior, CI, or planned module responsibilities, review and update:
 

@@ -3,18 +3,20 @@ use std::{collections::BTreeMap, sync::Arc};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TraceContext};
-use starweaver_model::{ContentPart, ModelMessage};
+use starweaver_model::{
+    ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponsePart, ToolReturnPart,
+};
 use starweaver_usage::{
     add_optional_pricing, PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot,
     UsageSnapshotEntry,
 };
 
 use crate::{
-    runtime_context, task::TASK_STATE_DOMAIN, AgentEvent, AgentInfo, AgentStreamQueueRegistry,
-    BusMessage, ContextLifecycleState, DependencyStore, EventBus, MessageBus, ModelConfig,
-    NoteStore, ResumableExportOptions, ResumableState, SecurityConfig, StateStore, Task,
-    TaskManager, TaskSnapshot, ToolConfig, ToolIdWrapper, WrapperMetadata,
-    TASK_SNAPSHOT_EVENT_KIND,
+    runtime_context, AgentEvent, AgentInfo, AgentStreamQueueRegistry, BusMessage,
+    ContextLifecycleState, DependencyStore, EventBus, MessageBus, ModelConfig, NoteStore,
+    ResumableExportOptions, ResumableState, SecurityConfig, StateStore, Task, TaskManager,
+    TaskSnapshot, ToolConfig, ToolIdWrapper, ToolSearchInvalidation, ToolSearchState,
+    WrapperMetadata, TASK_SNAPSHOT_EVENT_KIND,
 };
 
 /// Lifecycle-wide agent context.
@@ -36,6 +38,9 @@ pub struct AgentContext {
     /// Canonical message history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub message_history: Vec<ModelMessage>,
+    /// Tool returns to inject at the start of the next run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_tool_returns: Vec<ToolReturnPart>,
     /// Subagent message history keyed by agent id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub subagent_history: BTreeMap<String, Vec<ModelMessage>>,
@@ -65,10 +70,10 @@ pub struct AgentContext {
     pub agent_registry: BTreeMap<String, AgentInfo>,
     /// Tool names requiring approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub need_user_approve_tools: Vec<String>,
+    pub approval_required_tools: Vec<String>,
     /// MCP server names requiring approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub need_user_approve_mcps: Vec<String>,
+    pub approval_required_mcp_servers: Vec<String>,
     /// Files to auto-load on next request.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auto_load_files: Vec<String>,
@@ -164,6 +169,7 @@ impl AgentContext {
             parent_run_id: None,
             conversation_id: ConversationId::new(),
             message_history: Vec::new(),
+            pending_tool_returns: Vec::new(),
             subagent_history: BTreeMap::new(),
             user_prompts: None,
             previous_assistant_response_reference: None,
@@ -173,8 +179,8 @@ impl AgentContext {
             shell_env: BTreeMap::new(),
             deferred_tool_metadata: BTreeMap::new(),
             agent_registry,
-            need_user_approve_tools: Vec::new(),
-            need_user_approve_mcps: Vec::new(),
+            approval_required_tools: Vec::new(),
+            approval_required_mcp_servers: Vec::new(),
             auto_load_files: Vec::new(),
             task_manager: TaskManager::new(),
             tool_search_loaded_tools: Vec::new(),
@@ -214,6 +220,7 @@ impl AgentContext {
         context.session_id = state.session_id;
         context.conversation_id = state.conversation_id.unwrap_or_default();
         context.message_history = state.message_history;
+        context.pending_tool_returns = state.pending_tool_returns;
         context.subagent_history = state.subagent_history;
         context.user_prompts = state.user_prompts;
         context.previous_assistant_response_reference = state.previous_assistant_response_reference;
@@ -228,8 +235,8 @@ impl AgentContext {
                 AgentInfo::new(context.agent_id.as_str(), context.agent_id.as_str()),
             );
         }
-        context.need_user_approve_tools = state.need_user_approve_tools;
-        context.need_user_approve_mcps = state.need_user_approve_mcps;
+        context.approval_required_tools = state.approval_required_tools;
+        context.approval_required_mcp_servers = state.approval_required_mcp_servers;
         context.security = state.security;
         context.auto_load_files = state.auto_load_files;
         context.task_manager = TaskManager::from_exported(state.tasks);
@@ -242,7 +249,6 @@ impl AgentContext {
         context.tool_config = state.tool_config;
         context.started_at = state.started_at;
         context.state = state.state;
-        context.import_legacy_tasks_from_state();
         context.messages = state.message_bus;
         context.trace_context = state.trace_snapshot;
         context.metadata = state.metadata;
@@ -279,6 +285,11 @@ impl AgentContext {
             } else {
                 Vec::new()
             },
+            pending_tool_returns: if options.include_starweaver_extensions() {
+                self.pending_tool_returns.clone()
+            } else {
+                Vec::new()
+            },
             subagent_history: if options.include_subagent() {
                 self.subagent_history.clone()
             } else {
@@ -297,8 +308,8 @@ impl AgentContext {
             } else {
                 BTreeMap::new()
             },
-            need_user_approve_tools: self.need_user_approve_tools.clone(),
-            need_user_approve_mcps: self.need_user_approve_mcps.clone(),
+            approval_required_tools: self.approval_required_tools.clone(),
+            approval_required_mcp_servers: self.approval_required_mcp_servers.clone(),
             security: if options.include_runtime_policy() {
                 self.security.clone()
             } else {
@@ -464,6 +475,7 @@ impl AgentContext {
 
     /// Absorb child context state that should survive successful subagent execution.
     pub fn absorb_subagent_context(&mut self, child: &Self) {
+        let event_cursor = self.events.len();
         self.usage = child.usage.clone();
         self.usage_snapshot_entries
             .clone_from(&child.usage_snapshot_entries);
@@ -481,17 +493,8 @@ impl AgentContext {
                 .entry(agent_id.clone())
                 .or_insert_with(|| history.clone());
         }
-    }
-
-    fn import_legacy_tasks_from_state(&mut self) {
-        if !self.task_manager.is_empty() {
-            return;
-        }
-        let Some(value) = self.state.get(TASK_STATE_DOMAIN).cloned() else {
-            return;
-        };
-        if let Ok(snapshot) = serde_json::from_value::<TaskSnapshot>(value) {
-            self.task_manager = TaskManager::from_tasks(snapshot.tasks);
+        for event in child.events.events().iter().skip(event_cursor) {
+            self.events.publish(event.clone());
         }
     }
 
@@ -505,6 +508,64 @@ impl AgentContext {
     /// Replace trace correlation context.
     pub fn set_trace_context(&mut self, trace_context: TraceContext) {
         self.trace_context = trace_context;
+    }
+
+    /// Record a tool name loaded through dynamic tool search.
+    pub fn record_tool_search_loaded_tool(&mut self, tool_name: impl Into<String>) {
+        push_unique(&mut self.tool_search_loaded_tools, tool_name.into());
+    }
+
+    /// Record a namespace loaded through dynamic tool search.
+    pub fn record_tool_search_loaded_namespace(&mut self, namespace: impl Into<String>) {
+        push_unique(&mut self.tool_search_loaded_namespaces, namespace.into());
+    }
+
+    /// Record loaded tool-search state in one update.
+    pub fn record_tool_search_loaded(
+        &mut self,
+        tools: impl IntoIterator<Item = impl Into<String>>,
+        namespaces: impl IntoIterator<Item = impl Into<String>>,
+    ) {
+        for tool in tools {
+            self.record_tool_search_loaded_tool(tool);
+        }
+        for namespace in namespaces {
+            self.record_tool_search_loaded_namespace(namespace);
+        }
+    }
+
+    /// Clear all loaded tool-search state and return the removed values.
+    pub fn clear_tool_search_loaded(&mut self) -> ToolSearchInvalidation {
+        ToolSearchInvalidation {
+            removed_tools: std::mem::take(&mut self.tool_search_loaded_tools),
+            removed_namespaces: std::mem::take(&mut self.tool_search_loaded_namespaces),
+        }
+    }
+
+    /// Retain only loaded tool-search entries accepted by the supplied predicates.
+    pub fn retain_tool_search_loaded(
+        &mut self,
+        mut keep_tool: impl FnMut(&str) -> bool,
+        mut keep_namespace: impl FnMut(&str) -> bool,
+    ) -> ToolSearchInvalidation {
+        ToolSearchInvalidation {
+            removed_tools: retain_matching(&mut self.tool_search_loaded_tools, |tool| {
+                keep_tool(tool)
+            }),
+            removed_namespaces: retain_matching(
+                &mut self.tool_search_loaded_namespaces,
+                |namespace| keep_namespace(namespace),
+            ),
+        }
+    }
+
+    /// Return the current tool-search state snapshot.
+    #[must_use]
+    pub fn tool_search_state(&self) -> ToolSearchState {
+        ToolSearchState {
+            loaded_tools: self.tool_search_loaded_tools.clone(),
+            loaded_namespaces: self.tool_search_loaded_namespaces.clone(),
+        }
     }
 
     /// Record a model message in context history.
@@ -544,6 +605,38 @@ impl AgentContext {
         self.usage_snapshot_entries
             .insert(ledger_key.unwrap_or(agent_id), entry);
         self.build_usage_snapshot()
+    }
+
+    /// Update one cumulative external usage ledger entry.
+    ///
+    /// This helper is for host services, sub-systems, and adapters that need to
+    /// include non-model usage in the run snapshot without pretending the usage
+    /// came from the active model request.
+    #[must_use]
+    pub fn update_external_usage_snapshot_entry(
+        &mut self,
+        source_id: impl Into<String>,
+        source_name: impl Into<String>,
+        model_id: impl Into<String>,
+        usage: Usage,
+        estimate_pricing: Option<PricingEstimate>,
+        usage_id: Option<String>,
+    ) -> UsageSnapshot {
+        let source_id = source_id.into();
+        let ledger_key = usage_id.as_ref().map_or_else(
+            || format!("external:{source_id}"),
+            |usage_id| format!("external:{source_id}:{usage_id}"),
+        );
+        self.update_usage_snapshot_entry(
+            source_id,
+            source_name,
+            model_id,
+            usage,
+            estimate_pricing,
+            usage_id,
+            "external",
+            Some(ledger_key),
+        )
     }
 
     /// Build a cumulative usage snapshot for this run.
@@ -626,6 +719,86 @@ impl AgentContext {
         })
     }
 
+    /// Append synthetic error tool returns for any unclosed tool calls in message history.
+    ///
+    /// This is used when a run fails or is interrupted after a provider has emitted tool calls but
+    /// before every tool return has been recorded. It keeps recovered history acceptable to
+    /// providers that require every tool call to be closed by a matching tool return.
+    pub fn repair_dangling_tool_calls(&mut self, reason: impl Into<String>) -> usize {
+        let reason = reason.into();
+        let mut pending = Vec::<(String, String)>::new();
+        for message in &self.message_history {
+            match message {
+                ModelMessage::Response(response) => {
+                    for part in &response.parts {
+                        match part {
+                            ModelResponsePart::ToolCall(call)
+                            | ModelResponsePart::ProviderToolCall { call, .. } => {
+                                pending.push((call.id.clone(), call.name.clone()));
+                            }
+                            ModelResponsePart::Text { .. }
+                            | ModelResponsePart::ProviderText { .. }
+                            | ModelResponsePart::Thinking { .. }
+                            | ModelResponsePart::ProviderThinking { .. }
+                            | ModelResponsePart::NativeToolCall { .. }
+                            | ModelResponsePart::NativeToolReturn { .. }
+                            | ModelResponsePart::File { .. }
+                            | ModelResponsePart::Compaction { .. }
+                            | ModelResponsePart::ProviderOpaque { .. } => {}
+                        }
+                    }
+                }
+                ModelMessage::Request(request) => {
+                    for part in &request.parts {
+                        if let ModelRequestPart::ToolReturn(tool_return) = part {
+                            pending.retain(|(id, _)| id != &tool_return.tool_call_id);
+                        }
+                    }
+                }
+            }
+        }
+        if pending.is_empty() {
+            return 0;
+        }
+        let repaired_count = pending.len();
+        let mut parts = Vec::with_capacity(repaired_count);
+        for (tool_call_id, name) in pending {
+            let mut metadata = Metadata::default();
+            metadata.insert(
+                "starweaver.repaired_dangling_tool_call".to_string(),
+                serde_json::json!(true),
+            );
+            metadata.insert("reason".to_string(), serde_json::json!(reason.clone()));
+            parts.push(ModelRequestPart::ToolReturn(
+                ToolReturnPart::new(
+                    tool_call_id,
+                    name,
+                    serde_json::json!({
+                        "error": "tool_call_interrupted",
+                        "message": reason.clone(),
+                    }),
+                )
+                .with_error(true)
+                .with_metadata(metadata),
+            ));
+        }
+        self.message_history
+            .push(ModelMessage::Request(ModelRequest {
+                parts,
+                timestamp: Some(Utc::now()),
+                instructions: None,
+                run_id: self.run_id.clone(),
+                conversation_id: Some(self.conversation_id.clone()),
+                metadata: serde_json::json!({
+                    "starweaver.repaired_dangling_tool_calls": true,
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            }));
+        repaired_count
+    }
+
     /// Publish an event.
     pub fn publish_event(&mut self, event: AgentEvent) {
         self.events.publish(event);
@@ -634,24 +807,12 @@ impl AgentContext {
     /// Return all tasks from the typed task manager.
     #[must_use]
     pub fn tasks(&self) -> Vec<Task> {
-        if !self.task_manager.is_empty() {
-            return self.task_manager.list_all();
-        }
-        self.state
-            .get(TASK_STATE_DOMAIN)
-            .cloned()
-            .and_then(|value| serde_json::from_value::<TaskSnapshot>(value).ok())
-            .map_or_else(Vec::new, |snapshot| snapshot.tasks)
+        self.task_manager.list_all()
     }
 
-    /// Replace all tasks in the typed task manager and legacy task state domain.
+    /// Replace all tasks in the typed task manager.
     pub fn set_tasks(&mut self, tasks: Vec<Task>) {
-        self.task_manager.replace_all(tasks.clone());
-        self.state.set(
-            TASK_STATE_DOMAIN,
-            serde_json::to_value(TaskSnapshot { tasks })
-                .unwrap_or_else(|_| serde_json::json!({"tasks": []})),
-        );
+        self.task_manager.replace_all(tasks);
     }
 
     /// Return a full task snapshot.
@@ -672,7 +833,7 @@ impl AgentContext {
 
     /// Enqueue a message.
     pub fn enqueue_message(&mut self, message: BusMessage) {
-        self.messages.enqueue(message);
+        self.messages.send(message);
     }
 
     /// Send a bus message idempotently.
@@ -795,6 +956,26 @@ impl AgentContext {
     pub fn render_runtime_context(&self, is_user_prompt: bool) -> Option<String> {
         runtime_context::render_runtime_context(self, is_user_prompt)
     }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn retain_matching(values: &mut Vec<String>, mut keep: impl FnMut(&str) -> bool) -> Vec<String> {
+    let mut retained = Vec::with_capacity(values.len());
+    let mut removed = Vec::new();
+    for value in std::mem::take(values) {
+        if keep(&value) {
+            retained.push(value);
+        } else {
+            removed.push(value);
+        }
+    }
+    *values = retained;
+    removed
 }
 
 impl Default for AgentContext {

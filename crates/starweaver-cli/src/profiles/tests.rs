@@ -158,6 +158,15 @@ async fn configured_subagent_delegate_inherits_parent_model_settings_and_config(
         .unwrap();
 
     assert_eq!(result.output(), "captured: hello");
-    assert_eq!(context.events.events()[0].kind, "subagent_started");
-    assert_eq!(context.events.events()[1].kind, "subagent_completed");
+    let lifecycle_events = context
+        .events
+        .events()
+        .iter()
+        .filter(|event| event.kind == "subagent_started" || event.kind == "subagent_completed")
+        .map(|event| event.kind.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lifecycle_events,
+        vec!["subagent_started", "subagent_completed"]
+    );
 }

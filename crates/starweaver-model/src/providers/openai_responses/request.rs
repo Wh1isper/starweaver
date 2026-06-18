@@ -76,34 +76,34 @@ pub(super) fn build_request_with_options(
         request.insert("instructions".to_string(), json!(instructions.join("\n\n")));
     }
     apply_common_settings_without_seed(&mut request, settings, max_tokens_parameter);
-    if let Some(openai) =
+    if let Some(openai_settings) =
         settings.and_then(|settings| settings.provider_settings.openai_responses.as_ref())
     {
-        if let Some(store) = openai.store {
+        if let Some(store) = openai_settings.store {
             request.insert("store".to_string(), json!(store));
         }
-        if let Some(user) = &openai.user {
+        if let Some(user) = &openai_settings.user {
             request.insert("user".to_string(), json!(user));
         }
-        if let Some(truncation) = &openai.truncation {
+        if let Some(truncation) = &openai_settings.truncation {
             request.insert("truncation".to_string(), json!(truncation));
         }
-        if let Some(context_management) = &openai.context_management {
+        if let Some(context_management) = &openai_settings.context_management {
             request.insert("context_management".to_string(), context_management.clone());
         }
-        if let Some(prompt_cache_key) = &openai.prompt_cache_key {
+        if let Some(prompt_cache_key) = &openai_settings.prompt_cache_key {
             request.insert("prompt_cache_key".to_string(), json!(prompt_cache_key));
         }
-        if let Some(prompt_cache_retention) = &openai.prompt_cache_retention {
+        if let Some(prompt_cache_retention) = &openai_settings.prompt_cache_retention {
             request.insert(
                 "prompt_cache_retention".to_string(),
                 json!(prompt_cache_retention),
             );
         }
-        for include in &openai.include {
+        for include in &openai_settings.include {
             ensure_include(&mut request, include);
         }
-        if let Some(text_verbosity) = &openai.text_verbosity {
+        if let Some(text_verbosity) = &openai_settings.text_verbosity {
             let text = request
                 .entry("text".to_string())
                 .or_insert_with(|| Value::Object(Map::new()));
@@ -112,7 +112,6 @@ pub(super) fn build_request_with_options(
             }
         }
     }
-    strip_openai_replay_aliases(&mut request);
     if let Some(previous_response_id) = previous_response_id {
         request.insert(
             "previous_response_id".to_string(),
@@ -145,17 +144,6 @@ pub(super) fn build_request_with_options(
         request.insert("tools".to_string(), json!(tool_defs));
     }
     Ok(Value::Object(request))
-}
-
-fn strip_openai_replay_aliases(request: &mut Map<String, Value>) {
-    for key in [
-        "openai_previous_response_id",
-        "openai_conversation_id",
-        "openai_send_reasoning_ids",
-        "openai_include_encrypted_reasoning",
-    ] {
-        request.remove(key);
-    }
 }
 
 fn ensure_include(request: &mut Map<String, Value>, include: &str) {

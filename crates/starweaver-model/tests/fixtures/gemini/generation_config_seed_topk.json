@@ -1,0 +1,62 @@
+{
+  "model": "gemini-2.5-pro",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are precise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Pick a deterministic answer."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "temperature": 0.1,
+    "top_k": 40,
+    "seed": 12345,
+    "provider_settings": {
+      "google": {
+        "cached_content": "cachedContents/cache-1",
+        "response_logprobs": true,
+        "logprobs": 3
+      }
+    }
+  },
+  "expected_provider_request": {
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "You are precise."
+        }
+      ]
+    },
+    "contents": [
+      {
+        "role": "user",
+        "parts": [
+          {
+            "text": "Pick a deterministic answer."
+          }
+        ]
+      }
+    ],
+    "generationConfig": {
+      "temperature": 0.1,
+      "topK": 40,
+      "seed": 12345,
+      "responseLogprobs": true,
+      "logprobs": 3
+    },
+    "cachedContent": "cachedContents/cache-1"
+  }
+}

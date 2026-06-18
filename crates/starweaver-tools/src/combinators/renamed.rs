@@ -2,10 +2,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::Value;
+use starweaver_context::AgentContext;
 use starweaver_core::Metadata;
+use starweaver_model::ToolDefinition;
 
 use crate::{
-    DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolResult, Toolset,
+    DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolResult,
+    ToolUserInputPreprocessResult, Toolset,
 };
 
 /// Toolset wrapper that applies stable tool name mappings.
@@ -89,6 +92,10 @@ impl Toolset for RenamedToolset {
         self.inner.max_retries()
     }
 
+    fn timeout_ms(&self) -> Option<u64> {
+        self.inner.timeout_ms()
+    }
+
     fn get_instructions(&self) -> Vec<ToolInstruction> {
         self.inner.get_instructions()
     }
@@ -126,7 +133,43 @@ impl Tool for RenamedTool {
         self.inner.max_retries()
     }
 
+    fn timeout_ms(&self) -> Option<u64> {
+        self.inner.timeout_ms()
+    }
+
+    fn return_schema(&self) -> Option<Value> {
+        self.inner.return_schema()
+    }
+
+    fn strict_schema(&self) -> Option<bool> {
+        self.inner.strict_schema()
+    }
+
+    fn sequential(&self) -> Option<bool> {
+        self.inner.sequential()
+    }
+
+    fn is_available(&self, context: &AgentContext) -> bool {
+        self.inner.is_available(context)
+    }
+
+    fn prepare_definition(
+        &self,
+        context: &AgentContext,
+        definition: ToolDefinition,
+    ) -> Option<ToolDefinition> {
+        self.inner.prepare_definition(context, definition)
+    }
+
     async fn call(&self, context: ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         self.inner.call(context, arguments).await
+    }
+
+    async fn preprocess_user_input(
+        &self,
+        context: ToolContext,
+        user_input: Value,
+    ) -> Result<ToolUserInputPreprocessResult, ToolError> {
+        self.inner.preprocess_user_input(context, user_input).await
     }
 }

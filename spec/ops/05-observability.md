@@ -105,6 +105,7 @@ Recorder responsibilities:
 - record success or error status and `error.type`
 - close spans when the runtime boundary completes
 - expose an `InMemoryTraceRecorder` for span-tree snapshot tests
+- expose deterministic `export_otel_gen_ai_spans` and `AdapterTraceRecorder::otel_gen_ai_spans` projections for OpenTelemetry GenAI field tests before binding to a concrete exporter
 - provide feature-gated adapters for `tracing`, OpenTelemetry, OTLP, and Langfuse-friendly metadata
 
 Runtime propagation rules:
@@ -125,13 +126,21 @@ The runtime creates `gen_ai.inference` spans around every model call. The span u
 - `starweaver.model.stream_event`: canonical stream event records emitted by the model layer.
 - `starweaver.model.response`: canonical model response, usage, finish reason, model name, and provider metadata.
 
-The production protocol client may receive an optional debug recorder through `ModelRequestContext`. When supplied, it records debug-level spans/events for:
+The production protocol client exposes a provider request audit path through
+`ProtocolModelClient::with_provider_request_audit`. When supplied, it records
+`ProviderRequestAuditSnapshot` values outside the redacted span tree for:
 
-- exact HTTP request after provider adapter conversion, auth/config/override merge, and extra-body merge
-- exact HTTP response before canonical parsing
-- future provider stream chunks before canonical stream normalization
+- exact HTTP method and URL after provider adapter conversion
+- optional headers after auth/config/override merge
+- optional body after provider adapter conversion and extra-body merge
+- request metadata for run, conversation, fixture, or gateway correlation
+- whether the request used the streaming path
 
-This split keeps the model layer reconstructable by default while preserving a precise wire-level diagnostic seam for provider bugs, gateway/audit issues, and replay fixture generation.
+Provider audit capture is disabled by default. The policy can capture metadata
+only, redacted headers/body, or explicit full payloads. This split keeps the
+model layer reconstructable by default while preserving a precise wire-level
+diagnostic seam for provider bugs, gateway/audit issues, and replay fixture
+generation.
 
 ## Tool, Capability, and Filter Spans
 

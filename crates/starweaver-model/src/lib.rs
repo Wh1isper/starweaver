@@ -67,8 +67,13 @@ pub use stream::{
 };
 pub use test::{latest_user_text, tool_call_response, FunctionModel, FunctionModelInfo, TestModel};
 pub use transport::{
-    AuthConfig, DynHttpClient, DynSleeper, HttpModelConfig, HttpRequest, HttpRequestOptions,
-    HttpResponse, MaxTokensParameter, ModelEventStream, ModelHttpClient, ModelSleeper, NoopSleeper,
-    ReqwestHttpClient, RetryPolicy, TokioSleeper,
+    AuthConfig, DynHttpClient, DynProviderRequestAuditRecorder, DynSleeper, HttpModelConfig,
+    HttpRequest, HttpRequestOptions, HttpResponse, InMemoryProviderRequestAuditRecorder,
+    MaxTokensParameter, ModelEventStream, ModelHttpClient, ModelSleeper, NoopSleeper,
+    ProviderRequestAuditPayloadPolicy, ProviderRequestAuditPolicy, ProviderRequestAuditRecorder,
+    ProviderRequestAuditSnapshot, ReqwestHttpClient, RetryPolicy, TokioSleeper,
 };
-pub use wrappers::{ConcurrencyLimitedModel, DynModelAdapter, FallbackModel, ProfileOverrideModel};
+pub use wrappers::{
+    ConcurrencyLimitedModel, DynModelAdapter, DynModelExecutionHook, FallbackModel, HookedModel,
+    ModelExecutionHook, ModelExecutionMetadata, ProfileOverrideModel,
+};

@@ -1,0 +1,43 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Summarize this document: "
+            },
+            {
+              "kind": "file_url",
+              "url": "https://example.test/spec.pdf",
+              "media_type": "application/pdf"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Summarize this document: "
+          },
+          {
+            "type": "input_file",
+            "file_url": "https://example.test/spec.pdf",
+            "media_type": "application/pdf"
+          }
+        ]
+      }
+    ]
+  }
+}

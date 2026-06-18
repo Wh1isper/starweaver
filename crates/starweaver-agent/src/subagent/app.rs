@@ -1,10 +1,18 @@
 use starweaver_context::AgentContext;
 use starweaver_model::ModelMessage;
 use starweaver_runtime::{
-    Agent as RuntimeAgent, AgentError, AgentResult, AgentStreamRecord, AgentStreamResult,
+    Agent as RuntimeAgent, AgentError, AgentInput, AgentResult, AgentStreamRecord,
+    AgentStreamResult,
 };
 
-use crate::session::AgentSession;
+use crate::{
+    session::AgentSession,
+    streaming::{
+        start_session_stream, start_session_stream_with_options, try_start_session_stream,
+        try_start_session_stream_with_options, AgentStreamError, AgentStreamHandle,
+        AgentStreamOptions,
+    },
+};
 
 use super::SubagentRegistry;
 
@@ -67,7 +75,7 @@ impl AgentApp {
     /// # Errors
     ///
     /// Returns an error when the core runtime fails.
-    pub async fn run(&self, prompt: impl Into<String>) -> Result<AgentResult, AgentError> {
+    pub async fn run(&self, prompt: impl Into<AgentInput>) -> Result<AgentResult, AgentError> {
         self.agent.run(prompt).await
     }
 
@@ -78,7 +86,7 @@ impl AgentApp {
     /// Returns an error when the core runtime fails.
     pub async fn run_with_history(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         message_history: Vec<ModelMessage>,
     ) -> Result<AgentResult, AgentError> {
         self.agent.run_with_history(prompt, message_history).await
@@ -91,7 +99,7 @@ impl AgentApp {
     /// Returns an error when the core runtime fails.
     pub async fn run_with_context(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         context: &mut AgentContext,
     ) -> Result<AgentResult, AgentError> {
         self.agent.run_with_context(prompt, context).await
@@ -104,9 +112,122 @@ impl AgentApp {
     /// Returns an error when the core runtime fails.
     pub async fn run_stream(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
     ) -> Result<AgentStreamResult, AgentError> {
         self.agent.run_stream(prompt).await
+    }
+
+    /// Start a live stream with a fresh context.
+    #[must_use]
+    pub fn stream(&self, prompt: impl Into<AgentInput>) -> AgentStreamHandle {
+        start_session_stream(self.agent.clone(), AgentContext::default(), prompt.into())
+    }
+
+    /// Try to start a live stream with a fresh context.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentStreamError::RuntimeUnavailable` when called outside an
+    /// active Tokio runtime.
+    pub fn try_stream(
+        &self,
+        prompt: impl Into<AgentInput>,
+    ) -> Result<AgentStreamHandle, AgentStreamError> {
+        try_start_session_stream(self.agent.clone(), AgentContext::default(), prompt.into())
+    }
+
+    /// Start a live stream with a fresh context and explicit stream delivery options.
+    #[must_use]
+    pub fn stream_with_stream_options(
+        &self,
+        prompt: impl Into<AgentInput>,
+        stream_options: AgentStreamOptions,
+    ) -> AgentStreamHandle {
+        start_session_stream_with_options(
+            self.agent.clone(),
+            AgentContext::default(),
+            prompt.into(),
+            stream_options,
+        )
+    }
+
+    /// Try to start a live stream with a fresh context and explicit stream delivery options.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentStreamError::RuntimeUnavailable` when called outside an
+    /// active Tokio runtime.
+    pub fn try_stream_with_stream_options(
+        &self,
+        prompt: impl Into<AgentInput>,
+        stream_options: AgentStreamOptions,
+    ) -> Result<AgentStreamHandle, AgentStreamError> {
+        try_start_session_stream_with_options(
+            self.agent.clone(),
+            AgentContext::default(),
+            prompt.into(),
+            stream_options,
+        )
+    }
+
+    /// Start a live stream with caller-provided context.
+    #[must_use]
+    pub fn stream_with_context(
+        &self,
+        prompt: impl Into<AgentInput>,
+        context: AgentContext,
+    ) -> AgentStreamHandle {
+        start_session_stream(self.agent.clone(), context, prompt.into())
+    }
+
+    /// Try to start a live stream with caller-provided context.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentStreamError::RuntimeUnavailable` when called outside an
+    /// active Tokio runtime.
+    pub fn try_stream_with_context(
+        &self,
+        prompt: impl Into<AgentInput>,
+        context: AgentContext,
+    ) -> Result<AgentStreamHandle, AgentStreamError> {
+        try_start_session_stream(self.agent.clone(), context, prompt.into())
+    }
+
+    /// Start a live stream with caller-provided context and stream delivery options.
+    #[must_use]
+    pub fn stream_with_context_and_stream_options(
+        &self,
+        prompt: impl Into<AgentInput>,
+        context: AgentContext,
+        stream_options: AgentStreamOptions,
+    ) -> AgentStreamHandle {
+        start_session_stream_with_options(
+            self.agent.clone(),
+            context,
+            prompt.into(),
+            stream_options,
+        )
+    }
+
+    /// Try to start a live stream with caller-provided context and stream delivery options.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentStreamError::RuntimeUnavailable` when called outside an
+    /// active Tokio runtime.
+    pub fn try_stream_with_context_and_stream_options(
+        &self,
+        prompt: impl Into<AgentInput>,
+        context: AgentContext,
+        stream_options: AgentStreamOptions,
+    ) -> Result<AgentStreamHandle, AgentStreamError> {
+        try_start_session_stream_with_options(
+            self.agent.clone(),
+            context,
+            prompt.into(),
+            stream_options,
+        )
     }
 
     /// Run with an explicit stream event collector.
@@ -116,7 +237,7 @@ impl AgentApp {
     /// Returns an error when the core runtime fails.
     pub async fn run_with_context_and_stream_events(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         context: &mut AgentContext,
         events: &mut Vec<AgentStreamRecord>,
     ) -> Result<AgentResult, AgentError> {

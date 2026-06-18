@@ -4,6 +4,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
+use starweaver_core::{AgentId, RunId, TaskId};
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily,
@@ -11,8 +12,9 @@ use starweaver_model::{
 };
 use starweaver_runtime::{
     Agent, AgentCapability, AgentCheckpoint, AgentError, AgentExecutionDecision,
-    AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentStreamEvent, AgentStreamRecord,
-    CapabilityResult, OutputSchema, StaticCapabilityBundle,
+    AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentSidebandEventCategory,
+    AgentStreamEvent, AgentStreamRecord, AgentStreamSource, CapabilityResult, OutputSchema,
+    StaticCapabilityBundle,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 
@@ -72,6 +74,47 @@ fn lookup_registry() -> ToolRegistry {
         |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
     );
     ToolRegistry::new().with_tool(Arc::new(tool))
+}
+
+#[test]
+fn stream_record_source_defaults_to_none_and_skips_serialization() {
+    let record = AgentStreamRecord::new(7, AgentStreamEvent::ModelRequest { step: 1 });
+
+    assert!(record.source.is_none());
+    let value = serde_json::to_value(&record).unwrap();
+    assert!(value.get("source").is_none());
+    let restored: AgentStreamRecord = serde_json::from_value(value).unwrap();
+    assert!(restored.source.is_none());
+    assert_eq!(restored.sequence, 7);
+}
+
+#[test]
+fn stream_record_source_attribution_round_trips() {
+    let source = AgentStreamSource::subagent(
+        AgentId::from_string("child-agent"),
+        "child",
+        TaskId::from_string("task-1"),
+        Some(RunId::from_string("run-child")),
+        Some(RunId::from_string("run-parent")),
+        3,
+    );
+    let record =
+        AgentStreamRecord::new(10, AgentStreamEvent::ModelRequest { step: 1 }).with_source(source);
+
+    let value = serde_json::to_value(&record).unwrap();
+
+    assert_eq!(value["source"]["kind"], "subagent");
+    assert_eq!(value["source"]["agent_id"], "child-agent");
+    assert_eq!(value["source"]["agent_name"], "child");
+    assert_eq!(value["source"]["task_id"], "task-1");
+    assert_eq!(value["source"]["run_id"], "run-child");
+    assert_eq!(value["source"]["parent_run_id"], "run-parent");
+    assert_eq!(value["source"]["source_sequence"], 3);
+    let restored: AgentStreamRecord = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        restored.source.unwrap().parent_run_id.unwrap().as_str(),
+        "run-parent"
+    );
 }
 
 #[tokio::test]
@@ -324,6 +367,59 @@ async fn stream_events_expose_context_sideband_events() {
         AgentStreamEvent::Custom { event }
             if event.kind == "tool_progress" && event.payload["status"] == "working"
     )));
+    let progress = stream
+        .events
+        .iter()
+        .filter_map(|record| record.event.sideband_event())
+        .find(|event| event.kind == "tool_progress")
+        .unwrap();
+    assert_eq!(progress.category, AgentSidebandEventCategory::Tool);
+    assert_eq!(progress.kind, "tool_progress");
+    assert_eq!(progress.payload["status"], "working");
+}
+
+#[test]
+fn sideband_event_classifies_stable_context_event_taxonomy() {
+    let event = AgentStreamEvent::Custom {
+        event: AgentEvent::new(
+            "tool_search_initialized",
+            serde_json::json!({"namespace_count": 2}),
+        ),
+    };
+    let sideband = event.sideband_event().unwrap();
+    assert_eq!(sideband.category, AgentSidebandEventCategory::ToolSearch);
+    assert_eq!(sideband.kind, "tool_search_initialized");
+    assert_eq!(sideband.payload["namespace_count"], 2);
+
+    let event = AgentStreamEvent::Custom {
+        event: AgentEvent::new("toolset_initialized", serde_json::json!({"tool_count": 2})),
+    };
+    let sideband = event.sideband_event().unwrap();
+    assert_eq!(sideband.category, AgentSidebandEventCategory::Tool);
+    assert_eq!(sideband.kind, "toolset_initialized");
+
+    let event = AgentStreamEvent::Custom {
+        event: AgentEvent::new("skill_activated", serde_json::json!({"name": "rust"})),
+    };
+    let sideband = event.sideband_event().unwrap();
+    assert_eq!(sideband.category, AgentSidebandEventCategory::Skill);
+
+    let event = AgentStreamEvent::Custom {
+        event: AgentEvent::new("skills_reloaded", serde_json::json!({"changes": []})),
+    };
+    let sideband = event.sideband_event().unwrap();
+    assert_eq!(sideband.category, AgentSidebandEventCategory::Skill);
+
+    let event = AgentStreamEvent::Custom {
+        event: AgentEvent::new("hitl_resolved", serde_json::json!({"approved": 1})),
+    };
+    let sideband = event.sideband_event().unwrap();
+    assert_eq!(sideband.category, AgentSidebandEventCategory::Hitl);
+
+    let event = AgentStreamEvent::Custom {
+        event: AgentEvent::new("external_signal", serde_json::json!({})),
+    };
+    assert!(event.sideband_event().is_none());
 }
 
 #[tokio::test]

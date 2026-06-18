@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use serde_json::Value;
 use thiserror::Error;
 
 use crate::run::AgentRunState;
@@ -96,53 +95,27 @@ pub fn parse_output(
         Some(schema) => {
             let value = serde_json::from_str(raw_output)
                 .map_err(|error| OutputValidationError::InvalidJson(error.to_string()))?;
-            validate_json_value(&value, &schema.schema)?;
+            validate_json_value(&value, schema)?;
             Ok(OutputValue::Json(value))
         }
         None => Ok(OutputValue::Text(raw_output.to_string())),
     }
 }
 
-fn validate_json_value(value: &Value, schema: &Value) -> OutputValidationResult<()> {
-    if let Some(schema_type) = schema.get("type").and_then(Value::as_str) {
-        validate_type(value, schema_type)?;
-    }
-    if let Some(required) = schema.get("required").and_then(Value::as_array) {
-        validate_required(value, required)?;
-    }
-    Ok(())
-}
-
-fn validate_type(value: &Value, schema_type: &str) -> OutputValidationResult<()> {
-    let valid = match schema_type {
-        "object" => value.is_object(),
-        "array" => value.is_array(),
-        "string" => value.is_string(),
-        "number" => value.is_number(),
-        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
-        "boolean" => value.is_boolean(),
-        "null" => value.is_null(),
-        _ => true,
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(OutputValidationError::Schema(format!(
-            "expected JSON value of type {schema_type}"
-        )))
-    }
-}
-
-fn validate_required(value: &Value, required: &[Value]) -> OutputValidationResult<()> {
-    let object = value.as_object().ok_or_else(|| {
-        OutputValidationError::Schema("required fields need an object output".to_string())
+fn validate_json_value(
+    value: &serde_json::Value,
+    schema: &OutputSchema,
+) -> OutputValidationResult<()> {
+    let validator = jsonschema::validator_for(&schema.schema).map_err(|error| {
+        OutputValidationError::Schema(format!("invalid output schema {}: {error}", schema.name))
     })?;
-    for field in required.iter().filter_map(Value::as_str) {
-        if !object.contains_key(field) {
-            return Err(OutputValidationError::Schema(format!(
-                "missing required field {field}"
-            )));
+    validator.validate(value).map_err(|error| {
+        let path = error.instance_path.as_str();
+        let detail = error.masked().to_string();
+        if path.is_empty() {
+            OutputValidationError::Schema(detail)
+        } else {
+            OutputValidationError::Schema(format!("{path}: {detail}"))
         }
-    }
-    Ok(())
+    })
 }

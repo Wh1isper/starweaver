@@ -1,6 +1,6 @@
 # CLI
 
-`starweaver-cli` is the local headless product surface for Starweaver. It runs prompts through the SDK runtime stream, projects runtime records into AGUI-compatible `DisplayMessage` events, persists replay evidence locally, and prints either human-readable text or display JSONL.
+`starweaver-cli` is the local headless product surface for Starweaver. It runs prompts through the SDK runtime stream, projects runtime records into AGUI-named `DisplayMessage` events, persists replay evidence locally, and prints either human-readable text or display JSONL.
 
 ## Launchers
 
@@ -348,11 +348,11 @@ sw cli -p "summarize this repository"
 
 Output modes:
 
-| Mode            | Flag                     | Output contract                                           |
-| --------------- | ------------------------ | --------------------------------------------------------- |
-| `text`          | `--output text`          | assistant text and compact tool/status lines              |
-| `display-jsonl` | `--output display-jsonl` | one AGUI-compatible `DisplayMessage` JSON object per line |
-| `silent`        | `--output silent`        | persisted records and compact final status                |
+| Mode            | Flag                     | Output contract                                      |
+| --------------- | ------------------------ | ---------------------------------------------------- |
+| `text`          | `--output text`          | assistant text and compact tool/status lines         |
+| `display-jsonl` | `--output display-jsonl` | one Starweaver `DisplayMessage` JSON object per line |
+| `silent`        | `--output silent`        | persisted records and compact final status           |
 
 Examples:
 
@@ -585,12 +585,12 @@ Get resolved config values and persist project or global config overrides:
 ```bash
 starweaver-cli config get trim.current_session_keep_recent_runs
 starweaver-cli config get metadata.tools
-starweaver-cli config get metadata.compatibility
+starweaver-cli config get metadata.unmapped
 starweaver-cli config set trim.current_session_keep_recent_runs 10
 starweaver-cli config set --global general.default_profile general
 ```
 
-Starweaver preserves recognized display, subagent, command, security, and max-request fields in compatibility metadata so configuration audits can map those sections into first-class Starweaver settings over time.
+Starweaver preserves recognized display, subagent, command, security, and max-request fields in unmapped metadata so configuration audits can map those sections into first-class Starweaver settings over time.
 
 ## Shell completions
 

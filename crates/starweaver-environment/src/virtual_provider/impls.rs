@@ -471,8 +471,22 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
                 .lock()
                 .map_err(|error| EnvironmentError::Provider(error.to_string()))?
                 .clone(),
-            resources: Vec::new(),
-            metadata: Metadata::default(),
+            resources: self
+                .resources
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+                .clone(),
+            processes: self
+                .processes
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+                .values()
+                .cloned()
+                .collect(),
+            metadata: Metadata::from_iter([(
+                crate::ENVIRONMENT_PROVIDER_KIND_KEY.to_string(),
+                serde_json::json!("virtual"),
+            )]),
         })
     }
 }

@@ -5,11 +5,13 @@ use serde_json::{Map, Value};
 /// Serializable metadata object shared by Starweaver crates.
 pub type Metadata = Map<String, Value>;
 
+mod cancellation;
 mod ids;
 mod subagent;
 mod trace;
 mod xml;
 
+pub use cancellation::CancellationToken;
 pub use ids::{AgentId, CheckpointId, ConversationId, RunId, SessionId, TaskId};
 pub use subagent::{SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec};
 pub use trace::TraceContext;
@@ -85,6 +87,24 @@ mod tests {
         assert_eq!(fallback.parent_span_id.as_deref(), Some("parent"));
         assert_eq!(fallback.metadata, metadata);
         assert!(TraceContext::new().is_empty());
+    }
+
+    #[test]
+    fn trace_parent_parser_ignores_invalid_w3c_shapes() {
+        for invalid in [
+            "00-short-00f067aa0ba902b7-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-xyz067aa0ba902b7-01",
+            "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+            "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-zz",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-extra",
+        ] {
+            let context = TraceContext::from_trace_parent(invalid);
+            assert_eq!(context.trace_id.as_deref(), Some(invalid));
+            assert_eq!(context.parent_span_id, None);
+            assert!(context.metadata.is_empty());
+        }
     }
 
     #[test]

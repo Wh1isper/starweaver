@@ -73,7 +73,7 @@ impl NativeToolKind {
 }
 
 fn default_prompted_output_template() -> String {
-    "Always respond with a JSON object that's compatible with this schema:\n\n{schema}\n\nDon't include any text or Markdown fencing before or after."
+    "Always respond with a JSON object that matches this schema:\n\n{schema}\n\nDon't include any text or Markdown fencing before or after."
         .to_string()
 }
 

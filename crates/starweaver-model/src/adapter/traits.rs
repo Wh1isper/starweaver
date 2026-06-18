@@ -80,6 +80,7 @@ pub trait ModelAdapter: Send + Sync {
         params: ModelRequestParameters,
         context: ModelRequestContext,
     ) -> Result<ModelResponseEventStream, ModelError> {
+        let cancellation_token = context.cancellation_token();
         let events = self
             .request_stream(messages, settings, params, context)
             .await?;
@@ -87,7 +88,10 @@ pub trait ModelAdapter: Send + Sync {
         for event in events {
             let _ = sender.send(Ok(event)).await;
         }
-        Ok(ModelResponseEventStream::new(receiver))
+        Ok(ModelResponseEventStream::new_with_cancellation(
+            receiver,
+            cancellation_token,
+        ))
     }
 
     /// Count tokens for a request where provider support exists.

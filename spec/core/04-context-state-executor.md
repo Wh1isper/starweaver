@@ -66,7 +66,7 @@ Compact restore uses these explicit fields instead of reconstructing intent from
 
 `AgentContext.session_id` is an optional logical affinity id that can survive resumable state export/import. It is not a provider wire-format field. Runtime request building may convert it into a low-priority typed `ModelSettings` overlay, and provider mappers then translate typed settings into protocol-specific bodies or headers.
 
-Durable local session ids remain `SessionStore`/CLI concerns. CLI metadata uses `starweaver.durable_session_id` and `starweaver.durable_run_id` as canonical durable identifiers, with `cli.session_id` / `cli.run_id` aliases for CLI consumers. `starweaver.session_id` is retained only as a compatibility fallback for older routing/trace consumers.
+Durable local session ids remain `SessionStore`/CLI concerns. CLI metadata uses `starweaver.durable_session_id` and `starweaver.durable_run_id` as canonical durable identifiers, with `cli.session_id` / `cli.run_id` aliases for CLI consumers. Provider routing affinity stays in `AgentContext.session_id` and typed provider settings rather than durable metadata.
 
 Provider-specific routing headers are not generic context metadata. Codex OAuth owns `session_id`, `session-id`, `thread_id`, `thread-id`, and `x-client-request-id` headers through typed `CodexSettings`; Gateway sticky routing owns `x-session-id` through typed `GatewaySettings` or explicit raw headers.
 

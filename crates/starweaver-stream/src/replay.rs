@@ -121,7 +121,10 @@ pub enum ReplayEventKind {
     /// Heartbeat event.
     Heartbeat,
     /// Terminal event marker.
-    Terminal(StreamTerminalMarker),
+    Terminal {
+        /// Terminal marker payload.
+        marker: StreamTerminalMarker,
+    },
 }
 
 /// Sequenced replay event.

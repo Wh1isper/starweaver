@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::{DisplayMessage, DisplayMessageKind};
 
-/// AG-UI / Starweaver-compatible top-level event object.
+/// AG-UI or Starweaver top-level event object.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AguiEvent {
     /// Event type such as `RUN_STARTED` or `TEXT_MESSAGE_CONTENT`.
@@ -97,11 +97,29 @@ pub fn display_to_vercel_data_stream(message: &DisplayMessage) -> Vec<VercelData
         DisplayMessageKind::RunFailed => vec![part("error", message.payload.clone())],
         DisplayMessageKind::RunCancelled => vec![part("abort", message.payload.clone())],
         DisplayMessageKind::RunQueued
+        | DisplayMessageKind::ToolsUnavailable
+        | DisplayMessageKind::ToolSearchLoaded
+        | DisplayMessageKind::ToolSearchInitialized
+        | DisplayMessageKind::ToolSearchRefreshed
+        | DisplayMessageKind::ToolSearchInvalidated
+        | DisplayMessageKind::ToolSearchFailed
+        | DisplayMessageKind::ToolSearchNoMatch
+        | DisplayMessageKind::ToolsetInitialized
+        | DisplayMessageKind::ToolsetUnavailable
+        | DisplayMessageKind::ToolsetFailed
+        | DisplayMessageKind::ToolsetRefreshed
+        | DisplayMessageKind::ToolsetClosed
         | DisplayMessageKind::ApprovalRequested
         | DisplayMessageKind::ApprovalResolved
+        | DisplayMessageKind::HitlResolved
+        | DisplayMessageKind::HitlDiagnostic
         | DisplayMessageKind::Checkpoint
+        | DisplayMessageKind::SkillsScanned
+        | DisplayMessageKind::SkillActivated
+        | DisplayMessageKind::SkillsReloaded
         | DisplayMessageKind::SubagentStarted
         | DisplayMessageKind::SubagentCompleted
+        | DisplayMessageKind::SubagentFailed
         | DisplayMessageKind::CompactionStarted
         | DisplayMessageKind::CompactionCompleted
         | DisplayMessageKind::CompactionFailed
@@ -110,7 +128,12 @@ pub fn display_to_vercel_data_stream(message: &DisplayMessage) -> Vec<VercelData
         | DisplayMessageKind::HandoffFailed
         | DisplayMessageKind::SteeringSubmitted
         | DisplayMessageKind::SteeringReceived
-        | DisplayMessageKind::TaskSnapshot => vec![part(
+        | DisplayMessageKind::TaskSnapshot
+        | DisplayMessageKind::TaskEvent
+        | DisplayMessageKind::NoteEvent
+        | DisplayMessageKind::FileEvent
+        | DisplayMessageKind::MediaEvent
+        | DisplayMessageKind::HostOperation => vec![part(
             "data",
             json!({
                 "type": display_event_type(message.kind),
@@ -169,11 +192,29 @@ const fn display_event_type(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::ToolCallDelta => "TOOL_CALL_ARGS",
         DisplayMessageKind::ToolCallEnd => "TOOL_CALL_END",
         DisplayMessageKind::ToolResult => "TOOL_CALL_RESULT",
+        DisplayMessageKind::ToolsUnavailable => "TOOLS_UNAVAILABLE",
+        DisplayMessageKind::ToolSearchLoaded => "TOOL_SEARCH_LOADED",
+        DisplayMessageKind::ToolSearchInitialized => "TOOL_SEARCH_INITIALIZED",
+        DisplayMessageKind::ToolSearchRefreshed => "TOOL_SEARCH_REFRESHED",
+        DisplayMessageKind::ToolSearchInvalidated => "TOOL_SEARCH_INVALIDATED",
+        DisplayMessageKind::ToolSearchFailed => "TOOL_SEARCH_FAILED",
+        DisplayMessageKind::ToolSearchNoMatch => "TOOL_SEARCH_NO_MATCH",
+        DisplayMessageKind::ToolsetInitialized => "TOOLSET_INITIALIZED",
+        DisplayMessageKind::ToolsetUnavailable => "TOOLSET_UNAVAILABLE",
+        DisplayMessageKind::ToolsetFailed => "TOOLSET_FAILED",
+        DisplayMessageKind::ToolsetRefreshed => "TOOLSET_REFRESHED",
+        DisplayMessageKind::ToolsetClosed => "TOOLSET_CLOSED",
         DisplayMessageKind::ApprovalRequested => "APPROVAL_REQUESTED",
         DisplayMessageKind::ApprovalResolved => "APPROVAL_RESOLVED",
+        DisplayMessageKind::HitlResolved => "HITL_RESOLVED",
+        DisplayMessageKind::HitlDiagnostic => "HITL_DIAGNOSTIC",
         DisplayMessageKind::Checkpoint => "CHECKPOINT",
+        DisplayMessageKind::SkillsScanned => "SKILLS_SCANNED",
+        DisplayMessageKind::SkillActivated => "SKILL_ACTIVATED",
+        DisplayMessageKind::SkillsReloaded => "SKILLS_RELOADED",
         DisplayMessageKind::SubagentStarted => "SUBAGENT_STARTED",
         DisplayMessageKind::SubagentCompleted => "SUBAGENT_COMPLETED",
+        DisplayMessageKind::SubagentFailed => "SUBAGENT_FAILED",
         DisplayMessageKind::CompactionStarted => "COMPACTION_STARTED",
         DisplayMessageKind::CompactionCompleted => "COMPACTION_COMPLETED",
         DisplayMessageKind::CompactionFailed => "COMPACTION_FAILED",
@@ -183,6 +224,11 @@ const fn display_event_type(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::SteeringSubmitted => "STEERING_SUBMITTED",
         DisplayMessageKind::SteeringReceived => "STEERING_RECEIVED",
         DisplayMessageKind::TaskSnapshot => "TASK_SNAPSHOT",
+        DisplayMessageKind::TaskEvent => "TASK_EVENT",
+        DisplayMessageKind::NoteEvent => "NOTE_EVENT",
+        DisplayMessageKind::FileEvent => "FILE_EVENT",
+        DisplayMessageKind::MediaEvent => "MEDIA_EVENT",
+        DisplayMessageKind::HostOperation => "HOST_OPERATION",
         DisplayMessageKind::RunCompleted => "RUN_FINISHED",
         DisplayMessageKind::RunFailed => "RUN_ERROR",
         DisplayMessageKind::RunCancelled => "RUN_CANCELLED",

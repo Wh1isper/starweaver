@@ -13,7 +13,9 @@ pub mod run;
 pub mod stream;
 pub mod trace;
 
-pub use agent::{Agent, AgentError, AgentOverride, AgentResult, AgentRuntimePolicy};
+pub use agent::{
+    Agent, AgentEndStrategy, AgentError, AgentInput, AgentOverride, AgentResult, AgentRuntimePolicy,
+};
 pub use capability::{
     resolve_capability_order, AgentCapability, CapabilityBundle, CapabilityError, CapabilityId,
     CapabilityOrderError, CapabilityOrdering, CapabilityResult, CapabilitySpec, RetryEventKind,
@@ -35,8 +37,9 @@ pub use instructions::{
 pub use iteration::{AgentIterResult, AgentIterationKind, AgentIterationStep, AgentIterationTrace};
 pub use output::{
     parse_output, DynOutputFunction, FunctionOutputFunction, FunctionOutputValidator,
-    OutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputPolicy, OutputSchema,
-    OutputValidationError, OutputValidationResult, OutputValidator, OutputValue,
+    OutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputMedia, OutputPolicy,
+    OutputSchema, OutputValidationError, OutputValidationResult, OutputValidator, OutputValue,
+    SchemaOutputFunction,
 };
 pub use retry_recovery::{
     heal_context_overflow_history, heal_openai_item_reference_history,
@@ -44,8 +47,13 @@ pub use retry_recovery::{
 };
 pub use run::{AgentRunResult, AgentRunState, RunStatus};
 pub use starweaver_model::{ModelResponseStreamEvent, PartDelta, PartEnd, PartStart};
-pub use stream::{AgentStreamEvent, AgentStreamRecord, AgentStreamResult};
+pub use stream::{
+    AgentSidebandEvent, AgentSidebandEventCategory, AgentStreamEvent, AgentStreamRecord,
+    AgentStreamResult, AgentStreamSink, AgentStreamSource, AgentStreamSourceKind,
+};
 pub use trace::{
-    AdapterTraceRecorder, DynTraceRecorder, InMemoryTraceRecorder, NoopTraceRecorder, RecordedSpan,
-    SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus, TraceLevel, TraceRecorder,
+    export_otel_gen_ai_spans, AdapterTraceRecorder, DynTraceRecorder, InMemoryTraceRecorder,
+    NoopTraceRecorder, OtelGenAiSpan, PolicyTraceRecorder, RecordedSpan, SpanEvent, SpanHandle,
+    SpanKind, SpanSpec, SpanStatus, TraceDebugPolicy, TraceLevel, TraceRecorder,
+    TraceRedactionPolicy,
 };

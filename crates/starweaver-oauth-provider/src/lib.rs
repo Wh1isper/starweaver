@@ -2,7 +2,6 @@
 #![allow(clippy::module_name_repetitions)]
 //! OAuth-backed provider helpers for Starweaver.
 //!
-//! This crate is the Rust migration of the reference `ya-oauth-provider` package.
 //! It provides Codex OAuth-backed model helpers and a refresh supervisor for
 //! keeping store-backed OAuth token sources warm.
 
@@ -393,7 +392,7 @@ pub fn create_oauth_refresh_supervisor_for_models_with_options<'a>(
     }
 }
 
-/// `ya-oauth-provider` compatible Codex helper namespace.
+/// Codex helper namespace.
 pub mod codex {
     pub use starweaver_model::{
         build_session_headers, codex_model_profile, CodexOAuthResponsesModel,
@@ -402,14 +401,14 @@ pub mod codex {
     pub use crate::{build_codex_model, build_codex_model_with_store, infer_oauth_model};
 }
 
-/// `ya-oauth-provider` compatible HTTP helper namespace.
+/// HTTP helper namespace.
 pub mod http {
     pub use starweaver_model::{
         build_codex_headers, patch_codex_responses_body, OAuthBearerHttpClient, CODEX_ORIGINATOR,
     };
 }
 
-/// `ya-oauth-provider` compatible refresh helper namespace.
+/// Refresh helper namespace.
 pub mod refresh {
     pub use crate::{
         create_oauth_refresh_supervisor_for_models,

@@ -10,9 +10,6 @@ use starweaver_core::Metadata;
 /// Custom event kind emitted with a full task board snapshot.
 pub const TASK_SNAPSHOT_EVENT_KIND: &str = "task_snapshot";
 
-/// Backward-compatible state domain used by older serialized contexts.
-pub const TASK_STATE_DOMAIN: &str = "tasks";
-
 /// Task execution status.
 #[derive(Clone, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -167,17 +164,6 @@ impl TaskManager {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Create a manager from tasks.
-    #[must_use]
-    pub fn from_tasks(tasks: Vec<Task>) -> Self {
-        Self {
-            tasks: tasks
-                .into_iter()
-                .map(|task| (task.id.clone(), task))
-                .collect(),
-        }
     }
 
     /// Create a new task.

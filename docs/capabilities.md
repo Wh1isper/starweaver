@@ -42,6 +42,50 @@ assert_eq!(context.state.get("last_output"), Some(&serde_json::json!("ok")));
 
 Capability bundles can package hooks, instructions, tools, settings, output validators, output functions, history processors, and usage limits.
 
+Run input that must be adjusted before the first model request belongs in `prepare_run_input_with_context`. This hook receives the initialized run state and context before request assembly, so it can rewrite the incoming `AgentInput` or add pending tool returns for durable resume paths that already have matching prior tool calls in history.
+
+```rust
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use starweaver_agent::{
+    AgentBuilder, AgentCapability, AgentInput, AgentRunState, CapabilityResult, TestModel,
+};
+
+struct PromptPrefix;
+
+#[async_trait]
+impl AgentCapability for PromptPrefix {
+    async fn prepare_run_input(
+        &self,
+        _state: &mut AgentRunState,
+        input: AgentInput,
+    ) -> CapabilityResult<AgentInput> {
+        Ok(AgentInput::text(format!(
+            "Use the support policy.\n\n{}",
+            input.content
+                .iter()
+                .filter_map(|part| match part {
+                    starweaver_agent::ContentPart::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        )))
+    }
+}
+
+# async fn example() -> Result<(), starweaver_agent::AgentError> {
+let agent = AgentBuilder::new(Arc::new(TestModel::with_text("ok")))
+    .capability(Arc::new(PromptPrefix))
+    .build();
+
+let result = agent.run("hello").await?;
+assert_eq!(result.output, "ok");
+# Ok(())
+# }
+```
+
 Model-visible context belongs in `prepare_model_messages_with_context`, because mutations from that hook are captured in canonical session history and remain part of future prompt-cache prefixes. Runtime-owned context is installed by the runtime as the built-in `starweaver.runtime.context` capability in this same canonical pipeline. Use `prepare_provider_messages_with_context` only for provider-bound rewrites that must not be stored in session history.
 
 Capabilities can order themselves around the built-in runtime context injector with `RUNTIME_CONTEXT_CAPABILITY_ID`:

@@ -1,18 +1,67 @@
 //! Tool registry and execution dispatch.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
 
+use serde::{Deserialize, Serialize};
+use starweaver_context::AgentContext;
 use starweaver_model::{ToolCallPart, ToolDefinition, ToolReturnPart};
 
-use crate::{error_return, DynTool, DynToolset, ToolContext, ToolError, ToolInstruction};
+use crate::{
+    error_return, DynTool, DynToolExecutionHook, DynToolset, ToolContext, ToolError,
+    ToolExecutionHooks, ToolExecutionOutcome, ToolInstruction, ToolResult, ToolsetLifecycleError,
+    ToolsetLifecycleReport, ToolsetPreparation,
+};
+
+fn success_return(call: &ToolCallPart, result: ToolResult) -> ToolReturnPart {
+    let model_return_content = result
+        .model_content
+        .clone()
+        .unwrap_or_else(|| result.content.clone());
+    ToolReturnPart {
+        tool_call_id: call.id.clone(),
+        name: call.name.clone(),
+        content: model_return_content,
+        is_error: false,
+        metadata: result.metadata,
+        app_value: result.app_value,
+        user_content: result.user_content,
+        private_metadata: result.private_metadata,
+    }
+}
+
+/// Report describing which tools are visible for a specific agent context.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ToolAvailabilityReport {
+    /// Tool names exposed to the model.
+    pub available: Vec<String>,
+    /// Tool names skipped by context-aware availability predicates.
+    pub unavailable: Vec<String>,
+}
+
+impl ToolAvailabilityReport {
+    /// Return whether no tools were skipped.
+    #[must_use]
+    pub fn is_all_available(&self) -> bool {
+        self.unavailable.is_empty()
+    }
+
+    /// Return whether no tools are exposed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.available.is_empty() && self.unavailable.is_empty()
+    }
+}
 
 /// Tool registry used by agent runs.
 #[derive(Clone, Default)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, DynTool>,
     toolset_max_retries: BTreeMap<String, usize>,
+    toolset_timeouts_ms: BTreeMap<String, u64>,
     instructions: BTreeMap<String, ToolInstruction>,
+    execution_hooks: ToolExecutionHooks,
     max_retries: Option<usize>,
+    timeout_ms: Option<u64>,
 }
 
 impl ToolRegistry {
@@ -46,6 +95,56 @@ impl ToolRegistry {
         self.max_retries = Some(max_retries);
     }
 
+    /// Set an agent-level execution timeout default for tools that do not override it.
+    #[must_use]
+    pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    /// Update the agent-level execution timeout default.
+    pub const fn set_timeout_ms(&mut self, timeout_ms: u64) {
+        self.timeout_ms = Some(timeout_ms);
+    }
+
+    /// Add a global execution hook.
+    #[must_use]
+    pub fn with_global_execution_hook(mut self, hook: DynToolExecutionHook) -> Self {
+        self.insert_global_execution_hook(hook);
+        self
+    }
+
+    /// Insert a global execution hook.
+    pub fn insert_global_execution_hook(&mut self, hook: DynToolExecutionHook) {
+        self.execution_hooks.push_global_hook(hook);
+    }
+
+    /// Add a tool-specific execution hook.
+    #[must_use]
+    pub fn with_tool_execution_hook(
+        mut self,
+        tool: impl Into<String>,
+        hook: DynToolExecutionHook,
+    ) -> Self {
+        self.insert_tool_execution_hook(tool, hook);
+        self
+    }
+
+    /// Insert a tool-specific execution hook.
+    pub fn insert_tool_execution_hook(
+        &mut self,
+        tool: impl Into<String>,
+        hook: DynToolExecutionHook,
+    ) {
+        self.execution_hooks.push_tool_hook(tool, hook);
+    }
+
+    /// Return execution hooks registered on this registry.
+    #[must_use]
+    pub const fn execution_hooks(&self) -> &ToolExecutionHooks {
+        &self.execution_hooks
+    }
+
     /// Add an instruction block, deduplicated by group.
     pub fn insert_instruction(&mut self, instruction: ToolInstruction) {
         self.instructions
@@ -62,17 +161,110 @@ impl ToolRegistry {
 
     /// Insert all tools and instructions from a toolset.
     pub fn insert_toolset(&mut self, toolset: &DynToolset) {
+        self.insert_prepared_toolset(toolset, toolset.get_tools(), toolset.get_instructions());
+    }
+
+    /// Prepare and insert all tools and instructions from a toolset for a context.
+    ///
+    /// The lifecycle report is published into the context event bus using the report state's
+    /// default event kind. Failed lifecycle operations also publish a failure/unavailable
+    /// report before returning the error.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lifecycle error when context-aware preparation fails or exceeds its
+    /// configured timeout.
+    pub async fn insert_toolset_with_context(
+        &mut self,
+        context: &mut AgentContext,
+        toolset: &DynToolset,
+    ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
+        let policy = toolset.lifecycle_policy();
+        if policy.enter_before_prepare {
+            let enter_result = if let Some(timeout_ms) = policy.initialization_timeout_ms {
+                tokio::time::timeout(
+                    Duration::from_millis(timeout_ms),
+                    toolset.enter_with_context(context),
+                )
+                .await
+                .map_err(|_| ToolsetLifecycleError::timeout(toolset.name(), timeout_ms))?
+            } else {
+                toolset.enter_with_context(context).await
+            };
+            match enter_result {
+                Ok(report) => context.publish_event(report.into_event()),
+                Err(error) => {
+                    let report = error.to_report(toolset.id().map(ToOwned::to_owned));
+                    context.publish_event(report.into_event());
+                    return Err(error);
+                }
+            }
+        }
+        let preparation =
+            if let Some(timeout_ms) = policy.read_timeout_ms.or(policy.initialization_timeout_ms) {
+                tokio::time::timeout(
+                    Duration::from_millis(timeout_ms),
+                    toolset.prepare_with_context(context),
+                )
+                .await
+                .map_err(|_| ToolsetLifecycleError::timeout(toolset.name(), timeout_ms))?
+            } else {
+                toolset.prepare_with_context(context).await
+            };
+        match preparation {
+            Ok(preparation) => {
+                let ToolsetPreparation {
+                    tools,
+                    instructions,
+                    report,
+                } = preparation;
+                let should_fail = policy.fail_on_unavailable
+                    && report.state == crate::ToolsetLifecycleState::Unavailable;
+                self.insert_prepared_toolset(toolset, tools, instructions);
+                let report_for_event = report.clone();
+                context.publish_event(report_for_event.into_event());
+                if should_fail {
+                    let message = report
+                        .message
+                        .as_deref()
+                        .unwrap_or("toolset unavailable")
+                        .to_string();
+                    return Err(ToolsetLifecycleError::unavailable(toolset.name(), message));
+                }
+                Ok(report)
+            }
+            Err(error) => {
+                let report = error.to_report(toolset.id().map(ToOwned::to_owned));
+                context.publish_event(report.into_event());
+                Err(error)
+            }
+        }
+    }
+
+    fn insert_prepared_toolset(
+        &mut self,
+        toolset: &DynToolset,
+        tools: Vec<DynTool>,
+        instructions: Vec<ToolInstruction>,
+    ) {
         let max_retries = toolset.max_retries();
-        for tool in toolset.get_tools() {
+        let timeout_ms = toolset.timeout_ms();
+        for tool in tools {
             if let Some(max_retries) = max_retries {
                 if tool.max_retries().is_none() {
                     self.toolset_max_retries
                         .insert(tool.name().to_string(), max_retries);
                 }
             }
+            if let Some(timeout_ms) = timeout_ms {
+                if tool.timeout_ms().is_none() {
+                    self.toolset_timeouts_ms
+                        .insert(tool.name().to_string(), timeout_ms);
+                }
+            }
             self.insert(tool);
         }
-        for instruction in toolset.get_instructions() {
+        for instruction in instructions {
             self.insert_instruction(instruction);
         }
     }
@@ -82,9 +274,16 @@ impl ToolRegistry {
         if let Some(max_retries) = registry.max_retries {
             self.max_retries = Some(max_retries);
         }
+        if let Some(timeout_ms) = registry.timeout_ms {
+            self.timeout_ms = Some(timeout_ms);
+        }
         for (name, max_retries) in &registry.toolset_max_retries {
             self.toolset_max_retries.insert(name.clone(), *max_retries);
         }
+        for (name, timeout_ms) in &registry.toolset_timeouts_ms {
+            self.toolset_timeouts_ms.insert(name.clone(), *timeout_ms);
+        }
+        self.execution_hooks.extend(&registry.execution_hooks);
         for tool in registry.tools.values() {
             self.insert(tool.clone());
         }
@@ -114,6 +313,54 @@ impl ToolRegistry {
         self.tools.values().map(|tool| tool.definition()).collect()
     }
 
+    /// Return tool definitions available for the current agent context, sorted by name.
+    #[must_use]
+    pub fn definitions_for_context(&self, context: &AgentContext) -> Vec<ToolDefinition> {
+        self.definitions_and_availability_for_context(context).0
+    }
+
+    /// Return tool definitions and availability diagnostics for the current context.
+    #[must_use]
+    pub fn definitions_and_availability_for_context(
+        &self,
+        context: &AgentContext,
+    ) -> (Vec<ToolDefinition>, ToolAvailabilityReport) {
+        let mut definitions = Vec::new();
+        let mut report = ToolAvailabilityReport::default();
+        for tool in self.tools.values() {
+            if tool.is_available(context) {
+                if let Some(definition) = tool.prepare_definition(context, tool.definition()) {
+                    report.available.push(tool.name().to_string());
+                    definitions.push(definition);
+                } else {
+                    report.unavailable.push(tool.name().to_string());
+                }
+            } else {
+                report.unavailable.push(tool.name().to_string());
+            }
+        }
+        (definitions, report)
+    }
+
+    /// Return context-aware availability diagnostics without model definitions.
+    #[must_use]
+    pub fn availability_report(&self, context: &AgentContext) -> ToolAvailabilityReport {
+        self.tools
+            .values()
+            .fold(ToolAvailabilityReport::default(), |mut report, tool| {
+                if tool.is_available(context)
+                    && tool
+                        .prepare_definition(context, tool.definition())
+                        .is_some()
+                {
+                    report.available.push(tool.name().to_string());
+                } else {
+                    report.unavailable.push(tool.name().to_string());
+                }
+                report
+            })
+    }
+
     /// Return whether the registry is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -135,25 +382,57 @@ impl ToolRegistry {
             .entry("tool_name".to_string())
             .or_insert_with(|| serde_json::json!(call.name.clone()));
         match self.tools.get(&call.name) {
-            Some(tool) => match tool.call(context, call.arguments.execution_value()).await {
-                Ok(result) => {
-                    let model_return_content = result
-                        .model_content
-                        .clone()
-                        .unwrap_or_else(|| result.content.clone());
-                    ToolReturnPart {
-                        tool_call_id: call.id.clone(),
-                        name: call.name.clone(),
-                        content: model_return_content,
-                        is_error: false,
-                        metadata: result.metadata,
-                        app_value: result.app_value,
-                        user_content: result.user_content,
-                        private_metadata: result.private_metadata,
-                    }
+            Some(tool) => {
+                let mut arguments = call.arguments.execution_value();
+                if let Err(error) = self
+                    .execution_hooks
+                    .run_before(&mut context, call, &mut arguments)
+                    .await
+                {
+                    return error_return(call, &error);
                 }
-                Err(error) => error_return(call, &error),
-            },
+                let timeout_ms = self.timeout_ms_for(&call.name);
+                let cancellation_token = context.cancellation_token();
+                let cancelled = || ToolError::Cancelled {
+                    tool: call.name.clone(),
+                    reason: "agent run cancellation requested".to_string(),
+                };
+                let result = if cancellation_token.is_cancelled() {
+                    Err(cancelled())
+                } else if let Some(timeout_ms) = timeout_ms {
+                    tokio::select! {
+                        biased;
+                        () = cancellation_token.cancelled() => Err(cancelled()),
+                        result = tokio::time::timeout(
+                            Duration::from_millis(timeout_ms),
+                            tool.call(context.clone(), arguments),
+                        ) => result.unwrap_or_else(|_| {
+                            Err(ToolError::Timeout {
+                                tool: call.name.clone(),
+                                timeout_ms,
+                            })
+                        }),
+                    }
+                } else {
+                    tokio::select! {
+                        biased;
+                        () = cancellation_token.cancelled() => Err(cancelled()),
+                        result = tool.call(context.clone(), arguments) => result,
+                    }
+                };
+                let mut outcome = ToolExecutionOutcome::from_result(result);
+                if let Err(error) = self
+                    .execution_hooks
+                    .run_after(&context, call, &mut outcome)
+                    .await
+                {
+                    outcome = ToolExecutionOutcome::Error(error);
+                }
+                match outcome.into_result() {
+                    Ok(result) => success_return(call, result),
+                    Err(error) => error_return(call, &error),
+                }
+            }
             None => error_return(call, &ToolError::NotFound(call.name.clone())),
         }
     }
@@ -178,6 +457,22 @@ impl ToolRegistry {
         self.max_retries
     }
 
+    /// Return the effective execution timeout for a registered tool.
+    #[must_use]
+    pub fn timeout_ms_for(&self, name: &str) -> Option<u64> {
+        self.tools.get(name).and_then(|tool| {
+            tool.timeout_ms()
+                .or_else(|| self.toolset_timeouts_ms.get(name).copied())
+                .or(self.timeout_ms)
+        })
+    }
+
+    /// Return this registry's agent-level execution timeout default.
+    #[must_use]
+    pub const fn timeout_ms(&self) -> Option<u64> {
+        self.timeout_ms
+    }
+
     /// Return whether a tool is registered by name.
     #[must_use]
     pub fn contains(&self, name: &str) -> bool {
@@ -199,6 +494,7 @@ impl ToolRegistry {
     /// Remove one tool by name.
     pub fn remove(&mut self, name: &str) -> Option<DynTool> {
         self.toolset_max_retries.remove(name);
+        self.toolset_timeouts_ms.remove(name);
         self.tools.remove(name)
     }
 
@@ -209,6 +505,9 @@ impl ToolRegistry {
         if let Some(max_retries) = self.max_retries {
             selected.max_retries = Some(max_retries);
         }
+        if let Some(timeout_ms) = self.timeout_ms {
+            selected.timeout_ms = Some(timeout_ms);
+        }
         for name in names {
             let name = name.as_ref();
             if let Some(tool) = self.tools.get(name) {
@@ -217,9 +516,18 @@ impl ToolRegistry {
                         .toolset_max_retries
                         .insert(name.to_string(), *max_retries);
                 }
+                if let Some(timeout_ms) = self.toolset_timeouts_ms.get(name) {
+                    selected
+                        .toolset_timeouts_ms
+                        .insert(name.to_string(), *timeout_ms);
+                }
                 selected.insert(tool.clone());
             }
         }
+        let selected_names = selected.names();
+        selected.execution_hooks = self
+            .execution_hooks
+            .select_for_tools(selected_names.iter().map(String::as_str));
         selected
     }
 

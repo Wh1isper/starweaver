@@ -12,7 +12,7 @@ const ANTHROPIC_CONTEXT_MANAGEMENT_BETA: &str = "context-management-2025-06-27";
 #[allow(clippy::match_same_arms)]
 pub(super) fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
     if let Some(spec) = parse_anthropic_preset(name)
-        .or_else(|| parse_anthropic_preset(anthropic_legacy_alias(name)))
+        .or_else(|| parse_anthropic_preset(anthropic_preset_alias(name)))
     {
         return Some(match spec.kind {
             AnthropicPresetKind::Adaptive { effort, max_tokens } => anthropic_adaptive(
@@ -72,17 +72,11 @@ pub(super) fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
             8 * K_TOKENS,
             Some(ServiceTier::Priority),
         )),
-        "deepseek_v4_default" | "deepseek_v4_high" => Some(openai_compatible_thinking(
-            "high",
-            Some(128 * K_TOKENS),
-            true,
-        )),
-        "deepseek_v4_max" => Some(openai_compatible_thinking(
-            "max",
-            Some(384 * K_TOKENS),
-            true,
-        )),
-        "deepseek_v4_off" => Some(openai_compatible_thinking(
+        "deepseek_v4_default" | "deepseek_v4_high" => {
+            Some(openai_protocol_thinking("high", Some(128 * K_TOKENS), true))
+        }
+        "deepseek_v4_max" => Some(openai_protocol_thinking("max", Some(384 * K_TOKENS), true)),
+        "deepseek_v4_off" => Some(openai_protocol_thinking(
             "high",
             Some(128 * K_TOKENS),
             false,
@@ -119,7 +113,7 @@ enum AnthropicPresetKind {
     Off,
 }
 
-fn anthropic_legacy_alias(name: &str) -> &str {
+fn anthropic_preset_alias(name: &str) -> &str {
     match name {
         "anthropic_default" | "anthropic_default_interleaved_thinking" => {
             "anthropic_adaptive_default"
@@ -352,11 +346,7 @@ fn openai_responses(
     }
 }
 
-fn openai_compatible_thinking(
-    effort: &str,
-    max_tokens: Option<u32>,
-    enabled: bool,
-) -> ModelSettings {
+fn openai_protocol_thinking(effort: &str, max_tokens: Option<u32>, enabled: bool) -> ModelSettings {
     let mut extra_body = Map::new();
     extra_body.insert(
         "thinking".to_string(),

@@ -2,6 +2,7 @@
 
 mod context_xml;
 mod error;
+mod factory;
 mod file_tree;
 mod local_io;
 mod local_provider;
@@ -36,6 +37,12 @@ pub(crate) use shell::{
 };
 
 pub use error::{EnvironmentError, EnvironmentResult};
+pub use factory::{
+    environment_provider_kind, resource_ref_kind, DynEnvironmentProviderFactory,
+    DynResourceRestoreFactory, EnvironmentProviderFactory, EnvironmentProviderFactoryRegistry,
+    ResourceRestoreFactory, ResourceRestoreFactoryRegistry, TrustedLocalEnvironmentProviderFactory,
+    VirtualEnvironmentProviderFactory, ENVIRONMENT_PROVIDER_KIND_KEY, RESOURCE_REF_KIND_KEY,
+};
 pub use local_provider::LocalEnvironmentProvider;
 pub use policy::{EnvironmentPolicy, FilePolicy, ShellPolicy};
 pub use provider::{

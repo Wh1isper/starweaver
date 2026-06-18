@@ -95,6 +95,15 @@ Output modes:
 - output functions that finish a run through a tool-like call
 - validators that accept, transform, or request retry
 
+When a response contains both output function calls and ordinary tool calls, the
+runtime `AgentEndStrategy` controls completion:
+
+- `early`: complete with the first valid output function and skip ordinary tools.
+- `graceful`: execute ordinary tools from the same response, append their returns
+  to history, and complete with the first valid output.
+- `exhaustive`: execute ordinary tools from the same response, append their
+  returns to history, and complete with the first valid output.
+
 SDK ergonomics should expose output policy builders, while runtime semantics remain in `starweaver-runtime`.
 
 ## Capability Bundles

@@ -55,6 +55,8 @@ A durable store should persist these records together:
 - environment state reference from the service layer
 - trace id and span ids from the service tracer
 
+For SDK-owned runtimes, `AgentRuntime::restore_environment_from_state` restores exported provider state through an `EnvironmentProviderFactoryRegistry`. The portable registry includes virtual environment restore, including virtual process snapshots; trusted local restore requires the host to register a policy-bearing local factory. When exported resource references need host-owned recovery, `AgentRuntime::restore_environment_from_state_with_resources` first resolves typed `ResourceRef` values through a `ResourceRestoreFactoryRegistry`, then restores the provider from the rewritten state.
+
 ```rust
 use std::sync::{Arc, Mutex};
 

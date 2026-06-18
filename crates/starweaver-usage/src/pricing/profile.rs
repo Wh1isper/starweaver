@@ -166,7 +166,7 @@ impl ModelPricingProfile {
         }
     }
 
-    /// Return the default details used for compatibility projections.
+    /// Return the default details used for summary projections.
     ///
     /// For tiered profiles this is the first, lowest-context tier.
     #[must_use]
@@ -194,7 +194,7 @@ impl ModelPricingProfile {
         }
     }
 
-    /// Return the standard input/output compatibility projection.
+    /// Return the standard input/output summary projection.
     ///
     /// For tiered profiles this is the first, lowest-context tier.
     #[must_use]

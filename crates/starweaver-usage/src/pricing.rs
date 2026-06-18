@@ -166,7 +166,7 @@ pub fn known_model_pricing_profile(model_id: &str) -> Option<ModelPricingProfile
 /// Return built-in best-effort pricing details for a known model id.
 ///
 /// For context-length-tiered providers this returns the default/lowest-context
-/// tier for compatibility with callers that expect a single cache-aware record.
+/// tier as the single cache-aware summary record.
 #[must_use]
 pub fn known_model_pricing_details(model_id: &str) -> Option<ModelPricingDetails> {
     known_model_pricing_profile(model_id).map(|profile| profile.default_details())
@@ -174,8 +174,8 @@ pub fn known_model_pricing_details(model_id: &str) -> Option<ModelPricingDetails
 
 /// Return built-in best-effort standard input/output pricing for a known model id.
 ///
-/// For context-length-tiered providers this is the compatibility projection of
-/// the default/lowest standard input/output rate.
+/// For context-length-tiered providers this is the summary projection of the
+/// default/lowest standard input/output rate.
 #[must_use]
 pub fn known_model_pricing(model_id: &str) -> Option<ModelPricing> {
     known_model_pricing_profile(model_id).map(|profile| profile.standard_pricing())
@@ -465,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn model_pricing_details_serde_defaults_are_backwards_compatible() {
+    fn model_pricing_details_serde_defaults_fill_optional_cache_rates() {
         let decoded = serde_json::from_str::<ModelPricingDetails>(
             r#"{"input_micros_per_million_tokens":1,"output_micros_per_million_tokens":2}"#,
         )

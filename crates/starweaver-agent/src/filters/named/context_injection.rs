@@ -520,7 +520,12 @@ fn user_text_part(text: String, source: &str) -> ModelRequestPart {
 }
 
 fn is_steering_bus_message(message: &starweaver_context::BusMessage) -> bool {
-    message.topic == "steering" || message.source == "user"
+    message
+        .metadata
+        .get("starweaver.topic")
+        .and_then(Value::as_str)
+        == Some("steering")
+        || message.source == "user"
 }
 
 const fn latest_message_is_request(messages: &[ModelMessage]) -> bool {

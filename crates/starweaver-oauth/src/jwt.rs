@@ -29,7 +29,7 @@ pub fn decode_jwt_payload(jwt: &str) -> OAuthResult<Value> {
     }
 }
 
-/// Extract Codex-compatible `ChatGPT` account metadata from an ID token.
+/// Extract Codex `ChatGPT` account metadata from an ID token.
 pub fn account_from_id_token(id_token: &str) -> OAuthResult<OAuthAccount> {
     let claims = decode_jwt_payload(id_token)?;
     let profile_data = claims

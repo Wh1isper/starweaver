@@ -57,7 +57,7 @@ impl PartDelta {
         }
     }
 
-    /// Return a text representation for legacy display paths.
+    /// Return a text-only display projection.
     #[must_use]
     pub fn as_text(&self) -> String {
         match &self.delta {

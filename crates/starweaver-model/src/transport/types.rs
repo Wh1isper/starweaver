@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use starweaver_core::CancellationToken;
 
 /// Stable HTTP method set required by model transports.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -29,6 +30,9 @@ pub struct HttpRequest {
     /// Request metadata for tracing and auditing.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub metadata: Map<String, Value>,
+    /// Cancellation token for long-running streaming requests.
+    #[serde(skip, default)]
+    pub cancellation_token: CancellationToken,
 }
 
 /// Response returned by an injected model HTTP client.

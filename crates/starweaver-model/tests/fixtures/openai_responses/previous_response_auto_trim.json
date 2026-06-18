@@ -1,0 +1,70 @@
+{
+  "model": "gpt-4.1-mini",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "old"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "response",
+      "parts": [
+        {
+          "kind": "provider_text",
+          "text": "stored",
+          "provider": {
+            "id": "msg_stored",
+            "provider_name": "openai"
+          }
+        }
+      ],
+      "provider": {
+        "name": "openai",
+        "response_id": "resp_1"
+      }
+    },
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "new"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "provider_replay": {
+      "previous_response_id": "auto"
+    }
+  },
+  "expected_provider_request": {
+    "model": "gpt-4.1-mini",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "new"
+          }
+        ]
+      }
+    ],
+    "previous_response_id": "resp_1"
+  }
+}

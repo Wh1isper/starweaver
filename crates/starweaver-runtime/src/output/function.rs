@@ -5,7 +5,7 @@ use starweaver_model::ToolDefinition;
 
 use crate::run::AgentRunState;
 
-use super::{OutputValidationResult, OutputValue};
+use super::{validation::parse_output, OutputSchema, OutputValidationResult, OutputValue};
 
 /// Function-style final output call definition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -37,6 +37,14 @@ impl OutputFunctionDefinition {
         self
     }
 
+    /// Build an output function definition from an output schema.
+    #[must_use]
+    pub fn from_output_schema(schema: &OutputSchema) -> Self {
+        let mut definition = Self::new(schema.name.clone(), schema.schema.clone());
+        definition.description.clone_from(&schema.description);
+        definition
+    }
+
     /// Convert to a provider-neutral tool definition.
     #[must_use]
     pub fn tool_definition(&self) -> ToolDefinition {
@@ -44,8 +52,40 @@ impl OutputFunctionDefinition {
             name: self.name.clone(),
             description: self.description.clone(),
             parameters: self.parameters.clone(),
+            return_schema: None,
+            strict: None,
+            sequential: None,
             metadata: serde_json::Map::new(),
         }
+    }
+}
+
+/// Schema-backed output function used for tool-mode structured output.
+#[derive(Clone)]
+pub struct SchemaOutputFunction {
+    schema: OutputSchema,
+}
+
+impl SchemaOutputFunction {
+    /// Build an output function that validates arguments against an output schema.
+    #[must_use]
+    pub const fn new(schema: OutputSchema) -> Self {
+        Self { schema }
+    }
+}
+
+#[async_trait]
+impl OutputFunction for SchemaOutputFunction {
+    fn definition(&self) -> OutputFunctionDefinition {
+        OutputFunctionDefinition::from_output_schema(&self.schema)
+    }
+
+    async fn call(
+        &self,
+        _context: OutputFunctionContext,
+        arguments: Value,
+    ) -> OutputValidationResult<OutputValue> {
+        parse_output(&arguments.to_string(), Some(&self.schema))
     }
 }
 

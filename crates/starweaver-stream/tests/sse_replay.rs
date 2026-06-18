@@ -20,7 +20,9 @@ fn replay_sse_frames_serialize_full_events_with_canonical_names(
         ReplayEvent::new(
             scope,
             3,
-            ReplayEventKind::Terminal(StreamTerminalMarker::RunCompleted),
+            ReplayEventKind::Terminal {
+                marker: StreamTerminalMarker::RunCompleted,
+            },
         ),
     ];
 
@@ -49,11 +51,11 @@ fn replay_sse_event_names_cover_all_builtin_kinds() {
         "heartbeat"
     );
     assert_eq!(
-        replay_sse_event_name(&ReplayEventKind::Terminal(
-            StreamTerminalMarker::RunCancelled {
+        replay_sse_event_name(&ReplayEventKind::Terminal {
+            marker: StreamTerminalMarker::RunCancelled {
                 reason: "test".to_string(),
-            }
-        )),
+            },
+        }),
         "terminal"
     );
 }

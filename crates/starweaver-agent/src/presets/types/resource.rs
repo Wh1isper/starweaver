@@ -78,7 +78,7 @@ pub struct TemplateStringSpec {
 /// Toolset wrapper requested by an agent spec.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ToolsetWrapperSpec {
-    /// Wrapper kind, such as `filtered`, `renamed`, `approval_required`, `dynamic`, or `deferred_loading`.
+    /// Wrapper kind, such as `filtered`, `renamed`, `approval_required`, `dynamic`, or `deferred`.
     pub kind: String,
     /// Registry key for the inner toolset when applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]

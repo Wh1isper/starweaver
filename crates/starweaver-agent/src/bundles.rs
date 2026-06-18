@@ -29,7 +29,12 @@ pub use external::{
 };
 pub use runtime_context::RuntimeContextCapability;
 pub use skills::{
-    parse_skill_markdown, skill_tools, SkillError, SkillPackage, SkillRegistry, SkillSourceScope,
+    parse_skill_markdown, skill_discovery, skill_discovery_from_report, skill_tools,
+    SkillDiscoveryCapability, SkillError, SkillPackage, SkillRegistry, SkillReloadBinding,
+    SkillReloadChange, SkillReloadChangeKind, SkillReloadDecision, SkillReloadReason,
+    SkillReloadReport, SkillReloadSchedule, SkillReloadScheduleState, SkillScanDiagnostic,
+    SkillScanDiagnosticKind, SkillScanReport, SkillScheduledReloadResult, SkillSourceKind,
+    SkillSourceScope, SKILL_ACTIVATION_EVENT_KIND, SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND,
 };
 pub use starweaver_tools::{dynamic_tool_proxy, ToolProxyNamePrefixError, ToolProxyToolset};
 pub use task::task_tools;

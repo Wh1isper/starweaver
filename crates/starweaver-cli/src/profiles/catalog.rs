@@ -81,7 +81,7 @@ fn config_model_profile_summary(name: &str, profile: &CliModelProfile) -> Profil
 pub fn show_profile(config: &CliConfig, requested: &str) -> CliResult<String> {
     let (spec, source) = load_profile_spec(config, requested)?;
     let mut yaml =
-        serde_yaml::to_string(&spec).map_err(|error| CliError::Config(error.to_string()))?;
+        yaml_serde::to_string(&spec).map_err(|error| CliError::Config(error.to_string()))?;
     yaml.push_str(&source.render_comment());
     Ok(yaml)
 }

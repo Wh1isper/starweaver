@@ -72,7 +72,8 @@ fn collect_model_error_text(error: &ModelError, parts: &mut Vec<String>) {
     match error {
         ModelError::ProviderStatus { body, .. } => parts.push(body.to_string()),
         ModelError::RetryExhausted { source, .. } => collect_model_error_text(source, parts),
-        ModelError::MessageMapping(_)
+        ModelError::Cancelled { .. }
+        | ModelError::MessageMapping(_)
         | ModelError::ResponseParsing(_)
         | ModelError::Transport(_)
         | ModelError::RealModelRequestBlocked { .. }

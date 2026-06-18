@@ -624,6 +624,9 @@ fn probe_tool(name: &str) -> ToolDefinition {
             "properties": {"query": {"type": "string"}},
             "required": ["query"]
         }),
+        return_schema: None,
+        strict: None,
+        sequential: None,
         metadata: Map::new(),
     }
 }

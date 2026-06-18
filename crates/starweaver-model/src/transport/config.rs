@@ -175,5 +175,6 @@ pub fn build_http_request(
         body,
         timeout: timeout_ms.map(Duration::from_millis),
         metadata: merge_metadata(config, options),
+        cancellation_token: starweaver_core::CancellationToken::default(),
     }
 }

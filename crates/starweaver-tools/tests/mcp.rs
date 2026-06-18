@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use starweaver_core::{ConversationId, RunId};
 use starweaver_tools::{
-    DynToolset, McpToolSpec, McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer,
-    ToolRegistry,
+    DynToolset, McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec,
+    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, ToolRegistry,
 };
 
 #[test]
@@ -25,9 +25,28 @@ fn mcp_toolset_exposes_declared_tools_and_instructions() {
             )
             .with_description("Get a forecast")
             .with_task(true),
-        ),
+        )
+        .with_resource(
+            McpResourceSpec::new("resource://weather/current")
+                .with_name("Current weather")
+                .with_mime_type("application/json"),
+        )
+        .with_prompt(McpPromptSpec::new(
+            "forecast-summary",
+            serde_json::json!({"type": "object"}),
+        ))
+        .with_sampling(McpSamplingSpec::enabled())
+        .with_subscription(McpSubscriptionSpec::new(
+            "weather-updates",
+            "resource://weather/current",
+        )),
     );
 
+    let config = serde_json::to_value(toolset.config()).unwrap();
+    assert_eq!(config["resources"][0]["uri"], "resource://weather/current");
+    assert_eq!(config["prompts"][0]["name"], "forecast-summary");
+    assert_eq!(config["sampling"]["enabled"], true);
+    assert_eq!(config["subscriptions"][0]["name"], "weather-updates");
     let toolset: DynToolset = Arc::new(toolset);
     let registry = ToolRegistry::new().with_toolset(&toolset);
     let definitions = registry.definitions();

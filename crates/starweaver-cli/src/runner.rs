@@ -26,8 +26,8 @@ use starweaver_runtime::{
     AgentCapability, AgentRunState, AgentStreamEvent, CapabilityResult, ModelResponseStreamEvent,
 };
 use starweaver_session::{
-    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, ExecutionStatus,
-    RunRecord, RunStatus,
+    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, RunRecord, RunStatus,
+    ToolReturnRecordInput,
 };
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
@@ -283,8 +283,6 @@ fn sync_run_request_metadata(session: &mut AgentSession, run: &RunRecord) {
         "starweaver.durable_session_id",
         json!(run.session_id.as_str()),
     );
-    // Compatibility fallback while provider routing moves to typed ModelSettings.
-    session.set_metadata("starweaver.session_id", json!(run.session_id.as_str()));
     session.set_metadata("starweaver.durable_run_id", json!(run.run_id.as_str()));
     session.set_metadata("cli.session_id", json!(run.session_id.as_str()));
     session.set_metadata("cli.run_id", json!(run.run_id.as_str()));
@@ -715,7 +713,7 @@ mod tests {
         sync_run_request_metadata(&mut session, &run);
 
         assert_eq!(
-            session.context().metadata["starweaver.session_id"],
+            session.context().metadata["starweaver.durable_session_id"],
             "session_cli_header"
         );
         assert_eq!(
@@ -829,7 +827,10 @@ mod tests {
             let metadata = captured_metadata.lock().unwrap();
             metadata[0].clone()
         };
-        assert_eq!(metadata["starweaver.session_id"], "session_runtime_header");
+        assert_eq!(
+            metadata["starweaver.durable_session_id"],
+            "session_runtime_header"
+        );
         assert_eq!(metadata["starweaver.durable_run_id"], "run_runtime_header");
         assert_eq!(metadata["cli.session_id"], "session_runtime_header");
         assert_eq!(metadata["cli.run_id"], "run_runtime_header");

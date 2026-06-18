@@ -18,9 +18,19 @@ async fn virtual_provider_reads_lists_shells_and_exports_state() {
         stderr: String::new(),
         metadata: Metadata::default(),
     };
+    let process = ShellProcessSnapshot {
+        process_id: "process_1".to_string(),
+        command: "sleep 1".to_string(),
+        status: ShellProcessStatus::Completed,
+        stdout: "done".to_string(),
+        stderr: String::new(),
+        return_code: Some(0),
+        metadata: Metadata::default(),
+    };
     let provider = VirtualEnvironmentProvider::new("test")
         .with_file("src/lib.rs", "content")
-        .with_shell_output("echo ok", output.clone());
+        .with_shell_output("echo ok", output.clone())
+        .with_process(process.clone());
 
     assert_eq!(provider.read_text("src/lib.rs").await.unwrap(), "content");
     provider
@@ -47,7 +57,97 @@ async fn virtual_provider_reads_lists_shells_and_exports_state() {
     );
     let state = provider.export_state().await.unwrap();
     assert_eq!(state.provider_id, "test");
+    assert_eq!(environment_provider_kind(&state), Some("virtual"));
     assert_eq!(state.files["src/main.rs"], "fn main() {}");
+    assert_eq!(state.processes, vec![process.clone()]);
+
+    let restored = VirtualEnvironmentProvider::from_state(state).unwrap();
+    assert_eq!(restored.read_text("src/lib.rs").await.unwrap(), "content");
+    assert_eq!(
+        restored.read_text("src/main.rs").await.unwrap(),
+        "fn main() {}"
+    );
+    assert_eq!(restored.list_processes().await.unwrap(), vec![process]);
+}
+
+#[tokio::test]
+async fn environment_factory_registry_restores_virtual_provider_state() {
+    let provider = VirtualEnvironmentProvider::new("factory")
+        .with_file("README.md", "factory restore")
+        .with_resource(ResourceRef {
+            id: "resource-1".to_string(),
+            uri: "resource://factory/artifact-1".to_string(),
+            metadata: Metadata::from_iter([(
+                "resource_kind".to_string(),
+                serde_json::json!("media"),
+            )]),
+        });
+    let state = provider.export_state().await.unwrap();
+    assert_eq!(state.resources.len(), 1);
+    let registry = EnvironmentProviderFactoryRegistry::portable_defaults();
+
+    let restored = registry.restore(&state).unwrap();
+
+    assert_eq!(restored.id(), "factory");
+    assert_eq!(
+        restored.read_text("README.md").await.unwrap(),
+        "factory restore"
+    );
+    let restored_state = restored.export_state().await.unwrap();
+    assert_eq!(restored_state.resources, state.resources);
+}
+
+#[derive(Debug)]
+struct TestResourceRestoreFactory;
+
+#[async_trait::async_trait]
+impl ResourceRestoreFactory for TestResourceRestoreFactory {
+    fn kind(&self) -> &'static str {
+        "media"
+    }
+
+    async fn restore(&self, resource: &ResourceRef) -> EnvironmentResult<ResourceRef> {
+        let mut restored = resource.clone();
+        restored.uri = restored.uri.replace("s3://bucket/", "resource://restored/");
+        restored
+            .metadata
+            .insert("restored".to_string(), serde_json::json!(true));
+        Ok(restored)
+    }
+}
+
+#[tokio::test]
+async fn resource_restore_registry_restores_typed_resources_and_preserves_provider_refs() {
+    let external = ResourceRef {
+        id: "external-media".to_string(),
+        uri: "s3://bucket/media.png".to_string(),
+        metadata: Metadata::from_iter([(
+            RESOURCE_REF_KIND_KEY.to_string(),
+            serde_json::json!("media"),
+        )]),
+    };
+    let provider_scoped = ResourceRef {
+        id: "provider-scoped".to_string(),
+        uri: "resource://provider-scoped/item".to_string(),
+        metadata: Metadata::default(),
+    };
+    let registry =
+        ResourceRestoreFactoryRegistry::new().with_factory(Arc::new(TestResourceRestoreFactory));
+
+    let restored = registry
+        .restore_all(&[external.clone(), provider_scoped.clone()])
+        .await
+        .unwrap();
+
+    assert_eq!(resource_ref_kind(&external), Some("media"));
+    assert_eq!(restored[0].uri, "resource://restored/media.png");
+    assert_eq!(restored[0].metadata["restored"], serde_json::json!(true));
+    assert_eq!(restored[1], provider_scoped);
+    assert_eq!(
+        registry.restore_required(&external).await.unwrap().uri,
+        "resource://restored/media.png"
+    );
+    assert!(registry.restore_required(&provider_scoped).await.is_err());
 }
 
 #[tokio::test]
@@ -445,6 +545,44 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     ));
 
     let _ = std::fs::remove_file(unrelated_tmp);
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(external).unwrap();
+}
+
+#[tokio::test]
+async fn local_provider_restores_from_trusted_state_with_explicit_policy() {
+    let root = unique_test_dir();
+    let external = unique_test_dir();
+    std::fs::write(root.join("README.md"), "root").unwrap();
+    std::fs::write(external.join("extra.txt"), "extra").unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_id("local-test")
+        .with_allowed_paths([external.clone()])
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+    let state = provider.export_state().await.unwrap();
+
+    let restored = LocalEnvironmentProvider::from_trusted_state(
+        &state,
+        EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(restored.id(), "local-test");
+    assert_eq!(restored.read_text("README.md").await.unwrap(), "root");
+    assert_eq!(
+        restored
+            .read_text(external.join("extra.txt").to_str().unwrap())
+            .await
+            .unwrap(),
+        "extra"
+    );
+
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(external).unwrap();
 }

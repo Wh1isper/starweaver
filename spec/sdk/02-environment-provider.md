@@ -168,7 +168,7 @@ Provider configuration should include:
 - workspace mounts with host path, provider path, sandbox path, and read/write mode
 - default working directory inside the sandbox path space
 - runtime backend preference: auto, Linux bubblewrap/seccomp, macOS seatbelt, Windows restricted token, Docker, Podman, nsjail, remote microVM
-- policy profile: read-only, workspace-write, relay-workspace-write, network-proxy, full-access diagnostic profile
+- policy profile: read-only, workspace-write, mounted-workspace-write, network-proxy, full-access diagnostic profile
 - network mode: blocked, restricted, proxy, full
 - home strategy: tmpfs or denied home
 - timeout, output limit, environment allowlist, and process cleanup mode
@@ -176,7 +176,7 @@ Provider configuration should include:
 
 Linux should prefer bubblewrap with seccomp and optional Landlock hardening. macOS should generate a seatbelt profile with explicit workspace and temp allowlists. Windows should use restricted tokens, Job Objects, AppContainer where available, and ACL grants for selected roots. Containerized modes use Docker or Podman mounts and cgroup limits. Remote and cloud modes implement the same provider contract through their service boundary.
 
-Filesystem and shell views should share the same workspace mount set so writes from `write` are visible to shell commands and shell-created files are visible to `glob`, `grep`, and `view`. `EnvironmentState` should record provider id, mount ids, sandbox runtime, policy revision, diagnostics summary, background process handles, and output cursors.
+Filesystem and shell views should share the same workspace mount set so writes from `write` are visible to shell commands and shell-created files are visible to `glob`, `grep`, and `view`. `EnvironmentState` should record provider id, mount ids, sandbox runtime, policy revision, diagnostics summary, portable background process snapshots, and output cursors. Live OS process reattachment remains a trusted-host policy, not portable provider state.
 
 ## Durable Execution
 
@@ -200,7 +200,7 @@ flowchart TD
     checkpoint --> service
 ```
 
-The provider exports a state summary. The service runtime persists that summary and asks the provider to restore or reconnect when a session resumes.
+The provider exports a state summary. The service runtime persists that summary and asks the provider to restore or reconnect when a session resumes. `EnvironmentProviderFactoryRegistry` is the SDK restore boundary for provider state snapshots; portable defaults cover virtual providers, and trusted local restore requires a host-owned policy factory. Long-lived external resources still need a separate resource factory registry.
 
 ## Tool Binding
 

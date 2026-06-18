@@ -30,6 +30,23 @@ pub enum AgentSpecError {
     /// Spec requested a capability that the caller did not provide.
     #[error("unknown capability: {0}")]
     UnknownCapability(String),
+    /// Spec requested a skill registry root that the caller did not provide.
+    #[error("unknown skill registry root: {0}")]
+    UnknownSkillRoot(String),
+    /// Spec requested an environment provider that the caller did not provide.
+    #[error("unknown environment provider: {0}")]
+    UnknownEnvironmentProvider(String),
+    /// Spec requested a toolset wrapper that Starweaver cannot materialize.
+    #[error("unsupported toolset wrapper kind: {0}")]
+    UnsupportedToolsetWrapper(String),
+    /// Spec toolset wrapper parameters are invalid.
+    #[error("invalid toolset wrapper {kind}: {reason}")]
+    InvalidToolsetWrapper {
+        /// Wrapper kind.
+        kind: String,
+        /// Validation failure reason.
+        reason: String,
+    },
     /// Template references a dependency path absent from the dependency schema.
     #[error("unknown dependency template variable '{variable}' in template '{template}'")]
     UnknownTemplateVariable {

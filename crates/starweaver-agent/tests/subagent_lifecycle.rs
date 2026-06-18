@@ -8,6 +8,20 @@ use starweaver_agent::{
 use starweaver_context::AgentContext;
 use starweaver_core::{SubagentLifecycleEvent, SubagentLifecycleKind, TaskId};
 
+fn lifecycle_events(context: &AgentContext) -> Vec<&starweaver_context::AgentEvent> {
+    context
+        .events
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind.as_str(),
+                "subagent_started" | "subagent_completed" | "subagent_failed"
+            )
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn subagent_lifecycle_events_are_emitted_in_order() {
     let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
@@ -22,7 +36,7 @@ async fn subagent_lifecycle_events_are_emitted_in_order() {
         .await
         .unwrap();
 
-    let events = context.events.events();
+    let events = lifecycle_events(&context);
     let started: SubagentLifecycleEvent =
         serde_json::from_value(events[0].payload.clone()).unwrap();
     let completed: SubagentLifecycleEvent =
@@ -52,7 +66,8 @@ async fn missing_subagent_emits_failed_lifecycle_event() {
         .await
         .unwrap_err();
 
-    let event = &context.events.events()[0];
+    let events = lifecycle_events(&context);
+    let event = events[0];
     let failed: SubagentLifecycleEvent = serde_json::from_value(event.payload.clone()).unwrap();
 
     assert_eq!(event.kind, "subagent_failed");
@@ -88,6 +103,7 @@ async fn failing_subagent_emits_failed_lifecycle_event() {
             .policy(AgentRuntimePolicy {
                 max_steps: 0,
                 output_retries: 0,
+                ..AgentRuntimePolicy::default()
             })
             .build(),
     );
@@ -100,7 +116,7 @@ async fn failing_subagent_emits_failed_lifecycle_event() {
         .await
         .unwrap_err();
 
-    let events = context.events.events();
+    let events = lifecycle_events(&context);
     let started: SubagentLifecycleEvent =
         serde_json::from_value(events[0].payload.clone()).unwrap();
     let failed: SubagentLifecycleEvent = serde_json::from_value(events[1].payload.clone()).unwrap();

@@ -18,6 +18,10 @@ Serializable configuration lives in `SubagentSpec`:
 
 Runtime configuration lives in `SubagentConfig` and includes an executable agent handle.
 
+## Built-In Preset Policy
+
+Starweaver does not expose an `include_builtin_subagents` flag. Hosts register first-party or product-specific subagents explicitly through `AgentSpecRegistry` or `SubagentRegistry`, then select them with `all_subagents` or named `subagents` in `AgentSpec`. This keeps product-owned agents visible in configuration and avoids an implicit global preset set.
+
 ## Delegation Flow
 
 ```mermaid
@@ -43,7 +47,7 @@ Failure path:
 
 - missing subagent emits `subagent_failed`
 - runtime failure emits a typed failed event when the error boundary is added
-- cancellation and timeout emit lifecycle events after runtime support lands
+- cancellation and timeout emit subagent lifecycle events after dedicated child-run lifecycle handling lands
 
 ## Inherited Tools
 

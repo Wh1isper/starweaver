@@ -1,5 +1,6 @@
 //! HTTP transport boundary for production model adapters.
 
+mod audit;
 mod client;
 pub(crate) mod config;
 mod reqwest_client;
@@ -7,6 +8,12 @@ mod retry;
 mod sse;
 mod types;
 
+pub(crate) use audit::ProviderRequestAuditCapture;
+pub use audit::{
+    DynProviderRequestAuditRecorder, InMemoryProviderRequestAuditRecorder,
+    ProviderRequestAuditPayloadPolicy, ProviderRequestAuditPolicy, ProviderRequestAuditRecorder,
+    ProviderRequestAuditSnapshot,
+};
 pub use client::{DynHttpClient, ModelEventStream, ModelHttpClient};
 pub(crate) use config::extend_headers_case_insensitive;
 pub use config::{

@@ -206,7 +206,7 @@ fn guidance_files_append_project_guidance_and_user_rules_as_transient_guidance()
     );
     assert!(input.guidance_text_parts[1].starts_with(&format!(
         "<user-rules location={}>",
-        global.join("RULES.md").display()
+        path_absolute_posix(&global.join("RULES.md"))
     )));
     assert!(input.guidance_text_parts[1].contains("Prefer Chinese replies."));
     assert!(input.guidance_text_parts[1].ends_with("</user-rules>"));

@@ -24,7 +24,7 @@ This spec maps application-facing agent concepts into Starweaver's first-party S
 | environment           | provider families and policy                               | partial        | `sdk/02-environment-provider.md`          | fake/local/process tests       |
 | filters               | named policy filter capabilities                           | landed/partial | this spec and `ops/07`                    | SDK filter order tests         |
 | toolsets              | first-party bundles, MCP, proxy                            | partial        | `sdk/03-first-party-tool-bundles.md`      | toolset/proxy/MCP tests        |
-| toolset wrappers      | filtered/prepared/renamed/approval/dynamic/deferred        | pending        | `core/03-tools-output-capabilities.md`    | wrapper tests                  |
+| toolset wrappers      | filtered/prepared/renamed/approval/dynamic/deferred        | landed         | `core/03-tools-output-capabilities.md`    | wrapper tests                  |
 | deferred tools        | SDK requests/results and inline handlers                   | partial        | `ops/03`, `core/03`                       | control-flow and service tests |
 | subagents             | specs, registry, inherited tools, lifecycle                | partial        | `sdk/04-subagents-skills.md`              | subagent tests                 |
 | skills                | fileops-loaded skills and tool summaries                   | partial        | `sdk/04-subagents-skills.md`              | skill tests                    |
@@ -129,7 +129,7 @@ Skills load from configured roots through provider file operations. Current SDK 
 Remaining work:
 
 - CLI startup seeding for bundled skills and subagents.
-- Shared `~/.agents` discovery/import options for Starweaver compatibility.
+- Shared `~/.agents` discovery/import options for Starweaver skill and subagent roots.
 - Exact precedence tests for shared user, tool-specific user, shared project, and tool-specific project roots.
 - Public `list_skills`, `load_skill`, and `reload_skills` tools over the active provider-visible skill cache.
 - Hot reload at request boundaries in development profiles.
@@ -166,7 +166,7 @@ Remaining media migration work:
 - Tall screenshot splitting with overlap.
 - Animated GIF retention and support filtering.
 - Newest-media count limits across user messages and nested tool returns.
-- S3-compatible and provider resource-store upload adapters.
+- S3 protocol and provider resource-store upload adapters.
 - Binary/resource download integration with `EnvironmentProvider` resource traits.
 - Concrete fallback media understanding clients with usage accounting.
 
@@ -187,7 +187,7 @@ Remaining media migration work:
 
 Before implementing the next SDK batch:
 
-1. Update `memos/implementation-todo.md` with status, owner, and validation command.
+1. Update `spec/alignment/07-gap-matrix-and-roadmap.md` with status, owner, and validation command.
 2. Add a focused test for the behavior before broadening public API.
 3. Keep docs examples compiling through `make docs-check` when user-facing examples change.
-4. Keep capability/toolset additions compatible with durable session and stream contracts.
+4. Keep capability/toolset additions aligned with durable session and stream contracts.

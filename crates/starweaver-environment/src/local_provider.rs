@@ -69,6 +69,40 @@ impl LocalEnvironmentProvider {
         }
     }
 
+    /// Restore a local provider from a trusted environment state snapshot.
+    ///
+    /// The caller must supply the policy because persisted local paths are host
+    /// capabilities, not portable authority. This method should only be used when
+    /// the snapshot was produced by the same trusted host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state does not contain a valid local root or
+    /// allowed path list.
+    pub fn from_trusted_state(
+        state: &EnvironmentState,
+        policy: EnvironmentPolicy,
+    ) -> EnvironmentResult<Self> {
+        let root_value =
+            state.metadata.get("root").cloned().ok_or_else(|| {
+                EnvironmentError::InvalidRequest("missing local root".to_string())
+            })?;
+        let root = serde_json::from_value::<PathBuf>(root_value)
+            .map_err(|error| EnvironmentError::InvalidRequest(error.to_string()))?;
+        let allowed_paths = state
+            .metadata
+            .get("allowed_paths")
+            .cloned()
+            .map(serde_json::from_value::<Vec<PathBuf>>)
+            .transpose()
+            .map_err(|error| EnvironmentError::InvalidRequest(error.to_string()))?
+            .unwrap_or_default();
+        Ok(Self::new(root)
+            .with_id(state.provider_id.clone())
+            .with_policy(policy)
+            .with_allowed_paths(allowed_paths))
+    }
+
     /// Set provider id.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
@@ -311,7 +345,7 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
                 .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
         }
         std::fs::write(&path, content).map_err(|error| map_io_error(&path, &error))?;
-        Ok(display_local_path(&path))
+        Ok(display_local_path(&normalize_local_config_path(path)))
     }
 
     async fn stat(&self, path: &str) -> EnvironmentResult<FileStat> {
@@ -501,6 +535,10 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
 
     async fn export_state(&self) -> EnvironmentResult<EnvironmentState> {
         let mut metadata = Metadata::default();
+        metadata.insert(
+            crate::ENVIRONMENT_PROVIDER_KIND_KEY.to_string(),
+            serde_json::json!("local"),
+        );
         metadata.insert("root".to_string(), serde_json::json!(self.root));
         metadata.insert(
             "allowed_paths".to_string(),
@@ -510,6 +548,7 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
             provider_id: self.id.clone(),
             files: BTreeMap::new(),
             resources: Vec::new(),
+            processes: Vec::new(),
             metadata,
         })
     }

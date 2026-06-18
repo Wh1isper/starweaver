@@ -10,11 +10,13 @@ use std::sync::{Arc, LazyLock, Mutex};
 use async_trait::async_trait;
 use starweaver_agent::{
     attach_environment, AgentBuilder, AgentCapability, AgentContext, AgentRunState, AgentSession,
-    CapabilityOrdering, CapabilityResult, CapabilitySpec, FunctionDynamicInstruction,
+    CapabilityOrdering, CapabilityResult, CapabilitySpec, DynToolset, FunctionDynamicInstruction,
     FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
     FunctionTool, MediaUploadRequest, MediaUploader, ModelCapability, ModelConfig,
     OutputFunctionDefinition, OutputSchema, OutputValue, StaticCapabilityBundle, StaticToolset,
-    TestModel, ToolContext, ToolRegistry, ToolResult, UsageLimits, DEFAULT_FILTER_ORDER,
+    TestModel, ToolContext, ToolExecutionHook, ToolInstruction, ToolRegistry, ToolResult, Toolset,
+    ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetPreparation, UsageLimits,
+    DEFAULT_FILTER_ORDER, TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND,
 };
 use starweaver_environment::{
     EnvironmentPolicy, FilePolicy, ShellPolicy, VirtualEnvironmentProvider,
@@ -46,6 +48,120 @@ struct InlineImageCapability;
 
 struct FakeUploader;
 
+struct FailingUploader;
+
+struct TenantPreparedToolset;
+
+struct RunLifecycleToolset {
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+struct BuilderToolHook {
+    order: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl ToolExecutionHook for BuilderToolHook {
+    async fn before_tool_call(
+        &self,
+        _context: &mut ToolContext,
+        _call: &ToolCallPart,
+        arguments: &mut serde_json::Value,
+    ) -> Result<(), starweaver_agent::ToolError> {
+        self.order.lock().unwrap().push("before".to_string());
+        arguments["builder_hook"] = serde_json::json!(true);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl Toolset for RunLifecycleToolset {
+    fn name(&self) -> &'static str {
+        "run_lifecycle_tools"
+    }
+
+    fn get_tools(&self) -> Vec<starweaver_agent::DynTool> {
+        Vec::new()
+    }
+
+    fn lifecycle_policy(&self) -> ToolsetLifecyclePolicy {
+        ToolsetLifecyclePolicy::default()
+            .with_enter_before_prepare(true)
+            .with_exit_after_run(true)
+    }
+
+    async fn enter_with_context(
+        &self,
+        _context: &AgentContext,
+    ) -> Result<starweaver_agent::ToolsetLifecycleReport, ToolsetLifecycleError> {
+        self.calls.lock().unwrap().push("enter".to_string());
+        Ok(starweaver_agent::ToolsetLifecycleReport::new(
+            self.name(),
+            self.id().map(ToOwned::to_owned),
+            starweaver_agent::ToolsetLifecycleState::Initialized,
+            0,
+            0,
+        ))
+    }
+
+    async fn prepare_with_context(
+        &self,
+        _context: &AgentContext,
+    ) -> Result<ToolsetPreparation, ToolsetLifecycleError> {
+        self.calls.lock().unwrap().push("prepare".to_string());
+        Ok(ToolsetPreparation::initialized(
+            self.name(),
+            self.id().map(ToOwned::to_owned),
+            Vec::new(),
+            Vec::new(),
+        ))
+    }
+
+    async fn exit_with_context(
+        &self,
+        _context: &AgentContext,
+    ) -> Result<starweaver_agent::ToolsetLifecycleReport, ToolsetLifecycleError> {
+        self.calls.lock().unwrap().push("exit".to_string());
+        Ok(starweaver_agent::ToolsetLifecycleReport::new(
+            self.name(),
+            self.id().map(ToOwned::to_owned),
+            starweaver_agent::ToolsetLifecycleState::Closed,
+            0,
+            0,
+        ))
+    }
+}
+
+#[async_trait]
+impl Toolset for TenantPreparedToolset {
+    fn name(&self) -> &'static str {
+        "tenant_tools"
+    }
+
+    fn get_tools(&self) -> Vec<starweaver_agent::DynTool> {
+        Vec::new()
+    }
+
+    async fn prepare_with_context(
+        &self,
+        context: &AgentContext,
+    ) -> Result<ToolsetPreparation, ToolsetLifecycleError> {
+        assert_eq!(context.metadata["tenant"], "alpha");
+        let tool = FunctionTool::new(
+            "tenant_echo",
+            Some("Tenant echo tool".to_string()),
+            serde_json::json!({"type": "object"}),
+            |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+        );
+        Ok(ToolsetPreparation::initialized(
+            self.name(),
+            self.id().map(ToOwned::to_owned),
+            vec![Arc::new(tool)],
+            vec![ToolInstruction::new("tenant_tools", "Use tenant tools.")],
+        ))
+    }
+}
+
 #[async_trait]
 impl MediaUploader for FakeUploader {
     async fn upload(&self, request: MediaUploadRequest) -> Result<ContentPart, String> {
@@ -55,6 +171,13 @@ impl MediaUploader for FakeUploader {
             resource_type: "image".to_string(),
             metadata: serde_json::Map::new(),
         })
+    }
+}
+
+#[async_trait]
+impl MediaUploader for FailingUploader {
+    async fn upload(&self, _request: MediaUploadRequest) -> Result<ContentPart, String> {
+        Err("upload unavailable".to_string())
     }
 }
 
@@ -277,6 +400,48 @@ async fn builder_default_policy_allows_more_than_sixteen_model_steps() {
 }
 
 #[tokio::test]
+async fn builder_tool_execution_hook_wraps_runtime_tool_calls() {
+    let calls = Arc::new(Mutex::new(0));
+    let captured_args = Arc::new(Mutex::new(Vec::new()));
+    let hook_order = Arc::new(Mutex::new(Vec::new()));
+    let model = Arc::new(LoopingToolModel {
+        calls: Arc::clone(&calls),
+        loop_until: 1,
+    });
+    let captured_args_for_tool = captured_args.clone();
+    let tool = FunctionTool::new(
+        "continue_loop",
+        Some("Continue the loop".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_ctx: ToolContext, args: serde_json::Value| {
+            let captured_args = captured_args_for_tool.clone();
+            async move {
+                captured_args.lock().unwrap().push(args.clone());
+                Ok(ToolResult::new(args))
+            }
+        },
+    );
+
+    let result = AgentBuilder::new(model)
+        .tool(Arc::new(tool))
+        .tool_execution_hook(
+            "continue_loop",
+            Arc::new(BuilderToolHook {
+                order: hook_order.clone(),
+            }),
+        )
+        .build()
+        .run("loop with hook")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(*calls.lock().unwrap(), 2);
+    assert_eq!(captured_args.lock().unwrap()[0]["builder_hook"], true);
+    assert_eq!(*hook_order.lock().unwrap(), vec!["before".to_string()]);
+}
+
+#[tokio::test]
 async fn builder_creates_reusable_agent_with_tools() {
     let model = Arc::new(CaptureModel {
         captured_params: Arc::new(Mutex::new(Vec::new())),
@@ -402,6 +567,55 @@ async fn builder_default_media_upload_filter_uses_configured_uploader_without_du
         .unwrap();
 
     assert_eq!(result.output, "uploaded");
+}
+
+#[tokio::test]
+async fn builder_default_media_upload_filter_keeps_original_media_on_upload_failure() {
+    let model = FunctionModel::new(
+        |messages: Vec<ModelMessage>,
+         _settings: Option<ModelSettings>,
+         _info: FunctionModelInfo| {
+            let request = messages
+                .iter()
+                .rev()
+                .find_map(|message| match message {
+                    ModelMessage::Request(request) => Some(request),
+                    ModelMessage::Response(_) => None,
+                })
+                .expect("latest request");
+            let content = request
+                .parts
+                .iter()
+                .rev()
+                .find_map(|part| match part {
+                    ModelRequestPart::UserPrompt { content, .. } => Some(content),
+                    ModelRequestPart::SystemPrompt { .. }
+                    | ModelRequestPart::Instruction { .. }
+                    | ModelRequestPart::ToolReturn(_)
+                    | ModelRequestPart::RetryPrompt { .. } => None,
+                })
+                .expect("media content");
+            assert!(content.iter().any(|part| matches!(
+                part,
+                ContentPart::Binary { media_type, .. } if media_type == "image/png"
+            )));
+            assert_eq!(
+                request.metadata["starweaver_media_upload_failures"][0],
+                "upload unavailable"
+            );
+            Ok(ModelResponse::text("fallback kept"))
+        },
+    );
+
+    let result = AgentBuilder::new(Arc::new(model))
+        .media_uploader(Arc::new(FailingUploader))
+        .capability(Arc::new(InlineImageCapability))
+        .build()
+        .run("upload inline image")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "fallback kept");
 }
 
 #[tokio::test]
@@ -731,6 +945,114 @@ async fn builder_applies_settings_params_validators_functions_and_toolsets() {
     assert_eq!(params.extra_body["route"], "sdk");
 }
 
+#[tokio::test]
+async fn builder_prepares_toolsets_with_run_context() {
+    let model = Arc::new(CaptureModel {
+        captured_params: Arc::new(Mutex::new(Vec::new())),
+    });
+    let toolset: DynToolset = Arc::new(TenantPreparedToolset);
+    let mut context = AgentContext::default();
+    context
+        .metadata
+        .insert("tenant".to_string(), serde_json::json!("alpha"));
+
+    let result = AgentBuilder::new(model.clone())
+        .toolset(&toolset)
+        .build()
+        .run_with_context("hello", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, r#"{"answer":"ok"}"#);
+    let params = model.captured_params.lock().unwrap()[0].clone();
+    assert!(params.tools.iter().any(|tool| tool.name == "tenant_echo"));
+    assert!(params
+        .instructions
+        .iter()
+        .any(|instruction| instruction.text.contains("Use tenant tools.")));
+    let event = context
+        .events
+        .events()
+        .iter()
+        .find(|event| event.kind == TOOLSET_INITIALIZED_EVENT_KIND)
+        .expect("toolset lifecycle event");
+    assert_eq!(event.payload["name"], "tenant_tools");
+    assert_eq!(event.payload["state"], "initialized");
+    assert_eq!(event.payload["tool_count"], 1);
+}
+
+#[tokio::test]
+async fn builder_closes_lifecycle_toolsets_before_run_exit() {
+    let lifecycle_calls = Arc::new(Mutex::new(Vec::new()));
+    let toolset: DynToolset = Arc::new(RunLifecycleToolset {
+        calls: lifecycle_calls.clone(),
+    });
+    let mut context = AgentContext::default();
+
+    let result = AgentBuilder::new(Arc::new(TestModel::with_text("done")))
+        .toolset(&toolset)
+        .build()
+        .run_with_context("hello", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(
+        *lifecycle_calls.lock().unwrap(),
+        vec![
+            "enter".to_string(),
+            "prepare".to_string(),
+            "exit".to_string()
+        ]
+    );
+    let closed_event = context
+        .events
+        .events()
+        .iter()
+        .find(|event| event.kind == TOOLSET_CLOSED_EVENT_KIND)
+        .expect("toolset close event");
+    assert_eq!(closed_event.payload["name"], "run_lifecycle_tools");
+    assert_eq!(closed_event.payload["state"], "closed");
+}
+
+#[tokio::test]
+async fn builder_closes_lifecycle_toolsets_after_model_failure() {
+    let lifecycle_calls = Arc::new(Mutex::new(Vec::new()));
+    let toolset: DynToolset = Arc::new(RunLifecycleToolset {
+        calls: lifecycle_calls.clone(),
+    });
+    let mut context = AgentContext::default();
+    let model = FunctionModel::new(|_messages, _settings, _info| {
+        Err(ModelError::Transport("network unavailable".to_string()))
+    });
+
+    let result = AgentBuilder::new(Arc::new(model))
+        .toolset(&toolset)
+        .build()
+        .run_with_context("hello", &mut context)
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        *lifecycle_calls.lock().unwrap(),
+        vec![
+            "enter".to_string(),
+            "prepare".to_string(),
+            "exit".to_string()
+        ]
+    );
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == TOOLSET_CLOSED_EVENT_KIND));
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "run_failed"));
+}
+
 #[test]
 fn builder_replaces_subagent_registry_and_policy() {
     let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
@@ -742,6 +1064,7 @@ fn builder_replaces_subagent_registry_and_policy() {
         .policy(starweaver_agent::AgentRuntimePolicy {
             max_steps: 3,
             output_retries: 2,
+            ..starweaver_agent::AgentRuntimePolicy::default()
         });
     let app = builder.build_app();
 

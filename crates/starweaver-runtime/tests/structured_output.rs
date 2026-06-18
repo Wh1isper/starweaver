@@ -79,6 +79,33 @@ fn answer_schema() -> OutputSchema {
     )
 }
 
+fn strict_nested_answer_schema() -> OutputSchema {
+    OutputSchema::new(
+        "answer",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string", "enum": ["Paris"]},
+                "details": {
+                    "type": "object",
+                    "properties": {
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string", "enum": ["capital", "france"]},
+                            "minItems": 1
+                        }
+                    },
+                    "required": ["confidence", "tags"],
+                    "additionalProperties": false
+                }
+            },
+            "required": ["answer", "details"],
+            "additionalProperties": false
+        }),
+    )
+}
+
 #[tokio::test]
 async fn structured_output_schema_is_passed_to_model_params() {
     let model = Arc::new(ScriptedModel::new(vec![ModelResponse::text(
@@ -124,6 +151,38 @@ async fn invalid_json_output_retries_and_accepts_next_response() {
         .unwrap();
     assert!(format!("{second_request:?}").contains("RetryPrompt"));
     assert!(format!("{second_request:?}").contains("expected value"));
+}
+
+#[tokio::test]
+async fn full_json_schema_validation_retries_nested_schema_failures() {
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse::text(
+            r#"{"answer":"Berlin","details":{"confidence":1.2,"tags":["city"],"extra":true}}"#,
+        ),
+        ModelResponse::text(
+            r#"{"answer":"Paris","details":{"confidence":0.9,"tags":["capital","france"]}}"#,
+        ),
+    ]));
+
+    let result = Agent::new(model.clone())
+        .with_output_schema(strict_nested_answer_schema())
+        .with_policy(AgentRuntimePolicy {
+            output_retries: 1,
+            ..AgentRuntimePolicy::default()
+        })
+        .run("return strict json")
+        .await
+        .unwrap();
+
+    let structured = result.structured_output.unwrap();
+    assert_eq!(structured["answer"], "Paris");
+    assert_eq!(structured["details"]["tags"][0], "capital");
+    assert_eq!(model.captured_messages.lock().unwrap().len(), 2);
+    let retry_request = model.captured_messages.lock().unwrap()[1]
+        .last()
+        .cloned()
+        .unwrap();
+    assert!(format!("{retry_request:?}").contains("RetryPrompt"));
 }
 
 #[tokio::test]

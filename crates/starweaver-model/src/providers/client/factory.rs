@@ -102,7 +102,7 @@ impl ProtocolModelClient {
         ))
     }
 
-    /// Create a Bedrock Converse client for a gateway-compatible endpoint.
+    /// Create a Bedrock Converse client for a gateway endpoint.
     ///
     /// Bedrock production calls usually require AWS `SigV4`. Gateways and signed clients can inject
     /// the final endpoint and headers through `HttpModelConfig` and `ModelHttpClient`.

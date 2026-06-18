@@ -76,11 +76,6 @@ impl OAuthStore {
         Ok(self.load()?.providers.get(provider_name).cloned())
     }
 
-    /// Compatibility alias for CLI callers.
-    pub fn load_provider(&self, provider_name: &str) -> OAuthResult<Option<OAuthProviderRecord>> {
-        self.get_provider(provider_name)
-    }
-
     /// Save one provider record.
     pub fn set_provider(
         &self,
@@ -93,15 +88,6 @@ impl OAuthStore {
                 .insert(provider_name.to_string(), record);
             Ok(())
         })
-    }
-
-    /// Compatibility alias for CLI callers.
-    pub fn save_provider(
-        &self,
-        provider_name: &str,
-        record: OAuthProviderRecord,
-    ) -> OAuthResult<()> {
-        self.set_provider(provider_name, record)
     }
 
     /// Delete one provider record and return the deleted record.

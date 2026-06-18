@@ -1,4 +1,4 @@
-//! AGUI-compatible display message protocol and projection helpers.
+//! Starweaver display message protocol and AGUI projection helpers.
 
 mod custom;
 mod projector;

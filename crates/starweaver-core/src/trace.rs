@@ -44,7 +44,7 @@ impl TraceContext {
     pub fn from_trace_parent(trace_parent: impl Into<String>) -> Self {
         let trace_parent = trace_parent.into();
         let parts = trace_parent.split('-').collect::<Vec<_>>();
-        if parts.len() >= 4 {
+        if parts.len() == 4 && valid_trace_parent_parts(&parts) {
             let mut metadata = Metadata::default();
             metadata.insert(
                 "trace_flags".to_string(),
@@ -98,4 +98,24 @@ impl TraceContext {
             && self.trace_state.is_none()
             && self.metadata.is_empty()
     }
+}
+
+fn valid_trace_parent_parts(parts: &[&str]) -> bool {
+    let [version, trace_id, parent_span_id, trace_flags] = parts else {
+        return false;
+    };
+    *version != "ff"
+        && is_lower_hex(version, 2)
+        && is_lower_hex(trace_id, 32)
+        && trace_id.bytes().any(|byte| byte != b'0')
+        && is_lower_hex(parent_span_id, 16)
+        && parent_span_id.bytes().any(|byte| byte != b'0')
+        && is_lower_hex(trace_flags, 2)
+}
+
+fn is_lower_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }

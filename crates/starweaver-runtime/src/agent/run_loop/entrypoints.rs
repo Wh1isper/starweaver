@@ -3,7 +3,7 @@ use starweaver_core::ConversationId;
 use starweaver_model::ModelMessage;
 
 use crate::{
-    agent::{Agent, AgentError, AgentResult},
+    agent::{Agent, AgentError, AgentInput, AgentResult},
     iteration::{AgentIterResult, AgentIterationTrace},
     stream::{AgentStreamRecord, AgentStreamResult},
 };
@@ -14,7 +14,7 @@ impl Agent {
     /// # Errors
     ///
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run(&self, prompt: impl Into<String>) -> Result<AgentResult, AgentError> {
+    pub async fn run(&self, prompt: impl Into<AgentInput>) -> Result<AgentResult, AgentError> {
         self.run_with_history(prompt, Vec::new()).await
     }
 
@@ -23,7 +23,10 @@ impl Agent {
     /// # Errors
     ///
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
-    pub async fn run_iter(&self, prompt: impl Into<String>) -> Result<AgentIterResult, AgentError> {
+    pub async fn run_iter(
+        &self,
+        prompt: impl Into<AgentInput>,
+    ) -> Result<AgentIterResult, AgentError> {
         let mut events = Vec::new();
         let result = self.run_with_stream_events(prompt, &mut events).await?;
         let iterations = AgentIterationTrace::from_stream_records(&events);
@@ -41,7 +44,7 @@ impl Agent {
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
     pub async fn run_stream(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
     ) -> Result<AgentStreamResult, AgentError> {
         let mut events = Vec::new();
         let result = self.run_with_stream_events(prompt, &mut events).await?;
@@ -55,7 +58,7 @@ impl Agent {
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
     pub async fn run_with_history_iter(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         message_history: Vec<ModelMessage>,
     ) -> Result<AgentIterResult, AgentError> {
         let mut events = Vec::new();
@@ -77,7 +80,7 @@ impl Agent {
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
     pub async fn run_with_stream_events(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         events: &mut Vec<AgentStreamRecord>,
     ) -> Result<AgentResult, AgentError> {
         self.run_with_history_and_stream_events(prompt, Vec::new(), events)
@@ -91,11 +94,11 @@ impl Agent {
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
     pub async fn run_with_history_and_stream_events(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         message_history: Vec<ModelMessage>,
         events: &mut Vec<AgentStreamRecord>,
     ) -> Result<AgentResult, AgentError> {
-        let mut context = context_from_history(message_history);
+        let mut context = self.context_from_history(message_history);
         self.run_with_context_and_stream_events(prompt, &mut context, events)
             .await
     }
@@ -107,10 +110,10 @@ impl Agent {
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
     pub async fn run_with_history(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         message_history: Vec<ModelMessage>,
     ) -> Result<AgentResult, AgentError> {
-        let mut context = context_from_history(message_history);
+        let mut context = self.context_from_history(message_history);
         self.run_with_context(prompt, &mut context).await
     }
 
@@ -121,7 +124,7 @@ impl Agent {
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
     pub async fn run_with_context_iter(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         context: &mut AgentContext,
     ) -> Result<AgentIterResult, AgentError> {
         let mut events = Vec::new();
@@ -143,7 +146,7 @@ impl Agent {
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
     pub async fn run_with_context_and_stream_events(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         context: &mut AgentContext,
         events: &mut Vec<AgentStreamRecord>,
     ) -> Result<AgentResult, AgentError> {
@@ -159,19 +162,17 @@ impl Agent {
     #[allow(clippy::too_many_lines)]
     pub async fn run_with_context(
         &self,
-        prompt: impl Into<String>,
+        prompt: impl Into<AgentInput>,
         context: &mut AgentContext,
     ) -> Result<AgentResult, AgentError> {
         self.run_with_context_inner(prompt, context, None).await
     }
-}
-
-fn context_from_history(message_history: Vec<ModelMessage>) -> AgentContext {
-    let conversation_id = latest_conversation_id(&message_history).unwrap_or_default();
-    AgentContext {
-        conversation_id,
-        message_history,
-        ..AgentContext::default()
+    fn context_from_history(&self, message_history: Vec<ModelMessage>) -> AgentContext {
+        let conversation_id = latest_conversation_id(&message_history).unwrap_or_default();
+        let mut context = self.new_context();
+        context.conversation_id = conversation_id;
+        context.message_history = message_history;
+        context
     }
 }
 

@@ -4,10 +4,11 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Map};
+use starweaver_context::{AgentContext, ToolAvailabilityPolicy, ToolConfig};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ContentPart, FunctionModel, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ToolDefinition, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    TestModel, ToolDefinition, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
     INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_METADATA,
     INSTRUCTION_ORIGIN_TOOLSET,
 };
@@ -16,8 +17,8 @@ use starweaver_runtime::{
     FunctionOutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputValue,
 };
 use starweaver_tools::{
-    DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext, ToolInstruction, ToolRegistry,
-    ToolResult,
+    set_tool_metadata_kind, DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext,
+    ToolInstruction, ToolKind, ToolRegistry, ToolResult,
 };
 
 struct ReorderToolsCapability;
@@ -47,6 +48,9 @@ impl AgentCapability for AddToolCapability {
             name: "added".to_string(),
             description: None,
             parameters: json!({"type": "object"}),
+            return_schema: None,
+            strict: None,
+            sequential: None,
             metadata: Map::new(),
         });
         Ok(tools)
@@ -95,8 +99,7 @@ impl AgentCapability for ChangeToolKindCapability {
         mut tools: Vec<ToolDefinition>,
     ) -> starweaver_runtime::CapabilityResult<Vec<ToolDefinition>> {
         if let Some(tool) = tools.first_mut() {
-            tool.metadata
-                .insert("starweaver_tool_kind".to_string(), json!("output"));
+            set_tool_metadata_kind(&mut tool.metadata, ToolKind::Output);
         }
         Ok(tools)
     }
@@ -168,6 +171,106 @@ async fn prepare_tools_reordering_is_normalized_to_original_stable_order() {
         .unwrap();
 
     assert_eq!(result.output, "ok");
+}
+
+#[tokio::test]
+async fn unavailable_tools_are_filtered_before_model_request() {
+    let model = FunctionModel::new(|_messages, _settings, info| {
+        let names = info
+            .params
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["always"]);
+        Ok(ModelResponse::text("ok"))
+    });
+    let gated = FunctionTool::new(
+        "gated",
+        Some("Context-gated tool".to_string()),
+        json!({"type": "object"}),
+        |_ctx: ToolContext, args| std::future::ready(Ok(ToolResult::new(args))),
+    )
+    .with_availability(|context| {
+        context
+            .metadata
+            .get("enable_gated_tool")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    });
+    let tools = ToolRegistry::new()
+        .with_tool(tool("always"))
+        .with_tool(Arc::new(gated));
+    let mut context = AgentContext::default();
+
+    let result = Agent::new(Arc::new(model))
+        .with_tools(tools)
+        .run_with_context("hello", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "ok");
+    let Some(event) = context
+        .events
+        .events()
+        .iter()
+        .find(|event| event.kind == "tools_unavailable")
+    else {
+        panic!("tools_unavailable event");
+    };
+    assert_eq!(event.payload["available"], json!(["always"]));
+    assert_eq!(event.payload["unavailable"], json!(["gated"]));
+}
+
+#[tokio::test]
+async fn unavailable_tools_can_fail_closed_before_model_request() {
+    let model = Arc::new(TestModel::with_text("should not run"));
+    let gated = Arc::new(
+        FunctionTool::new(
+            "gated",
+            Some("Context-gated tool".to_string()),
+            json!({"type": "object"}),
+            |_ctx: ToolContext, args| std::future::ready(Ok(ToolResult::new(args))),
+        )
+        .with_availability(|context| {
+            context
+                .metadata
+                .get("enable_gated_tool")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        }),
+    );
+    let tools = ToolRegistry::new()
+        .with_tool(tool("always"))
+        .with_tool(gated);
+    let mut context = AgentContext {
+        tool_config: ToolConfig {
+            unavailable_tool_policy: ToolAvailabilityPolicy::FailRun,
+            ..ToolConfig::default()
+        },
+        ..AgentContext::default()
+    };
+
+    let error = Agent::new(model.clone())
+        .with_tools(tools)
+        .run_with_context("hello", &mut context)
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, AgentError::Capability(message) if message.contains("unavailable tools rejected by policy") && message.contains("gated"))
+    );
+    assert!(model.captured_messages().is_empty());
+    let Some(event) = context
+        .events
+        .events()
+        .iter()
+        .find(|event| event.kind == "tools_unavailable")
+    else {
+        panic!("tools_unavailable event");
+    };
+    assert_eq!(event.payload["available"], json!(["always"]));
+    assert_eq!(event.payload["unavailable"], json!(["gated"]));
 }
 
 #[tokio::test]

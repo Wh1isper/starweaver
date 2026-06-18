@@ -1,6 +1,6 @@
 # Model Providers, Transport, and Replay
 
-The model layer is the compatibility boundary between Starweaver's canonical agent protocol and provider APIs. It mirrors provider-neutral agent framework discipline: provider-specific request shaping, response normalization, settings/profile behavior, deterministic test models, production request guards, and replay-driven compatibility tests.
+The model layer is the contract boundary between Starweaver's canonical agent protocol and provider APIs. It mirrors provider-neutral agent framework discipline: provider-specific request shaping, response normalization, settings/profile behavior, deterministic test models, production request guards, and replay-driven contract tests.
 
 ## Model Layer Responsibilities
 
@@ -12,7 +12,7 @@ The model layer is the compatibility boundary between Starweaver's canonical age
 - Support injectable HTTP clients, endpoint overrides, headers, extra body fields, retry policy, and gateway routing.
 - Provide deterministic `TestModel` and `FunctionModel` for application and runtime tests.
 - Block production model calls in tests through a request guard.
-- Maintain replay fixtures as provider compatibility contracts.
+- Maintain replay fixtures as provider request/response contracts.
 
 ## Built-in Presets
 
@@ -40,7 +40,7 @@ Provider mappers consume these presets through the same `ModelSettings`, `ModelP
 
 Provider-specific typed settings should be the primary alignment surface. `provider_options`, `extra_body`, and `extra_headers` remain raw escape hatches; final raw body/header overlays intentionally win over typed settings.
 
-Session-affinity routing uses `AgentContext.session_id` as a logical affinity source. Runtime request building converts that value into a low-priority typed `ModelSettings` overlay for OpenAI prompt-cache keys, Codex OAuth session/thread IDs, or opt-in Gateway sticky routing. Durable local session IDs remain trace/session metadata and are not generic model HTTP headers. `starweaver.session_id` is retained only as a legacy compatibility fallback; `starweaver.durable_session_id` is the canonical durable local session metadata key.
+Session-affinity routing uses `AgentContext.session_id` as a logical affinity source. Runtime request building converts that value into a low-priority typed `ModelSettings` overlay for OpenAI prompt-cache keys, Codex OAuth session/thread IDs, or opt-in Gateway sticky routing. Durable local session IDs remain trace/session metadata and are not generic model HTTP headers. `starweaver.durable_session_id` is the canonical durable local session metadata key.
 
 ## Provider Families
 
@@ -62,7 +62,7 @@ The model protocol uses a typed conversation AST defined in `06-message-request-
 - `ContentPart` owns text, URL media, inline binary media, data URLs, and resource references.
 - `ToolCallPart` should evolve from raw `serde_json::Value` arguments toward a typed argument state that preserves parsed objects, raw JSON strings, and invalid-marker evidence.
 
-`ModelRequestParameters` is the single per-call negotiation object for function tools, native tools, output mode/schema, instruction parts, thinking, HTTP overrides, provider extra body fields, and replay/audit metadata. Provider adapters receive prepared parameters after model-profile capability resolution.
+`ModelRequestParameters` is the single per-call negotiation object for function tools, native tools, output mode/schema, instruction parts, thinking, HTTP overrides, provider extra body fields, and replay/audit metadata. Provider adapters receive prepared parameters after model profile capability resolution.
 
 ## Request Preparation and Normalization
 
@@ -86,13 +86,13 @@ Model calls produce three evidence layers:
 
 1. Canonical model evidence from the runtime: provider-neutral messages, settings, request parameters, canonical stream events, canonical response, usage, finish reason, provider metadata, run id, conversation id, and trace context. This is info-level telemetry and is enabled by default.
 2. Prepared request evidence from the model layer: normalized messages, prepared request parameters, selected output mode, resolved thinking/native-tool behavior, profile id, and schema transformations. This is info-level telemetry with content redaction applied by policy.
-3. Raw LLM-request evidence from the protocol client: exact HTTP request, merged headers/body/options, raw provider response, provider status, and future raw stream chunks. This is debug-level telemetry and is enabled by application policy.
+3. Provider request audit evidence from the protocol client: exact HTTP method and URL, optional merged headers/body/options, request metadata, model name, provider name, and streaming flag. This is outside the redacted span tree and is enabled only when an application installs a provider request audit recorder.
 
-Replay fixtures continue to use canonical history plus prepared request evidence plus expected provider request/response. The debug recorder provides a direct capture path for generating or auditing fixtures. Sensitive headers and prompt content pass through redaction before exporter delivery; local fixture import keeps scrub rules in the replay tooling.
+Replay fixtures continue to use canonical history plus prepared request evidence plus expected provider request/response. `ProviderRequestAuditSnapshot` provides a direct capture path for generating or auditing fixtures. Sensitive headers and prompt content pass through the explicit audit policy before exporter delivery; local fixture import keeps scrub rules in the replay tooling.
 
 ## Replay Fixture Contract
 
-Every replay fixture stores the full compatibility surface in JSON:
+Every replay fixture stores the full provider contract surface in JSON:
 
 ```mermaid
 flowchart TD
@@ -160,7 +160,7 @@ Current fixture-driven coverage includes:
 | Typed tool-argument preservation           | yes                                                                                                                                       |
 | Settings merge precedence                  | yes, including nested typed provider settings                                                                                             |
 | Profile capability contracts               | yes, including native-tool mapper consistency and active-reasoning sampling-drop policy                                                   |
-| OpenAI typed parameter mapping             | Chat/Responses prompt cache, official/compatible max-token variants, seed, user/store/logprobs/truncation/includes                        |
+| OpenAI typed parameter mapping             | Chat/Responses prompt cache, official/OpenAI-protocol max-token variants, seed, user/store/logprobs/truncation/includes                   |
 | Anthropic typed parameter mapping          | tool choice, parallel-tool disable, native JSON schema output, betas, metadata/context/container/service tier                             |
 | Gemini typed parameter mapping             | seed, safety settings, cached content, labels, logprobs, service tier                                                                     |
 | Bedrock typed parameter mapping            | `ToolChoice::None`, top-k/thinking passthrough, service tier, guardrail/performance/request metadata, inference-profile `modelId` routing |
@@ -169,7 +169,7 @@ Current fixture-driven coverage includes:
 
 ## CI Gate
 
-`make replay-check` is the focused provider compatibility gate. CI runs it before the full test suite.
+`make replay-check` is the focused provider contract gate. CI runs it before the full test suite.
 
 ```bash
 make replay-check
@@ -188,7 +188,7 @@ cargo test -p starweaver-model --test replay --test request_parameters --locked
 - Compare canonicalized JSON for map-order-independent assertions.
 - Assert usage, provider metadata, finish reason, and tool call parts in every response replay.
 - Store provider quirks in mapper tests first, then promote stable behavior into docs/spec.
-- Record unsupported provider replay categories in `memos/implementation-todo.md`.
+- Record unsupported provider replay categories in `spec/alignment/05-models-output-provider-alignment.md`.
 - Add typed stream-delta fixtures before widening model stream event variants.
 
 ## Provider Mapper Boundaries
@@ -211,11 +211,11 @@ Replay failures are handled in this order:
 2. Fix mapper request generation or response parsing.
 3. Add regression assertions for the exact canonical field that failed.
 4. Run `make replay-check` and `make check`.
-5. Update the TODO matrix when a provider behavior needs a new canonical type.
+5. Update `spec/alignment/05-models-output-provider-alignment.md` when a provider behavior needs a new canonical type.
 
 ## Remaining Replay Families
 
-Remaining replay families are tracked in `memos/implementation-todo.md`:
+Remaining replay families are tracked in `spec/alignment/05-models-output-provider-alignment.md`:
 
 - per-provider prepared request snapshot fixture fields
 - streaming chunk and delta fixtures

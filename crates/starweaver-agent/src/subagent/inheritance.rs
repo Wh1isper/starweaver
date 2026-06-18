@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use starweaver_runtime::{AgentCapability, CapabilityBundle};
 use starweaver_tools::ToolRegistry;
 
 /// Tool inheritance policy for SDK-level subagent delegation.
@@ -129,6 +130,55 @@ pub enum SubagentToolInheritanceError {
     /// Required tool was also listed as denied.
     #[error("required inherited tool is denied: {0}")]
     DeniedRequiredTool(String),
+}
+
+/// Capability inheritance policy for SDK-level subagent delegation.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SubagentCapabilityInheritancePolicy {
+    /// Inherit parent runtime hook capabilities registered through the SDK builder.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub hooks: bool,
+    /// Inherit parent capability bundles registered through the SDK builder.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub capability_bundles: bool,
+    /// Capability ids or bundle names withheld from the child agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_capabilities: Vec<String>,
+}
+
+impl SubagentCapabilityInheritancePolicy {
+    /// Inherit parent runtime hook capabilities.
+    #[must_use]
+    pub const fn with_hooks(mut self, enabled: bool) -> Self {
+        self.hooks = enabled;
+        self
+    }
+
+    /// Inherit parent capability bundles.
+    #[must_use]
+    pub const fn with_capability_bundles(mut self, enabled: bool) -> Self {
+        self.capability_bundles = enabled;
+        self
+    }
+
+    /// Add denied capability ids or bundle names.
+    #[must_use]
+    pub fn with_denied_capabilities(mut self, denied_capabilities: Vec<String>) -> Self {
+        self.denied_capabilities = denied_capabilities;
+        self
+    }
+
+    pub(crate) fn allows_hook(&self, capability: &std::sync::Arc<dyn AgentCapability>) -> bool {
+        self.allows(capability.spec().id.as_str())
+    }
+
+    pub(crate) fn allows_bundle(&self, bundle: &std::sync::Arc<dyn CapabilityBundle>) -> bool {
+        self.allows(bundle.spec().id.as_str()) && self.allows(bundle.name())
+    }
+
+    fn allows(&self, id: &str) -> bool {
+        !self.denied_capabilities.iter().any(|denied| denied == id)
+    }
 }
 
 const fn default_auto_inherit() -> bool {

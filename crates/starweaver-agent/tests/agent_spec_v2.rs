@@ -3,11 +3,14 @@
 use std::sync::Arc;
 
 use starweaver_agent::{
-    AgentSpec, AgentSpecError, AgentSpecRegistry, CapabilitySpec, DurabilityPolicyPreset,
-    ObservabilityPolicyPreset, StreamingPolicyPreset, TestModel,
+    AgentSpec, AgentSpecError, AgentSpecRegistry, ApprovalPolicyPreset, CapabilitySpec,
+    DurabilityPolicyPreset, EnvironmentPolicyPreset, ObservabilityPolicyPreset,
+    StreamingPolicyPreset, TestModel,
 };
+use starweaver_environment::VirtualEnvironmentProvider;
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn agent_spec_v2_projects_host_materialized_policies() {
     let spec = AgentSpec::from_yaml(
         r#"
@@ -48,8 +51,10 @@ metadata:
 model:
   model_id: test
 preset:
+  approval_preset: approval-default
   streaming_preset: stream-default
   observability_preset: trace-default
+  environment_preset: env-default
   durability_preset: durable-default
 "#,
     )
@@ -57,6 +62,14 @@ preset:
     let registry = AgentSpecRegistry::new()
         .with_model("test", Arc::new(TestModel::with_text("ok")))
         .with_capability("memory", CapabilitySpec::new("memory"))
+        .with_approval_preset(
+            "approval-default",
+            ApprovalPolicyPreset {
+                approval_required_tools: vec!["edit".to_string()],
+                deferred_tools: Vec::new(),
+                network_requires_approval: false,
+            },
+        )
         .with_streaming_preset(
             "stream-default",
             StreamingPolicyPreset {
@@ -72,6 +85,15 @@ preset:
                 exporter: Some("otlp".to_string()),
                 redaction_keys: vec!["api_key".to_string()],
                 sampling_ratio: Some(1.0),
+            },
+        )
+        .with_environment_preset(
+            "env-default",
+            EnvironmentPolicyPreset {
+                provider: Some("local".to_string()),
+                roots: vec!["workspace".to_string()],
+                process_capable: true,
+                sandbox: false,
             },
         )
         .with_durability_preset(
@@ -94,6 +116,14 @@ preset:
     assert_eq!(
         policies.streaming.unwrap().adapter.as_deref(),
         Some("display-jsonl")
+    );
+    assert_eq!(
+        policies.approval.unwrap().approval_required_tools,
+        vec!["edit".to_string()]
+    );
+    assert_eq!(
+        policies.environment.unwrap().provider.as_deref(),
+        Some("local")
     );
     assert!(policies.observability.unwrap().trace_enabled);
     assert_eq!(
@@ -151,4 +181,42 @@ templates:
         AgentSpecError::UnknownTemplateVariable { template, variable }
             if template == "bad-template" && variable == "project.slug"
     ));
+}
+
+#[tokio::test]
+async fn agent_spec_v2_builds_owned_runtime() {
+    let spec = AgentSpec::from_yaml(
+        r"
+name: runtime-agent
+model:
+  model_id: test
+instructions:
+  - Stay concise.
+preset:
+  environment:
+    provider: local
+",
+    )
+    .unwrap();
+    let registry = AgentSpecRegistry::new()
+        .with_model("test", Arc::new(TestModel::with_text("ok")))
+        .with_environment_provider(
+            "local",
+            Arc::new(VirtualEnvironmentProvider::new("runtime-env")),
+        );
+
+    let mut runtime = spec.runtime_builder(&registry).unwrap().build();
+    let result = runtime.run("hello").await.unwrap();
+
+    assert_eq!(result.output, "ok");
+    assert_eq!(runtime.session().context().usage.requests, 0);
+    assert_eq!(
+        runtime
+            .export_environment_state()
+            .await
+            .unwrap()
+            .unwrap()
+            .provider_id,
+        "runtime-env"
+    );
 }

@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{McpToolSpec, McpTransport};
+use super::{
+    McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec, McpTransport,
+};
 
 /// Client-side MCP toolset configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -32,6 +34,18 @@ pub struct McpToolsetConfig {
     /// Declared server tools.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<McpToolSpec>,
+    /// Declared server resources.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<McpResourceSpec>,
+    /// Declared server prompts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<McpPromptSpec>,
+    /// Declared server sampling capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampling: Option<McpSamplingSpec>,
+    /// Declared server subscriptions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<McpSubscriptionSpec>,
 }
 
 impl McpToolsetConfig {
@@ -48,6 +62,10 @@ impl McpToolsetConfig {
             init_timeout_ms: None,
             instructions: None,
             tools: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+            sampling: None,
+            subscriptions: Vec::new(),
         }
     }
 
@@ -97,6 +115,34 @@ impl McpToolsetConfig {
     #[must_use]
     pub fn with_tool(mut self, tool: McpToolSpec) -> Self {
         self.tools.push(tool);
+        self
+    }
+
+    /// Add one declared server resource.
+    #[must_use]
+    pub fn with_resource(mut self, resource: McpResourceSpec) -> Self {
+        self.resources.push(resource);
+        self
+    }
+
+    /// Add one declared server prompt.
+    #[must_use]
+    pub fn with_prompt(mut self, prompt: McpPromptSpec) -> Self {
+        self.prompts.push(prompt);
+        self
+    }
+
+    /// Attach server sampling capability.
+    #[must_use]
+    pub fn with_sampling(mut self, sampling: McpSamplingSpec) -> Self {
+        self.sampling = Some(sampling);
+        self
+    }
+
+    /// Add one declared server subscription.
+    #[must_use]
+    pub fn with_subscription(mut self, subscription: McpSubscriptionSpec) -> Self {
+        self.subscriptions.push(subscription);
         self
     }
 }

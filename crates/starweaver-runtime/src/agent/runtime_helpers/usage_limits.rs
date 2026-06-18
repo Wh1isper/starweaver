@@ -52,11 +52,11 @@ impl Agent {
             .auto_load_files
             .clone_from(&snapshot.auto_load_files);
         context
-            .need_user_approve_tools
-            .clone_from(&snapshot.need_user_approve_tools);
+            .approval_required_tools
+            .clone_from(&snapshot.approval_required_tools);
         context
-            .need_user_approve_mcps
-            .clone_from(&snapshot.need_user_approve_mcps);
+            .approval_required_mcp_servers
+            .clone_from(&snapshot.approval_required_mcp_servers);
         context
             .tool_search_loaded_tools
             .clone_from(&snapshot.tool_search_loaded_tools);

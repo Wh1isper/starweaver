@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use starweaver_agent::{
-    AgentBuilder, FunctionTool, SubagentConfig, SubagentRegistry, SubagentTask, TestModel,
-    ToolContext, ToolRegistry, ToolResult,
+    AgentBuilder, FunctionTool, SubagentConfig, SubagentParentTools, SubagentRegistry,
+    SubagentTask, SubagentToolInheritancePolicy, TestModel, ToolContext, ToolRegistry, ToolResult,
 };
 use starweaver_context::{AgentContext, BusMessage};
 use starweaver_core::TaskId;
@@ -16,6 +16,15 @@ fn response_with_usage(text: &str, usage: Usage) -> ModelResponse {
         usage,
         ..ModelResponse::text(text)
     }
+}
+
+fn subagent_event<'a>(context: &'a AgentContext, kind: &str) -> &'a starweaver_context::AgentEvent {
+    context
+        .events
+        .events()
+        .iter()
+        .find(|event| event.kind == kind)
+        .unwrap()
 }
 
 #[test]
@@ -68,8 +77,14 @@ async fn sdk_subagent_registry_delegates_with_parent_usage() {
 
     assert_eq!(result.output, "child output");
     assert_eq!(context.usage.requests, result.state.usage.requests);
-    assert_eq!(context.events.events()[0].kind, "subagent_started");
-    assert_eq!(context.events.events()[1].kind, "subagent_completed");
+    assert_eq!(
+        subagent_event(&context, "subagent_started").kind,
+        "subagent_started"
+    );
+    assert_eq!(
+        subagent_event(&context, "subagent_completed").kind,
+        "subagent_completed"
+    );
 }
 
 #[tokio::test]
@@ -92,11 +107,70 @@ async fn sdk_subagent_registry_returns_task_result_envelope() {
     assert_eq!(envelope.task.metadata["source"], "test");
     assert_eq!(envelope.output(), "child output");
     assert_eq!(context.usage.requests, envelope.result.state.usage.requests);
-    assert_eq!(context.events.events()[0].payload["task_id"], "task-1");
-    assert_eq!(context.events.events()[1].payload["task_id"], "task-1");
-    assert_eq!(
-        context.events.events()[1].payload["metadata"]["source"],
-        "test"
+    let started = subagent_event(&context, "subagent_started");
+    let completed = subagent_event(&context, "subagent_completed");
+    assert_eq!(started.payload["task_id"], "task-1");
+    assert_eq!(completed.payload["task_id"], "task-1");
+    assert_eq!(completed.payload["metadata"]["source"], "test");
+}
+
+#[tokio::test]
+async fn sdk_subagent_registry_supports_multi_level_nested_delegation() {
+    let grandchild =
+        Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("grandchild output"))).build());
+    let child = Arc::new(
+        AgentBuilder::new(Arc::new(TestModel::with_responses(vec![
+            tool_call_response(
+                "call_nested",
+                "delegate",
+                serde_json::json!({
+                    "subagent_name": "grandchild",
+                    "prompt": "nested work",
+                    "metadata": {"source": "child"}
+                }),
+            ),
+            ModelResponse::text("child output"),
+        ])))
+        .build(),
+    );
+    let registry = Arc::new(
+        SubagentRegistry::new()
+            .with_subagent(SubagentConfig::new("grandchild", grandchild))
+            .with_subagent(
+                SubagentConfig::new("child", child).with_tool_inheritance(
+                    SubagentToolInheritancePolicy::default()
+                        .with_inherit_all_when_empty(true)
+                        .with_nested_delegation(true),
+                ),
+            ),
+    );
+    let mut context = AgentContext::default();
+    context.insert_dependency(SubagentParentTools(
+        ToolRegistry::new().with_tool(registry.delegate_tool()),
+    ));
+
+    let result = registry
+        .delegate("child", "delegate to grandchild", &mut context)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "child output");
+    assert!(context.events.events().iter().any(|event| {
+        event.kind == "subagent_completed" && event.payload["name"] == "grandchild"
+    }));
+    assert!(context
+        .events
+        .events()
+        .iter()
+        .any(|event| { event.kind == "subagent_completed" && event.payload["name"] == "child" }));
+    assert!(
+        context.events.events().iter().any(|event| {
+            event.kind == "subagent_stream_record"
+                && event.payload["name"] == "child"
+                && event.payload["record"]["source"]["agent_name"] == "grandchild"
+        }),
+        "events: {:#?}",
+        context.events.events()
     );
 }
 

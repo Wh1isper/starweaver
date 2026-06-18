@@ -90,6 +90,21 @@ pub(super) fn merge_request_params(
     if overlay.output_schema.is_some() {
         merged.output_schema.clone_from(&overlay.output_schema);
     }
+    if overlay.output_mode.is_some() {
+        merged.output_mode = overlay.output_mode;
+    }
+    if !overlay.instructions.is_empty() {
+        merged.instructions.extend(overlay.instructions.clone());
+    }
+    if overlay.thinking.is_some() {
+        merged.thinking.clone_from(&overlay.thinking);
+    }
+    if overlay.allow_text_output.is_some() {
+        merged.allow_text_output = overlay.allow_text_output;
+    }
+    if overlay.allow_image_output.is_some() {
+        merged.allow_image_output = overlay.allow_image_output;
+    }
     merged.http.headers.extend(overlay.http.headers.clone());
     merged
         .http
@@ -106,5 +121,6 @@ pub(super) fn merge_request_params(
     }
     merged.http.metadata.extend(overlay.http.metadata.clone());
     merged.extra_body.extend(overlay.extra_body.clone());
+    merged.metadata.extend(overlay.metadata.clone());
     merged
 }

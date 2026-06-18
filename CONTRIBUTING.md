@@ -1,6 +1,6 @@
 # Contributing
 
-This guide covers local development for Starweaver. Product and architecture decisions live in `spec/`; user-facing guides live in `docs/`; implementation planning and review evidence live in `memos/`.
+This guide covers local development for Starweaver. Product and architecture decisions live in `spec/`; user-facing guides live in `docs/`; reference alignment and implementation planning live in `spec/alignment/`.
 
 ## Repository Layout
 
@@ -17,7 +17,7 @@ This guide covers local development for Starweaver. Product and architecture dec
 - `crates/starweaver-cli` — command-line entry point.
 - `docs/` — mdBook user documentation with runnable Rust examples.
 - `spec/` — architecture and product specs.
-- `memos/` — implementation roadmap, reference notes, and review evidence.
+- `spec/alignment/` — reference alignment, gap tracking, implementation planning, and review evidence.
 
 ## Development Workflow
 
@@ -72,7 +72,7 @@ make coverage
 
 - Keep user-facing docs in `docs/`.
 - Keep architecture decisions in `spec/`.
-- Keep roadmap and review notes in `memos/`.
+- Keep reference-alignment roadmap and review notes in `spec/alignment/`.
 - Put Rust examples in fenced `rust` blocks.
 - Use hidden async wrappers for docs examples compiled by `make docs-check`.
 - Update `docs/SUMMARY.md` and `docs/nav.json` when adding, removing, or renaming docs pages.
@@ -97,9 +97,9 @@ Provider mapping changes need replay evidence:
 2. Assert canonical request or response shape.
 3. Record or scrub cassettes with `make record-model-cassette`, `make scrub-model-cassette`, and `make import-model-cassette`.
 4. Run `make replay-check`.
-5. Update `memos/implementation-todo.md` when a captured provider behavior remains queued.
+5. Update `spec/alignment/07-gap-matrix-and-roadmap.md` when a captured provider behavior remains queued.
 
-Replay tests cover the compatibility boundary for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, Gemini generateContent, Bedrock Converse, request parameters, model settings, and provider profiles.
+Replay tests cover the provider contract boundary for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, Gemini generateContent, Bedrock Converse, request parameters, model settings, and provider profiles.
 
 ## Spec Workflow
 
@@ -125,4 +125,4 @@ Update `README.md`, `AGENTS.md`, docs, CI, and workspace manifests when spec cha
 
 MCP integration uses the official Model Context Protocol Rust SDK at <https://github.com/modelcontextprotocol/rust-sdk> through the `rmcp` crate.
 
-A2A adapters belong to the platform or service-adapter layer. AGUI compatibility is expressed through the shared `DisplayMessage` wire protocol, which service transports can wrap for external clients. The core runtime and first-party SDK should expose stable events, traces, checkpoints, and session records that those surfaces can consume.
+A2A adapters belong to the platform or service-adapter layer. AGUI delivery is expressed through the shared `DisplayMessage` wire protocol, which service transports can wrap for external clients. The core runtime and first-party SDK should expose stable events, traces, checkpoints, and session records that those surfaces can consume.

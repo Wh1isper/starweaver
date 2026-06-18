@@ -25,6 +25,7 @@ starweaver-session.workspace = true
 starweaver-stream.workspace = true
 
 [dev-dependencies]
+starweaver-agent.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 

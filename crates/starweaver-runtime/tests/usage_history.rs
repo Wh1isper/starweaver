@@ -226,6 +226,50 @@ async fn usage_limits_include_existing_context_usage() {
 }
 
 #[tokio::test]
+async fn usage_limits_include_restored_context_usage() {
+    let model = Arc::new(TestModel::with_responses(vec![response_with_usage(
+        "ok",
+        Usage {
+            requests: 1,
+            input_tokens: 1,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 1,
+            total_tokens: 2,
+            tool_calls: 0,
+        },
+    )]));
+    let context = AgentContext {
+        usage: Usage {
+            requests: 1,
+            input_tokens: 3,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            output_tokens: 2,
+            total_tokens: 5,
+            tool_calls: 0,
+        },
+        ..AgentContext::default()
+    };
+    let mut restored = AgentContext::from_state(context.export_full_state());
+
+    let error = Agent::new(model)
+        .with_usage_limits(UsageLimits::new().with_total_tokens_limit(6))
+        .run_with_context("hello", &mut restored)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AgentError::UsageLimit(UsageLimitError::Token {
+            kind: UsageTokenKind::TotalTokens,
+            limit: 6,
+            actual: 7
+        })
+    ));
+}
+
+#[tokio::test]
 async fn usage_snapshot_includes_existing_context_usage() {
     let model = Arc::new(TestModel::with_responses(vec![response_with_usage(
         "ok",

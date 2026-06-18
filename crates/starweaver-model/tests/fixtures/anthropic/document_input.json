@@ -1,0 +1,51 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "You are concise."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Summarize this document: "
+            },
+            {
+              "kind": "file_url",
+              "url": "https://example.test/spec.pdf",
+              "media_type": "application/pdf"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expected_provider_request": {
+    "model": "claude-3-5-sonnet-latest",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Summarize this document: "
+          },
+          {
+            "type": "document",
+            "source": {
+              "type": "url",
+              "url": "https://example.test/spec.pdf"
+            }
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024,
+    "system": "You are concise."
+  }
+}

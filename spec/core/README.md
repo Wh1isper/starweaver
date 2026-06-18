@@ -31,7 +31,7 @@ flowchart TD
     context --> core
 ```
 
-- `starweaver-core`: shared identifiers, metadata, trace context, subagent specs, and XML helpers.
+- `starweaver-core`: shared identifiers, metadata, trace context, cooperative cancellation token, subagent specs, and XML helpers.
 - `starweaver-model`: canonical message/request/response ASTs, model request preparation, settings, profiles, provider mappers, transport, replay fixtures, test models, request guard.
 - `starweaver-tools`: tool definitions, dynamic tool execution, toolsets, MCP foundations, metadata, retry and control-flow envelopes.
 - `starweaver-context`: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, notes, usage ledger, resumable state.
@@ -48,7 +48,7 @@ Core Starweaver should cover these feature families before broader SDK expansion
 | Dependencies           | typed and named dependencies in context                               | context/tool/runtime dependency tests              |
 | Model providers        | provider-neutral protocol and replay fixtures                         | `make replay-check`                                |
 | Message/request AST    | typed request/response parts, request envelope, streaming part events | message AST, request preparation, and stream tests |
-| Tools                  | function tools, toolsets, metadata, retries                           | `starweaver-tools` and runtime tool loop tests     |
+| Tools                  | function tools, toolsets, metadata, retries, cancellation             | `starweaver-tools` and runtime tool loop tests     |
 | Output                 | schemas, typed parsing, validators, output functions                  | structured output and typed output tests           |
 | Capabilities and hooks | composable runtime extensions                                         | capability bundle and hook tests                   |
 | Message history        | all/new messages, processors, reinjection                             | message history tests                              |
@@ -98,7 +98,7 @@ The core layer emits enough evidence for durable replay and resume:
 - `AgentStreamRecord` captures user-observable run progress.
 - Executor checkpoints capture graph-level progress, tool boundaries, suspend points, and completion.
 - Tool control-flow metadata captures approval and deferred execution boundaries.
-- Provider replay fixtures capture request/response compatibility across protocol families.
+- Provider replay fixtures capture request/response contracts across protocol families.
 - Prepared model request snapshots capture canonical history, normalized history, prepared parameters, provider wire request, and canonical response.
 
 Durability belongs above the core runtime, while the runtime emits stable evidence and accepts restored context state.
@@ -110,4 +110,4 @@ Durability belongs above the core runtime, while the runtime emits stable eviden
 - `make check`
 - `make test`
 - targeted docs example checks when user-facing docs change
-- feature coverage matrix updated in `memos/implementation-todo.md`
+- feature coverage matrix updated in `spec/alignment/07-gap-matrix-and-roadmap.md`

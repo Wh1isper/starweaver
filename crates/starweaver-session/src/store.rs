@@ -9,6 +9,11 @@ use async_trait::async_trait;
 use starweaver_core::SessionId;
 use starweaver_runtime::AgentCheckpoint;
 
+use crate::{
+    error::SessionStoreError,
+    records::{RunRecord, RunStatus, SessionRecord},
+};
+
 pub use contract::{SessionFilter, SessionStore};
 pub use memory::InMemorySessionStore;
 
@@ -40,9 +45,48 @@ impl starweaver_runtime::AgentExecutor for SessionStoreExecutor {
         checkpoint: AgentCheckpoint,
     ) -> Result<starweaver_runtime::AgentExecutionDecision, starweaver_runtime::AgentExecutorError>
     {
-        self.store
-            .append_checkpoint(&self.session_id, checkpoint)
-            .await?;
+        match self
+            .store
+            .append_checkpoint(&self.session_id, checkpoint.clone())
+            .await
+        {
+            Ok(()) => {}
+            Err(SessionStoreError::NotFound(_)) => {
+                match self.store.load_session(&self.session_id).await {
+                    Ok(_) => {}
+                    Err(SessionStoreError::NotFound(_)) => {
+                        self.store
+                            .save_session(SessionRecord::new(self.session_id.clone()))
+                            .await?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+                let mut run = RunRecord::new(
+                    self.session_id.clone(),
+                    checkpoint.run_id.clone(),
+                    checkpoint.conversation_id.clone(),
+                );
+                run.status = checkpoint_status(checkpoint.resume.status);
+                run.trace_context = checkpoint.resume.trace_context.clone();
+                self.store.append_run(run).await?;
+                self.store
+                    .append_checkpoint(&self.session_id, checkpoint)
+                    .await?;
+            }
+            Err(error) => return Err(error.into()),
+        }
         Ok(starweaver_runtime::AgentExecutionDecision::Continue)
+    }
+}
+
+const fn checkpoint_status(status: starweaver_runtime::RunStatus) -> RunStatus {
+    match status {
+        starweaver_runtime::RunStatus::Starting | starweaver_runtime::RunStatus::Running => {
+            RunStatus::Running
+        }
+        starweaver_runtime::RunStatus::Waiting => RunStatus::Waiting,
+        starweaver_runtime::RunStatus::Completed => RunStatus::Completed,
+        starweaver_runtime::RunStatus::Failed => RunStatus::Failed,
+        starweaver_runtime::RunStatus::Cancelled => RunStatus::Cancelled,
     }
 }

@@ -140,6 +140,9 @@ fn nested_nullable_tool() -> ToolDefinition {
                 }
             }
         }),
+        return_schema: None,
+        strict: None,
+        sequential: None,
         metadata: Map::new(),
     }
 }

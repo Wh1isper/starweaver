@@ -110,14 +110,14 @@ fn cli_run_prints_display_messages() {
 }
 
 #[test]
-fn cli_session_alias_and_delete_accept_unique_prefix() {
+fn cli_session_list_and_delete_accept_unique_prefix() {
     let temp = tempfile::tempdir().unwrap();
     let run = cli(&temp)
         .args(["-p", "delete me", "--output", "silent"])
         .output()
         .unwrap();
     assert!(run.status.success());
-    let list = cli(&temp).args(["sessions", "list"]).output().unwrap();
+    let list = cli(&temp).args(["session", "list"]).output().unwrap();
     assert!(list.status.success());
     let stdout = String::from_utf8(list.stdout).unwrap();
     let session: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
@@ -135,7 +135,7 @@ fn cli_session_alias_and_delete_accept_unique_prefix() {
     assert!(String::from_utf8(delete.stdout)
         .unwrap()
         .contains("status=deleted"));
-    let empty = cli(&temp).args(["sessions", "list"]).output().unwrap();
+    let empty = cli(&temp).args(["session", "list"]).output().unwrap();
     assert!(empty.status.success());
     assert!(String::from_utf8(empty.stdout).unwrap().trim().is_empty());
     assert!(!temp
@@ -397,7 +397,7 @@ fn cli_session_replay_orders_runs_by_session_sequence() {
         let mut command = cli(&temp);
         command.args(["run", prompt]);
         if index > 0 {
-            command.arg("--continue-session");
+            command.arg("--continue");
         }
         let output = command.output().unwrap();
         assert!(
@@ -677,7 +677,7 @@ fn cli_persists_restore_environment_control_flow_and_storage_artifacts() {
         .to_string();
 
     let second = cli(&temp)
-        .args(["run", "second", "--continue-session", "--output", "silent"])
+        .args(["run", "second", "--continue", "--output", "silent"])
         .output()
         .unwrap();
     assert!(
@@ -779,7 +779,7 @@ fn cli_trim_older_than_dry_run_preserves_recent_and_active_runs() {
         let mut command = cli(&temp);
         command.args(["run", prompt, "--output", "silent"]);
         if index > 0 {
-            command.arg("--continue-session");
+            command.arg("--continue");
         }
         let output = command.output().unwrap();
         assert!(output.status.success());

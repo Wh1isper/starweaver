@@ -24,6 +24,9 @@ fn lookup_tool() -> ToolDefinition {
             },
             "required": ["query"]
         }),
+        return_schema: None,
+        strict: None,
+        sequential: None,
         metadata: Map::new(),
     }
 }

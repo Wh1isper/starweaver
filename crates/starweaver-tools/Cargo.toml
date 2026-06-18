@@ -21,9 +21,9 @@ starweaver-context.workspace = true
 starweaver-core.workspace = true
 starweaver-model.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
 
 [lints]
 workspace = true

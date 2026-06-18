@@ -194,10 +194,7 @@ fn is_task_status_line(line: &str) -> bool {
 
 pub(in crate::tui::state) fn is_task_snapshot_event(kind: &str) -> bool {
     let normalized = kind.to_ascii_lowercase().replace(['.', '-'], "_");
-    normalized == TASK_SNAPSHOT_EVENT_KIND
-        || normalized == "task_panel"
-        || normalized.ends_with("_task_snapshot")
-        || normalized.ends_with("_task_panel")
+    normalized == TASK_SNAPSHOT_EVENT_KIND || normalized.ends_with("_task_snapshot")
 }
 
 pub(in crate::tui::state) fn task_panel_items_from_value(
@@ -207,7 +204,6 @@ pub(in crate::tui::state) fn task_panel_items_from_value(
     for candidate in [payload, value] {
         if let Some(items) = candidate
             .get("tasks")
-            .or_else(|| candidate.get("items"))
             .and_then(Value::as_array)
             .or_else(|| candidate.as_array())
         {

@@ -57,6 +57,50 @@ assert_eq!(delegated.output(), "child");
 
 The registry shares usage and dependencies with child contexts. The task envelope is the extension point for lifecycle, cancellation, polling, and nested delegation guardrails.
 
+Use `SubagentConfig::with_execution_hook` to wrap delegated child runs with application policy. A `SubagentExecutionHook` receives typed metadata before and after the child run, can mutate the child context before execution, and observes the final output, usage, run id, or error without changing the default delegation contract.
+
+```rust
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use starweaver_agent::{
+    AgentBuilder, AgentContext, SubagentConfig, SubagentExecutionHook,
+    SubagentExecutionMetadata, SubagentExecutionOutcome, TestModel,
+};
+
+struct AuditHook;
+
+#[async_trait]
+impl SubagentExecutionHook for AuditHook {
+    async fn before_subagent_run(
+        &self,
+        metadata: SubagentExecutionMetadata,
+        child_context: &mut AgentContext,
+    ) -> Result<(), starweaver_agent::AgentError> {
+        child_context.metadata.insert(
+            "subagent.audit_name".to_string(),
+            serde_json::json!(metadata.name),
+        );
+        Ok(())
+    }
+
+    async fn after_subagent_run(
+        &self,
+        _metadata: SubagentExecutionMetadata,
+        _child_context: &AgentContext,
+        outcome: SubagentExecutionOutcome,
+    ) -> Result<(), starweaver_agent::AgentError> {
+        assert!(matches!(outcome, SubagentExecutionOutcome::Completed { .. }));
+        Ok(())
+    }
+}
+
+let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+let config = SubagentConfig::new("research", child).with_execution_hook(Arc::new(AuditHook));
+
+assert_eq!(config.name, "research");
+```
+
 Expose delegation to the model with the typed `delegate` tool when an agent should choose a registered child agent during a run.
 
 ```rust
@@ -127,6 +171,12 @@ assert_eq!(started.task_id.as_str(), "research-1");
 # }
 ```
 
+## Stream Attribution
+
+When the `delegate` tool runs inside a parent agent stream, child stream records are merged into the parent stream with `AgentStreamRecord.source` set to subagent attribution. The source records the child agent id, child agent name, task id, child run id, parent run id, and the original child sequence before rebasing into the parent sequence.
+
+Delegation is still blocking: the parent waits for the child run to finish, then emits the attributed child records before the parent tool return. This preserves durable ordering and lets live handles, stream archives, and replay consumers identify child records without changing the top-level stream event enum.
+
 ## Markdown Configuration
 
 `SubagentSpec` is the serializable portion of a subagent definition. It can be loaded from markdown frontmatter and passed to service or CLI layers without carrying a runtime agent handle.
@@ -154,6 +204,10 @@ assert_eq!(spec.system_prompt, "You are a debugging expert.");
 ```
 
 Runtime `SubagentConfig` keeps the executable agent handle in programmatic code. This split lets files, services, and CLI commands exchange serializable specs while applications decide how each spec maps to a concrete runtime agent.
+
+Use `project_subagent_spec` when a host wants to materialize markdown subagent files through the same `AgentSpec` registry path as regular agents. The projection returns a child `AgentSpec`, `SubagentToolInheritancePolicy`, and `SubagentCapabilityInheritancePolicy`; pass the agent spec and tool policy into `SubagentConfig::from_agent_spec` to build an executable child agent without manually constructing a nested `AgentBuilder`. The capability policy is also preserved in the projected agent metadata, so `SubagentConfig::from_agent_spec` applies it automatically. If the child spec resolves an environment provider through `AgentSpecRegistry`, the delegated child context uses that provider; otherwise it inherits the provider already attached to the parent context.
+
+If a markdown subagent omits `model` or sets `model: inherit`, the projection requires a concrete inherited model id from the host because executable Rust agents still resolve models through `AgentSpecRegistry`. `tools` and `optional_tools` become inherited parent-tool policy, not child-owned toolsets. With no explicit tool lists, the projected policy inherits all parent tools except denied tools and guarded delegation tools.
 
 ## Tool Inheritance
 
@@ -186,4 +240,34 @@ assert_eq!(inherited.names(), vec!["task_list"]);
 
 `SubagentConfig::with_tool_inheritance(policy)` attaches the policy to one child. The SDK also keeps nested delegation guarded by default through a subagent stack in context metadata; opt into nested coordination with `with_nested_delegation(true)` when the application has explicit recursion policy.
 
+When `subagent_info` is called inside an agent run, it uses the same parent tool registry that delegation would use and reports each child subagent's `available`, `inherited_tools`, and `diagnostics` fields. If delegation is attempted while a required inherited tool is missing or denied, the parent context receives a `subagent_failed` lifecycle event whose metadata includes `error_kind`, `tool_name`, and a human-readable message.
+
 Markdown frontmatter can include `denied_tools`; the parsed `SubagentSpec` stores that list in metadata so services and CLI layers can map it into runtime inheritance policy.
+
+## Capability Inheritance
+
+`SubagentCapabilityInheritancePolicy` controls whether a delegated child receives parent SDK builder hooks or capability bundles. Inheritance is explicit: parent hook capabilities are inherited only when `hooks` is enabled, and parent capability bundles are inherited only when `capability_bundles` is enabled. `denied_capabilities` filters by hook capability id, bundle capability id, or bundle name.
+
+```rust
+use std::sync::Arc;
+
+use starweaver_agent::{
+    AgentBuilder, StaticCapabilityBundle, SubagentCapabilityInheritancePolicy, SubagentConfig,
+    TestModel,
+};
+
+let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+let bundle = Arc::new(StaticCapabilityBundle::new("parent-bundle"));
+
+let agent = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
+    .capability_bundle(bundle)
+    .subagent(
+        SubagentConfig::new("child", child).with_capability_inheritance(
+            SubagentCapabilityInheritancePolicy::default().with_capability_bundles(true),
+        ),
+    )
+    .build();
+# let _ = agent;
+```
+
+Markdown frontmatter can declare the same policy with `inherit_hooks`, `inherit_capabilities`, and `denied_capabilities`. `project_subagent_spec` keeps those settings in the projection and `SubagentConfig::from_agent_spec` applies them from the projected `AgentSpec` metadata.

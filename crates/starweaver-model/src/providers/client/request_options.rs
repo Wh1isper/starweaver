@@ -11,12 +11,6 @@ use crate::{
 
 use super::ProtocolModelClient;
 
-const OPENAI_REPLAY_ALIASES: &[&str] = &[
-    "openai_previous_response_id",
-    "openai_conversation_id",
-    "openai_send_reasoning_ids",
-    "openai_include_encrypted_reasoning",
-];
 impl ProtocolModelClient {
     pub(super) fn request_options(
         &self,
@@ -80,18 +74,7 @@ impl ProtocolModelClient {
                     .insert("provider.codex.thread_id".to_string(), json!(thread_id));
             }
         }
-        self.apply_protocol_request_options(context, &mut options);
         options
-    }
-
-    fn apply_protocol_request_options(
-        &self,
-        _context: &ModelRequestContext,
-        options: &mut HttpRequestOptions,
-    ) {
-        if matches!(self.profile.protocol, ProtocolFamily::OpenAiResponses) {
-            strip_openai_replay_aliases(&mut options.extra_body);
-        }
     }
 
     pub(super) fn finalize_http_request(&self, request: &mut HttpRequest) {
@@ -99,9 +82,6 @@ impl ProtocolModelClient {
         let Some(body) = request.body.as_object_mut() else {
             return;
         };
-        if matches!(self.profile.protocol, ProtocolFamily::OpenAiResponses) {
-            strip_openai_replay_aliases(body);
-        }
         if self.provider_name != "codex"
             && matches!(
                 self.profile.protocol,
@@ -117,42 +97,25 @@ impl ProtocolModelClient {
     }
 }
 
-fn strip_openai_replay_aliases(extra_body: &mut Map<String, Value>) {
-    for key in OPENAI_REPLAY_ALIASES {
-        extra_body.remove(*key);
-    }
-}
-
 fn apply_openai_prompt_cache_metadata(
     metadata: &Map<String, Value>,
     extra_body: &mut Map<String, Value>,
-    auto_session_key: bool,
+    auto_affinity_key: bool,
 ) {
-    // Compatibility fallback only. New runtime routing should set prompt-cache
-    // keys through typed OpenAI provider settings before this finalizer runs.
     if !extra_body.contains_key("prompt_cache_key") {
-        if let Some(key) = metadata_string(
-            metadata,
-            &["starweaver.prompt_cache_key", "openai.prompt_cache_key"],
-        ) {
+        if let Some(key) = metadata_string(metadata, &["starweaver.prompt_cache_key"]) {
             extra_body.insert("prompt_cache_key".to_string(), json!(key));
-        } else if auto_session_key {
-            if let Some(session_id) =
-                metadata_string(metadata, &["starweaver.session_id", "cli.session_id"])
+        } else if auto_affinity_key {
+            if let Some(affinity_id) =
+                metadata_string(metadata, &["starweaver.prompt_cache_affinity_id"])
                     .and_then(format_openai_prompt_cache_key)
             {
-                extra_body.insert("prompt_cache_key".to_string(), json!(session_id));
+                extra_body.insert("prompt_cache_key".to_string(), json!(affinity_id));
             }
         }
     }
     if !extra_body.contains_key("prompt_cache_retention") {
-        if let Some(retention) = metadata_string(
-            metadata,
-            &[
-                "starweaver.prompt_cache_retention",
-                "openai.prompt_cache_retention",
-            ],
-        ) {
+        if let Some(retention) = metadata_string(metadata, &["starweaver.prompt_cache_retention"]) {
             extra_body.insert("prompt_cache_retention".to_string(), json!(retention));
         }
     }

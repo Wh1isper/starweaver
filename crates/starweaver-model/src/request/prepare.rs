@@ -28,8 +28,37 @@ pub fn prepare_model_request(
     let mut prepared_params = params;
     let mut metadata = Map::new();
 
-    let output_mode = select_output_mode(profile, &prepared_params);
-    prepared_params.output_mode.get_or_insert(output_mode);
+    let mut output_mode = select_output_mode(profile, &prepared_params);
+    if output_mode == OutputMode::Image && !profile.supports_image_output {
+        metadata.insert(
+            "image_output_fallback".to_string(),
+            serde_json::json!({
+                "requested": OutputMode::Image,
+                "selected": OutputMode::Text,
+                "reason": "unsupported_by_model_profile",
+                "protocol": profile.protocol,
+            }),
+        );
+        output_mode = OutputMode::Text;
+        prepared_params.allow_image_output = Some(false);
+        prepared_params.allow_text_output = Some(true);
+    }
+    prepared_params.output_mode = Some(output_mode);
+    match output_mode {
+        OutputMode::ToolOrText => {
+            prepared_params.allow_text_output.get_or_insert(true);
+        }
+        OutputMode::Image => {
+            prepared_params.allow_image_output.get_or_insert(true);
+            attach_image_generation_tool(&mut prepared_params, profile, &mut metadata);
+        }
+        OutputMode::Auto
+        | OutputMode::Text
+        | OutputMode::NativeJsonSchema
+        | OutputMode::NativeJsonObject
+        | OutputMode::Tool
+        | OutputMode::Prompted => {}
+    }
 
     if let Some(thinking) = settings
         .as_ref()
@@ -67,6 +96,34 @@ pub fn prepare_model_request(
     .with_thinking_from_params()
 }
 
+fn attach_image_generation_tool(
+    params: &mut ModelRequestParameters,
+    profile: &ModelProfile,
+    metadata: &mut Map<String, Value>,
+) {
+    if !profile
+        .supported_native_tools
+        .contains(&NativeToolKind::ImageGeneration)
+    {
+        return;
+    }
+    let already_present = params.native_tools.iter().any(|tool| {
+        NativeToolKind::from_tool_type(&tool.tool_type) == Some(NativeToolKind::ImageGeneration)
+    });
+    if already_present {
+        return;
+    }
+    params
+        .native_tools
+        .push(crate::adapter::NativeToolDefinition::new(
+            NativeToolKind::ImageGeneration.as_str(),
+        ));
+    metadata.insert(
+        "image_generation_tool_added".to_string(),
+        serde_json::json!(true),
+    );
+}
+
 fn merge_settings(
     default_settings: Option<&ModelSettings>,
     request_settings: Option<ModelSettings>,
@@ -79,14 +136,24 @@ fn merge_settings(
     }
 }
 
-fn select_output_mode(profile: &ModelProfile, params: &ModelRequestParameters) -> OutputMode {
-    params.output_mode.unwrap_or_else(|| {
-        if params.output_schema.is_some() {
-            OutputMode::from_structured_output_mode(profile.default_structured_output_mode)
-        } else {
-            OutputMode::Text
-        }
-    })
+const fn select_output_mode(profile: &ModelProfile, params: &ModelRequestParameters) -> OutputMode {
+    match params.output_mode {
+        Some(OutputMode::Auto) | None => default_output_mode(profile, params),
+        Some(OutputMode::ToolOrText) if params.output_schema.is_some() => OutputMode::ToolOrText,
+        Some(OutputMode::ToolOrText) => OutputMode::Text,
+        Some(mode) => mode,
+    }
+}
+
+const fn default_output_mode(
+    profile: &ModelProfile,
+    params: &ModelRequestParameters,
+) -> OutputMode {
+    if params.output_schema.is_some() {
+        OutputMode::from_structured_output_mode(profile.default_structured_output_mode)
+    } else {
+        OutputMode::Text
+    }
 }
 
 fn filter_function_tools_by_choice(

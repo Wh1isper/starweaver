@@ -55,7 +55,11 @@ async fn model_trace_events_capture_canonical_request_stream_and_response() {
         request_event.attributes["starweaver.model.message_count"],
         json!(1)
     );
-    assert!(request_event.attributes["gen_ai.request"]["messages"].is_array());
+    assert_eq!(
+        request_event.attributes["gen_ai.request"]["redacted"],
+        json!(true)
+    );
+    assert!(request_event.attributes["gen_ai.request"]["messages"].is_null());
 
     assert!(model_span
         .events
@@ -70,6 +74,11 @@ async fn model_trace_events_capture_canonical_request_stream_and_response() {
         response_event.attributes["gen_ai.usage.input_tokens"],
         json!(3)
     );
+    assert_eq!(
+        response_event.attributes["gen_ai.response"]["redacted"],
+        json!(true)
+    );
+    assert!(response_event.attributes["gen_ai.response"]["parts"].is_null());
     assert_eq!(
         response_event.attributes["gen_ai.usage.output_tokens"],
         json!(2)

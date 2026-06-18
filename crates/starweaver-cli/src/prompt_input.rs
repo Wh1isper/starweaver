@@ -19,6 +19,7 @@ pub struct PromptAttachment {
 impl PromptAttachment {
     /// Build an image attachment.
     #[must_use]
+    #[allow(dead_code)]
     pub fn image(index: usize, data: Vec<u8>, media_type: impl Into<String>) -> Self {
         let media_type = media_type.into();
         let size_bytes = data.len();
@@ -136,6 +137,7 @@ impl PromptInput {
 
 /// Format attachment placeholder used in the composer.
 #[must_use]
+#[allow(dead_code)]
 pub fn attachment_placeholder(index: usize, media_type: &str, size_bytes: usize) -> String {
     format!(
         "[Attached image {index}: {media_type} {}]",

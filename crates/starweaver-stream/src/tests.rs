@@ -44,7 +44,7 @@ fn display_message(
 }
 
 #[test]
-fn display_message_serializes_as_agui_compatible_event() {
+fn display_message_serializes_with_agui_event_name() {
     let message = display_message(
         1,
         DisplayMessageKind::AssistantTextDelta,
@@ -60,7 +60,7 @@ fn display_message_serializes_as_agui_compatible_event() {
 }
 
 #[test]
-fn all_display_message_kinds_serialize_to_agui_compatible_types() {
+fn all_display_message_kinds_serialize_to_agui_event_names() {
     let cases = [
         (DisplayMessageKind::RunQueued, "RUN_QUEUED"),
         (DisplayMessageKind::RunStarted, "RUN_STARTED"),
@@ -74,11 +74,47 @@ fn all_display_message_kinds_serialize_to_agui_compatible_types() {
         (DisplayMessageKind::ToolCallDelta, "TOOL_CALL_ARGS"),
         (DisplayMessageKind::ToolCallEnd, "TOOL_CALL_END"),
         (DisplayMessageKind::ToolResult, "TOOL_CALL_RESULT"),
+        (DisplayMessageKind::ToolsUnavailable, "TOOLS_UNAVAILABLE"),
+        (DisplayMessageKind::ToolSearchLoaded, "TOOL_SEARCH_LOADED"),
+        (
+            DisplayMessageKind::ToolSearchInitialized,
+            "TOOL_SEARCH_INITIALIZED",
+        ),
+        (
+            DisplayMessageKind::ToolSearchRefreshed,
+            "TOOL_SEARCH_REFRESHED",
+        ),
+        (
+            DisplayMessageKind::ToolSearchInvalidated,
+            "TOOL_SEARCH_INVALIDATED",
+        ),
+        (DisplayMessageKind::ToolSearchFailed, "TOOL_SEARCH_FAILED"),
+        (
+            DisplayMessageKind::ToolSearchNoMatch,
+            "TOOL_SEARCH_NO_MATCH",
+        ),
+        (
+            DisplayMessageKind::ToolsetInitialized,
+            "TOOLSET_INITIALIZED",
+        ),
+        (
+            DisplayMessageKind::ToolsetUnavailable,
+            "TOOLSET_UNAVAILABLE",
+        ),
+        (DisplayMessageKind::ToolsetFailed, "TOOLSET_FAILED"),
+        (DisplayMessageKind::ToolsetRefreshed, "TOOLSET_REFRESHED"),
+        (DisplayMessageKind::ToolsetClosed, "TOOLSET_CLOSED"),
         (DisplayMessageKind::ApprovalRequested, "APPROVAL_REQUESTED"),
         (DisplayMessageKind::ApprovalResolved, "APPROVAL_RESOLVED"),
+        (DisplayMessageKind::HitlResolved, "HITL_RESOLVED"),
+        (DisplayMessageKind::HitlDiagnostic, "HITL_DIAGNOSTIC"),
         (DisplayMessageKind::Checkpoint, "CHECKPOINT"),
+        (DisplayMessageKind::SkillsScanned, "SKILLS_SCANNED"),
+        (DisplayMessageKind::SkillActivated, "SKILL_ACTIVATED"),
+        (DisplayMessageKind::SkillsReloaded, "SKILLS_RELOADED"),
         (DisplayMessageKind::SubagentStarted, "SUBAGENT_STARTED"),
         (DisplayMessageKind::SubagentCompleted, "SUBAGENT_COMPLETED"),
+        (DisplayMessageKind::SubagentFailed, "SUBAGENT_FAILED"),
         (DisplayMessageKind::CompactionStarted, "COMPACTION_STARTED"),
         (
             DisplayMessageKind::CompactionCompleted,
@@ -91,6 +127,11 @@ fn all_display_message_kinds_serialize_to_agui_compatible_types() {
         (DisplayMessageKind::SteeringSubmitted, "STEERING_SUBMITTED"),
         (DisplayMessageKind::SteeringReceived, "STEERING_RECEIVED"),
         (DisplayMessageKind::TaskSnapshot, "TASK_SNAPSHOT"),
+        (DisplayMessageKind::TaskEvent, "TASK_EVENT"),
+        (DisplayMessageKind::NoteEvent, "NOTE_EVENT"),
+        (DisplayMessageKind::FileEvent, "FILE_EVENT"),
+        (DisplayMessageKind::MediaEvent, "MEDIA_EVENT"),
+        (DisplayMessageKind::HostOperation, "HOST_OPERATION"),
         (DisplayMessageKind::RunCompleted, "RUN_FINISHED"),
         (DisplayMessageKind::RunFailed, "RUN_ERROR"),
         (DisplayMessageKind::RunCancelled, "RUN_CANCELLED"),
@@ -104,29 +145,370 @@ fn all_display_message_kinds_serialize_to_agui_compatible_types() {
     }
 }
 
-#[test]
-fn display_message_accepts_legacy_snake_case_kind_alias() {
-    let mut value = serde_json::to_value(display_message(
-        1,
-        DisplayMessageKind::AssistantTextDelta,
-        json!({"delta": "hello"}),
-    ))
-    .unwrap();
-    value["kind"] = json!("assistant_text_delta");
-    value.as_object_mut().unwrap().remove("type");
-    let message = serde_json::from_value::<DisplayMessage>(value).unwrap();
-    assert_eq!(message.kind, DisplayMessageKind::AssistantTextDelta);
+fn sideband_display_context() -> DisplayProjectionContext {
+    DisplayProjectionContext::new(
+        SessionId::from_string("session-sideband"),
+        RunId::from_string("run-sideband"),
+    )
+}
 
-    let mut task_panel = serde_json::to_value(display_message(
-        2,
-        DisplayMessageKind::TaskSnapshot,
-        json!([]),
-    ))
-    .unwrap();
-    task_panel["kind"] = json!("task_panel");
-    task_panel.as_object_mut().unwrap().remove("type");
-    let message = serde_json::from_value::<DisplayMessage>(task_panel).unwrap();
-    assert_eq!(message.kind, DisplayMessageKind::TaskSnapshot);
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn default_projector_maps_tool_sideband_custom_events() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = sideband_display_context();
+    let tools_unavailable = custom_stream_record(
+        30,
+        "tools_unavailable",
+        &json!({"available": ["read"], "unavailable": ["write", "shell"]}),
+    );
+    let tool_search_loaded = custom_stream_record(
+        31,
+        "tool_search_loaded",
+        &json!({"loaded_tools": ["lookup_docs"], "loaded_namespaces": ["docs"]}),
+    );
+    let tool_search_initialized = custom_stream_record(
+        32,
+        "tool_search_initialized",
+        &json!({
+            "total_tools": 12,
+            "total_namespaces": 3,
+            "available_tools": 10,
+            "unavailable_tools": 2
+        }),
+    );
+    let tool_search_refreshed = custom_stream_record(
+        33,
+        "tool_search_refreshed",
+        &json!({"total_tools": 4, "total_namespaces": 0}),
+    );
+    let tool_search_invalidated = custom_stream_record(
+        34,
+        "tool_search_invalidated",
+        &json!({
+            "removed_loaded_tools": ["lookup_docs"],
+            "removed_loaded_namespaces": ["docs"]
+        }),
+    );
+    let tool_search_failed = custom_stream_record(
+        35,
+        "tool_search_failed",
+        &json!({"message": "Parameter 'query' is required."}),
+    );
+    let tool_search_no_match =
+        custom_stream_record(36, "tool_search_no_match", &json!({"query": "missing"}));
+    let toolset_initialized = custom_stream_record(
+        37,
+        "toolset_initialized",
+        &json!({"name": "docs", "state": "initialized", "tool_count": 2}),
+    );
+    let toolset_failed = custom_stream_record(
+        38,
+        "toolset_failed",
+        &json!({"name": "remote", "state": "failed", "message": "offline"}),
+    );
+
+    let unavailable_messages = projector.project(&context, &tools_unavailable).await;
+    let loaded_messages = projector.project(&context, &tool_search_loaded).await;
+    let initialized_messages = projector.project(&context, &tool_search_initialized).await;
+    let refreshed_messages = projector.project(&context, &tool_search_refreshed).await;
+    let invalidated_messages = projector.project(&context, &tool_search_invalidated).await;
+    let failed_messages = projector.project(&context, &tool_search_failed).await;
+    let no_match_messages = projector.project(&context, &tool_search_no_match).await;
+    let toolset_initialized_messages = projector.project(&context, &toolset_initialized).await;
+    let toolset_failed_messages = projector.project(&context, &toolset_failed).await;
+
+    assert_eq!(
+        unavailable_messages[0].kind,
+        DisplayMessageKind::ToolsUnavailable
+    );
+    assert_eq!(
+        unavailable_messages[0].preview.as_deref(),
+        Some("tools unavailable: 2 tool(s)")
+    );
+    assert_eq!(
+        loaded_messages[0].kind,
+        DisplayMessageKind::ToolSearchLoaded
+    );
+    assert_eq!(
+        loaded_messages[0].preview.as_deref(),
+        Some("tool search loaded 1 tool(s), 1 namespace(s)")
+    );
+    assert_eq!(
+        initialized_messages[0].kind,
+        DisplayMessageKind::ToolSearchInitialized
+    );
+    assert_eq!(
+        initialized_messages[0].preview.as_deref(),
+        Some("tool search initialized: 12 tool(s), 3 namespace(s)")
+    );
+    assert_eq!(
+        refreshed_messages[0].kind,
+        DisplayMessageKind::ToolSearchRefreshed
+    );
+    assert_eq!(
+        refreshed_messages[0].preview.as_deref(),
+        Some("tool search refreshed: 4 tool(s), 0 namespace(s)")
+    );
+    assert_eq!(
+        invalidated_messages[0].kind,
+        DisplayMessageKind::ToolSearchInvalidated
+    );
+    assert_eq!(
+        invalidated_messages[0].preview.as_deref(),
+        Some("tool search invalidated 1 tool(s), 1 namespace(s)")
+    );
+    assert_eq!(
+        failed_messages[0].kind,
+        DisplayMessageKind::ToolSearchFailed
+    );
+    assert_eq!(
+        failed_messages[0].preview.as_deref(),
+        Some("tool search failed: Parameter 'query' is required.")
+    );
+    assert_eq!(
+        no_match_messages[0].kind,
+        DisplayMessageKind::ToolSearchNoMatch
+    );
+    assert_eq!(
+        no_match_messages[0].preview.as_deref(),
+        Some("tool search no match: missing")
+    );
+    assert_eq!(
+        toolset_initialized_messages[0].kind,
+        DisplayMessageKind::ToolsetInitialized
+    );
+    assert_eq!(
+        toolset_initialized_messages[0].preview.as_deref(),
+        Some("docs initialized: 2 tool(s)")
+    );
+    assert_eq!(
+        toolset_failed_messages[0].kind,
+        DisplayMessageKind::ToolsetFailed
+    );
+    assert_eq!(
+        toolset_failed_messages[0].preview.as_deref(),
+        Some("remote failed: offline")
+    );
+}
+
+#[tokio::test]
+async fn default_projector_maps_skill_sideband_custom_events() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = sideband_display_context();
+    let skills_reloaded = custom_stream_record(
+        34,
+        "skills_reloaded",
+        &json!({
+            "package_count": 2,
+            "diagnostics": [],
+            "changes": [{"kind": "modified", "name": "research"}]
+        }),
+    );
+    let skills_scanned = custom_stream_record(
+        35,
+        "skills_scanned",
+        &json!({"package_count": 1, "diagnostics": [{"kind": "invalid_frontmatter"}]}),
+    );
+    let skill_activated = custom_stream_record(
+        36,
+        "skill_activated",
+        &json!({"name": "research", "body_bytes": 42}),
+    );
+
+    let skill_messages = projector.project(&context, &skills_reloaded).await;
+    let scanned_messages = projector.project(&context, &skills_scanned).await;
+    let activated_messages = projector.project(&context, &skill_activated).await;
+
+    assert_eq!(skill_messages[0].kind, DisplayMessageKind::SkillsReloaded);
+    assert_eq!(
+        skill_messages[0].preview.as_deref(),
+        Some("skills reloaded: 2 package(s), 1 change(s), 0 diagnostic(s)")
+    );
+    assert_eq!(scanned_messages[0].kind, DisplayMessageKind::SkillsScanned);
+    assert_eq!(
+        scanned_messages[0].preview.as_deref(),
+        Some("skills scanned: 1 package(s), 1 diagnostic(s)")
+    );
+    assert_eq!(
+        activated_messages[0].kind,
+        DisplayMessageKind::SkillActivated
+    );
+    assert_eq!(
+        activated_messages[0].preview.as_deref(),
+        Some("skill activated: research")
+    );
+}
+
+#[tokio::test]
+async fn default_projector_maps_hitl_sideband_custom_events() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = sideband_display_context();
+    let approval_requested =
+        custom_stream_record(37, "approval_requested", &json!({"tool_name": "edit"}));
+    let approval_resolved =
+        custom_stream_record(38, "approval_resolved", &json!({"status": "approved"}));
+    let hitl_resolved = custom_stream_record(
+        39,
+        "hitl_resolved",
+        &json!({
+            "tool_returns": 3,
+            "approved": 1,
+            "denied": 1,
+            "deferred_completed": 1,
+            "deferred_failed": 0,
+            "deferred_cancelled": 0
+        }),
+    );
+    let hitl_diagnostic = custom_stream_record(
+        40,
+        "hitl_decision_diagnostic",
+        &json!({"error_kind": "duplicate_decision", "decision_id": "call_duplicate"}),
+    );
+
+    let approval_requested_messages = projector.project(&context, &approval_requested).await;
+    let approval_resolved_messages = projector.project(&context, &approval_resolved).await;
+    let hitl_messages = projector.project(&context, &hitl_resolved).await;
+    let hitl_diagnostic_messages = projector.project(&context, &hitl_diagnostic).await;
+
+    assert_eq!(
+        approval_requested_messages[0].kind,
+        DisplayMessageKind::ApprovalRequested
+    );
+    assert_eq!(
+        approval_requested_messages[0].preview.as_deref(),
+        Some("approval requested: edit")
+    );
+    assert_eq!(
+        approval_resolved_messages[0].kind,
+        DisplayMessageKind::ApprovalResolved
+    );
+    assert_eq!(
+        approval_resolved_messages[0].preview.as_deref(),
+        Some("approval resolved: approved")
+    );
+    assert_eq!(hitl_messages[0].kind, DisplayMessageKind::HitlResolved);
+    assert_eq!(
+        hitl_messages[0].preview.as_deref(),
+        Some("hitl resolved: 3 return(s), 1 approved, 1 denied, 1 deferred completed, 0 deferred failed, 0 deferred cancelled")
+    );
+    assert_eq!(
+        hitl_diagnostic_messages[0].kind,
+        DisplayMessageKind::HitlDiagnostic
+    );
+    assert_eq!(
+        hitl_diagnostic_messages[0].preview.as_deref(),
+        Some("hitl diagnostic: duplicate_decision: call_duplicate")
+    );
+}
+
+#[tokio::test]
+async fn default_projector_maps_subagent_sideband_custom_events() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = sideband_display_context();
+    let subagent_started = custom_stream_record(
+        40,
+        "subagent_started",
+        &json!({"name": "research", "task_id": "research-1"}),
+    );
+    let subagent_completed = custom_stream_record(
+        41,
+        "subagent_completed",
+        &json!({"name": "research", "task_id": "research-1"}),
+    );
+    let subagent_failed = custom_stream_record(
+        42,
+        "subagent_failed",
+        &json!({"name": "research", "metadata": {"error": "missing_subagent"}}),
+    );
+
+    let subagent_started_messages = projector.project(&context, &subagent_started).await;
+    let subagent_completed_messages = projector.project(&context, &subagent_completed).await;
+    let subagent_messages = projector.project(&context, &subagent_failed).await;
+
+    assert_eq!(
+        subagent_started_messages[0].kind,
+        DisplayMessageKind::SubagentStarted
+    );
+    assert_eq!(
+        subagent_started_messages[0].preview.as_deref(),
+        Some("subagent started: research")
+    );
+    assert_eq!(
+        subagent_completed_messages[0].kind,
+        DisplayMessageKind::SubagentCompleted
+    );
+    assert_eq!(
+        subagent_completed_messages[0].preview.as_deref(),
+        Some("subagent completed: research")
+    );
+    assert_eq!(
+        subagent_messages[0].kind,
+        DisplayMessageKind::SubagentFailed
+    );
+    assert_eq!(
+        subagent_messages[0].preview.as_deref(),
+        Some("subagent failed: research: missing_subagent")
+    );
+}
+
+#[tokio::test]
+async fn default_projector_maps_generic_sideband_custom_events() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = sideband_display_context();
+    let task_updated = custom_stream_record(
+        43,
+        "task_updated",
+        &json!({"subject": "Ship display events", "status": "completed"}),
+    );
+    let note_set = custom_stream_record(44, "note_set", &json!({"name": "design"}));
+    let file_changed = custom_stream_record(45, "file_changed", &json!({"path": "src/lib.rs"}));
+    let media_uploaded = custom_stream_record(
+        46,
+        "media_uploaded",
+        &json!({"uri": "resource://uploaded/image"}),
+    );
+    let host_operation = custom_stream_record(
+        47,
+        "host_browser_opened",
+        &json!({"operation": "browser_opened"}),
+    );
+
+    let task_messages = projector.project(&context, &task_updated).await;
+    let note_messages = projector.project(&context, &note_set).await;
+    let file_messages = projector.project(&context, &file_changed).await;
+    let media_messages = projector.project(&context, &media_uploaded).await;
+    let host_messages = projector.project(&context, &host_operation).await;
+
+    assert_eq!(task_messages[0].kind, DisplayMessageKind::TaskEvent);
+    assert_eq!(
+        task_messages[0].preview.as_deref(),
+        Some("task event: Ship display events")
+    );
+    assert_eq!(
+        task_messages[0].metadata["starweaver_event_kind"],
+        json!("task_updated")
+    );
+    assert_eq!(note_messages[0].kind, DisplayMessageKind::NoteEvent);
+    assert_eq!(
+        note_messages[0].preview.as_deref(),
+        Some("note event: design")
+    );
+    assert_eq!(file_messages[0].kind, DisplayMessageKind::FileEvent);
+    assert_eq!(
+        file_messages[0].preview.as_deref(),
+        Some("file event: src/lib.rs")
+    );
+    assert_eq!(media_messages[0].kind, DisplayMessageKind::MediaEvent);
+    assert_eq!(
+        media_messages[0].preview.as_deref(),
+        Some("media event: resource://uploaded/image")
+    );
+    assert_eq!(host_messages[0].kind, DisplayMessageKind::HostOperation);
+    assert_eq!(
+        host_messages[0].preview.as_deref(),
+        Some("host operation: browser_opened")
+    );
 }
 
 #[tokio::test]
@@ -166,7 +548,9 @@ async fn replay_subscription_receives_live_tail_after_cursor() {
         ReplayEvent::new(
             scope.clone(),
             2,
-            ReplayEventKind::Terminal(StreamTerminalMarker::RunCompleted),
+            ReplayEventKind::Terminal {
+                marker: StreamTerminalMarker::RunCompleted,
+            },
         ),
     )
     .await
@@ -176,7 +560,9 @@ async fn replay_subscription_receives_live_tail_after_cursor() {
     assert_eq!(event.sequence, 2);
     assert!(matches!(
         event.event,
-        ReplayEventKind::Terminal(StreamTerminalMarker::RunCompleted)
+        ReplayEventKind::Terminal {
+            marker: StreamTerminalMarker::RunCompleted
+        }
     ));
 }
 
@@ -426,18 +812,12 @@ async fn default_projector_maps_summary_and_compaction_custom_events() {
         "task_snapshot",
         &json!({"tasks": [{"id": "1", "subject": "Ship", "status": "pending"}]}),
     );
-    let legacy_task_panel = custom_stream_record(
-        14,
-        "task_panel",
-        &json!({"items": [{"id": "2", "subject": "Legacy", "status": "pending"}]}),
-    );
     let unrelated = custom_stream_record(15, "unknown_event", &json!({"ok": true}));
 
     let compact_messages = projector.project(&context, &compact_started).await;
     let handoff_messages = projector.project(&context, &handoff_completed).await;
     let steering_messages = projector.project(&context, &steering_received).await;
     let task_messages = projector.project(&context, &task_snapshot).await;
-    let legacy_task_messages = projector.project(&context, &legacy_task_panel).await;
     let unrelated_messages = projector.project(&context, &unrelated).await;
 
     assert_eq!(compact_messages.len(), 1);
@@ -471,19 +851,6 @@ async fn default_projector_maps_summary_and_compaction_custom_events() {
     assert_eq!(task_messages[0].payload["tasks"][0]["subject"], "Ship");
     assert_eq!(
         task_messages[0].preview.as_deref(),
-        Some("task snapshot: 1 task(s)")
-    );
-    assert_eq!(legacy_task_messages.len(), 1);
-    assert_eq!(
-        legacy_task_messages[0].kind,
-        DisplayMessageKind::TaskSnapshot
-    );
-    assert_eq!(
-        legacy_task_messages[0].payload["items"][0]["subject"],
-        "Legacy"
-    );
-    assert_eq!(
-        legacy_task_messages[0].preview.as_deref(),
         Some("task snapshot: 1 task(s)")
     );
     assert!(unrelated_messages.is_empty());

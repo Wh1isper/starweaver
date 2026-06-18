@@ -90,8 +90,8 @@ pub struct CliConfig {
     pub tools_config: serde_json::Value,
     /// MCP config metadata loaded from mcp.json.
     pub mcp_config: serde_json::Value,
-    /// Compatibility metadata for config sections preserved for migration audits.
-    pub compatibility_metadata: serde_json::Value,
+    /// Unmapped config metadata preserved for configuration audits.
+    pub unmapped_metadata: serde_json::Value,
     /// Custom slash commands loaded from `[commands.*]` config sections.
     pub slash_commands: BTreeMap<String, SlashCommandDefinition>,
     /// Automatic trim after a run.
@@ -432,7 +432,7 @@ impl ConfigResolver {
             providers: default_provider_configs(),
             tools_config: serde_json::Value::Null,
             mcp_config: serde_json::Value::Null,
-            compatibility_metadata: serde_json::json!({}),
+            unmapped_metadata: serde_json::json!({}),
             slash_commands: BTreeMap::new(),
             auto_trim: true,
             current_session_keep_recent_runs: 20,
@@ -609,7 +609,7 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
     let raw = content
         .parse::<Value>()
         .map_err(|error| CliError::Config(error.to_string()))?;
-    merge_compatibility_metadata(config, &raw);
+    merge_unmapped_metadata(config, &raw);
     let parsed = toml::from_str::<FileConfig>(&content)?;
     let base = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     if let Some(general) = parsed.general {
@@ -620,7 +620,7 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
         let max_requests = general.max_requests;
         if let Some(max_requests) = max_requests {
             merge_json_value(
-                &mut config.compatibility_metadata,
+                &mut config.unmapped_metadata,
                 serde_json::json!({"general": {"max_requests": max_requests}}),
             );
         }
@@ -843,7 +843,7 @@ fn reserved_slash_command(name: &str) -> bool {
     )
 }
 
-fn merge_compatibility_metadata(config: &mut CliConfig, raw: &Value) {
+fn merge_unmapped_metadata(config: &mut CliConfig, raw: &Value) {
     let Some(root) = raw.as_table() else {
         return;
     };
@@ -857,7 +857,7 @@ fn merge_compatibility_metadata(config: &mut CliConfig, raw: &Value) {
     }
     if !metadata.is_empty() {
         merge_json_value(
-            &mut config.compatibility_metadata,
+            &mut config.unmapped_metadata,
             serde_json::Value::Object(metadata),
         );
     }

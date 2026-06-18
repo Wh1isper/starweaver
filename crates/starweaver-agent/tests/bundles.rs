@@ -5,12 +5,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use starweaver_agent::{
     attach_environment, dynamic_tool_proxy, filesystem_tools, host_operation_tools, json_tool,
-    namespaced_toolset, shell_tools, task_tools, AgentCapability, AgentContext, AgentSession,
-    EnvironmentContextCapability, HostMediaCapabilities, HostMediaUnderstandingClient,
-    HostMediaUnderstandingClientHandle, HostScrapeClient, HostScrapeClientHandle, HostSearchClient,
-    HostSearchClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse, ScrapeRequest,
-    ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem, ToolContext, ToolRegistry,
-    ToolResult,
+    namespaced_toolset, shell_tools, task_tools, AgentCapability, AgentContext,
+    AgentRuntimeBuilder, AgentSession, EnvironmentContextCapability, HostMediaCapabilities,
+    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
+    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
+    MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
+    SearchResultItem, ToolContext, ToolRegistry, ToolResult,
 };
 use starweaver_context::ToolConfig;
 use starweaver_core::{ConversationId, Metadata, RunId};
@@ -1212,6 +1212,53 @@ async fn host_operations_use_injected_clients_and_capabilities() {
     assert_eq!(media.content["provider_ready"]["type"], "media_url");
     assert_eq!(image.content["content"], "image analysis");
     assert_eq!(image.content["model_id"], "fake-media-model");
+}
+
+#[tokio::test]
+async fn agent_runtime_builder_runs_host_search_adapter() {
+    let model = TestModel::with_responses(vec![
+        tool_call_response(
+            "call_search",
+            "search",
+            serde_json::json!({"query": "rust sdk", "num": 1}),
+        ),
+        ModelResponse::text("searched"),
+    ]);
+    let mut context = AgentContext::default();
+    context
+        .dependencies
+        .insert(HostSearchClientHandle::new(Arc::new(FakeSearchClient)));
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(model))
+        .context(context)
+        .toolset(&host_operation_tools())
+        .build();
+
+    let result = runtime.run("search docs").await.unwrap();
+
+    assert_eq!(result.output, "searched");
+    let tool_return = result
+        .state
+        .message_history
+        .iter()
+        .flat_map(|message| match message {
+            starweaver_model::ModelMessage::Request(request) => request.parts.iter().collect(),
+            starweaver_model::ModelMessage::Response(_) => Vec::new(),
+        })
+        .find_map(|part| match part {
+            starweaver_model::ModelRequestPart::ToolReturn(tool_return)
+                if tool_return.name == "search" =>
+            {
+                Some(tool_return)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(tool_return.content["provider"], "fake");
+    assert_eq!(tool_return.content["results"][0]["title"], "Rust SDK");
+    assert_eq!(
+        tool_return.content["results"][0]["citation"]["provider"],
+        "fake"
+    );
 }
 
 #[tokio::test]

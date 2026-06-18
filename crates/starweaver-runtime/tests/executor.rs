@@ -5,15 +5,17 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use starweaver_context::AgentContext;
 use starweaver_model::{ModelResponse, TestModel};
 use starweaver_runtime::{
     Agent, AgentCapability, AgentCheckpoint, AgentError, AgentExecutionDecision,
-    AgentExecutionNode, AgentExecutor, AgentExecutorError, CapabilityResult,
+    AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentStreamEvent, CapabilityResult,
 };
 
 #[derive(Default)]
 struct RecordingExecutor {
     nodes: Mutex<Vec<AgentExecutionNode>>,
+    checkpoints: Mutex<Vec<AgentCheckpoint>>,
     suspend_at: Option<AgentExecutionNode>,
 }
 
@@ -25,6 +27,9 @@ impl AgentExecutor for RecordingExecutor {
     ) -> Result<AgentExecutionDecision, AgentExecutorError> {
         if let Ok(mut nodes) = self.nodes.lock() {
             nodes.push(checkpoint.node);
+        }
+        if let Ok(mut checkpoints) = self.checkpoints.lock() {
+            checkpoints.push(checkpoint.clone());
         }
         if Some(checkpoint.node) == self.suspend_at {
             return Ok(AgentExecutionDecision::Suspend {
@@ -61,6 +66,37 @@ async fn executor_records_fine_grained_checkpoints() {
             AgentExecutionNode::RunComplete,
         ]
     );
+}
+
+#[tokio::test]
+async fn executor_checkpoints_record_latest_stream_cursor() {
+    let executor = Arc::new(RecordingExecutor::default());
+    let mut context = AgentContext::default();
+    let mut events = Vec::new();
+
+    Agent::new(Arc::new(TestModel::with_responses(vec![
+        ModelResponse::text("done"),
+    ])))
+    .with_executor(executor.clone())
+    .run_with_context_and_stream_events("hello", &mut context, &mut events)
+    .await
+    .unwrap();
+
+    let checkpoints = executor
+        .checkpoints
+        .lock()
+        .map_or_else(|_| Vec::new(), |checkpoints| checkpoints.clone());
+    assert!(!checkpoints.is_empty());
+    for checkpoint in checkpoints {
+        let cursor = checkpoint.resume.cursor.stream_cursor.unwrap();
+        let event = events.get(cursor).unwrap();
+        assert_eq!(event.sequence, cursor);
+        assert!(matches!(
+            &event.event,
+            AgentStreamEvent::NodeStart { node, step, .. }
+                if *node == checkpoint.node && *step == checkpoint.run_step
+        ));
+    }
 }
 
 #[tokio::test]

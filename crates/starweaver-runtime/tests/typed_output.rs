@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use serde::Deserialize;
-use starweaver_model::TestModel;
-use starweaver_runtime::{Agent, AgentError, OutputSchema, OutputValue};
+use starweaver_model::{ModelResponse, ModelResponsePart, TestModel};
+use starweaver_runtime::{Agent, AgentError, OutputMedia, OutputPolicy, OutputSchema, OutputValue};
 
 #[derive(Debug, Deserialize, PartialEq)]
 struct Answer {
@@ -54,4 +54,38 @@ fn output_value_parses_text_or_json_into_type() {
         .unwrap();
 
     assert_eq!(from_text, from_json);
+}
+
+#[tokio::test]
+async fn agent_result_exposes_image_output_wrappers() {
+    let mut response = ModelResponse::text("generated image");
+    response.parts.push(ModelResponsePart::File {
+        url: "resource://generated/image-1".to_string(),
+        media_type: "image/png".to_string(),
+    });
+
+    let result = Agent::new(Arc::new(TestModel::with_responses(vec![response])))
+        .with_output_policy(OutputPolicy::image())
+        .run("draw")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "generated image");
+    assert_eq!(
+        result.image_outputs(),
+        vec![OutputMedia::new(
+            "resource://generated/image-1",
+            "image/png"
+        )]
+    );
+    assert_eq!(result.media_outputs(), result.image_outputs());
+    assert_eq!(
+        result.output_value(),
+        OutputValue::Media(vec![OutputMedia::new(
+            "resource://generated/image-1",
+            "image/png"
+        )])
+    );
+    let parsed: Vec<OutputMedia> = result.output_value().parse().unwrap();
+    assert!(parsed[0].is_image());
 }

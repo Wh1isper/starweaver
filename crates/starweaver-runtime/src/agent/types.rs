@@ -1,7 +1,7 @@
 //! Agent runtime public types.
 
 use serde::{Deserialize, Serialize};
-use starweaver_model::{ModelError, ModelMessage};
+use starweaver_model::{ContentPart, ModelError, ModelMessage};
 use thiserror::Error;
 
 use starweaver_usage::UsageLimitError;
@@ -9,8 +9,96 @@ use starweaver_usage::UsageLimitError;
 use crate::{
     capability::CapabilityOrderError,
     executor::{AgentExecutionNode, AgentExecutorError},
+    output::{OutputMedia, OutputValue},
     run::{AgentRunResult, AgentRunState},
 };
+
+/// User input for an agent run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentInput {
+    /// Ordered multimodal user content parts.
+    pub content: Vec<ContentPart>,
+}
+
+impl AgentInput {
+    /// Build input from ordered user content parts.
+    #[must_use]
+    pub fn new(content: impl Into<Vec<ContentPart>>) -> Self {
+        Self {
+            content: content.into(),
+        }
+    }
+
+    /// Build text-only input.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::new(vec![ContentPart::text(text)])
+    }
+
+    /// Build input from ordered user content parts.
+    #[must_use]
+    pub fn parts(content: impl Into<Vec<ContentPart>>) -> Self {
+        Self::new(content)
+    }
+
+    /// Return true when no content parts are present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
+    pub(in crate::agent) fn text_projection(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|part| match part {
+                ContentPart::Text { text } => Some(text.as_str()),
+                ContentPart::ImageUrl { .. }
+                | ContentPart::FileUrl { .. }
+                | ContentPart::Binary { .. }
+                | ContentPart::ResourceRef { .. }
+                | ContentPart::DataUrl { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+impl From<String> for AgentInput {
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
+impl From<&str> for AgentInput {
+    fn from(text: &str) -> Self {
+        Self::text(text)
+    }
+}
+
+impl From<ContentPart> for AgentInput {
+    fn from(content: ContentPart) -> Self {
+        Self::new(vec![content])
+    }
+}
+
+impl From<Vec<ContentPart>> for AgentInput {
+    fn from(content: Vec<ContentPart>) -> Self {
+        Self::new(content)
+    }
+}
+
+/// Strategy for handling ordinary tool calls returned alongside a final output tool call.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentEndStrategy {
+    /// Stop as soon as a valid output function returns final output.
+    #[default]
+    Early,
+    /// Execute remaining ordinary tools, then complete with the first valid final output.
+    Graceful,
+    /// Execute all ordinary tools, then complete with the first valid final output.
+    Exhaustive,
+}
 
 /// Runtime policy for bare agent runs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -19,6 +107,9 @@ pub struct AgentRuntimePolicy {
     pub max_steps: usize,
     /// Maximum output validation retries.
     pub output_retries: usize,
+    /// How to handle ordinary tool calls returned alongside a final output function.
+    #[serde(default)]
+    pub end_strategy: AgentEndStrategy,
 }
 
 impl Default for AgentRuntimePolicy {
@@ -26,6 +117,7 @@ impl Default for AgentRuntimePolicy {
         Self {
             max_steps: 10_000,
             output_retries: 1,
+            end_strategy: AgentEndStrategy::Early,
         }
     }
 }
@@ -39,6 +131,12 @@ pub enum AgentError {
     /// Capability hook failed.
     #[error("capability error: {0}")]
     Capability(String),
+    /// Runtime execution was cancelled cooperatively.
+    #[error("agent run cancelled: {reason}")]
+    Cancelled {
+        /// Human-readable cancellation reason.
+        reason: String,
+    },
     /// Capability ordering failed.
     #[error(transparent)]
     CapabilityOrder(#[from] CapabilityOrderError),
@@ -114,6 +212,47 @@ impl AgentResult {
     #[must_use]
     pub fn new_messages(&self) -> &[ModelMessage] {
         &self.messages[self.history_len..]
+    }
+
+    /// Return media/file outputs from the latest model response.
+    #[must_use]
+    pub fn media_outputs(&self) -> Vec<OutputMedia> {
+        self.messages
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                ModelMessage::Response(response) => Some(
+                    response
+                        .parts
+                        .iter()
+                        .filter_map(OutputMedia::from_response_part)
+                        .collect::<Vec<_>>(),
+                ),
+                ModelMessage::Request(_) => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Return image outputs from the latest model response.
+    #[must_use]
+    pub fn image_outputs(&self) -> Vec<OutputMedia> {
+        self.media_outputs()
+            .into_iter()
+            .filter(OutputMedia::is_image)
+            .collect()
+    }
+
+    /// Return the final output as text, JSON, or media wrappers.
+    #[must_use]
+    pub fn output_value(&self) -> OutputValue {
+        let media = self.media_outputs();
+        if !media.is_empty() {
+            OutputValue::Media(media)
+        } else if let Some(value) = self.structured_output.clone() {
+            OutputValue::Json(value)
+        } else {
+            OutputValue::Text(self.output.clone())
+        }
     }
 
     /// Parse structured output into a Rust type.

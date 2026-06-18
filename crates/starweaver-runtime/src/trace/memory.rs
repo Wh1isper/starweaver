@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use starweaver_core::{Metadata, TraceContext};
 use uuid::Uuid;
 
+use super::{export_otel_gen_ai_spans, OtelGenAiSpan};
 use super::{RecordedSpan, SpanEvent, SpanHandle, SpanSpec, SpanStatus, TraceRecorder};
 
 /// Deterministic in-memory trace recorder for tests and CLI inspection.
@@ -97,6 +98,12 @@ impl AdapterTraceRecorder {
     #[must_use]
     pub fn spans(&self) -> Vec<RecordedSpan> {
         self.inner.spans()
+    }
+
+    /// Return spans projected into deterministic OpenTelemetry `GenAI` fields.
+    #[must_use]
+    pub fn otel_gen_ai_spans(&self) -> Vec<OtelGenAiSpan> {
+        export_otel_gen_ai_spans(&self.spans())
     }
 }
 

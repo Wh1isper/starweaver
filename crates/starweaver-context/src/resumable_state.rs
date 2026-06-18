@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TraceContext};
-use starweaver_model::{ContentPart, ModelMessage};
+use starweaver_model::{ContentPart, ModelMessage, ToolReturnPart};
 use starweaver_usage::{Usage, UsageSnapshotEntry};
 
 use crate::{AgentInfo, MessageBus, ModelConfig, SecurityConfig, StateStore, ToolConfig};
@@ -114,6 +114,9 @@ pub struct ResumableState {
     /// Canonical message history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub message_history: Vec<ModelMessage>,
+    /// Tool returns to inject at the start of the next run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_tool_returns: Vec<ToolReturnPart>,
     /// Serialized subagent history, keyed by agent id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub subagent_history: BTreeMap<String, Vec<ModelMessage>>,
@@ -140,10 +143,10 @@ pub struct ResumableState {
     pub agent_registry: BTreeMap<String, AgentInfo>,
     /// Tool names requiring approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub need_user_approve_tools: Vec<String>,
+    pub approval_required_tools: Vec<String>,
     /// MCP server names requiring approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub need_user_approve_mcps: Vec<String>,
+    pub approval_required_mcp_servers: Vec<String>,
     /// Security-related runtime configuration.
     #[serde(default, skip_serializing_if = "SecurityConfig::is_default")]
     pub security: SecurityConfig,
@@ -190,7 +193,7 @@ pub struct ResumableState {
     /// Run metadata. Starweaver extension.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
-    /// Extra opaque data for future-compatible restore.
+    /// Host extension data preserved across state export and restore.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, Value>,
 }

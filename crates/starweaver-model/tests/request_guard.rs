@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use serde_json::{json, Map};
-use starweaver_core::{ConversationId, RunId};
+use starweaver_core::{CancellationToken, ConversationId, RunId};
 use starweaver_model::{
     block_real_model_requests,
     profile::{ModelProfile, ProtocolFamily},
@@ -45,6 +45,7 @@ async fn global_guard_blocks_production_model_requests_and_restores_setting() {
         body: json!({"model": "gpt-4.1-mini", "input": "hello"}),
         timeout: None,
         metadata: Map::default(),
+        cancellation_token: CancellationToken::default(),
     };
     let error = reqwest_client.send(request).await.unwrap_err();
     assert!(matches!(

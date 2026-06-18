@@ -2,29 +2,153 @@
 
 mod support;
 
-use serde_json::json;
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{json, Value};
 use starweaver_model::{
-    message::ModelMessage,
+    adapter::{NativeToolDefinition, ToolDefinition},
+    message::{ModelMessage, ModelRequest, ModelRequestPart, ModelResponse},
+    prepare_model_request,
     providers::{
         anthropic::AnthropicMessagesAdapter, bedrock::BedrockConverseAdapter,
         gemini::GeminiGenerateContentAdapter, openai_chat::OpenAiChatAdapter,
         openai_responses::OpenAiResponsesAdapter,
     },
-    ModelError, ModelResponsePart,
+    ModelError, ModelProfile, ModelRequestParameters, ModelResponsePart, OutputMode,
+    ProtocolFamily,
 };
 
 fn assert_json_eq(actual: &serde_json::Value, expected: &serde_json::Value) {
     support::replay::assert_json_eq(actual, expected);
 }
 
+fn build_provider_request(
+    provider: &str,
+    model: &str,
+    history: &[ModelMessage],
+    settings: Option<&starweaver_model::ModelSettings>,
+    tools: &[ToolDefinition],
+    native_tools: &[NativeToolDefinition],
+) -> serde_json::Value {
+    match provider {
+        "openai_chat" => OpenAiChatAdapter::build_request(model, history, settings, tools).unwrap(),
+        "openai_responses" => {
+            OpenAiResponsesAdapter::build_request(model, history, settings, tools, native_tools)
+                .unwrap()
+        }
+        "anthropic" => {
+            AnthropicMessagesAdapter::build_request(model, history, settings, tools).unwrap()
+        }
+        "gemini" => GeminiGenerateContentAdapter::build_request_with_native_tools(
+            history,
+            settings,
+            tools,
+            native_tools,
+        )
+        .unwrap(),
+        "bedrock" => {
+            BedrockConverseAdapter::build_request(model, history, settings, tools).unwrap()
+        }
+        other => panic!("unknown provider fixture namespace: {other}"),
+    }
+}
+
+fn json_round_trip<T>(value: &T) -> T
+where
+    T: Serialize + DeserializeOwned,
+{
+    serde_json::from_value(serde_json::to_value(value).unwrap()).unwrap()
+}
+
+fn fixture_names(provider: &str) -> Vec<String> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(provider);
+    let mut names = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|extension| extension.to_str()) == Some("json"))
+                .then(|| path.file_stem()?.to_str().map(str::to_string))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+fn representative_compacted_history() -> Vec<ModelMessage> {
+    let mut summary = ModelResponse::text(
+        "## Condensed conversation summary\n\nThe user asked for provider replay coverage.",
+    );
+    summary
+        .metadata
+        .insert("keep".to_string(), json!("compact"));
+    vec![
+        ModelMessage::Request(ModelRequest {
+            parts: vec![
+                ModelRequestPart::SystemPrompt {
+                    text: "You are concise.".to_string(),
+                    metadata: serde_json::Map::new(),
+                },
+                ModelRequestPart::UserPrompt {
+                    content: vec![starweaver_model::ContentPart::Text {
+                        text: "Compact the conversation history.".to_string(),
+                    }],
+                    name: None,
+                    metadata: serde_json::Map::new(),
+                },
+            ],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        }),
+        ModelMessage::Response(summary),
+        ModelMessage::Request(ModelRequest::user_text(
+            "Continue from the restored context.",
+        )),
+    ]
+}
+
+fn prompted_retry_history() -> Vec<ModelMessage> {
+    vec![
+        ModelMessage::Request(ModelRequest::user_text("Return an answer.")),
+        ModelMessage::Request(ModelRequest {
+            parts: vec![ModelRequestPart::RetryPrompt {
+                text: "output schema validation failed: /answer: expected string".to_string(),
+                tool_call_id: None,
+                metadata: serde_json::Map::new(),
+            }],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: serde_json::Map::new(),
+        }),
+    ]
+}
+
+fn json_contains_text(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(text) => text.contains(needle),
+        Value::Array(items) => items.iter().any(|item| json_contains_text(item, needle)),
+        Value::Object(map) => map.values().any(|item| json_contains_text(item, needle)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
+}
+
 fn assert_openai_chat_request(fixture: &support::replay::RequestFixture) -> serde_json::Value {
-    let request = OpenAiChatAdapter::build_request(
+    let request = build_provider_request(
+        "openai_chat",
         &fixture.model,
         &fixture.history,
         fixture.settings.as_ref(),
         &fixture.tools,
-    )
-    .unwrap();
+        &fixture.native_tools,
+    );
     assert_json_eq(&request, &fixture.expected_provider_request);
     if !fixture.request_parameters.tools.is_empty() {
         assert_eq!(fixture.request_parameters.tools, fixture.tools);
@@ -43,25 +167,25 @@ fn assert_openai_chat_fixture(name: &str) -> starweaver_model::ModelResponse {
 
 fn assert_openai_responses_fixture(name: &str) -> starweaver_model::ModelResponse {
     let fixture = support::replay::load_replay_fixture("openai_responses", name);
-    let request = OpenAiResponsesAdapter::build_request(
+    let request = build_provider_request(
+        "openai_responses",
         &fixture.request.model,
         &fixture.request.history,
         fixture.request.settings.as_ref(),
         &fixture.request.tools,
         &fixture.request.native_tools,
-    )
-    .unwrap();
+    );
     assert_json_eq(&request, &fixture.request.expected_provider_request);
 
     let response = OpenAiResponsesAdapter::parse_response(&fixture.provider_response).unwrap();
     assert_eq!(
-        legacy_openai_response_projection(&response),
+        openai_response_projection(&response),
         fixture.expected_response
     );
     response
 }
 
-fn legacy_openai_response_projection(
+fn openai_response_projection(
     response: &starweaver_model::ModelResponse,
 ) -> starweaver_model::ModelResponse {
     let mut projected = response.clone();
@@ -100,13 +224,14 @@ fn legacy_openai_response_projection(
 
 fn assert_anthropic_fixture(name: &str) -> starweaver_model::ModelResponse {
     let fixture = support::replay::load_replay_fixture("anthropic", name);
-    let request = AnthropicMessagesAdapter::build_request(
+    let request = build_provider_request(
+        "anthropic",
         &fixture.request.model,
         &fixture.request.history,
         fixture.request.settings.as_ref(),
         &fixture.request.tools,
-    )
-    .unwrap();
+        &fixture.request.native_tools,
+    );
     assert_json_eq(&request, &fixture.request.expected_provider_request);
 
     let response = AnthropicMessagesAdapter::parse_response(&fixture.provider_response).unwrap();
@@ -116,13 +241,14 @@ fn assert_anthropic_fixture(name: &str) -> starweaver_model::ModelResponse {
 
 fn assert_gemini_fixture(name: &str) -> starweaver_model::ModelResponse {
     let fixture = support::replay::load_replay_fixture("gemini", name);
-    let request = GeminiGenerateContentAdapter::build_request_with_native_tools(
+    let request = build_provider_request(
+        "gemini",
+        &fixture.request.model,
         &fixture.request.history,
         fixture.request.settings.as_ref(),
         &fixture.request.tools,
         &fixture.request.native_tools,
-    )
-    .unwrap();
+    );
     assert_json_eq(&request, &fixture.request.expected_provider_request);
 
     let response =
@@ -133,13 +259,14 @@ fn assert_gemini_fixture(name: &str) -> starweaver_model::ModelResponse {
 
 fn assert_bedrock_fixture(name: &str) -> starweaver_model::ModelResponse {
     let fixture = support::replay::load_replay_fixture("bedrock", name);
-    let request = BedrockConverseAdapter::build_request(
+    let request = build_provider_request(
+        "bedrock",
         &fixture.request.model,
         &fixture.request.history,
         fixture.request.settings.as_ref(),
         &fixture.request.tools,
-    )
-    .unwrap();
+        &fixture.request.native_tools,
+    );
     assert_json_eq(&request, &fixture.request.expected_provider_request);
 
     let response = BedrockConverseAdapter::parse_response(&fixture.provider_response).unwrap();
@@ -340,6 +467,25 @@ fn replays_anthropic_tool_return_history() {
 }
 
 #[test]
+fn anthropic_private_thinking_replay_fixture_maps_signature_natively() {
+    let fixture = support::replay::load_request_fixture("anthropic", "provider_thinking_replay");
+    let request = build_provider_request(
+        "anthropic",
+        &fixture.model,
+        &fixture.history,
+        fixture.settings.as_ref(),
+        &fixture.tools,
+        &fixture.native_tools,
+    );
+    assert_json_eq(&request, &fixture.expected_provider_request);
+
+    let content = request["messages"][1]["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "thinking");
+    assert_eq!(content[0]["thinking"], "Need arithmetic.");
+    assert_eq!(content[0]["signature"], "sig_replay_1");
+}
+
+#[test]
 fn replays_anthropic_thinking_error_cache_and_stop_fixtures() {
     for name in [
         "thinking_block",
@@ -436,6 +582,164 @@ fn replays_bedrock_strict_tool_stop_fields_and_filter_fixtures() {
         "sigv4_gateway_metadata",
     ] {
         assert_bedrock_fixture(name);
+    }
+}
+
+#[test]
+fn provider_requests_are_stable_after_restored_fixture_state() {
+    for provider in [
+        "openai_chat",
+        "openai_responses",
+        "anthropic",
+        "gemini",
+        "bedrock",
+    ] {
+        for name in fixture_names(provider) {
+            let fixture = support::replay::load_request_fixture(provider, &name);
+            let baseline = build_provider_request(
+                provider,
+                &fixture.model,
+                &fixture.history,
+                fixture.settings.as_ref(),
+                &fixture.tools,
+                &fixture.native_tools,
+            );
+            let restored_history: Vec<ModelMessage> = json_round_trip(&fixture.history);
+            let restored_settings: Option<starweaver_model::ModelSettings> =
+                json_round_trip(&fixture.settings);
+            let restored_tools: Vec<ToolDefinition> = json_round_trip(&fixture.tools);
+            let restored_native_tools: Vec<NativeToolDefinition> =
+                json_round_trip(&fixture.native_tools);
+            let restored = build_provider_request(
+                provider,
+                &fixture.model,
+                &restored_history,
+                restored_settings.as_ref(),
+                &restored_tools,
+                &restored_native_tools,
+            );
+
+            assert_json_eq(&baseline, &fixture.expected_provider_request);
+            assert_json_eq(&restored, &baseline);
+        }
+    }
+}
+
+#[test]
+fn provider_requests_preserve_representative_compacted_history_shape() {
+    let history = representative_compacted_history();
+
+    let openai_chat = build_provider_request("openai_chat", "model", &history, None, &[], &[]);
+    let chat_messages = openai_chat["messages"].as_array().unwrap();
+    assert_eq!(chat_messages[0]["role"], "system");
+    assert_eq!(chat_messages[1]["role"], "user");
+    assert_eq!(chat_messages[2]["role"], "assistant");
+    assert!(chat_messages[2]["content"]
+        .as_str()
+        .unwrap()
+        .contains("Condensed conversation summary"));
+    assert_eq!(chat_messages[3]["role"], "user");
+
+    let openai_responses =
+        build_provider_request("openai_responses", "model", &history, None, &[], &[]);
+    assert_eq!(openai_responses["instructions"], "You are concise.");
+    let responses_input = openai_responses["input"].as_array().unwrap();
+    assert_eq!(responses_input[0]["role"], "user");
+    assert_eq!(responses_input[1]["role"], "assistant");
+    assert!(responses_input[1]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Condensed conversation summary"));
+    assert_eq!(responses_input[2]["role"], "user");
+
+    let anthropic = build_provider_request("anthropic", "model", &history, None, &[], &[]);
+    let anthropic_messages = anthropic["messages"].as_array().unwrap();
+    assert_eq!(anthropic_messages[0]["role"], "user");
+    assert_eq!(anthropic_messages[1]["role"], "assistant");
+    assert!(anthropic_messages[1]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Condensed conversation summary"));
+    assert_eq!(anthropic_messages[2]["role"], "user");
+
+    let gemini = build_provider_request("gemini", "model", &history, None, &[], &[]);
+    let gemini_contents = gemini["contents"].as_array().unwrap();
+    assert_eq!(gemini_contents[0]["role"], "user");
+    assert_eq!(gemini_contents[1]["role"], "model");
+    assert!(gemini_contents[1]["parts"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Condensed conversation summary"));
+    assert_eq!(gemini_contents[2]["role"], "user");
+
+    let bedrock = build_provider_request("bedrock", "model", &history, None, &[], &[]);
+    let bedrock_messages = bedrock["messages"].as_array().unwrap();
+    assert_eq!(bedrock_messages[0]["role"], "user");
+    assert_eq!(bedrock_messages[1]["role"], "assistant");
+    assert!(bedrock_messages[1]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Condensed conversation summary"));
+    assert_eq!(bedrock_messages[2]["role"], "user");
+}
+
+#[test]
+fn provider_requests_include_prompted_output_retry_diagnostics() {
+    let params = ModelRequestParameters {
+        output_mode: Some(OutputMode::Prompted),
+        output_schema: Some(json!({
+            "name": "answer",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "answer": {"type": "string"}
+                },
+                "required": ["answer"]
+            }
+        })),
+        ..ModelRequestParameters::default()
+    };
+
+    for (provider, protocol) in [
+        ("openai_chat", ProtocolFamily::OpenAiChatCompletions),
+        ("openai_responses", ProtocolFamily::OpenAiResponses),
+        ("anthropic", ProtocolFamily::AnthropicMessages),
+        ("gemini", ProtocolFamily::GeminiGenerateContent),
+        ("bedrock", ProtocolFamily::BedrockConverse),
+    ] {
+        let profile = ModelProfile::for_protocol(protocol);
+        let prepared = prepare_model_request(
+            prompted_retry_history(),
+            None,
+            None,
+            params.clone(),
+            &profile,
+        );
+        let request = build_provider_request(
+            provider,
+            "model",
+            &prepared.normalized_messages,
+            prepared.settings.as_ref(),
+            &prepared.params.tools,
+            &prepared.params.native_tools,
+        );
+
+        assert_eq!(prepared.output_mode, OutputMode::Prompted);
+        assert!(
+            json_contains_text(
+                &request,
+                "Always respond with a JSON object that matches this schema"
+            ),
+            "{provider} request missing prompted output schema instruction: {request:#}"
+        );
+        assert!(
+            json_contains_text(&request, "\"answer\""),
+            "{provider} request missing output schema content: {request:#}"
+        );
+        assert!(
+            json_contains_text(&request, "output schema validation failed"),
+            "{provider} request missing retry diagnostic: {request:#}"
+        );
     }
 }
 

@@ -56,6 +56,15 @@ pub struct ToolDefinition {
     /// JSON schema parameters.
     #[serde(default)]
     pub parameters: Value,
+    /// Optional JSON schema for a successful tool return value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub return_schema: Option<Value>,
+    /// Whether provider-supported schema validation should be strict.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+    /// Whether the tool should run sequentially with respect to other tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequential: Option<bool>,
     /// Runtime metadata for capability hooks, filtering, approval, and provider adaptation.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub metadata: Map<String, Value>,

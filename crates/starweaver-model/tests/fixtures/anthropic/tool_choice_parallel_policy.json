@@ -1,0 +1,99 @@
+{
+  "model": "claude-3-5-sonnet-latest",
+  "history": [
+    {
+      "kind": "request",
+      "parts": [
+        {
+          "kind": "system_prompt",
+          "text": "Use tools precisely."
+        },
+        {
+          "kind": "user_prompt",
+          "content": [
+            {
+              "kind": "text",
+              "text": "Look this up."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "tool_choice": {
+      "kind": "tool",
+      "name": "lookup"
+    },
+    "parallel_tool_calls": false,
+    "provider_settings": {
+      "anthropic": {
+        "context_management": {
+          "edits": []
+        },
+        "container": "container-1",
+        "service_tier": "priority"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Look up a value",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    }
+  ],
+  "expected_provider_request": {
+    "model": "claude-3-5-sonnet-latest",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "Look this up."
+          }
+        ]
+      }
+    ],
+    "max_tokens": 1024,
+    "system": "Use tools precisely.",
+    "context_management": {
+      "edits": []
+    },
+    "container": "container-1",
+    "service_tier": "priority",
+    "tool_choice": {
+      "type": "tool",
+      "name": "lookup",
+      "disable_parallel_tool_use": true
+    },
+    "tools": [
+      {
+        "name": "lookup",
+        "description": "Look up a value",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  }
+}

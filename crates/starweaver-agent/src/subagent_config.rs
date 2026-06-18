@@ -5,7 +5,12 @@ use std::{fs, path::Path};
 use serde::Deserialize;
 use serde_json::Value;
 use starweaver_core::SubagentSpec;
+use starweaver_model::ModelSettings;
 use thiserror::Error;
+
+use crate::{
+    AgentSpec, ModelPreset, SubagentCapabilityInheritancePolicy, SubagentToolInheritancePolicy,
+};
 
 /// Error returned while parsing subagent markdown configuration.
 #[derive(Debug, Error)]
@@ -19,9 +24,29 @@ pub enum SubagentConfigError {
     /// A required field is missing.
     #[error("missing required subagent field: {0}")]
     MissingField(&'static str),
+    /// Subagent requested inherited model configuration but no inherited model id was supplied.
+    #[error("subagent model is inherited but no inherited model id was supplied")]
+    MissingInheritedModel,
+    /// Inline model settings could not be parsed.
+    #[error("invalid subagent model settings: {0}")]
+    InvalidModelSettings(String),
+    /// Inline model config could not be projected into an agent spec.
+    #[error("invalid subagent model config: {0}")]
+    InvalidModelConfig(String),
     /// File I/O failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+/// Projection from serializable subagent config into runtime agent spec inputs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubagentSpecProjection {
+    /// Runtime-free child agent spec.
+    pub agent_spec: AgentSpec,
+    /// Parent-tool inheritance policy for the executable subagent config.
+    pub tool_inheritance: SubagentToolInheritancePolicy,
+    /// Parent-capability inheritance policy for the executable subagent config.
+    pub capability_inheritance: SubagentCapabilityInheritancePolicy,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -32,6 +57,9 @@ struct Frontmatter {
     tools: Option<StringList>,
     optional_tools: Option<StringList>,
     denied_tools: Option<StringList>,
+    inherit_hooks: Option<bool>,
+    inherit_capabilities: Option<bool>,
+    denied_capabilities: Option<StringList>,
     model: Option<String>,
     model_settings: Option<Value>,
     model_cfg: Option<Value>,
@@ -101,6 +129,24 @@ pub fn parse_subagent_markdown(content: &str) -> Result<SubagentSpec, SubagentCo
             serde_json::json!(denied_tools.into_vec()),
         );
     }
+    if let Some(inherit_hooks) = frontmatter.inherit_hooks {
+        spec.metadata.insert(
+            "inherit_hooks".to_string(),
+            serde_json::json!(inherit_hooks),
+        );
+    }
+    if let Some(inherit_capabilities) = frontmatter.inherit_capabilities {
+        spec.metadata.insert(
+            "inherit_capabilities".to_string(),
+            serde_json::json!(inherit_capabilities),
+        );
+    }
+    if let Some(denied_capabilities) = frontmatter.denied_capabilities {
+        spec.metadata.insert(
+            "denied_capabilities".to_string(),
+            serde_json::json!(denied_capabilities.into_vec()),
+        );
+    }
     spec.model = frontmatter.model;
     spec.model_settings = frontmatter.model_settings;
     spec.model_config = frontmatter.model_cfg.or(frontmatter.model_config);
@@ -110,9 +156,133 @@ pub fn parse_subagent_markdown(content: &str) -> Result<SubagentSpec, SubagentCo
     Ok(spec)
 }
 
+/// Project a serializable subagent spec into an agent spec plus tool inheritance policy.
+///
+/// If `spec.model` is absent or equals `inherit`, `inherited_model_id` is used as the concrete
+/// model id because executable Rust agents require an explicit model adapter.
+///
+/// # Errors
+///
+/// Returns an error when inherited model resolution is required but absent, or when structured
+/// model settings/config cannot be represented by the current agent-spec contract.
+pub fn project_subagent_spec(
+    spec: &SubagentSpec,
+    inherited_model_id: Option<&str>,
+) -> Result<SubagentSpecProjection, SubagentConfigError> {
+    let model_id = match spec.model.as_deref().map(str::trim) {
+        Some(model) if !model.is_empty() && !is_inherit(model) => model.to_string(),
+        _ => inherited_model_id
+            .filter(|model| !model.trim().is_empty())
+            .map(str::to_string)
+            .ok_or(SubagentConfigError::MissingInheritedModel)?,
+    };
+    let (settings_preset, settings) = spec
+        .model_settings
+        .clone()
+        .map(parse_model_settings)
+        .transpose()?
+        .unwrap_or_default();
+    let config_preset = spec
+        .model_config
+        .clone()
+        .map(parse_model_config_preset)
+        .transpose()?
+        .flatten();
+    let mut agent_spec = AgentSpec {
+        name: spec.name.clone(),
+        description: Some(spec.description.clone()),
+        instructions: vec![spec.system_prompt.clone()],
+        model: Some(ModelPreset {
+            model_id,
+            settings_preset,
+            config_preset,
+            settings,
+        }),
+        metadata: spec.metadata.clone(),
+        ..AgentSpec::default()
+    };
+    if let Some(instruction) = spec.instruction.as_ref() {
+        agent_spec.metadata.insert(
+            "subagent_instruction".to_string(),
+            serde_json::json!(instruction),
+        );
+    }
+    let denied_tools = denied_tools_from_metadata(&spec.metadata);
+    let inherit_all_when_empty = spec.tools.is_empty() && spec.optional_tools.is_empty();
+    let tool_inheritance =
+        SubagentToolInheritancePolicy::new(spec.tools.clone(), spec.optional_tools.clone())
+            .with_denied_tools(denied_tools)
+            .with_inherit_all_when_empty(inherit_all_when_empty);
+    let capability_inheritance = capability_inheritance_from_metadata(&spec.metadata);
+    Ok(SubagentSpecProjection {
+        agent_spec,
+        tool_inheritance,
+        capability_inheritance,
+    })
+}
+
 fn parse_frontmatter(frontmatter: &str) -> Result<Frontmatter, SubagentConfigError> {
-    serde_yaml::from_str(frontmatter)
+    yaml_serde::from_str(frontmatter)
         .map_err(|error| SubagentConfigError::InvalidFrontmatter(error.to_string()))
+}
+
+fn parse_model_settings(
+    value: Value,
+) -> Result<(Option<String>, Option<ModelSettings>), SubagentConfigError> {
+    match value {
+        Value::Null => Ok((None, None)),
+        Value::String(value) if is_inherit(&value) => Ok((None, None)),
+        Value::String(value) => Ok((Some(value), None)),
+        value => serde_json::from_value(value)
+            .map(|settings| (None, Some(settings)))
+            .map_err(|error| SubagentConfigError::InvalidModelSettings(error.to_string())),
+    }
+}
+
+fn parse_model_config_preset(value: Value) -> Result<Option<String>, SubagentConfigError> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(value) if is_inherit(&value) => Ok(None),
+        Value::String(value) => Ok(Some(value)),
+        _ => Err(SubagentConfigError::InvalidModelConfig(
+            "structured model config is not representable by AgentSpec; use a model_config preset name"
+                .to_string(),
+        )),
+    }
+}
+
+fn denied_tools_from_metadata(metadata: &serde_json::Map<String, Value>) -> Vec<String> {
+    metadata
+        .get("denied_tools")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default()
+}
+
+fn capability_inheritance_from_metadata(
+    metadata: &serde_json::Map<String, Value>,
+) -> SubagentCapabilityInheritancePolicy {
+    let inherit_hooks = metadata
+        .get("inherit_hooks")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let inherit_capabilities = metadata
+        .get("inherit_capabilities")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let denied_capabilities = metadata
+        .get("denied_capabilities")
+        .cloned()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_default();
+    SubagentCapabilityInheritancePolicy::default()
+        .with_hooks(inherit_hooks)
+        .with_capability_bundles(inherit_capabilities)
+        .with_denied_capabilities(denied_capabilities)
+}
+
+fn is_inherit(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("inherit")
 }
 
 /// Load a subagent markdown file into a serializable spec.

@@ -173,7 +173,7 @@ mod tests {
             OsString::from("hello"),
             OsString::from("-s"),
             OsString::from("session_test"),
-            OsString::from("--model-profile"),
+            OsString::from("--profile"),
             OsString::from("coding"),
             OsString::from("--worker"),
             OsString::from("off"),
@@ -320,7 +320,7 @@ HOMELAB_API_KEY = "test-key"
     }
 
     #[test]
-    fn configured_slash_commands_layer_aliases_and_redact_compatibility_metadata() {
+    fn configured_slash_commands_layer_aliases_and_redact_unmapped_metadata() {
         let temp = tempfile::tempdir().unwrap();
         let global = temp.path().join("global");
         let project = temp.path().join("project/.starweaver");
@@ -370,11 +370,10 @@ prompt = "ignored invalid name"
         assert!(!config.slash_commands.contains_key("model"));
         assert!(config.slash_commands.contains_key("bad_name"));
         assert!(!config.slash_commands.contains_key("bad name"));
-        let compatibility =
-            output(temp.path(), &["config", "get", "metadata.compatibility"]).unwrap();
-        assert!(!compatibility.contains("global secret prompt"));
-        assert!(!compatibility.contains("Project review prompt"));
-        assert!(!compatibility.contains("commands"));
+        let unmapped = output(temp.path(), &["config", "get", "metadata.unmapped"]).unwrap();
+        assert!(!unmapped.contains("global secret prompt"));
+        assert!(!unmapped.contains("Project review prompt"));
+        assert!(!unmapped.contains("commands"));
     }
 
     #[test]

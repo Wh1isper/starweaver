@@ -9,14 +9,14 @@ use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
-    get_model_settings, AnthropicSettings, BedrockSettings, CodexSettings, ContentPart,
+    get_model_settings, AnthropicSettings, AuthConfig, BedrockSettings, CodexSettings, ContentPart,
     GatewaySettings, GoogleSettings, HttpModelConfig, HttpRequest, HttpRequestOptions,
-    HttpResponse, MessageNormalization, ModelAdapter, ModelError, ModelEventStream,
-    ModelHttpClient, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
-    ModelRequestParameters, ModelRequestPart, ModelSettings, NativeToolDefinition,
-    OpenAiChatSettings, OpenAiResponsesSettings, OutputMode, ProtocolFamily, ProtocolModelClient,
-    ProviderSettings, ServiceTier, StructuredOutputMode, ThinkingSettings, ToolChoice,
-    ToolDefinition,
+    HttpResponse, InMemoryProviderRequestAuditRecorder, MessageNormalization, ModelAdapter,
+    ModelError, ModelEventStream, ModelHttpClient, ModelMessage, ModelProfile, ModelRequest,
+    ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelSettings,
+    NativeToolDefinition, OpenAiChatSettings, OpenAiResponsesSettings, OutputMode, ProtocolFamily,
+    ProtocolModelClient, ProviderRequestAuditPolicy, ProviderSettings, ServiceTier,
+    StructuredOutputMode, ThinkingSettings, ToolChoice, ToolDefinition,
 };
 
 #[derive(Clone, Default)]
@@ -128,6 +128,9 @@ fn model_request_parameters_serialize_round_trip() {
                 "properties": {"query": {"type": "string"}},
                 "required": ["query"]
             }),
+            return_schema: None,
+            strict: None,
+            sequential: None,
             metadata: Map::from_iter([("tier".to_string(), json!("required"))]),
         }],
         native_tools: vec![NativeToolDefinition::new("web_search_preview")
@@ -327,7 +330,106 @@ async fn protocol_client_merges_default_and_request_settings_into_wire_request()
 }
 
 #[tokio::test]
-async fn protocol_client_adds_openai_prompt_cache_routing_from_session_metadata() {
+async fn protocol_client_records_explicit_provider_request_audit_snapshot() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_audit",
+        "model": "gpt-4.1-mini",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "4"}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
+    })));
+    let mut http_config = HttpModelConfig::new("https://api.openai.test/v1", "chat/completions");
+    http_config.auth = Some(AuthConfig::Bearer {
+        token: "secret_token".to_string(),
+    });
+    http_config
+        .extra_body
+        .insert("api_key".to_string(), json!("body_secret"));
+    let recorder = Arc::new(InMemoryProviderRequestAuditRecorder::new());
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-4.1-mini",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        http_config,
+        Arc::new(http),
+    )
+    .with_provider_request_audit(
+        recorder.clone(),
+        ProviderRequestAuditPolicy::redacted_payloads(),
+    );
+
+    client
+        .request(
+            history(),
+            None,
+            ModelRequestParameters::default(),
+            context_with_metadata(Map::from_iter([("audit_id".to_string(), json!("audit_1"))])),
+        )
+        .await
+        .unwrap();
+
+    let snapshots = recorder.snapshots();
+    assert_eq!(snapshots.len(), 1);
+    let snapshot = &snapshots[0];
+    assert_eq!(snapshot.provider_name, "openai");
+    assert_eq!(snapshot.model_name, "gpt-4.1-mini");
+    assert!(!snapshot.stream);
+    assert_eq!(
+        snapshot.headers.as_ref().unwrap()["authorization"],
+        serde_json::json!({"redacted": true}).to_string()
+    );
+    assert_eq!(
+        snapshot.body.as_ref().unwrap()["api_key"],
+        serde_json::json!({"redacted": true})
+    );
+    assert_eq!(
+        snapshot.body.as_ref().unwrap()["messages"][0]["role"],
+        "system"
+    );
+    assert_eq!(snapshot.metadata["audit_id"], "audit_1");
+}
+
+#[tokio::test]
+async fn protocol_client_omits_provider_request_audit_payloads_by_default() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_audit_default",
+        "model": "gpt-4.1-mini",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "4"}}]
+    })));
+    let mut http_config = HttpModelConfig::new("https://api.openai.test/v1", "chat/completions");
+    http_config.auth = Some(AuthConfig::Bearer {
+        token: "secret_token".to_string(),
+    });
+    let recorder = Arc::new(InMemoryProviderRequestAuditRecorder::new());
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-4.1-mini",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        http_config,
+        Arc::new(http),
+    )
+    .with_provider_request_audit(
+        recorder.clone(),
+        ProviderRequestAuditPolicy::metadata_only(),
+    );
+
+    client
+        .request(
+            history(),
+            None,
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let snapshot = recorder.snapshots().pop().unwrap();
+    assert!(snapshot.headers.is_none());
+    assert!(snapshot.body.is_none());
+    assert_eq!(snapshot.url, "https://api.openai.test/v1/chat/completions");
+}
+
+#[tokio::test]
+async fn protocol_client_adds_openai_prompt_cache_routing_from_explicit_affinity_metadata() {
     let http = CaptureHttpClient::with_response(text_response(json!({
         "id": "resp_cache",
         "model": "gpt-5.5",
@@ -348,15 +450,14 @@ async fn protocol_client_adds_openai_prompt_cache_routing_from_session_metadata(
             history(),
             Some(ModelSettings {
                 provider_options: Some(json!({
-                    "store": false,
-                    "openai_include_encrypted_reasoning": true
+                    "store": false
                 })),
                 ..ModelSettings::default()
             }),
             ModelRequestParameters::default(),
             context_with_metadata(Map::from_iter([
                 (
-                    "starweaver.session_id".to_string(),
+                    "starweaver.prompt_cache_affinity_id".to_string(),
                     json!("session_143a9ff4-285b-4fe7-ad79-b1b291bbac44"),
                 ),
                 (
@@ -375,10 +476,6 @@ async fn protocol_client_adds_openai_prompt_cache_routing_from_session_metadata(
     );
     assert_eq!(request.body["prompt_cache_retention"], "24h");
     assert_eq!(request.body["store"], false);
-    assert!(request
-        .body
-        .get("openai_include_encrypted_reasoning")
-        .is_none());
 }
 
 #[tokio::test]
@@ -397,10 +494,6 @@ async fn protocol_client_preserves_config_level_openai_prompt_cache_settings() {
     config
         .extra_body
         .insert("prompt_cache_retention".to_string(), json!("24h"));
-    config.extra_body.insert(
-        "openai_include_encrypted_reasoning".to_string(),
-        json!(true),
-    );
     let client = ProtocolModelClient::new(
         "openai",
         "gpt-5.5",
@@ -415,7 +508,7 @@ async fn protocol_client_preserves_config_level_openai_prompt_cache_settings() {
             None,
             ModelRequestParameters::default(),
             context_with_metadata(Map::from_iter([(
-                "starweaver.session_id".to_string(),
+                "starweaver.prompt_cache_affinity_id".to_string(),
                 json!("session_should_not_override_config"),
             )])),
         )
@@ -425,10 +518,6 @@ async fn protocol_client_preserves_config_level_openai_prompt_cache_settings() {
     let request = http.last_request();
     assert_eq!(request.body["prompt_cache_key"], "config-level-key");
     assert_eq!(request.body["prompt_cache_retention"], "24h");
-    assert!(request
-        .body
-        .get("openai_include_encrypted_reasoning")
-        .is_none());
 }
 
 #[tokio::test]
@@ -460,7 +549,7 @@ async fn protocol_client_preserves_explicit_openai_prompt_cache_settings() {
             }),
             ModelRequestParameters::default(),
             context_with_metadata(Map::from_iter([(
-                "starweaver.session_id".to_string(),
+                "starweaver.prompt_cache_affinity_id".to_string(),
                 json!("session_should_not_override"),
             )])),
         )
@@ -473,7 +562,7 @@ async fn protocol_client_preserves_explicit_openai_prompt_cache_settings() {
 }
 
 #[tokio::test]
-async fn protocol_client_adds_openai_chat_prompt_cache_routing_from_session_metadata() {
+async fn protocol_client_adds_openai_chat_prompt_cache_routing_from_explicit_affinity_metadata() {
     let http = CaptureHttpClient::with_response(text_response(json!({
         "id": "chatcmpl_cache",
         "model": "gpt-4.1-mini",
@@ -494,7 +583,7 @@ async fn protocol_client_adds_openai_chat_prompt_cache_routing_from_session_meta
             None,
             ModelRequestParameters::default(),
             context_with_metadata(Map::from_iter([(
-                "cli.session_id".to_string(),
+                "starweaver.prompt_cache_affinity_id".to_string(),
                 json!("session_chat_cache"),
             )])),
         )
@@ -506,9 +595,9 @@ async fn protocol_client_adds_openai_chat_prompt_cache_routing_from_session_meta
 }
 
 #[tokio::test]
-async fn protocol_client_does_not_add_session_prompt_cache_key_for_openai_compatible_models() {
+async fn protocol_client_does_not_add_session_prompt_cache_key_for_openai_protocol_models() {
     let http = CaptureHttpClient::with_response(text_response(json!({
-        "id": "chatcmpl_compatible",
+        "id": "chatcmpl_protocol",
         "model": "mimo-v2.5-pro",
         "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}
@@ -528,7 +617,7 @@ async fn protocol_client_does_not_add_session_prompt_cache_key_for_openai_compat
             ModelRequestParameters::default(),
             context_with_metadata(Map::from_iter([(
                 "cli.session_id".to_string(),
-                json!("session_compatible"),
+                json!("session_protocol"),
             )])),
         )
         .await
@@ -919,12 +1008,18 @@ async fn openai_tool_choice_allowlists_and_none_are_prepared_for_wire_requests()
             name: "lookup".to_string(),
             description: None,
             parameters: json!({"type": "object"}),
+            return_schema: None,
+            strict: Some(true),
+            sequential: Some(true),
             metadata: Map::new(),
         },
         ToolDefinition {
             name: "skip".to_string(),
             description: None,
             parameters: json!({"type": "object"}),
+            return_schema: None,
+            strict: None,
+            sequential: None,
             metadata: Map::new(),
         },
     ];
@@ -949,6 +1044,7 @@ async fn openai_tool_choice_allowlists_and_none_are_prepared_for_wire_requests()
     let request = http.last_request();
     assert_eq!(request.body["tools"].as_array().unwrap().len(), 1);
     assert_eq!(request.body["tools"][0]["name"], "lookup");
+    assert_eq!(request.body["tools"][0]["strict"], true);
     assert_eq!(request.body["tool_choice"]["type"], "allowed_tools");
     assert_eq!(request.body["tool_choice"]["mode"], "required");
     assert_eq!(request.body["tool_choice"]["tools"][0]["type"], "function");
@@ -972,6 +1068,47 @@ async fn openai_tool_choice_allowlists_and_none_are_prepared_for_wire_requests()
     let request = http.last_request();
     assert!(request.body.get("tools").is_none());
     assert_eq!(request.body["tool_choice"], "none");
+}
+
+#[tokio::test]
+async fn openai_chat_maps_strict_tool_definitions() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "id": "chatcmpl_strict_tool",
+        "model": "gpt-4.1-mini",
+        "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    })));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-4.1-mini",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+        HttpModelConfig::new("https://api.openai.test/v1", "chat/completions"),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            None,
+            ModelRequestParameters {
+                tools: vec![ToolDefinition {
+                    name: "lookup".to_string(),
+                    description: None,
+                    parameters: json!({"type": "object"}),
+                    return_schema: None,
+                    strict: Some(true),
+                    sequential: Some(true),
+                    metadata: Map::new(),
+                }],
+                ..ModelRequestParameters::default()
+            },
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.body["tools"][0]["function"]["strict"], true);
 }
 
 #[test]
@@ -1009,11 +1146,14 @@ fn provider_settings_merge_is_field_level_and_preserves_raw_overrides() {
     };
 
     let merged = base.merge(&overlay);
-    let openai = merged.provider_settings.openai_chat.unwrap();
-    assert_eq!(openai.user.as_deref(), Some("base-user"));
-    assert_eq!(openai.store, Some(false));
-    assert_eq!(openai.logprobs, Some(true));
-    assert_eq!(openai.prompt_cache_key.as_deref(), Some("overlay-cache"));
+    let openai_settings = merged.provider_settings.openai_chat.unwrap();
+    assert_eq!(openai_settings.user.as_deref(), Some("base-user"));
+    assert_eq!(openai_settings.store, Some(false));
+    assert_eq!(openai_settings.logprobs, Some(true));
+    assert_eq!(
+        openai_settings.prompt_cache_key.as_deref(),
+        Some("overlay-cache")
+    );
     let gateway = merged.provider_settings.gateway.unwrap();
     assert_eq!(gateway.x_session_id.as_deref(), Some("base-gateway"));
     assert_eq!(gateway.extra_headers["x-base"], "yes");
@@ -1074,10 +1214,7 @@ async fn openai_chat_uses_max_completion_tokens_seed_and_typed_settings() {
                 ..ModelSettings::default()
             }),
             ModelRequestParameters::default(),
-            context_with_metadata(Map::from_iter([(
-                "cli.session_id".to_string(),
-                json!("legacy-session"),
-            )])),
+            context_with_metadata(Map::new()),
         )
         .await
         .unwrap();
@@ -1146,7 +1283,7 @@ async fn openai_chat_drops_sampling_parameters_when_reasoning_policy_requires_it
 }
 
 #[tokio::test]
-async fn openai_compatible_chat_provider_defaults_to_legacy_max_tokens() {
+async fn openai_protocol_chat_provider_defaults_to_classic_max_tokens() {
     let http = CaptureHttpClient::with_response(text_response(json!({
         "id": "chatcmpl_gateway",
         "model": "gateway-model",
@@ -1346,11 +1483,11 @@ async fn gateway_and_codex_typed_routing_settings_drive_headers_and_metadata() {
             context_with_metadata(Map::from_iter([
                 (
                     "provider.codex.session_id".to_string(),
-                    json!("legacy-session"),
+                    json!("codex-session"),
                 ),
                 (
                     "provider.codex.thread_id".to_string(),
-                    json!("legacy-thread"),
+                    json!("codex-thread"),
                 ),
             ])),
         )
@@ -1521,6 +1658,9 @@ async fn anthropic_maps_tool_choice_parallel_tools_and_native_structured_output(
                     name: "lookup".to_string(),
                     description: None,
                     parameters: json!({"type": "object"}),
+                    return_schema: None,
+                    strict: None,
+                    sequential: None,
                     metadata: Map::new(),
                 }],
                 output_schema: Some(json!({
@@ -1760,6 +1900,9 @@ async fn bedrock_maps_typed_fields_and_omits_tools_when_tool_choice_none() {
                     name: "lookup".to_string(),
                     description: None,
                     parameters: json!({"type": "object"}),
+                    return_schema: None,
+                    strict: None,
+                    sequential: None,
                     metadata: Map::new(),
                 }],
                 ..ModelRequestParameters::default()

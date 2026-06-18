@@ -15,6 +15,12 @@ pub enum CapabilityError {
     /// Capability hook failed.
     #[error("capability failed: {0}")]
     Failed(String),
+    /// Runtime work was cancelled cooperatively by the host.
+    #[error("capability cancelled: {reason}")]
+    Cancelled {
+        /// Human-readable cancellation reason.
+        reason: String,
+    },
 }
 
 /// Capability hook result.

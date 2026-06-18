@@ -5,7 +5,10 @@ use starweaver_context::{
     TaskStatus,
 };
 use starweaver_core::{SessionId, TraceContext};
-use starweaver_model::{ContentPart, ModelMessage, ModelRequest, ModelResponse};
+use starweaver_model::{
+    ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart,
+    ToolCallPart,
+};
 use starweaver_usage::Usage;
 
 #[test]
@@ -108,6 +111,39 @@ fn event_bus_records_and_drains_events() {
     let drained = context.events.drain();
     assert_eq!(drained.len(), 2);
     assert!(context.events.events().is_empty());
+}
+
+#[test]
+fn context_repairs_dangling_tool_calls_with_error_returns() {
+    let mut context = AgentContext::default();
+    context.push_message(ModelMessage::Response(ModelResponse {
+        parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+            id: "call_1".to_string(),
+            name: "lookup".to_string(),
+            arguments: serde_json::json!({"query": "docs"}).into(),
+        })],
+        ..ModelResponse::text("")
+    }));
+
+    let repaired = context.repair_dangling_tool_calls("stream interrupted");
+
+    assert_eq!(repaired, 1);
+    let Some(ModelMessage::Request(request)) = context.message_history.last() else {
+        panic!("repair should append request");
+    };
+    let Some(ModelRequestPart::ToolReturn(tool_return)) = request.parts.first() else {
+        panic!("repair should append tool return");
+    };
+    assert_eq!(tool_return.tool_call_id, "call_1");
+    assert_eq!(tool_return.name, "lookup");
+    assert!(tool_return.is_error);
+    assert_eq!(tool_return.content["error"], "tool_call_interrupted");
+    assert_eq!(tool_return.content["message"], "stream interrupted");
+    assert_eq!(
+        tool_return.metadata["starweaver.repaired_dangling_tool_call"],
+        true
+    );
+    assert_eq!(context.repair_dangling_tool_calls("again"), 0);
 }
 
 #[test]

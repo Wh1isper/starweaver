@@ -6,7 +6,7 @@ use std::{
 use super::{CliConfig, ConfigScope};
 use crate::{error::io_error, CliError, CliResult};
 
-/// Write built-in Starweaver-compatible subagent presets into a config root.
+/// Write built-in Starweaver subagent presets into a config root.
 pub fn write_default_subagent_presets(root: &Path, force: bool) -> CliResult<Vec<PathBuf>> {
     let dir = root.join("subagents");
     fs::create_dir_all(&dir).map_err(|error| io_error(&dir, error))?;

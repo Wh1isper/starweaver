@@ -235,7 +235,7 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "trim.all_sessions_keep_days" => config.all_sessions_keep_days.to_string(),
         "metadata.tools" => serde_json::to_string(&config.tools_config)?,
         "metadata.mcp" => serde_json::to_string(&config.mcp_config)?,
-        "metadata.compatibility" => serde_json::to_string(&config.compatibility_metadata)?,
+        "metadata.unmapped" => serde_json::to_string(&config.unmapped_metadata)?,
         other => {
             if let Some((provider, field)) = split_provider_config_key(other) {
                 if let Some(provider_config) = provider_config_by_name(config, provider) {

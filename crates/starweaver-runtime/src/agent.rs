@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
-use starweaver_context::{ModelConfig, ToolConfig};
-use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
-use starweaver_tools::ToolRegistry;
+use starweaver_context::{AgentContext, AgentInfo, ModelConfig, ToolConfig};
+use starweaver_core::{AgentId, CancellationToken};
+use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings, OutputMode};
+use starweaver_tools::{DynToolset, ToolRegistry};
 
 use starweaver_usage::UsageLimits;
 
@@ -14,7 +15,9 @@ use crate::{
     executor::{DirectAgentExecutor, DynAgentExecutor},
     graph::{inspect_graph, AgentGraphTrace, AgentNode, GraphError},
     instructions::DynDynamicInstruction,
-    output::{DynOutputFunction, OutputPolicy, OutputSchema, OutputValidator},
+    output::{
+        DynOutputFunction, OutputPolicy, OutputSchema, OutputValidator, SchemaOutputFunction,
+    },
     trace::{DynTraceRecorder, NoopTraceRecorder},
 };
 
@@ -26,11 +29,13 @@ mod runtime_helpers;
 mod types;
 
 pub use overrides::AgentOverride;
-pub use types::{AgentError, AgentResult, AgentRuntimePolicy};
+pub use types::{AgentEndStrategy, AgentError, AgentInput, AgentResult, AgentRuntimePolicy};
 
 /// Minimal agent builder/runtime.
 #[derive(Clone)]
 pub struct Agent {
+    default_id: AgentId,
+    default_name: String,
     model: Arc<dyn ModelAdapter>,
     instructions: Vec<String>,
     dynamic_instructions: Vec<DynDynamicInstruction>,
@@ -41,8 +46,10 @@ pub struct Agent {
     output_functions: Vec<DynOutputFunction>,
     usage_limits: Option<UsageLimits>,
     tools: ToolRegistry,
+    toolsets: Vec<DynToolset>,
     capabilities: Vec<Arc<dyn AgentCapability>>,
     stream_observers: Vec<Arc<dyn AgentCapability>>,
+    cancellation_token: Option<CancellationToken>,
     executor: DynAgentExecutor,
     trace_recorder: DynTraceRecorder,
     policy: AgentRuntimePolicy,
@@ -55,6 +62,8 @@ impl Agent {
     #[must_use]
     pub fn new(model: Arc<dyn ModelAdapter>) -> Self {
         Self {
+            default_id: AgentId::default(),
+            default_name: AgentId::default().as_str().to_string(),
             model,
             instructions: Vec::new(),
             dynamic_instructions: Vec::new(),
@@ -65,13 +74,70 @@ impl Agent {
             output_functions: Vec::new(),
             usage_limits: None,
             tools: ToolRegistry::new(),
+            toolsets: Vec::new(),
             capabilities: Vec::new(),
             stream_observers: Vec::new(),
+            cancellation_token: None,
             executor: Arc::new(DirectAgentExecutor),
             trace_recorder: Arc::new(NoopTraceRecorder),
             policy: AgentRuntimePolicy::default(),
             model_config: None,
             tool_config: None,
+        }
+    }
+
+    /// Return the default agent id used when this agent creates a context.
+    #[must_use]
+    pub const fn agent_id(&self) -> &AgentId {
+        &self.default_id
+    }
+
+    /// Return the default human-readable agent name.
+    #[must_use]
+    pub fn agent_name(&self) -> &str {
+        &self.default_name
+    }
+
+    /// Set the default agent id used when this agent creates a context.
+    #[must_use]
+    pub fn with_agent_id(mut self, agent_id: AgentId) -> Self {
+        self.default_id = agent_id;
+        self
+    }
+
+    /// Set the default human-readable agent name.
+    #[must_use]
+    pub fn with_agent_name(mut self, agent_name: impl Into<String>) -> Self {
+        self.default_name = agent_name.into();
+        self
+    }
+
+    /// Set both the default agent id and human-readable agent name.
+    #[must_use]
+    pub fn with_agent_identity(mut self, agent_id: AgentId, agent_name: impl Into<String>) -> Self {
+        self.default_id = agent_id;
+        self.default_name = agent_name.into();
+        self
+    }
+
+    /// Create a fresh context using this agent's configured identity.
+    #[must_use]
+    pub fn new_context(&self) -> AgentContext {
+        let mut context = AgentContext::new(self.default_id.clone());
+        self.apply_context_identity(&mut context);
+        context
+    }
+
+    fn apply_context_identity(&self, context: &mut AgentContext) {
+        context.agent_registry.insert(
+            self.default_id.as_str().to_string(),
+            AgentInfo::new(self.default_id.as_str(), self.default_name.clone()),
+        );
+        if self.default_name != self.default_id.as_str() {
+            context.metadata.insert(
+                "agent_name".to_string(),
+                serde_json::json!(self.default_name.as_str()),
+            );
         }
     }
 
@@ -110,6 +176,20 @@ impl Agent {
         self
     }
 
+    /// Add one runtime toolset that is materialized for each agent context.
+    #[must_use]
+    pub fn with_toolset(mut self, toolset: DynToolset) -> Self {
+        self.toolsets.push(toolset);
+        self
+    }
+
+    /// Add many runtime toolsets that are materialized for each agent context.
+    #[must_use]
+    pub fn with_toolsets(mut self, toolsets: impl IntoIterator<Item = DynToolset>) -> Self {
+        self.toolsets.extend(toolsets);
+        self
+    }
+
     /// Merge additional runtime tools into this agent.
     #[must_use]
     pub fn with_appended_tools(mut self, tools: &ToolRegistry) -> Self {
@@ -120,7 +200,11 @@ impl Agent {
     /// Return a clone of the runtime tool registry.
     #[must_use]
     pub fn tools(&self) -> ToolRegistry {
-        self.tools.clone()
+        let mut tools = self.tools.clone();
+        for toolset in &self.toolsets {
+            tools.insert_toolset(toolset);
+        }
+        tools
     }
 
     /// Set the agent-level retry default for runtime tools.
@@ -140,14 +224,33 @@ impl Agent {
     /// Apply a complete output policy.
     #[must_use]
     pub fn with_output_policy(mut self, policy: OutputPolicy) -> Self {
-        let (schema, validators, functions, retries) = policy.into_parts();
+        let (schema, validators, functions, retries, mode, allow_text_output, allow_image_output) =
+            policy.into_parts();
+        let schema_output_function = match (schema.as_ref(), mode) {
+            (Some(schema), Some(OutputMode::Tool | OutputMode::ToolOrText)) => {
+                Some(Arc::new(SchemaOutputFunction::new(schema.clone())) as DynOutputFunction)
+            }
+            _ => None,
+        };
         if let Some(schema) = schema {
             self.output_schema = Some(schema);
         }
         self.output_validators.extend(validators);
+        if let Some(function) = schema_output_function {
+            self.output_functions.push(function);
+        }
         self.output_functions.extend(functions);
         if let Some(retries) = retries {
             self.policy.output_retries = retries;
+        }
+        if let Some(mode) = mode {
+            self.request_params.output_mode = Some(mode);
+        }
+        if let Some(allow_text_output) = allow_text_output {
+            self.request_params.allow_text_output = Some(allow_text_output);
+        }
+        if let Some(allow_image_output) = allow_image_output {
+            self.request_params.allow_image_output = Some(allow_image_output);
         }
         self
     }
@@ -224,6 +327,13 @@ impl Agent {
     #[must_use]
     pub fn with_stream_observer(mut self, observer: Arc<dyn AgentCapability>) -> Self {
         self.stream_observers.push(observer);
+        self
+    }
+
+    /// Set a cooperative cancellation token used by streaming callers.
+    #[must_use]
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
         self
     }
 

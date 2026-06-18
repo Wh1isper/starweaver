@@ -36,7 +36,7 @@ struct ActiveTuiRun {
 }
 
 enum TuiRunMessage {
-    Stream(AgentStreamRecord),
+    Stream(Box<AgentStreamRecord>),
     Completed(CompletedPromptRun),
     Failed(String),
 }
@@ -418,7 +418,7 @@ fn spawn_tui_run(
     let forward_handle = thread::spawn(move || {
         while let Ok(record) = stream_receiver.recv() {
             if stream_ui_sender
-                .send(TuiRunMessage::Stream(record))
+                .send(TuiRunMessage::Stream(Box::new(record)))
                 .is_err()
             {
                 break;

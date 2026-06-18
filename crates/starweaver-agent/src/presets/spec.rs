@@ -9,15 +9,19 @@ use starweaver_model::{
     ProfileOverrideModel,
 };
 use starweaver_runtime::OutputPolicy;
-use starweaver_tools::ToolRegistry;
+use starweaver_tools::{
+    dynamic_tool_search, ApprovalRequiredToolset, DeferredToolset, DynToolset, FilteredToolset,
+    RenamedToolset, ToolProxyToolset,
+};
 
-use crate::AgentBuilder;
+use crate::{AgentBuilder, AgentRuntimeBuilder, SkillRegistry};
 
 use super::{
     registry::AgentSpecRegistry,
     types::{
-        AgentSpec, AgentSpecError, AgentSpecHostPolicies, DurabilityPolicyPreset,
-        ObservabilityPolicyPreset, RetryPolicyPreset, StreamingPolicyPreset,
+        AgentSpec, AgentSpecError, AgentSpecHostPolicies, ApprovalPolicyPreset,
+        DurabilityPolicyPreset, EnvironmentPolicyPreset, ObservabilityPolicyPreset,
+        RetryPolicyPreset, SkillBundleSpec, StreamingPolicyPreset, ToolsetWrapperSpec,
     },
 };
 
@@ -28,7 +32,7 @@ impl AgentSpec {
     ///
     /// Returns an error when YAML parsing fails.
     pub fn from_yaml(text: &str) -> Result<Self, AgentSpecError> {
-        serde_yaml::from_str(text).map_err(|error| AgentSpecError::Invalid(error.to_string()))
+        yaml_serde::from_str(text).map_err(|error| AgentSpecError::Invalid(error.to_string()))
     }
 
     /// Return an editor-oriented JSON schema for `AgentSpec` v2.
@@ -106,6 +110,8 @@ impl AgentSpec {
             toolset_wrappers: self.toolset_wrappers.clone(),
             host_policies: self.host_policies.clone(),
             workspace: self.workspace.clone(),
+            approval: self.resolved_approval(registry)?,
+            environment: self.resolved_environment(registry)?,
             durability: self.resolved_durability(registry)?,
             observability: self.resolved_observability(registry)?,
             streaming: self.resolved_streaming(registry)?,
@@ -118,6 +124,7 @@ impl AgentSpec {
     /// # Errors
     ///
     /// Returns an error when referenced objects cannot be resolved.
+    #[allow(clippy::too_many_lines)]
     pub fn builder(&self, registry: &AgentSpecRegistry) -> Result<AgentBuilder, AgentSpecError> {
         let model_id = self
             .model
@@ -136,6 +143,7 @@ impl AgentSpec {
         let mut runtime = self.preset.runtime.clone();
         retry.apply_runtime(&mut runtime);
         self.host_policies(registry)?;
+        let approval = self.resolved_approval(registry)?;
         let mut builder = AgentBuilder::new(model).policy(runtime);
         for instruction in &self.instructions {
             builder = builder.instruction(instruction.clone());
@@ -152,8 +160,19 @@ impl AgentSpec {
         if let Some(tool_retries) = retry.tool_retries {
             builder = builder.tool_retries(tool_retries);
         }
+        if let Some(approval) = approval.as_ref() {
+            builder = builder.approval_required_tools(approval.approval_required_tools.clone());
+        }
         if let Some(output) = self.resolved_output(&retry) {
             builder = builder.output_policy(output);
+        }
+        if let Some(skill_registry) = self.materialized_skill_registry(registry)? {
+            builder = builder.skills(skill_registry);
+        }
+        for name in &self.capability_refs {
+            if let Some(bundle) = registry.capability_bundles.get(name) {
+                builder = builder.capability_bundle(bundle.clone());
+            }
         }
         let mut selected_toolsets = Vec::new();
         for key in &self.toolsets {
@@ -163,18 +182,37 @@ impl AgentSpec {
                     .ok_or_else(|| AgentSpecError::UnknownToolset(key.clone()))?,
             );
         }
-        let mut tools = ToolRegistry::new();
+        let mut materialized_toolsets = Vec::new();
+        let wrapped_toolsets = self.materialized_toolset_wrappers(registry)?;
+        let wrapped_keys = self
+            .toolset_wrappers
+            .iter()
+            .filter_map(|wrapper| wrapper.toolset.as_deref())
+            .collect::<Vec<_>>();
         if self.all_toolsets {
             for toolset in &registry.toolsets {
-                tools.insert_toolset(toolset);
+                if !wrapped_keys
+                    .iter()
+                    .any(|key| toolset_matches_key(toolset, key))
+                {
+                    materialized_toolsets.push(toolset.clone());
+                }
             }
         } else {
             for toolset in selected_toolsets {
-                tools.insert_toolset(&toolset);
+                if !wrapped_keys
+                    .iter()
+                    .any(|key| toolset_matches_key(&toolset, key))
+                {
+                    materialized_toolsets.push(toolset);
+                }
             }
         }
-        if !tools.is_empty() {
-            builder = builder.tool_registry(tools);
+        for toolset in wrapped_toolsets {
+            materialized_toolsets.push(toolset);
+        }
+        if !materialized_toolsets.is_empty() {
+            builder = builder.toolsets(materialized_toolsets);
         }
         let mut selected_subagents = Vec::new();
         for name in &self.subagents {
@@ -194,6 +232,22 @@ impl AgentSpec {
             }
         }
         Ok(builder)
+    }
+
+    /// Build an owned runtime builder from this spec.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when referenced objects cannot be resolved.
+    pub fn runtime_builder(
+        &self,
+        registry: &AgentSpecRegistry,
+    ) -> Result<AgentRuntimeBuilder, AgentSpecError> {
+        let mut runtime = AgentRuntimeBuilder::from_builder(self.builder(registry)?);
+        if let Some(environment) = self.materialized_environment_provider(registry)? {
+            runtime = runtime.environment(environment);
+        }
+        Ok(runtime)
     }
 
     fn resolved_model_settings(&self) -> Result<Option<ModelSettings>, AgentSpecError> {
@@ -283,6 +337,42 @@ impl AgentSpec {
         )
     }
 
+    fn resolved_approval(
+        &self,
+        registry: &AgentSpecRegistry,
+    ) -> Result<Option<ApprovalPolicyPreset>, AgentSpecError> {
+        let mut approval = self
+            .preset
+            .approval_preset
+            .as_deref()
+            .map(|name| {
+                registry.approval_presets.get(name).cloned().ok_or_else(|| {
+                    AgentSpecError::UnknownPolicyPreset {
+                        kind: "approval",
+                        name: name.to_string(),
+                    }
+                })
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if let Some(overlay) = &self.preset.approval {
+            merge_approval_policy(&mut approval, overlay);
+        }
+        Ok((!approval_policy_empty(&approval)).then_some(approval))
+    }
+
+    fn resolved_environment(
+        &self,
+        registry: &AgentSpecRegistry,
+    ) -> Result<Option<EnvironmentPolicyPreset>, AgentSpecError> {
+        Self::resolved_policy(
+            self.preset.environment_preset.as_deref(),
+            self.preset.environment.clone(),
+            "environment",
+            &registry.environment_presets,
+        )
+    }
+
     fn resolved_retry(
         &self,
         registry: &AgentSpecRegistry,
@@ -313,6 +403,127 @@ impl AgentSpec {
             spec.retries = retry.output_retries;
         }
         spec.to_policy()
+    }
+
+    fn materialized_toolset_wrappers(
+        &self,
+        registry: &AgentSpecRegistry,
+    ) -> Result<Vec<DynToolset>, AgentSpecError> {
+        let mut toolsets = Vec::new();
+        for wrapper in &self.toolset_wrappers {
+            match wrapper.kind.as_str() {
+                "approval_required" => {
+                    let inner = wrapper_inner_toolset(wrapper, registry)?;
+                    let approval_tools = approval_tools_from_wrapper(wrapper)?;
+                    toolsets.push(
+                        Arc::new(ApprovalRequiredToolset::new(inner, approval_tools)) as DynToolset,
+                    );
+                }
+                "deferred" | "deferred_call" | "deferred_tools" => {
+                    let inner = wrapper_inner_toolset(wrapper, registry)?;
+                    let deferred_tools = deferred_tools_from_wrapper(wrapper)?;
+                    toolsets
+                        .push(Arc::new(DeferredToolset::new(inner, deferred_tools)) as DynToolset);
+                }
+                "dynamic" | "tool_proxy" | "dynamic_tool_proxy" => {
+                    let inner = wrapper_inner_toolset(wrapper, registry)?;
+                    let mut proxy = ToolProxyToolset::new(vec![inner]);
+                    if let Some(prefix) = optional_string_param(wrapper, "prefix")? {
+                        proxy = proxy.try_with_name_prefix(prefix).map_err(|error| {
+                            AgentSpecError::InvalidToolsetWrapper {
+                                kind: wrapper.kind.clone(),
+                                reason: error.to_string(),
+                            }
+                        })?;
+                    }
+                    if let Some(max_results) = optional_usize_param(wrapper, "max_results")? {
+                        proxy = proxy.with_max_results(max_results);
+                    }
+                    toolsets.push(Arc::new(proxy) as DynToolset);
+                }
+                "dynamic_search" | "tool_search" | "dynamic_tool_search" => {
+                    let inner = wrapper_inner_toolset(wrapper, registry)?;
+                    toolsets.push(dynamic_tool_search(vec![inner]));
+                }
+                "filtered" => {
+                    let inner = wrapper_inner_toolset(wrapper, registry)?;
+                    let include_tools = optional_string_list_param(wrapper, "include_tools")?
+                        .or(optional_string_list_param(wrapper, "tools")?);
+                    let exclude_tools = optional_string_list_param(wrapper, "exclude_tools")?;
+                    match (include_tools, exclude_tools) {
+                        (Some(tools), None) => {
+                            toolsets.push(Arc::new(FilteredToolset::include_names(inner, tools))
+                                as DynToolset);
+                        }
+                        (None, Some(tools)) => {
+                            toolsets.push(Arc::new(FilteredToolset::exclude_names(inner, tools))
+                                as DynToolset);
+                        }
+                        (Some(_), Some(_)) => {
+                            return Err(AgentSpecError::InvalidToolsetWrapper {
+                                kind: wrapper.kind.clone(),
+                                reason: "include_tools and exclude_tools cannot both be set"
+                                    .to_string(),
+                            });
+                        }
+                        (None, None) => {
+                            return Err(AgentSpecError::InvalidToolsetWrapper {
+                                kind: wrapper.kind.clone(),
+                                reason: "missing include_tools or exclude_tools".to_string(),
+                            });
+                        }
+                    }
+                }
+                "renamed" => {
+                    let inner = wrapper_inner_toolset(wrapper, registry)?;
+                    let mappings = string_map_param(wrapper, "mappings")?;
+                    toolsets.push(Arc::new(RenamedToolset::new(inner, mappings)) as DynToolset);
+                }
+                kind => {
+                    if let Some(factory) = registry.toolset_wrapper_factories.get(kind) {
+                        toolsets.push(factory(wrapper, registry)?);
+                    } else {
+                        return Err(AgentSpecError::UnsupportedToolsetWrapper(kind.to_string()));
+                    }
+                }
+            }
+        }
+        Ok(toolsets)
+    }
+
+    fn materialized_skill_registry(
+        &self,
+        registry: &AgentSpecRegistry,
+    ) -> Result<Option<SkillRegistry>, AgentSpecError> {
+        let Some(skills) = self.skills.as_ref().filter(|skills| skills.enabled) else {
+            return Ok(None);
+        };
+        let skill_registry = materialized_skill_registry(skills, registry)?;
+        Ok((!skill_registry.is_empty()).then_some(skill_registry))
+    }
+
+    pub(crate) fn materialized_environment_provider(
+        &self,
+        registry: &AgentSpecRegistry,
+    ) -> Result<Option<starweaver_environment::DynEnvironmentProvider>, AgentSpecError> {
+        let environment = self.resolved_environment(registry)?;
+        let provider = environment
+            .as_ref()
+            .and_then(|environment| environment.provider.as_deref())
+            .or_else(|| {
+                self.workspace
+                    .as_ref()
+                    .and_then(|workspace| workspace.provider.as_deref())
+            });
+        let Some(provider) = provider else {
+            return Ok(None);
+        };
+        registry
+            .environment_providers
+            .get(provider)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| AgentSpecError::UnknownEnvironmentProvider(provider.to_string()))
     }
 
     fn validate_policy_refs(&self, registry: &AgentSpecRegistry) -> Result<(), AgentSpecError> {
@@ -445,6 +656,279 @@ fn validate_named<T>(
         }
     }
     Ok(())
+}
+
+fn approval_policy_empty(policy: &ApprovalPolicyPreset) -> bool {
+    policy.approval_required_tools.is_empty()
+        && policy.deferred_tools.is_empty()
+        && !policy.network_requires_approval
+}
+
+fn materialized_skill_registry(
+    skills: &SkillBundleSpec,
+    registry: &AgentSpecRegistry,
+) -> Result<SkillRegistry, AgentSpecError> {
+    let mut merged = SkillRegistry::new();
+    if skills.roots.is_empty() {
+        for skill_registry in registry.skill_registries.values() {
+            merge_skill_registry(&mut merged, skill_registry);
+        }
+        return Ok(merged);
+    }
+    for root in &skills.roots {
+        let Some(skill_registry) = registry.skill_registries.get(root) else {
+            return Err(AgentSpecError::UnknownSkillRoot(root.clone()));
+        };
+        merge_skill_registry(&mut merged, skill_registry);
+    }
+    Ok(merged)
+}
+
+fn merge_skill_registry(target: &mut SkillRegistry, source: &SkillRegistry) {
+    for package in source.packages() {
+        target.insert(package);
+    }
+}
+
+fn merge_approval_policy(target: &mut ApprovalPolicyPreset, overlay: &ApprovalPolicyPreset) {
+    extend_unique(
+        &mut target.approval_required_tools,
+        &overlay.approval_required_tools,
+    );
+    extend_unique(&mut target.deferred_tools, &overlay.deferred_tools);
+    target.network_requires_approval |= overlay.network_requires_approval;
+}
+
+fn extend_unique(target: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        if !target.iter().any(|existing| existing == value) {
+            target.push(value.clone());
+        }
+    }
+}
+
+fn toolset_matches_key(toolset: &DynToolset, key: &str) -> bool {
+    toolset.name() == key || toolset.id().is_some_and(|id| id == key)
+}
+
+fn wrapper_inner_toolset(
+    wrapper: &ToolsetWrapperSpec,
+    registry: &AgentSpecRegistry,
+) -> Result<DynToolset, AgentSpecError> {
+    let key = wrapper
+        .toolset
+        .as_deref()
+        .ok_or_else(|| AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: "missing toolset".to_string(),
+        })?;
+    registry
+        .toolset(key)
+        .ok_or_else(|| AgentSpecError::UnknownToolset(key.to_string()))
+}
+
+fn approval_tools_from_wrapper(
+    wrapper: &ToolsetWrapperSpec,
+) -> Result<Vec<String>, AgentSpecError> {
+    let Some(value) = wrapper
+        .params
+        .get("tools")
+        .or_else(|| wrapper.params.get("tool"))
+        .or_else(|| wrapper.params.get("approval_required_tools"))
+    else {
+        return Ok(vec!["*".to_string()]);
+    };
+    match value {
+        Value::String(tool) if !tool.trim().is_empty() => Ok(vec![tool.trim().to_string()]),
+        Value::Array(values) => {
+            let mut tools = Vec::new();
+            for value in values {
+                let Some(tool) = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|tool| !tool.is_empty())
+                else {
+                    return Err(AgentSpecError::InvalidToolsetWrapper {
+                        kind: wrapper.kind.clone(),
+                        reason: "tools must contain non-empty strings".to_string(),
+                    });
+                };
+                tools.push(tool.to_string());
+            }
+            if tools.is_empty() {
+                return Err(AgentSpecError::InvalidToolsetWrapper {
+                    kind: wrapper.kind.clone(),
+                    reason: "tools must not be empty".to_string(),
+                });
+            }
+            Ok(tools)
+        }
+        _ => Err(AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: "tools must be a string or string array".to_string(),
+        }),
+    }
+}
+
+fn deferred_tools_from_wrapper(
+    wrapper: &ToolsetWrapperSpec,
+) -> Result<Vec<String>, AgentSpecError> {
+    let Some(value) = wrapper
+        .params
+        .get("tools")
+        .or_else(|| wrapper.params.get("tool"))
+        .or_else(|| wrapper.params.get("deferred_tools"))
+    else {
+        return Ok(vec!["*".to_string()]);
+    };
+    match value {
+        Value::String(tool) if !tool.trim().is_empty() => Ok(vec![tool.trim().to_string()]),
+        Value::Array(values) => {
+            let mut tools = Vec::new();
+            for value in values {
+                let Some(tool) = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|tool| !tool.is_empty())
+                else {
+                    return Err(AgentSpecError::InvalidToolsetWrapper {
+                        kind: wrapper.kind.clone(),
+                        reason: "deferred_tools must contain non-empty strings".to_string(),
+                    });
+                };
+                tools.push(tool.to_string());
+            }
+            if tools.is_empty() {
+                return Err(AgentSpecError::InvalidToolsetWrapper {
+                    kind: wrapper.kind.clone(),
+                    reason: "deferred_tools must not be empty".to_string(),
+                });
+            }
+            Ok(tools)
+        }
+        _ => Err(AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: "deferred_tools must be a string or string array".to_string(),
+        }),
+    }
+}
+
+fn optional_string_param(
+    wrapper: &ToolsetWrapperSpec,
+    key: &str,
+) -> Result<Option<String>, AgentSpecError> {
+    let Some(value) = wrapper.params.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Err(AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: format!("{key} must be a non-empty string"),
+        });
+    };
+    Ok(Some(value.to_string()))
+}
+
+fn optional_usize_param(
+    wrapper: &ToolsetWrapperSpec,
+    key: &str,
+) -> Result<Option<usize>, AgentSpecError> {
+    let Some(value) = wrapper.params.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_u64().and_then(|value| usize::try_from(value).ok()) else {
+        return Err(AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: format!("{key} must be a non-negative integer"),
+        });
+    };
+    Ok(Some(value))
+}
+
+fn optional_string_list_param(
+    wrapper: &ToolsetWrapperSpec,
+    key: &str,
+) -> Result<Option<Vec<String>>, AgentSpecError> {
+    let Some(value) = wrapper.params.get(key) else {
+        return Ok(None);
+    };
+    string_list_value(wrapper, key, value).map(Some)
+}
+
+fn string_list_value(
+    wrapper: &ToolsetWrapperSpec,
+    key: &str,
+    value: &Value,
+) -> Result<Vec<String>, AgentSpecError> {
+    match value {
+        Value::String(value) if !value.trim().is_empty() => Ok(vec![value.trim().to_string()]),
+        Value::Array(values) => {
+            let mut strings = Vec::new();
+            for value in values {
+                let Some(value) = value
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return Err(AgentSpecError::InvalidToolsetWrapper {
+                        kind: wrapper.kind.clone(),
+                        reason: format!("{key} must contain non-empty strings"),
+                    });
+                };
+                strings.push(value.to_string());
+            }
+            if strings.is_empty() {
+                return Err(AgentSpecError::InvalidToolsetWrapper {
+                    kind: wrapper.kind.clone(),
+                    reason: format!("{key} must not be empty"),
+                });
+            }
+            Ok(strings)
+        }
+        _ => Err(AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: format!("{key} must be a string or string array"),
+        }),
+    }
+}
+
+fn string_map_param(
+    wrapper: &ToolsetWrapperSpec,
+    key: &str,
+) -> Result<BTreeMap<String, String>, AgentSpecError> {
+    let Some(value) = wrapper.params.get(key) else {
+        return Err(AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: format!("missing {key}"),
+        });
+    };
+    let Some(object) = value.as_object() else {
+        return Err(AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: format!("{key} must be an object"),
+        });
+    };
+    let mut mappings = BTreeMap::new();
+    for (from, to) in object {
+        let Some(to) = to.as_str().map(str::trim).filter(|value| !value.is_empty()) else {
+            return Err(AgentSpecError::InvalidToolsetWrapper {
+                kind: wrapper.kind.clone(),
+                reason: format!("{key} values must be non-empty strings"),
+            });
+        };
+        mappings.insert(from.clone(), to.to_string());
+    }
+    if mappings.is_empty() {
+        return Err(AgentSpecError::InvalidToolsetWrapper {
+            kind: wrapper.kind.clone(),
+            reason: format!("{key} must not be empty"),
+        });
+    }
+    Ok(mappings)
 }
 
 fn context_model_config_from_preset(preset: &ModelConfigPresetData) -> ModelConfig {
