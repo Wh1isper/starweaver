@@ -1,21 +1,27 @@
-use std::{env, fs, process::Command, time::Duration};
+use std::{collections::BTreeSet, env, fs, process::Command, time::Duration};
 
 use crate::common::{root, run_capture, run_command};
 
-const WORKSPACE_CRATES: [&str; 10] = [
+const WORKSPACE_DEPENDENCIES: [&str; 13] = [
     "starweaver-agent",
     "starweaver-context",
     "starweaver-core",
     "starweaver-environment",
     "starweaver-model",
+    "starweaver-oauth",
+    "starweaver-oauth-provider",
     "starweaver-runtime",
     "starweaver-session",
     "starweaver-storage",
     "starweaver-stream",
     "starweaver-tools",
+    "starweaver-usage",
 ];
-const PUBLISH_PACKAGES: [&str; 11] = [
+const DRY_RUN_PACKAGES: [&str; 3] = ["starweaver-core", "starweaver-usage", "starweaver-oauth"];
+const PUBLISH_PACKAGES: [&str; 14] = [
     "starweaver-core",
+    "starweaver-usage",
+    "starweaver-oauth",
     "starweaver-model",
     "starweaver-context",
     "starweaver-tools",
@@ -23,8 +29,9 @@ const PUBLISH_PACKAGES: [&str; 11] = [
     "starweaver-environment",
     "starweaver-session",
     "starweaver-stream",
-    "starweaver-storage",
+    "starweaver-oauth-provider",
     "starweaver-agent",
+    "starweaver-storage",
     "starweaver-cli",
 ];
 
@@ -36,10 +43,11 @@ pub fn upversion(args: &[String]) -> Result<(), String> {
         return Err("usage: upversion x.y.z".to_string());
     }
     let root = root()?;
+    validate_release_package_lists(&root)?;
     let manifest = root.join("Cargo.toml");
     let mut text = fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
     text = replace_workspace_version(&text, version)?;
-    for krate in WORKSPACE_CRATES {
+    for krate in WORKSPACE_DEPENDENCIES {
         text = replace_workspace_dependency_version(&text, krate, version)?;
     }
     fs::write(&manifest, text).map_err(|error| error.to_string())?;
@@ -143,17 +151,21 @@ pub fn workspace_version(args: &[String]) -> Result<(), String> {
 
 pub fn publish_dry_run() -> Result<(), String> {
     let root = root()?;
-    println!("Dry-run publishing starweaver-core");
-    run_command(
-        Command::new("cargo")
-            .arg("publish")
-            .arg("-p")
-            .arg("starweaver-core")
-            .arg("--locked")
-            .arg("--dry-run")
-            .arg("--allow-dirty")
-            .current_dir(root),
-    )
+    validate_release_package_lists(&root)?;
+    for package in DRY_RUN_PACKAGES {
+        println!("Dry-run publishing {package}");
+        run_command(
+            Command::new("cargo")
+                .arg("publish")
+                .arg("-p")
+                .arg(package)
+                .arg("--locked")
+                .arg("--dry-run")
+                .arg("--allow-dirty")
+                .current_dir(&root),
+        )?;
+    }
+    Ok(())
 }
 
 pub fn publish(args: &[String]) -> Result<(), String> {
@@ -161,6 +173,7 @@ pub fn publish(args: &[String]) -> Result<(), String> {
         return Err("publish takes no arguments".to_string());
     }
     let root = root()?;
+    validate_release_package_lists(&root)?;
     let retries = env::var("PUBLISH_RETRIES")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -205,4 +218,77 @@ pub fn publish(args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> {
+    ensure_unique("workspace dependency", &WORKSPACE_DEPENDENCIES)?;
+    ensure_unique("dry-run package", &DRY_RUN_PACKAGES)?;
+    ensure_unique("publish package", &PUBLISH_PACKAGES)?;
+
+    let publish_packages: BTreeSet<_> = PUBLISH_PACKAGES.iter().copied().collect();
+    let workspace_dependencies: BTreeSet<_> = WORKSPACE_DEPENDENCIES.iter().copied().collect();
+    let expected_workspace_dependencies: BTreeSet<_> = publish_packages
+        .iter()
+        .copied()
+        .filter(|package| *package != "starweaver-cli")
+        .collect();
+    if workspace_dependencies != expected_workspace_dependencies {
+        return Err(format!(
+            "workspace dependency list must match publish packages except starweaver-cli: expected {expected_workspace_dependencies:?}, got {workspace_dependencies:?}"
+        ));
+    }
+
+    let dry_run_packages: BTreeSet<_> = DRY_RUN_PACKAGES.iter().copied().collect();
+    if !dry_run_packages.is_subset(&publish_packages) {
+        return Err(format!(
+            "dry-run packages must be publish packages: got {dry_run_packages:?}"
+        ));
+    }
+
+    let manifest = root.join("Cargo.toml");
+    let manifest_text = fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
+    let manifest_value: toml::Value = manifest_text
+        .parse()
+        .map_err(|error| format!("{}: {error}", manifest.display()))?;
+    let workspace_crates = workspace_crates_from_manifest(&manifest_value)?;
+    if workspace_crates != publish_packages {
+        return Err(format!(
+            "publish package list must match crates/* workspace members: expected {workspace_crates:?}, got {publish_packages:?}"
+        ));
+    }
+    for krate in WORKSPACE_DEPENDENCIES {
+        let needle = format!("{krate} = {{ path = \"crates/{krate}\", version = \"");
+        if !manifest_text.contains(&needle) {
+            return Err(format!(
+                "workspace dependency {krate} must use a path plus version entry"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_unique(label: &str, values: &[&str]) -> Result<(), String> {
+    let set: BTreeSet<_> = values.iter().copied().collect();
+    if set.len() != values.len() {
+        return Err(format!("{label} list contains duplicate entries"));
+    }
+    Ok(())
+}
+
+fn workspace_crates_from_manifest(manifest: &toml::Value) -> Result<BTreeSet<&str>, String> {
+    let members = manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| "missing workspace.members".to_string())?;
+    let mut crates = BTreeSet::new();
+    for member in members {
+        let member = member
+            .as_str()
+            .ok_or_else(|| "workspace.members entries must be strings".to_string())?;
+        if let Some(name) = member.strip_prefix("crates/") {
+            crates.insert(name);
+        }
+    }
+    Ok(crates)
 }

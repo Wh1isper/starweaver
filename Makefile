@@ -151,7 +151,7 @@ upversion: ## Update workspace version; pass VERSION=x.y.z
 	@cargo check --workspace --all-targets --all-features --locked
 
 .PHONY: publish-dry-run
-publish-dry-run: ## Dry-run the root crate publish package
+publish-dry-run: ## Dry-run first-wave crate publish packages
 	@$(XTASK) publish-dry-run
 
 .PHONY: publish

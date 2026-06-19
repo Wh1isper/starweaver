@@ -195,7 +195,7 @@ impl CliService {
         }
     }
 
-    fn run_prompt(&mut self, command: &RunCommand) -> CliResult<String> {
+    pub(crate) fn run_prompt(&mut self, command: &RunCommand) -> CliResult<String> {
         let execution = self.execute_prompt_run(command, None)?;
         match execution.output_mode {
             OutputMode::Text => Ok(render_display_text(&execution.messages)),

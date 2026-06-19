@@ -2,6 +2,7 @@
 //! CLI-first local product surface for Starweaver.
 
 mod args;
+mod client_state;
 mod clipboard;
 mod config;
 mod environment;

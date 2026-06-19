@@ -1,18 +1,16 @@
 use std::{
-    fs,
     io::IsTerminal as _,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
-use chrono::Utc;
-use serde_json::{json, Value};
 use starweaver_runtime::AgentStreamRecord;
 
 use super::{rendering::render_display_text, CliService};
 use crate::{
     args::{OutputMode, RunCommand, TuiCommand},
+    client_state,
     config::{clear_current_session, write_current_session, CliConfig},
     local_store::SessionSummary,
     profiles::{list_config_model_profiles, list_profiles, ProfileSummary},
@@ -540,35 +538,11 @@ fn model_choice_label(choice: &crate::tui::ModelChoice) -> String {
 }
 
 fn read_tui_selected_profile(config: &CliConfig) -> CliResult<Option<String>> {
-    let path = config.tui_state_dir.join("state.json");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content =
-        fs::read_to_string(&path).map_err(|error| crate::error::io_error(&path, error))?;
-    let value = serde_json::from_str::<Value>(&content)?;
-    Ok(value
-        .get("selected_profile")
-        .or_else(|| value.get("selectedProfile"))
-        .and_then(Value::as_str)
-        .map(ToString::to_string))
+    client_state::read_selected_profile(config, "tui")
 }
 
 fn write_tui_selected_profile(config: &CliConfig, profile: &str) -> CliResult<()> {
-    fs::create_dir_all(&config.tui_state_dir)
-        .map_err(|error| crate::error::io_error(&config.tui_state_dir, error))?;
-    let path = config.tui_state_dir.join("state.json");
-    let temp = config
-        .tui_state_dir
-        .join(format!("state.{}.json.tmp", std::process::id()));
-    let value = json!({
-        "selected_profile": profile,
-        "updated_at": Utc::now().to_rfc3339(),
-    });
-    fs::write(&temp, serde_json::to_vec_pretty(&value)?)
-        .map_err(|error| crate::error::io_error(&temp, error))?;
-    fs::rename(&temp, &path).map_err(|error| crate::error::io_error(&path, error))?;
-    Ok(())
+    client_state::write_selected_profile(config, "tui", profile)
 }
 
 fn should_run_interactive_tui(command: &TuiCommand) -> bool {

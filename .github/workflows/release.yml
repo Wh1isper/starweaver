@@ -33,6 +33,10 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install mdBook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5.3
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@v2
@@ -61,6 +65,9 @@ jobs:
 
       - name: Run release validation
         run: make ci-all
+
+      - name: Run CLI release smoke
+        run: make cli-smoke
 
   publish-crates:
     name: Publish crates

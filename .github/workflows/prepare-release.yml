@@ -37,6 +37,10 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install mdBook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5.3
 
       - name: Install cargo-llvm-cov
         if: github.event.inputs.run_full_ci == 'true'
@@ -62,6 +66,7 @@ jobs:
         run: |
           if [[ "${{ github.event.inputs.run_full_ci }}" == "true" ]]; then
             make ci-all
+            make cli-smoke
           else
             make fmt-check
             make check

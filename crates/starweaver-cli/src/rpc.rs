@@ -6,7 +6,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    args::{Cli, CliCommand, HitlPolicy, OutputMode, RunCommand},
+    args::{HitlPolicy, OutputMode, RunCommand},
+    client_state,
     config::{get_config_value, read_current_session, write_current_session, CliConfig},
     local_store::LocalStore,
     profiles::{list_config_model_profiles, list_profiles, show_profile},
@@ -126,7 +127,8 @@ fn dispatch(config: &CliConfig, method: &str, params: &Value) -> Result<Value, R
                 .get("client")
                 .and_then(Value::as_str)
                 .unwrap_or("tui");
-            write_client_selected_profile(config, client, &profile).map_err(RpcError::from)?;
+            client_state::write_selected_profile(config, client, &profile)
+                .map_err(RpcError::from)?;
             Ok(json!({
                 "client": client,
                 "selectedProfile": profile,
@@ -247,7 +249,7 @@ fn run_prompt(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
     let prompt = required_string(params, "prompt")?;
     let client = params.get("client").and_then(Value::as_str);
     let client_profile = client
-        .map(|client| read_client_selected_profile(config, client).map_err(RpcError::from))
+        .map(|client| client_state::read_selected_profile(config, client).map_err(RpcError::from))
         .transpose()?
         .flatten();
     let profile = params
@@ -295,34 +297,11 @@ fn run_prompt(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
             .and_then(parse_hitl),
         session_affinity_id: None,
     };
-    let cli = cli_for_command(CliCommand::Run(command));
     let output = CliService::open(config.clone())
         .map_err(RpcError::from)?
-        .execute(cli)
+        .run_prompt(&command)
         .map_err(RpcError::from)?;
     serde_json::from_str(output.trim()).map_err(|error| RpcError::new(-32_000, error.to_string()))
-}
-
-#[allow(clippy::missing_const_for_fn)]
-fn cli_for_command(command: CliCommand) -> Cli {
-    Cli {
-        prompt: None,
-        session: None,
-        continue_session: false,
-        new_session: false,
-        run: None,
-        branch_from: None,
-        profile: None,
-        worker: None,
-        worker_label: None,
-        worktree: None,
-        worktree_name: None,
-        branch: None,
-        output: None,
-        hitl: None,
-        store: None,
-        command: Some(command),
-    }
 }
 
 fn config_get(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
@@ -352,7 +331,7 @@ fn config_get(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
 
 fn selected_profile_result(config: &CliConfig, client: Option<&str>) -> Result<Value, RpcError> {
     let selected = client
-        .map(|client| read_client_selected_profile(config, client).map_err(RpcError::from))
+        .map(|client| client_state::read_selected_profile(config, client).map_err(RpcError::from))
         .transpose()?
         .flatten()
         .unwrap_or_else(|| config.default_profile.clone());
@@ -369,7 +348,7 @@ fn selected_model_profile_result(
 ) -> Result<Value, RpcError> {
     let configured_profiles = list_config_model_profiles(config);
     let persisted = client
-        .map(|client| read_client_selected_profile(config, client).map_err(RpcError::from))
+        .map(|client| client_state::read_selected_profile(config, client).map_err(RpcError::from))
         .transpose()?
         .flatten();
     let selected = persisted
@@ -437,46 +416,6 @@ fn model_id_for_profile(config: &CliConfig, profile: &str) -> Option<String> {
         .into_iter()
         .find(|summary| summary.name == profile)
         .map(|summary| summary.model_id)
-}
-
-fn read_client_selected_profile(config: &CliConfig, client: &str) -> CliResult<Option<String>> {
-    let path = client_state_dir(config, client)?.join("state.json");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content =
-        std::fs::read_to_string(&path).map_err(|error| crate::error::io_error(&path, error))?;
-    let value = serde_json::from_str::<Value>(&content)?;
-    Ok(value
-        .get("selected_profile")
-        .or_else(|| value.get("selectedProfile"))
-        .and_then(Value::as_str)
-        .map(ToString::to_string))
-}
-
-fn write_client_selected_profile(config: &CliConfig, client: &str, profile: &str) -> CliResult<()> {
-    let dir = client_state_dir(config, client)?;
-    std::fs::create_dir_all(&dir).map_err(|error| crate::error::io_error(&dir, error))?;
-    let path = dir.join("state.json");
-    let temp = dir.join(format!("state.{}.json.tmp", std::process::id()));
-    let value = json!({
-        "selected_profile": profile,
-        "updated_at": chrono::Utc::now().to_rfc3339(),
-    });
-    std::fs::write(&temp, serde_json::to_vec_pretty(&value)?)
-        .map_err(|error| crate::error::io_error(&temp, error))?;
-    std::fs::rename(&temp, &path).map_err(|error| crate::error::io_error(&path, error))?;
-    Ok(())
-}
-
-fn client_state_dir(config: &CliConfig, client: &str) -> CliResult<std::path::PathBuf> {
-    match client {
-        "tui" => Ok(config.tui_state_dir.clone()),
-        "desktop" => Ok(config.desktop_state_dir.clone()),
-        other => Err(CliError::Usage(format!(
-            "unknown client state scope: {other}; expected tui or desktop"
-        ))),
-    }
 }
 
 fn parse_hitl(value: &str) -> Option<HitlPolicy> {

@@ -60,14 +60,16 @@ Publishing the draft GitHub Release triggers `.github/workflows/release.yml`:
 
 1. Validate the release tag against the workspace version.
 2. Run `make ci-all`.
-3. Dry-run the root crate publish package.
-4. Publish crates in dependency order through the `Release` environment.
+3. Dry-run the first-wave publish packages that do not depend on other unpublished Starweaver crates.
+4. Publish all workspace crates in dependency order through the `Release` environment.
 
 Manual dry-run:
 
 ```bash
 make publish-dry-run
 ```
+
+For the first release, dependent crates cannot be fully dry-run against crates.io until their Starweaver dependencies have been published. The dry-run target validates the release package lists and dry-runs the dependency-free first-wave crates: `starweaver-core`, `starweaver-usage`, and `starweaver-oauth`.
 
 Manual publish after validation and approval:
 

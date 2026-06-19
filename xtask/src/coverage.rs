@@ -22,9 +22,12 @@ const WORKSPACE_PACKAGES: &[&str] = &[
     "starweaver-agent",
     "starweaver-context",
     "starweaver-core",
+    "starweaver-oauth",
+    "starweaver-oauth-provider",
     "starweaver-model",
     "starweaver-runtime",
     "starweaver-tools",
+    "starweaver-usage",
     "starweaver-environment",
     "starweaver-session",
     "starweaver-stream",
@@ -45,19 +48,38 @@ fn coverage_group(name: &str) -> Option<CoverageGroup> {
             default_threshold: 95.0,
             measured_floor: Some(55.0),
             acceptance_paths: &[
-                "starweaver-model/src/message.rs",
-                "starweaver-model/src/settings.rs",
-                "starweaver-runtime/src/history.rs",
+                "starweaver-core/src/xml.rs",
+                "starweaver-model/src/message/history.rs",
+                "starweaver-model/src/providers/content.rs",
+                "starweaver-model/src/providers/openai_responses/request.rs",
+                "starweaver-model/src/providers/usage.rs",
+                "starweaver-runtime/src/agent/run_loop/entrypoints.rs",
+                "starweaver-runtime/src/agent/runtime_helpers/usage_limits.rs",
                 "starweaver-runtime/src/instructions.rs",
                 "starweaver-runtime/src/run.rs",
                 "starweaver-tools/src/instruction.rs",
+                "starweaver-tools/src/mcp/toolset.rs",
+                "starweaver-tools/src/tool/function.rs",
             ],
         }),
         "agent" => Some(CoverageGroup {
             report_packages: &["starweaver-agent"],
             default_threshold: 90.0,
             measured_floor: Some(55.0),
-            acceptance_paths: &["session.rs", "subagent.rs", "subagent_config.rs"],
+            acceptance_paths: &[
+                "bundles/environment/filesystem/instructions.rs",
+                "bundles/environment/shell_review/types/request.rs",
+                "bundles/runtime_context.rs",
+                "filters.rs",
+                "filters/named/tool_args.rs",
+                "mcp_live.rs",
+                "presets/registry.rs",
+                "streaming.rs",
+                "subagent/config.rs",
+                "subagent/registry.rs",
+                "subagent/task.rs",
+                "subagent_config.rs",
+            ],
         }),
         "service" => Some(CoverageGroup {
             report_packages: &["starweaver-cli"],
@@ -129,7 +151,17 @@ pub fn coverage_gate(args: &[String]) -> Result<(), String> {
             ));
         }
     }
-    let acceptance = aggregate_coverage(group.acceptance_paths, &files)?;
+    let (acceptance, selected) = aggregate_coverage(group.acceptance_paths, &files)?;
+    println!("{group_name} acceptance coverage files:");
+    for file in &selected {
+        println!(
+            "  {}: {:.2}% ({}/{})",
+            file.path,
+            file.percent,
+            file.lines - file.missed,
+            file.lines
+        );
+    }
     if acceptance.percent < threshold {
         return Err(format!(
             "{group_name} acceptance coverage {:.2}% is below the {:.2}% line gate",
@@ -191,15 +223,32 @@ fn parse_coverage(output: &str) -> Result<(Vec<FileCoverage>, FileCoverage), Str
     ))
 }
 
-fn aggregate_coverage(paths: &[&str], files: &[FileCoverage]) -> Result<FileCoverage, String> {
-    let selected: Vec<_> = files
+fn aggregate_coverage(
+    paths: &[&str],
+    files: &[FileCoverage],
+) -> Result<(FileCoverage, Vec<FileCoverage>), String> {
+    let mut missing = Vec::new();
+    for pattern in paths {
+        if !files.iter().any(|file| path_matches(&file.path, pattern)) {
+            missing.push(*pattern);
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "coverage gate selected missing paths: {}",
+            missing.join(", ")
+        ));
+    }
+    let mut selected: Vec<_> = files
         .iter()
         .filter(|file| {
             paths
                 .iter()
                 .any(|pattern| path_matches(&file.path, pattern))
         })
+        .cloned()
         .collect();
+    selected.sort_by(|left, right| left.path.cmp(&right.path));
     if selected.is_empty() {
         return Err("coverage gate selected no files".to_string());
     }
@@ -210,12 +259,15 @@ fn aggregate_coverage(paths: &[&str], files: &[FileCoverage]) -> Result<FileCove
     } else {
         ((lines - missed) as f64 / lines as f64) * 100.0
     };
-    Ok(FileCoverage {
-        path: "acceptance".to_string(),
-        lines,
-        missed,
-        percent,
-    })
+    Ok((
+        FileCoverage {
+            path: "acceptance".to_string(),
+            lines,
+            missed,
+            percent,
+        },
+        selected,
+    ))
 }
 
 fn path_matches(file_path: &str, pattern: &str) -> bool {
