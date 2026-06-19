@@ -40,7 +40,7 @@ pub fn shell_process_metadata(command: &ShellCommand) -> Metadata {
 pub fn local_shell_executable() -> String {
     #[cfg(windows)]
     {
-        if let Some(shell) = env::var_os("SHELL").and_then(valid_shell_value) {
+        if let Some(shell) = env::var_os("SHELL").as_deref().and_then(valid_shell_value) {
             return shell;
         }
         if let Some(shell) = find_executable_in_path(&["bash.exe", "bash", "sh.exe", "sh"]) {
@@ -77,11 +77,11 @@ pub fn local_shell_command(command: &str) -> Command {
 }
 
 #[cfg(windows)]
-fn valid_shell_value(value: std::ffi::OsString) -> Option<String> {
+fn valid_shell_value(value: &std::ffi::OsStr) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    let shell = PathBuf::from(&value);
+    let shell = Path::new(value);
     if shell.components().count() > 1 && !shell.is_file() {
         return None;
     }

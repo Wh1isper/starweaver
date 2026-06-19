@@ -2,10 +2,13 @@
 
 use std::{
     io,
-    process::{Child, Command, Stdio},
+    process::{Child, Stdio},
     thread,
     time::{Duration, Instant},
 };
+
+#[cfg(unix)]
+use std::process::Command;
 
 use async_trait::async_trait;
 use starweaver_core::Metadata;
@@ -163,16 +166,16 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         process_id: &str,
         signal: i32,
     ) -> EnvironmentResult<ShellProcessSnapshot> {
-        let snapshot = {
-            let mut processes = self
-                .processes
-                .lock()
-                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            let process = processes
-                .get_mut(process_id)
-                .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
-            #[cfg(unix)]
-            {
+        #[cfg(unix)]
+        {
+            let snapshot = {
+                let mut processes = self
+                    .processes
+                    .lock()
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                let process = processes
+                    .get_mut(process_id)
+                    .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
                 let pid = process.child.id().to_string();
                 let status = Command::new("kill")
                     .arg(format!("-{signal}"))
@@ -184,16 +187,18 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
                         "failed to signal process {process_id} with signal {signal}"
                     )));
                 }
-            }
-            #[cfg(not(unix))]
-            {
-                return Err(EnvironmentError::InvalidRequest(
-                    "shell_signal is only supported on Unix local providers".to_string(),
-                ));
-            }
-            refresh_local_shell_process(process_id, process, false)?
-        };
-        Ok(snapshot)
+                refresh_local_shell_process(process_id, process, false)?
+            };
+            Ok(snapshot)
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = (process_id, signal);
+            Err(EnvironmentError::InvalidRequest(
+                "shell_signal is only supported on Unix local providers".to_string(),
+            ))
+        }
     }
 
     async fn kill_process(&self, process_id: &str) -> EnvironmentResult<ShellProcessSnapshot> {

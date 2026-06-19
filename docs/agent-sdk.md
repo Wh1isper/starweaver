@@ -5,14 +5,14 @@ applications need while keeping lower-level crates available for advanced integr
 
 ## Main types
 
-| Type | Purpose |
-| ---- | ------- |
-| `AgentBuilder` | Configure model, instructions, tools, output, policy, capabilities, and subagents. |
-| `AgentApp` | Application wrapper for sessions, subagent registry, and app-level helpers. |
-| `AgentSession` | Multi-turn object that owns `AgentContext` next to a runtime agent. |
-| `AgentContext` | Run/session evidence: ids, history, dependencies, notes, state, usage, events, and config. |
-| `AgentRuntimeBuilder` | Durable runtime builder for session stores, stream archives, and environment restore. |
-| `SubagentRegistry` | Application-owned delegation registry for named child agents. |
+| Type                  | Purpose                                                                                    |
+| --------------------- | ------------------------------------------------------------------------------------------ |
+| `AgentBuilder`        | Configure model, instructions, tools, output, policy, capabilities, and subagents.         |
+| `AgentApp`            | Application wrapper for sessions, subagent registry, and app-level helpers.                |
+| `AgentSession`        | Multi-turn object that owns `AgentContext` next to a runtime agent.                        |
+| `AgentContext`        | Run/session evidence: ids, history, dependencies, notes, state, usage, events, and config. |
+| `AgentRuntimeBuilder` | Durable runtime builder for session stores, stream archives, and environment restore.      |
+| `SubagentRegistry`    | Application-owned delegation registry for named child agents.                              |
 
 ## SDK layers
 
