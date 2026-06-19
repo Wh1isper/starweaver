@@ -174,21 +174,50 @@ pub fn normalize_local_config_path(path: PathBuf) -> PathBuf {
 }
 
 pub fn normalize_absolute_request_path(path: &Path) -> EnvironmentResult<PathBuf> {
-    if !path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::Prefix(_) | Component::ParentDir | Component::CurDir
-            )
-        })
+    let normalized_path = normalize_absolute_request_path_input(path);
+    if !normalized_path.is_absolute()
+        || normalized_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
     {
         return Err(EnvironmentError::InvalidRequest(path.display().to_string()));
     }
-    Ok(normalize_local_config_path(path.to_path_buf()))
+    Ok(normalize_local_config_path(normalized_path))
 }
 
+#[cfg(windows)]
+fn normalize_absolute_request_path_input(path: &Path) -> PathBuf {
+    let path = path.to_string_lossy();
+    strip_windows_verbatim_prefix(&path).map_or_else(|| PathBuf::from(path.as_ref()), PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn normalize_absolute_request_path_input(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
+
+#[cfg(windows)]
+pub fn display_local_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    strip_windows_verbatim_prefix(&path)
+        .unwrap_or_else(|| path.into_owned())
+        .replace('\\', "/")
+}
+
+#[cfg(not(windows))]
 pub fn display_local_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(windows)]
+fn strip_windows_verbatim_prefix(path: &str) -> Option<String> {
+    let normalized = path.replace('/', "\\");
+    if let Some(stripped) = normalized.strip_prefix(r"\\?\UNC\") {
+        return Some(format!("\\\\{stripped}"));
+    }
+    normalized
+        .strip_prefix(r"\\?\")
+        .map(std::string::ToString::to_string)
 }
 
 pub fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {

@@ -549,6 +549,49 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     std::fs::remove_dir_all(external).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn display_local_path_strips_windows_verbatim_prefixes() {
+    assert_eq!(
+        display_local_path(Path::new(
+            r"\\?\C:\Users\runneradmin\AppData\Local\Temp\stdout.log"
+        )),
+        "C:/Users/runneradmin/AppData/Local/Temp/stdout.log"
+    );
+    assert_eq!(
+        display_local_path(Path::new(r"\\?\UNC\server\share\stdout.log")),
+        "//server/share/stdout.log"
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn local_provider_accepts_windows_verbatim_tmp_paths() {
+    let root = unique_test_dir();
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy::default(),
+    });
+
+    let tmp_path = provider
+        .write_tmp_file("stdout.log", b"full shell output")
+        .await
+        .unwrap();
+    assert!(!tmp_path.starts_with("//?/"));
+    assert_eq!(
+        provider.read_text(&tmp_path).await.unwrap(),
+        "full shell output"
+    );
+
+    let leaked_verbatim_path = format!("//?/{tmp_path}");
+    assert_eq!(
+        provider.read_text(&leaked_verbatim_path).await.unwrap(),
+        "full shell output"
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 async fn local_provider_restores_from_trusted_state_with_explicit_policy() {
     let root = unique_test_dir();
@@ -808,12 +851,15 @@ async fn local_context_file_tree_matches_starweaver_sdk_semantics() {
         .unwrap()
         .unwrap();
 
-    let tmp_dir = provider.tmp_dir_path().unwrap().display().to_string();
+    let tmp_dir = display_local_path(provider.tmp_dir_path().unwrap());
     assert!(instructions.contains(&format!("<tmp-directory>{tmp_dir}</tmp-directory>")));
     assert!(instructions.contains(
         "<tmp-directory-note>This is an agent-only temporary directory for intermediate files."
     ));
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&root)
+    )));
     assert!(!instructions.contains("<file>"));
     assert!(instructions.contains(".git/ (skipped)"));
     assert!(instructions.contains("node_modules/ (skipped)"));
@@ -921,10 +967,16 @@ async fn local_context_file_tree_includes_allowed_external_roots() {
 
     assert!(instructions.contains(&format!(
         "<default-directory>{}</default-directory>",
-        root.display()
+        display_local_path(&root)
     )));
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", external.display())));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&root)
+    )));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&external)
+    )));
     assert!(instructions.contains("README.md"));
     assert!(instructions.contains("skills/research/SKILL.md"));
 
@@ -952,13 +1004,16 @@ async fn local_context_file_tree_deduplicates_visible_nested_allowed_roots() {
 
     assert_eq!(
         instructions
-            .matches(&format!("<directory path=\"{}\">", root.display()))
+            .matches(&format!(
+                "<directory path=\"{}\">",
+                display_local_path(&root)
+            ))
             .count(),
         1
     );
     assert!(!instructions.contains(&format!(
         "<directory path=\"{}\">",
-        root.join("skills").display()
+        display_local_path(&root.join("skills"))
     )));
     assert!(instructions.contains("skills/research/SKILL.md"));
 
@@ -985,8 +1040,14 @@ async fn local_context_file_tree_keeps_hidden_nested_allowed_roots() {
         .unwrap()
         .unwrap();
 
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", allowed_root.display())));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&root)
+    )));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&allowed_root)
+    )));
     assert!(instructions.contains("research/SKILL.md"));
 
     std::fs::remove_dir_all(root).unwrap();
@@ -1012,9 +1073,15 @@ async fn local_context_file_tree_keeps_gitignored_nested_allowed_roots() {
         .unwrap()
         .unwrap();
 
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&root)
+    )));
     assert!(instructions.contains("ignored/ (gitignored)"));
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", allowed_root.display())));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&allowed_root)
+    )));
     assert!(instructions.contains("SKILL.md"));
 
     std::fs::remove_dir_all(root).unwrap();
@@ -1039,8 +1106,14 @@ async fn local_context_file_tree_keeps_deep_nested_allowed_roots() {
         .unwrap()
         .unwrap();
 
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", root.display())));
-    assert!(instructions.contains(&format!("<directory path=\"{}\">", allowed_root.display())));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&root)
+    )));
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&allowed_root)
+    )));
     assert!(instructions.contains("SKILL.md"));
 
     std::fs::remove_dir_all(root).unwrap();
