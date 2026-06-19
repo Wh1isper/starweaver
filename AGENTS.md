@@ -181,10 +181,10 @@ make scripts-check
 To ask the assistant to prepare a unified-version release, use GitHub CLI from the repository root:
 
 ```bash
-gh workflow run prepare-release.yml -f version=0.0.1 -f run_full_ci=true
+gh workflow run prepare-release.yml -f version=0.0.1
 ```
 
-This creates a `release/v0.0.1` pull request. After the pull request merges, `draft-release.yml` creates a draft GitHub Release with `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, plus `checksums.txt`. Publishing that draft release triggers `release.yml`, which publishes crates through the `Release` environment.
+This pushes `release/v0.0.1` for review. After the release commit reaches `main`, publish `v0.0.1` as a GitHub Release. The `release.yml` workflow runs from the published Release event, builds `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, uploads `checksums.txt`, and publishes crates through the `Release` environment.
 
 For repository-wide hooks, run:
 

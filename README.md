@@ -7,7 +7,7 @@ one workspace.
 
 The current release line is preparing for the first public release, `0.0.1`. The development
 version in this repository intentionally uses the pre-release version `0.0.1-dev.0`; the release
-workflow promotes it to `0.0.1`.
+commit promotes it to `0.0.1`.
 
 ## Why Starweaver
 
@@ -149,10 +149,10 @@ make ci
 Prepare the first public release:
 
 ```bash
-gh workflow run prepare-release.yml -f version=0.0.1 -f run_full_ci=true
+gh workflow run prepare-release.yml -f version=0.0.1
 ```
 
-The workflow creates a `release/v0.0.1` pull request. After it merges, GitHub Actions builds a draft release with CLI archives and checksums. Publishing that draft triggers crate publishing through the `Release` environment.
+The workflow pushes `release/v0.0.1` for review. After that release commit reaches `main`, publish `v0.0.1` as a GitHub Release; the published Release event builds CLI archives, uploads checksums, and publishes crates through the `Release` environment.
 
 ## Acknowledgements
 

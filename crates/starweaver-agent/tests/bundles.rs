@@ -1008,7 +1008,7 @@ async fn local_shell_tmp_output_path_can_be_viewed() {
             &starweaver_model::ToolCallPart {
                 id: "shell".to_string(),
                 name: "shell_exec".to_string(),
-                arguments: serde_json::json!({"command": "printf '0123456789abcdef'"}).into(),
+                arguments: serde_json::json!({"command": "echo 0123456789abcdef"}).into(),
             },
         )
         .await;
@@ -1030,7 +1030,10 @@ async fn local_shell_tmp_output_path_can_be_viewed() {
         .as_str()
         .or_else(|| viewed.content["content"].as_str())
         .unwrap_or_else(|| panic!("unexpected view result: {}", viewed.content));
-    assert_eq!(viewed_content, "0123456789abcdef");
+    assert_eq!(
+        viewed_content.trim_end_matches(['\r', '\n']),
+        "0123456789abcdef"
+    );
 
     std::fs::remove_dir_all(root).unwrap();
 }

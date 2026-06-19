@@ -1,38 +1,58 @@
 # Release
 
 Starweaver uses one workspace version for crates and CLI artifacts. The repository development
-version should stay on a pre-release version such as `0.0.1-dev.0`. A release preparation workflow
-promotes that version to the public release version, such as `0.0.1`.
+version should stay on a pre-release version such as `0.0.1-dev.0`. A release commit promotes that
+version to the public release version, such as `0.0.1`.
+
+Publishing a GitHub Release for a `vX.Y.Z` tag is the publishing trigger. The tag must point at a
+commit whose workspace version is exactly `X.Y.Z`.
 
 ## First release
 
-Prepare the first public release from the repository root:
+Prepare the first public release branch from the repository root:
 
 ```bash
-gh workflow run prepare-release.yml -f version=0.0.1 -f run_full_ci=true
+gh workflow run prepare-release.yml -f version=0.0.1
 ```
 
 The workflow:
 
 1. validates the requested semver version,
 2. runs `make upversion VERSION=0.0.1`,
-3. runs full CI and CLI smoke checks when `run_full_ci=true`,
-4. opens a `release/v0.0.1` pull request.
+3. runs fast release preparation checks,
+4. pushes `release/v0.0.1`,
+5. writes the manual pull request URL to the workflow summary.
 
-For local preparation:
+After the release pull request is merged into `main`, publish the GitHub Release:
+
+```bash
+gh release create v0.0.1 --target main --title "Starweaver v0.0.1" --generate-notes
+```
+
+For fully local preparation:
 
 ```bash
 make upversion VERSION=0.0.1
 make ci
 make cli-smoke
 make publish-dry-run
+git add Cargo.toml Cargo.lock crates/*/Cargo.toml
+git commit -m "Prepare release v0.0.1"
+git push
+gh release create v0.0.1 --target main --title "Starweaver v0.0.1" --generate-notes
 ```
 
-## Draft release workflow
+## Release workflow
 
-When a `release/vX.Y.Z` pull request is merged into `main`, `draft-release.yml` validates the
-merged release commit, runs `make ci-all`, runs `make cli-smoke`, builds CLI launcher binaries,
-creates a draft GitHub Release for tag `vX.Y.Z`, and uploads binary archives plus `checksums.txt`.
+Publishing the GitHub Release triggers `.github/workflows/release.yml`:
+
+1. validate the release tag against the workspace version,
+2. run `make ci`,
+3. run `make cli-smoke`,
+4. build CLI launcher binaries,
+5. upload binary archives and `checksums.txt` to the GitHub Release,
+6. dry-run first-wave publish packages,
+7. publish all workspace crates in dependency order through the `Release` environment.
 
 CLI archives are built for:
 
@@ -57,17 +77,9 @@ starweaver-cli.exe
 sw.exe
 ```
 
-The draft release also includes `checksums.txt` with SHA-256 checksums for all archives.
+The release also includes `checksums.txt` with SHA-256 checksums for all archives.
 
 ## Publish crates
-
-Publishing the draft GitHub Release triggers `.github/workflows/release.yml`:
-
-1. validate the release tag against the workspace version,
-2. run `make ci-all`,
-3. run `make cli-smoke`,
-4. dry-run first-wave publish packages,
-5. publish all workspace crates in dependency order through the `Release` environment.
 
 Manual dry-run:
 
@@ -91,7 +103,7 @@ make publish
 - `CARGO_REGISTRY_TOKEN` secret is configured.
 - The `Release` environment exists and requires the intended approval policy.
 - The target tag, such as `v0.0.1`, does not already exist.
-- GitHub Actions can create the `release/vX.Y.Z` pull request.
+- GitHub Actions has `contents: write` permission so release assets can be uploaded.
 
 ## After publishing
 
