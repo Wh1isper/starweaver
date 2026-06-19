@@ -3,9 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    display_local_path, is_tmp_path, normalize_absolute_request_path, normalize_local_config_path,
-    normalize_path, normalize_requested_path, normalize_str_path, push_unique_path,
-    EnvironmentError, EnvironmentResult, DEFAULT_TMP_DIR,
+    display_local_path, is_absolute_request_path, is_tmp_path, normalize_absolute_request_path,
+    normalize_local_config_path, normalize_path, normalize_requested_path, normalize_str_path,
+    push_unique_path, EnvironmentError, EnvironmentResult, DEFAULT_TMP_DIR,
 };
 
 use super::LocalEnvironmentProvider;
@@ -30,7 +30,7 @@ impl LocalEnvironmentProvider {
         path: &str,
     ) -> EnvironmentResult<(String, PathBuf)> {
         let requested = Path::new(path);
-        if requested.is_absolute() {
+        if is_absolute_request_path(requested) {
             let filesystem_path = normalize_absolute_request_path(requested)?;
             if !self.is_under_allowed_roots(&filesystem_path) {
                 return Err(EnvironmentError::AccessDenied(path.to_string()));

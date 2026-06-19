@@ -185,10 +185,17 @@ pub fn normalize_absolute_request_path(path: &Path) -> EnvironmentResult<PathBuf
     Ok(normalize_local_config_path(normalized_path))
 }
 
+pub fn is_absolute_request_path(path: &Path) -> bool {
+    normalize_absolute_request_path_input(path).is_absolute()
+}
+
 #[cfg(windows)]
 fn normalize_absolute_request_path_input(path: &Path) -> PathBuf {
     let path = path.to_string_lossy();
-    strip_windows_verbatim_prefix(&path).map_or_else(|| PathBuf::from(path.as_ref()), PathBuf::from)
+    if let Some(stripped) = strip_windows_verbatim_prefix(&path) {
+        return PathBuf::from(stripped);
+    }
+    windows_msys_drive_path(&path).map_or_else(|| PathBuf::from(path.as_ref()), PathBuf::from)
 }
 
 #[cfg(not(windows))]
@@ -218,6 +225,24 @@ fn strip_windows_verbatim_prefix(path: &str) -> Option<String> {
     normalized
         .strip_prefix(r"\\?\")
         .map(std::string::ToString::to_string)
+}
+
+#[cfg(windows)]
+fn windows_msys_drive_path(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let stripped = normalized.strip_prefix('/')?;
+    let (drive, rest) = stripped
+        .split_once('/')
+        .map_or((stripped, ""), |(drive, rest)| (drive, rest));
+    if drive.len() != 1 || !drive.as_bytes()[0].is_ascii_alphabetic() {
+        return None;
+    }
+    let drive = drive.to_ascii_uppercase();
+    if rest.is_empty() {
+        Some(format!("{drive}:\\"))
+    } else {
+        Some(format!("{drive}:\\{}", rest.replace('/', "\\")))
+    }
 }
 
 pub fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {

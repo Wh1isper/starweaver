@@ -518,7 +518,7 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
         .write_tmp_file("stdout.log", b"full shell output")
         .await
         .unwrap();
-    let tmp_path_buf = PathBuf::from(&tmp_path);
+    let tmp_path_buf = normalize_local_config_path(PathBuf::from(&tmp_path));
     assert!(tmp_path_buf.is_absolute());
     assert!(provider.path_is_managed_tmp(&tmp_path_buf));
     assert!(provider
@@ -565,6 +565,13 @@ fn display_local_path_strips_windows_verbatim_prefixes() {
 }
 
 #[cfg(windows)]
+fn windows_msys_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let (drive, rest) = normalized.split_once(":/").unwrap();
+    format!("/{}/{}", drive.to_ascii_lowercase(), rest)
+}
+
+#[cfg(windows)]
 #[tokio::test]
 async fn local_provider_accepts_windows_verbatim_tmp_paths() {
     let root = unique_test_dir();
@@ -586,6 +593,12 @@ async fn local_provider_accepts_windows_verbatim_tmp_paths() {
     let leaked_verbatim_path = format!("//?/{tmp_path}");
     assert_eq!(
         provider.read_text(&leaked_verbatim_path).await.unwrap(),
+        "full shell output"
+    );
+
+    let msys_path = windows_msys_path(&tmp_path);
+    assert_eq!(
+        provider.read_text(&msys_path).await.unwrap(),
         "full shell output"
     );
 
@@ -682,15 +695,16 @@ async fn local_provider_tmp_base_dir_places_managed_tmp_under_base() {
             shell: ShellPolicy::default(),
         });
 
-    let tmp_dir = provider.tmp_dir_path().unwrap().to_path_buf();
-    assert!(tmp_dir.starts_with(&tmp_base));
+    let normalized_tmp_base = normalize_local_config_path(tmp_base.clone());
+    let tmp_dir = normalize_local_config_path(provider.tmp_dir_path().unwrap().to_path_buf());
+    assert!(tmp_dir.starts_with(&normalized_tmp_base));
     assert!(tmp_dir
         .file_name()
         .unwrap()
         .to_string_lossy()
         .starts_with(LOCAL_TMP_DIR_PREFIX));
     let tmp_path = provider.write_tmp_file("grep.json", b"[]").await.unwrap();
-    assert!(PathBuf::from(&tmp_path).starts_with(&tmp_dir));
+    assert!(normalize_local_config_path(PathBuf::from(&tmp_path)).starts_with(&tmp_dir));
     assert_eq!(provider.read_text(&tmp_path).await.unwrap(), "[]");
 
     std::fs::remove_dir_all(root).unwrap();
@@ -927,9 +941,15 @@ async fn local_provider_accepts_allowed_absolute_paths_and_rejects_unsafe_paths(
             path: display_local_path(&external.join("research/SKILL.md")),
         }]
     );
+    #[cfg(not(windows))]
     assert!(matches!(
         provider.read_text("/etc/passwd").await,
         Err(EnvironmentError::AccessDenied(_))
+    ));
+    #[cfg(windows)]
+    assert!(matches!(
+        provider.read_text("/etc/passwd").await,
+        Err(EnvironmentError::InvalidRequest(_))
     ));
     assert!(matches!(
         provider.read_text("../outside.txt").await,
@@ -1178,7 +1198,8 @@ async fn local_provider_shell_tmpdir_uses_managed_namespace() {
     assert_eq!(output.status, 0);
     let path = output.stdout;
     assert!(path.contains("session_123"));
-    assert!(Path::new(&path).is_absolute());
+    let normalized_path = normalize_absolute_request_path(Path::new(&path)).unwrap();
+    assert!(provider.path_is_managed_tmp(&normalized_path));
     assert_eq!(provider.read_text(&path).await.unwrap(), "managed");
 
     std::fs::remove_dir_all(root).unwrap();
@@ -1211,7 +1232,8 @@ async fn local_provider_background_shell_tmpdir_uses_managed_namespace() {
     assert_eq!(completed.status, ShellProcessStatus::Completed);
     let path = completed.stdout;
     assert!(path.contains("session_123"));
-    assert!(Path::new(&path).is_absolute());
+    let normalized_path = normalize_absolute_request_path(Path::new(&path)).unwrap();
+    assert!(provider.path_is_managed_tmp(&normalized_path));
     assert_eq!(provider.read_text(&path).await.unwrap(), "managed");
 
     std::fs::remove_dir_all(root).unwrap();
