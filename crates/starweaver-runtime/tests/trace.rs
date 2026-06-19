@@ -2,11 +2,16 @@
 
 use std::sync::Arc;
 
-use starweaver_core::AgentId;
-use starweaver_model::{tool_call_response, FinishReason, ModelResponse};
+use async_trait::async_trait;
+use starweaver_context::AgentContext;
+use starweaver_core::{AgentId, TraceContext};
+use starweaver_model::{
+    tool_call_response, FinishReason, ModelResponse, ModelResponsePart, ToolCallPart,
+};
 use starweaver_runtime::{
-    export_otel_gen_ai_spans, AdapterTraceRecorder, Agent, InMemoryTraceRecorder, OtelGenAiSpan,
-    SpanKind, SpanStatus, TraceLevel,
+    export_otel_gen_ai_spans, AdapterTraceRecorder, Agent, AgentCapability, AgentRunState,
+    CapabilityError, CapabilityResult, InMemoryTraceRecorder, OtelGenAiSpan, SpanKind, SpanStatus,
+    TraceLevel,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 use starweaver_usage::Usage;
@@ -299,4 +304,114 @@ fn span_specs_and_events_carry_trace_levels() {
     let spans = recorder.spans();
     assert_eq!(spans[0].level, TraceLevel::Debug);
     assert_eq!(spans[0].events[0].level, TraceLevel::Debug);
+}
+
+struct FailingRunStartCapability;
+
+#[async_trait]
+impl AgentCapability for FailingRunStartCapability {
+    async fn on_run_start_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+    ) -> CapabilityResult<()> {
+        Err(CapabilityError::Failed("run start failed".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn run_start_error_closes_agent_span_and_restores_trace_context() {
+    let recorder = Arc::new(InMemoryTraceRecorder::new());
+    let root = TraceContext::from_trace_id("trace-parent").with_span_id("span-parent");
+    let agent = Agent::new(Arc::new(starweaver_model::TestModel::with_text("unused")))
+        .with_capability(Arc::new(FailingRunStartCapability))
+        .with_trace_recorder(recorder.clone());
+    let mut context = agent.new_context().with_trace_context(root.clone());
+
+    let error = agent
+        .run_with_context("hello", &mut context)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("run start failed"));
+    assert_eq!(context.trace_context, root);
+    let spans = recorder.spans();
+    assert!(spans
+        .iter()
+        .all(|span| !matches!(span.status, SpanStatus::Open)));
+    let agent_span = spans
+        .iter()
+        .find(|span| span.name == "gen_ai.invoke_agent")
+        .unwrap();
+    assert_eq!(agent_span.trace_id, "trace-parent");
+    assert_eq!(agent_span.parent_span_id.as_deref(), Some("span-parent"));
+    assert!(matches!(agent_span.status, SpanStatus::Error { .. }));
+}
+
+struct FailingBeforeToolCapability;
+
+#[async_trait]
+impl AgentCapability for FailingBeforeToolCapability {
+    async fn before_tool_execution_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        _tool_context: &mut ToolContext,
+        _call: &ToolCallPart,
+    ) -> CapabilityResult<()> {
+        Err(CapabilityError::Failed("before tool failed".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn before_tool_error_closes_active_tool_step_and_agent_spans() {
+    let recorder = Arc::new(InMemoryTraceRecorder::new());
+    let tool = FunctionTool::new(
+        "echo",
+        Some("Echo".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_context: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    );
+    let tools = ToolRegistry::new().with_tool(Arc::new(tool));
+    let model = starweaver_model::TestModel::with_responses(vec![ModelResponse {
+        parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+            id: "call-1".to_string(),
+            name: "echo".to_string(),
+            arguments: serde_json::json!({"text": "hello"}).into(),
+        })],
+        ..ModelResponse::text("")
+    }]);
+    let root = TraceContext::from_trace_id("trace-tool").with_span_id("span-parent");
+    let agent = Agent::new(Arc::new(model))
+        .with_tools(tools)
+        .with_capability(Arc::new(FailingBeforeToolCapability))
+        .with_trace_recorder(recorder.clone());
+    let mut context = agent.new_context().with_trace_context(root.clone());
+
+    let error = agent
+        .run_with_context("hello", &mut context)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("before tool failed"));
+    assert_eq!(context.trace_context, root);
+    let spans = recorder.spans();
+    assert!(spans
+        .iter()
+        .all(|span| !matches!(span.status, SpanStatus::Open)));
+    let tool_span = spans
+        .iter()
+        .find(|span| span.name == "gen_ai.execute_tool")
+        .unwrap();
+    let step_span = spans
+        .iter()
+        .find(|span| span.name == "starweaver.loop.step")
+        .unwrap();
+    let agent_span = spans
+        .iter()
+        .find(|span| span.name == "gen_ai.invoke_agent")
+        .unwrap();
+    assert!(matches!(tool_span.status, SpanStatus::Error { .. }));
+    assert!(matches!(step_span.status, SpanStatus::Error { .. }));
+    assert!(matches!(agent_span.status, SpanStatus::Error { .. }));
 }

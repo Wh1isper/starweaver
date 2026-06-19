@@ -16,12 +16,14 @@ pub(crate) fn default_filter_capabilities_with_media_uploader(
     compact_model: Option<&std::sync::Arc<dyn starweaver_model::ModelAdapter>>,
     compact_model_settings: Option<&starweaver_model::ModelSettings>,
     compact_request_params: Option<&starweaver_model::ModelRequestParameters>,
+    trace_recorder: Option<&starweaver_runtime::DynTraceRecorder>,
     media_uploader: Option<&std::sync::Arc<dyn media::MediaUploader>>,
 ) -> Vec<std::sync::Arc<dyn starweaver_runtime::AgentCapability>> {
     named::default_filter_capabilities_with_media_uploader(
         compact_model,
         compact_model_settings,
         compact_request_params,
+        trace_recorder,
         media_uploader,
     )
 }

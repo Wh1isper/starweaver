@@ -3,8 +3,11 @@
 use serde_json::{Map, Value};
 use starweaver_context::{AgentContext, AgentContextHandle};
 use starweaver_model::{
-    ContentPart, ModelMessage, ModelRequest, ModelRequestContext, ModelRequestParameters,
-    ModelRequestPart, ModelResponse, OutputMode,
+    ContentPart, ModelAdapter, ModelMessage, ModelRequest, ModelRequestContext,
+    ModelRequestParameters, ModelRequestPart, ModelResponse, OutputMode,
+};
+use starweaver_runtime::{
+    DynTraceRecorder, SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus, TraceRecorderHandle,
 };
 use starweaver_tools::{ToolApprovalState, ToolContext, ToolError, ToolResult};
 use starweaver_usage::Usage;
@@ -136,19 +139,37 @@ async fn review_shell_command(
         });
     };
 
-    let response = model
+    let (request_context, model_trace) = shell_review_model_trace(context, model.as_ref());
+    let response = match model
         .request_stream_final(
             vec![ModelMessage::Request(shell_review_model_request(
                 config, request,
             ))],
             config.model_settings.clone(),
             shell_review_request_params(),
-            ModelRequestContext::new(context.run_id.clone(), context.conversation_id.clone()),
+            request_context,
         )
         .await
-        .map_err(|error| {
-            tool_execution_error("shell_exec", format!("Shell review failed: {error}"))
-        })?;
+    {
+        Ok(response) => {
+            if let Some(trace) = &model_trace {
+                trace.record_response(&response);
+                trace.close(SpanStatus::Ok);
+            }
+            response
+        }
+        Err(error) => {
+            if let Some(trace) = &model_trace {
+                trace.close(SpanStatus::Error {
+                    error_type: "model_error".to_string(),
+                });
+            }
+            return Err(tool_execution_error(
+                "shell_exec",
+                format!("Shell review failed: {error}"),
+            ));
+        }
+    };
     record_shell_review_usage(context, &response);
     parse_shell_review_decision(&response).ok_or_else(|| {
         tool_execution_error(
@@ -159,6 +180,112 @@ async fn review_shell_command(
             ),
         )
     })
+}
+
+struct ShellReviewModelTrace {
+    recorder: DynTraceRecorder,
+    span: SpanHandle,
+}
+
+impl ShellReviewModelTrace {
+    fn record_response(&self, response: &ModelResponse) {
+        self.recorder.record_event(
+            &self.span,
+            SpanEvent::new("starweaver.model.response")
+                .with_attribute(
+                    "gen_ai.response",
+                    serde_json::json!({
+                        "redacted": true,
+                        "part_count": response.parts.len(),
+                        "text_chars": response.text_output().chars().count(),
+                        "finish_reason": &response.finish_reason,
+                        "model_name": response.model_name.as_deref(),
+                    }),
+                )
+                .with_attribute(
+                    "gen_ai.usage.input_tokens",
+                    serde_json::json!(response.usage.input_tokens),
+                )
+                .with_attribute(
+                    "gen_ai.usage.output_tokens",
+                    serde_json::json!(response.usage.output_tokens),
+                ),
+        );
+    }
+
+    fn close(&self, status: SpanStatus) {
+        self.recorder.close_span(&self.span, status);
+    }
+}
+
+fn shell_review_model_trace(
+    context: &ToolContext,
+    model: &dyn ModelAdapter,
+) -> (ModelRequestContext, Option<ShellReviewModelTrace>) {
+    let request_context =
+        ModelRequestContext::new(context.run_id.clone(), context.conversation_id.clone())
+            .with_trace_context(context.trace_context.clone());
+    let Some(trace_recorder) = context
+        .dependency::<TraceRecorderHandle>()
+        .map(|handle| handle.recorder())
+    else {
+        return (request_context, None);
+    };
+    let span = trace_recorder.start_span(
+        shell_review_model_span_spec(context, model),
+        &context.trace_context,
+    );
+    trace_recorder.record_event(&span, shell_review_model_request_event());
+    let request_context = request_context.with_trace_context(span.context().clone());
+    (
+        request_context,
+        Some(ShellReviewModelTrace {
+            recorder: trace_recorder,
+            span,
+        }),
+    )
+}
+
+fn shell_review_model_span_spec(context: &ToolContext, model: &dyn ModelAdapter) -> SpanSpec {
+    let spec = SpanSpec::new("gen_ai.inference")
+        .with_kind(SpanKind::Client)
+        .with_attribute("gen_ai.operation.name", serde_json::json!("chat"))
+        .with_attribute("gen_ai.agent.id", serde_json::json!("shell_review"))
+        .with_attribute(
+            "gen_ai.conversation.id",
+            serde_json::json!(context.conversation_id.as_str()),
+        )
+        .with_attribute(
+            "starweaver.run.id",
+            serde_json::json!(context.run_id.as_str()),
+        )
+        .with_attribute(
+            "gen_ai.request.model",
+            serde_json::json!(model.model_name()),
+        );
+    match model.provider_name() {
+        Some(provider_name) => {
+            spec.with_attribute("gen_ai.provider.name", serde_json::json!(provider_name))
+        }
+        None => spec,
+    }
+}
+
+fn shell_review_model_request_event() -> SpanEvent {
+    SpanEvent::new("starweaver.model.request")
+        .with_attribute("starweaver.model.message_count", serde_json::json!(1))
+        .with_attribute(
+            "starweaver.model.has_output_schema",
+            serde_json::json!(true),
+        )
+        .with_attribute(
+            "gen_ai.request",
+            serde_json::json!({
+                "redacted": true,
+                "message_count": 1,
+                "output_schema_name": null,
+            }),
+        )
 }
 
 fn shell_review_model_request(

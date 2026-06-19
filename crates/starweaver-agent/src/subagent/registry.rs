@@ -6,7 +6,7 @@ use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 use starweaver_core::{Metadata, SubagentLifecycleEvent, SubagentLifecycleKind, TaskId};
 use starweaver_runtime::{
     AgentCapability, AgentError, AgentResult, AgentStreamRecord, AgentStreamSink,
-    AgentStreamSource, CapabilityBundle,
+    AgentStreamSource, CapabilityBundle, TraceRecorderHandle,
 };
 use starweaver_tools::{
     typed_json_tool, DynTool, EmptyToolArgs, ToolContext, ToolError, ToolRegistry, ToolResult,
@@ -170,6 +170,12 @@ impl SubagentRegistry {
                             }
                         })?;
                     let mut parent_context = context_handle.snapshot();
+                    parent_context.trace_context = context.trace_context.clone();
+                    if let Some(trace_recorder) = context.dependency::<TraceRecorderHandle>() {
+                        parent_context
+                            .dependencies
+                            .insert(trace_recorder.as_ref().clone());
+                    }
                     let mut metadata = arguments.metadata.unwrap_or_else(|| serde_json::json!({}));
                     if let Some(agent_id) = arguments.agent_id {
                         metadata["agent_id"] = serde_json::json!(agent_id);
@@ -351,6 +357,9 @@ impl SubagentRegistry {
             .clone()
             .with_appended_tools(&inherited_tools);
         let mut child_agent = child_agent;
+        if let Some(trace_recorder) = parent_context.dependency::<TraceRecorderHandle>() {
+            child_agent = child_agent.with_trace_recorder(trace_recorder.recorder());
+        }
         for capability in &subagent.inherited_capabilities {
             child_agent = child_agent.with_capability(capability.clone());
         }

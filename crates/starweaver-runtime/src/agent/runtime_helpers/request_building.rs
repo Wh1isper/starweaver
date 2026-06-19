@@ -30,6 +30,9 @@ use crate::{
     trace::{SpanSpec, SpanStatus},
 };
 
+const HISTORY_COMPACTION_TRACE_RECORDED_METADATA: &str =
+    "starweaver.history.compaction.trace_recorded";
+
 impl Agent {
     fn attach_static_instruction_parts(&self, request: &mut ModelRequest) {
         if self.instructions.is_empty() {
@@ -277,7 +280,11 @@ impl Agent {
                 .await
                 .map_err(Self::capability_error)?;
             let after_count = messages.len();
-            if before_count != after_count {
+            let trace_recorded = context
+                .metadata
+                .remove(HISTORY_COMPACTION_TRACE_RECORDED_METADATA)
+                .is_some();
+            if before_count != after_count && !trace_recorded {
                 let span = self.trace_recorder.start_span(
                     SpanSpec::new("starweaver.history.compaction")
                         .with_attribute(

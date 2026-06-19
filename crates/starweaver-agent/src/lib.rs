@@ -100,7 +100,8 @@ pub use starweaver_runtime::{
     OutputFunctionContext, OutputFunctionDefinition, OutputMedia, OutputPolicy, OutputSchema,
     OutputValidationError, OutputValidationResult, OutputValidator, OutputValue, RecordedSpan,
     RetryEventKind, RunStatus, SchemaOutputFunction, SpanEvent, SpanHandle, SpanKind, SpanSpec,
-    SpanStatus, StaticCapabilityBundle, TraceLevel, TraceRecorder, RUNTIME_CONTEXT_CAPABILITY_ID,
+    SpanStatus, StaticCapabilityBundle, TraceLevel, TraceRecorder, TraceRecorderHandle,
+    RUNTIME_CONTEXT_CAPABILITY_ID,
 };
 pub use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, DeferredToolRequest,
@@ -675,6 +676,7 @@ impl AgentBuilder {
         );
         let media_capability_hook = Arc::new(HostMediaCapabilityHook { media_capabilities });
         let mut tools = self.tools;
+        let trace_recorder = self.trace_recorder.clone();
         if !subagents.is_empty() {
             let subagents = Arc::new(subagents);
             tools.insert(subagents.delegate_tool());
@@ -743,6 +745,7 @@ impl AgentBuilder {
             Some(&compact_model),
             compact_model_settings.as_ref(),
             Some(&compact_request_params),
+            trace_recorder.as_ref(),
             self.media_uploader.as_ref(),
         ) {
             agent = agent.with_capability(capability);

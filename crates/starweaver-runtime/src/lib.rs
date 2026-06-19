@@ -55,5 +55,5 @@ pub use trace::{
     export_otel_gen_ai_spans, AdapterTraceRecorder, DynTraceRecorder, InMemoryTraceRecorder,
     NoopTraceRecorder, OtelGenAiSpan, PolicyTraceRecorder, RecordedSpan, SpanEvent, SpanHandle,
     SpanKind, SpanSpec, SpanStatus, TraceDebugPolicy, TraceLevel, TraceRecorder,
-    TraceRedactionPolicy,
+    TraceRecorderHandle, TraceRedactionPolicy,
 };

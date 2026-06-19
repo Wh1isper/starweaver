@@ -9,7 +9,7 @@ mod tool_args;
 use std::sync::Arc;
 
 use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
-use starweaver_runtime::{AgentCapability, StaticCapabilityBundle};
+use starweaver_runtime::{AgentCapability, DynTraceRecorder, StaticCapabilityBundle};
 
 use super::compact::CacheFriendlyCompactCapability;
 
@@ -46,6 +46,7 @@ pub fn default_filter_capabilities_with_config(
         compact_model_settings,
         compact_request_params,
         None,
+        None,
     )
 }
 
@@ -53,6 +54,7 @@ pub(super) fn default_filter_capabilities_with_media_uploader(
     compact_model: Option<&Arc<dyn ModelAdapter>>,
     compact_model_settings: Option<&ModelSettings>,
     compact_request_params: Option<&ModelRequestParameters>,
+    trace_recorder: Option<&DynTraceRecorder>,
     media_uploader: Option<&Arc<dyn super::media::MediaUploader>>,
 ) -> Vec<Arc<dyn AgentCapability>> {
     DEFAULT_FILTER_ORDER
@@ -65,6 +67,9 @@ pub(super) fn default_filter_capabilities_with_media_uploader(
                 }
                 if let Some(params) = compact_request_params.cloned() {
                     capability = capability.with_request_params(params);
+                }
+                if let Some(recorder) = trace_recorder.cloned() {
+                    capability = capability.with_trace_recorder(recorder);
                 }
                 Arc::new(capability) as Arc<dyn AgentCapability>
             } else if *name == "media_upload" {

@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
+use starweaver_core::TraceContext;
 use starweaver_model::{
     transport::{should_retry_error, RetryPolicy},
     ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
@@ -31,8 +32,70 @@ use crate::{
     stream::{
         push_stream_event, push_stream_record, AgentStreamEvent, AgentStreamRecord, AgentStreamSink,
     },
-    trace::{SpanEvent, SpanKind, SpanSpec, SpanStatus},
+    trace::{
+        DynTraceRecorder, SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus,
+        TraceRecorderHandle,
+    },
 };
+
+struct ActiveSpan {
+    recorder: DynTraceRecorder,
+    span: SpanHandle,
+    fallback_error_type: &'static str,
+    closed: bool,
+}
+
+impl ActiveSpan {
+    fn start(
+        recorder: &DynTraceRecorder,
+        spec: SpanSpec,
+        parent: &TraceContext,
+        fallback_error_type: &'static str,
+    ) -> Self {
+        let span = recorder.start_span(spec, parent);
+        Self {
+            recorder: recorder.clone(),
+            span,
+            fallback_error_type,
+            closed: false,
+        }
+    }
+
+    const fn context(&self) -> &TraceContext {
+        self.span.context()
+    }
+
+    fn close(&mut self, status: SpanStatus) {
+        if self.closed {
+            return;
+        }
+        self.recorder.close_span(&self.span, status);
+        self.closed = true;
+    }
+}
+
+impl std::ops::Deref for ActiveSpan {
+    type Target = SpanHandle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.span
+    }
+}
+
+impl Drop for ActiveSpan {
+    fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
+        self.recorder.close_span(
+            &self.span,
+            SpanStatus::Error {
+                error_type: self.fallback_error_type.to_string(),
+            },
+        );
+        self.closed = true;
+    }
+}
 
 #[inline(never)]
 fn shared_context_dependency(context: &AgentContext) -> Arc<AgentContext> {
@@ -56,6 +119,21 @@ fn should_resume_provider_stream(error: &starweaver_model::ModelError) -> bool {
 impl Agent {
     #[allow(clippy::large_stack_frames, clippy::too_many_lines)]
     async fn run_with_context_inner(
+        &self,
+        prompt: impl Into<AgentInput>,
+        context: &mut AgentContext,
+        stream_events: Option<&mut Vec<AgentStreamRecord>>,
+    ) -> Result<AgentResult, AgentError> {
+        let previous_trace_context = context.trace_context.clone();
+        let result = self
+            .run_with_context_inner_impl(prompt, context, stream_events)
+            .await;
+        context.trace_context = previous_trace_context;
+        result
+    }
+
+    #[allow(clippy::large_stack_frames, clippy::too_many_lines)]
+    async fn run_with_context_inner_impl(
         &self,
         prompt: impl Into<AgentInput>,
         context: &mut AgentContext,
@@ -210,7 +288,8 @@ impl Agent {
             .agent_registry
             .get(&agent_id)
             .map_or_else(|| agent_id.clone(), |info| info.agent_name.clone());
-        let run_span = self.trace_recorder.start_span(
+        let mut run_span = ActiveSpan::start(
+            &self.trace_recorder,
             SpanSpec::new("gen_ai.invoke_agent")
                 .with_attribute("gen_ai.operation.name", serde_json::json!("invoke_agent"))
                 .with_attribute("gen_ai.agent.id", serde_json::json!(agent_id))
@@ -221,6 +300,7 @@ impl Agent {
                 )
                 .with_attribute("starweaver.run.id", serde_json::json!(run_id.as_str())),
             &context.trace_context,
+            "agent_run_dropped",
         );
         let previous_trace_context = context.trace_context.clone();
         context.trace_context = run_span.context().clone();
@@ -301,24 +381,20 @@ impl Agent {
         let mut tool_retries = BTreeMap::<String, usize>::new();
 
         'agent_loop: loop {
-            let step_span = self.trace_recorder.start_span(
+            let mut step_span = ActiveSpan::start(
+                &self.trace_recorder,
                 SpanSpec::new("starweaver.loop.step")
                     .with_attribute("starweaver.run.step", serde_json::json!(state.run_step)),
                 run_span.context(),
+                "loop_step_dropped",
             );
             if state.run_step >= self.policy.max_steps {
-                self.trace_recorder.close_span(
-                    &step_span,
-                    SpanStatus::Error {
-                        error_type: "step_limit_exceeded".to_string(),
-                    },
-                );
-                self.trace_recorder.close_span(
-                    &run_span,
-                    SpanStatus::Error {
-                        error_type: "step_limit_exceeded".to_string(),
-                    },
-                );
+                step_span.close(SpanStatus::Error {
+                    error_type: "step_limit_exceeded".to_string(),
+                });
+                run_span.close(SpanStatus::Error {
+                    error_type: "step_limit_exceeded".to_string(),
+                });
                 fail_run!(
                     &mut state,
                     &run_id,
@@ -431,9 +507,12 @@ impl Agent {
                     model_spec = model_spec
                         .with_attribute("gen_ai.provider.name", serde_json::json!(provider_name));
                 }
-                let model_span = self
-                    .trace_recorder
-                    .start_span(model_spec, step_span.context());
+                let mut model_span = ActiveSpan::start(
+                    &self.trace_recorder,
+                    model_spec,
+                    step_span.context(),
+                    "model_request_dropped",
+                );
                 self.record_model_request_event(&model_span, &messages, settings.as_ref(), &params);
                 let request_context =
                     ModelRequestContext::new(run_id.clone(), conversation_id.clone())
@@ -449,24 +528,15 @@ impl Agent {
                         let error = $error;
                         match error {
                             starweaver_model::ModelError::Cancelled { reason } => {
-                                self.trace_recorder.close_span(
-                                    &model_span,
-                                    SpanStatus::Error {
-                                        error_type: "model_cancelled".to_string(),
-                                    },
-                                );
-                                self.trace_recorder.close_span(
-                                    &step_span,
-                                    SpanStatus::Error {
-                                        error_type: "model_cancelled".to_string(),
-                                    },
-                                );
-                                self.trace_recorder.close_span(
-                                    &run_span,
-                                    SpanStatus::Error {
-                                        error_type: "model_cancelled".to_string(),
-                                    },
-                                );
+                                model_span.close(SpanStatus::Error {
+                                    error_type: "model_cancelled".to_string(),
+                                });
+                                step_span.close(SpanStatus::Error {
+                                    error_type: "model_cancelled".to_string(),
+                                });
+                                run_span.close(SpanStatus::Error {
+                                    error_type: "model_cancelled".to_string(),
+                                });
                                 fail_run!(
                                     &mut state,
                                     &run_id,
@@ -476,29 +546,20 @@ impl Agent {
                                 );
                             }
                             error => {
-                                self.trace_recorder.close_span(
-                                    &model_span,
-                                    SpanStatus::Error {
-                                        error_type: "model_error".to_string(),
-                                    },
-                                );
+                                model_span.close(SpanStatus::Error {
+                                    error_type: "model_error".to_string(),
+                                });
                                 let recovery =
                                     recover_retry_message_history(&error, &state.message_history);
                                 if recovery.reasons.is_empty()
                                     || model_error_retries_used >= DEFAULT_MODEL_ERROR_RETRIES
                                 {
-                                    self.trace_recorder.close_span(
-                                        &step_span,
-                                        SpanStatus::Error {
-                                            error_type: "model_error".to_string(),
-                                        },
-                                    );
-                                    self.trace_recorder.close_span(
-                                        &run_span,
-                                        SpanStatus::Error {
-                                            error_type: "model_error".to_string(),
-                                        },
-                                    );
+                                    step_span.close(SpanStatus::Error {
+                                        error_type: "model_error".to_string(),
+                                    });
+                                    run_span.close(SpanStatus::Error {
+                                        error_type: "model_error".to_string(),
+                                    });
                                     fail_run!(&mut state, &run_id, context_event_cursor, previous_trace_context.clone(), AgentError::Model(error));
                                 }
                                 model_error_retries_used =
@@ -522,7 +583,7 @@ impl Agent {
                                 ));
                                 stream_context_events!(&state, context_event_cursor);
                                 next_prompt = DEFAULT_MODEL_ERROR_RESUME_PROMPT.to_string();
-                                self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                                step_span.close(SpanStatus::Ok);
                                 continue 'agent_loop;
                             }
                         }
@@ -625,24 +686,15 @@ impl Agent {
                             stream_context_events!(&state, context_event_cursor);
                             continue 'model_stream_resume;
                         }
-                        self.trace_recorder.close_span(
-                            &model_span,
-                            SpanStatus::Error {
-                                error_type: "missing_final_result".to_string(),
-                            },
-                        );
-                        self.trace_recorder.close_span(
-                            &step_span,
-                            SpanStatus::Error {
-                                error_type: "missing_final_result".to_string(),
-                            },
-                        );
-                        self.trace_recorder.close_span(
-                            &run_span,
-                            SpanStatus::Error {
-                                error_type: "missing_final_result".to_string(),
-                            },
-                        );
+                        model_span.close(SpanStatus::Error {
+                            error_type: "missing_final_result".to_string(),
+                        });
+                        step_span.close(SpanStatus::Error {
+                            error_type: "missing_final_result".to_string(),
+                        });
+                        run_span.close(SpanStatus::Error {
+                            error_type: "missing_final_result".to_string(),
+                        });
                         fail_run!(
                             &mut state,
                             &run_id,
@@ -654,7 +706,7 @@ impl Agent {
                         );
                     };
                     self.record_model_response_event(&model_span, &response);
-                    self.trace_recorder.close_span(&model_span, SpanStatus::Ok);
+                    model_span.close(SpanStatus::Ok);
                     response
                 } else {
                     let response = match self
@@ -666,7 +718,7 @@ impl Agent {
                         Err(error) => recover_model_error!(error),
                     };
                     self.record_model_response_event(&model_span, &response);
-                    self.trace_recorder.close_span(&model_span, SpanStatus::Ok);
+                    model_span.close(SpanStatus::Ok);
                     response
                 }
             };
@@ -730,18 +782,12 @@ impl Agent {
                 context_event_cursor
             );
             if let Err(error) = self.check_usage(&state) {
-                self.trace_recorder.close_span(
-                    &step_span,
-                    SpanStatus::Error {
-                        error_type: "usage_limit".to_string(),
-                    },
-                );
-                self.trace_recorder.close_span(
-                    &run_span,
-                    SpanStatus::Error {
-                        error_type: "usage_limit".to_string(),
-                    },
-                );
+                step_span.close(SpanStatus::Error {
+                    error_type: "usage_limit".to_string(),
+                });
+                run_span.close(SpanStatus::Error {
+                    error_type: "usage_limit".to_string(),
+                });
                 fail_run!(
                     &mut state,
                     &run_id,
@@ -805,8 +851,8 @@ impl Agent {
                                     output: output.clone(),
                                 }
                             );
-                            self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
-                            self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                            step_span.close(SpanStatus::Ok);
+                            run_span.close(SpanStatus::Ok);
                             context.finish_run();
                             context.trace_context = previous_trace_context;
                             return Ok(AgentResult {
@@ -821,18 +867,12 @@ impl Agent {
                     Ok(None) => {}
                     Err(CapabilityError::ModelRetry(message)) => {
                         if output_retries_used >= self.policy.output_retries {
-                            self.trace_recorder.close_span(
-                                &step_span,
-                                SpanStatus::Error {
-                                    error_type: "output_retry_limit_exceeded".to_string(),
-                                },
-                            );
-                            self.trace_recorder.close_span(
-                                &run_span,
-                                SpanStatus::Error {
-                                    error_type: "output_retry_limit_exceeded".to_string(),
-                                },
-                            );
+                            step_span.close(SpanStatus::Error {
+                                error_type: "output_retry_limit_exceeded".to_string(),
+                            });
+                            run_span.close(SpanStatus::Error {
+                                error_type: "output_retry_limit_exceeded".to_string(),
+                            });
                             fail_run!(
                                 &mut state,
                                 &run_id,
@@ -860,22 +900,16 @@ impl Agent {
                             }
                         );
                         next_prompt = message;
-                        self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                        step_span.close(SpanStatus::Ok);
                         continue;
                     }
                     Err(error) => {
-                        self.trace_recorder.close_span(
-                            &step_span,
-                            SpanStatus::Error {
-                                error_type: "capability_error".to_string(),
-                            },
-                        );
-                        self.trace_recorder.close_span(
-                            &run_span,
-                            SpanStatus::Error {
-                                error_type: "capability_error".to_string(),
-                            },
-                        );
+                        step_span.close(SpanStatus::Error {
+                            error_type: "capability_error".to_string(),
+                        });
+                        run_span.close(SpanStatus::Error {
+                            error_type: "capability_error".to_string(),
+                        });
                         fail_run!(
                             &mut state,
                             &run_id,
@@ -886,18 +920,12 @@ impl Agent {
                     }
                 }
                 if run_tools.is_empty() {
-                    self.trace_recorder.close_span(
-                        &step_span,
-                        SpanStatus::Error {
-                            error_type: "tool_calls_require_tools".to_string(),
-                        },
-                    );
-                    self.trace_recorder.close_span(
-                        &run_span,
-                        SpanStatus::Error {
-                            error_type: "tool_calls_require_tools".to_string(),
-                        },
-                    );
+                    step_span.close(SpanStatus::Error {
+                        error_type: "tool_calls_require_tools".to_string(),
+                    });
+                    run_span.close(SpanStatus::Error {
+                        error_type: "tool_calls_require_tools".to_string(),
+                    });
                     fail_run!(
                         &mut state,
                         &run_id,
@@ -912,18 +940,12 @@ impl Agent {
                     .filter(|call| run_tools.get(&call.name).is_some())
                     .count() as u64;
                 if let Err(error) = self.check_tool_calls(&state, projected_successful_tool_calls) {
-                    self.trace_recorder.close_span(
-                        &step_span,
-                        SpanStatus::Error {
-                            error_type: "usage_limit".to_string(),
-                        },
-                    );
-                    self.trace_recorder.close_span(
-                        &run_span,
-                        SpanStatus::Error {
-                            error_type: "usage_limit".to_string(),
-                        },
-                    );
+                    step_span.close(SpanStatus::Error {
+                        error_type: "usage_limit".to_string(),
+                    });
+                    run_span.close(SpanStatus::Error {
+                        error_type: "usage_limit".to_string(),
+                    });
                     fail_run!(
                         &mut state,
                         &run_id,
@@ -943,7 +965,8 @@ impl Agent {
                     );
                     let tool_retry = *tool_retries.get(&call.name).unwrap_or(&0);
                     let tool_max_retries = run_tools.max_retries_for(&call.name);
-                    let tool_span = self.trace_recorder.start_span(
+                    let mut tool_span = ActiveSpan::start(
+                        &self.trace_recorder,
                         SpanSpec::new("gen_ai.execute_tool")
                             .with_attribute(
                                 "gen_ai.agent.id",
@@ -963,11 +986,13 @@ impl Agent {
                                 serde_json::json!(call.id.clone()),
                             ),
                         step_span.context(),
+                        "tool_execution_dropped",
                     );
                     let context_handle = context_handle_snapshot(context);
                     let mut tool_dependencies = context.dependencies.clone();
                     tool_dependencies.insert_arc(shared_context_dependency(context));
                     tool_dependencies.insert(context_handle.clone());
+                    tool_dependencies.insert(TraceRecorderHandle::new(self.trace_recorder.clone()));
                     let stream_sink = stream_events.as_ref().map(|_| AgentStreamSink::default());
                     if let Some(stream_sink) = &stream_sink {
                         tool_dependencies.insert(stream_sink.clone());
@@ -1033,19 +1058,16 @@ impl Agent {
                             ),
                     );
                     if tool_return.is_error && tool_return_control_flow(&tool_return).is_none() {
-                        self.trace_recorder.close_span(
-                            &tool_span,
-                            SpanStatus::Error {
-                                error_type: tool_return
-                                    .metadata
-                                    .get("error_kind")
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("tool_error")
-                                    .to_string(),
-                            },
-                        );
+                        tool_span.close(SpanStatus::Error {
+                            error_type: tool_return
+                                .metadata
+                                .get("error_kind")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("tool_error")
+                                .to_string(),
+                        });
                     } else {
-                        self.trace_recorder.close_span(&tool_span, SpanStatus::Ok);
+                        tool_span.close(SpanStatus::Ok);
                     }
                     self.absorb_tool_context_handle(&mut state, context, &context_handle)?;
                     self.call_after_tool_result(&mut state, context, call, &mut tool_return)
@@ -1059,24 +1081,15 @@ impl Agent {
                     );
                     if tool_return.is_error && is_tool_retry_return(&tool_return) {
                         if tool_retry >= tool_max_retries {
-                            self.trace_recorder.close_span(
-                                &tool_span,
-                                SpanStatus::Error {
-                                    error_type: "tool_retry_limit_exceeded".to_string(),
-                                },
-                            );
-                            self.trace_recorder.close_span(
-                                &step_span,
-                                SpanStatus::Error {
-                                    error_type: "tool_retry_limit_exceeded".to_string(),
-                                },
-                            );
-                            self.trace_recorder.close_span(
-                                &run_span,
-                                SpanStatus::Error {
-                                    error_type: "tool_retry_limit_exceeded".to_string(),
-                                },
-                            );
+                            tool_span.close(SpanStatus::Error {
+                                error_type: "tool_retry_limit_exceeded".to_string(),
+                            });
+                            step_span.close(SpanStatus::Error {
+                                error_type: "tool_retry_limit_exceeded".to_string(),
+                            });
+                            run_span.close(SpanStatus::Error {
+                                error_type: "tool_retry_limit_exceeded".to_string(),
+                            });
                             fail_run!(
                                 &mut state,
                                 &run_id,
@@ -1168,8 +1181,8 @@ impl Agent {
                     );
                     checkpoint!(AgentExecutionNode::ToolReturn, &state, context_event_cursor);
                     close_run_toolsets!(&state, context_event_cursor);
-                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
-                    self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                    step_span.close(SpanStatus::Ok);
+                    run_span.close(SpanStatus::Ok);
                     context.finish_run();
                     context.trace_context = previous_trace_context;
                     return Ok(AgentResult {
@@ -1227,8 +1240,8 @@ impl Agent {
                             output: output.clone(),
                         }
                     );
-                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
-                    self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                    step_span.close(SpanStatus::Ok);
+                    run_span.close(SpanStatus::Ok);
                     context.finish_run();
                     context.trace_context = previous_trace_context;
                     return Ok(AgentResult {
@@ -1240,7 +1253,7 @@ impl Agent {
                     });
                 }
                 next_prompt.clear();
-                self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                step_span.close(SpanStatus::Ok);
                 continue;
             }
 
@@ -1266,7 +1279,7 @@ impl Agent {
                         }
                     );
                     next_prompt = message;
-                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                    step_span.close(SpanStatus::Ok);
                 }
                 Ok(()) => {
                     state.output = Some(output.clone());
@@ -1290,8 +1303,8 @@ impl Agent {
                             output: output.clone(),
                         }
                     );
-                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
-                    self.trace_recorder.close_span(&run_span, SpanStatus::Ok);
+                    step_span.close(SpanStatus::Ok);
+                    run_span.close(SpanStatus::Ok);
                     context.finish_run();
                     context.trace_context = previous_trace_context;
                     return Ok(AgentResult {
@@ -1304,18 +1317,12 @@ impl Agent {
                 }
                 Err(CapabilityError::ModelRetry(message)) => {
                     if output_retries_used >= self.policy.output_retries {
-                        self.trace_recorder.close_span(
-                            &step_span,
-                            SpanStatus::Error {
-                                error_type: "output_retry_limit_exceeded".to_string(),
-                            },
-                        );
-                        self.trace_recorder.close_span(
-                            &run_span,
-                            SpanStatus::Error {
-                                error_type: "output_retry_limit_exceeded".to_string(),
-                            },
-                        );
+                        step_span.close(SpanStatus::Error {
+                            error_type: "output_retry_limit_exceeded".to_string(),
+                        });
+                        run_span.close(SpanStatus::Error {
+                            error_type: "output_retry_limit_exceeded".to_string(),
+                        });
                         fail_run!(
                             &mut state,
                             &run_id,
@@ -1343,21 +1350,15 @@ impl Agent {
                         }
                     );
                     next_prompt = message;
-                    self.trace_recorder.close_span(&step_span, SpanStatus::Ok);
+                    step_span.close(SpanStatus::Ok);
                 }
                 Err(error) => {
-                    self.trace_recorder.close_span(
-                        &step_span,
-                        SpanStatus::Error {
-                            error_type: "capability_error".to_string(),
-                        },
-                    );
-                    self.trace_recorder.close_span(
-                        &run_span,
-                        SpanStatus::Error {
-                            error_type: "capability_error".to_string(),
-                        },
-                    );
+                    step_span.close(SpanStatus::Error {
+                        error_type: "capability_error".to_string(),
+                    });
+                    run_span.close(SpanStatus::Error {
+                        error_type: "capability_error".to_string(),
+                    });
                     fail_run!(
                         &mut state,
                         &run_id,
