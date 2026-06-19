@@ -1025,7 +1025,12 @@ async fn local_shell_tmp_output_path_can_be_viewed() {
             },
         )
         .await;
-    assert_eq!(viewed.content.as_str().unwrap(), "0123456789abcdef");
+    let viewed_content = viewed
+        .content
+        .as_str()
+        .or_else(|| viewed.content["content"].as_str())
+        .unwrap_or_else(|| panic!("unexpected view result: {}", viewed.content));
+    assert_eq!(viewed_content, "0123456789abcdef");
 
     std::fs::remove_dir_all(root).unwrap();
 }
