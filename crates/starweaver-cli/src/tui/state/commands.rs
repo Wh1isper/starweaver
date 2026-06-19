@@ -1,4 +1,4 @@
-use std::{fmt::Write as _, process::Command};
+use std::{env, fmt::Write as _, path::Path, process::Command};
 
 use super::{
     model_choice_config_suffix, model_choice_label, push_shell_output_lines, FooterMode,
@@ -300,7 +300,7 @@ impl InteractiveTuiState {
             return;
         }
         self.body.push(format!("Shell command: {command}"));
-        match Command::new("/bin/bash").arg("-lc").arg(command).output() {
+        match tui_shell_command(command).output() {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -319,4 +319,76 @@ impl InteractiveTuiState {
             Err(error) => self.body.push(format!("Shell error: {error}")),
         }
     }
+}
+
+fn tui_shell_command(command: &str) -> Command {
+    let executable = tui_shell_executable();
+    let mut process = Command::new(&executable);
+    if uses_windows_cmd(&executable) {
+        process.arg("/C");
+    } else {
+        process.arg("-lc");
+    }
+    process.arg(command);
+    process
+}
+
+fn tui_shell_executable() -> String {
+    #[cfg(windows)]
+    {
+        if let Some(shell) = env::var_os("SHELL").as_deref().and_then(valid_shell_value) {
+            return shell;
+        }
+        if let Some(shell) = find_executable_in_path(&["bash.exe", "bash", "sh.exe", "sh"]) {
+            return shell;
+        }
+        for candidate in [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\sh.exe",
+        ] {
+            let path = std::path::PathBuf::from(candidate);
+            if path.is_file() {
+                return path.to_string_lossy().to_string();
+            }
+        }
+        env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+    }
+
+    #[cfg(not(windows))]
+    {
+        env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
+}
+
+#[cfg(windows)]
+fn valid_shell_value(value: &std::ffi::OsStr) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+    let shell = Path::new(value);
+    if shell.components().count() > 1 && !shell.is_file() {
+        return None;
+    }
+    Some(value.to_string_lossy().to_string())
+}
+
+#[cfg(windows)]
+fn find_executable_in_path(names: &[&str]) -> Option<String> {
+    let path = env::var_os("PATH")?;
+    for directory in env::split_paths(&path) {
+        for name in names {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn uses_windows_cmd(executable: &str) -> bool {
+    Path::new(executable)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("cmd"))
 }

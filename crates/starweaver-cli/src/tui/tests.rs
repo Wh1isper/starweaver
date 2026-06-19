@@ -3042,13 +3042,13 @@ fn bang_command_prints_natural_shell_transcript() {
         line == "[SYS] Shell command usage: !<command> (example: !git status --short)"
     }));
 
-    state.input = "!printf 'hello\\n'".to_string();
+    state.input = "!echo hello".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
     assert!(state.input.is_empty());
     assert!(state
         .body
         .iter()
-        .any(|line| line == "Shell command: printf 'hello\\n'"));
+        .any(|line| line == "Shell command: echo hello"));
     assert!(state.body.iter().any(|line| line == "Shell stdout:"));
     assert!(state.body.iter().any(|line| line == "  hello"));
     assert!(state
