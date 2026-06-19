@@ -1,9 +1,8 @@
-# Pydantic AI Core Abstractions
+# Agent Core Abstractions
 
 ## Scope
 
-This document lists only remaining Pydantic AI abstraction gaps and Rust-native
-non-goals.
+This document lists only remaining core agent abstraction gaps and Rust-native non-goals.
 
 ## Provider Replay Status
 
@@ -16,7 +15,7 @@ non-goals.
 
 - Multi-output selector semantics remain a product choice; current typed output, output function, and `AgentEndStrategy` APIs cover the adopted behavior.
 - Public graph inspection exists through the deterministic graph APIs; live graph iteration, node override, and node hook contexts remain internal unless Starweaver chooses graph control as a stable SDK surface.
-- Decorator-like registration is a Python syntax pattern; Rust-native builders and typed helpers remain the primary API unless macros remove clear boilerplate without creating a second public API style.
+- Decorator-like registration is a language-specific syntax pattern; Rust-native builders and typed helpers remain the primary API unless macros remove clear boilerplate without creating a second public API style.
 
 ## Acceptance
 

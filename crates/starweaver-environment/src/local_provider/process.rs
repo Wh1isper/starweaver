@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use starweaver_core::Metadata;
 
 use crate::{
-    read_child_pipe, refresh_local_shell_process, shell_process_metadata, EnvironmentError,
-    EnvironmentResult, ProcessShellProvider, ShellCommand, ShellProcessSnapshot,
+    local_shell_command, read_child_pipe, refresh_local_shell_process, shell_process_metadata,
+    EnvironmentError, EnvironmentResult, ProcessShellProvider, ShellCommand, ShellProcessSnapshot,
     ShellProcessStatus,
 };
 
@@ -40,9 +40,8 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         }
         let cwd = self.resolve_shell_cwd(command.cwd.as_deref())?;
         let environment = self.shell_environment(&command.environment)?;
-        let mut child = Command::new("/bin/sh")
-            .arg("-lc")
-            .arg(&command.command)
+        let mut process = local_shell_command(&command.command);
+        let mut child = process
             .current_dir(cwd)
             .envs(&environment)
             .stdin(Stdio::piped())

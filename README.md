@@ -1,79 +1,48 @@
 # Starweaver
 
-Starweaver is a Rust agent SDK for building provider-neutral AI agents with a solid core runtime, reusable tool schema, first-party SDK ergonomics, and durable execution foundations.
+Starweaver is a Rust agent SDK for building local-first AI agents, CLIs, and service runtimes.
+It gives you a typed agent loop, provider-neutral model protocol, function tools, structured
+output, durable session primitives, first-party environment tools, and a CLI product surface in
+one workspace.
 
-The project focuses on these workspace layers:
+The current release line is preparing for the first public release, `0.0.1`. The development
+version in this repository intentionally uses the pre-release version `0.0.1-dev.0`; the release
+workflow promotes it to `0.0.1`.
 
-- `starweaver-usage`: usage accounting, usage limits, snapshot events, and optional USD pricing estimates.
-- `starweaver-model`: provider-neutral model messages, settings, profiles, transport, replay-tested provider mappings, and OAuth-backed provider model adapters.
-- `starweaver-oauth`: OAuth credential storage under `~/.starweaver`, Codex device login, token refresh, JWT metadata extraction, and store-backed token sources.
-- `starweaver-oauth-provider`: OAuth-backed provider helpers, Codex model construction helpers, and refresh supervisor utilities.
-- `starweaver-tools`: function tools, toolsets, MCP foundations, tool metadata, approval/deferred markers, and execution primitives.
-- `starweaver-runtime`: deterministic agent loop, tool loop, output validation, retries, usage-limit enforcement, stream records, capability hooks, trace recording, and executor checkpoints.
-- `starweaver-agent`: public SDK facade with `AgentBuilder`, `AgentApp`, SDK sessions, spec presets, first-party tool bundles, subagents, and application-facing helpers.
-- `starweaver-environment`: filesystem, shell, resources, policy, state snapshots, virtual provider tests, and local provider foundations.
-- `starweaver-session`: durable session contracts for input parts, `SessionStore`, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
-- `starweaver-stream`: display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, and protocol envelopes.
-- `starweaver-storage`: SQLite migrations, concrete durable session storage, replay event storage, stream archives, and migration status reporting.
-- `starweaver-cli`: CLI-first product surface for headless stdio runs, display-message rendering, session restore, launcher dispatch, and install/update workflows.
+## Why Starweaver
 
-Planned layers are specified before public API graduation:
+- Rust-native agent construction with `AgentBuilder`, `AgentApp`, and `AgentSession`.
+- Provider-neutral model messages, settings, profiles, streaming parts, and request audit hooks.
+- Typed function tools from Serde and `schemars`, plus toolsets, metadata, retries, approval, and deferred records.
+- Structured output through JSON Schema, typed parsing, output functions, and validation retry.
+- Runtime extension hooks for prompt preparation, request shaping, tool policy, output validation, usage, and trace recording.
+- Durable execution foundations: context export/restore, checkpoints, session records, replay streams, and SQLite storage adapters.
+- First-party SDK bundles for filesystem, shell, skills, task tracking, host search/scrape/media adapters, MCP, and subagents.
+- A CLI launcher with profile-based local runs, install/update flow, display messages, local storage, and release artifacts.
 
-- `starweaver-platform`: hosted orchestration and external protocol adapters.
+## Install
 
-## Design Boundary
-
-Starweaver keeps its implementation boundaries native:
-
-- `starweaver-runtime` owns the agentic loop.
-- `starweaver-context` owns neutral run and session evidence.
-- `starweaver-agent` owns SDK ergonomics and first-party bundles.
-- `starweaver-usage` owns usage accounting, limits, snapshots, and optional USD pricing estimates.
-
-## CLI install
-
-Install the latest launcher and CLI binaries from GitHub Releases:
+After the first release is published:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
 ```
 
-Run the CLI through the product launcher:
+Install a pinned release:
 
 ```bash
-starweaver cli -p "hello" --output text
-sw cli -p "hello" --output text
-starweaver update cli
+STARWEAVER_VERSION=v0.0.1 \
+  curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
 ```
 
-CLI configuration examples live in `examples/cli/`.
+Run from a checkout before the first release:
 
-## Documentation
+```bash
+make cli -- -p "hello" --output text
+make sw -- version
+```
 
-Published docs: <https://starweaver.wh1isper.top>
-
-Repository docs live in `docs/` and are built with mdBook. Architecture and product decisions live in `spec/`. The detailed implementation roadmap lives in `spec/alignment/07-gap-matrix-and-roadmap.md`.
-
-Useful starting points:
-
-- [docs/index.md](docs/index.md)
-- [docs/agent.md](docs/agent.md)
-- [docs/models.md](docs/models.md)
-- [docs/tools.md](docs/tools.md)
-- [docs/output.md](docs/output.md)
-- [docs/testing.md](docs/testing.md)
-- [docs/session-stream.md](docs/session-stream.md)
-- [docs/release.md](docs/release.md)
-- [spec/README.md](spec/README.md)
-- [spec/core/08-boundaries-and-usage.md](spec/core/08-boundaries-and-usage.md)
-- [spec/core/07-agent-foundation-maturity-roadmap.md](spec/core/07-agent-foundation-maturity-roadmap.md)
-- [spec/ops/02-shared-execution-components.md](spec/ops/02-shared-execution-components.md)
-- [spec/ops/03-durable-service-runtime.md](spec/ops/03-durable-service-runtime.md)
-- [spec/ops/04-cli-product.md](spec/ops/04-cli-product.md)
-- [spec/alignment/README.md](spec/alignment/README.md)
-- [spec/alignment/07-gap-matrix-and-roadmap.md](spec/alignment/07-gap-matrix-and-roadmap.md)
-
-## Quick Example
+## SDK Quickstart
 
 ```rust
 use std::sync::Arc;
@@ -91,44 +60,103 @@ assert_eq!(result.output, "Paris");
 # }
 ```
 
+Add typed tools:
+
+```rust
+use std::sync::Arc;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use starweaver_agent::{typed_tool, AgentBuilder, TestModel, ToolContext, ToolResult};
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+struct LookupArgs {
+    /// City to look up.
+    city: String,
+}
+
+# async fn example() -> Result<(), starweaver_agent::AgentError> {
+let lookup = typed_tool::<LookupArgs, _, _>(
+    "lookup_weather",
+    Some("Look up weather for a city".to_string()),
+    |_ctx: ToolContext, args: LookupArgs| async move {
+        Ok(ToolResult::new(serde_json::json!({
+            "city": args.city,
+            "forecast": "clear"
+        })))
+    },
+);
+
+let agent = AgentBuilder::new(Arc::new(TestModel::with_text("clear")))
+    .tool(Arc::new(lookup))
+    .build();
+
+let result = agent.run("What is the weather in Paris?").await?;
+assert_eq!(result.output, "clear");
+# Ok(())
+# }
+```
+
+## Documentation
+
+Published docs: <https://starweaver.wh1isper.top>
+
+Start here:
+
+- [Quickstart](docs/quickstart.md)
+- [Agent SDK](docs/agent-sdk.md)
+- [Agents](docs/agent.md)
+- [Models](docs/models.md)
+- [Tools](docs/tools.md)
+- [Structured Output](docs/output.md)
+- [CLI](docs/cli.md)
+- [Testing](docs/testing.md)
+- [Release](docs/release.md)
+
+Architecture and product decisions live in [spec/](spec/). User-facing guides live in [docs/](docs/).
+
+## Workspace
+
+Starweaver is organized as focused crates:
+
+- `starweaver-agent`: public SDK facade, app/session helpers, bundles, subagents, profiles, and filters.
+- `starweaver-runtime`: deterministic agent loop, graph state, tools, output, retries, capabilities, streams, traces, and checkpoints.
+- `starweaver-model`: provider-neutral model protocol, settings, profiles, transports, wrappers, OAuth-backed adapters, and replay tests.
+- `starweaver-tools`: function tools, toolsets, metadata, lifecycle, MCP foundations, approval, and deferred execution.
+- `starweaver-context`: `AgentContext`, typed dependencies, state, event/message buses, notes, usage, and resumable state.
+- `starweaver-environment`: local and virtual filesystem/shell providers, policies, resources, and environment snapshots.
+- `starweaver-session`, `starweaver-stream`, `starweaver-storage`: durable session, replay, display stream, and SQLite storage contracts.
+- `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
+
 ## Validation
+
+```bash
+make fmt-check
+make check
+make test
+make docs-check
+make docs-build
+```
+
+Full local gate:
 
 ```bash
 make ci
 ```
 
-Focused commands:
+## Release
+
+Prepare the first public release:
 
 ```bash
-make replay-check
-make coverage-core
-make coverage-agent
-make coverage-service
-make coverage-ci
-make coverage
-make cli-examples-check
-make install-script-check
-make scripts-check
-make docs-check
-make docs-build
-make upversion VERSION=0.2.0
+gh workflow run prepare-release.yml -f version=0.0.1 -f run_full_ci=true
 ```
 
-## Repository Automation
+The workflow creates a `release/v0.0.1` pull request. After it merges, GitHub Actions builds a draft release with CLI archives and checksums. Publishing that draft triggers crate publishing through the `Release` environment.
 
-Repository automation is implemented in the Rust `xtask` crate and wrapped by Makefile targets.
+## Acknowledgements
 
-```bash
-make cli-examples-check
-make install-script-check
-make scripts-check
-make replay-summary
-make record-model-cassette ARGS="request.json --provider openai_chat --output cassette.json"
-```
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, documentation rules, and validation commands.
+Starweaver's design is informed by prior agent SDK work, including Pydantic AI and the Yet Another Agents / ya-mono ecosystem. Starweaver's implementation, public symbols, crate boundaries, documentation, and release workflow use Starweaver-native names and contracts.
 
 ## License
 

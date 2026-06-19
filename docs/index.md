@@ -1,75 +1,54 @@
 # Starweaver
 
-Starweaver is a Rust agent SDK with provider-neutral model protocols, a checkpointable runtime, reusable tool schema, standalone usage accounting, and an application-facing SDK layer.
+Starweaver is a Rust agent SDK for local-first agent products. It combines a typed SDK facade,
+a deterministic runtime loop, provider-neutral model and tool contracts, structured output,
+durable session evidence, first-party environment tools, and a CLI surface.
 
-The project keeps Rust crate boundaries explicit:
+Use it when you want application code to own the runtime contract instead of hiding the agent loop
+behind provider-specific request formats.
 
 ```mermaid
-flowchart TD
-    app[Application]
-    sdk[starweaver-agent]
-    runtime[starweaver-runtime]
-    usage[starweaver-usage]
-    model[starweaver-model]
-    tools[starweaver-tools]
-    context[starweaver-context]
-    platform[future platform adapters]
+flowchart LR
+    app["Application or CLI"]
+    agent["starweaver-agent"]
+    runtime["starweaver-runtime"]
+    model["starweaver-model"]
+    tools["starweaver-tools"]
+    context["starweaver-context"]
+    ops["session, stream, storage"]
 
-    app --> sdk
-    sdk --> runtime
-    sdk --> tools
+    app --> agent
+    agent --> runtime
     runtime --> model
     runtime --> tools
     runtime --> context
-    runtime --> usage
-    model --> usage
-    context --> usage
-    platform --> sdk
-    platform --> runtime
+    runtime --> ops
 ```
 
-## Current foundation
+## What you can build
 
-- `starweaver-usage` provides usage accounting, usage limits, snapshot contracts, and optional USD pricing estimates.
-- `starweaver-model` provides canonical messages, provider profiles, request settings, protocol clients, replay-tested provider mappers, and deterministic test models.
-- `starweaver-tools` provides tool definitions, function tools, toolsets, prefixed toolsets, registries, retry metadata, approval/deferred metadata, and MCP foundations.
-- `starweaver-runtime` provides the core agent loop, output validation, tool loop, usage-limit enforcement, usage snapshot events, stream records, capability hooks, context integration, and executor checkpoints.
-- `starweaver-agent` provides the SDK builder, app wrapper, facade re-exports, and SDK-level subagent registry.
+- SDK agents with static and dynamic instructions.
+- Provider-neutral model integrations and deterministic test models.
+- Typed function tools, toolsets, MCP-backed tools, and host-backed tools.
+- Structured JSON output with typed parsing and validation retry.
+- Multi-turn sessions with `AgentContext`, usage, dependencies, notes, and resumable state.
+- Subagent registries for application-owned delegation.
+- Durable runtimes with checkpoints, display streams, replay records, and SQLite adapters.
+- Local CLI workflows with profiles, launcher dispatch, install/update, and display JSONL.
 
-## First run
+## Learning path
 
-```rust
-use std::sync::Arc;
+1. [Install](install.md): install from release artifacts or run from source.
+2. [Quickstart](quickstart.md): build and run your first agent.
+3. [Agent SDK](agent-sdk.md): understand the SDK surface and crate boundaries.
+4. [Tools](tools.md): add typed function tools and toolsets.
+5. [Structured Output](output.md): return JSON with schemas and typed parsing.
+6. [Session and Stream Contracts](session-stream.md): integrate durable product surfaces.
+7. [Release](release.md): prepare and publish Starweaver releases.
 
-use starweaver_agent::{AgentBuilder, TestModel};
+## Stability in `0.0.1`
 
-# async fn example() -> Result<(), starweaver_agent::AgentError> {
-let agent = AgentBuilder::new(Arc::new(TestModel::with_text("Paris")))
-    .instruction("Answer concisely.")
-    .build();
-
-let result = agent.run("What is the capital of France?").await?;
-assert_eq!(result.output, "Paris");
-# Ok(())
-# }
-```
-
-## Documentation map
-
-- [Install](install.md)
-- [Testing](testing.md)
-- [CLI](cli.md)
-- [Agents](agent.md)
-- [Models](models.md)
-- [Direct APIs](direct.md)
-- [Tools](tools.md)
-- [Structured output](output.md)
-- [Message history](message-history.md)
-- [Dependencies](dependencies.md)
-- [Capabilities](capabilities.md)
-- [Graph inspection](graph.md)
-- [Durability](durability.md)
-- [Session and stream contracts](session-stream.md)
-- [SDK apps](sdk-app.md)
-- [Subagents](subagents.md)
-- [MCP](mcp.md)
+The first public release focuses on SDK foundations, deterministic testing, tool/runtime
+contracts, local CLI workflows, and release automation. Some host integration surfaces are
+intentionally explicit: live external resources, product-specific service transports, and hosted
+platform adapters remain integration points rather than hidden defaults.

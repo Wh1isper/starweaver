@@ -24,7 +24,7 @@ def initialize_response(request_id):
                 "resources": {},
                 "prompts": {},
             },
-            "serverInfo": {"name": "starweaver-reconnect-fixture", "version": "0.1.0"},
+            "serverInfo": {"name": "starweaver-reconnect-fixture", "version": "0.0.1"},
             "instructions": "Use reconnect fixture MCP tools.",
         },
     }

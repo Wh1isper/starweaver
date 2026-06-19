@@ -2,12 +2,12 @@
 
 ## Scope
 
-This document tracks only remaining differences from ya-agent-sdk's `create_agent(...)`, `stream_agent(...)`, `AgentRuntime`, and related SDK surfaces.
+This document tracks only remaining differences in Starweaver's agent construction, streaming, runtime, and related SDK surfaces.
 
 ## `create_agent(...)` Status
 
 - No remaining `create_agent(...)` gap is tracked for current SDK scope.
-- Reference `need_user_approve_mcps` behavior maps to Starweaver's Rust-native `approval_required_tools(...)` / `ApprovalRequiredToolset` policy over MCP-discovered tool names. `runtime_durable_store_resumes_live_mcp_approval_and_deferred_records` proves live MCP approval records, deferred records, resume, and resumed model history at the host-backed live MCP seam; `runtime_durable_store_resumes_rmcp_stdio_approval_and_deferred_records` proves the same flow over the concrete `RmcpLiveMcpClient` stdio protocol path.
+- MCP approval behavior maps to Starweaver's Rust-native `approval_required_tools(...)` / `ApprovalRequiredToolset` policy over MCP-discovered tool names. `runtime_durable_store_resumes_live_mcp_approval_and_deferred_records` proves live MCP approval records, deferred records, resume, and resumed model history at the host-backed live MCP seam; `runtime_durable_store_resumes_rmcp_stdio_approval_and_deferred_records` proves the same flow over the concrete `RmcpLiveMcpClient` stdio protocol path.
 
 ## `AgentRuntime` Gaps
 
@@ -40,5 +40,5 @@ Current evidence:
 
 ## Acceptance
 
-- Any added SDK surface remains Rust-native and does not introduce reference-project names.
+- Any added SDK surface remains Rust-native and uses Starweaver-native names.
 - Durable runtime, stream, and wrapper APIs have integration tests covering run, interrupt, resume, and replay when introduced.

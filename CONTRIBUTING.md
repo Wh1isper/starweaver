@@ -1,6 +1,6 @@
 # Contributing
 
-This guide covers local development for Starweaver. Product and architecture decisions live in `spec/`; user-facing guides live in `docs/`; reference alignment and implementation planning live in `spec/alignment/`.
+This guide covers local development for Starweaver. Product and architecture decisions live in `spec/`; user-facing guides live in `docs/`; implementation readiness and planning notes live in `spec/alignment/`.
 
 ## Repository Layout
 
@@ -17,7 +17,7 @@ This guide covers local development for Starweaver. Product and architecture dec
 - `crates/starweaver-cli` — command-line entry point.
 - `docs/` — mdBook user documentation with runnable Rust examples.
 - `spec/` — architecture and product specs.
-- `spec/alignment/` — reference alignment, gap tracking, implementation planning, and review evidence.
+- `spec/alignment/` — readiness notes, gap tracking, implementation planning, and review evidence.
 
 ## Development Workflow
 
@@ -72,7 +72,7 @@ make coverage
 
 - Keep user-facing docs in `docs/`.
 - Keep architecture decisions in `spec/`.
-- Keep reference-alignment roadmap and review notes in `spec/alignment/`.
+- Keep readiness roadmap and review notes in `spec/alignment/`.
 - Put Rust examples in fenced `rust` blocks.
 - Use hidden async wrappers for docs examples compiled by `make docs-check`.
 - Update `docs/SUMMARY.md` and `docs/nav.json` when adding, removing, or renaming docs pages.
@@ -107,8 +107,8 @@ Specs are the review gate for public API and crate boundary changes. Update spec
 
 Current spec layers:
 
-- `spec/core/` — Pydantic AI-style core agent foundation.
-- `spec/sdk/` — first-party Agent SDK surface and ya-agent-sdk integration.
+- `spec/core/` — core agent foundation.
+- `spec/sdk/` — first-party Agent SDK surface and application integration.
 - `spec/ops/` — CI readiness, shared session/stream components, durable runtime, CLI, observability, and product operations.
 
 Update `README.md`, `AGENTS.md`, docs, CI, and workspace manifests when spec changes affect commands, public structure, or crate responsibilities.

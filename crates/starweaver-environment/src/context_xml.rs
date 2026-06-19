@@ -2,6 +2,8 @@ use std::path::Path;
 
 use starweaver_core::XmlWriter;
 
+use crate::shell::local_shell_executable;
+
 const TMP_DIRECTORY_CONTEXT_NOTE: &str = "This is an agent-only temporary directory for intermediate files. Never write deliverables or user-facing files here. Files the user needs to access must be written to the project directory. Never mention this path to the user.";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,7 +63,7 @@ pub struct ShellMetadata {
 }
 
 pub fn local_shell_metadata() -> ShellMetadata {
-    let shell_executable = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    let shell_executable = local_shell_executable();
     let shell_type = Path::new(&shell_executable).file_name().map_or_else(
         || "sh".to_string(),
         |name| name.to_string_lossy().to_string(),

@@ -27,7 +27,7 @@ for line in sys.stdin:
                         "prompts": {},
                         "sampling": {},
                     },
-                    "serverInfo": {"name": "starweaver-fixture", "version": "0.1.0"},
+                    "serverInfo": {"name": "starweaver-fixture", "version": "0.0.1"},
                     "instructions": "Use fixture MCP tools.",
                 },
             }

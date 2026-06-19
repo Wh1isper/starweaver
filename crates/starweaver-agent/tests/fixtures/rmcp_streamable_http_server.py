@@ -21,7 +21,7 @@ def response_for(message):
                     "prompts": {},
                     "sampling": {},
                 },
-                "serverInfo": {"name": "starweaver-http-fixture", "version": "0.1.0"},
+                "serverInfo": {"name": "starweaver-http-fixture", "version": "0.0.1"},
                 "instructions": "Use HTTP fixture MCP tools.",
             },
         }

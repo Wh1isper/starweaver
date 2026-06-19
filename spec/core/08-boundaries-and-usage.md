@@ -1,6 +1,6 @@
 # Runtime, SDK, and Usage Boundaries
 
-This spec records Starweaver's native boundary after the reference-project cleanup. It separates the agentic loop, runtime context, SDK ergonomics, and usage accounting so code does not encode reference-project names or migration concepts.
+This spec records Starweaver's native boundary. It separates the agentic loop, runtime context, SDK ergonomics, and usage accounting so code uses Starweaver-native names and avoids migration concepts.
 
 ## Boundary Summary
 
@@ -70,7 +70,7 @@ Context exports use neutral profiles:
 - `ResumableExportOptions::curated()` for portable session restoration fields
 - `ResumableExportOptions::full()` for full Starweaver runtime state
 
-The context crate must not expose reference-project names in public symbols, module names, IDs, or tests.
+The context crate must not expose external project names in public symbols, module names, IDs, or tests.
 
 ## SDK Boundary
 
@@ -146,4 +146,4 @@ Pricing is best-effort. Absence of `estimate_pricing` means no known model price
 - focused `starweaver-usage` tests for usage arithmetic, serde round trips, and pricing estimates
 - runtime tests for `usage_snapshot` payloads
 - CLI tests for token-only and pricing-aware `/cost` output
-- grep audit of `crates/` for reference-project names after cleanup
+- grep audit of `crates/` for external project names after cleanup

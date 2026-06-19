@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeMap,
+    env,
     io::{self, Read},
     path::Path,
     process::{Command, Stdio},
@@ -34,6 +35,78 @@ pub fn shell_process_metadata(command: &ShellCommand) -> Metadata {
         );
     }
     metadata
+}
+
+pub fn local_shell_executable() -> String {
+    #[cfg(windows)]
+    {
+        if let Some(shell) = env::var_os("SHELL").and_then(valid_shell_value) {
+            return shell;
+        }
+        if let Some(shell) = find_executable_in_path(&["bash.exe", "bash", "sh.exe", "sh"]) {
+            return shell;
+        }
+        for candidate in [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\sh.exe",
+        ] {
+            let path = std::path::PathBuf::from(candidate);
+            if path.is_file() {
+                return path.to_string_lossy().to_string();
+            }
+        }
+        env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
+    }
+
+    #[cfg(not(windows))]
+    {
+        env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+    }
+}
+
+pub fn local_shell_command(command: &str) -> Command {
+    let executable = local_shell_executable();
+    let mut process = Command::new(&executable);
+    if uses_windows_cmd(&executable) {
+        process.arg("/C");
+    } else {
+        process.arg("-lc");
+    }
+    process.arg(command);
+    process
+}
+
+#[cfg(windows)]
+fn valid_shell_value(value: std::ffi::OsString) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+    let shell = PathBuf::from(&value);
+    if shell.components().count() > 1 && !shell.is_file() {
+        return None;
+    }
+    Some(value.to_string_lossy().to_string())
+}
+
+#[cfg(windows)]
+fn find_executable_in_path(names: &[&str]) -> Option<String> {
+    let path = env::var_os("PATH")?;
+    for directory in env::split_paths(&path) {
+        for name in names {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn uses_windows_cmd(executable: &str) -> bool {
+    Path::new(executable)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("cmd"))
 }
 
 pub fn refresh_local_shell_process(
@@ -100,9 +173,8 @@ pub fn run_local_shell_command(
     environment: &BTreeMap<String, String>,
     timeout_seconds: Option<u64>,
 ) -> EnvironmentResult<ShellOutput> {
-    let mut child = Command::new("/bin/sh")
-        .arg("-lc")
-        .arg(command)
+    let mut process = local_shell_command(command);
+    let mut child = process
         .current_dir(cwd)
         .envs(environment)
         .stdout(Stdio::piped())

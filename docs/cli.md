@@ -40,7 +40,7 @@ starweaver-cli update
 The CLI also performs a short background release lookup and caches the result in `~/.starweaver/update-check.json`. Human-readable commands append a compact hint when the cache reports a newer release:
 
 ```text
-Update available: starweaver 0.1.0 -> 0.2.0. Run `starweaver update`.
+Update available: starweaver 0.0.1 -> 0.0.2. Run `starweaver update`.
 ```
 
 Scripted environments can disable the hint and background lookup:

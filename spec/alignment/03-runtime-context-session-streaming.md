@@ -7,7 +7,7 @@ This document records only remaining runtime, context, session, and streaming ga
 ## Runtime Execution Decisions
 
 - Public graph inspection is exposed through deterministic graph APIs, but mutable node-by-node execution control is not exposed.
-- Node hook contexts are internal; reference SDKs expose richer pre/post node and event hooks.
+- Node hook contexts are internal; richer pre/post node and event hooks remain a product decision.
 
 Required direction:
 

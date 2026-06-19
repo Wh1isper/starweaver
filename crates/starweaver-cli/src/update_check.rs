@@ -164,11 +164,11 @@ mod tests {
 
     #[test]
     fn update_version_comparison_handles_semver_and_fallbacks() {
-        assert!(update_is_newer("0.1.0", "0.2.0"));
-        assert!(update_is_newer("v0.1.0", "v0.1.1"));
-        assert!(!update_is_newer("0.2.0", "0.1.0"));
-        assert!(!update_is_newer("0.1.0", "latest"));
-        assert!(update_is_newer("dev", "0.1.0"));
+        assert!(update_is_newer("0.0.1", "0.0.2"));
+        assert!(update_is_newer("v0.0.1", "v0.0.2"));
+        assert!(!update_is_newer("0.0.2", "0.0.1"));
+        assert!(!update_is_newer("0.0.1", "latest"));
+        assert!(update_is_newer("dev", "0.0.1"));
         assert!(!update_is_newer("dev", "dev"));
     }
 

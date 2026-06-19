@@ -146,7 +146,7 @@ docs-build: ## Build the static documentation site
 
 .PHONY: upversion
 upversion: ## Update workspace version; pass VERSION=x.y.z
-	@if [ -z "$(VERSION)" ]; then echo "VERSION is required, for example: make upversion VERSION=0.2.0"; exit 1; fi
+	@if [ -z "$(VERSION)" ]; then echo "VERSION is required, for example: make upversion VERSION=0.0.1"; exit 1; fi
 	@$(XTASK) upversion $(VERSION)
 	@cargo check --workspace --all-targets --all-features --locked
 

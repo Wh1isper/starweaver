@@ -1,40 +1,37 @@
 [
   {
-    "label": "Overview",
+    "label": "Getting Started",
     "items": [
       "index",
       "install",
+      "quickstart",
       "testing",
       "cli",
       "release"
     ]
   },
   {
-    "label": "Core Concepts",
+    "label": "Build Agents",
     "items": [
+      "agent-sdk",
       "agent",
       "models",
-      "direct",
       "tools",
       "output",
       "message-history",
       "dependencies",
-      "capabilities",
+      "capabilities"
+    ]
+  },
+  {
+    "label": "Runtime and Operations",
+    "items": [
+      "direct",
       "graph",
       "durability",
-      "session-stream"
-    ]
-  },
-  {
-    "label": "SDK Layer",
-    "items": [
+      "session-stream",
       "sdk-app",
-      "subagents"
-    ]
-  },
-  {
-    "label": "MCP",
-    "items": [
+      "subagents",
       "mcp"
     ]
   }

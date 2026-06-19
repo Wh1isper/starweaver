@@ -329,11 +329,11 @@ Current MVP semantics: `run.start` and `run.prompt` execute a blocking prompt ru
 Example handshake:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"desktop","version":"0.1.0"}}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"desktop","version":"0.0.1"}}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2026-06-08","serverInfo":{"name":"starweaver-cli","version":"0.1.0"},"capabilities":{"sessions":true,"runs":true,"management":true,"profiles":true,"clientModelSelection":true,"blockingRunStart":true,"liveDisplay":false,"cancel":false,"steering":false,"approvals":true,"deferred":true},"config":{"globalDir":"/home/user/.starweaver","tuiStateDir":"/home/user/.starweaver/tui","desktopStateDir":"/home/user/.starweaver/desktop","defaultProfile":"general"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2026-06-08","serverInfo":{"name":"starweaver-cli","version":"0.0.1"},"capabilities":{"sessions":true,"runs":true,"management":true,"profiles":true,"clientModelSelection":true,"blockingRunStart":true,"liveDisplay":false,"cancel":false,"steering":false,"approvals":true,"deferred":true},"config":{"globalDir":"/home/user/.starweaver","tuiStateDir":"/home/user/.starweaver/tui","desktopStateDir":"/home/user/.starweaver/desktop","defaultProfile":"general"}}}
 ```
 
 Example model selection:

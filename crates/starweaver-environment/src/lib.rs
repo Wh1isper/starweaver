@@ -33,7 +33,8 @@ pub(crate) use search::{
     local_grep_file_match_limit, local_search_walk_builder, search_text, LocalGrepSink,
 };
 pub(crate) use shell::{
-    read_child_pipe, refresh_local_shell_process, run_local_shell_command, shell_process_metadata,
+    local_shell_command, read_child_pipe, refresh_local_shell_process, run_local_shell_command,
+    shell_process_metadata,
 };
 
 pub use error::{EnvironmentError, EnvironmentResult};

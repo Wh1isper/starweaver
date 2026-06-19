@@ -6,7 +6,7 @@
 
 Implementation boundary rule:
 
-- Code, tests, public symbols, module names, and observable IDs should use Starweaver-native names instead of reference-project names.
+- Code, tests, public symbols, module names, and observable IDs should use Starweaver-native names.
 - `starweaver-runtime` owns the agentic loop; `starweaver-context` owns neutral run/session evidence; `starweaver-agent` owns SDK ergonomics and first-party bundles; `starweaver-usage` owns usage accounting, limits, snapshots, and optional USD pricing estimates.
 - Durable session/run IDs are generic request metadata (`starweaver.durable_session_id`, `starweaver.durable_run_id`, plus CLI-scoped aliases). Stable provider-routing affinity lives in `AgentContext.session_id` and typed `ModelSettings` provider settings, not generic durable metadata or model HTTP headers. Provider-specific headers such as `session_id`, `session-id`, `thread_id`, `thread-id`, and `x-client-request-id` belong in Codex/OpenAI subscription OAuth code only and must be sourced from typed provider routing settings.
 
@@ -67,13 +67,17 @@ Current docs:
 
 - `docs/index.md` — overview and documentation map
 - `docs/install.md` — install and local validation
+- `docs/quickstart.md` — first agent, tools, structured output, sessions, and CLI run
+- `docs/agent-sdk.md` — SDK surface, layers, capabilities, bundles, and entry points
 - `docs/agent.md` — agent builder and result basics
 - `docs/models.md` — test models, function models, and production-request guard
+- `docs/direct.md` — direct model, stream, and tool APIs
 - `docs/tools.md` — function tools, registries, toolsets, and retry metadata
 - `docs/output.md` — structured output schemas and typed parsing
 - `docs/message-history.md` — history continuation and new messages
 - `docs/dependencies.md` — typed dependencies in context and tools
 - `docs/capabilities.md` — runtime capability hooks
+- `docs/graph.md` — graph inspection and iteration trace
 - `docs/durability.md` — executor checkpoints
 - `docs/sdk-app.md` — `AgentApp` usage
 - `docs/subagents.md` — SDK-level subagent delegation
@@ -84,7 +88,7 @@ Current docs:
 
 ## Spec Workflow
 
-Use `spec/` for product and architecture decisions before introducing new crates or public APIs. Use `spec/alignment/` for reference-project alignment, implementation evidence, and prioritized gap tracking.
+Use `spec/` for product and architecture decisions before introducing new crates or public APIs. Use `spec/alignment/` for implementation evidence, readiness notes, and prioritized gap tracking.
 
 Current specs:
 
@@ -113,7 +117,7 @@ Current specs:
 - `spec/ops/07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
 - `spec/ops/09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
-Use `spec/alignment/` for working alignment notes, design comparisons, implementation evidence, and roadmap reminders. The current detailed implementation roadmap is `spec/alignment/07-gap-matrix-and-roadmap.md`.
+Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. The current detailed implementation roadmap is `spec/alignment/07-gap-matrix-and-roadmap.md`.
 
 After changing repository structure, workspace boundaries, command behavior, CI, or planned module responsibilities, review and update:
 
@@ -177,10 +181,10 @@ make scripts-check
 To ask the assistant to prepare a unified-version release, use GitHub CLI from the repository root:
 
 ```bash
-gh workflow run prepare-release.yml -f version=0.2.0 -f run_full_ci=true
+gh workflow run prepare-release.yml -f version=0.0.1 -f run_full_ci=true
 ```
 
-This creates a `release/v0.2.0` pull request. After the pull request merges, `draft-release.yml` creates a draft GitHub Release with `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, plus `checksums.txt`. Publishing that draft release triggers `release.yml`, which publishes crates through the `Release` environment.
+This creates a `release/v0.0.1` pull request. After the pull request merges, `draft-release.yml` creates a draft GitHub Release with `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, plus `checksums.txt`. Publishing that draft release triggers `release.yml`, which publishes crates through the `Release` environment.
 
 For repository-wide hooks, run:
 
