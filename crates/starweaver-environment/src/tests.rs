@@ -602,6 +602,15 @@ async fn local_provider_accepts_windows_verbatim_tmp_paths() {
         "full shell output"
     );
 
+    let temp_dir = display_local_path(&std::env::temp_dir());
+    if let Some(relative) = tmp_path.strip_prefix(&format!("{}/", temp_dir.trim_end_matches('/'))) {
+        let msys_tmp_path = format!("/tmp/{relative}");
+        assert_eq!(
+            provider.read_text(&msys_tmp_path).await.unwrap(),
+            "full shell output"
+        );
+    }
+
     std::fs::remove_dir_all(root).unwrap();
 }
 

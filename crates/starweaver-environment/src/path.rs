@@ -195,6 +195,9 @@ fn normalize_absolute_request_path_input(path: &Path) -> PathBuf {
     if let Some(stripped) = strip_windows_verbatim_prefix(&path) {
         return PathBuf::from(stripped);
     }
+    if let Some(tmp_path) = windows_msys_tmp_path(&path) {
+        return tmp_path;
+    }
     windows_msys_drive_path(&path).map_or_else(|| PathBuf::from(path.as_ref()), PathBuf::from)
 }
 
@@ -243,6 +246,15 @@ fn windows_msys_drive_path(path: &str) -> Option<String> {
     } else {
         Some(format!("{drive}:\\{}", rest.replace('/', "\\")))
     }
+}
+
+#[cfg(windows)]
+fn windows_msys_tmp_path(path: &str) -> Option<PathBuf> {
+    let normalized = path.replace('\\', "/");
+    let relative = normalized
+        .strip_prefix("/tmp/")
+        .or_else(|| normalized.strip_prefix("/var/tmp/"))?;
+    Some(std::env::temp_dir().join(relative.replace('/', "\\")))
 }
 
 pub fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
