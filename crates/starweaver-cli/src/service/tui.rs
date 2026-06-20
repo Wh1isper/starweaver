@@ -12,10 +12,11 @@ use crate::{
     args::{OutputMode, RunCommand, TuiCommand},
     client_state,
     config::{clear_current_session, write_current_session, CliConfig},
-    local_store::SessionSummary,
+    local_store::{LocalStore, SessionSummary},
     profiles::{list_config_model_profiles, list_profiles, ProfileSummary},
     prompt_input::PromptInput,
     runner::CliSteeringMessage,
+    runtime_coordinator::{CliRuntimeCoordinator, RunStreamEvent},
     CliResult,
 };
 
@@ -28,8 +29,8 @@ struct CompletedPromptRun {
 
 struct ActiveTuiRun {
     receiver: mpsc::Receiver<TuiRunMessage>,
-    steering_sender: mpsc::Sender<CliSteeringMessage>,
-    cancel_sender: mpsc::Sender<()>,
+    coordinator: CliRuntimeCoordinator,
+    run_id: String,
     cancelling: bool,
 }
 
@@ -44,30 +45,6 @@ const TUI_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(33);
 const TUI_MIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 impl CliService {
-    fn run_prompt_streaming_with_steering(
-        &mut self,
-        command: &RunCommand,
-        prompt_input: Option<PromptInput>,
-        stream_sender: mpsc::Sender<AgentStreamRecord>,
-        steering_receiver: mpsc::Receiver<CliSteeringMessage>,
-        cancel_receiver: mpsc::Receiver<()>,
-    ) -> CliResult<CompletedPromptRun> {
-        let execution = self.execute_prompt_run_with_steering(
-            command,
-            prompt_input,
-            stream_sender,
-            steering_receiver,
-            cancel_receiver,
-        )?;
-        let output_text = render_display_text(&execution.messages);
-        Ok(CompletedPromptRun {
-            session_id: execution.session_id,
-            run_id: execution.run_id,
-            status: execution.status,
-            output_text,
-        })
-    }
-
     pub(super) fn tui(&mut self, command: &TuiCommand) -> CliResult<String> {
         if should_run_interactive_tui(command) {
             self.interactive_tui(command)?;
@@ -289,7 +266,7 @@ impl CliService {
                 Some(crate::tui::InteractiveTuiEvent::Cancel) => {
                     if let Some(run) = active_run.as_mut() {
                         if !run.cancelling {
-                            let _ = run.cancel_sender.send(());
+                            let _ = run.coordinator.cancel_run(&run.run_id);
                             run.cancelling = true;
                         }
                     }
@@ -305,11 +282,14 @@ impl CliService {
                     if let Some(run) = active_run.as_ref() {
                         if !run.cancelling
                             && run
-                                .steering_sender
-                                .send(CliSteeringMessage {
-                                    id: steering.id,
-                                    text: steering.text,
-                                })
+                                .coordinator
+                                .steer_run(
+                                    &run.run_id,
+                                    CliSteeringMessage {
+                                        id: steering.id,
+                                        text: steering.text,
+                                    },
+                                )
                                 .is_err()
                         {
                             state.fail_run("background steering channel closed");
@@ -409,61 +389,82 @@ fn spawn_tui_run(
     config.oauth_refresh.enabled = false;
     let command = command.clone();
     let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
-    let (stream_sender, stream_receiver) = mpsc::channel::<AgentStreamRecord>();
-    let (steering_sender, steering_receiver) = mpsc::channel::<CliSteeringMessage>();
-    let (cancel_sender, cancel_receiver) = mpsc::channel::<()>();
-    let stream_ui_sender = ui_sender.clone();
-    let forward_handle = thread::spawn(move || {
-        while let Ok(record) = stream_receiver.recv() {
-            if stream_ui_sender
-                .send(TuiRunMessage::Stream(Box::new(record)))
-                .is_err()
-            {
-                break;
+    let coordinator = CliRuntimeCoordinator::new(config.clone());
+    let run_command = RunCommand {
+        prompt: Some(prompt_input.text.clone()),
+        prompt_parts: Vec::new(),
+        session: session_id.or(command.session),
+        continue_session: false,
+        new_session: false,
+        run: None,
+        branch_from: None,
+        profile,
+        output: Some(OutputMode::Text),
+        hitl: None,
+        worker: None,
+        worker_label: None,
+        worktree: None,
+        worktree_name: None,
+        branch: None,
+        session_affinity_id,
+    };
+    let started = match coordinator.start_run_with_raw(run_command, Some(prompt_input)) {
+        Ok(started) => started,
+        Err(error) => {
+            let _ = ui_sender.send(TuiRunMessage::Failed(error.to_string()));
+            return ActiveTuiRun {
+                receiver,
+                coordinator,
+                run_id: String::new(),
+                cancelling: false,
+            };
+        }
+    };
+    let run_id = started.run_id.clone();
+    thread::spawn(move || {
+        while let Ok(event) = started.events.recv() {
+            match event {
+                RunStreamEvent::Raw(record) => {
+                    if ui_sender.send(TuiRunMessage::Stream(record)).is_err() {
+                        break;
+                    }
+                }
+                RunStreamEvent::Status(status) if status_is_terminal(&status.status) => {
+                    let output_text = LocalStore::open(&config)
+                        .and_then(|store| {
+                            store.replay_display(&status.session_id, Some(&status.run_id), None)
+                        })
+                        .map_or_else(
+                            |_| {
+                                status
+                                    .output_preview
+                                    .clone()
+                                    .unwrap_or_else(|| status.status.clone())
+                            },
+                            |messages| render_display_text(&messages),
+                        );
+                    let _ = ui_sender.send(TuiRunMessage::Completed(CompletedPromptRun {
+                        session_id: status.session_id,
+                        run_id: status.run_id,
+                        status: status.status,
+                        output_text,
+                    }));
+                    break;
+                }
+                RunStreamEvent::Status(_) | RunStreamEvent::Output(_) => {}
             }
         }
     });
-    thread::spawn(move || {
-        let result = CliService::open(config).and_then(|mut service| {
-            let run_command = RunCommand {
-                prompt: Some(prompt_input.text.clone()),
-                prompt_parts: Vec::new(),
-                session: session_id.or(command.session),
-                continue_session: false,
-                new_session: false,
-                run: None,
-                branch_from: None,
-                profile,
-                output: Some(OutputMode::Text),
-                hitl: None,
-                worker: None,
-                worker_label: None,
-                worktree: None,
-                worktree_name: None,
-                branch: None,
-                session_affinity_id,
-            };
-            service.run_prompt_streaming_with_steering(
-                &run_command,
-                Some(prompt_input),
-                stream_sender,
-                steering_receiver,
-                cancel_receiver,
-            )
-        });
-        let _ = forward_handle.join();
-        let message = match result {
-            Ok(completed) => TuiRunMessage::Completed(completed),
-            Err(error) => TuiRunMessage::Failed(error.to_string()),
-        };
-        let _ = ui_sender.send(message);
-    });
     ActiveTuiRun {
         receiver,
-        steering_sender,
-        cancel_sender,
+        coordinator,
+        run_id,
         cancelling: false,
     }
+}
+
+fn status_is_terminal(status: &str) -> bool {
+    matches!(status, "completed" | "failed" | "cancelled")
 }
 
 pub(super) fn model_choices(config: &CliConfig) -> Vec<crate::tui::ModelChoice> {

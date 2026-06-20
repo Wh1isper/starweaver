@@ -20,10 +20,14 @@ use uuid::Uuid;
 
 use crate::{config::CliConfig, error::io_error, CliError, CliResult};
 
+mod archive;
 mod db;
 mod hitl;
+mod replay;
 mod schema;
+mod session_store;
 
+pub use archive::LocalStreamArchive;
 use db::{
     atomic_write_json, cheap_checksum, checkpoint_refs, i64_to_usize, insert_approval_records_tx,
     insert_checkpoint_refs_tx, insert_context_state_tx, insert_deferred_tool_records_tx,
@@ -36,6 +40,8 @@ use hitl::{
     existing_resume_tool_return_ids, latest_tool_call_order, pending_hitl_resume_error,
     tool_return_control_flow,
 };
+pub use replay::DisplayReplayWindow;
+pub use session_store::LocalSessionStore;
 
 /// Local `SQLite` and file-store handle.
 pub struct LocalStore {
@@ -210,6 +216,12 @@ impl LocalStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM replay_snapshots
+             WHERE scope = ?1
+                OR scope IN (SELECT 'run:' || run_id FROM runs WHERE session_id = ?2)",
+            params![format!("session:{session_id}"), session_id],
+        )?;
         for table in [
             "display_messages",
             "raw_stream_records",
@@ -379,6 +391,15 @@ impl LocalStore {
         }
         insert_stream_cursor_tx(&tx, run, &raw_cursor)?;
         insert_stream_cursor_tx(&tx, run, &display_cursor)?;
+        tx.execute(
+            "INSERT OR REPLACE INTO replay_snapshots (scope, snapshot_json, updated_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                format!("run:{}", run.run_id.as_str()),
+                serde_json::to_string(&artifacts.display_snapshot)?,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
         insert_checkpoint_refs_tx(&tx, run, &checkpoint_refs)?;
         insert_approval_records_tx(&tx, &artifacts.approvals)?;
         insert_deferred_tool_records_tx(&tx, &artifacts.deferred_tools)?;
@@ -766,6 +787,10 @@ impl LocalStore {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM replay_snapshots WHERE scope = ?1",
+            params![format!("run:{run_id}")],
+        )?;
         for table in [
             "display_messages",
             "raw_stream_records",

@@ -139,7 +139,7 @@ pub(super) fn render_prompt_run_json(execution: &PromptRunExecution) -> CliResul
 }
 
 #[allow(clippy::too_many_lines)]
-fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
+pub(super) fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
     let mut event = match message.kind {
         DisplayMessageKind::RunQueued => {
             let value = json!({"sequence_no": message.payload.get("sequence_no").cloned()});

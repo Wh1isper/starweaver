@@ -127,6 +127,11 @@ impl LocalStore {
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (session_id, run_id) REFERENCES runs(session_id, run_id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS replay_snapshots (
+                scope TEXT PRIMARY KEY,
+                snapshot_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             ",
         )?;
         add_column_if_missing(&self.conn, "file_refs", "checksum", "TEXT")?;

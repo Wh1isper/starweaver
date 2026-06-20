@@ -5,10 +5,6 @@ It gives you a typed agent loop, provider-neutral model protocol, function tools
 output, durable session primitives, first-party environment tools, and a CLI product surface in
 one workspace.
 
-The current release line is preparing for the first public release, `0.0.1`. The development
-version in this repository intentionally uses the pre-release version `0.0.1-dev.0`; the release
-commit promotes it to `0.0.1`.
-
 ## Why Starweaver
 
 - Rust-native agent construction with `AgentBuilder`, `AgentApp`, and `AgentSession`.
@@ -42,7 +38,7 @@ Install a pinned release or prerelease:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh \
-  | STARWEAVER_VERSION=v0.0.1 sh
+  | STARWEAVER_VERSION=vX.Y.Z sh
 ```
 
 The default `latest` channel uses GitHub's latest stable release first and falls back to the
@@ -165,13 +161,13 @@ make ci
 
 ## Release
 
-Prepare the first public release:
+Prepare a release:
 
 ```bash
-gh workflow run prepare-release.yml -f version=0.0.1
+gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
-The workflow pushes `release/v0.0.1` for review. After that release commit reaches `main`, publish `v0.0.1` as a GitHub Release; the published Release event builds CLI archives, uploads checksums, and publishes crates through the `Release` environment.
+The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release; the published Release event builds CLI archives, uploads checksums, and publishes crates through the `Release` environment.
 
 ## Acknowledgements
 

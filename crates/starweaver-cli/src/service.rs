@@ -1,12 +1,14 @@
 //! CLI service layer over local storage and SDK execution.
+#![allow(clippy::redundant_pub_crate)]
 
 use std::{fs, path::Path, sync::mpsc, thread, time::Duration};
 
 use serde_json::{json, Value};
+use starweaver_agent::ResumableState;
 use starweaver_core::sdk_name;
 use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
 use starweaver_runtime::AgentStreamRecord;
-use starweaver_session::{ApprovalStatus, RunStatus};
+use starweaver_session::{ApprovalStatus, RunRecord, RunStatus};
 use starweaver_stream::DisplayMessage;
 
 use crate::{
@@ -16,9 +18,11 @@ use crate::{
         OutputMode, ResumeCommand, RunCommand, SessionCommand, TuiCommand,
     },
     config::{read_current_session, write_current_session, CliConfig},
-    environment::{resolve_environment_for_session, validate_environment_config},
+    environment::{
+        resolve_environment_for_session, validate_environment_config, ResolvedEnvironment,
+    },
     local_store::LocalStore,
-    profiles::{list_profiles, resolve_profile},
+    profiles::{list_profiles, resolve_profile, ResolvedProfile},
     prompt_input::PromptInput,
     runner::{
         execute_agent_session, execute_agent_session_with_channels, failed_display_message,
@@ -46,12 +50,34 @@ use setup::remove_file_if_exists;
 use tui::model_choices;
 use worktree::apply_starweaver_run_metadata;
 
-struct PromptRunExecution {
-    session_id: String,
-    run_id: String,
-    status: String,
+pub(super) fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
+    rendering::display_message_to_agui_event(message)
+}
+
+pub(super) struct PromptRunExecution {
+    pub(super) session_id: String,
+    pub(super) run_id: String,
+    pub(super) status: String,
+    pub(super) output_mode: OutputMode,
+    pub(super) messages: Vec<DisplayMessage>,
+}
+
+pub(super) struct PreparedPromptRun {
+    pub(super) session_id: String,
+    pub(super) run_id: String,
+    pub(super) output_mode: OutputMode,
+    pub(super) run: RunRecord,
+    run_input: PromptInput,
+    resolved_profile: ResolvedProfile,
+    environment: ResolvedEnvironment,
+    restore_state: Option<ResumableState>,
+    policy: CliRunPolicy,
+}
+
+pub(super) struct ExecutedPromptRun {
+    run: RunRecord,
     output_mode: OutputMode,
-    messages: Vec<DisplayMessage>,
+    execution: crate::runner::CliRunExecution,
 }
 
 const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
@@ -217,23 +243,6 @@ impl CliService {
         self.execute_prompt_run_with_channels(command, None, stream_sender, None, None)
     }
 
-    fn execute_prompt_run_with_steering(
-        &mut self,
-        command: &RunCommand,
-        prompt_input: Option<PromptInput>,
-        stream_sender: mpsc::Sender<AgentStreamRecord>,
-        steering_receiver: mpsc::Receiver<CliSteeringMessage>,
-        cancel_receiver: mpsc::Receiver<()>,
-    ) -> CliResult<PromptRunExecution> {
-        self.execute_prompt_run_with_channels(
-            command,
-            prompt_input,
-            Some(stream_sender),
-            Some(steering_receiver),
-            Some(cancel_receiver),
-        )
-    }
-
     #[allow(clippy::too_many_lines)]
     fn execute_prompt_run_with_channels(
         &mut self,
@@ -243,6 +252,28 @@ impl CliService {
         steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
         cancel_receiver: Option<mpsc::Receiver<()>>,
     ) -> CliResult<PromptRunExecution> {
+        let prepared = self.prepare_prompt_run(command, prompt_input)?;
+        let run_on_error = prepared.run.clone();
+        let executed = match Self::run_prepared_prompt(
+            prepared,
+            stream_sender,
+            steering_receiver,
+            cancel_receiver,
+        ) {
+            Ok(executed) => executed,
+            Err(error) => {
+                self.fail_prepared_prompt_run(run_on_error, &error)?;
+                return Err(error);
+            }
+        };
+        self.complete_prompt_run(executed)
+    }
+
+    pub(super) fn prepare_prompt_run(
+        &mut self,
+        command: &RunCommand,
+        prompt_input: Option<PromptInput>,
+    ) -> CliResult<PreparedPromptRun> {
         let input =
             prompt_input.map_or_else(|| command.prompt_text().map(PromptInput::text), Ok)?;
         let raw_prompt = input.text.clone();
@@ -305,6 +336,35 @@ impl CliService {
         write_current_session(&self.config, &session_id)?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
         let output_mode = command.output.unwrap_or(self.config.default_output);
+        Ok(PreparedPromptRun {
+            session_id,
+            run_id: run.run_id.as_str().to_string(),
+            output_mode,
+            run,
+            run_input,
+            resolved_profile,
+            environment,
+            restore_state,
+            policy: CliRunPolicy { hitl },
+        })
+    }
+
+    pub(super) fn run_prepared_prompt(
+        prepared: PreparedPromptRun,
+        stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+        steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
+        cancel_receiver: Option<mpsc::Receiver<()>>,
+    ) -> CliResult<ExecutedPromptRun> {
+        let PreparedPromptRun {
+            output_mode,
+            run,
+            run_input,
+            resolved_profile,
+            environment,
+            restore_state,
+            policy,
+            ..
+        } = prepared;
         let result = if stream_sender.is_some()
             || steering_receiver.is_some()
             || cancel_receiver.is_some()
@@ -316,7 +376,7 @@ impl CliService {
                 &environment.provider,
                 environment.process_provider.as_ref(),
                 restore_state,
-                CliRunPolicy { hitl },
+                policy,
                 stream_sender,
                 steering_receiver,
                 cancel_receiver,
@@ -329,18 +389,35 @@ impl CliService {
                 &environment.provider,
                 environment.process_provider.as_ref(),
                 restore_state,
-                CliRunPolicy { hitl },
+                policy,
             )
         };
-        let execution = match result {
-            Ok(execution) => execution,
-            Err(error) => {
-                let messages = failed_display_message(&run, &error.to_string());
-                self.store()?
-                    .fail_run_with_messages(&mut run, error.to_string(), &messages)?;
-                return Err(error);
-            }
-        };
+        result.map(|execution| ExecutedPromptRun {
+            run,
+            output_mode,
+            execution,
+        })
+    }
+
+    pub(super) fn fail_prepared_prompt_run(
+        &mut self,
+        mut run: RunRecord,
+        error: &CliError,
+    ) -> CliResult<()> {
+        let messages = failed_display_message(&run, &error.to_string());
+        self.store()?
+            .fail_run_with_messages(&mut run, error.to_string(), &messages)
+    }
+
+    pub(super) fn complete_prompt_run(
+        &mut self,
+        executed: ExecutedPromptRun,
+    ) -> CliResult<PromptRunExecution> {
+        let ExecutedPromptRun {
+            mut run,
+            output_mode,
+            execution,
+        } = executed;
         let execution_failed = execution.artifacts.status == RunStatus::Failed;
         let output = execution.output;
         let messages = self
@@ -351,12 +428,12 @@ impl CliService {
         }
         if self.config.auto_trim {
             let keep_runs = self.config.current_session_keep_recent_runs;
-            let _report = self
-                .store()?
-                .trim(vec![session_id.clone()], keep_runs, false)?;
+            let _report =
+                self.store()?
+                    .trim(vec![run.session_id.as_str().to_string()], keep_runs, false)?;
         }
         Ok(PromptRunExecution {
-            session_id,
+            session_id: run.session_id.as_str().to_string(),
             run_id: run.run_id.as_str().to_string(),
             status: run_status_name(run.status).to_string(),
             output_mode,

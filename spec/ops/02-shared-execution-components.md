@@ -37,6 +37,7 @@ Boundary invariants:
 - JSON-RPC stdio is the complete local host-control surface for sessions, runs, replay, cancellation, steering, approvals, deferred calls, profiles, config, diagnostics, and client model selection; CLI commands are shell-friendly subsets that map onto the same handlers.
 - Model profiles and provider settings live in shared config; the selected profile for TUI/Desktop is frontend state, not shared config.
 - `starweaver-storage` keeps concrete SQLite persistence reusable and product-neutral.
+- Runtime checkpoint and stream record types stay in `starweaver-runtime`; they are the upstream durable evidence persisted by session and stream components rather than a separate contract crate.
 
 ## Shared Storage Direction
 
@@ -51,7 +52,7 @@ Boundary invariants:
 - `replay_events`
 - `replay_snapshots`
 
-This split keeps session/stream contracts in `starweaver-session` and `starweaver-stream`, while concrete persistence lives in the storage crate. CLI and future hosts select adapters through configuration and keep product behavior at the edge.
+This split keeps session/stream contracts in `starweaver-session` and `starweaver-stream`, while concrete persistence lives in the storage crate. During CLI convergence, `starweaver-cli` exposes `LocalSessionStore` and `LocalStreamArchive` adapters over its local store so runtime-facing code depends on shared contracts before the final storage adapter swap. CLI and future hosts select adapters through configuration and keep product behavior at the edge.
 
 ## Bottom-up Build Order
 

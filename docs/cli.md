@@ -504,7 +504,7 @@ starweaver-cli resume --session <session-id> --prompt "continue after review"
 
 ## JSON-RPC stdio runtime
 
-`starweaver-cli rpc` starts a newline-delimited JSON-RPC 2.0 runtime over stdin/stdout. It is the local host API for TUI/Desktop integrations and exposes the management surface that CLI commands wrap for shell use.
+`starweaver-cli rpc` starts a newline-delimited JSON-RPC 2.0 runtime over stdin/stdout. It is the local host API for Desktop and host integrations, while the TUI uses the same in-process runtime coordinator and local session store rather than launching through RPC.
 
 ```bash
 sw cli rpc
@@ -518,11 +518,16 @@ Example handshake and client model selection:
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"tui"}}}
 {"jsonrpc":"2.0","id":2,"method":"model.list","params":{"client":"tui"}}
 {"jsonrpc":"2.0","id":3,"method":"model.select","params":{"client":"tui","profile":"coding"}}
-{"jsonrpc":"2.0","id":4,"method":"run.prompt","params":{"client":"tui","prompt":"hello","newSession":true}}
-{"jsonrpc":"2.0","id":5,"method":"shutdown","params":{}}
+{"jsonrpc":"2.0","id":4,"method":"run.start","params":{"client":"tui","prompt":"hello","newSession":true}}
+{"jsonrpc":"2.0","id":5,"method":"session.output","params":{"sessionId":"session_...","runId":"run_..."}}
+{"jsonrpc":"2.0","id":6,"method":"shutdown","params":{}}
 ```
 
-`model.select` writes `~/.starweaver/tui/state.json` or `~/.starweaver/desktop/state.json` depending on the `client` parameter. `run.prompt` and `run.start` use this priority for model selection: explicit `profile`/`modelProfile`, then selected profile for the supplied `client`, then the resolved config default profile. The current implementation returns a blocking compact run summary; the live coordinator will later add non-blocking run start, display notifications, cancellation, steering, and attach semantics.
+`model.select` writes `~/.starweaver/tui/state.json` or `~/.starweaver/desktop/state.json` depending on the `client` parameter. `run.prompt` and `run.start` use this priority for model selection: explicit `profile`/`modelProfile`, then selected profile for the supplied `client`, then the resolved config default profile.
+
+`run.start` is non-blocking: it returns `sessionId`, `runId`, `status`, and `payloadFormat` after durable run creation and active-run registration. The runtime coordinator emits scoped Starweaver replay events; the RPC protocol edge maps those events into `run.started`, `run.output`, and `run.status` notifications. Stream payloads default to `agui`; pass `payloadFormat` or `stream.payloadFormat` as `display_message` to receive Starweaver `DisplayMessage` payloads instead. `run.prompt` remains the blocking method that returns the compact final JSON summary.
+
+Use `session.replay` for persisted output, `run.attach` to replay and subscribe to a run, or `session.output` to replay session output. Cursor semantics are scope-local: run output uses `run:<runId>` sequence values, while session output uses `session:<sessionId>` sequence values over the ordered session display feed. RPC clients may pass a full `cursor` object or the numeric `after` shorthand, which is interpreted within the requested scope. Active control methods are `run.cancel`, `run.steer`, `session.steer`, and `run.await`.
 
 ## Environment
 
@@ -555,7 +560,7 @@ sessions/<session-id>/runs/<run-id>/context.state.json
 sessions/<session-id>/runs/<run-id>/environment.state.json
 ```
 
-SQLite tables retain context states, environment snapshots, stream cursors, checkpoint refs, approvals, deferred tool records, file checksums, and compact run projections.
+SQLite tables retain context states, environment snapshots, stream cursors, checkpoint refs, approvals, deferred tool records, file checksums, and compact run projections. `LocalSessionStore` and `LocalStreamArchive` adapt the CLI store to the shared `SessionStore` and `StreamArchive` contracts, exposing persisted session lifecycle and display output as `ReplayScope` / `ReplayCursor` windows so RPC, TUI, and headless replay consume the same durable contracts while the CLI storage path continues converging on shared storage adapters.
 
 Trim retained run evidence with dry-run and age-filter support:
 

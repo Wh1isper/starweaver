@@ -14,7 +14,8 @@ mod profiles;
 mod prompt_input;
 mod rpc;
 mod runner;
-mod service;
+pub(crate) mod runtime_coordinator;
+pub(crate) mod service;
 mod slash_commands;
 mod tui;
 mod update_check;
@@ -24,7 +25,9 @@ use std::env;
 pub use args::{Cli, CliCommand, OutputMode, SessionCommand};
 pub use config::{CliConfig, ConfigResolver};
 pub use error::{CliError, CliResult};
-pub use local_store::{LocalStore, TrimReport};
+pub use local_store::{
+    DisplayReplayWindow, LocalSessionStore, LocalStore, LocalStreamArchive, TrimReport,
+};
 pub use service::CliService;
 pub use slash_commands::SlashCommandDefinition;
 
@@ -541,6 +544,206 @@ prompt = "Review carefully."
         let session_id = value["session_id"].as_str().unwrap();
         let show = output(temp.path(), &["session", "show", session_id]).unwrap();
         assert_eq!(show.lines().count(), 3);
+    }
+
+    #[test]
+    fn display_replay_window_uses_scoped_cursors() {
+        let temp = tempfile::tempdir().unwrap();
+        output(temp.path(), &["-p", "one"]).unwrap();
+        output(temp.path(), &["-p", "two", "--continue"]).unwrap();
+        let sessions = output(temp.path(), &["session", "list"]).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(sessions.lines().next().unwrap()).unwrap();
+        let session_id = value["session_id"].as_str().unwrap();
+        let cli = args::parse([
+            "starweaver-cli".to_string(),
+            "session".to_string(),
+            "list".to_string(),
+        ])
+        .unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let store = LocalStore::open(&config).unwrap();
+
+        let session_window = store.replay_display_window(session_id, None, None).unwrap();
+        assert_eq!(
+            session_window.scope,
+            starweaver_stream::ReplayScope::session(session_id)
+        );
+        assert_eq!(session_window.next_sequence, session_window.events.len());
+        for (sequence, event) in session_window.events.iter().enumerate() {
+            assert_eq!(
+                event.scope,
+                starweaver_stream::ReplayScope::session(session_id)
+            );
+            assert_eq!(event.sequence, sequence);
+        }
+
+        let session_cursor = starweaver_stream::ReplayCursor::new(session_window.scope.clone(), 0);
+        let session_tail = store
+            .replay_display_window(session_id, None, Some(&session_cursor))
+            .unwrap();
+        assert!(session_tail.events.iter().all(|event| event.sequence > 0));
+        assert_eq!(session_tail.next_sequence, session_window.next_sequence);
+
+        let first_run = store.list_runs(session_id, 10).unwrap().remove(0);
+        let run_window = store
+            .replay_display_window(session_id, Some(&first_run.run_id), None)
+            .unwrap();
+        assert_eq!(
+            run_window.scope,
+            starweaver_stream::ReplayScope::run(&first_run.run_id)
+        );
+        assert!(run_window.next_sequence > 0);
+        assert!(run_window
+            .events
+            .iter()
+            .all(|event| event.scope == starweaver_stream::ReplayScope::run(&first_run.run_id)));
+    }
+
+    #[test]
+    fn local_stream_archive_implements_shared_stream_contract() {
+        use starweaver_stream::StreamArchive as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        output(temp.path(), &["-p", "archive"]).unwrap();
+        let sessions = output(temp.path(), &["session", "list"]).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(sessions.lines().next().unwrap()).unwrap();
+        let session_id = value["session_id"].as_str().unwrap();
+        let cli = args::parse([
+            "starweaver-cli".to_string(),
+            "session".to_string(),
+            "list".to_string(),
+        ])
+        .unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let store = LocalStore::open(&config).unwrap();
+        let run = store.list_runs(session_id, 10).unwrap().remove(0);
+        let archive = LocalStreamArchive::new(config);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let run_scope = starweaver_stream::ReplayScope::run(&run.run_id);
+        let session_scope = starweaver_stream::ReplayScope::session(session_id);
+
+        let run_messages = runtime
+            .block_on(archive.replay_display_after(&run_scope, None))
+            .unwrap();
+        assert!(!run_messages.is_empty());
+        let run_range = runtime.block_on(archive.cursor_range(&run_scope)).unwrap();
+        assert!(run_range.is_some());
+
+        let session_messages = runtime
+            .block_on(archive.replay_display_after(
+                &session_scope,
+                Some(starweaver_stream::ReplayCursor::new(
+                    session_scope.clone(),
+                    0,
+                )),
+            ))
+            .unwrap();
+        assert!(session_messages.len() < run_messages.len());
+        let session_range = runtime
+            .block_on(archive.cursor_range(&session_scope))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session_range.0.sequence, 0);
+
+        let extra = starweaver_stream::DisplayMessage::new(
+            999,
+            starweaver_core::SessionId::from_string(session_id),
+            starweaver_core::RunId::from_string(&run.run_id),
+            starweaver_stream::DisplayMessageKind::HostOperation,
+        )
+        .with_preview("extra archive message");
+        runtime
+            .block_on(archive.append_display_messages(run_scope.clone(), vec![extra]))
+            .unwrap();
+        let appended = runtime
+            .block_on(archive.replay_display_after(
+                &run_scope,
+                Some(starweaver_stream::ReplayCursor::new(run_scope.clone(), 998)),
+            ))
+            .unwrap();
+        assert_eq!(appended.len(), 1);
+        assert_eq!(
+            appended[0].preview.as_deref(),
+            Some("extra archive message")
+        );
+
+        let snapshot = starweaver_stream::ReplaySnapshot {
+            scope: Some(run_scope.clone()),
+            revision: 7,
+            cursor: Some(starweaver_stream::ReplayCursor::new(run_scope.clone(), 999)),
+            display_messages: appended,
+            metadata: serde_json::Map::default(),
+        };
+        runtime
+            .block_on(archive.append_snapshot(run_scope.clone(), snapshot.clone()))
+            .unwrap();
+        let latest = runtime
+            .block_on(archive.latest_snapshot(&run_scope))
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.revision, snapshot.revision);
+
+        let _raw_records = runtime
+            .block_on(archive.replay_raw_after(
+                &starweaver_core::SessionId::from_string(session_id),
+                &starweaver_core::RunId::from_string(&run.run_id),
+                None,
+            ))
+            .unwrap();
+    }
+
+    #[test]
+    fn local_session_and_stream_adapters_back_agent_runtime_builder() {
+        use std::sync::Arc;
+
+        use starweaver_session::SessionStore as _;
+        use starweaver_stream::StreamArchive as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cli = args::parse([
+            "starweaver-cli".to_string(),
+            "session".to_string(),
+            "list".to_string(),
+        ])
+        .unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        let session_id = starweaver_core::SessionId::from_string("session_local_runtime");
+        let session_store = Arc::new(LocalSessionStore::new(config.clone()));
+        let stream_archive = Arc::new(LocalStreamArchive::new(config));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut agent_runtime = starweaver_agent::AgentRuntimeBuilder::new(Arc::new(
+            starweaver_agent::TestModel::with_text("ok"),
+        ))
+        .durable_session_id(session_id.clone())
+        .session_store(session_store.clone())
+        .stream_archive(stream_archive.clone())
+        .build();
+
+        let result = runtime.block_on(agent_runtime.run_stream("hello")).unwrap();
+        assert_eq!(result.result.output, "ok");
+
+        let runs = runtime
+            .block_on(session_store.list_runs(&session_id))
+            .unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, starweaver_session::RunStatus::Completed);
+        let run_scope = starweaver_stream::ReplayScope::run(runs[0].run_id.as_str());
+        let display_messages = runtime
+            .block_on(stream_archive.replay_display_after(&run_scope, None))
+            .unwrap();
+        assert!(!display_messages.is_empty());
+        let trace = runtime
+            .block_on(session_store.compact_session_trace(&session_id))
+            .unwrap();
+        assert_eq!(trace.runs, 1);
     }
 
     #[test]

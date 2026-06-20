@@ -57,6 +57,7 @@ Current landed durable foundations:
 - `starweaver-storage` SQLite migrations, `SqliteSessionStore`, `SqliteReplayEventLog`, `SqliteStreamArchive`, and migration status reporting
 - `starweaver-runtime` executor checkpoints and stream records
 - `starweaver-agent` app/session helpers and SDK facade
+- `starweaver-cli` local `SessionStore` and `StreamArchive` adapters over CLI persistence while product storage converges on the shared storage crate
 
 Current foundation gaps:
 
@@ -85,7 +86,7 @@ Required operations:
 - get compact run and session trace projections
 - compact or archive session evidence
 
-The store owns durable session state. The core runtime owns deterministic state transitions and checkpoint emission. Product hosts map runtime evidence into session records and stream events.
+The store owns durable session state. The core runtime owns deterministic state transitions, checkpoint emission, and runtime stream records; those runtime checkpoint and stream types are the upstream durable evidence consumed by session stores, stream archives, replay logs, and product hosts. Starweaver does not introduce a separate runtime-contract/evidence layer for these records.
 
 ## StreamArchive Contract
 

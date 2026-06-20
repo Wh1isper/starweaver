@@ -76,24 +76,20 @@ Current landed CLI foundations:
 - config parser for global/project roots, model profiles, selected environment values, tools/MCP metadata, skill/subagent directories, and unmapped metadata
 - global config bootstrap under `~/.starweaver`, including `skills`, `subagents`, `tui`, and `desktop` state directories
 - TUI state/render/terminal modules, active-run steering, `/help`, `/clear`, `/cost`, `/model`, `/goal`, shell passthrough, streamed tool-call rendering, process-level provider session affinity, and model choice persistence under `~/.starweaver/tui/state.json`
-- JSON-RPC stdio MVP with `initialize`, `shutdown`, `profile.*`, `model.*`, `config.get`, `diagnostics.get`, session management, replay, and blocking `run.start`/`run.prompt`
+- JSON-RPC stdio runtime with `initialize`, `shutdown`, `profile.*`, `model.*`, `config.get`, `diagnostics.get`, session management, replay/output, non-blocking `run.start`, blocking `run.prompt`, `run.attach`, `run.await`, cancellation, steering, approvals, and deferred calls
 - partial worktree parsing and run metadata support
 
 Current implementation shape for headless execution:
 
 - one-shot `run_prompt` renders stored `DisplayMessage` records after run completion
-- the TUI path already uses live raw runtime records, steering messages, and cancellation channels through `execute_agent_session_with_channels`
-- `LocalStore` persists sessions, runs, raw stream records, display messages, approvals, deferred calls, context state, environment state, checkpoints, replay snapshots, and current-session state
-- JSON-RPC runtime can reuse current session selection, run assembly, TUI streaming channels, cancellation channels, and steering channels while extracting live display projection and event-sink persistence into a shared runtime coordinator
+- RPC and TUI active runs share `CliRuntimeCoordinator`, which owns active-run registration, live display projection, raw runtime forwarding for TUI, native replay-event subscriptions, cancellation senders, and steering senders
+- RPC owns protocol payload projection: the coordinator publishes scoped Starweaver replay events, while RPC maps those events to AGUI or native `DisplayMessage` payloads at the transport edge
+- `LocalStore` persists sessions, runs, raw stream records, display messages, approvals, deferred calls, context state, environment state, checkpoints, replay snapshots, and current-session state; `LocalSessionStore` and `LocalStreamArchive` adapt that store to the shared `SessionStore` and `StreamArchive` contracts while exposing persisted display output as `ReplayScope` / `ReplayCursor` windows during storage convergence
 
 Primary postponed migration gaps:
 
-- live JSON-RPC active-run notifications and non-blocking active run control
-- shared runtime coordinator used by RPC, TUI, and CLI commands
 - normalized JSON output for CLI management subsets
 - live stdout streaming for one-shot headless output
-- Starweaver/AGUI top-level event projection mode
-- slash command migration coverage
 - deeper TUI session/task/HITL/media workflows
 - startup asset seeding and config import
 - shell environment isolation, shell review, media config, browser config, and OAuth refresh settings
@@ -136,7 +132,7 @@ Headless output modes:
 
 `display-jsonl` is the Starweaver-native automation format for live output. `json` is the compact command-result format for hosts that only need the final run summary. `DisplayMessage` is the durable Starweaver wire event used by CLI output, replay archives, and restore views. `agui-jsonl` is the adapter format for consumers that expect Starweaver/AGUI top-level event objects.
 
-JSON-RPC stdio is the complete local runtime API. It covers both management operations and active agent execution. CLI commands are the shell-friendly subset over the same service handlers, and TUI is a terminal client over the same runtime surface. Desktop applications can use the same RPC protocol as a desktop client.
+JSON-RPC stdio is the complete local host-control API. It covers both management operations and active agent execution. CLI commands are the shell-friendly subset over the same service handlers. TUI is a terminal client over the same in-process runtime coordinator and local store, while Desktop applications can use the JSON-RPC protocol as a desktop client.
 
 Model choice is client state. `~/.starweaver/config.toml` defines shared model profiles and provider settings, while `~/.starweaver/tui/state.json` and `~/.starweaver/desktop/state.json` store the selected profile for each frontend. Headless CLI runs can still pass `--profile`; RPC `run.start` can pass an explicit `profile`/`modelProfile` or fall back to the selected profile for the supplied `client`.
 
@@ -205,19 +201,35 @@ flowchart TD
     cli[CLI command subset]
     tui[TUI terminal client]
     desktop[Desktop client]
+    service[CliService command handlers]
     coordinator[CliRuntimeCoordinator]
-    store[SQLite session and stream store]
+    store[LocalStore]
+    session_store[LocalSessionStore]
+    archive[LocalStreamArchive]
+    replay[ReplayScope and ReplayCursor windows]
     runtime[Agent runtime]
     display[DisplayMessage stream]
+    protocol[RPC payload adapter]
 
     rpc --> coordinator
-    cli --> coordinator
-    tui --> rpc
+    cli --> service
+    tui --> coordinator
     desktop --> rpc
+    service --> runtime
+    service --> store
+    runtime --> session_store
+    service --> display
     coordinator --> runtime
-    coordinator --> store
+    coordinator --> session_store
+    coordinator --> archive
     runtime --> coordinator
     coordinator --> display
+    session_store --> store
+    archive --> store
+    archive --> replay
+    coordinator --> replay
+    replay --> protocol
+    protocol --> rpc
     display --> rpc
     display --> cli
     display --> tui
@@ -251,7 +263,7 @@ sequenceDiagram
     Runtime-->>Coordinator: runtime stream records
     Coordinator->>Store: persist raw/display evidence
     Coordinator-->>RPC: display/status events
-    RPC-->>Client: run.display_message notifications
+    RPC-->>Client: run.output notifications
     Client->>RPC: run.cancel or run.steer
     RPC->>Coordinator: send cancel/steering channel message
     Coordinator->>Runtime: observe control at runtime boundary
@@ -261,35 +273,38 @@ sequenceDiagram
 
 Core RPC methods:
 
-| Method                     | Purpose                                              | Primary params                                                                                                         | Result                                                                    |
-| -------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `initialize`               | handshake and capability discovery                   | `clientInfo`, optional `workspaceRoot`                                                                                 | `protocolVersion`, `serverInfo`, `capabilities`, selected config summary  |
-| `shutdown`                 | graceful server shutdown                             | optional `timeoutMs`                                                                                                   | terminal status                                                           |
-| `session.create`           | create a durable local session                       | `profile`, `title`, `metadata`, optional `workspaceRoot`                                                               | session summary                                                           |
-| `session.list`             | list sessions                                        | `profile`, `workspace`, `status`, `limit`                                                                              | session summaries                                                         |
-| `session.get`              | load one session and recent runs                     | `sessionId`, `runs`                                                                                                    | session summary plus run summaries                                        |
-| `session.current.get`      | read current project session pointer                 | empty params                                                                                                           | current session id or null                                                |
-| `session.current.set`      | update current project session pointer               | `sessionId`                                                                                                            | updated pointer                                                           |
-| `session.delete`           | delete a session and retained evidence               | `sessionId`                                                                                                            | deletion summary                                                          |
-| `session.replay`           | replay persisted display messages                    | `sessionId`, optional `runId`, optional `after` cursor                                                                 | display messages plus cursor range                                        |
-| `run.start` / `run.prompt` | append and start an agent run                        | `prompt` or `inputParts`, session selection, `profile`/`modelProfile`, `client`, `hitl`, `metadata`, streaming options | MVP: blocking final summary; target: `sessionId`, `runId`, initial status |
-| `run.attach`               | replay then subscribe to an active or historical run | `sessionId`, `runId`, optional `after` cursor                                                                          | attach summary and latest cursor                                          |
-| `run.status`               | inspect one run                                      | `sessionId`, `runId`                                                                                                   | run summary                                                               |
-| `run.cancel`               | request cancellation for an active run               | `runId`, optional `reason`                                                                                             | cancellation acknowledgement                                              |
-| `run.steer`                | enqueue steering text for an active run              | `runId`, `text`, optional `steeringId`                                                                                 | steering acknowledgement                                                  |
-| `run.await`                | wait for terminal status                             | `runId`, optional `timeoutMs`                                                                                          | terminal run summary                                                      |
-| `approval.list`            | list approval records                                | optional `sessionId`, optional `runId`                                                                                 | approval records                                                          |
-| `approval.decide`          | approve or deny a pending approval                   | `approvalId`, `status`, optional `reason`                                                                              | updated approval record                                                   |
-| `deferred.list`            | list deferred tool calls                             | optional `sessionId`, optional `runId`                                                                                 | deferred records                                                          |
-| `deferred.complete`        | complete a deferred tool call                        | `deferredId`, JSON `result`                                                                                            | updated deferred record                                                   |
-| `deferred.fail`            | fail a deferred tool call                            | `deferredId`, `error`                                                                                                  | updated deferred record                                                   |
-| `profile.list`             | list available profiles                              | optional `client`                                                                                                      | profile summaries plus current client selection                           |
-| `profile.get`              | load one profile                                     | `name`                                                                                                                 | profile details safe for clients                                          |
-| `model.list`               | list model profiles for a client                     | optional `client` (`tui` or `desktop`)                                                                                 | profile summaries plus current selected profile                           |
-| `model.current`            | read selected model profile for a client             | optional `client`                                                                                                      | `selectedProfile`, `modelId`, client scope                                |
-| `model.select`             | persist selected model profile for a client          | `client`, `profile`                                                                                                    | updated selected profile and model id                                     |
-| `config.get`               | read selected resolved config values                 | `key` or `keys`                                                                                                        | key/value map                                                             |
-| `diagnostics.get`          | read runtime diagnostics                             | optional sections                                                                                                      | diagnostics object                                                        |
+| Method                | Purpose                                               | Primary params                                                                             | Result                                                                   |
+| --------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| `initialize`          | handshake and capability discovery                    | `clientInfo`, optional `workspaceRoot`                                                     | `protocolVersion`, `serverInfo`, `capabilities`, selected config summary |
+| `shutdown`            | graceful server shutdown                              | optional `timeoutMs`                                                                       | terminal status                                                          |
+| `session.create`      | create a durable local session                        | `profile`, `title`, `metadata`, optional `workspaceRoot`                                   | session summary                                                          |
+| `session.list`        | list sessions                                         | `profile`, `workspace`, `status`, `limit`                                                  | session summaries                                                        |
+| `session.get`         | load one session and recent runs                      | `sessionId`, `runs`                                                                        | session summary plus run summaries                                       |
+| `session.current.get` | read current project session pointer                  | empty params                                                                               | current session id or null                                               |
+| `session.current.set` | update current project session pointer                | `sessionId`                                                                                | updated pointer                                                          |
+| `session.delete`      | delete a session and retained evidence                | `sessionId`                                                                                | deletion summary                                                         |
+| `session.replay`      | replay persisted display messages                     | `sessionId`, optional `runId`, optional `cursor` or `after`                                | display messages, replay events, latest cursor, and next sequence        |
+| `session.output`      | replay session output and subscribe when active       | `sessionId`, optional `runId`, optional `cursor` or `after`, optional `payloadFormat`      | output events plus active subscription state                             |
+| `run.start`           | append and start a non-blocking agent run             | `prompt`, session selection, `profile`/`modelProfile`, `client`, `hitl`, streaming options | `sessionId`, `runId`, `status`, `payloadFormat`                          |
+| `run.prompt`          | append and run a blocking prompt                      | `prompt`, session selection, `profile`/`modelProfile`, `client`, `hitl`                    | compact final JSON run summary                                           |
+| `run.attach`          | replay then subscribe to an active or historical run  | `sessionId`, `runId`, optional `cursor` or `after`, optional `payloadFormat`               | output events plus active subscription state                             |
+| `run.status`          | inspect one run                                       | `sessionId`, `runId`                                                                       | run summary                                                              |
+| `run.cancel`          | request cancellation for an active run                | `runId`, optional `reason`                                                                 | cancellation acknowledgement                                             |
+| `run.steer`           | enqueue steering text for an active run               | `runId`, `text`, optional `steeringId`                                                     | steering acknowledgement                                                 |
+| `session.steer`       | enqueue steering text for the active run in a session | `sessionId`, `text`, optional `steeringId`                                                 | steering acknowledgement with resolved `runId`                           |
+| `run.await`           | wait for terminal status                              | `sessionId`, `runId`, optional `timeoutMs`                                                 | terminal run summary                                                     |
+| `approval.list`       | list approval records                                 | optional `sessionId`, optional `runId`                                                     | approval records                                                         |
+| `approval.decide`     | approve or deny a pending approval                    | `approvalId`, `status`, optional `reason`                                                  | updated approval record                                                  |
+| `deferred.list`       | list deferred tool calls                              | optional `sessionId`, optional `runId`                                                     | deferred records                                                         |
+| `deferred.complete`   | complete a deferred tool call                         | `deferredId`, JSON `result`                                                                | updated deferred record                                                  |
+| `deferred.fail`       | fail a deferred tool call                             | `deferredId`, `error`                                                                      | updated deferred record                                                  |
+| `profile.list`        | list available profiles                               | optional `client`                                                                          | profile summaries plus current client selection                          |
+| `profile.get`         | load one profile                                      | `name`                                                                                     | profile details safe for clients                                         |
+| `model.list`          | list model profiles for a client                      | optional `client` (`tui` or `desktop`)                                                     | profile summaries plus current selected profile                          |
+| `model.current`       | read selected model profile for a client              | optional `client`                                                                          | `selectedProfile`, `modelId`, client scope                               |
+| `model.select`        | persist selected model profile for a client           | `client`, `profile`                                                                        | updated selected profile and model id                                    |
+| `config.get`          | read selected resolved config values                  | `key` or `keys`                                                                            | key/value map                                                            |
+| `diagnostics.get`     | read runtime diagnostics                              | optional sections                                                                          | diagnostics object                                                       |
 
 Run session selection mirrors existing CLI flags:
 
@@ -313,18 +328,17 @@ Run model selection priority:
 
 Live notifications:
 
-| Method                   | Params                                                  | When emitted                                           |
-| ------------------------ | ------------------------------------------------------- | ------------------------------------------------------ |
-| `run.display_message`    | `sessionId`, `runId`, `cursor`, native `DisplayMessage` | each projected display message                         |
-| `run.raw_event`          | `sessionId`, `runId`, `sequence`, raw runtime record    | debug subscriptions and test harnesses                 |
-| `run.snapshot`           | `sessionId`, `runId`, `ReplaySnapshot`                  | compaction milestones and attach responses             |
-| `run.status`             | `sessionId`, `runId`, `status`, optional output/error   | queued, running, waiting, completed, failed, cancelled |
-| `run.approval_requested` | `sessionId`, `runId`, approval record                   | approval control-flow boundary                         |
-| `run.deferred_requested` | `sessionId`, `runId`, deferred record                   | deferred tool-call boundary                            |
+| Method        | Params                                                              | When emitted                                           |
+| ------------- | ------------------------------------------------------------------- | ------------------------------------------------------ |
+| `run.started` | `sessionId`, `runId`, `status`                                      | after durable run creation and active-run registration |
+| `run.output`  | `sessionId`, `runId`, `cursor`, `payloadFormat`, `payload`          | each projected display message                         |
+| `run.status`  | `sessionId`, `runId`, `status`, optional `outputPreview` or `error` | running, completed, failed, cancelled                  |
 
-Target live semantics: `run.start` returns after durable run creation and active-run registration. The final result arrives through `run.status` and can also be awaited with `run.await`. Active cancellation and steering use the in-memory active-run registry, while every durable event is persisted to SQLite.
+Stream payloads default to `agui`, where `payload` is a Starweaver/AGUI top-level event object mapped from the durable `DisplayMessage`. Clients can request native display payloads with `payloadFormat` or `stream.payloadFormat` set to `display_message`; those `run.output` items include the original `DisplayMessage` in `displayMessage`. Payload formatting is owned by the RPC protocol edge, not by `CliRuntimeCoordinator`.
 
-Current MVP semantics: `run.start` and `run.prompt` execute a blocking prompt run and return the same compact JSON summary as `--output json` after completion. MVP capabilities advertise `blockingRunStart=true`, `liveDisplay=false`, `cancel=false`, and `steering=false` until the shared runtime coordinator lands.
+Replay cursor semantics are scope-local. `run.attach` and `session.replay` with a `runId` use `ReplayScope::run(runId)`, where event sequence values match the run-local `DisplayMessage.sequence`. `session.output` without a `runId` and `session.replay` without a `runId` use `ReplayScope::session(sessionId)`, where sequence values are assigned over the ordered session display feed. The numeric `after` parameter is a shorthand for a `ReplayCursor` in the requested scope; clients that need explicit reconnect state should send the full `cursor` object returned by `run.output` or `session.replay.latestCursor`.
+
+Current live semantics: `run.start` returns after durable run creation and active-run registration. The final result arrives through `run.status` and can also be awaited with `run.await`. Active cancellation and steering use the in-memory active-run registry, while durable run output is replayed from SQLite through `session.replay`, `session.output`, and `run.attach`. `run.prompt` remains a blocking method and returns the same compact JSON summary as `--output json` after completion.
 
 Example handshake:
 
@@ -333,7 +347,7 @@ Example handshake:
 ```
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2026-06-08","serverInfo":{"name":"starweaver-cli","version":"0.0.1"},"capabilities":{"sessions":true,"runs":true,"management":true,"profiles":true,"clientModelSelection":true,"blockingRunStart":true,"liveDisplay":false,"cancel":false,"steering":false,"approvals":true,"deferred":true},"config":{"globalDir":"/home/user/.starweaver","tuiStateDir":"/home/user/.starweaver/tui","desktopStateDir":"/home/user/.starweaver/desktop","defaultProfile":"general"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2026-06-08","serverInfo":{"name":"starweaver-cli","version":"0.0.1"},"capabilities":{"sessions":true,"runs":true,"management":true,"profiles":true,"clientModelSelection":true,"blockingRunStart":false,"blockingRunPrompt":true,"nonBlockingRunStart":true,"liveDisplay":true,"cancel":true,"steering":true,"attach":true,"defaultStreamPayload":"agui","approvals":true,"deferred":true},"config":{"globalDir":"/home/user/.starweaver","tuiStateDir":"/home/user/.starweaver/tui","desktopStateDir":"/home/user/.starweaver/desktop","defaultProfile":"general"}}}
 ```
 
 Example model selection:
@@ -349,54 +363,55 @@ Example model selection:
 Example run start:
 
 ```json
-{"jsonrpc":"2.0","id":3,"method":"run.start","params":{"prompt":"summarize this repository","newSession":true,"client":"tui","stream":{"displayFormat":"display_message"}}}
+{"jsonrpc":"2.0","id":3,"method":"run.start","params":{"prompt":"summarize this repository","newSession":true,"client":"tui","stream":{"payloadFormat":"agui"}}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":3,"result":{"sessionId":"session_...","runId":"run_...","status":"completed","outputPreview":"...","latestCursor":{"scope":"run:run_...","sequence":13}}}
+{"jsonrpc":"2.0","id":3,"result":{"sessionId":"session_...","runId":"run_...","status":"running","payloadFormat":"agui"}}
 ```
 
 Example live event:
 
 ```json
-{"jsonrpc":"2.0","method":"run.display_message","params":{"sessionId":"session_...","runId":"run_...","cursor":{"scope":"run:run_...","sequence":3},"message":{"schema":"starweaver.display.v1","sequence":3,"type":"TEXT_MESSAGE_CONTENT","session_id":"session_...","run_id":"run_...","payload":{"delta":"Hello"}}}}
+{"jsonrpc":"2.0","method":"run.output","params":{"sessionId":"session_...","runId":"run_...","cursor":{"scope":"run:run_...","sequence":3},"payloadFormat":"agui","payload":{"type":"TEXT_MESSAGE_CHUNK","messageId":"run_...","delta":"Hello"}}}
 ```
 
 CLI commands remain a subset/facade over the same handlers:
 
-| CLI command                             | RPC equivalent                         | Purpose                          |
-| --------------------------------------- | -------------------------------------- | -------------------------------- |
-| `run -p ... --output display-jsonl`     | `run.start` plus display notifications | shell-friendly foreground run    |
-| `run --output json`                     | `run.start` / `run.await`              | compact final run summary        |
-| `session list --output json`            | `session.list`                         | scripted session discovery       |
-| `session show --output json`            | `session.get`                          | scripted session inspection      |
-| `session replay --output display-jsonl` | `session.replay`                       | scripted replay export           |
-| `approval * --output json`              | `approval.*`                           | scripted HITL decisions          |
-| `deferred * --output json`              | `deferred.*`                           | scripted deferred-tool decisions |
+| CLI command                             | RPC equivalent                           | Purpose                          |
+| --------------------------------------- | ---------------------------------------- | -------------------------------- |
+| `run -p ... --output display-jsonl`     | shared prompt run and display projection | shell-friendly foreground run    |
+| `run --output json`                     | shared prompt run with compact summary   | compact final run summary        |
+| `session list --output json`            | `session.list`                           | scripted session discovery       |
+| `session show --output json`            | `session.get`                            | scripted session inspection      |
+| `session replay --output display-jsonl` | `session.replay`                         | scripted replay export           |
+| `approval * --output json`              | `approval.*`                             | scripted HITL decisions          |
+| `deferred * --output json`              | `deferred.*`                             | scripted deferred-tool decisions |
 
-TUI should become the terminal client over the runtime coordinator. The current TUI path already creates stream, steering, and cancellation channels; the RPC runtime should reuse those semantics and let the TUI either call the coordinator in-process or speak the same JSON-RPC protocol to an owned local runtime process.
+TUI is the terminal client over the runtime coordinator. It calls the coordinator in-process, receives raw `AgentStreamRecord` values for terminal state updates, and shares the same session store, run lifecycle preparation, cancellation, and steering infrastructure as RPC without launching through the JSON-RPC stdio server.
 
 Implementation impact on the current CLI:
 
 - add `CliCommand::Rpc(RpcCommand)` and route it through `run_from_env` so the RPC server can own stdin/stdout directly
 - keep `command_output` for shell-friendly one-shot commands and tests
 - introduce a `rpc` module with JSON-RPC line framing, request dispatch, error mapping, model selection methods, and stderr diagnostics
-- introduce a `CliRuntimeCoordinator` shared by RPC, TUI, and CLI command handlers
-- move completion-time display projection in `runner.rs` toward an event-sink model that can project, persist, and emit `DisplayMessage` records as runtime records arrive
+- introduce a `CliRuntimeCoordinator` shared by RPC and TUI active runs
+- split prompt execution into prepare, run, complete, and fail steps so product surfaces can share run lifecycle code without routing through each other
+- project live runtime records into `DisplayMessage` values, wrap them in scoped replay events, and preserve raw runtime records for TUI state updates
 - keep raw `AgentStreamRecord` capture for debugging, replay evidence, and TUI state updates
-- maintain an active-run registry keyed by `runId` with cancellation sender, steering sender, status, latest cursor, and join handle
+- maintain an active-run registry keyed by `runId` with cancellation sender, steering sender, status, live display messages, and stream subscribers
 - expose management methods through RPC first, then map CLI command subset onto the same service handlers
-- reuse `LocalStore` methods for session/replay/approval/deferred management, then converge storage calls onto `starweaver-storage` adapters when the CLI persistence migration lands
+- reuse `LocalStore` methods for session/approval/deferred management, expose shared lifecycle and replay through `LocalSessionStore`, `LocalStreamArchive`, and `ReplayScope` / `ReplayCursor` windows, then converge concrete storage calls onto `starweaver-storage` adapters when the CLI persistence migration lands
 
-Initial build slices:
+Build slices:
 
 1. Protocol shell: `sw cli rpc`, `initialize`, `shutdown`, newline JSON-RPC framing tests, stderr diagnostics contract.
 2. Management API: `session.create`, `session.list`, `session.get`, current-session pointer methods, `session.replay`, `profile.*`, `model.*`, `config.get`, `diagnostics.get`.
-3. Run start MVP: `run.start`/`run.prompt` with prompt text, session selection, client-state model selection, blocking compact JSON result.
-4. Live display: shared runtime coordinator, non-blocking active-run registry, per-message persistence, `run.display_message`, terminal `run.status` notification, replay cursor tracking, `run.attach`.
-5. Active control: `run.cancel`, `run.steer`, `approval.*`, `deferred.*`, `run.await`.
+3. Run lifecycle: shared prompt preparation/execution/completion, blocking `run.prompt`, non-blocking `run.start`, session selection, and client-state model selection.
+4. Live display: shared runtime coordinator, non-blocking active-run registry, `run.output`, terminal `run.status` notification, AGUI/default payload projection, `session.output`, and `run.attach`.
+5. Active control: `run.cancel`, `run.steer`, `session.steer`, `approval.*`, `deferred.*`, `run.await`.
 6. CLI facade: normalize `--output json`, keep `display-jsonl` run/replay streams, and map command handlers onto the same runtime service methods.
-7. TUI client migration: route TUI active runs through the coordinator or owned RPC runtime while preserving the retained terminal renderer.
+7. TUI client migration: route TUI active runs through the in-process coordinator while preserving the retained terminal renderer.
 8. Desktop client: consume the same JSON-RPC protocol, display stream, and replay/attach semantics.
 
 ## Display Protocol as the UI Boundary
