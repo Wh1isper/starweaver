@@ -177,11 +177,11 @@ pub fn publish(args: &[String]) -> Result<(), String> {
     let retries = env::var("PUBLISH_RETRIES")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(10);
+        .unwrap_or(60);
     let delay = env::var("PUBLISH_RETRY_DELAY_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(30);
+        .unwrap_or(60);
     for package in PUBLISH_PACKAGES {
         println!("Publishing {package}");
         let mut attempt = 1;
