@@ -50,10 +50,16 @@ pub fn check_install_script() -> Result<(), String> {
     run_command(Command::new("sh").arg("-n").arg(&install_path))?;
     let install_script = fs::read_to_string(&install_path).map_err(|error| error.to_string())?;
     for required in [
+        "STARWEAVER_VERSION:-latest",
         "STARWEAVER_COMPONENTS:-cli",
+        "set -- $COMPONENTS",
+        "STARWEAVER_INSTALL_DIR",
+        "STARWEAVER_NO_MODIFY_PATH",
+        "https://github.com/$REPO/releases",
         "starweaver-cli-$tag-$target",
         "archive missing expected binary",
         "checksums.txt",
+        "verify_checksum_if_available",
         "ln -s \"starweaver\" \"$INSTALL_DIR/sw\"",
     ] {
         if !install_script.contains(required) {

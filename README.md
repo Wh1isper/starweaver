@@ -22,20 +22,39 @@ commit promotes it to `0.0.1`.
 
 ## Install
 
-After the first release is published:
+Install the latest public release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
 ```
 
-Install a pinned release:
+The installer downloads the matching `starweaver-cli` archive, verifies `checksums.txt` when
+available, and installs `starweaver`, `starweaver-cli`, and `sw`. It installs into
+`$HOME/.local/bin` for normal users and `/usr/local/bin` for root. Override the location when
+needed:
 
 ```bash
-STARWEAVER_VERSION=v0.0.1 \
-  curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh \
+  | STARWEAVER_INSTALL_DIR="$HOME/bin" sh
 ```
 
-Run from a checkout before the first release:
+Install a pinned release or prerelease:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh \
+  | STARWEAVER_VERSION=v0.0.1 sh
+```
+
+The default `latest` channel uses GitHub's latest stable release first and falls back to the
+newest public prerelease when no stable release exists yet.
+
+Update an installed CLI from GitHub release artifacts:
+
+```bash
+starweaver update
+```
+
+Run from a checkout:
 
 ```bash
 make cli -- -p "hello" --output text
@@ -156,7 +175,7 @@ The workflow pushes `release/v0.0.1` for review. After that release commit reach
 
 ## Acknowledgements
 
-Starweaver's design is informed by prior agent SDK work, including Pydantic AI and the Yet Another Agents / ya-mono ecosystem. Starweaver's implementation, public symbols, crate boundaries, documentation, and release workflow use Starweaver-native names and contracts.
+Thank you to the projects that helped shape Starweaver's thinking, especially [Pydantic AI](https://github.com/pydantic/pydantic-ai) and [Yet Another Agents / ya-mono](https://github.com/Wh1isper/ya-mono).
 
 ## License
 

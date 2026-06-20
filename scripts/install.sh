@@ -39,6 +39,17 @@ fetch() {
   fi
 }
 
+fetch_stdout() {
+  url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$url" -O -
+  else
+    fail "install curl or wget"
+  fi
+}
+
 resolve_version() {
   if [ "$VERSION" != "latest" ]; then
     case "$VERSION" in
@@ -47,13 +58,18 @@ resolve_version() {
     esac
     return
   fi
+  tag=""
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSLI "https://github.com/$REPO/releases/latest" | awk -F/ '/^Location:/ {gsub(/\r/, "", $NF); print $NF; exit}'
+    tag="$(curl -fsSLI "https://github.com/$REPO/releases/latest" 2>/dev/null | awk -F/ '/^Location:/ {gsub(/\r/, "", $NF); print $NF; exit}' || true)"
   elif command -v wget >/dev/null 2>&1; then
-    wget --server-response --spider "https://github.com/$REPO/releases/latest" 2>&1 | awk -F/ '/Location:/ {gsub(/\r/, "", $NF); print $NF; exit}'
+    tag="$(wget --server-response --spider "https://github.com/$REPO/releases/latest" 2>&1 | awk -F/ '/Location:/ {gsub(/\r/, "", $NF); print $NF; exit}' || true)"
   else
     fail "install curl or wget"
   fi
+  if [ -z "$tag" ]; then
+    tag="$(fetch_stdout "https://github.com/$REPO/releases" 2>/dev/null | sed -n 's/.*href="[^"]*\/releases\/tag\/\([^"?/#]*\)[^"]*".*/\1/p' | head -n 1 || true)"
+  fi
+  printf '%s\n' "$tag"
 }
 
 detect_target() {
@@ -201,10 +217,11 @@ main() {
   trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
   old_ifs="$IFS"
   IFS=','
-  for component in $COMPONENTS; do
+  set -- $COMPONENTS
+  IFS="$old_ifs"
+  for component do
     install_component "$component" "$target" "$tag"
   done
-  IFS="$old_ifs"
   ensure_path_hint
   log "starweaver installed from $tag"
 }

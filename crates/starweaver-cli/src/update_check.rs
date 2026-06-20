@@ -5,11 +5,12 @@ use std::{env, fs, path::Path, thread, time::Duration};
 use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{config::CliConfig, error::io_error, CliResult};
 
-const LATEST_RELEASE_API: &str = "https://api.github.com/repos/Wh1isper/starweaver/releases/latest";
+const LATEST_RELEASE_URL: &str = "https://github.com/Wh1isper/starweaver/releases/latest";
+const RELEASES_URL: &str = "https://github.com/Wh1isper/starweaver/releases";
+const RELEASE_TAG_PREFIX: &str = "/releases/tag/";
 const CHECK_INTERVAL_SECONDS: i64 = 24 * 60 * 60;
 
 /// Cached update check result.
@@ -117,34 +118,89 @@ fn fetch_latest_release() -> Result<UpdateCheckCache, String> {
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
-        let response = reqwest::Client::new()
-            .get(LATEST_RELEASE_API)
-            .header(reqwest::header::USER_AGENT, "starweaver-cli")
-            .timeout(Duration::from_secs(2))
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
-        let status = response.status();
-        let body = response.text().await.map_err(|error| error.to_string())?;
-        if !status.is_success() {
-            return Err(body.trim().to_string());
+        let client = reqwest::Client::new();
+        match fetch_latest_release_redirect(&client).await {
+            Ok(cache) => Ok(cache),
+            Err(primary_error) => {
+                fetch_release_page_metadata(&client)
+                    .await
+                    .map_err(|fallback_error| {
+                        format!("{primary_error}; prerelease fallback failed: {fallback_error}")
+                    })
+            }
         }
-        let json = serde_json::from_str::<Value>(&body).map_err(|error| error.to_string())?;
-        let latest_version = json
-            .get("tag_name")
-            .and_then(Value::as_str)
-            .map(|tag| tag.trim_start_matches('v').to_string());
-        let release_url = json
-            .get("html_url")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        Ok(UpdateCheckCache {
-            checked_at: Some(Utc::now()),
-            latest_version,
-            release_url,
-            error: None,
-        })
     })
+}
+
+async fn fetch_latest_release_redirect(
+    client: &reqwest::Client,
+) -> Result<UpdateCheckCache, String> {
+    let response = client
+        .get(LATEST_RELEASE_URL)
+        .header(reqwest::header::USER_AGENT, "starweaver-cli")
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let final_url = response.url().to_string();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(body.trim().to_string());
+    }
+    let tag = parse_release_tag_from_url(&final_url)
+        .ok_or_else(|| format!("latest release redirect did not include a tag: {final_url}"))?;
+    Ok(cache_from_tag(&tag))
+}
+
+async fn fetch_release_page_metadata(client: &reqwest::Client) -> Result<UpdateCheckCache, String> {
+    let response = client
+        .get(RELEASES_URL)
+        .header(reqwest::header::USER_AGENT, "starweaver-cli")
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(body.trim().to_string());
+    }
+    let tag = parse_release_tag_from_page(&body)
+        .ok_or_else(|| "releases page did not include a release tag link".to_string())?;
+    Ok(cache_from_tag(&tag))
+}
+
+fn cache_from_tag(tag: &str) -> UpdateCheckCache {
+    let tag = tag.trim();
+    let latest_version = Some(tag.trim_start_matches('v').to_string());
+    let release_url = Some(format!(
+        "https://github.com/Wh1isper/starweaver/releases/tag/{tag}"
+    ));
+    UpdateCheckCache {
+        checked_at: Some(Utc::now()),
+        latest_version,
+        release_url,
+        error: None,
+    }
+}
+
+fn parse_release_tag_from_url(url: &str) -> Option<String> {
+    let tag = url.split(RELEASE_TAG_PREFIX).nth(1)?;
+    take_tag_segment(tag)
+}
+
+fn parse_release_tag_from_page(page: &str) -> Option<String> {
+    let tag = page.split(RELEASE_TAG_PREFIX).nth(1)?;
+    take_tag_segment(tag)
+}
+
+fn take_tag_segment(value: &str) -> Option<String> {
+    let tag = value
+        .split(['"', '?', '#', '/', '<', '>'])
+        .next()
+        .unwrap_or_default();
+    (!tag.is_empty()).then(|| tag.to_string())
 }
 
 #[cfg(test)]
@@ -170,6 +226,35 @@ mod tests {
         assert!(!update_is_newer("0.0.1", "latest"));
         assert!(update_is_newer("dev", "0.0.1"));
         assert!(!update_is_newer("dev", "dev"));
+    }
+
+    #[test]
+    fn release_metadata_parser_accepts_redirects_and_release_pages() {
+        assert_eq!(
+            parse_release_tag_from_url(
+                "https://github.com/Wh1isper/starweaver/releases/tag/v0.0.2"
+            ),
+            Some("v0.0.2".to_string())
+        );
+        assert_eq!(
+            parse_release_tag_from_url(
+                "https://github.com/Wh1isper/starweaver/releases/tag/v0.0.2?expanded_assets=true"
+            ),
+            Some("v0.0.2".to_string())
+        );
+        assert_eq!(
+            parse_release_tag_from_page(
+                r#"<a href="/Wh1isper/starweaver/releases/tag/v0.0.1">v0.0.1</a>"#
+            ),
+            Some("v0.0.1".to_string())
+        );
+
+        let cache = cache_from_tag("v0.0.1");
+        assert_eq!(cache.latest_version.as_deref(), Some("0.0.1"));
+        assert_eq!(
+            cache.release_url.as_deref(),
+            Some("https://github.com/Wh1isper/starweaver/releases/tag/v0.0.1")
+        );
     }
 
     #[test]
