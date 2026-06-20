@@ -188,6 +188,8 @@ This pushes `release/v0.0.1` for review. After the release commit reaches `main`
 
 Use squash merge only for GitHub pull requests. Do not merge pull requests with merge commits into `main`.
 
+Keep release-event publishing packaging-only. Do not run CI, smoke checks, or publish dry-runs inside `.github/workflows/release.yml`; run validation before merging the release pull request.
+
 For repository-wide hooks, run:
 
 ```bash

@@ -46,13 +46,12 @@ gh release create v0.0.1 --target main --title "Starweaver v0.0.1" --generate-no
 
 Publishing the GitHub Release triggers `.github/workflows/release.yml`:
 
-1. validate the release tag against the workspace version,
-2. run `make ci`,
-3. run `make cli-smoke`,
-4. build CLI launcher binaries,
-5. upload binary archives and `checksums.txt` to the GitHub Release,
-6. dry-run first-wave publish packages,
-7. publish all workspace crates in dependency order through the `Release` environment.
+1. build CLI launcher binaries from the release tag,
+2. upload binary archives and `checksums.txt` to the GitHub Release,
+3. publish all workspace crates in dependency order through the `Release` environment.
+
+Release-event publishing is packaging-only. Run validation before merging the release pull request,
+not inside `.github/workflows/release.yml`.
 
 CLI archives are built for:
 
