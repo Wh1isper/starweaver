@@ -186,6 +186,8 @@ gh workflow run prepare-release.yml -f version=0.0.1
 
 This pushes `release/v0.0.1` for review. After the release commit reaches `main`, publish `v0.0.1` as a GitHub Release. The `release.yml` workflow runs from the published Release event, builds `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, uploads `checksums.txt`, and publishes crates through the `Release` environment.
 
+Use squash merge only for GitHub pull requests. Do not merge pull requests with merge commits into `main`.
+
 For repository-wide hooks, run:
 
 ```bash
