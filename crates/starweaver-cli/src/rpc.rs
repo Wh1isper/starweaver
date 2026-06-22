@@ -656,6 +656,7 @@ fn run_command_from_params(
             .get("hitl")
             .and_then(Value::as_str)
             .and_then(parse_hitl),
+        goal: None,
         session_affinity_id: None,
     })
 }

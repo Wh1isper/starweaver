@@ -619,6 +619,7 @@ pub(super) const fn default_config_template(scope: ConfigScope) -> &'static str 
 default_profile = "general"
 default_output = "agui-jsonl"
 default_hitl = "defer"
+max_goal_iterations = 10
 
 [providers.openai]
 enabled = true
@@ -659,6 +660,7 @@ channel = "stable"
 default_profile = "general"
 default_output = "agui-jsonl"
 default_hitl = "defer"
+max_goal_iterations = 10
 
 [environment]
 provider = "local"

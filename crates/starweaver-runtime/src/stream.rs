@@ -45,6 +45,8 @@ pub enum AgentSidebandEventCategory {
     Compact,
     /// User steering events.
     Steering,
+    /// Runtime goal-mode events.
+    Goal,
     /// Background process or background shell events.
     Background,
     /// Capability-specific events that do not fit a narrower category.
@@ -107,6 +109,7 @@ impl AgentSidebandEvent {
             "steering_received" | "steering_submitted" => {
                 Some(AgentSidebandEventCategory::Steering)
             }
+            "goal_iteration" | "goal_complete" => Some(AgentSidebandEventCategory::Goal),
             "background_shell_complete" => Some(AgentSidebandEventCategory::Background),
             "message_received" => Some(AgentSidebandEventCategory::Message),
             "subagent_started" | "subagent_completed" | "subagent_failed" => {
@@ -135,6 +138,7 @@ impl AgentSidebandEvent {
             _ if kind.starts_with("usage_") => Some(AgentSidebandEventCategory::Usage),
             _ if kind.starts_with("compact_") => Some(AgentSidebandEventCategory::Compact),
             _ if kind.starts_with("steering_") => Some(AgentSidebandEventCategory::Steering),
+            _ if kind.starts_with("goal_") => Some(AgentSidebandEventCategory::Goal),
             _ if kind.starts_with("background_") => Some(AgentSidebandEventCategory::Background),
             _ if kind.starts_with("capability_") => Some(AgentSidebandEventCategory::Capability),
             _ => None,

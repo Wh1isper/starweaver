@@ -23,7 +23,8 @@ use starweaver_model::{
     INSTRUCTION_ORIGIN_METADATA,
 };
 use starweaver_runtime::{
-    AgentCapability, AgentRunState, AgentStreamEvent, CapabilityResult, ModelResponseStreamEvent,
+    AgentCapability, AgentRunState, AgentStreamEvent, CapabilityResult, GoalCapability,
+    GoalRunOptions, ModelResponseStreamEvent, OutputPolicy,
 };
 use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, RunRecord, RunStatus,
@@ -48,10 +49,22 @@ use projection::{
 };
 
 /// CLI run policy.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CliRunPolicy {
     /// Headless human-in-the-loop behavior.
     pub hitl: HitlPolicy,
+    /// Runtime goal-mode behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<CliGoalRunPolicy>,
+}
+
+/// CLI goal-mode policy forwarded to the runtime agent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CliGoalRunPolicy {
+    /// Goal objective.
+    pub objective: String,
+    /// Maximum runtime goal retry iterations.
+    pub max_iterations: usize,
 }
 
 /// Steering message sent from the interactive UI into the running agent.
@@ -79,7 +92,7 @@ pub fn execute_agent_session(
     environment: &DynEnvironmentProvider,
     process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
-    policy: CliRunPolicy,
+    policy: &CliRunPolicy,
 ) -> CliResult<CliRunExecution> {
     execute_agent_session_with_stream_sender(
         input,
@@ -102,7 +115,7 @@ pub fn execute_agent_session_with_stream_sender(
     environment: &DynEnvironmentProvider,
     process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
-    policy: CliRunPolicy,
+    policy: &CliRunPolicy,
     stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
 ) -> CliResult<CliRunExecution> {
     execute_agent_session_with_channels(
@@ -128,12 +141,19 @@ pub fn execute_agent_session_with_channels(
     environment: &DynEnvironmentProvider,
     process_environment: Option<&DynProcessShellProvider>,
     restore_state: Option<ResumableState>,
-    policy: CliRunPolicy,
+    policy: &CliRunPolicy,
     stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
     steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
     cancel_receiver: Option<mpsc::Receiver<()>>,
 ) -> CliResult<CliRunExecution> {
     let mut agent = profile.build_agent()?;
+    if let Some(goal) = policy.goal.as_ref() {
+        let options = GoalRunOptions::new(goal.objective.clone(), goal.max_iterations);
+        let retry_budget = options.max_iterations().saturating_add(5);
+        agent = agent
+            .with_output_policy(OutputPolicy::new().with_retries(retry_budget))
+            .with_capability(Arc::new(GoalCapability::new(options)));
+    }
     let pending_steering = steering_receiver.map(start_steering_collector);
     let observed_records = Arc::new(Mutex::new(Vec::new()));
     agent = agent.with_stream_observer(Arc::new(CliStreamObserver {
@@ -1519,8 +1539,9 @@ mod tests {
         let projection = cancelled_display_projection(
             &run,
             &records,
-            CliRunPolicy {
+            &CliRunPolicy {
                 hitl: HitlPolicy::Deny,
+                goal: None,
             },
             &runtime,
         );

@@ -77,6 +77,13 @@ pub(super) fn apply_env(config: &mut CliConfig) {
             config.default_hitl = hitl;
         }
     }
+    if let Some(value) = env::var_os("STARWEAVER_MAX_GOAL_ITERATIONS") {
+        if let Ok(max_goal_iterations) = value.to_string_lossy().parse::<usize>() {
+            if max_goal_iterations > 0 {
+                config.max_goal_iterations = max_goal_iterations;
+            }
+        }
+    }
     if let Some(value) = env::var_os("STARWEAVER_UPDATE_CHANNEL") {
         config.update_channel = value.to_string_lossy().to_string();
     }

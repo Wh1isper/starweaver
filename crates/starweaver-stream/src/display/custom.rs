@@ -105,6 +105,10 @@ fn custom_display_kind(normalized: &str) -> Option<DisplayMessageKind> {
         ],
     ) {
         Some(DisplayMessageKind::SteeringReceived)
+    } else if custom_event_kind_matches(normalized, &["goal_iteration"]) {
+        Some(DisplayMessageKind::GoalIteration)
+    } else if custom_event_kind_matches(normalized, &["goal_complete", "goal_completed"]) {
+        Some(DisplayMessageKind::GoalCompleted)
     } else if custom_event_kind_matches(normalized, &["tools_unavailable"]) {
         Some(DisplayMessageKind::ToolsUnavailable)
     } else if custom_event_kind_matches(normalized, &["tool_search_loaded"]) {
@@ -232,6 +236,15 @@ fn custom_display_preview(kind: DisplayMessageKind, payload: &Value) -> String {
                 |text| format!("steering received: {text}"),
             )
         }
+        DisplayMessageKind::GoalIteration => {
+            let iteration = payload_u64(payload, &["iteration"]).unwrap_or(0);
+            let max_iterations = payload_u64(payload, &["max_iterations"]).unwrap_or(0);
+            format!("goal iteration {iteration}/{max_iterations}")
+        }
+        DisplayMessageKind::GoalCompleted => payload_string(payload, &["reason"]).map_or_else(
+            || "goal completed".to_string(),
+            |reason| format!("goal completed: {reason}"),
+        ),
         DisplayMessageKind::TaskSnapshot => task_snapshot_items(payload).map_or_else(
             || "task snapshot".to_string(),
             |tasks| format!("task snapshot: {} task(s)", tasks.len()),

@@ -171,6 +171,7 @@ impl CliService {
                 profile: cli.profile.clone(),
                 output: cli.output,
                 hitl: cli.hitl,
+                goal: None,
                 worker: cli.worker.clone(),
                 worker_label: cli.worker_label.clone(),
                 worktree: cli.worktree.clone(),
@@ -331,6 +332,13 @@ impl CliService {
         }
         write_current_session(&self.config, &session_id)?;
         let hitl = command.hitl.unwrap_or(self.config.default_hitl);
+        let goal = command
+            .goal
+            .as_ref()
+            .map(|goal| crate::runner::CliGoalRunPolicy {
+                objective: goal.objective.clone(),
+                max_iterations: goal.max_iterations.max(1),
+            });
         let output_mode = command.output.unwrap_or(self.config.default_output);
         Ok(PreparedPromptRun {
             session_id,
@@ -341,7 +349,7 @@ impl CliService {
             resolved_profile,
             environment,
             restore_state,
-            policy: CliRunPolicy { hitl },
+            policy: CliRunPolicy { hitl, goal },
         })
     }
 
@@ -372,7 +380,7 @@ impl CliService {
                 &environment.provider,
                 environment.process_provider.as_ref(),
                 restore_state,
-                policy,
+                &policy,
                 stream_sender,
                 steering_receiver,
                 cancel_receiver,
@@ -385,7 +393,7 @@ impl CliService {
                 &environment.provider,
                 environment.process_provider.as_ref(),
                 restore_state,
-                policy,
+                &policy,
             )
         };
         result.map(|execution| ExecutedPromptRun {
@@ -646,6 +654,7 @@ impl CliService {
             profile: source_run.profile.clone(),
             output: command.output,
             hitl: command.hitl,
+            goal: None,
             worker: None,
             worker_label: None,
             worktree: None,

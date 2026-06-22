@@ -273,6 +273,8 @@ pub(super) fn display_message_to_agui_event(message: &DisplayMessage) -> Option<
         | DisplayMessageKind::HandoffFailed
         | DisplayMessageKind::SteeringSubmitted
         | DisplayMessageKind::SteeringReceived
+        | DisplayMessageKind::GoalIteration
+        | DisplayMessageKind::GoalCompleted
         | DisplayMessageKind::TaskSnapshot
         | DisplayMessageKind::TaskEvent
         | DisplayMessageKind::NoteEvent
@@ -341,6 +343,8 @@ const fn display_extension_name(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::HandoffFailed => "starweaver.handoff_failed",
         DisplayMessageKind::SteeringSubmitted => "starweaver.steering_submitted",
         DisplayMessageKind::SteeringReceived => "starweaver.steering_received",
+        DisplayMessageKind::GoalIteration => "starweaver.goal_iteration",
+        DisplayMessageKind::GoalCompleted => "starweaver.goal_completed",
         DisplayMessageKind::TaskSnapshot => "starweaver.task_snapshot",
         DisplayMessageKind::TaskEvent => "starweaver.task_event",
         DisplayMessageKind::NoteEvent => "starweaver.note_event",

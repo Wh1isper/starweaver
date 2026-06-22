@@ -155,8 +155,19 @@ fn display_program_name(program: Option<&str>) -> String {
         .and_then(|value| Path::new(value).file_name())
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
-        .unwrap_or("sw")
+        .map_or("sw", strip_windows_exe_suffix)
         .to_string()
+}
+
+fn strip_windows_exe_suffix(value: &str) -> &str {
+    let Some(suffix) = value.get(value.len().saturating_sub(4)..) else {
+        return value;
+    };
+    if suffix.eq_ignore_ascii_case(".exe") {
+        value.get(..value.len() - 4).unwrap_or(value)
+    } else {
+        value
+    }
 }
 
 fn launcher_help(program: &str) -> String {
@@ -613,6 +624,8 @@ mod tests {
             command_output(["sw".to_string(), "version".to_string()]).unwrap(),
             "starweaver-agent-sdk\n"
         );
+        let windows_help = command_output(["sw.exe".to_string(), "--help".to_string()]).unwrap();
+        assert!(windows_help.contains("Use `sw cli --help`"));
         let help = command_output(["sw".to_string()]).unwrap();
         assert!(help.contains("Starweaver product launcher"));
         assert!(help.contains("Usage:"));

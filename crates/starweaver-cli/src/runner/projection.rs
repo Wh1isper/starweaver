@@ -19,7 +19,7 @@ pub(super) struct DisplayProjection {
 pub(super) fn project_display_messages(
     run: &RunRecord,
     raw_records: &[AgentStreamRecord],
-    policy: CliRunPolicy,
+    policy: &CliRunPolicy,
     runtime: &tokio::runtime::Runtime,
 ) -> DisplayProjection {
     let policy_metadata = serde_json::to_value(policy).unwrap_or(Value::Null);
@@ -181,7 +181,7 @@ pub(super) fn project_display_messages(
 fn apply_control_flow(
     run: &RunRecord,
     tool_return: &starweaver_model::ToolReturnPart,
-    policy: CliRunPolicy,
+    policy: &CliRunPolicy,
     sequence: usize,
     display_messages: &mut Vec<DisplayMessage>,
     approvals: &mut Vec<ApprovalRecord>,
@@ -528,13 +528,14 @@ pub(super) fn failed_display_projection(
     run: &RunRecord,
     raw_records: &[AgentStreamRecord],
     error: &str,
-    policy: CliRunPolicy,
+    policy: &CliRunPolicy,
     runtime: &tokio::runtime::Runtime,
 ) -> DisplayProjection {
     let mut projection = project_display_messages(run, raw_records, policy, runtime);
     projection
         .messages
         .retain(|message| !is_internal_display_compaction_marker(message));
+    append_goal_completion_if_needed(&mut projection.messages, run, policy, "error", Some(error));
     if !projection
         .messages
         .iter()
@@ -588,13 +589,14 @@ pub(super) fn failed_display_projection(
 pub(super) fn cancelled_display_projection(
     run: &RunRecord,
     raw_records: &[AgentStreamRecord],
-    policy: CliRunPolicy,
+    policy: &CliRunPolicy,
     runtime: &tokio::runtime::Runtime,
 ) -> DisplayProjection {
     let mut projection = project_display_messages(run, raw_records, policy, runtime);
     projection
         .messages
         .retain(|message| !is_internal_display_compaction_marker(message));
+    append_goal_completion_if_needed(&mut projection.messages, run, policy, "cancelled", None);
     projection.messages.push(
         DisplayMessage::new(
             projection.messages.len(),
@@ -637,4 +639,40 @@ pub(super) fn cancelled_display_projection(
     resequence_display_messages(&mut projection.messages);
     projection.status = RunStatus::Cancelled;
     projection
+}
+
+fn append_goal_completion_if_needed(
+    messages: &mut Vec<DisplayMessage>,
+    run: &RunRecord,
+    policy: &CliRunPolicy,
+    reason: &str,
+    error: Option<&str>,
+) {
+    let Some(goal) = policy.goal.as_ref() else {
+        return;
+    };
+    if messages
+        .iter()
+        .any(|message| message.kind == DisplayMessageKind::GoalCompleted)
+    {
+        return;
+    }
+    let mut payload = json!({
+        "reason": reason,
+        "task": goal.objective.as_str(),
+        "max_iterations": goal.max_iterations,
+    });
+    if let Some(error) = error {
+        payload["error"] = json!(error);
+    }
+    messages.push(
+        DisplayMessage::new(
+            messages.len(),
+            run.session_id.clone(),
+            run.run_id.clone(),
+            DisplayMessageKind::GoalCompleted,
+        )
+        .with_payload(payload)
+        .with_preview(format!("goal completed: {reason}")),
+    );
 }
