@@ -1,0 +1,24 @@
+[package]
+name = "starweaver-rpc-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "JSON-RPC host protocol helpers for Starweaver"
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+starweaver-stream.workspace = true
+
+[dev-dependencies]
+starweaver-core.workspace = true
+
+[lints]
+workspace = true

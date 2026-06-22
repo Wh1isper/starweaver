@@ -5,7 +5,8 @@ use crate::{AuthConfig, HttpModelConfig};
 /// Build an Anthropic HTTP model config from an API key.
 #[must_use]
 pub fn anthropic_http_config(api_key: impl Into<String>) -> HttpModelConfig {
-    let mut config = HttpModelConfig::new("https://api.anthropic.com/v1", "messages");
+    let mut config =
+        HttpModelConfig::provider_endpoint("https://api.anthropic.com/v1", "v1", "messages");
     config.auth = Some(AuthConfig::Header {
         name: "x-api-key".to_string(),
         value: api_key.into(),
@@ -19,7 +20,8 @@ pub fn anthropic_http_config(api_key: impl Into<String>) -> HttpModelConfig {
 /// Build an `OpenAI` Chat Completions HTTP model config from an API key.
 #[must_use]
 pub fn openai_chat_http_config(api_key: impl Into<String>) -> HttpModelConfig {
-    let mut config = HttpModelConfig::new("https://api.openai.com/v1", "chat/completions");
+    let mut config =
+        HttpModelConfig::provider_endpoint("https://api.openai.com/v1", "v1", "chat/completions");
     config.auth = Some(AuthConfig::Bearer {
         token: api_key.into(),
     });
@@ -29,7 +31,8 @@ pub fn openai_chat_http_config(api_key: impl Into<String>) -> HttpModelConfig {
 /// Build an `OpenAI` Responses HTTP model config from an API key.
 #[must_use]
 pub fn openai_responses_http_config(api_key: impl Into<String>) -> HttpModelConfig {
-    let mut config = HttpModelConfig::new("https://api.openai.com/v1", "responses");
+    let mut config =
+        HttpModelConfig::provider_endpoint("https://api.openai.com/v1", "v1", "responses");
     config.auth = Some(AuthConfig::Bearer {
         token: api_key.into(),
     });
@@ -43,8 +46,9 @@ pub fn gemini_http_config(
     model_name: impl Into<String>,
 ) -> HttpModelConfig {
     let model_name = model_name.into();
-    HttpModelConfig::new(
+    HttpModelConfig::provider_endpoint(
         "https://generativelanguage.googleapis.com/v1beta",
+        "v1beta",
         format!("models/{model_name}:generateContent?key={}", api_key.into()),
     )
 }

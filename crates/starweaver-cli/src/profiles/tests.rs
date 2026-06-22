@@ -129,6 +129,81 @@ fn subagent_model_config_can_override_with_preset_or_inline_object() {
     assert!(inline.preset.is_none());
 }
 
+#[test]
+fn anthropic_gateway_endpoint_uses_v1_when_base_url_has_no_sub_path() {
+    let mut http_config = anthropic_http_config("test-key");
+    let provider_config = ProviderConfig {
+        base_url: Some("http://localhost:8090".to_string()),
+        ..ProviderConfig::default()
+    };
+
+    apply_provider_http_config_overrides(&mut http_config, &provider_config);
+
+    assert_eq!(http_config.base_url, "http://localhost:8090");
+    assert_eq!(http_config.endpoint_path, "messages");
+    assert_eq!(
+        http_config.endpoint_url(),
+        "http://localhost:8090/v1/messages"
+    );
+}
+
+#[test]
+fn anthropic_gateway_endpoint_uses_messages_when_base_url_has_sub_path() {
+    let mut http_config = anthropic_http_config("test-key");
+    let provider_config = ProviderConfig {
+        base_url: Some("http://localhost:8090/abc".to_string()),
+        ..ProviderConfig::default()
+    };
+
+    apply_provider_http_config_overrides(&mut http_config, &provider_config);
+
+    assert_eq!(http_config.endpoint_path, "messages");
+    assert_eq!(
+        http_config.endpoint_url(),
+        "http://localhost:8090/abc/messages"
+    );
+}
+
+#[test]
+fn anthropic_gateway_endpoint_keeps_explicit_endpoint_path() {
+    let mut http_config = anthropic_http_config("test-key");
+    let provider_config = ProviderConfig {
+        base_url: Some("http://localhost:8090".to_string()),
+        endpoint_path: Some("custom/messages".to_string()),
+        ..ProviderConfig::default()
+    };
+
+    apply_provider_http_config_overrides(&mut http_config, &provider_config);
+
+    assert_eq!(http_config.endpoint_path, "custom/messages");
+    assert_eq!(
+        http_config.endpoint_url(),
+        "http://localhost:8090/custom/messages"
+    );
+}
+
+#[test]
+fn anthropic_endpoint_sub_path_detection_handles_root_and_existing_v1() {
+    assert_eq!(
+        anthropic_http_config("test-key")
+            .with_base_url("https://gateway.example")
+            .endpoint_url(),
+        "https://gateway.example/v1/messages"
+    );
+    assert_eq!(
+        anthropic_http_config("test-key")
+            .with_base_url("https://gateway.example/")
+            .endpoint_url(),
+        "https://gateway.example/v1/messages"
+    );
+    assert_eq!(
+        anthropic_http_config("test-key")
+            .with_base_url("https://gateway.example/v1")
+            .endpoint_url(),
+        "https://gateway.example/v1/messages"
+    );
+}
+
 #[tokio::test]
 async fn configured_subagent_delegate_inherits_parent_model_settings_and_config() {
     let config = test_config();

@@ -744,11 +744,8 @@ fn provider_model(
     };
     if parsed.oauth_provider.as_deref() == Some("codex") {
         let codex_config = &config.providers.codex;
-        let mut http_config = HttpModelConfig::new(
-            codex_config.base_url.as_deref().unwrap_or(CODEX_BASE_URL),
-            codex_config.endpoint_path.as_deref().unwrap_or("responses"),
-        );
-        http_config.max_tokens_parameter = codex_config.max_tokens_parameter;
+        let mut http_config = HttpModelConfig::new(CODEX_BASE_URL, "responses");
+        apply_provider_http_config_overrides(&mut http_config, codex_config);
         http_config
             .metadata
             .insert("oauth_provider".to_string(), json!("codex"));
@@ -804,13 +801,7 @@ fn provider_model(
         }
         ProtocolFamily::BedrockConverse => return Ok(None),
     };
-    if let Some(base_url) = provider_config.base_url.as_ref() {
-        http_config.base_url.clone_from(base_url);
-    }
-    if let Some(endpoint_path) = provider_config.endpoint_path.as_ref() {
-        http_config.endpoint_path.clone_from(endpoint_path);
-    }
-    http_config.max_tokens_parameter = provider_config.max_tokens_parameter;
+    apply_provider_http_config_overrides(&mut http_config, &provider_config);
     let profile = provider_model_profile(model_config_preset, parsed.protocol)?;
     let client = ProtocolModelClient::new(
         parsed.provider,
@@ -820,6 +811,19 @@ fn provider_model(
         Arc::new(ReqwestHttpClient::new().map_err(|error| CliError::Config(error.to_string()))?),
     );
     Ok(Some(Arc::new(client)))
+}
+
+fn apply_provider_http_config_overrides(
+    http_config: &mut HttpModelConfig,
+    provider_config: &ProviderConfig,
+) {
+    if let Some(base_url) = provider_config.base_url.as_ref() {
+        http_config.set_base_url(base_url);
+    }
+    if let Some(endpoint_path) = provider_config.endpoint_path.as_ref() {
+        http_config.set_endpoint_path(endpoint_path);
+    }
+    http_config.max_tokens_parameter = provider_config.max_tokens_parameter;
 }
 
 struct ProviderModelId {

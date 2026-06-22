@@ -53,6 +53,8 @@ Installer environment variables:
 | `STARWEAVER_NO_MODIFY_PATH` | Set to `1` to skip shell profile updates.                |
 | `STARWEAVER_GITHUB_REPO`    | Override the release repository for forks.               |
 
+The CLI component installs `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`.
+
 ## Crates
 
 After `0.0.1` is published:
@@ -77,7 +79,12 @@ Installed CLI binaries update through the launcher:
 starweaver update
 starweaver update cli
 starweaver cli update
+starweaver update --dry-run
+starweaver update --force
 ```
 
 The update command invokes the installer with `STARWEAVER_COMPONENTS=cli`, replaces CLI launcher
-binaries, and preserves existing configuration and session data under `~/.starweaver`.
+binaries, and preserves existing configuration and session data under `~/.starweaver`. It checks the
+current CLI package version before installing and returns `status=up-to-date` when the selected
+release is already installed. Use `--force` or `STARWEAVER_UPDATE_FORCE=1` to reinstall the selected
+release.

@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "crates/starweaver-cli",
+    "crates/starweaver-rpc",
+    "crates/starweaver-rpc-core",
     "crates/starweaver-agent",
     "crates/starweaver-context",
     "crates/starweaver-core",
@@ -45,6 +47,8 @@ starweaver-environment = { path = "crates/starweaver-environment", version = "0.
 starweaver-session = { path = "crates/starweaver-session", version = "0.0.1" }
 starweaver-stream = { path = "crates/starweaver-stream", version = "0.0.1" }
 starweaver-storage = { path = "crates/starweaver-storage", version = "0.0.1" }
+starweaver-cli = { path = "crates/starweaver-cli", version = "0.0.1" }
+starweaver-rpc-core = { path = "crates/starweaver-rpc-core", version = "0.0.1" }
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde", "std"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }

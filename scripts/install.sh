@@ -175,7 +175,7 @@ install_component() {
   case "$component" in
     cli|starweaver-cli)
       asset="starweaver-cli-$tag-$target"
-      install_names="starweaver starweaver-cli sw"
+      install_names="starweaver starweaver-cli sw starweaver-rpc"
       ;;
     *) fail "unknown component: $component" ;;
   esac

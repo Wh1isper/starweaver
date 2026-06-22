@@ -4,28 +4,33 @@
 
 ## Launchers
 
-Installations include three CLI entry points:
+Installations include four local entry points:
 
 | Binary           | Role                         |
 | ---------------- | ---------------------------- |
 | `starweaver`     | product launcher             |
 | `sw`             | short alias for `starweaver` |
 | `starweaver-cli` | local agent CLI command      |
+| `starweaver-rpc` | standalone JSON-RPC host     |
 
 Launcher dispatch keeps product commands easy to discover:
 
 ```bash
+sw
+sw --help
+sw -p "hello"
+sw run "hello"
+sw session list
 starweaver version
 starweaver doctor
 starweaver update
 starweaver update cli
 starweaver cli
 starweaver cli -p "hello"
-sw cli
-sw cli -p "hello"
+starweaver rpc stdio
 ```
 
-`starweaver cli ...` dispatches to the CLI product. `starweaver <command> ...` dispatches to `starweaver-<command> ...` for future command families. The launcher resolves command binaries from the install directory first, then `PATH`. From a checkout, `make cli` runs the same product path as `sw cli`: in a terminal it opens the interactive TUI, and prompt arguments can be passed with `make cli -- -p "hello"`.
+`sw` and `starweaver` print launcher help with no arguments. Prompt flags and common CLI commands such as `run`, `session`, `config`, `auth`, and `tools` dispatch directly to the local CLI product, so `sw -p "hello"` and `sw session list` are shortcuts for `sw cli -p "hello"` and `sw cli session list`. Unknown command families still dispatch to `starweaver-<command> ...`; the launcher resolves command binaries from the install directory first, then `PATH`. From a checkout, `make cli` runs the same product path as `sw cli`: in a terminal it opens the interactive TUI, and prompt arguments can be passed with `make cli -- -p "hello"`.
 
 ## Updates
 
@@ -34,8 +39,16 @@ sw cli -p "hello"
 ```bash
 starweaver update
 starweaver update cli
+starweaver update --dry-run
+starweaver update --force
 starweaver-cli update
 ```
+
+Update first compares the current CLI package version with the selected release. It returns
+`status=up-to-date` without downloading assets when the latest release is not newer. Set
+`STARWEAVER_VERSION` to install a pinned release; pinned releases only skip when the selected version
+matches the current version, so explicit rollbacks remain possible. Use `--force` or
+`STARWEAVER_UPDATE_FORCE=1` to reinstall the selected release.
 
 The CLI also performs a short background release lookup and caches the result in `~/.starweaver/update-check.json`. Human-readable commands append a compact hint when the cache reports a newer release:
 
@@ -183,6 +196,8 @@ Gateway model ids use the gateway name as a provider config key. `homelab@openai
 base_url = "https://gateway.example/v1"
 max_tokens_parameter = "omit"
 ```
+
+Provider presets treat a `base_url` with no path as a provider API host and insert the provider API root before the endpoint (`/v1` for OpenAI and Anthropic, `/v1beta` for Gemini). A `base_url` with a path is treated as a gateway mount point, so Starweaver appends only the provider endpoint. Set `endpoint_path` when the gateway needs a fully custom route.
 
 ```bash
 export HOMELAB_API_KEY=...
@@ -342,8 +357,8 @@ Run a prompt with either shorthand or the `run` subcommand:
 ```bash
 starweaver-cli -p "summarize this repository"
 starweaver-cli run -p "summarize this repository"
-starweaver cli -p "summarize this repository"
-sw cli -p "summarize this repository"
+sw -p "summarize this repository"
+sw run -p "summarize this repository"
 ```
 
 Output modes:
@@ -398,7 +413,7 @@ Run-scoped replay emits the same display JSONL that the initial headless run emi
 The CLI TUI opens a Codex-style inline terminal viewport when stdin and stdout are TTYs. On a fresh machine, it renders a bordered session header card, implemented startup shortcuts, a no-border bottom composer with `› Ask Starweaver to do anything`, and a compact footer with `? for shortcuts` plus right-aligned context. Type a prompt and press Enter or Tab to start a background run; pressing Tab while a run is active queues the draft for the next run. Runtime stream records update the scrollback while the input area stays responsive. Assistant output follows Codex-style terminal Markdown rendering: raw assistant Markdown is parsed with `pulldown-cmark`, reflowed at the current viewport width, and styled for headings, lists, blockquotes, fenced code, inline code, emphasis, strong text, links, and horizontal rules.
 
 ```bash
-sw cli tui
+sw tui
 make cli
 ```
 
@@ -502,15 +517,23 @@ starweaver-cli resume --session <session-id> --prompt "continue after review"
 
 `resume` appends a continuation run from the waiting or head run state. Service-managed same-run checkpoint reload, interruption APIs, service transports, workflows, and schedules belong to future service adapters.
 
-## JSON-RPC stdio runtime
+## JSON-RPC host service
 
-`starweaver-cli rpc` starts a newline-delimited JSON-RPC 2.0 runtime over stdin/stdout. It is the local host API for Desktop and host integrations, while the TUI uses the same in-process runtime coordinator and local session store rather than launching through RPC.
+`starweaver-rpc` and `starweaver-cli rpc` start the JSON-RPC 2.0 host service. `starweaver-rpc` is the dedicated Desktop/local host process with its own command-line entrypoint; `starweaver-cli rpc` exposes the same server for CLI-managed installs and launcher compatibility. TUI uses the same in-process runtime coordinator and local session store rather than launching through RPC.
 
 ```bash
-sw cli rpc
+starweaver rpc stdio
+starweaver-rpc stdio
+starweaver-rpc http --host 127.0.0.1 --port 8765
 starweaver cli rpc
 starweaver-cli rpc
+starweaver-cli rpc stdio
+starweaver-cli rpc http --host 127.0.0.1 --port 8765
 ```
+
+The default `stdio` transport is newline-delimited JSON-RPC over stdin/stdout. It supports responses and live notifications on stdout, with diagnostics on stderr. JSON-RPC frame parsing, standard request validation, error envelopes, replay cursor parsing, and stream payload projection live in `starweaver-rpc-core` so the standalone RPC process and CLI adapter share the same protocol edge.
+
+The `http` transport serves JSON-RPC request/response calls at `POST /rpc` on the configured host and port. It is useful for local host integrations that prefer HTTP. Live server notifications are not streamed over the unary HTTP endpoint; HTTP `initialize` responses advertise `liveDisplay: false` and `streamSubscribe: false`. HTTP clients should use `run.await`, `run.status`, or `stream.replay` to observe progress.
 
 Example handshake and client model selection:
 
@@ -519,15 +542,18 @@ Example handshake and client model selection:
 {"jsonrpc":"2.0","id":2,"method":"model.list","params":{"client":"tui"}}
 {"jsonrpc":"2.0","id":3,"method":"model.select","params":{"client":"tui","profile":"coding"}}
 {"jsonrpc":"2.0","id":4,"method":"run.start","params":{"client":"tui","prompt":"hello","newSession":true}}
-{"jsonrpc":"2.0","id":5,"method":"session.output","params":{"sessionId":"session_...","runId":"run_..."}}
-{"jsonrpc":"2.0","id":6,"method":"shutdown","params":{}}
+{"jsonrpc":"2.0","id":5,"method":"stream.subscribe","params":{"sessionId":"session_...","runId":"run_...","subscriptionId":"sub_1"}}
+{"jsonrpc":"2.0","id":6,"method":"stream.unsubscribe","params":{"subscriptionId":"sub_1"}}
+{"jsonrpc":"2.0","id":7,"method":"shutdown","params":{}}
 ```
+
+The `stream.subscribe` example is for notification-capable transports such as stdio. Unary HTTP clients should omit live subscriptions and use replay/status polling.
 
 `model.select` writes `~/.starweaver/tui/state.json` or `~/.starweaver/desktop/state.json` depending on the `client` parameter. `run.prompt` and `run.start` use this priority for model selection: explicit `profile`/`modelProfile`, then selected profile for the supplied `client`, then the resolved config default profile.
 
 `run.start` is non-blocking: it returns `sessionId`, `runId`, `status`, and `payloadFormat` after durable run creation and active-run registration. The runtime coordinator emits scoped Starweaver replay events; the RPC protocol edge maps those events into `run.started`, `run.output`, and `run.status` notifications. Stream payloads default to `agui`; pass `payloadFormat` or `stream.payloadFormat` as `display_message` to receive Starweaver `DisplayMessage` payloads instead. `run.prompt` remains the blocking method that returns the compact final JSON summary.
 
-Use `session.replay` for persisted output, `run.attach` to replay and subscribe to a run, or `session.output` to replay session output. Cursor semantics are scope-local: run output uses `run:<runId>` sequence values, while session output uses `session:<sessionId>` sequence values over the ordered session display feed. RPC clients may pass a full `cursor` object or the numeric `after` shorthand, which is interpreted within the requested scope. Active control methods are `run.cancel`, `run.steer`, `session.steer`, and `run.await`.
+Use `stream.replay` for persisted output and `stream.subscribe` / `stream.unsubscribe` for explicit stream subscription lifecycle on notification-capable transports. `session.replay`, `session.output`, and `run.attach` remain product-shaped aliases over the same replay and active-run coordinator paths. Cursor semantics are scope-local: run output uses `run:<runId>` sequence values, while session output uses `session:<sessionId>` sequence values over the ordered session display feed. RPC clients may pass a full `cursor` object or the numeric `after` shorthand, which is interpreted within the requested scope. Active control methods are `run.cancel`, `run.steer`, `session.steer`, and `run.await`.
 
 ## Environment
 
@@ -574,7 +600,7 @@ Reset runtime state while preserving configuration:
 
 ```bash
 starweaver-cli reset --yes
-sw cli reset --yes
+sw reset --yes
 ```
 
 `reset` removes the resolved SQLite database, `state.json`, and file store. It leaves `config.toml`, `tools.toml`, `mcp.json`, `skills/`, and `subagents/` in place.
@@ -583,7 +609,7 @@ sw cli reset --yes
 
 Global Starweaver configuration lives under `~/.starweaver`. `~/.starweaver/config.toml` stores shared defaults, provider settings, and model profile definitions. `~/.starweaver/tools.toml`, `~/.starweaver/mcp.json`, `~/.starweaver/skills`, and `~/.starweaver/subagents` are shared by CLI, TUI, Desktop, and RPC hosts. The CLI also discovers shared Agent Skills from `~/.agents/skills` by default. Frontend state is separate: TUI uses `~/.starweaver/tui/state.json`, Desktop uses `~/.starweaver/desktop/state.json`, and project runtime state keeps the current session pointer in `.starweaver/state.json`.
 
-Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_CONFIG_DIR`, `STARWEAVER_PROJECT_DIR`, `STARWEAVER_PROFILE`, `STARWEAVER_SKILL_DIRS`, `STARWEAVER_SUBAGENT_DIRS`, `STARWEAVER_DISABLED_SUBAGENTS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_IMAGE_UNDERSTANDING_MODEL`, `STARWEAVER_VIDEO_UNDERSTANDING_MODEL`, `STARWEAVER_AUDIO_UNDERSTANDING_MODEL`, `STARWEAVER_UPDATE_CHANNEL`, `STARWEAVER_UPDATE_CHECK`, `STARWEAVER_OAUTH_AUTH_FILE`, and `STARWEAVER_NO_AUTO_TRIM`.
+Resolution order is built-in defaults, global `config.toml`, project `config.toml`, `tools.toml` and `mcp.json` metadata, environment variables, then command flags. Supported environment overrides include `STARWEAVER_CONFIG_DIR`, `STARWEAVER_PROJECT_DIR`, `STARWEAVER_PROFILE`, `STARWEAVER_SKILL_DIRS`, `STARWEAVER_SUBAGENT_DIRS`, `STARWEAVER_DISABLED_SUBAGENTS`, `STARWEAVER_SESSION_DB`, `STARWEAVER_FILE_STORE`, `STARWEAVER_WORKSPACE_ROOT`, `STARWEAVER_ENV_PROVIDER`, `STARWEAVER_FILES_POLICY`, `STARWEAVER_SHELL_ENABLED`, `STARWEAVER_OUTPUT`, `STARWEAVER_HITL`, `STARWEAVER_IMAGE_UNDERSTANDING_MODEL`, `STARWEAVER_VIDEO_UNDERSTANDING_MODEL`, `STARWEAVER_AUDIO_UNDERSTANDING_MODEL`, `STARWEAVER_UPDATE_CHANNEL`, `STARWEAVER_UPDATE_CHECK`, `STARWEAVER_UPDATE_DRY_RUN`, `STARWEAVER_UPDATE_FORCE`, `STARWEAVER_OAUTH_AUTH_FILE`, and `STARWEAVER_NO_AUTO_TRIM`.
 
 Get resolved config values and persist project or global config overrides:
 

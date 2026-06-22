@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/in
 ```
 
 The installer downloads the matching `starweaver-cli` archive, verifies `checksums.txt` when
-available, and installs `starweaver`, `starweaver-cli`, and `sw`. It installs into
+available, and installs `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`. It installs into
 `$HOME/.local/bin` for normal users and `/usr/local/bin` for root. Override the location when
 needed:
 
@@ -50,10 +50,16 @@ Update an installed CLI from GitHub release artifacts:
 starweaver update
 ```
 
+The update command checks the current CLI package version before invoking the installer. When the
+selected release is already installed it exits with `status=up-to-date`; pass `--force` to reinstall
+the same version.
+
 Run from a checkout:
 
 ```bash
 make cli -- -p "hello" --output text
+make sw -- --help
+make sw -- -p "hello" --output text
 make sw -- version
 ```
 
@@ -142,6 +148,8 @@ Starweaver is organized as focused crates:
 - `starweaver-environment`: local and virtual filesystem/shell providers, policies, resources, and environment snapshots.
 - `starweaver-session`, `starweaver-stream`, `starweaver-storage`: durable session, replay, display stream, and SQLite storage contracts.
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
+- `starweaver-rpc-core`: shared JSON-RPC host protocol helpers and stream/replay projections.
+- `starweaver-rpc`: standalone JSON-RPC host process for Desktop and local host integrations.
 
 ## Validation
 

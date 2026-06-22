@@ -12,6 +12,7 @@ The operations layer turns core runtime evidence and SDK contracts into validate
 - OpenTelemetry GenAI observability
 - Langfuse-friendly OTLP export
 - CLI product
+- JSON-RPC host protocol
 - platform integration
 - release acceptance
 
@@ -27,6 +28,7 @@ flowchart TD
     stream[Shared stream contracts]
     storage[Shared SQLite storage]
     cli[CLI product]
+    hostrpc[JSON-RPC host protocol]
     service[Future service adapters]
     observability[Observability]
     platform[Platform]
@@ -40,6 +42,10 @@ flowchart TD
     storage --> cli
     session --> cli
     stream --> cli
+    cli --> hostrpc
+    session --> hostrpc
+    stream --> hostrpc
+    hostrpc --> service
     session --> service
     stream --> service
     storage --> service
@@ -53,8 +59,9 @@ flowchart TD
 - `01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `02-shared-execution-components.md` — shared session storage and stream protocol contracts
 - `03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
-- `04-cli-product.md` — CLI-first product surface with JSON-RPC stdio as the complete local runtime and management API, CLI commands as a shell-friendly subset, TUI as the terminal client, Desktop as a future client, headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, and GitHub install/update flow
+- `04-cli-product.md` — CLI-first product surface with CLI commands as a shell-friendly subset, TUI as the terminal client, standalone JSON-RPC host process for Desktop/local clients, headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, and GitHub install/update flow
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
+- `06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP/socket/WebSocket transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
 - `07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
 - `09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 

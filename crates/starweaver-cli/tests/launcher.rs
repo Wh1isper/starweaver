@@ -47,6 +47,44 @@ fn sw_alias_dispatches_to_same_launcher() {
 }
 
 #[test]
+fn sw_root_prints_help_and_direct_cli_prompt_works() {
+    let temp = tempfile::tempdir().unwrap();
+    let help = env_command(env!("CARGO_BIN_EXE_sw"), &temp)
+        .output()
+        .unwrap();
+    assert!(
+        help.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&help.stderr)
+    );
+    let stdout = String::from_utf8(help.stdout).unwrap();
+    assert!(stdout.contains("Starweaver product launcher"));
+    assert!(stdout.contains("Usage:"));
+
+    let flag_help = env_command(env!("CARGO_BIN_EXE_sw"), &temp)
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(flag_help.status.success());
+    assert!(String::from_utf8(flag_help.stdout)
+        .unwrap()
+        .contains("Use `sw cli --help`"));
+
+    let run = env_command(env!("CARGO_BIN_EXE_sw"), &temp)
+        .args(["-p", "hello", "--output", "silent"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let stdout = String::from_utf8(run.stdout).unwrap();
+    assert!(stdout.contains("session_id=session_"));
+    assert!(stdout.contains("status=completed"));
+}
+
+#[test]
 fn launcher_version_and_doctor_are_builtin() {
     let temp = tempfile::tempdir().unwrap();
     let version = env_command(env!("CARGO_BIN_EXE_starweaver"), &temp)
@@ -82,6 +120,25 @@ fn launcher_update_is_builtin() {
     let stdout = String::from_utf8(update.stdout).unwrap();
     assert!(stdout.contains("update=github-release"));
     assert!(stdout.contains("target=cli"));
+    assert!(stdout.contains("status=dry-run"));
+}
+
+#[test]
+fn launcher_update_accepts_dry_run_and_force_flags() {
+    let temp = tempfile::tempdir().unwrap();
+    let update = env_command(env!("CARGO_BIN_EXE_sw"), &temp)
+        .env("STARWEAVER_INSTALL_DIR", temp.path().join("bin"))
+        .args(["update", "--dry-run", "--force"])
+        .output()
+        .unwrap();
+    assert!(
+        update.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let stdout = String::from_utf8(update.stdout).unwrap();
+    assert!(stdout.contains("target=cli"));
+    assert!(stdout.contains("force=true"));
     assert!(stdout.contains("status=dry-run"));
 }
 

@@ -31,25 +31,25 @@ jobs:
             package: starweaver-cli
             target: x86_64-unknown-linux-gnu
             archive: starweaver-cli-${{ github.event.release.tag_name }}-x86_64-unknown-linux-gnu.tar.gz
-            bins: "starweaver starweaver-cli sw"
+            bins: "starweaver starweaver-cli sw starweaver-rpc"
           - os: macos-latest
             name: cli-x86_64-apple-darwin
             package: starweaver-cli
             target: x86_64-apple-darwin
             archive: starweaver-cli-${{ github.event.release.tag_name }}-x86_64-apple-darwin.tar.gz
-            bins: "starweaver starweaver-cli sw"
+            bins: "starweaver starweaver-cli sw starweaver-rpc"
           - os: macos-latest
             name: cli-aarch64-apple-darwin
             package: starweaver-cli
             target: aarch64-apple-darwin
             archive: starweaver-cli-${{ github.event.release.tag_name }}-aarch64-apple-darwin.tar.gz
-            bins: "starweaver starweaver-cli sw"
+            bins: "starweaver starweaver-cli sw starweaver-rpc"
           - os: windows-latest
             name: cli-x86_64-pc-windows-msvc
             package: starweaver-cli
             target: x86_64-pc-windows-msvc
             archive: starweaver-cli-${{ github.event.release.tag_name }}-x86_64-pc-windows-msvc.zip
-            bins: "starweaver.exe starweaver-cli.exe sw.exe"
+            bins: "starweaver.exe starweaver-cli.exe sw.exe starweaver-rpc.exe"
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v6
@@ -67,6 +67,7 @@ jobs:
       - name: Build binaries
         run: |
           cargo build --release --locked -p "${{ matrix.package }}" --bins --target "${{ matrix.target }}"
+          cargo build --release --locked -p starweaver-rpc --bins --target "${{ matrix.target }}"
           out_dir="target/${{ matrix.target }}/release"
           mkdir -p dist
           for bin in ${{ matrix.bins }}; do

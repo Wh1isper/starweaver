@@ -27,7 +27,13 @@ impl CliService {
     }
 
     pub(super) fn update(command: &UpdateCommand) -> CliResult<String> {
-        crate::launcher::update_component(&command.target)
+        crate::launcher::update_component_with_env_options(
+            &command.target,
+            crate::launcher::UpdateOptions {
+                dry_run: command.dry_run,
+                force: command.force,
+            },
+        )
     }
 
     pub(super) fn skills(&self, command: CatalogCommand) -> CliResult<String> {

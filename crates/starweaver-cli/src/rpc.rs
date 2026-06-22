@@ -1,18 +1,27 @@
-//! Newline-delimited JSON-RPC stdio runtime for local host integrations.
+//! JSON-RPC host service and local transports.
+
+mod transport;
 
 use std::{
-    io::{self, BufRead as _, Write as _},
-    sync::mpsc,
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::Duration,
 };
 
-use serde::Deserialize;
 use serde_json::{json, Value};
+use starweaver_rpc_core::{
+    attachment_result, handle_json_rpc_text, notification, output_item, replay_cursor_from_params,
+    replay_result, stream_payload_format, RpcError, StreamPayloadFormat, INVALID_PARAMS,
+    METHOD_NOT_FOUND, SERVER_ERROR, UNSUPPORTED_FEATURE,
+};
 use starweaver_stream::ReplayScope;
 
 use crate::{
-    args::{HitlPolicy, OutputMode, RunCommand},
+    args::{HitlPolicy, OutputMode, RpcCommand, RpcTransport, RunCommand},
     client_state,
     config::{get_config_value, read_current_session, write_current_session, CliConfig},
     local_store::{LocalStore, LocalStreamArchive},
@@ -22,128 +31,79 @@ use crate::{
     CliError, CliResult, CliService,
 };
 
-mod protocol;
-
-use protocol::{
-    attachment_result, notification, output_item, replay_cursor_from_params, replay_result,
-    stream_payload_format, StreamPayloadFormat,
-};
-
 const PROTOCOL_VERSION: &str = "2026-06-08";
-
-#[derive(Debug, Deserialize)]
-struct RpcRequest {
-    #[serde(default)]
-    id: Option<Value>,
-    method: String,
-    #[serde(default)]
-    params: Value,
-}
-
-#[derive(Debug)]
-struct RpcError {
-    code: i64,
-    message: String,
-}
-
-impl RpcError {
-    fn new(code: i64, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-        }
-    }
-}
 
 impl From<CliError> for RpcError {
     fn from(error: CliError) -> Self {
-        Self::new(-32_000, error.to_string())
+        Self::new(SERVER_ERROR, error.to_string())
     }
 }
 
-/// Run the JSON-RPC stdio server until stdin closes or `shutdown` is requested.
-pub fn run_stdio(config: &CliConfig) -> CliResult<()> {
-    let (output_sender, output_receiver) = mpsc::channel::<Value>();
-    let writer = thread::spawn(move || {
-        let mut stdout = io::stdout();
-        while let Ok(response) = output_receiver.recv() {
-            if serde_json::to_writer(&mut stdout, &response).is_err() {
-                break;
-            }
-            if stdout.write_all(b"\n").is_err() || stdout.flush().is_err() {
-                break;
-            }
-        }
-    });
-    let server = RpcServer::new(config.clone(), output_sender.clone());
-    let stdin = io::stdin();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|error| CliError::Run(error.to_string()))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let (response, shutdown) = server.handle_line(&line);
-        if let Some(response) = response {
-            output_sender
-                .send(response)
-                .map_err(|error| CliError::Run(error.to_string()))?;
-        }
-        if shutdown {
-            break;
-        }
+/// Run the selected JSON-RPC host transport.
+pub fn run(config: &CliConfig, command: &RpcCommand) -> CliResult<()> {
+    match command.transport {
+        RpcTransport::Stdio => transport::run_stdio(config),
+        RpcTransport::Http => transport::run_http(config, &command.host, command.port),
     }
-    drop(output_sender);
-    let _ = writer.join();
-    Ok(())
 }
 
-struct RpcServer {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RpcNotificationMode {
+    Live,
+    ReplayOnly,
+}
+
+impl RpcNotificationMode {
+    const fn supports_live_notifications(self) -> bool {
+        matches!(self, Self::Live)
+    }
+}
+
+struct RpcService {
     config: CliConfig,
     coordinator: CliRuntimeCoordinator,
     output_sender: mpsc::Sender<Value>,
+    subscriptions: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    notifications: RpcNotificationMode,
 }
 
-impl RpcServer {
+impl RpcService {
     fn new(config: CliConfig, output_sender: mpsc::Sender<Value>) -> Self {
+        Self::with_notification_mode(config, output_sender, RpcNotificationMode::Live)
+    }
+
+    fn replay_only(config: CliConfig, output_sender: mpsc::Sender<Value>) -> Self {
+        Self::with_notification_mode(config, output_sender, RpcNotificationMode::ReplayOnly)
+    }
+
+    fn with_notification_mode(
+        config: CliConfig,
+        output_sender: mpsc::Sender<Value>,
+        notifications: RpcNotificationMode,
+    ) -> Self {
         Self {
             coordinator: CliRuntimeCoordinator::new(config.clone()),
             config,
             output_sender,
+            subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            notifications,
         }
     }
 
     fn handle_line(&self, line: &str) -> (Option<Value>, bool) {
-        let request = match serde_json::from_str::<RpcRequest>(line) {
-            Ok(request) => request,
-            Err(error) => {
-                return (
-                    Some(error_response(
-                        &Value::Null,
-                        -32_700,
-                        &format!("parse error: {error}"),
-                    )),
-                    false,
-                )
-            }
-        };
-        let id = request.id.clone();
-        let result = self.dispatch(&request.method, &request.params);
-        let shutdown = request.method == "shutdown" && result.is_ok();
-        let Some(id) = id else {
-            return (None, shutdown);
-        };
-        let response = match result {
-            Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
-            Err(error) => error_response(&id, error.code, &error.message),
-        };
-        (Some(response), shutdown)
+        self.handle_text(line)
+    }
+
+    fn handle_text(&self, text: &str) -> (Option<Value>, bool) {
+        let outcome = handle_json_rpc_text(text, |method, params| self.dispatch(method, params));
+        (outcome.response, outcome.shutdown)
     }
 
     #[allow(clippy::too_many_lines)]
     fn dispatch(&self, method: &str, params: &Value) -> Result<Value, RpcError> {
         let config = &self.config;
         match method {
-            "initialize" => Ok(initialize_result(config)),
+            "initialize" => Ok(initialize_result(config, self.notifications)),
             "shutdown" => Ok(json!({"status": "shutdown"})),
             "profile.list" => Ok(json!({
                 "profiles": list_profiles(config),
@@ -235,25 +195,7 @@ impl RpcServer {
                 write_current_session(config, &session_id).map_err(RpcError::from)?;
                 Ok(json!({"sessionId": session_id}))
             }
-            "session.replay" => {
-                let session_id = required_string(params, "sessionId")?;
-                let run_id = params.get("runId").and_then(Value::as_str);
-                let scope =
-                    run_id.map_or_else(|| ReplayScope::session(&session_id), ReplayScope::run);
-                let cursor = replay_cursor_from_params(params, scope)?;
-                let archive = LocalStreamArchive::new(config.clone());
-                let window = archive
-                    .replay_display_window(&session_id, run_id, cursor.as_ref())
-                    .map_err(RpcError::from)?;
-                Ok(replay_result(
-                    &session_id,
-                    run_id,
-                    &window.scope,
-                    &window.events,
-                    cursor.as_ref(),
-                    window.next_sequence,
-                ))
-            }
+            "session.replay" | "stream.replay" => self.stream_replay(params),
             "session.delete" => {
                 let session_id = required_string(params, "sessionId")?;
                 let mut store = LocalStore::open(config).map_err(RpcError::from)?;
@@ -261,6 +203,8 @@ impl RpcServer {
                 Ok(json!({"sessionId": session_id, "deleted": deleted}))
             }
             "session.output" => self.session_output(params),
+            "stream.subscribe" => self.stream_subscribe(params),
+            "stream.unsubscribe" => self.stream_unsubscribe(params),
             "run.prompt" => run_prompt(config, params),
             "run.start" => self.run_start(params),
             "run.attach" => self.run_attach(params),
@@ -292,7 +236,7 @@ impl RpcServer {
                     "denied" | "rejected" | "reject" => starweaver_session::ApprovalStatus::Denied,
                     other => {
                         return Err(RpcError::new(
-                            -32_602,
+                            INVALID_PARAMS,
                             format!("unknown approval status: {other}"),
                         ))
                     }
@@ -343,7 +287,10 @@ impl RpcServer {
                     .map_err(RpcError::from)?;
                 Ok(json!({"deferred": deferred}))
             }
-            other => Err(RpcError::new(-32_601, format!("method not found: {other}"))),
+            other => Err(RpcError::new(
+                METHOD_NOT_FOUND,
+                format!("method not found: {other}"),
+            )),
         }
     }
 
@@ -374,7 +321,13 @@ impl RpcServer {
             .coordinator
             .attach_run(&session_id, &run_id, cursor.as_ref())
             .map_err(RpcError::from)?;
-        let result = attachment_result(&attachment, format);
+        let result = attachment_result(
+            &attachment.session_id,
+            attachment.run_id.as_deref(),
+            attachment.active,
+            &attachment.events,
+            format,
+        );
         self.spawn_attachment_notifications(&mut attachment, format);
         Ok(result)
     }
@@ -389,9 +342,112 @@ impl RpcServer {
             .coordinator
             .session_output(&session_id, run_id, cursor.as_ref())
             .map_err(RpcError::from)?;
-        let result = attachment_result(&attachment, format);
+        let result = attachment_result(
+            &attachment.session_id,
+            attachment.run_id.as_deref(),
+            attachment.active,
+            &attachment.events,
+            format,
+        );
         self.spawn_attachment_notifications(&mut attachment, format);
         Ok(result)
+    }
+
+    fn stream_replay(&self, params: &Value) -> Result<Value, RpcError> {
+        let session_id = required_string(params, "sessionId")?;
+        let run_id = params.get("runId").and_then(Value::as_str);
+        let scope = run_id.map_or_else(|| ReplayScope::session(&session_id), ReplayScope::run);
+        let cursor = replay_cursor_from_params(params, scope)?;
+        let archive = LocalStreamArchive::new(self.config.clone());
+        let window = archive
+            .replay_display_window(&session_id, run_id, cursor.as_ref())
+            .map_err(RpcError::from)?;
+        Ok(replay_result(
+            &session_id,
+            run_id,
+            &window.scope,
+            &window.events,
+            cursor.as_ref(),
+            window.next_sequence,
+        ))
+    }
+
+    fn stream_subscribe(&self, params: &Value) -> Result<Value, RpcError> {
+        if !self.notifications.supports_live_notifications() {
+            return Err(RpcError::new(
+                UNSUPPORTED_FEATURE,
+                "stream.subscribe requires a live notification transport",
+            ));
+        }
+        let subscription_id = subscription_id(params);
+        let session_id = required_string(params, "sessionId")?;
+        let run_id = params.get("runId").and_then(Value::as_str);
+        let format = stream_payload_format(params)?;
+        let scope = run_id.map_or_else(|| ReplayScope::session(&session_id), ReplayScope::run);
+        let cursor = replay_cursor_from_params(params, scope)?;
+        let mut attachment = if let Some(run_id) = run_id {
+            self.coordinator
+                .attach_run(&session_id, run_id, cursor.as_ref())
+                .map_err(RpcError::from)?
+        } else {
+            self.coordinator
+                .session_output(&session_id, None, cursor.as_ref())
+                .map_err(RpcError::from)?
+        };
+        let mut result = attachment_result(
+            &attachment.session_id,
+            attachment.run_id.as_deref(),
+            attachment.active,
+            &attachment.events,
+            format,
+        );
+        insert_subscription_id(&mut result, &subscription_id);
+        if attachment.subscription.is_some() {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut subscriptions = self.subscriptions.lock().map_err(|error| {
+                RpcError::new(
+                    SERVER_ERROR,
+                    format!("subscription registry poisoned: {error}"),
+                )
+            })?;
+            if subscriptions.contains_key(&subscription_id) {
+                return Err(RpcError::new(
+                    SERVER_ERROR,
+                    format!("subscription already exists: {subscription_id}"),
+                ));
+            }
+            subscriptions.insert(subscription_id.clone(), Arc::clone(&cancel));
+            drop(subscriptions);
+            self.spawn_stream_subscription_notifications(
+                &mut attachment,
+                format,
+                subscription_id,
+                cancel,
+            );
+        }
+        Ok(result)
+    }
+
+    fn stream_unsubscribe(&self, params: &Value) -> Result<Value, RpcError> {
+        let subscription_id = required_string(params, "subscriptionId")?;
+        let subscription = self
+            .subscriptions
+            .lock()
+            .map_err(|error| {
+                RpcError::new(
+                    SERVER_ERROR,
+                    format!("subscription registry poisoned: {error}"),
+                )
+            })?
+            .remove(&subscription_id);
+        let unsubscribed = subscription.is_some();
+        if let Some(cancel) = subscription {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        Ok(json!({
+            "subscriptionId": subscription_id,
+            "unsubscribed": unsubscribed,
+        }))
     }
 
     fn run_status(&self, params: &Value) -> Result<Value, RpcError> {
@@ -468,10 +524,10 @@ impl RpcServer {
             let event = match timeout {
                 Some(timeout) => receiver
                     .recv_timeout(timeout)
-                    .map_err(|error| RpcError::new(-32_000, error.to_string()))?,
+                    .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))?,
                 None => receiver
                     .recv()
-                    .map_err(|error| RpcError::new(-32_000, error.to_string()))?,
+                    .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))?,
             };
             if let RunStreamEvent::Status(status) = event {
                 if status_is_terminal(&status.status) {
@@ -482,6 +538,9 @@ impl RpcServer {
     }
 
     fn spawn_run_notifications(&self, started: StartedRun, format: StreamPayloadFormat) {
+        if !self.notifications.supports_live_notifications() {
+            return;
+        }
         let output_sender = self.output_sender.clone();
         thread::spawn(move || {
             let session_id = started.session_id.clone();
@@ -503,11 +562,43 @@ impl RpcServer {
         attachment: &mut RunAttachment,
         format: StreamPayloadFormat,
     ) {
+        if !self.notifications.supports_live_notifications() {
+            return;
+        }
         let Some(subscription) = attachment.subscription.take() else {
             return;
         };
         let output_sender = self.output_sender.clone();
         thread::spawn(move || forward_run_events(&output_sender, subscription, format));
+    }
+
+    fn spawn_stream_subscription_notifications(
+        &self,
+        attachment: &mut RunAttachment,
+        format: StreamPayloadFormat,
+        subscription_id: String,
+        cancel: Arc<AtomicBool>,
+    ) {
+        if !self.notifications.supports_live_notifications() {
+            return;
+        }
+        let Some(subscription) = attachment.subscription.take() else {
+            return;
+        };
+        let output_sender = self.output_sender.clone();
+        let subscriptions = Arc::clone(&self.subscriptions);
+        thread::spawn(move || {
+            forward_subscription_events(
+                &output_sender,
+                &subscription,
+                format,
+                &subscription_id,
+                &cancel,
+            );
+            if let Ok(mut subscriptions) = subscriptions.lock() {
+                subscriptions.remove(&subscription_id);
+            }
+        });
     }
 }
 
@@ -581,6 +672,18 @@ fn steering_id(params: &Value) -> String {
         )
 }
 
+fn subscription_id(params: &Value) -> String {
+    params
+        .get("subscriptionId")
+        .or_else(|| params.get("id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map_or_else(
+            || format!("stream_{}", chrono::Utc::now().timestamp_micros()),
+            ToString::to_string,
+        )
+}
+
 fn forward_run_events(
     output_sender: &mpsc::Sender<Value>,
     receiver: mpsc::Receiver<RunStreamEvent>,
@@ -603,11 +706,60 @@ fn forward_run_events(
     }
 }
 
+fn forward_subscription_events(
+    output_sender: &mpsc::Sender<Value>,
+    receiver: &mpsc::Receiver<RunStreamEvent>,
+    format: StreamPayloadFormat,
+    subscription_id: &str,
+    cancel: &AtomicBool,
+) {
+    while !cancel.load(Ordering::SeqCst) {
+        let event = match receiver.recv_timeout(Duration::from_millis(100)) {
+            Ok(event) => event,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let terminal = matches!(
+            &event,
+            RunStreamEvent::Status(status) if status_is_terminal(&status.status)
+        );
+        let frame = match event {
+            RunStreamEvent::Output(output) => {
+                let Some(output) = output_item(&output, format) else {
+                    continue;
+                };
+                let mut params = json!(output);
+                insert_subscription_id(&mut params, subscription_id);
+                notification("stream.output", &params)
+            }
+            RunStreamEvent::Status(status) => {
+                let mut params = json!(status);
+                insert_subscription_id(&mut params, subscription_id);
+                notification("stream.status", &params)
+            }
+            RunStreamEvent::Raw(_) => continue,
+        };
+        if output_sender.send(frame).is_err() || terminal {
+            break;
+        }
+    }
+}
+
+fn insert_subscription_id(value: &mut Value, subscription_id: &str) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "subscriptionId".to_string(),
+            Value::String(subscription_id.to_string()),
+        );
+    }
+}
+
 fn status_is_terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled")
 }
 
-fn initialize_result(config: &CliConfig) -> Value {
+fn initialize_result(config: &CliConfig, notifications: RpcNotificationMode) -> Value {
+    let live_notifications = notifications.supports_live_notifications();
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "serverInfo": {"name": "starweaver-cli", "version": env!("CARGO_PKG_VERSION")},
@@ -620,7 +772,9 @@ fn initialize_result(config: &CliConfig) -> Value {
             "blockingRunStart": false,
             "blockingRunPrompt": true,
             "nonBlockingRunStart": true,
-            "liveDisplay": true,
+            "liveDisplay": live_notifications,
+            "streamReplay": true,
+            "streamSubscribe": live_notifications,
             "cancel": true,
             "steering": true,
             "attach": true,
@@ -644,7 +798,8 @@ fn run_prompt(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
         .map_err(RpcError::from)?
         .run_prompt(&command)
         .map_err(RpcError::from)?;
-    serde_json::from_str(output.trim()).map_err(|error| RpcError::new(-32_000, error.to_string()))
+    serde_json::from_str(output.trim())
+        .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))
 }
 
 fn config_get(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
@@ -656,12 +811,15 @@ fn config_get(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
         return Ok(json!({"values": {key: value}}));
     }
     let Some(keys) = params.get("keys").and_then(Value::as_array) else {
-        return Err(RpcError::new(-32_602, "config.get requires key or keys"));
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "config.get requires key or keys",
+        ));
     };
     let mut values = serde_json::Map::new();
     for key in keys {
         let Some(key) = key.as_str() else {
-            return Err(RpcError::new(-32_602, "keys must be strings"));
+            return Err(RpcError::new(INVALID_PARAMS, "keys must be strings"));
         };
         let value = get_config_value(config, key)
             .map_err(RpcError::from)?
@@ -734,7 +892,7 @@ fn ensure_profile(config: &CliConfig, profile: &str) -> Result<(), RpcError> {
         Ok(())
     } else {
         Err(RpcError::new(
-            -32_602,
+            INVALID_PARAMS,
             format!("unknown profile: {profile}"),
         ))
     }
@@ -748,7 +906,7 @@ fn ensure_client_model_profile(config: &CliConfig, profile: &str) -> Result<(), 
         Ok(())
     } else {
         Err(RpcError::new(
-            -32_602,
+            INVALID_PARAMS,
             format!("unknown model profile: {profile}"),
         ))
     }
@@ -777,20 +935,21 @@ fn required_string(params: &Value, key: &str) -> Result<String, RpcError> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
-        .ok_or_else(|| RpcError::new(-32_602, format!("missing string param: {key}")))
-}
-
-fn error_response(id: &Value, code: i64, message: &str) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": {"code": code, "message": message},
-    })
+        .ok_or_else(|| RpcError::new(INVALID_PARAMS, format!("missing string param: {key}")))
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    use std::{
+        io::{Read as _, Write as _},
+        net::{TcpListener, TcpStream},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+    };
 
     use serde_json::json;
 
@@ -805,12 +964,12 @@ mod tests {
     #[allow(clippy::needless_pass_by_value)]
     fn request(config: &CliConfig, id: u64, method: &str, params: Value) -> Value {
         let (output_sender, _output_receiver) = mpsc::channel::<Value>();
-        let server = RpcServer::new(config.clone(), output_sender);
+        let server = RpcService::new(config.clone(), output_sender);
         request_with_server(&server, id, method, params)
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    fn request_with_server(server: &RpcServer, id: u64, method: &str, params: Value) -> Value {
+    fn request_with_server(server: &RpcService, id: u64, method: &str, params: Value) -> Value {
         let line = json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -828,6 +987,76 @@ mod tests {
             "unexpected RPC error: {response}"
         );
         response["result"].clone()
+    }
+
+    fn http_post(config: &CliConfig, body: &Value) -> (String, Arc<AtomicBool>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let service = Arc::new(RpcService::replay_only(
+            config.clone(),
+            transport::closed_notification_sender(),
+        ));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let server_shutdown = Arc::clone(&shutdown);
+        let handle = thread::spawn(move || {
+            let (stream, _address) = listener.accept().unwrap();
+            transport::handle_http_connection(stream, &service, &server_shutdown).unwrap();
+        });
+        let body = body.to_string();
+        let mut client = TcpStream::connect(address).unwrap();
+        write!(
+            client,
+            "POST /rpc HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        handle.join().unwrap();
+        (response, shutdown)
+    }
+
+    fn http_body(response: &str) -> Value {
+        let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
+        serde_json::from_str(body).unwrap()
+    }
+
+    #[test]
+    fn initialize_capabilities_follow_notification_transport() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let live = RpcService::new(config.clone(), output_sender);
+        let initialized = request_with_server(&live, 1, "initialize", json!({}));
+        assert_eq!(initialized["capabilities"]["liveDisplay"], true);
+        assert_eq!(initialized["capabilities"]["streamSubscribe"], true);
+
+        let replay_only = RpcService::replay_only(config, transport::closed_notification_sender());
+        let initialized = request_with_server(&replay_only, 2, "initialize", json!({}));
+        assert_eq!(initialized["capabilities"]["liveDisplay"], false);
+        assert_eq!(initialized["capabilities"]["streamSubscribe"], false);
+        assert_eq!(initialized["capabilities"]["streamReplay"], true);
+    }
+
+    #[test]
+    fn rpc_command_parses_http_transport() {
+        let cli = args::parse([
+            "starweaver-cli".to_string(),
+            "rpc".to_string(),
+            "http".to_string(),
+            "--host".to_string(),
+            "127.0.0.1".to_string(),
+            "--port".to_string(),
+            "0".to_string(),
+        ])
+        .unwrap();
+        let Some(crate::CliCommand::Rpc(command)) = cli.command else {
+            panic!("expected rpc command");
+        };
+        assert_eq!(command.transport, crate::args::RpcTransport::Http);
+        assert_eq!(command.host, "127.0.0.1");
+        assert_eq!(command.port, 0);
     }
 
     #[test]
@@ -916,7 +1145,7 @@ model = "test:coding"
         })
         .to_string();
         let (output_sender, _output_receiver) = mpsc::channel::<Value>();
-        let server = RpcServer::new(config, output_sender);
+        let server = RpcService::new(config, output_sender);
         let (response, shutdown) = server.handle_line(&line);
         assert!(!shutdown);
         let response = response.unwrap();
@@ -1025,11 +1254,76 @@ model = "test:coding"
     }
 
     #[test]
+    fn stream_methods_cover_replay_subscribe_and_unsubscribe() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let created = request(&config, 1, "session.create", json!({"title": "stream rpc"}));
+        let session_id = created["session"]["session_id"].as_str().unwrap();
+
+        let replay = request(
+            &config,
+            2,
+            "stream.replay",
+            json!({"sessionId": session_id}),
+        );
+        assert_eq!(replay["sessionId"], session_id);
+        assert_eq!(replay["scope"], format!("session:{session_id}"));
+        assert_eq!(replay["events"].as_array().unwrap().len(), 0);
+
+        let subscribed = request(
+            &config,
+            3,
+            "stream.subscribe",
+            json!({
+                "sessionId": session_id,
+                "subscriptionId": "sub_stream_test",
+                "payloadFormat": "display_message"
+            }),
+        );
+        assert_eq!(subscribed["subscriptionId"], "sub_stream_test");
+        assert_eq!(subscribed["sessionId"], session_id);
+        assert_eq!(subscribed["active"], false);
+        assert_eq!(subscribed["payloadFormat"], "display_message");
+
+        let unsubscribed = request(
+            &config,
+            4,
+            "stream.unsubscribe",
+            json!({"subscriptionId": "sub_stream_test"}),
+        );
+        assert_eq!(unsubscribed["subscriptionId"], "sub_stream_test");
+        assert_eq!(unsubscribed["unsubscribed"], false);
+    }
+
+    #[test]
+    fn stream_subscribe_requires_live_notification_transport() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let server = RpcService::replay_only(config, transport::closed_notification_sender());
+        let line = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "stream.subscribe",
+            "params": {"sessionId": "session_test"},
+        })
+        .to_string();
+        let (response, shutdown) = server.handle_line(&line);
+        assert!(!shutdown);
+        let response = response.unwrap();
+        assert_eq!(response["id"], 1);
+        assert_eq!(response["error"]["code"], UNSUPPORTED_FEATURE);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("live notification transport"));
+    }
+
+    #[test]
     fn run_start_streams_agui_payloads_and_session_output_replays() {
         let temp = tempfile::tempdir().unwrap();
         let config = test_config(temp.path());
         let (output_sender, output_receiver) = mpsc::channel::<Value>();
-        let server = RpcServer::new(config, output_sender);
+        let server = RpcService::new(config, output_sender);
 
         let started = request_with_server(
             &server,
@@ -1124,5 +1418,47 @@ prompt = "Review via RPC."
         );
         assert_eq!(value["metadata"]["cli.slash_command.name"], "review");
         assert_eq!(value["metadata"]["cli.slash_command.invoked"], "rv");
+    }
+
+    #[test]
+    fn http_transport_dispatches_json_rpc_requests() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+
+        let (response, shutdown) = http_post(
+            &config,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"clientInfo": {"name": "http-test"}},
+            }),
+        );
+        assert!(!shutdown.load(Ordering::SeqCst));
+        let body = http_body(&response);
+        assert_eq!(body["jsonrpc"], "2.0");
+        assert_eq!(body["id"], 1);
+        assert_eq!(body["result"]["protocolVersion"], PROTOCOL_VERSION);
+        assert_eq!(body["result"]["serverInfo"]["name"], "starweaver-cli");
+    }
+
+    #[test]
+    fn http_transport_shutdown_marks_server_shutdown() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+
+        let (response, shutdown) = http_post(
+            &config,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "shutdown",
+                "params": {},
+            }),
+        );
+        assert!(shutdown.load(Ordering::SeqCst));
+        let body = http_body(&response);
+        assert_eq!(body["id"], 7);
+        assert_eq!(body["result"]["status"], "shutdown");
     }
 }

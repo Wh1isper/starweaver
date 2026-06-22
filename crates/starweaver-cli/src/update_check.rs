@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{config::CliConfig, error::io_error, CliResult};
 
-const LATEST_RELEASE_URL: &str = "https://github.com/Wh1isper/starweaver/releases/latest";
-const RELEASES_URL: &str = "https://github.com/Wh1isper/starweaver/releases";
+const DEFAULT_REPO: &str = "Wh1isper/starweaver";
 const RELEASE_TAG_PREFIX: &str = "/releases/tag/";
 const CHECK_INTERVAL_SECONDS: i64 = 24 * 60 * 60;
 
@@ -68,7 +67,7 @@ pub fn update_hint(config: &CliConfig) -> Option<String> {
     })
 }
 
-fn update_is_newer(current: &str, latest: &str) -> bool {
+pub fn update_is_newer(current: &str, latest: &str) -> bool {
     let current_trimmed = current.trim_start_matches('v');
     let latest_trimmed = latest.trim_start_matches('v');
     let Ok(current_version) = Version::parse(current_trimmed) else {
@@ -78,6 +77,15 @@ fn update_is_newer(current: &str, latest: &str) -> bool {
         return false;
     };
     latest_version > current_version
+}
+
+pub fn versions_match(left: &str, right: &str) -> bool {
+    let left_trimmed = left.trim_start_matches('v');
+    let right_trimmed = right.trim_start_matches('v');
+    match (Version::parse(left_trimmed), Version::parse(right_trimmed)) {
+        (Ok(left_version), Ok(right_version)) => left_version == right_version,
+        _ => left_trimmed == right_trimmed,
+    }
 }
 
 /// Read cached update metadata.
@@ -112,17 +120,22 @@ fn cache_is_fresh(path: &Path) -> bool {
     Utc::now().signed_duration_since(checked_at).num_seconds() < CHECK_INTERVAL_SECONDS
 }
 
-fn fetch_latest_release() -> Result<UpdateCheckCache, String> {
+pub fn fetch_latest_release() -> Result<UpdateCheckCache, String> {
+    let repo = release_repo();
+    fetch_latest_release_for_repo(&repo)
+}
+
+fn fetch_latest_release_for_repo(repo: &str) -> Result<UpdateCheckCache, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
     runtime.block_on(async {
         let client = reqwest::Client::new();
-        match fetch_latest_release_redirect(&client).await {
+        match fetch_latest_release_redirect(&client, repo).await {
             Ok(cache) => Ok(cache),
             Err(primary_error) => {
-                fetch_release_page_metadata(&client)
+                fetch_release_page_metadata(&client, repo)
                     .await
                     .map_err(|fallback_error| {
                         format!("{primary_error}; prerelease fallback failed: {fallback_error}")
@@ -134,9 +147,10 @@ fn fetch_latest_release() -> Result<UpdateCheckCache, String> {
 
 async fn fetch_latest_release_redirect(
     client: &reqwest::Client,
+    repo: &str,
 ) -> Result<UpdateCheckCache, String> {
     let response = client
-        .get(LATEST_RELEASE_URL)
+        .get(latest_release_url(repo))
         .header(reqwest::header::USER_AGENT, "starweaver-cli")
         .timeout(Duration::from_secs(2))
         .send()
@@ -150,12 +164,15 @@ async fn fetch_latest_release_redirect(
     }
     let tag = parse_release_tag_from_url(&final_url)
         .ok_or_else(|| format!("latest release redirect did not include a tag: {final_url}"))?;
-    Ok(cache_from_tag(&tag))
+    Ok(cache_from_tag(repo, &tag))
 }
 
-async fn fetch_release_page_metadata(client: &reqwest::Client) -> Result<UpdateCheckCache, String> {
+async fn fetch_release_page_metadata(
+    client: &reqwest::Client,
+    repo: &str,
+) -> Result<UpdateCheckCache, String> {
     let response = client
-        .get(RELEASES_URL)
+        .get(releases_url(repo))
         .header(reqwest::header::USER_AGENT, "starweaver-cli")
         .timeout(Duration::from_secs(2))
         .send()
@@ -168,15 +185,27 @@ async fn fetch_release_page_metadata(client: &reqwest::Client) -> Result<UpdateC
     }
     let tag = parse_release_tag_from_page(&body)
         .ok_or_else(|| "releases page did not include a release tag link".to_string())?;
-    Ok(cache_from_tag(&tag))
+    Ok(cache_from_tag(repo, &tag))
 }
 
-fn cache_from_tag(tag: &str) -> UpdateCheckCache {
+fn release_repo() -> String {
+    env::var("STARWEAVER_GITHUB_REPO")
+        .or_else(|_| env::var("STARWEAVER_REPO"))
+        .unwrap_or_else(|_| DEFAULT_REPO.to_string())
+}
+
+fn latest_release_url(repo: &str) -> String {
+    format!("https://github.com/{repo}/releases/latest")
+}
+
+fn releases_url(repo: &str) -> String {
+    format!("https://github.com/{repo}/releases")
+}
+
+fn cache_from_tag(repo: &str, tag: &str) -> UpdateCheckCache {
     let tag = tag.trim();
     let latest_version = Some(tag.trim_start_matches('v').to_string());
-    let release_url = Some(format!(
-        "https://github.com/Wh1isper/starweaver/releases/tag/{tag}"
-    ));
+    let release_url = Some(format!("https://github.com/{repo}/releases/tag/{tag}"));
     UpdateCheckCache {
         checked_at: Some(Utc::now()),
         latest_version,
@@ -226,6 +255,9 @@ mod tests {
         assert!(!update_is_newer("0.0.1", "latest"));
         assert!(update_is_newer("dev", "0.0.1"));
         assert!(!update_is_newer("dev", "dev"));
+        assert!(versions_match("0.0.1", "v0.0.1"));
+        assert!(!versions_match("0.0.1", "0.0.2"));
+        assert!(versions_match("dev", "dev"));
     }
 
     #[test]
@@ -249,7 +281,7 @@ mod tests {
             Some("v0.0.1".to_string())
         );
 
-        let cache = cache_from_tag("v0.0.1");
+        let cache = cache_from_tag(DEFAULT_REPO, "v0.0.1");
         assert_eq!(cache.latest_version.as_deref(), Some("0.0.1"));
         assert_eq!(
             cache.release_url.as_deref(),

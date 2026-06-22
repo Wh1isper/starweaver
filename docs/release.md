@@ -66,6 +66,7 @@ Unix archives contain:
 starweaver
 starweaver-cli
 sw
+starweaver-rpc
 ```
 
 Windows archives contain:
@@ -74,6 +75,7 @@ Windows archives contain:
 starweaver.exe
 starweaver-cli.exe
 sw.exe
+starweaver-rpc.exe
 ```
 
 The release also includes `checksums.txt` with SHA-256 checksums for all archives.
