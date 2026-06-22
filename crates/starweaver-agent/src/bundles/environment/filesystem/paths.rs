@@ -1,10 +1,18 @@
 //! Filesystem path operation tools.
 
-use starweaver_environment::EnvironmentError;
+use std::sync::LazyLock;
+
+use starweaver_environment::{EnvironmentError, FileListOptions};
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
+use tokio::sync::Semaphore;
 
 use super::{tool_execution_error, DeleteArgs, FilePathArgs, ListArgs, MkdirArgs, PathPairsArgs};
+use crate::bundles::environment::common::limit_or_unlimited;
 use crate::bundles::environment::handle::environment_provider;
+
+const LS_MAX_CONCURRENT_CALLS: usize = 16;
+static LS_CONCURRENCY_LIMIT: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(LS_MAX_CONCURRENT_CALLS));
 
 pub(super) async fn list_files(
     context: ToolContext,
@@ -12,18 +20,34 @@ pub(super) async fn list_files(
 ) -> Result<ToolResult, ToolError> {
     let provider = environment_provider(&context, "ls")?;
     let ignore = arguments.ignore.unwrap_or_default();
-    let entries = provider
-        .list(&arguments.path)
+    let max_entries = limit_or_unlimited("ls", "max_entries", arguments.max_entries)?;
+    let _permit = LS_CONCURRENCY_LIMIT
+        .acquire()
         .await
-        .map_err(|error| tool_execution_error("ls", error))?
-        .into_iter()
-        .filter(|entry| !ignore.iter().any(|pattern| ignore_match(pattern, entry)))
-        .collect::<Vec<_>>();
-    Ok(ToolResult::new(serde_json::json!({
+        .map_err(|error| tool_execution_error("ls", error))?;
+    let listing = provider
+        .list_with_options(
+            &arguments.path,
+            FileListOptions {
+                ignore_patterns: ignore.clone(),
+                max_entries,
+            },
+        )
+        .await
+        .map_err(|error| tool_execution_error("ls", error))?;
+    let mut result = serde_json::json!({
         "path": arguments.path,
         "ignore": ignore,
-        "entries": entries,
-    })))
+        "max_entries": arguments.max_entries,
+        "entries": listing.entries,
+    });
+    if listing.truncated {
+        result["truncated"] = serde_json::json!(true);
+        result["total_entries"] = serde_json::json!(listing.total_entries);
+        result["showing"] =
+            serde_json::json!(result["entries"].as_array().map_or(0, std::vec::Vec::len));
+    }
+    Ok(ToolResult::new(result))
 }
 
 pub(super) async fn mkdir_paths(
@@ -115,13 +139,4 @@ pub(super) async fn resource_ref(
         "uri": format!("env://{}/{}", provider.id(), arguments.file_path),
         "metadata": {"provider_id": provider.id(), "file_path": arguments.file_path},
     })))
-}
-
-fn ignore_match(pattern: &str, entry: &str) -> bool {
-    entry == pattern
-        || entry.ends_with(pattern)
-        || entry.contains(pattern)
-        || pattern
-            .strip_suffix('/')
-            .is_some_and(|prefix| entry.starts_with(prefix))
 }

@@ -1,17 +1,20 @@
 //! Virtual environment provider trait implementation.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, BinaryHeap},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use starweaver_core::Metadata;
 
 use crate::{
-    include_path, normalize_requested_path, parent_path, path_contains,
+    include_path, list_ignore_match, normalize_requested_path, parent_path, path_contains,
     render_environment_context_xml, render_virtual_file_tree_listing, replace_logical_prefix,
     strip_path_prefix, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
-    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileStat, FileTreeBlock,
-    PathGlob, ShellCommand, ShellOutput, ShellReviewEnvironmentContext,
-    DEFAULT_FILE_TREE_MAX_DEPTH,
+    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileListOptions,
+    FileListResult, FileStat, FileTreeBlock, PathGlob, ShellCommand, ShellOutput,
+    ShellReviewEnvironmentContext, DEFAULT_FILE_TREE_MAX_DEPTH,
 };
 
 use super::VirtualEnvironmentProvider;
@@ -379,24 +382,152 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
     }
 
     async fn list(&self, path: &str) -> EnvironmentResult<Vec<String>> {
-        self.check_file(path, false)?;
-        let prefix = if path.is_empty() {
+        let normalized = normalize_requested_path(path)?;
+        self.check_file(&normalized, false)?;
+        let prefix = if normalized.is_empty() || normalized == "." {
             String::new()
         } else {
-            format!("{}/", path.trim_end_matches('/'))
+            format!("{}/", normalized.trim_end_matches('/'))
         };
         let mut entries = BTreeSet::new();
-        entries.extend(
-            self.all_file_keys()?
-                .into_iter()
-                .filter(|entry| entry.starts_with(&prefix)),
-        );
-        entries.extend(
-            self.all_dir_keys()?
-                .into_iter()
-                .filter(|entry| entry.starts_with(&prefix)),
-        );
+        {
+            let files = self
+                .files
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            entries.extend(
+                files
+                    .keys()
+                    .filter(|entry| entry.starts_with(&prefix))
+                    .cloned(),
+            );
+        }
+        {
+            let binary_files = self
+                .binary_files
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            entries.extend(
+                binary_files
+                    .keys()
+                    .filter(|entry| entry.starts_with(&prefix))
+                    .cloned(),
+            );
+        }
+        {
+            let directories = self
+                .directories
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            entries.extend(
+                directories
+                    .iter()
+                    .filter(|entry| entry.starts_with(&prefix))
+                    .cloned(),
+            );
+        }
         Ok(entries.into_iter().collect())
+    }
+
+    async fn list_with_options(
+        &self,
+        path: &str,
+        options: FileListOptions,
+    ) -> EnvironmentResult<FileListResult> {
+        let normalized = normalize_requested_path(path)?;
+        self.check_file(&normalized, false)?;
+        let prefix = if normalized.is_empty() || normalized == "." {
+            String::new()
+        } else {
+            format!("{}/", normalized.trim_end_matches('/'))
+        };
+        if options.max_entries == 0 {
+            let mut entries = BTreeSet::new();
+            {
+                let files = self
+                    .files
+                    .lock()
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                entries.extend(files.keys().filter_map(|entry| {
+                    list_entry_matches(&prefix, &options.ignore_patterns, entry)
+                }));
+            }
+            {
+                let binary_files = self
+                    .binary_files
+                    .lock()
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                entries.extend(binary_files.keys().filter_map(|entry| {
+                    list_entry_matches(&prefix, &options.ignore_patterns, entry)
+                }));
+            }
+            {
+                let directories = self
+                    .directories
+                    .lock()
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                entries.extend(directories.iter().filter_map(|entry| {
+                    list_entry_matches(&prefix, &options.ignore_patterns, entry)
+                }));
+            }
+            let total_entries = entries.len();
+            return Ok(FileListResult {
+                entries: entries.into_iter().collect(),
+                truncated: false,
+                total_entries,
+            });
+        }
+
+        let mut entries = BinaryHeap::new();
+        let mut total_entries = 0usize;
+        {
+            let files = self
+                .files
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            collect_limited_list_entries(
+                files.keys(),
+                &prefix,
+                &options.ignore_patterns,
+                options.max_entries,
+                &mut entries,
+                &mut total_entries,
+            );
+        }
+        {
+            let binary_files = self
+                .binary_files
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            collect_limited_list_entries(
+                binary_files.keys(),
+                &prefix,
+                &options.ignore_patterns,
+                options.max_entries,
+                &mut entries,
+                &mut total_entries,
+            );
+        }
+        {
+            let directories = self
+                .directories
+                .lock()
+                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            collect_limited_list_entries(
+                directories.iter(),
+                &prefix,
+                &options.ignore_patterns,
+                options.max_entries,
+                &mut entries,
+                &mut total_entries,
+            );
+        }
+        let entries = entries.into_sorted_vec();
+        Ok(FileListResult {
+            truncated: total_entries > entries.len(),
+            total_entries,
+            entries,
+        })
     }
 
     async fn glob(
@@ -488,5 +619,37 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
                 serde_json::json!("virtual"),
             )]),
         })
+    }
+}
+
+fn list_entry_matches(prefix: &str, ignore_patterns: &[String], entry: &str) -> Option<String> {
+    if entry.starts_with(prefix) && !list_ignore_match(ignore_patterns, entry) {
+        Some(entry.to_string())
+    } else {
+        None
+    }
+}
+
+fn collect_limited_list_entries<'a, I>(
+    candidates: I,
+    prefix: &str,
+    ignore_patterns: &[String],
+    max_entries: usize,
+    entries: &mut BinaryHeap<String>,
+    total_entries: &mut usize,
+) where
+    I: IntoIterator<Item = &'a String>,
+{
+    for entry in candidates {
+        let Some(entry) = list_entry_matches(prefix, ignore_patterns, entry) else {
+            continue;
+        };
+        *total_entries = total_entries.saturating_add(1);
+        if entries.len() < max_entries {
+            entries.push(entry);
+        } else if entries.peek().is_some_and(|largest| entry < *largest) {
+            entries.pop();
+            entries.push(entry);
+        }
     }
 }

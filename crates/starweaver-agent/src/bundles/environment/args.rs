@@ -23,6 +23,10 @@ pub(super) const fn default_glob_max_results() -> isize {
     500
 }
 
+pub(super) const fn default_list_max_entries() -> isize {
+    500
+}
+
 pub(super) const fn default_grep_context_lines() -> isize {
     2
 }
@@ -77,6 +81,9 @@ pub(super) struct ListArgs {
     /// Glob patterns to ignore.
     #[serde(default)]
     pub(super) ignore: Option<Vec<String>>,
+    /// Maximum number of entries to return. Use -1 for unlimited.
+    #[serde(default = "default_list_max_entries")]
+    pub(super) max_entries: isize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
