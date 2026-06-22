@@ -50,11 +50,22 @@ pub use provider::{
     DynEnvironmentProvider, DynProcessShellProvider, EnvironmentProvider, ProcessShellProvider,
 };
 pub use types::{
-    EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions, FileStat,
-    ResourceRef, ShellCommand, ShellOutput, ShellProcessSnapshot, ShellProcessStatus,
-    ShellReviewEnvironmentContext,
+    EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions,
+    FileListOptions, FileListResult, FileStat, ResourceRef, ShellCommand, ShellOutput,
+    ShellProcessSnapshot, ShellProcessStatus, ShellReviewEnvironmentContext,
 };
 pub use virtual_provider::VirtualEnvironmentProvider;
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn list_ignore_match(patterns: &[String], entry: &str) -> bool {
+    patterns.iter().any(|pattern| {
+        entry == pattern
+            || entry.ends_with(pattern)
+            || entry.contains(pattern)
+            || pattern
+                .strip_suffix('/')
+                .is_some_and(|prefix| entry.starts_with(prefix))
+    })
+}

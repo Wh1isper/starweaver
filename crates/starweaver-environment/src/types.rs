@@ -61,6 +61,27 @@ impl Default for FileGrepOptions {
     }
 }
 
+/// Directory list options for provider-backed filesystem listing.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FileListOptions {
+    /// Entry name patterns to ignore.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignore_patterns: Vec<String>,
+    /// Maximum entries to return. Zero means no explicit limit.
+    pub max_entries: usize,
+}
+
+/// Directory list result.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FileListResult {
+    /// Provider-scoped entries.
+    pub entries: Vec<String>,
+    /// Whether entries were omitted because of `max_entries`.
+    pub truncated: bool,
+    /// Total matching entries before truncation.
+    pub total_entries: usize,
+}
+
 /// Glob result entry.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FileGlobMatch {

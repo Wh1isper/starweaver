@@ -42,10 +42,17 @@ Read files from the active environment. Supports text, images (PNG/JPEG/WebP), v
             .with_instruction(ToolInstruction::new(
                 "ls",
                 r#"<ls-tool>
-List directory contents with file info (name, type, size, modified time).
+List directory entries from the active environment.
+
+<parameters>
+- `path`: Directory root, default `.`.
+- `ignore`: Entry name patterns to exclude.
+- `max_entries`: Maximum entries to return, default `500`; use `-1` for unlimited only when the directory is known to be narrow.
+</parameters>
 
 <best-practices>
 - Use the ignore parameter to filter out unwanted entries such as logs, caches, and dependency directories.
+- Keep max_entries bounded for broad roots to avoid large tool responses.
 - For recursive file search: use glob instead.
 - For content search: use grep instead.
 </best-practices>

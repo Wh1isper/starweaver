@@ -319,6 +319,16 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
             },
         )
         .await;
+    let default_ls = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "default-ls".to_string(),
+                name: "ls".to_string(),
+                arguments: serde_json::json!({}).into(),
+            },
+        )
+        .await;
     let invalid_write_mode = registry
         .execute_call(
             context.clone(),
@@ -430,6 +440,10 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
         .unwrap()
         .iter()
         .all(|entry| entry.as_str() != Some("src/main.rs")));
+    assert_eq!(
+        default_ls.content["entries"],
+        serde_json::json!(["README.md", "docs/output.txt", "src/lib.rs", "src/main.rs"])
+    );
     assert!(invalid_write_mode.is_error);
     assert!(invalid_write_mode.content["error"]
         .as_str()
@@ -879,7 +893,7 @@ async fn filesystem_view_native_media_returns_provider_backed_content_parts() {
 }
 
 #[tokio::test]
-async fn glob_grep_and_shell_large_outputs_are_saved_to_environment_tmp_files() {
+async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files() {
     let mut provider_value = VirtualEnvironmentProvider::new("test").with_shell_output(
         "big output",
         ShellOutput {
@@ -905,6 +919,27 @@ async fn glob_grep_and_shell_large_outputs_are_saved_to_environment_tmp_files() 
     dependencies.insert(agent_context);
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
+
+    let ls = registry
+        .execute_call(
+            context.clone(),
+            &starweaver_model::ToolCallPart {
+                id: "ls".to_string(),
+                name: "ls".to_string(),
+                arguments: serde_json::json!({"path": "", "ignore": ["very_long_file_name_0000"]})
+                    .into(),
+            },
+        )
+        .await;
+    assert_eq!(ls.content["entries"].as_array().unwrap().len(), 500);
+    assert_eq!(ls.content["truncated"], true);
+    assert_eq!(ls.content["total_entries"], 899);
+    assert_eq!(ls.content["showing"], 500);
+    assert!(ls.content["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| !entry.as_str().unwrap().contains("very_long_file_name_0000")));
 
     let glob = registry
         .execute_call(
@@ -1496,7 +1531,7 @@ fn first_party_tool_arg_schemas_match_starweaver_sdk_and_describe_args() {
                         "instructions",
                     ],
                 ),
-                ("ls", vec!["path", "ignore"]),
+                ("ls", vec!["path", "ignore", "max_entries"]),
                 ("write", vec!["file_path", "content", "mode"]),
                 (
                     "edit",

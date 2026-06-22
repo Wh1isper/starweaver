@@ -1,7 +1,7 @@
 //! Local filesystem and shell environment provider.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BinaryHeap},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::UNIX_EPOCH,
@@ -10,15 +10,16 @@ use std::{
 use starweaver_core::Metadata;
 
 use crate::{
-    copy_local_dir, create_local_tmp_dir, display_local_path, local_grep_file_match_limit,
-    local_search_walk_builder, local_shell_metadata, map_io_error, normalize_local_config_path,
-    normalize_match_path, normalize_path, normalize_tmp_namespace, path_match_candidates,
-    prepare_local_destination, push_unique_candidate, push_unique_path,
+    copy_local_dir, create_local_tmp_dir, display_local_path, list_ignore_match,
+    local_grep_file_match_limit, local_search_walk_builder, local_shell_metadata, map_io_error,
+    normalize_local_config_path, normalize_match_path, normalize_path, normalize_tmp_namespace,
+    path_match_candidates, prepare_local_destination, push_unique_candidate, push_unique_path,
     render_environment_context_xml, render_local_file_tree_listing, run_local_shell_command,
     DynProcessShellProvider, EnvironmentError, EnvironmentPolicy, EnvironmentProvider,
     EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
-    FileGrepOptions, FilePolicy, FileStat, FileTreeBlock, LocalGrepSink, PathGlob, ShellCommand,
-    ShellOutput, ShellPolicy, ShellReviewEnvironmentContext, DEFAULT_FILE_TREE_MAX_DEPTH,
+    FileGrepOptions, FileListOptions, FileListResult, FilePolicy, FileStat, FileTreeBlock,
+    LocalGrepSink, PathGlob, ShellCommand, ShellOutput, ShellPolicy, ShellReviewEnvironmentContext,
+    DEFAULT_FILE_TREE_MAX_DEPTH,
 };
 use async_trait::async_trait;
 use grep_regex::RegexMatcher;
@@ -375,8 +376,56 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
             let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
             entries.push(entry.file_name().to_string_lossy().to_string());
         }
-        entries.sort();
+        entries.sort_unstable();
         Ok(entries)
+    }
+
+    async fn list_with_options(
+        &self,
+        path: &str,
+        options: FileListOptions,
+    ) -> EnvironmentResult<FileListResult> {
+        let path = self.resolve_provider_path(path, false)?;
+        if options.max_entries == 0 {
+            let mut entries = Vec::new();
+            for entry in std::fs::read_dir(&path).map_err(|error| map_io_error(&path, &error))? {
+                let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !list_ignore_match(&options.ignore_patterns, &name) {
+                    entries.push(name);
+                }
+            }
+            entries.sort_unstable();
+            let total_entries = entries.len();
+            return Ok(FileListResult {
+                entries,
+                truncated: false,
+                total_entries,
+            });
+        }
+
+        let mut entries = BinaryHeap::new();
+        let mut total_entries = 0usize;
+        for entry in std::fs::read_dir(&path).map_err(|error| map_io_error(&path, &error))? {
+            let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if list_ignore_match(&options.ignore_patterns, &name) {
+                continue;
+            }
+            total_entries = total_entries.saturating_add(1);
+            if entries.len() < options.max_entries {
+                entries.push(name);
+            } else if entries.peek().is_some_and(|largest| name < *largest) {
+                entries.pop();
+                entries.push(name);
+            }
+        }
+        let entries = entries.into_sorted_vec();
+        Ok(FileListResult {
+            truncated: total_entries > entries.len(),
+            total_entries,
+            entries,
+        })
     }
 
     async fn glob(

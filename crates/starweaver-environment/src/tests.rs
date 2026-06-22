@@ -46,6 +46,48 @@ async fn virtual_provider_reads_lists_shells_and_exports_state() {
         vec!["src/lib.rs", "src/main.rs"]
     );
     assert_eq!(
+        provider.list("./src").await.unwrap(),
+        vec!["src/lib.rs", "src/main.rs"]
+    );
+    assert_eq!(
+        provider.list(".").await.unwrap(),
+        vec!["src/lib.rs", "src/main.rs"]
+    );
+    assert_eq!(
+        provider
+            .list_with_options(
+                ".",
+                FileListOptions {
+                    ignore_patterns: Vec::new(),
+                    max_entries: 1,
+                },
+            )
+            .await
+            .unwrap(),
+        FileListResult {
+            entries: vec!["src/lib.rs".to_string()],
+            truncated: true,
+            total_entries: 2,
+        }
+    );
+    assert_eq!(
+        provider
+            .list_with_options(
+                ".",
+                FileListOptions {
+                    ignore_patterns: vec!["main".to_string()],
+                    max_entries: 1,
+                },
+            )
+            .await
+            .unwrap(),
+        FileListResult {
+            entries: vec!["src/lib.rs".to_string()],
+            truncated: false,
+            total_entries: 1,
+        }
+    );
+    assert_eq!(
         provider
             .run_shell(ShellCommand {
                 command: "echo ok".to_string(),
@@ -973,6 +1015,40 @@ async fn local_provider_accepts_allowed_absolute_paths_and_rejects_unsafe_paths(
 
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(external).unwrap();
+}
+
+#[tokio::test]
+async fn local_provider_list_with_options_filters_and_limits_sorted_entries() {
+    let root = unique_test_dir();
+    std::fs::write(root.join("zeta.txt"), "z").unwrap();
+    std::fs::write(root.join("alpha.log"), "a").unwrap();
+    std::fs::write(root.join("beta.txt"), "b").unwrap();
+    std::fs::write(root.join("gamma.txt"), "g").unwrap();
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy::default(),
+    });
+
+    let listing = provider
+        .list_with_options(
+            ".",
+            FileListOptions {
+                ignore_patterns: vec![".log".to_string()],
+                max_entries: 2,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        listing,
+        FileListResult {
+            entries: vec!["beta.txt".to_string(), "gamma.txt".to_string()],
+            truncated: true,
+            total_entries: 3,
+        }
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]

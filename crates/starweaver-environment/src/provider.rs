@@ -6,9 +6,10 @@ use async_trait::async_trait;
 use grep_regex::RegexMatcher;
 
 use crate::{
-    include_path, path_match_candidates, search_text, EnvironmentError, EnvironmentResult,
-    EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions, FileStat,
-    PathGlob, ShellCommand, ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    include_path, list_ignore_match, path_match_candidates, search_text, EnvironmentError,
+    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
+    FileGrepOptions, FileListOptions, FileListResult, FileStat, PathGlob, ShellCommand,
+    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
 };
 
 /// Shared environment provider reference.
@@ -93,6 +94,28 @@ pub trait EnvironmentProvider: Send + Sync {
 
     /// List logical entries under a path.
     async fn list(&self, path: &str) -> EnvironmentResult<Vec<String>>;
+
+    /// List logical entries under a path with filtering and result limits.
+    async fn list_with_options(
+        &self,
+        path: &str,
+        options: FileListOptions,
+    ) -> EnvironmentResult<FileListResult> {
+        let mut entries = self.list(path).await?;
+        if !options.ignore_patterns.is_empty() {
+            entries.retain(|entry| !list_ignore_match(&options.ignore_patterns, entry));
+        }
+        let total_entries = entries.len();
+        let truncated = options.max_entries > 0 && total_entries > options.max_entries;
+        if truncated {
+            entries.truncate(options.max_entries);
+        }
+        Ok(FileListResult {
+            entries,
+            truncated,
+            total_entries,
+        })
+    }
 
     /// Return path candidates used for provider-scoped path pattern matching.
     ///
