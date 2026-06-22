@@ -26,6 +26,8 @@ Current workspace members:
 - `crates/starweaver-stream` — shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, UI adapters, sanitization, and protocol envelopes
 - `crates/starweaver-storage` — shared SQLite migrations, concrete `SessionStore`, replay event-log, stream archive adapters, and migration status reporting
 - `crates/starweaver-cli` — CLI-first product surface for headless stdio runs, display-message rendering, session restore, launcher dispatch, and install/update workflows
+- `crates/starweaver-rpc-core` — shared JSON-RPC host protocol helpers, envelopes, errors, stream payload projection, and replay result helpers
+- `crates/starweaver-rpc` — standalone JSON-RPC host process for Desktop and local host integrations
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
 
@@ -46,6 +48,8 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-stream`: shared display/replay stream contracts, UI adapters, sanitizers, realtime compaction buffers, stream archives, and protocol envelopes.
 - `starweaver-storage`: shared SQLite migrations, concrete `SessionStore`, `StreamArchive`, and `ReplayEventLog` adapters, plus migration status reporting.
 - `starweaver-cli`: command-line product surface and local automation entry point.
+- `starweaver-rpc-core`: shared JSON-RPC host protocol helpers and target home for typed host-control protocol definitions.
+- `starweaver-rpc`: standalone JSON-RPC host process.
 - `starweaver-platform`: hosted orchestration and external protocol adapters such as A2A and AGUI.
 
 ## Documentation Workflow
@@ -114,6 +118,7 @@ Current specs:
 - `spec/ops/03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
 - `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, and GitHub install/update flow
 - `spec/ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
+- `spec/ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
 - `spec/ops/07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
 - `spec/ops/09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
@@ -184,7 +189,7 @@ To ask the assistant to prepare a unified-version release, use GitHub CLI from t
 gh workflow run prepare-release.yml -f version=0.0.1
 ```
 
-This pushes `release/v0.0.1` for review. After the release commit reaches `main`, publish `v0.0.1` as a GitHub Release. The `release.yml` workflow runs from the published Release event, builds `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, and `sw`, uploads `checksums.txt`, and publishes crates through the `Release` environment.
+This pushes `release/v0.0.1` for review. After the release commit reaches `main`, publish `v0.0.1` as a GitHub Release. The `release.yml` workflow runs from the published Release event, builds `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`, uploads `checksums.txt`, and publishes crates through the `Release` environment.
 
 Use squash merge only for GitHub pull requests. Do not merge pull requests with merge commits into `main`.
 

@@ -145,7 +145,7 @@ pub enum CliCommand {
     Reset(ResetCommand),
     /// Print diagnostics.
     Diagnostics,
-    /// Run the newline-delimited JSON-RPC stdio runtime.
+    /// Run the JSON-RPC host service.
     Rpc(RpcCommand),
     /// Print replay-check guidance.
     ReplayCheck,
@@ -585,6 +585,12 @@ pub struct RpcCommand {
     /// Runtime transport.
     #[arg(default_value = "stdio")]
     pub transport: RpcTransport,
+    /// HTTP bind host.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+    /// HTTP bind port.
+    #[arg(long, default_value_t = 8765)]
+    pub port: u16,
 }
 
 /// RPC runtime transport.
@@ -594,6 +600,8 @@ pub enum RpcTransport {
     /// Newline-delimited JSON-RPC over stdin/stdout.
     #[default]
     Stdio,
+    /// JSON-RPC request/response over HTTP.
+    Http,
 }
 
 /// Update command.
@@ -602,6 +610,12 @@ pub struct UpdateCommand {
     /// Update target, defaults to cli.
     #[arg(default_value = "cli")]
     pub target: String,
+    /// Print the update plan without downloading or installing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Reinstall even when the selected release matches the current version.
+    #[arg(long, short = 'f')]
+    pub force: bool,
 }
 
 /// Config commands.
@@ -676,11 +690,20 @@ pub fn command() -> clap::Command {
 
 /// Parse CLI arguments.
 pub fn parse(args: impl IntoIterator<Item = String>) -> CliResult<Cli> {
-    Cli::try_parse_from(args).map_err(|error| CliError::Usage(error.to_string()))
+    Cli::try_parse_from(args).map_err(|error| clap_error(&error))
 }
 
 /// Parse CLI arguments from OS strings.
 #[allow(dead_code)]
 pub fn parse_os(args: impl IntoIterator<Item = OsString>) -> CliResult<Cli> {
-    Cli::try_parse_from(args).map_err(|error| CliError::Usage(error.to_string()))
+    Cli::try_parse_from(args).map_err(|error| clap_error(&error))
+}
+
+fn clap_error(error: &clap::Error) -> CliError {
+    match error.kind() {
+        clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion => {
+            CliError::Display(error.to_string())
+        }
+        _ => CliError::Usage(error.to_string()),
+    }
 }

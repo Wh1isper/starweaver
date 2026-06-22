@@ -44,6 +44,7 @@ Operations and products:
 - `ops/03-durable-service-runtime.md` — durable sessions, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
 - `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, launcher dispatch, and GitHub install/update flow
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
+- `ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
 - `ops/07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
 - `ops/09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
@@ -63,6 +64,8 @@ flowchart TD
     stream[starweaver-stream]
     storage[starweaver-storage]
     cli[starweaver-cli]
+    rpc_core[starweaver-rpc-core]
+    rpc[starweaver-rpc]
     platform[future platform adapters]
 
     usage --> model
@@ -84,6 +87,9 @@ flowchart TD
     stream --> storage
     agent --> cli
     storage --> cli
+    stream --> rpc_core
+    rpc_core --> cli
+    cli --> rpc
     session --> platform
     stream --> platform
     agent --> platform
@@ -97,6 +103,7 @@ flowchart TD
 - SDK ergonomics live in `starweaver-agent`; concrete environment resources live in `starweaver-environment`.
 - Durable state is split between `starweaver-session`, `starweaver-stream`, and `starweaver-storage`.
 - CLI is the current product surface and stays focused on local/headless execution.
+- `starweaver-rpc-core` owns shared JSON-RPC frame parsing, standard request/error envelopes, replay cursor helpers, and stream payload projection; `starweaver-rpc` is the standalone local host process and calls the shared RPC server API while deeper method-handler extraction continues.
 - Platform adapters graduate from specs after responsibilities, call sites, and validation commands are clear.
 
 ## Current Priorities

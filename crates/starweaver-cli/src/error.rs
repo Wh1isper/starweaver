@@ -11,6 +11,9 @@ pub enum CliError {
     /// Command-line parser failed.
     #[error("{0}")]
     Usage(String),
+    /// Command-line parser requested display output.
+    #[error("{0}")]
+    Display(String),
     /// Configuration loading failed.
     #[error("configuration error: {0}")]
     Config(String),

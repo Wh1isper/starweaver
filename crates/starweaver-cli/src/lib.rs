@@ -22,7 +22,7 @@ mod update_check;
 
 use std::env;
 
-pub use args::{Cli, CliCommand, OutputMode, SessionCommand};
+pub use args::{Cli, CliCommand, OutputMode, RpcCommand, RpcTransport, SessionCommand};
 pub use config::{CliConfig, ConfigResolver};
 pub use error::{CliError, CliResult};
 pub use local_store::{
@@ -38,21 +38,60 @@ pub fn run_from_env() -> CliResult<()> {
 
 /// Run the CLI from an argument iterator.
 pub fn run(args: impl IntoIterator<Item = String>) -> CliResult<()> {
-    let cli = args::parse(args)?;
+    let cli = match args::parse(args) {
+        Ok(cli) => cli,
+        Err(CliError::Display(output)) => {
+            print!("{output}");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let config = ConfigResolver::default().resolve(&cli)?;
-    if matches!(cli.command, Some(CliCommand::Rpc(_))) {
-        return rpc::run_stdio(&config);
+    if let Some(CliCommand::Rpc(command)) = &cli.command {
+        return rpc::run(&config, command);
     }
     let output = command_output_from_parts(cli, config)?;
     print!("{output}");
     Ok(())
 }
 
+/// Run the JSON-RPC host service from a standalone RPC process.
+pub fn run_rpc_server(command: &RpcCommand, store: Option<String>) -> CliResult<()> {
+    let cli = rpc_cli(store, command.clone());
+    let config = ConfigResolver::default().resolve(&cli)?;
+    rpc::run(&config, command)
+}
+
 /// Return command output for tests and host integrations.
 pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<String> {
-    let cli = args::parse(args)?;
+    let cli = match args::parse(args) {
+        Ok(cli) => cli,
+        Err(CliError::Display(output)) => return Ok(output),
+        Err(error) => return Err(error),
+    };
     let config = ConfigResolver::default().resolve(&cli)?;
     command_output_from_parts(cli, config)
+}
+
+const fn rpc_cli(store: Option<String>, command: RpcCommand) -> Cli {
+    Cli {
+        prompt: None,
+        session: None,
+        continue_session: false,
+        new_session: false,
+        run: None,
+        branch_from: None,
+        profile: None,
+        worker: None,
+        worker_label: None,
+        worktree: None,
+        worktree_name: None,
+        branch: None,
+        output: None,
+        hitl: None,
+        store,
+        command: Some(CliCommand::Rpc(command)),
+    }
 }
 
 fn command_output_from_parts(cli: Cli, config: CliConfig) -> CliResult<String> {

@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use crate::{
+    presets::{
+        anthropic_http_config, gemini_http_config, openai_chat_http_config,
+        openai_responses_http_config,
+    },
     profile::{ModelProfile, ProtocolFamily},
-    transport::{AuthConfig, DynHttpClient, HttpModelConfig, ReqwestHttpClient},
+    transport::{DynHttpClient, HttpModelConfig, ReqwestHttpClient},
     ModelError,
 };
 
@@ -18,10 +22,7 @@ impl ProtocolModelClient {
         model_name: impl Into<String>,
         token: impl Into<String>,
     ) -> Result<Self, ModelError> {
-        let mut config = HttpModelConfig::new("https://api.openai.com/v1", "chat/completions");
-        config.auth = Some(AuthConfig::Bearer {
-            token: token.into(),
-        });
+        let config = openai_chat_http_config(token);
         Ok(Self::new(
             "openai",
             model_name,
@@ -40,10 +41,7 @@ impl ProtocolModelClient {
         model_name: impl Into<String>,
         token: impl Into<String>,
     ) -> Result<Self, ModelError> {
-        let mut config = HttpModelConfig::new("https://api.openai.com/v1", "responses");
-        config.auth = Some(AuthConfig::Bearer {
-            token: token.into(),
-        });
+        let config = openai_responses_http_config(token);
         Ok(Self::new(
             "openai",
             model_name,
@@ -62,14 +60,7 @@ impl ProtocolModelClient {
         model_name: impl Into<String>,
         api_key: impl Into<String>,
     ) -> Result<Self, ModelError> {
-        let mut config = HttpModelConfig::new("https://api.anthropic.com/v1", "messages");
-        config.auth = Some(AuthConfig::Header {
-            name: "x-api-key".to_string(),
-            value: api_key.into(),
-        });
-        config
-            .headers
-            .insert("anthropic-version".to_string(), "2023-06-01".to_string());
+        let config = anthropic_http_config(api_key);
         Ok(Self::new(
             "anthropic",
             model_name,
@@ -89,10 +80,7 @@ impl ProtocolModelClient {
         api_key: impl Into<String>,
     ) -> Result<Self, ModelError> {
         let model_name = model_name.into();
-        let config = HttpModelConfig::new(
-            "https://generativelanguage.googleapis.com/v1beta",
-            format!("models/{model_name}:generateContent?key={}", api_key.into()),
-        );
+        let config = gemini_http_config(api_key, model_name.clone());
         Ok(Self::new(
             "gemini",
             model_name,

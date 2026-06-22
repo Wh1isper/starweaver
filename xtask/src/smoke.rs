@@ -57,6 +57,7 @@ pub fn check_install_script() -> Result<(), String> {
         "STARWEAVER_NO_MODIFY_PATH",
         "https://github.com/$REPO/releases",
         "starweaver-cli-$tag-$target",
+        "starweaver-rpc",
         "archive missing expected binary",
         "checksums.txt",
         "verify_checksum_if_available",
@@ -179,11 +180,19 @@ pub fn smoke_cli_release() -> Result<(), String> {
         "starweaver-cli",
         "--locked",
     ]))?;
+    run_command(Command::new("cargo").current_dir(&root).args([
+        "build",
+        "--release",
+        "-p",
+        "starweaver-rpc",
+        "--locked",
+    ]))?;
     let release = root.join("target/release");
     let starweaver = release.join("starweaver");
     let sw = release.join("sw");
     let cli = release.join("starweaver-cli");
-    for binary in [&starweaver, &sw, &cli] {
+    let rpc = release.join("starweaver-rpc");
+    for binary in [&starweaver, &sw, &cli, &rpc] {
         if !binary.exists() {
             return Err(format!("missing release binary: {}", binary.display()));
         }

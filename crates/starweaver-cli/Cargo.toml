@@ -47,6 +47,7 @@ starweaver-oauth-provider.workspace = true
 starweaver-runtime.workspace = true
 starweaver-session.workspace = true
 starweaver-stream.workspace = true
+starweaver-rpc-core.workspace = true
 starweaver-tools.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

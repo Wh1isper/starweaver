@@ -50,10 +50,6 @@ use setup::remove_file_if_exists;
 use tui::model_choices;
 use worktree::apply_starweaver_run_metadata;
 
-pub(super) fn display_message_to_agui_event(message: &DisplayMessage) -> Option<Value> {
-    rendering::display_message_to_agui_event(message)
-}
-
 pub(super) struct PromptRunExecution {
     pub(super) session_id: String,
     pub(super) run_id: String,

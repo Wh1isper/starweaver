@@ -2093,6 +2093,7 @@ dependencies = [
  "starweaver-model",
  "starweaver-oauth",
  "starweaver-oauth-provider",
+ "starweaver-rpc-core",
  "starweaver-runtime",
  "starweaver-session",
  "starweaver-stream",
@@ -2195,6 +2196,26 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "starweaver-rpc"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "serde_json",
+ "starweaver-cli",
+ "tempfile",
+]
+
+[[package]]
+name = "starweaver-rpc-core"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "starweaver-core",
+ "starweaver-stream",
 ]
 
 [[package]]

@@ -31,6 +31,12 @@ pub struct HttpModelConfig {
     pub base_url: String,
     /// Provider-specific endpoint path.
     pub endpoint_path: String,
+    /// Provider API root path inserted when a configured base URL has no path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_root_path: Option<String>,
+    /// Provider endpoint path relative to the API root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_endpoint_path: Option<String>,
     /// Authentication config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthConfig>,
@@ -61,6 +67,8 @@ impl HttpModelConfig {
         Self {
             base_url: base_url.into(),
             endpoint_path: endpoint_path.into(),
+            api_root_path: None,
+            provider_endpoint_path: None,
             auth: None,
             headers: BTreeMap::new(),
             extra_body: Map::new(),
@@ -71,12 +79,94 @@ impl HttpModelConfig {
         }
     }
 
+    /// Create HTTP config for a provider endpoint with a known API root path.
+    ///
+    /// When `base_url` already includes a path, it is treated as a gateway mount point and the
+    /// resolved endpoint is appended directly. When `base_url` has no path, `api_root_path` is
+    /// inserted before the provider endpoint path.
+    #[must_use]
+    pub fn provider_endpoint(
+        base_url: impl Into<String>,
+        api_root_path: impl Into<String>,
+        endpoint_path: impl Into<String>,
+    ) -> Self {
+        let endpoint_path = endpoint_path.into();
+        let mut config = Self::new(base_url, endpoint_path.clone());
+        config.api_root_path = Some(api_root_path.into());
+        config.provider_endpoint_path = Some(endpoint_path);
+        config
+    }
+
+    /// Replace the base URL while preserving provider endpoint root semantics.
+    #[must_use]
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.set_base_url(base_url);
+        self
+    }
+
+    /// Replace the base URL while preserving provider endpoint root semantics.
+    pub fn set_base_url(&mut self, base_url: impl Into<String>) {
+        self.base_url = base_url.into();
+    }
+
+    /// Replace the endpoint path with an explicit caller-provided path.
+    #[must_use]
+    pub fn with_endpoint_path(mut self, endpoint_path: impl Into<String>) -> Self {
+        self.set_endpoint_path(endpoint_path);
+        self
+    }
+
+    /// Replace the endpoint path with an explicit caller-provided path.
+    pub fn set_endpoint_path(&mut self, endpoint_path: impl Into<String>) {
+        self.endpoint_path = endpoint_path.into();
+        self.api_root_path = None;
+        self.provider_endpoint_path = None;
+    }
+
     /// Resolve the absolute endpoint URL.
     #[must_use]
     pub fn endpoint_url(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
-        let path = self.endpoint_path.trim_start_matches('/');
+        let path = self.resolved_endpoint_path();
         format!("{base}/{path}")
+    }
+
+    fn resolved_endpoint_path(&self) -> String {
+        if let (Some(api_root_path), Some(provider_endpoint_path)) =
+            (&self.api_root_path, &self.provider_endpoint_path)
+        {
+            if base_url_has_path(&self.base_url) {
+                provider_endpoint_path.trim_start_matches('/').to_string()
+            } else {
+                join_paths(api_root_path, provider_endpoint_path)
+            }
+        } else {
+            self.endpoint_path.trim_start_matches('/').to_string()
+        }
+    }
+}
+
+fn base_url_has_path(base_url: &str) -> bool {
+    let trimmed = base_url.trim();
+    let after_scheme = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
+    let Some(path_start) = after_scheme.find('/') else {
+        return false;
+    };
+    after_scheme[path_start + 1..]
+        .split(['?', '#'])
+        .next()
+        .is_some_and(|path| !path.trim_matches('/').is_empty())
+}
+
+fn join_paths(prefix: &str, suffix: &str) -> String {
+    let prefix = prefix.trim_matches('/');
+    let suffix = suffix.trim_start_matches('/');
+    if prefix.is_empty() {
+        suffix.to_string()
+    } else if suffix.is_empty() {
+        prefix.to_string()
+    } else {
+        format!("{prefix}/{suffix}")
     }
 }
 

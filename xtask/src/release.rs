@@ -7,8 +7,9 @@ use std::{
 
 use crate::common::{root, run_capture, run_command};
 
-const WORKSPACE_DEPENDENCIES: [&str; 13] = [
+const WORKSPACE_DEPENDENCIES: [&str; 15] = [
     "starweaver-agent",
+    "starweaver-cli",
     "starweaver-context",
     "starweaver-core",
     "starweaver-environment",
@@ -16,14 +17,16 @@ const WORKSPACE_DEPENDENCIES: [&str; 13] = [
     "starweaver-oauth",
     "starweaver-oauth-provider",
     "starweaver-runtime",
+    "starweaver-rpc-core",
     "starweaver-session",
     "starweaver-storage",
     "starweaver-stream",
     "starweaver-tools",
     "starweaver-usage",
 ];
+const NON_PUBLISH_WORKSPACE_CRATES: [&str; 1] = ["starweaver-rpc"];
 const DRY_RUN_PACKAGES: [&str; 3] = ["starweaver-core", "starweaver-usage", "starweaver-oauth"];
-const PUBLISH_PACKAGES: [&str; 14] = [
+const PUBLISH_PACKAGES: [&str; 15] = [
     "starweaver-core",
     "starweaver-usage",
     "starweaver-oauth",
@@ -34,6 +37,7 @@ const PUBLISH_PACKAGES: [&str; 14] = [
     "starweaver-environment",
     "starweaver-session",
     "starweaver-stream",
+    "starweaver-rpc-core",
     "starweaver-oauth-provider",
     "starweaver-agent",
     "starweaver-storage",
@@ -365,19 +369,16 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
 
 fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> {
     ensure_unique("workspace dependency", &WORKSPACE_DEPENDENCIES)?;
+    ensure_unique("non-publish workspace crate", &NON_PUBLISH_WORKSPACE_CRATES)?;
     ensure_unique("dry-run package", &DRY_RUN_PACKAGES)?;
     ensure_unique("publish package", &PUBLISH_PACKAGES)?;
 
     let publish_packages: BTreeSet<_> = PUBLISH_PACKAGES.iter().copied().collect();
     let workspace_dependencies: BTreeSet<_> = WORKSPACE_DEPENDENCIES.iter().copied().collect();
-    let expected_workspace_dependencies: BTreeSet<_> = publish_packages
-        .iter()
-        .copied()
-        .filter(|package| *package != "starweaver-cli")
-        .collect();
+    let expected_workspace_dependencies = publish_packages.clone();
     if workspace_dependencies != expected_workspace_dependencies {
         return Err(format!(
-            "workspace dependency list must match publish packages except starweaver-cli: expected {expected_workspace_dependencies:?}, got {workspace_dependencies:?}"
+            "workspace dependency list must match publish packages: expected {expected_workspace_dependencies:?}, got {workspace_dependencies:?}"
         ));
     }
 
@@ -393,10 +394,13 @@ fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> 
     let manifest_value: toml::Value = manifest_text
         .parse()
         .map_err(|error| format!("{}: {error}", manifest.display()))?;
-    let workspace_crates = workspace_crates_from_manifest(&manifest_value)?;
+    let mut workspace_crates = workspace_crates_from_manifest(&manifest_value)?;
+    for krate in NON_PUBLISH_WORKSPACE_CRATES {
+        workspace_crates.remove(krate);
+    }
     if workspace_crates != publish_packages {
         return Err(format!(
-            "publish package list must match crates/* workspace members: expected {workspace_crates:?}, got {publish_packages:?}"
+            "publish package list must match publishable crates/* workspace members: expected {workspace_crates:?}, got {publish_packages:?}"
         ));
     }
     for krate in WORKSPACE_DEPENDENCIES {
