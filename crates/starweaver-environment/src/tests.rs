@@ -942,6 +942,40 @@ async fn local_context_file_tree_matches_starweaver_sdk_semantics() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn local_context_file_tree_marks_permission_denied_directories() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = unique_test_dir();
+    let restricted = root.join("Documents");
+    std::fs::create_dir_all(&restricted).unwrap();
+    std::fs::write(root.join("README.md"), "readme").unwrap();
+    std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    if std::fs::read_dir(&restricted).is_ok() {
+        std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        return;
+    }
+
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy::default(),
+    });
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(instructions.contains("Documents/ (permission denied)"));
+    assert!(instructions.contains("README.md"));
+
+    std::fs::set_permissions(&restricted, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 async fn local_provider_accepts_allowed_absolute_paths_and_rejects_unsafe_paths() {
     let root = unique_test_dir();
