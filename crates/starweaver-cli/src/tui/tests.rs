@@ -3058,36 +3058,47 @@ fn bang_command_prints_natural_shell_transcript() {
 }
 
 #[test]
-fn goal_mode_tracks_iterations_completion_and_max_iterations() {
+fn goal_mode_tracks_runtime_goal_events() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.input = "/goal migrate tui".to_string();
     assert_eq!(
         submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
         Some("migrate tui".to_string())
     );
-    let first = state.complete_goal_iteration("needs more work");
-    match first {
-        super::state::GoalIterationOutcome::Continue(prompt) => {
-            assert!(prompt.contains("<objective>"));
-            assert!(prompt.contains("migrate tui"));
-            assert!(prompt.contains("[GOAL_COMPLETE]"));
-        }
-        other => panic!("expected continuation, got {other:?}"),
-    }
+    assert_eq!(
+        state.take_pending_goal_submission(),
+        Some(("migrate tui".to_string(), 10))
+    );
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "goal_iteration",
+                json!({"iteration": 1, "max_iterations": 10, "task": "migrate tui"}),
+            ),
+        },
+    ));
     assert_eq!(state.goal_iteration, 1);
     assert!(state.goal_active);
     assert!(state
         .body
         .iter()
-        .any(|line| line == "[SYS] [Goal] Iteration 1/10"));
+        .any(|line| line == "[Goal] Iteration 1/10"));
 
-    let complete = state.complete_goal_iteration("[GOAL_COMPLETE]\nfinished");
-    assert_eq!(complete, super::state::GoalIterationOutcome::Complete);
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "goal_complete",
+                json!({"iteration": 1, "max_iterations": 10, "reason": "verified", "task": "migrate tui"}),
+            ),
+        },
+    ));
     assert!(!state.goal_active);
     assert!(state
         .body
         .iter()
-        .any(|line| line == "[SYS] [Goal] Task completed in 2 iteration(s)"));
+        .any(|line| line == "[Goal] Completed: verified after 1 iteration(s)"));
 
     let mut max_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     max_state.input = "/goal hard task".to_string();
@@ -3095,16 +3106,20 @@ fn goal_mode_tracks_iterations_completion_and_max_iterations() {
         submit_text(handle_key_event(&mut max_state, key_code(KeyCode::Enter))),
         Some("hard task".to_string())
     );
-    max_state.goal_max_iterations = 1;
-    assert_eq!(
-        max_state.complete_goal_iteration("still open"),
-        super::state::GoalIterationOutcome::MaxIterations
-    );
+    max_state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "goal_complete",
+                json!({"iteration": 1, "max_iterations": 1, "reason": "max_iterations", "task": "hard task"}),
+            ),
+        },
+    ));
     assert!(!max_state.goal_active);
     assert!(max_state
         .body
         .iter()
-        .any(|line| line.contains("Reached max iterations")));
+        .any(|line| line.contains("max iterations reached")));
 }
 
 #[test]

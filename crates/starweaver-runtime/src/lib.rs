@@ -4,6 +4,7 @@ pub mod agent;
 pub mod capability;
 pub mod direct;
 pub mod executor;
+pub mod goal;
 pub mod graph;
 pub mod instructions;
 pub mod iteration;
@@ -25,6 +26,11 @@ pub use direct::{model_request, model_request_stream, tool_call, DirectModelRequ
 pub use executor::{
     AgentCheckpoint, AgentExecutionDecision, AgentExecutionNode, AgentExecutor, AgentExecutorError,
     AgentResumeCursor, AgentResumeEvidence, DirectAgentExecutor, DynAgentExecutor,
+};
+pub use goal::{
+    build_goal_check_prompt, build_post_restore_goal_audit_prompt, has_completion_marker,
+    GoalCapability, GoalCompleteReason, GoalRunOptions, GOAL_CAPABILITY_ID,
+    GOAL_COMPLETE_EVENT_KIND, GOAL_COMPLETE_MARKER, GOAL_ITERATION_EVENT_KIND,
 };
 pub use graph::{
     inspect_graph, inspect_next_node, next_node, AgentGraphStep, AgentGraphTrace, AgentNode,

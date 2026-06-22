@@ -7,12 +7,12 @@ use std::{
 
 use starweaver_runtime::AgentStreamRecord;
 
-use super::{rendering::render_display_text, CliService};
+use super::CliService;
 use crate::{
-    args::{OutputMode, RunCommand, TuiCommand},
+    args::{GoalCommandOptions, OutputMode, RunCommand, TuiCommand},
     client_state,
     config::{clear_current_session, write_current_session, CliConfig},
-    local_store::{LocalStore, SessionSummary},
+    local_store::SessionSummary,
     profiles::{list_config_model_profiles, list_profiles, ProfileSummary},
     prompt_input::PromptInput,
     runner::CliSteeringMessage,
@@ -24,7 +24,6 @@ struct CompletedPromptRun {
     session_id: String,
     run_id: String,
     status: String,
-    output_text: String,
 }
 
 struct ActiveTuiRun {
@@ -142,6 +141,7 @@ impl CliService {
     #[allow(clippy::too_many_lines)]
     fn interactive_tui(&mut self, command: &TuiCommand) -> CliResult<()> {
         let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.tui_state_dir);
+        state.set_goal_max_iterations(self.config.max_goal_iterations);
         state.set_custom_commands(self.config.slash_commands.clone());
         state.set_model_choices(model_choices(&self.config));
         state.set_session_choices(self.tui_session_choices(50)?);
@@ -172,7 +172,7 @@ impl CliService {
         }
         let mut tui = crate::tui::InteractiveTui::enter()?;
         let mut active_run: Option<ActiveTuiRun> = None;
-        let mut queued_prompt: Option<(PromptInput, String)> = None;
+        let mut queued_prompt: Option<(PromptInput, String, Option<GoalCommandOptions>)> = None;
         let mut persisted_profile = state.profile.clone();
         let mut dirty = true;
         let now = Instant::now();
@@ -199,33 +199,17 @@ impl CliService {
                         active_run = None;
                         dirty = true;
                         if !was_cancelled {
-                            match state.complete_goal_iteration(&completed.output_text) {
-                                crate::tui::GoalIterationOutcome::Continue(prompt) => {
-                                    state.begin_run(&prompt);
-                                    active_run = Some(spawn_tui_run(
-                                        &self.config,
-                                        command,
-                                        state.session_id.clone(),
-                                        Some(state.session_affinity_id.clone()),
-                                        PromptInput::text(prompt),
-                                        Some(state.profile.clone()),
-                                    ));
-                                }
-                                crate::tui::GoalIterationOutcome::Inactive
-                                | crate::tui::GoalIterationOutcome::Complete
-                                | crate::tui::GoalIterationOutcome::MaxIterations => {
-                                    if let Some((prompt, display_prompt)) = queued_prompt.take() {
-                                        state.begin_run(&display_prompt);
-                                        active_run = Some(spawn_tui_run(
-                                            &self.config,
-                                            command,
-                                            state.session_id.clone(),
-                                            Some(state.session_affinity_id.clone()),
-                                            prompt,
-                                            Some(state.profile.clone()),
-                                        ));
-                                    }
-                                }
+                            if let Some((prompt, display_prompt, goal)) = queued_prompt.take() {
+                                state.begin_run(&display_prompt);
+                                active_run = Some(spawn_tui_run(
+                                    &self.config,
+                                    command,
+                                    state.session_id.clone(),
+                                    Some(state.session_affinity_id.clone()),
+                                    prompt,
+                                    Some(state.profile.clone()),
+                                    goal,
+                                ));
                             }
                         }
                         break;
@@ -352,8 +336,15 @@ impl CliService {
                     let display_prompt = state
                         .take_pending_submission_display_prompt()
                         .unwrap_or_else(|| prompt.display_text());
+                    let goal =
+                        state
+                            .take_pending_goal_submission()
+                            .map(|(objective, max_iterations)| GoalCommandOptions {
+                                objective,
+                                max_iterations,
+                            });
                     if active_run.is_some() {
-                        queued_prompt = Some((prompt, display_prompt));
+                        queued_prompt = Some((prompt, display_prompt, goal));
                         dirty = true;
                         continue;
                     }
@@ -365,6 +356,7 @@ impl CliService {
                         Some(state.session_affinity_id.clone()),
                         prompt,
                         Some(state.profile.clone()),
+                        goal,
                     ));
                     dirty = true;
                 }
@@ -384,12 +376,13 @@ fn spawn_tui_run(
     session_affinity_id: Option<String>,
     prompt_input: PromptInput,
     profile: Option<String>,
+    goal: Option<GoalCommandOptions>,
 ) -> ActiveTuiRun {
     let mut config = config.clone();
     config.oauth_refresh.enabled = false;
     let command = command.clone();
     let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
-    let coordinator = CliRuntimeCoordinator::new(config.clone());
+    let coordinator = CliRuntimeCoordinator::new(config);
     let run_command = RunCommand {
         prompt: Some(prompt_input.text.clone()),
         prompt_parts: Vec::new(),
@@ -401,6 +394,7 @@ fn spawn_tui_run(
         profile,
         output: Some(OutputMode::Text),
         hitl: None,
+        goal,
         worker: None,
         worker_label: None,
         worktree: None,
@@ -430,24 +424,10 @@ fn spawn_tui_run(
                     }
                 }
                 RunStreamEvent::Status(status) if status_is_terminal(&status.status) => {
-                    let output_text = LocalStore::open(&config)
-                        .and_then(|store| {
-                            store.replay_display(&status.session_id, Some(&status.run_id), None)
-                        })
-                        .map_or_else(
-                            |_| {
-                                status
-                                    .output_preview
-                                    .clone()
-                                    .unwrap_or_else(|| status.status.clone())
-                            },
-                            |messages| render_display_text(&messages),
-                        );
                     let _ = ui_sender.send(TuiRunMessage::Completed(CompletedPromptRun {
                         session_id: status.session_id,
                         run_id: status.run_id,
                         status: status.status,
-                        output_text,
                     }));
                     break;
                 }

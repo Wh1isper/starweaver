@@ -135,6 +135,12 @@ pub enum DisplayMessageKind {
     /// Steering message was received by a running agent.
     #[serde(rename = "STEERING_RECEIVED")]
     SteeringReceived,
+    /// Runtime goal-mode iteration requested another model attempt.
+    #[serde(rename = "GOAL_ITERATION")]
+    GoalIteration,
+    /// Runtime goal-mode stopped.
+    #[serde(rename = "GOAL_COMPLETED")]
+    GoalCompleted,
     /// Full task board snapshot.
     #[serde(rename = "TASK_SNAPSHOT")]
     TaskSnapshot,

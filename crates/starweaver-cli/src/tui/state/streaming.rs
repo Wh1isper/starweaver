@@ -91,33 +91,7 @@ impl InteractiveTuiState {
             }
             AgentStreamEvent::Custom { event } => {
                 self.phase.clone_from(&event.kind);
-                if event.kind == "usage_snapshot" {
-                    self.apply_usage_snapshot_payload(&event.payload, record.sequence);
-                } else if is_subagent_lifecycle_event_kind(&event.kind) {
-                    self.apply_subagent_lifecycle_event(&event.kind, &event.payload);
-                } else if is_task_snapshot_event(&event.kind) {
-                    self.apply_task_snapshot_payload(&event.payload);
-                } else if let Some(lines) =
-                    format_custom_context_event_lines(&event.kind, &event.payload)
-                {
-                    self.body.extend(lines);
-                } else if event.kind == "steering_received" {
-                    let steering_id = event
-                        .payload
-                        .get("id")
-                        .or_else(|| event.payload.get("message_id"))
-                        .and_then(serde_json::Value::as_str);
-                    let text = event
-                        .payload
-                        .get("text")
-                        .and_then(serde_json::Value::as_str);
-                    self.ack_steering_event(steering_id, text);
-                    if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
-                        self.body.push(format!("Steering received: {text}"));
-                    } else {
-                        self.body.push("Steering received".to_string());
-                    }
-                }
+                self.apply_custom_stream_event(&event.kind, &event.payload, record.sequence);
             }
             AgentStreamEvent::RunComplete { output, .. } => {
                 self.phase = "completed".to_string();
@@ -135,6 +109,35 @@ impl InteractiveTuiState {
         }
         if should_auto_scroll {
             self.scroll_to_bottom();
+        }
+    }
+
+    fn apply_custom_stream_event(&mut self, kind: &str, payload: &Value, sequence: usize) {
+        if kind == "usage_snapshot" {
+            self.apply_usage_snapshot_payload(payload, sequence);
+        } else if is_subagent_lifecycle_event_kind(kind) {
+            self.apply_subagent_lifecycle_event(kind, payload);
+        } else if is_task_snapshot_event(kind) {
+            self.apply_task_snapshot_payload(payload);
+        } else if is_goal_event_kind(kind) {
+            self.apply_goal_event_payload(kind, payload);
+            if let Some(lines) = format_custom_context_event_lines(kind, payload) {
+                self.body.extend(lines);
+            }
+        } else if let Some(lines) = format_custom_context_event_lines(kind, payload) {
+            self.body.extend(lines);
+        } else if kind == "steering_received" {
+            let steering_id = payload
+                .get("id")
+                .or_else(|| payload.get("message_id"))
+                .and_then(serde_json::Value::as_str);
+            let text = payload.get("text").and_then(serde_json::Value::as_str);
+            self.ack_steering_event(steering_id, text);
+            if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
+                self.body.push(format!("Steering received: {text}"));
+            } else {
+                self.body.push("Steering received".to_string());
+            }
         }
     }
 
@@ -461,4 +464,14 @@ impl InteractiveTuiState {
             self.task_panel_items = items;
         }
     }
+}
+
+fn is_goal_event_kind(kind: &str) -> bool {
+    let normalized = kind.to_ascii_lowercase().replace(['.', '-'], "_");
+    matches!(
+        normalized.as_str(),
+        "goal_iteration" | "goal_complete" | "goal_completed"
+    ) || normalized.ends_with("_goal_iteration")
+        || normalized.ends_with("_goal_complete")
+        || normalized.ends_with("_goal_completed")
 }

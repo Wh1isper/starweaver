@@ -74,6 +74,8 @@ pub struct CliConfig {
     pub default_output: OutputMode,
     /// Default headless human-in-the-loop policy.
     pub default_hitl: HitlPolicy,
+    /// Default maximum runtime goal retry iterations.
+    pub max_goal_iterations: usize,
     /// Update channel metadata.
     pub update_channel: String,
     /// OAuth token refresh supervisor configuration.
@@ -134,6 +136,7 @@ struct GeneralConfig {
     default_profile: Option<String>,
     default_output: Option<OutputMode>,
     default_hitl: Option<HitlPolicy>,
+    max_goal_iterations: Option<usize>,
     model: Option<String>,
     model_settings: Option<String>,
     model_cfg: Option<String>,
@@ -424,6 +427,7 @@ impl ConfigResolver {
             shell_review: CliShellReviewConfig::default(),
             default_output: OutputMode::AguiJsonl,
             default_hitl: HitlPolicy::Defer,
+            max_goal_iterations: 10,
             update_channel: "stable".to_string(),
             oauth_refresh: OAuthRefreshConfig::default(),
             default_model: None,
@@ -632,6 +636,9 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
         }
         if let Some(hitl) = general.default_hitl {
             config.default_hitl = hitl;
+        }
+        if let Some(max_goal_iterations) = general.max_goal_iterations {
+            config.max_goal_iterations = max_goal_iterations.max(1);
         }
         if let Some(model_id) = model {
             config.default_model = Some(CliModelProfile {

@@ -77,6 +77,7 @@ impl InteractiveTuiState {
             self.goal_active = true;
             self.goal_iteration = 0;
             self.goal_max_iterations = self.goal_max_iterations.max(1);
+            self.pending_goal_submission = Some(task.to_string());
             self.body.push(format!(
                 "[SYS] [Goal] Starting goal mode ({} max iterations). Ctrl+C to stop.",
                 self.goal_max_iterations

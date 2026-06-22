@@ -126,6 +126,8 @@ fn all_display_message_kinds_serialize_to_agui_event_names() {
         (DisplayMessageKind::HandoffFailed, "HANDOFF_FAILED"),
         (DisplayMessageKind::SteeringSubmitted, "STEERING_SUBMITTED"),
         (DisplayMessageKind::SteeringReceived, "STEERING_RECEIVED"),
+        (DisplayMessageKind::GoalIteration, "GOAL_ITERATION"),
+        (DisplayMessageKind::GoalCompleted, "GOAL_COMPLETED"),
         (DisplayMessageKind::TaskSnapshot, "TASK_SNAPSHOT"),
         (DisplayMessageKind::TaskEvent, "TASK_EVENT"),
         (DisplayMessageKind::NoteEvent, "NOTE_EVENT"),
@@ -807,16 +809,28 @@ async fn default_projector_maps_summary_and_compaction_custom_events() {
         "steering_received",
         &json!({"id": "steer_0", "text": "keep going"}),
     );
-    let task_snapshot = custom_stream_record(
+    let goal_iteration = custom_stream_record(
         13,
+        "goal_iteration",
+        &json!({"iteration": 1, "max_iterations": 10, "task": "ship"}),
+    );
+    let goal_complete = custom_stream_record(
+        14,
+        "goal_complete",
+        &json!({"iteration": 1, "max_iterations": 10, "reason": "verified", "task": "ship"}),
+    );
+    let task_snapshot = custom_stream_record(
+        15,
         "task_snapshot",
         &json!({"tasks": [{"id": "1", "subject": "Ship", "status": "pending"}]}),
     );
-    let unrelated = custom_stream_record(15, "unknown_event", &json!({"ok": true}));
+    let unrelated = custom_stream_record(16, "unknown_event", &json!({"ok": true}));
 
     let compact_messages = projector.project(&context, &compact_started).await;
     let handoff_messages = projector.project(&context, &handoff_completed).await;
     let steering_messages = projector.project(&context, &steering_received).await;
+    let goal_iteration_messages = projector.project(&context, &goal_iteration).await;
+    let goal_complete_messages = projector.project(&context, &goal_complete).await;
     let task_messages = projector.project(&context, &task_snapshot).await;
     let unrelated_messages = projector.project(&context, &unrelated).await;
 
@@ -845,6 +859,24 @@ async fn default_projector_maps_summary_and_compaction_custom_events() {
     assert_eq!(
         steering_messages[0].preview.as_deref(),
         Some("steering received: keep going")
+    );
+    assert_eq!(goal_iteration_messages.len(), 1);
+    assert_eq!(
+        goal_iteration_messages[0].kind,
+        DisplayMessageKind::GoalIteration
+    );
+    assert_eq!(
+        goal_iteration_messages[0].preview.as_deref(),
+        Some("goal iteration 1/10")
+    );
+    assert_eq!(goal_complete_messages.len(), 1);
+    assert_eq!(
+        goal_complete_messages[0].kind,
+        DisplayMessageKind::GoalCompleted
+    );
+    assert_eq!(
+        goal_complete_messages[0].preview.as_deref(),
+        Some("goal completed: verified")
     );
     assert_eq!(task_messages.len(), 1);
     assert_eq!(task_messages[0].kind, DisplayMessageKind::TaskSnapshot);

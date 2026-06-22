@@ -211,9 +211,21 @@ pub struct RunCommand {
     /// Headless human-in-the-loop policy.
     #[arg(long)]
     pub hitl: Option<HitlPolicy>,
+    /// Internal runtime goal-mode options.
+    #[arg(skip)]
+    pub goal: Option<GoalCommandOptions>,
     /// Internal stable provider-routing affinity id.
     #[arg(skip)]
     pub session_affinity_id: Option<String>,
+}
+
+/// Internal goal-mode options attached by product surfaces such as the TUI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GoalCommandOptions {
+    /// Goal objective.
+    pub objective: String,
+    /// Maximum runtime goal retry iterations.
+    pub max_iterations: usize,
 }
 
 impl RunCommand {

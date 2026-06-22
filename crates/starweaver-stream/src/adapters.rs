@@ -128,6 +128,8 @@ pub fn display_to_vercel_data_stream(message: &DisplayMessage) -> Vec<VercelData
         | DisplayMessageKind::HandoffFailed
         | DisplayMessageKind::SteeringSubmitted
         | DisplayMessageKind::SteeringReceived
+        | DisplayMessageKind::GoalIteration
+        | DisplayMessageKind::GoalCompleted
         | DisplayMessageKind::TaskSnapshot
         | DisplayMessageKind::TaskEvent
         | DisplayMessageKind::NoteEvent
@@ -223,6 +225,8 @@ const fn display_event_type(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::HandoffFailed => "HANDOFF_FAILED",
         DisplayMessageKind::SteeringSubmitted => "STEERING_SUBMITTED",
         DisplayMessageKind::SteeringReceived => "STEERING_RECEIVED",
+        DisplayMessageKind::GoalIteration => "GOAL_ITERATION",
+        DisplayMessageKind::GoalCompleted => "GOAL_COMPLETED",
         DisplayMessageKind::TaskSnapshot => "TASK_SNAPSHOT",
         DisplayMessageKind::TaskEvent => "TASK_EVENT",
         DisplayMessageKind::NoteEvent => "NOTE_EVENT",

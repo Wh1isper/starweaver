@@ -294,6 +294,7 @@ pub struct InteractiveTuiState {
     pub(super) goal_active: bool,
     pub(super) goal_iteration: usize,
     pub(super) goal_max_iterations: usize,
+    pending_goal_submission: Option<String>,
     pub(super) context_tokens: Option<u64>,
     pub(super) latest_request_total_tokens: Option<u64>,
     pub(super) context_window: Option<u64>,
@@ -361,6 +362,7 @@ impl InteractiveTuiState {
             goal_active: false,
             goal_iteration: 0,
             goal_max_iterations: 10,
+            pending_goal_submission: None,
             context_tokens: None,
             latest_request_total_tokens: None,
             context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
@@ -379,6 +381,11 @@ impl InteractiveTuiState {
     /// Set the context window shown by the footer and cost summary.
     pub fn set_context_window(&mut self, context_window: Option<u64>) {
         self.context_window = context_window.or(Some(DEFAULT_CONTEXT_WINDOW_TOKENS));
+    }
+
+    /// Set the maximum runtime goal retry iterations shown by `/goal`.
+    pub fn set_goal_max_iterations(&mut self, max_iterations: usize) {
+        self.goal_max_iterations = max_iterations.max(1);
     }
 
     /// Set model choices shown by `/model`.
@@ -484,6 +491,7 @@ impl InteractiveTuiState {
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
         self.session_picker_open = false;
+        self.finish_active_goal_without_runtime_event("unverified_stop");
     }
 
     /// Mark a run failed.
@@ -501,6 +509,7 @@ impl InteractiveTuiState {
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
         self.session_picker_open = false;
+        self.finish_active_goal_without_runtime_event("error");
         self.body.push(format!("Error: {error}"));
     }
 
@@ -519,6 +528,7 @@ impl InteractiveTuiState {
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
         self.session_picker_open = false;
+        self.finish_active_goal_without_runtime_event("cancelled");
         self.body.push(format!("Run cancelled: {reason}"));
     }
 
@@ -545,6 +555,7 @@ impl InteractiveTuiState {
         self.steering_items.clear();
         self.goal_task = None;
         self.goal_active = false;
+        self.pending_goal_submission = None;
         self.phase = "cleared".to_string();
         self.status = "IDLE".to_string();
         self.scroll_to_bottom();
@@ -781,55 +792,49 @@ impl InteractiveTuiState {
         self.phase = "run active; press Ctrl-C to interrupt".to_string();
     }
 
-    pub(crate) fn complete_goal_iteration(&mut self, output: &str) -> GoalIterationOutcome {
-        if !self.goal_active {
-            return GoalIterationOutcome::Inactive;
-        }
-        self.goal_iteration = self.goal_iteration.saturating_add(1);
-        if output.contains("[GOAL_COMPLETE]") {
-            self.goal_active = false;
-            self.body.push(format!(
-                "[SYS] [Goal] Task completed in {} iteration(s)",
-                self.goal_iteration
-            ));
-            return GoalIterationOutcome::Complete;
-        }
-        if self.goal_iteration >= self.goal_max_iterations {
-            self.goal_active = false;
-            self.body.push(format!(
-                "[SYS] [Goal] Reached max iterations ({}). Task may be incomplete. You can run /goal again to continue.",
-                self.goal_iteration
-            ));
-            return GoalIterationOutcome::MaxIterations;
-        }
-        self.body.push(format!(
-            "[SYS] [Goal] Iteration {}/{}",
-            self.goal_iteration, self.goal_max_iterations
-        ));
-        let Some(task) = self.goal_task.clone() else {
-            self.goal_active = false;
-            return GoalIterationOutcome::MaxIterations;
-        };
-        GoalIterationOutcome::Continue(goal_continuation_prompt(
-            &task,
-            self.goal_iteration,
-            self.goal_max_iterations,
-        ))
+    pub(crate) fn take_pending_goal_submission(&mut self) -> Option<(String, usize)> {
+        self.pending_goal_submission
+            .take()
+            .map(|objective| (objective, self.goal_max_iterations.max(1)))
     }
-}
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum GoalIterationOutcome {
-    Inactive,
-    Complete,
-    MaxIterations,
-    Continue(String),
-}
+    pub(super) fn apply_goal_event_payload(&mut self, kind: &str, payload: &Value) {
+        let normalized = kind.to_ascii_lowercase().replace(['.', '-'], "_");
+        if normalized == "goal_iteration" || normalized.ends_with("_goal_iteration") {
+            self.goal_active = true;
+            if let Some(task) = payload.get("task").and_then(Value::as_str) {
+                self.goal_task = Some(task.to_string());
+            }
+            if let Some(iteration) = payload.get("iteration").and_then(Value::as_u64) {
+                self.goal_iteration = usize::try_from(iteration).unwrap_or(usize::MAX);
+            }
+            if let Some(max_iterations) = payload.get("max_iterations").and_then(Value::as_u64) {
+                self.goal_max_iterations =
+                    usize::try_from(max_iterations).unwrap_or(usize::MAX).max(1);
+            }
+        } else if normalized == "goal_complete"
+            || normalized == "goal_completed"
+            || normalized.ends_with("_goal_complete")
+            || normalized.ends_with("_goal_completed")
+        {
+            if let Some(iteration) = payload.get("iteration").and_then(Value::as_u64) {
+                self.goal_iteration = usize::try_from(iteration).unwrap_or(usize::MAX);
+            }
+            if let Some(max_iterations) = payload.get("max_iterations").and_then(Value::as_u64) {
+                self.goal_max_iterations =
+                    usize::try_from(max_iterations).unwrap_or(usize::MAX).max(1);
+            }
+            self.goal_active = false;
+        }
+    }
 
-fn goal_continuation_prompt(task: &str, iteration: usize, max_iterations: usize) -> String {
-    format!(
-        "Continue working toward the active goal.\n\n<objective>\n{task}\n</objective>\n\n<goal-check>\nCurrent iteration: {iteration}/{max_iterations}.\nIf the goal is fully complete, include [GOAL_COMPLETE] on its own line.\nOtherwise, make concrete progress and continue.\n</goal-check>"
-    )
+    fn finish_active_goal_without_runtime_event(&mut self, reason: &str) {
+        if self.goal_active {
+            self.goal_active = false;
+            self.body.push(format!("[Goal] Completed: {reason}"));
+        }
+        self.pending_goal_submission = None;
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]

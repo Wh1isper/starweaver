@@ -78,6 +78,12 @@ pub(in crate::tui::state) fn format_custom_context_event_lines(
             compact_error_text(context_payload, payload)
         )]);
     }
+    if event_kind_matches(&normalized, &["goal_iteration"]) {
+        return Some(format_goal_iteration_lines(context_payload));
+    }
+    if event_kind_matches(&normalized, &["goal_complete", "goal_completed"]) {
+        return Some(format_goal_complete_lines(context_payload));
+    }
     None
 }
 
@@ -304,6 +310,25 @@ fn compact_error_text(payload: &Value, wrapper: &Value) -> String {
     payload_string(payload, &["error", "message", "reason"])
         .or_else(|| payload_string(wrapper, &["error", "message", "preview"]))
         .unwrap_or_else(|| "unknown error".to_string())
+}
+
+fn format_goal_iteration_lines(payload: &Value) -> Vec<String> {
+    let iteration = payload_u64(payload, &["iteration"]).unwrap_or(0);
+    let max_iterations = payload_u64(payload, &["max_iterations"]).unwrap_or(0);
+    vec![format!("[Goal] Iteration {iteration}/{max_iterations}")]
+}
+
+fn format_goal_complete_lines(payload: &Value) -> Vec<String> {
+    let reason = payload_string(payload, &["reason"]).unwrap_or_else(|| "unknown".to_string());
+    let iteration = payload_u64(payload, &["iteration"]).unwrap_or(0);
+    let line = match reason.as_str() {
+        "verified" => format!("[Goal] Completed: verified after {iteration} iteration(s)"),
+        "max_iterations" => {
+            format!("[Goal] Completed: max iterations reached after {iteration} iteration(s)")
+        }
+        other => format!("[Goal] Completed: {other}"),
+    };
+    vec![line]
 }
 
 fn payload_u64(value: &Value, keys: &[&str]) -> Option<u64> {

@@ -101,6 +101,7 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "general.default_profile" => config.default_profile.clone(),
         "general.default_output" => output_mode_name(config.default_output).to_string(),
         "general.default_hitl" => hitl_policy_name(config.default_hitl).to_string(),
+        "general.max_goal_iterations" => config.max_goal_iterations.to_string(),
         "skills.dirs" => config
             .skill_dirs
             .iter()
@@ -360,8 +361,13 @@ fn split_config_key(key: &str) -> CliResult<(&str, &str)> {
         match (section, field) {
             (
                 "general",
-                "default_profile" | "default_output" | "default_hitl" | "model" | "model_settings"
-                | "model_cfg",
+                "default_profile"
+                | "default_output"
+                | "default_hitl"
+                | "model"
+                | "model_settings"
+                | "model_cfg"
+                | "max_goal_iterations",
             )
             | ("skills", "dirs" | "additional_dirs")
             | ("subagents", "dirs" | "additional_dirs" | "disabled" | "disabled_builtins")
@@ -486,6 +492,24 @@ fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
         | "update.channel" => Value::String(value.to_string()),
         "general.default_output" => Value::String(validated_output_mode(value)?.to_string()),
         "general.default_hitl" => Value::String(validated_hitl_policy(value)?.to_string()),
+        "general.max_goal_iterations" => Value::Integer(
+            value
+                .trim()
+                .parse::<usize>()
+                .map_err(|error| CliError::Usage(error.to_string()))
+                .and_then(|parsed| {
+                    if parsed == 0 {
+                        Err(CliError::Usage(
+                            "invalid general.max_goal_iterations: value must be positive"
+                                .to_string(),
+                        ))
+                    } else {
+                        Ok(parsed)
+                    }
+                })?
+                .try_into()
+                .map_err(|error: std::num::TryFromIntError| CliError::Usage(error.to_string()))?,
+        ),
         "environment.provider" => Value::String(validated_environment_provider(value)?.to_string()),
         "environment.files_policy" => Value::String(validated_files_policy(value)?.to_string()),
         "security.shell_review.on_needs_approval" => {
