@@ -2043,7 +2043,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "starweaver-agent"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -2072,7 +2072,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-cli"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-context"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "chrono",
  "serde",
@@ -2123,7 +2123,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2133,7 +2133,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-environment"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "globset",
@@ -2151,7 +2151,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-model"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -2169,7 +2169,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-oauth"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -2185,7 +2185,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-oauth-provider"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-rpc"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "clap",
  "serde_json",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-rpc-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2220,7 +2220,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-runtime"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2240,7 +2240,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-session"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2256,7 +2256,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-storage"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2275,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-stream"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-tools"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-trait",
  "schemars",
@@ -2307,7 +2307,7 @@ dependencies = [
 
 [[package]]
 name = "starweaver-usage"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
