@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io,
     path::Path,
 };
 
@@ -41,6 +42,7 @@ pub fn render_local_file_tree_listing(
     append_local_file_tree_lines(
         root,
         root,
+        "",
         visible_root,
         policy,
         gitignore.as_ref(),
@@ -107,6 +109,7 @@ fn collect_virtual_file_tree_entries(
 fn append_local_file_tree_lines(
     root: &Path,
     current: &Path,
+    current_logical: &str,
     visible_root: &str,
     policy: &EnvironmentPolicy,
     gitignore: Option<&ignore::gitignore::Gitignore>,
@@ -114,12 +117,23 @@ fn append_local_file_tree_lines(
     max_depth: usize,
     output: &mut Vec<String>,
 ) -> EnvironmentResult<()> {
+    let children = match std::fs::read_dir(current) {
+        Ok(children) => children,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            output.push(permission_denied_directory_line(current_logical));
+            return Ok(());
+        }
+        Err(error) => return Err(EnvironmentError::Provider(error.to_string())),
+    };
+
     let mut directories = Vec::new();
     let mut files = Vec::new();
-    for child in
-        std::fs::read_dir(current).map_err(|error| EnvironmentError::Provider(error.to_string()))?
-    {
-        let child = child.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+    for child in children {
+        let child = match child {
+            Ok(child) => child,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => continue,
+            Err(error) => return Err(EnvironmentError::Provider(error.to_string())),
+        };
         let path = child.path();
         let relative = normalize_path(
             path.strip_prefix(root)
@@ -133,9 +147,14 @@ fn append_local_file_tree_lines(
         if !policy.files.permits(&policy_path, false) {
             continue;
         }
-        let file_type = child
-            .file_type()
-            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+        let file_type = match child.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                output.push(format!("{relative} (permission denied)"));
+                continue;
+            }
+            Err(error) => return Err(EnvironmentError::Provider(error.to_string())),
+        };
         if file_type.is_dir() {
             directories.push((relative, path));
         } else if file_type.is_file() {
@@ -164,6 +183,7 @@ fn append_local_file_tree_lines(
             append_local_file_tree_lines(
                 root,
                 &path,
+                &logical,
                 visible_root,
                 policy,
                 gitignore,
@@ -190,6 +210,14 @@ fn append_local_file_tree_lines(
     }
 
     Ok(())
+}
+
+fn permission_denied_directory_line(logical: &str) -> String {
+    if logical.is_empty() {
+        "(permission denied)".to_string()
+    } else {
+        format!("{logical}/ (permission denied)")
+    }
 }
 
 fn render_flat_file_tree_entries(
