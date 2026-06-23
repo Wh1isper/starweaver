@@ -1,5 +1,5 @@
 [package]
-name = "starweaver-environment"
+name = "starweaver-envd-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,27 +7,18 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Environment provider abstractions for Starweaver"
+description = "EnvD JSON-RPC client for Starweaver"
 readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
 async-trait.workspace = true
-globset.workspace = true
-grep-matcher.workspace = true
-grep-regex.workspace = true
-grep-searcher.workspace = true
-ignore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-starweaver-core.workspace = true
 starweaver-envd-core.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "process"] }
 
 [lints]
 workspace = true

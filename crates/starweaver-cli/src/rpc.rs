@@ -14,9 +14,10 @@ use std::{
 
 use serde_json::{json, Value};
 use starweaver_rpc_core::{
-    attachment_result, handle_json_rpc_text, notification, output_item, replay_cursor_from_params,
-    replay_result, stream_payload_format, RpcError, StreamPayloadFormat, INVALID_PARAMS,
-    METHOD_NOT_FOUND, SERVER_ERROR, UNSUPPORTED_FEATURE,
+    attachment_result, environment_attachment_refs, environment_attachment_result,
+    handle_json_rpc_text, notification, output_item, replay_cursor_from_params, replay_result,
+    stream_payload_format, RpcError, StreamPayloadFormat, INVALID_PARAMS, METHOD_NOT_FOUND,
+    SERVER_ERROR, UNSUPPORTED_FEATURE,
 };
 use starweaver_stream::ReplayScope;
 
@@ -297,6 +298,7 @@ impl RpcService {
     fn run_start(&self, params: &Value) -> Result<Value, RpcError> {
         let format = stream_payload_format(params)?;
         let command = run_command_from_params(&self.config, params, OutputMode::Json)?;
+        let environment_attachments = command.environment_attachments.clone();
         let started = self
             .coordinator
             .start_run(command, None)
@@ -304,12 +306,19 @@ impl RpcService {
         let session_id = started.session_id.clone();
         let run_id = started.run_id.clone();
         self.spawn_run_notifications(started, format);
-        Ok(json!({
+        let mut result = json!({
             "sessionId": session_id,
             "runId": run_id,
             "status": "running",
             "payloadFormat": format.as_str(),
-        }))
+        });
+        if !environment_attachments.is_empty() {
+            merge_object(
+                &mut result,
+                &environment_attachment_result(&environment_attachments),
+            );
+        }
+        Ok(result)
     }
 
     fn run_attach(&self, params: &Value) -> Result<Value, RpcError> {
@@ -608,6 +617,8 @@ fn run_command_from_params(
     output: OutputMode,
 ) -> Result<RunCommand, RpcError> {
     let prompt = required_string(params, "prompt")?;
+    let environment_attachments = environment_attachment_refs(params)?;
+    validate_environment_attachments_for_run(&environment_attachments)?;
     let client = params.get("client").and_then(Value::as_str);
     let client_profile = client
         .map(|client| client_state::read_selected_profile(config, client).map_err(RpcError::from))
@@ -658,7 +669,45 @@ fn run_command_from_params(
             .and_then(parse_hitl),
         goal: None,
         session_affinity_id: None,
+        environment_attachments,
     })
+}
+
+fn validate_environment_attachments_for_run(
+    attachments: &[starweaver_rpc_core::EnvironmentAttachmentRef],
+) -> Result<(), RpcError> {
+    if attachments.len() > 1 {
+        return Err(RpcError::new(
+            UNSUPPORTED_FEATURE,
+            "multiple environment attachments require multi-mount environment support",
+        ));
+    }
+    let Some(attachment) = attachments.first() else {
+        return Ok(());
+    };
+    match attachment.kind.as_str() {
+        "local" => Ok(()),
+        "envd" => {
+            let Some(endpoint) = attachment.requested_endpoint_ref() else {
+                return Err(RpcError::new(
+                    INVALID_PARAMS,
+                    "envd environment attachment requires endpointRef",
+                ));
+            };
+            if endpoint.starts_with("http://") {
+                Ok(())
+            } else {
+                Err(RpcError::new(
+                    UNSUPPORTED_FEATURE,
+                    "envd environment attachment currently supports http:// endpoint refs",
+                ))
+            }
+        }
+        other => Err(RpcError::new(
+            UNSUPPORTED_FEATURE,
+            format!("unsupported environment attachment kind: {other}"),
+        )),
+    }
 }
 
 fn steering_id(params: &Value) -> String {
@@ -752,6 +801,18 @@ fn insert_subscription_id(value: &mut Value, subscription_id: &str) {
             "subscriptionId".to_string(),
             Value::String(subscription_id.to_string()),
         );
+    }
+}
+
+fn merge_object(target: &mut Value, source: &Value) {
+    let Some(target) = target.as_object_mut() else {
+        return;
+    };
+    let Some(source) = source.as_object() else {
+        return;
+    };
+    for (key, value) in source {
+        target.insert(key.clone(), value.clone());
     }
 }
 
@@ -1317,6 +1378,35 @@ model = "test:coding"
             .as_str()
             .unwrap()
             .contains("live notification transport"));
+    }
+
+    #[test]
+    fn run_start_rejects_multiple_environment_attachments() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+        let line = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "run.start",
+            "params": {
+                "prompt": "hello",
+                "environmentAttachments": [
+                    {"id": "workspace"},
+                    {"id": "tools"}
+                ]
+            },
+        })
+        .to_string();
+        let (response, shutdown) = server.handle_line(&line);
+        assert!(!shutdown);
+        let response = response.unwrap();
+        assert_eq!(response["error"]["code"], UNSUPPORTED_FEATURE);
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("multi-mount environment support"));
     }
 
     #[test]

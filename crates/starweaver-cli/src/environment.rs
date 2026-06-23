@@ -2,10 +2,14 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use starweaver_envd::LocalEnvd;
+use starweaver_envd_client::EnvdRpcClient;
+use starweaver_envd_core::DEFAULT_ENVIRONMENT_ID;
 use starweaver_environment::{
-    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentPolicy, FilePolicy,
-    LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
+    DynEnvironmentProvider, DynProcessShellProvider, EnvdEnvironmentProvider, EnvironmentPolicy,
+    FilePolicy, LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
 };
+use starweaver_rpc_core::EnvironmentAttachmentRef;
 
 use crate::{CliConfig, CliError, CliResult};
 
@@ -38,6 +42,18 @@ pub fn resolve_environment_for_session(
     resolve_environment_with_tmp_namespace(config, Some(session_id))
 }
 
+/// Build an environment provider for a session, optionally using host RPC attachments.
+pub fn resolve_environment_for_session_with_attachments(
+    config: &CliConfig,
+    session_id: &str,
+    attachments: &[EnvironmentAttachmentRef],
+) -> CliResult<ResolvedEnvironment> {
+    if attachments.is_empty() {
+        return resolve_environment_for_session(config, session_id);
+    }
+    resolve_environment_attachment(config, Some(session_id), &attachments[0])
+}
+
 fn resolve_environment_with_tmp_namespace(
     config: &CliConfig,
     tmp_namespace: Option<&str>,
@@ -53,7 +69,7 @@ fn resolve_environment_with_tmp_namespace(
             if let Some(namespace) = tmp_namespace {
                 provider = provider.with_tmp_namespace(namespace);
             }
-            Arc::new(provider)
+            envd_backed_provider(Arc::new(provider), "cli-local")
         }
         "virtual" => {
             let mut provider = VirtualEnvironmentProvider::new("cli-virtual")
@@ -62,7 +78,7 @@ fn resolve_environment_with_tmp_namespace(
             if let Some(namespace) = tmp_namespace {
                 provider = provider.with_tmp_namespace(namespace);
             }
-            Arc::new(provider)
+            envd_backed_provider(Arc::new(provider), "cli-virtual")
         }
         other => {
             unreachable!("environment provider should be validated before resolution: {other}")
@@ -73,6 +89,53 @@ fn resolve_environment_with_tmp_namespace(
         provider,
         process_provider,
     })
+}
+
+fn resolve_environment_attachment(
+    config: &CliConfig,
+    tmp_namespace: Option<&str>,
+    attachment: &EnvironmentAttachmentRef,
+) -> CliResult<ResolvedEnvironment> {
+    match attachment.kind.as_str() {
+        "local" => resolve_environment_with_tmp_namespace(config, tmp_namespace),
+        "envd" => resolve_envd_attachment(attachment),
+        other => Err(CliError::Config(format!(
+            "unsupported environment attachment kind: {other}"
+        ))),
+    }
+}
+
+fn resolve_envd_attachment(
+    attachment: &EnvironmentAttachmentRef,
+) -> CliResult<ResolvedEnvironment> {
+    let endpoint = attachment
+        .requested_endpoint_ref()
+        .ok_or_else(|| CliError::Config("envd attachment requires endpointRef".to_string()))?;
+    let client = EnvdRpcClient::http(endpoint)
+        .map_err(|error| CliError::Config(format!("invalid envd endpoint: {error}")))?;
+    let environment_id = attachment
+        .requested_environment_id()
+        .unwrap_or(DEFAULT_ENVIRONMENT_ID)
+        .to_string();
+    let provider: DynEnvironmentProvider = Arc::new(
+        EnvdEnvironmentProvider::new(Arc::new(client), environment_id).with_id(&attachment.id),
+    );
+    let process_provider = provider.clone().process_shell_provider();
+    Ok(ResolvedEnvironment {
+        provider,
+        process_provider,
+    })
+}
+
+fn envd_backed_provider(provider: DynEnvironmentProvider, id: &str) -> DynEnvironmentProvider {
+    let shell_review_context = provider.shell_review_context();
+    let envd = Arc::new(LocalEnvd::new(provider));
+    let environment_id = envd.environment_id().to_string();
+    Arc::new(
+        EnvdEnvironmentProvider::new(envd, environment_id)
+            .with_id(id)
+            .with_shell_review_context(shell_review_context),
+    )
 }
 
 fn local_allowed_paths(config: &CliConfig) -> Vec<PathBuf> {
@@ -178,6 +241,13 @@ additional_dirs = ["../custom-skills"]
             .any(|path| path.ends_with("shared-agents/skills")));
 
         let environment = resolve_environment(&config).unwrap();
+        assert_eq!(environment.provider.id(), "cli-local");
+        let state = environment.provider.export_state().await.unwrap();
+        assert_eq!(
+            state.metadata["envd_environment_id"],
+            serde_json::json!("env_cli_default")
+        );
+        assert_eq!(state.metadata["envd_store"], serde_json::json!("ephemeral"));
         for package in packages {
             let content = environment.provider.read_text(&package.path).await.unwrap();
             assert!(content.contains(&format!("name: {}", package.name)));
@@ -207,6 +277,14 @@ additional_dirs = ["../custom-skills"]
         assert_eq!(
             environment.provider.read_text(&tmp_path).await.unwrap(),
             "captured output"
+        );
+        let state = environment.provider.export_state().await.unwrap();
+        assert_eq!(
+            state.metadata["envd_operation_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
         );
 
         let unrelated_tmp =

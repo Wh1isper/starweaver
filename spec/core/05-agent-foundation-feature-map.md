@@ -16,26 +16,26 @@ This map tracks Starweaver foundation coverage against agent runtime concepts. P
 
 ## Coverage Matrix
 
-| Area                     | Crates                                                                                | Status            | Next maturity step                                                                          |
-| ------------------------ | ------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------- |
-| Agent builder            | `starweaver-agent`, `starweaver-runtime`                                              | landed            | keep builder ergonomics aligned with docs examples                                          |
-| Agent app/session        | `starweaver-agent`, `starweaver-context`                                              | landed            | expand session helpers around durable stores                                                |
-| Model protocol           | `starweaver-model`                                                                    | landed            | deepen provider normalization fixtures                                                      |
-| Model wrappers           | `starweaver-model`                                                                    | landed            | add wrappers for fallback, instrumentation, and request transforms as concrete needs emerge |
-| Request preparation      | `starweaver-model`, `starweaver-runtime`                                              | landed            | preserve snapshots through replay and audit fixtures                                        |
-| Streaming parts          | `starweaver-model`, `starweaver-runtime`, `starweaver-stream`                         | landed            | broaden delta fixtures across providers                                                     |
-| Tool schema              | `starweaver-tools`, `starweaver-runtime`                                              | landed            | keep JSON schema snapshots stable                                                           |
-| Toolsets and combinators | `starweaver-tools`                                                                    | landed            | add deterministic tests for nested composition and prefixing                                |
-| Deferred tools           | `starweaver-tools`, `starweaver-runtime`, `starweaver-session`                        | landed            | add application-facing handlers and session-store replay examples                           |
-| Prepare-tools hooks      | `starweaver-runtime`                                                                  | landed            | add dependency-aware hook examples                                                          |
-| Structured output        | `starweaver-runtime`, `starweaver-agent`                                              | landed            | expand typed parsing and retry diagnostics                                                  |
-| Output functions         | `starweaver-runtime`                                                                  | landed            | add multi-output selection examples                                                         |
-| Capability middleware    | `starweaver-runtime`, `starweaver-agent`                                              | landed            | add reusable bundles for SDK applications                                                   |
-| Context state            | `starweaver-context`, `starweaver-session`                                            | landed            | add persistence examples through `SqliteSessionStore`                                       |
-| Durable execution        | `starweaver-runtime`, `starweaver-session`, `starweaver-stream`, `starweaver-storage` | landed foundation | extend service-host examples after platform ownership is defined                            |
-| Observability seams      | `starweaver-runtime`, `starweaver-core`                                               | partial           | add OpenTelemetry exporter adapters and redaction policy tests                              |
-| UI adapters              | `starweaver-stream`                                                                   | landed            | deepen sanitizer and protocol adapter tests                                                 |
-| Testing                  | all foundation crates                                                                 | landed            | keep coverage gates and replay checks current                                               |
+| Area                     | Crates                                                                                | Status            | Planning source                            |
+| ------------------------ | ------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------ |
+| Agent builder            | `starweaver-agent`, `starweaver-runtime`                                              | landed            | core/spec docs                             |
+| Agent app/session        | `starweaver-agent`, `starweaver-context`                                              | landed            | SDK/spec docs                              |
+| Model protocol           | `starweaver-model`                                                                    | landed            | core/spec docs                             |
+| Model wrappers           | `starweaver-model`                                                                    | landed            | core/spec docs                             |
+| Request preparation      | `starweaver-model`, `starweaver-runtime`                                              | landed            | core/spec docs                             |
+| Streaming parts          | `starweaver-model`, `starweaver-runtime`, `starweaver-stream`                         | landed            | core/ops specs                             |
+| Tool schema              | `starweaver-tools`, `starweaver-runtime`                                              | landed            | core/spec docs                             |
+| Toolsets and combinators | `starweaver-tools`                                                                    | landed            | core/spec docs                             |
+| Deferred tools           | `starweaver-tools`, `starweaver-runtime`, `starweaver-session`                        | landed            | core/ops specs                             |
+| Prepare-tools hooks      | `starweaver-runtime`                                                                  | landed            | core/spec docs                             |
+| Structured output        | `starweaver-runtime`, `starweaver-agent`                                              | landed            | core/spec docs                             |
+| Output functions         | `starweaver-runtime`                                                                  | landed            | core/spec docs                             |
+| Capability middleware    | `starweaver-runtime`, `starweaver-agent`                                              | landed            | core/spec docs                             |
+| Context state            | `starweaver-context`, `starweaver-session`                                            | landed            | core/ops specs                             |
+| Durable execution        | `starweaver-runtime`, `starweaver-session`, `starweaver-stream`, `starweaver-storage` | landed foundation | core/ops specs                             |
+| Observability seams      | `starweaver-runtime`, `starweaver-core`                                               | partial           | `../ops/05-observability.md`               |
+| UI adapters              | `starweaver-stream`                                                                   | landed            | `../ops/02-shared-execution-components.md` |
+| Testing                  | all foundation crates                                                                 | landed            | `../ops/01-ci-readiness.md`                |
 
 ## Foundation Acceptance Gates
 
@@ -48,13 +48,7 @@ make replay-check
 make docs-check
 ```
 
-## Follow-up Buckets
+## Planning Source
 
-| Bucket                  | Status    | Direction                                                                                                             |
-| ----------------------- | --------- | --------------------------------------------------------------------------------------------------------------------- |
-| provider replay breadth | active    | add fixtures for request parameters, stream parts, and provider-specific normalization                                |
-| toolset composition     | active    | keep combinators small and deterministic                                                                              |
-| durable storage         | active    | keep SQLite schema focused on shared session, run, checkpoint, approval, deferred, replay, and stream archive records |
-| UI protocol adapters    | active    | map `DisplayMessage` into external wire formats through explicit adapters                                             |
-| CLI migration audit     | postponed | resume after foundation gates stay stable                                                                             |
-| evals                   | postponed | add dataset, evaluator, and reporting layers after SDK and CLI behavior stabilize                                     |
+This file records feature coverage only. Follow-up work should live in the spec
+that owns the changed contract.

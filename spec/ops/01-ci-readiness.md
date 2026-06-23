@@ -73,16 +73,17 @@ Provider replay coverage is accepted when:
 - fixture coverage appears in `spec/alignment/05-models-output-provider-alignment.md`
 - unmigrated replay categories are explicitly listed
 
-## Feature Coverage Matrix
+## Feature Coverage
 
-`spec/alignment/07-gap-matrix-and-roadmap.md` owns the working matrix for:
+Domain specs own implementation status for the contracts they define. Alignment
+specs own evidence and remaining gap analysis for:
 
 - agent framework docs features
 - provider behavior tests
 - first-party SDK modules and tests
 - Starweaver specs
 - current implementation status
-- next implementation batch
+- active implementation batch status
 
 ## Release Gate
 

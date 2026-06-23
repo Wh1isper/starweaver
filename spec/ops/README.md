@@ -22,7 +22,7 @@ The operations layer turns core runtime evidence and SDK contracts into validate
 flowchart TD
     ci[CI validation]
     replay[Replay fixtures]
-    specs[Specs and alignment matrix]
+    specs[Specs and implementation plan]
     sdk[SDK]
     session[Shared session contracts]
     stream[Shared stream contracts]
@@ -62,8 +62,6 @@ flowchart TD
 - `04-cli-product.md` — CLI-first product surface with CLI commands as a shell-friendly subset, TUI as the terminal client, standalone JSON-RPC host process for Desktop/local clients, headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, and GitHub install/update flow
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP/socket/WebSocket transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
-- `07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
-- `09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
 ## Readiness Model
 
@@ -74,7 +72,7 @@ A feature moves from planned to accepted when it has:
 - targeted tests
 - docs examples where user-facing
 - CI coverage
-- alignment matrix update
+- implementation plan update
 - clear ownership in crate map
 - trace/span semantics when the feature affects runtime, model, tool, subagent, or service execution
 

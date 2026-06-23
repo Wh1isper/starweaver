@@ -217,6 +217,9 @@ pub struct RunCommand {
     /// Internal stable provider-routing affinity id.
     #[arg(skip)]
     pub session_affinity_id: Option<String>,
+    /// Internal host RPC environment attachments.
+    #[arg(skip)]
+    pub environment_attachments: Vec<starweaver_rpc_core::EnvironmentAttachmentRef>,
 }
 
 /// Internal goal-mode options attached by product surfaces such as the TUI.

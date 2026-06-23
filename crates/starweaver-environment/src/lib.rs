@@ -1,6 +1,7 @@
 //! Environment provider abstractions for filesystem, shell, and resource access.
 
 mod context_xml;
+mod envd_provider;
 mod error;
 mod factory;
 mod file_tree;
@@ -37,6 +38,10 @@ pub(crate) use shell::{
     shell_process_metadata,
 };
 
+pub use envd_provider::{
+    EnvdEnvironmentProvider, ENVD_ENVIRONMENT_ID_KEY, ENVD_KIND_KEY, ENVD_STATE_VERSION_KEY,
+    ENVD_STORE_KEY,
+};
 pub use error::{EnvironmentError, EnvironmentResult};
 pub use factory::{
     environment_provider_kind, resource_ref_kind, DynEnvironmentProviderFactory,

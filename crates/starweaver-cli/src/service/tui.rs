@@ -401,6 +401,7 @@ fn spawn_tui_run(
         worktree_name: None,
         branch: None,
         session_affinity_id,
+        environment_attachments: Vec::new(),
     };
     let started = match coordinator.start_run_with_raw(run_command, Some(prompt_input)) {
         Ok(started) => started,

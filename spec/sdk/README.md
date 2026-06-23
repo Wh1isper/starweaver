@@ -38,6 +38,10 @@ flowchart TD
 - Provide policy presets for model, tools, approval, output, streaming, observability, and durability.
 - Assemble first-party capability bundles and toolsets.
 - Bind environment providers to filesystem, shell, process, resource, and sandbox tools.
+- Keep environment-backed bundles implementation-neutral so local, virtual,
+  envd-backed, sandbox, and composite providers can share the same tool surface.
+- Treat envd as a standalone service/protocol consumed through an SDK adapter,
+  not as the SDK environment layer itself.
 - Load serializable subagent and skill specs.
 - Provide unified delegation and lifecycle events.
 - Expose docs and examples for application developers.

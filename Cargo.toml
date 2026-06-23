@@ -12,6 +12,9 @@ members = [
     "crates/starweaver-runtime",
     "crates/starweaver-tools",
     "crates/starweaver-environment",
+    "crates/starweaver-envd-core",
+    "crates/starweaver-envd",
+    "crates/starweaver-envd-client",
     "crates/starweaver-session",
     "crates/starweaver-stream",
     "crates/starweaver-storage",
@@ -44,6 +47,9 @@ starweaver-runtime = { path = "crates/starweaver-runtime", version = "0.0.2" }
 starweaver-tools = { path = "crates/starweaver-tools", version = "0.0.2" }
 starweaver-usage = { path = "crates/starweaver-usage", version = "0.0.2" }
 starweaver-environment = { path = "crates/starweaver-environment", version = "0.0.2" }
+starweaver-envd-core = { path = "crates/starweaver-envd-core", version = "0.0.2" }
+starweaver-envd = { path = "crates/starweaver-envd", version = "0.0.2" }
+starweaver-envd-client = { path = "crates/starweaver-envd-client", version = "0.0.2" }
 starweaver-session = { path = "crates/starweaver-session", version = "0.0.2" }
 starweaver-stream = { path = "crates/starweaver-stream", version = "0.0.2" }
 starweaver-storage = { path = "crates/starweaver-storage", version = "0.0.2" }
