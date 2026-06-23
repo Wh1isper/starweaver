@@ -16,8 +16,8 @@ use starweaver_agent::{
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::ToolCallPart;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    process::Command,
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    process::{Child, Command},
 };
 
 #[tokio::test]
@@ -225,25 +225,65 @@ async fn rmcp_stdio_client_discovers_executes_and_closes_fixture_server() {
     client.close("rmcp-fixture", &transport).await.unwrap();
 }
 
-#[tokio::test]
-async fn rmcp_streamable_http_client_discovers_executes_and_closes_fixture_server() {
+async fn start_streamable_http_fixture(fixture_name: &str) -> (Child, String) {
     let fixture = format!(
-        "{}/tests/fixtures/rmcp_streamable_http_server.py",
+        "{}/tests/fixtures/{fixture_name}",
         env!("CARGO_MANIFEST_DIR")
     );
-    let mut child = Command::new("python3")
-        .arg(fixture)
+    let mut command = Command::new("python3");
+    command
+        .arg("-u")
+        .arg(&fixture)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let stdout = child.stdout.take().unwrap();
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = command.spawn().unwrap_or_else(|error| {
+        panic!("failed to spawn streamable HTTP fixture {fixture}: {error}")
+    });
+    let Some(stdout) = child.stdout.take() else {
+        panic!("streamable HTTP fixture stdout should be piped")
+    };
+    let Some(mut stderr) = child.stderr.take() else {
+        panic!("streamable HTTP fixture stderr should be piped")
+    };
     let mut lines = BufReader::new(stdout).lines();
-    let url = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let url = match tokio::time::timeout(Duration::from_secs(30), lines.next_line()).await {
+        Ok(Ok(Some(url))) => url,
+        Ok(Ok(None)) => {
+            let mut stderr_text = String::new();
+            let _ = stderr.read_to_string(&mut stderr_text).await;
+            let status = child.wait().await.ok();
+            panic!(
+                "streamable HTTP fixture {fixture} exited before printing its URL; status: {status:?}; stderr:\n{stderr_text}"
+            );
+        }
+        Ok(Err(error)) => {
+            let _ = child.kill().await;
+            let mut stderr_text = String::new();
+            let _ = stderr.read_to_string(&mut stderr_text).await;
+            panic!(
+                "failed reading streamable HTTP fixture {fixture} URL from stdout: {error}; stderr:\n{stderr_text}"
+            );
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let mut stderr_text = String::new();
+            let _ = stderr.read_to_string(&mut stderr_text).await;
+            panic!(
+                "timed out waiting for streamable HTTP fixture {fixture} to print its URL; stderr:\n{stderr_text}"
+            );
+        }
+    };
+    tokio::spawn(async move {
+        let mut stderr_text = String::new();
+        let _ = stderr.read_to_string(&mut stderr_text).await;
+    });
+    (child, url)
+}
+
+#[tokio::test]
+async fn rmcp_streamable_http_client_discovers_executes_and_closes_fixture_server() {
+    let (mut child, url) = start_streamable_http_fixture("rmcp_streamable_http_server.py").await;
     let transport = McpTransport::streamable_http(url);
     let client = Arc::new(RmcpLiveMcpClient::new());
     let toolset = live_mcp_toolset(client.clone(), "rmcp-http-fixture", transport.clone())
@@ -285,23 +325,8 @@ async fn rmcp_streamable_http_client_discovers_executes_and_closes_fixture_serve
 
 #[tokio::test]
 async fn rmcp_streamable_http_client_reinitializes_after_expired_session() {
-    let fixture = format!(
-        "{}/tests/fixtures/rmcp_streamable_http_reconnect_server.py",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let mut child = Command::new("python3")
-        .arg(fixture)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut lines = BufReader::new(stdout).lines();
-    let url = tokio::time::timeout(Duration::from_secs(5), lines.next_line())
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    let (mut child, url) =
+        start_streamable_http_fixture("rmcp_streamable_http_reconnect_server.py").await;
     let transport = McpTransport::streamable_http(url);
     let client = Arc::new(RmcpLiveMcpClient::new());
     let toolset = live_mcp_toolset(client.clone(), "rmcp-reconnect-fixture", transport.clone())

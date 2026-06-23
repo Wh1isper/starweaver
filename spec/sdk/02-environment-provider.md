@@ -2,13 +2,19 @@
 
 `EnvironmentProvider` is the boundary for filesystem, shell, process, resources, sandbox, and environment state. It connects provider-owned resources with Starweaver's `AgentContext`, `StateStore`, capabilities, and durable executor seam.
 
+The Agent SDK environment layer is defined in `../environment/`. The standalone
+envd service/protocol is defined in `../envd/`. This page records the
+SDK-facing provider surface; the broader design treats `starweaver-environment`
+as an interface crate with local, virtual, envd-backed, sandbox, and composite
+implementations behind it.
+
 ## Design Goal
 
 Environment-backed tools should be first-party SDK features while runtime semantics stay provider-neutral. The runtime executes tools; the SDK binds tools to environment providers through capabilities and context.
 
 ## Abstraction Review
 
-The first Rust implementation should keep `EnvironmentProvider` intentionally small: identity, text file read/write/list, shell execution, and state export. Rich file operators, background process control, resource registries, and sandbox mounts should grow as optional provider capabilities or focused extension traits after SDK and service call sites prove the needed shape.
+The first Rust implementation should keep `EnvironmentProvider` intentionally small: identity, text file read/write/list, shell execution, and state export. Rich file operators, background process control, resource registries, envd adapter wiring, and sandbox mounts should grow as optional provider capabilities or focused extension traits after SDK and service call sites prove the needed shape.
 
 The stable architectural split is:
 
@@ -16,6 +22,7 @@ The stable architectural split is:
 - `AgentContext` carries typed provider handles for the active process
 - `StateStore` carries serializable provider id, resource refs, process refs, policy revision, and environment state hash
 - first-party tool bundles convert provider capabilities into normal tools
+- host services resolve provider implementations before a run starts, including local, virtual, direct envd, remote envd, sandbox, or composite implementations
 
 This shape gives SDK users a native environment path while keeping the core runtime provider-neutral.
 
@@ -65,6 +72,7 @@ classDiagram
 ## Provider Families
 
 - local provider: direct workspace file access with policy controls and a shell backend selected by host policy
+- envd-backed provider: adapter implementation that maps the same provider interface to direct or remote envd service calls
 - sandboxed shell provider: local workspace file access plus OS-level sandboxed shell execution over declared workspace mounts
 - process provider: isolated child process workspace
 - sandbox provider: container or remote microVM workspace

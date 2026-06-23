@@ -187,7 +187,7 @@ Remaining media migration work:
 
 Before implementing the next SDK batch:
 
-1. Update `spec/alignment/07-gap-matrix-and-roadmap.md` with status, owner, and validation command.
+1. Update the spec that owns the changed contract with status, owner, and validation command.
 2. Add a focused test for the behavior before broadening public API.
 3. Keep docs examples compiling through `make docs-check` when user-facing examples change.
 4. Keep capability/toolset additions aligned with durable session and stream contracts.

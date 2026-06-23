@@ -21,7 +21,10 @@ Current workspace members:
 - `crates/starweaver-runtime` — core agent loop, graph state machine, static and dynamic instructions, semantic retry, tool execution over provider-neutral tool schema, per-tool retry budgets, approval/deferred control-flow recording, prepare-tools hooks, structured output, typed structured output parsing, output functions, message history continuation, history processors, system prompt reinjection, usage-limit enforcement, typed usage snapshot events, typed stream events, scoped overrides, context integration, capability hooks, capability bundles, trace recording, and durable executor checkpoints
 - `crates/starweaver-tools` — function tool schema, prefixed tools/toolsets, MCP toolset foundations, tool metadata, retry budget metadata, approval/deferred control-flow metadata, tool registries, toolset combinators, and execution primitives
 - `crates/starweaver-agent` — ergonomic SDK facade, `AgentBuilder`, `AgentApp`, SDK-level subagent registry, first-party tool bundles, spec presets, session helpers, media/filter helpers, and application-facing helpers
-- `crates/starweaver-environment` — `EnvironmentProvider`, virtual and local provider foundations, file and shell policies, resource references, and environment state snapshots
+- `crates/starweaver-environment` — `EnvironmentProvider`, virtual and local provider foundations, file and shell policies, resource references, environment state snapshots, and envd-backed provider adapters
+- `crates/starweaver-envd-core` — runtime-neutral envd service trait, DTOs, protocol identity, JSON-RPC frame helpers, state descriptors, and error mapping
+- `crates/starweaver-envd-client` — stdio/http `EnvdRpcClient` over the shared envd service interface
+- `crates/starweaver-envd` — `LocalEnvd`, local ephemeral envd state, JSON-RPC dispatcher, stdio/http server transports, and standalone `starweaver-envd` binary
 - `crates/starweaver-session` — shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections
 - `crates/starweaver-stream` — shared display and replay stream contracts for display messages, replay event logs, replay transports, realtime compaction buffers, stream archives, UI adapters, sanitization, and protocol envelopes
 - `crates/starweaver-storage` — shared SQLite migrations, concrete `SessionStore`, replay event-log, stream archive adapters, and migration status reporting
@@ -43,7 +46,10 @@ Planned areas live in `spec/` until their responsibilities, integration points, 
 - `starweaver-tools`: tool schema, toolsets, metadata, tool context, combinators, and protocol-level tool execution primitives.
 - `starweaver-runtime`: core agent loop, state transitions, tool loop, output loop, capabilities, usage-limit enforcement, usage snapshot publication, streaming events, trace spans, and executor checkpoints.
 - `starweaver-agent`: SDK ergonomics, tool implementation bundles, subagent protocols, application wrappers, filters, media helpers, and policy presets.
-- `starweaver-environment`: environment provider contracts, file/shell policy, resource references, and resumable environment state snapshots.
+- `starweaver-environment`: environment provider contracts, file/shell policy, resource references, resumable environment state snapshots, and `EnvdEnvironmentProvider`.
+- `starweaver-envd-core`: runtime-neutral envd service protocol, DTOs, state descriptors, JSON-RPC frame helpers, and error mapping.
+- `starweaver-envd-client`: stdio/http envd client implementing the shared envd service interface.
+- `starweaver-envd`: local envd implementation, ephemeral local state, service dispatcher, stdio/http transports, and standalone envd binary.
 - `starweaver-session`: shared durable session contracts for input parts, `SessionStore` traits, session/run records, resume snapshots, approvals, deferred records, and compact trace projections.
 - `starweaver-stream`: shared display/replay stream contracts, UI adapters, sanitizers, realtime compaction buffers, stream archives, and protocol envelopes.
 - `starweaver-storage`: shared SQLite migrations, concrete `SessionStore`, `StreamArchive`, and `ReplayEventLog` adapters, plus migration status reporting.
@@ -104,7 +110,6 @@ Current specs:
 - `spec/core/04-context-state-executor.md` — AgentContext, StateStore, events, messages, notes, usage, checkpoints, and executor preparation
 - `spec/core/05-agent-foundation-feature-map.md` — Agent foundation feature coverage map across agents, providers, tools, output, streaming, and testing
 - `spec/core/06-message-request-abstractions.md` — Starweaver-native message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
-- `spec/core/07-agent-foundation-maturity-roadmap.md` — capability middleware, deferred tools, toolset combinators, AgentSpec v2, output modes, model wrappers, and UI adapter maturity roadmap
 - `spec/core/08-boundaries-and-usage.md` — native runtime/context/SDK/usage boundaries, usage snapshot pricing contract, and cleanup acceptance gates
 - `spec/sdk/README.md` — SDK product boundary and application-facing contract
 - `spec/sdk/01-agent-sdk-app.md` — AgentBuilder, AgentApp, AgentSession, policy presets, app composition, and docs surface
@@ -112,6 +117,15 @@ Current specs:
 - `spec/sdk/03-first-party-tool-bundles.md` — filesystem, shell, search, media, task, skill, and tool-proxy bundles implemented through capabilities and context
 - `spec/sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
 - `spec/sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
+- `spec/environment/README.md` — Starweaver Agent SDK environment layer, ownership rules, provider families, and envd relationship
+- `spec/environment/01-sdk-provider-contract.md` — `EnvironmentProvider`, process/shell extension traits, descriptors, capabilities, snapshots, and restore boundary
+- `spec/environment/02-tool-binding-and-envd-adapter.md` — environment-backed tool binding, `EnvdEnvironmentProvider`, CLI direct mode, host RPC attachments, and boundary rules
+- `spec/envd/README.md` — standalone envd service architecture, ownership rules, implementation shape, and Starweaver reference integration
+- `spec/envd/01-service-interface-and-state.md` — envd service trait, environment state, mount state, process state, operation/effect records, and capability model
+- `spec/envd/02-implementations-and-modes.md` — local ephemeral mode, implementation-owned state lifecycle, RPC server mode, RPC client mode, and future sandbox/composite backends
+- `spec/envd/03-rpc-protocol.md` — JSON-RPC method groups, stdio/http transports, request/response envelopes, errors, streaming, and idempotency
+- `spec/envd/04-provider-and-host-integration.md` — reference Starweaver provider adapter, host RPC, session metadata, approval, and dependency boundaries
+- `spec/envd/05-api-backlog.md` — unfinished envd API work that should wait for a concrete implementation or call site
 - `spec/ops/README.md` — operational layer scope and readiness model
 - `spec/ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `spec/ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts
@@ -119,10 +133,8 @@ Current specs:
 - `spec/ops/04-cli-product.md` — CLI-first product surface with headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, and GitHub install/update flow
 - `spec/ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `spec/ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
-- `spec/ops/07-cli-migration-roadmap.md` — foundation and CLI migration reference map with CLI audit postponed
-- `spec/ops/09-refactor-readiness.md` — code size budget, storage convergence, runtime/model/filter decomposition, and contract hardening
 
-Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. The current detailed implementation roadmap is `spec/alignment/07-gap-matrix-and-roadmap.md`.
+Use `spec/alignment/` for readiness notes, design comparisons, implementation evidence, and roadmap reminders. Keep unfinished work in the spec that owns the changed contract.
 
 After changing repository structure, workspace boundaries, command behavior, CI, or planned module responsibilities, review and update:
 

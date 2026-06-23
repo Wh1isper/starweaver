@@ -158,6 +158,7 @@ mod tests {
             worktree_name: None,
             branch: None,
             session_affinity_id: None,
+            environment_attachments: Vec::new(),
         };
         assert_eq!(run.prompt_text().unwrap(), " explicit ");
 
@@ -179,6 +180,7 @@ mod tests {
             worktree_name: None,
             branch: None,
             session_affinity_id: None,
+            environment_attachments: Vec::new(),
         };
         assert_eq!(joined.prompt_text().unwrap(), "hello world");
 
@@ -200,6 +202,7 @@ mod tests {
             worktree_name: None,
             branch: None,
             session_affinity_id: None,
+            environment_attachments: Vec::new(),
         };
         assert!(
             matches!(empty.prompt_text(), Err(CliError::Usage(message)) if message.contains("run -p"))

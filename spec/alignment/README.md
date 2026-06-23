@@ -33,11 +33,12 @@ flowchart TD
 | `04-tools-toolsets-hitl.md`                 | tool metadata, HITL, MCP, and event taxonomy gaps                        |
 | `05-models-output-provider-alignment.md`    | provider replay evidence, output exactness, usage, and media-output gaps |
 | `06-subagents-environments-skills-media.md` | subagent, environment/resource, and media workflow gaps                  |
-| `07-gap-matrix-and-roadmap.md`              | prioritized remaining roadmap                                            |
 
 ## Remaining Theme
 
-The remaining asymmetry is mostly exact SDK contract parity:
+The remaining asymmetry is mostly exact SDK contract parity. Execution order
+belongs in the implementation batch that picks up a concrete gap; completed
+roadmaps are not kept as active planning documents.
 
 - Python-style decorator syntax is intentionally mapped to Rust-native builders; multi-output selector ergonomics are not yet mirrored.
 - External resource adapter breadth remains narrower than the rest of the SDK; MCP stdio, streamable HTTP, session reinitialization, and protocol-level HITL/deferred paths have direct `rmcp` evidence.

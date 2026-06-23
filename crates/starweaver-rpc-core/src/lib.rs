@@ -1,5 +1,7 @@
 //! JSON-RPC host protocol helpers for Starweaver.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use starweaver_stream::{
@@ -198,6 +200,54 @@ pub struct RunOutputItem {
     display_message: Option<DisplayMessage>,
 }
 
+/// Environment access mode requested by a host RPC environment attachment.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentAttachmentAccessMode {
+    /// Read-only access.
+    ReadOnly,
+    /// Read and write access.
+    #[default]
+    ReadWrite,
+}
+
+/// Host-control reference to an environment attached to a run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentAttachmentRef {
+    /// Stable attachment id within the run.
+    pub id: String,
+    /// Attachment implementation kind, such as `local` or `envd`.
+    #[serde(default = "default_environment_attachment_kind")]
+    pub kind: String,
+    /// Requested access mode.
+    #[serde(default)]
+    pub mode: EnvironmentAttachmentAccessMode,
+    /// Endpoint reference or URL for remote implementations.
+    #[serde(default, alias = "endpoint", skip_serializing_if = "Option::is_none")]
+    pub endpoint_ref: Option<String>,
+    /// Concrete environment id within the implementation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    /// Host metadata for the attachment.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub metadata: serde_json::Map<String, Value>,
+}
+
+impl EnvironmentAttachmentRef {
+    /// Return the environment id requested by this ref, if any.
+    #[must_use]
+    pub fn requested_environment_id(&self) -> Option<&str> {
+        self.environment_id.as_deref()
+    }
+
+    /// Return the endpoint ref requested by this ref, if any.
+    #[must_use]
+    pub fn requested_endpoint_ref(&self) -> Option<&str> {
+        self.endpoint_ref.as_deref()
+    }
+}
+
 /// Build a JSON-RPC notification frame.
 #[must_use]
 pub fn notification(method: &str, params: &Value) -> Value {
@@ -205,6 +255,39 @@ pub fn notification(method: &str, params: &Value) -> Value {
         "jsonrpc": "2.0",
         "method": method,
         "params": params,
+    })
+}
+
+/// Parse environment attachment refs from host RPC params.
+///
+/// # Errors
+///
+/// Returns an RPC invalid-params error when the shape is invalid or ids are duplicated.
+pub fn environment_attachment_refs(
+    params: &Value,
+) -> Result<Vec<EnvironmentAttachmentRef>, RpcError> {
+    let Some(value) = params
+        .get("environmentAttachments")
+        .or_else(|| params.get("environments"))
+        .or_else(|| params.get("environment"))
+    else {
+        return Ok(Vec::new());
+    };
+    let refs = if value.is_array() {
+        serde_json::from_value::<Vec<EnvironmentAttachmentRef>>(value.clone())
+    } else {
+        serde_json::from_value::<EnvironmentAttachmentRef>(value.clone()).map(|value| vec![value])
+    }
+    .map_err(|error| RpcError::new(INVALID_PARAMS, format!("invalid environment refs: {error}")))?;
+    validate_environment_attachment_refs(&refs)?;
+    Ok(refs)
+}
+
+/// Build a serializable environment attachment result.
+#[must_use]
+pub fn environment_attachment_result(refs: &[EnvironmentAttachmentRef]) -> Value {
+    json!({
+        "environmentAttachments": refs,
     })
 }
 
@@ -345,6 +428,29 @@ fn optional_usize(params: &Value, key: &str) -> Option<usize> {
         .and_then(|value| usize::try_from(value).ok())
 }
 
+fn validate_environment_attachment_refs(refs: &[EnvironmentAttachmentRef]) -> Result<(), RpcError> {
+    let mut ids = BTreeSet::new();
+    for attachment in refs {
+        if attachment.id.trim().is_empty() {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                "environment attachment id must be non-empty",
+            ));
+        }
+        if !ids.insert(attachment.id.clone()) {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!("duplicate environment attachment id: {}", attachment.id),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn default_environment_attachment_kind() -> String {
+    "local".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -422,6 +528,38 @@ mod tests {
             StreamPayloadFormat::Agui
         );
         assert!(stream_payload_format(&json!({"format": "bad"})).is_err());
+    }
+
+    #[test]
+    fn parses_environment_attachment_refs_and_rejects_duplicates() {
+        let refs = environment_attachment_refs(&json!({
+            "environmentAttachments": [
+                {
+                    "id": "workspace",
+                    "kind": "envd",
+                    "mode": "read_write",
+                    "endpointRef": "http://127.0.0.1:8766/rpc",
+                    "environmentId": "env_cli_default"
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].id, "workspace");
+        assert_eq!(refs[0].kind, "envd");
+        assert_eq!(refs[0].mode, EnvironmentAttachmentAccessMode::ReadWrite);
+        assert_eq!(
+            refs[0].requested_endpoint_ref(),
+            Some("http://127.0.0.1:8766/rpc")
+        );
+
+        let duplicate = environment_attachment_refs(&json!({
+            "environments": [
+                {"id": "workspace"},
+                {"id": "workspace"}
+            ]
+        }));
+        assert!(duplicate.is_err());
     }
 
     #[test]

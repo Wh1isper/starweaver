@@ -4,7 +4,9 @@ The core layer is the Rust-native foundation for model-driven agent execution. I
 
 The core layer is designed for library authors and runtime implementers. It defines durable contracts while application tools and product policy live in SDK and operations layers.
 
-Detailed maturity work is tracked in `07-agent-foundation-maturity-roadmap.md`; the coverage matrix remains in `05-agent-foundation-feature-map.md`; native boundary rules and usage extraction are tracked in `08-boundaries-and-usage.md`.
+The coverage matrix remains in `05-agent-foundation-feature-map.md`; native
+boundary rules and usage extraction are tracked in
+`08-boundaries-and-usage.md`.
 
 ## Crate Ownership
 
@@ -110,4 +112,4 @@ Durability belongs above the core runtime, while the runtime emits stable eviden
 - `make check`
 - `make test`
 - targeted docs example checks when user-facing docs change
-- feature coverage matrix updated in `spec/alignment/07-gap-matrix-and-roadmap.md`
+- implementation status updated in the spec that owns the changed contract

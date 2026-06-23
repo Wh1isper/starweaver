@@ -2089,6 +2089,9 @@ dependencies = [
  "starweaver-agent",
  "starweaver-context",
  "starweaver-core",
+ "starweaver-envd",
+ "starweaver-envd-client",
+ "starweaver-envd-core",
  "starweaver-environment",
  "starweaver-model",
  "starweaver-oauth",
@@ -2132,6 +2135,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "starweaver-envd"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "clap",
+ "serde",
+ "serde_json",
+ "starweaver-core",
+ "starweaver-envd-client",
+ "starweaver-envd-core",
+ "starweaver-environment",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "starweaver-envd-client"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "starweaver-envd-core",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "starweaver-envd-core"
+version = "0.0.2"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "starweaver-core",
+ "thiserror",
+]
+
+[[package]]
 name = "starweaver-environment"
 version = "0.0.2"
 dependencies = [
@@ -2144,6 +2187,7 @@ dependencies = [
  "serde",
  "serde_json",
  "starweaver-core",
+ "starweaver-envd-core",
  "tempfile",
  "thiserror",
  "tokio",

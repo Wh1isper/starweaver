@@ -19,7 +19,8 @@ use crate::{
     },
     config::{read_current_session, write_current_session, CliConfig},
     environment::{
-        resolve_environment_for_session, validate_environment_config, ResolvedEnvironment,
+        resolve_environment_for_session_with_attachments, validate_environment_config,
+        ResolvedEnvironment,
     },
     local_store::LocalStore,
     profiles::{list_profiles, resolve_profile, ResolvedProfile},
@@ -178,6 +179,7 @@ impl CliService {
                 worktree_name: cli.worktree_name.clone(),
                 branch: cli.branch,
                 session_affinity_id: None,
+                environment_attachments: Vec::new(),
             };
             return self.run_prompt(&command);
         }
@@ -297,7 +299,11 @@ impl CliService {
         validate_environment_config(&run_config)?;
         append_guidance_files(&mut run_input, &run_config);
         let (session_id, created) = self.resolve_session(command, &resolved_profile.name)?;
-        let environment = resolve_environment_for_session(&run_config, &session_id)?;
+        let environment = resolve_environment_for_session_with_attachments(
+            &run_config,
+            &session_id,
+            &command.environment_attachments,
+        )?;
         let mut restore_from = command.run.clone().or_else(|| command.branch_from.clone());
         if restore_from.is_none() && !created {
             restore_from = self
@@ -328,6 +334,20 @@ impl CliService {
             run.metadata.insert(
                 "starweaver.session_affinity_id".to_string(),
                 json!(session_affinity_id),
+            );
+        }
+        if !command.environment_attachments.is_empty() {
+            run.metadata.insert(
+                "starweaver.environment_attachments".to_string(),
+                json!(command.environment_attachments),
+            );
+            run.metadata.insert(
+                "starweaver.environment_attachment_ids".to_string(),
+                json!(command
+                    .environment_attachments
+                    .iter()
+                    .map(|attachment| attachment.id.as_str())
+                    .collect::<Vec<_>>()),
             );
         }
         write_current_session(&self.config, &session_id)?;
@@ -661,6 +681,7 @@ impl CliService {
             worktree_name: None,
             branch: None,
             session_affinity_id: None,
+            environment_attachments: Vec::new(),
         };
         self.run_prompt(&run_command)
     }
