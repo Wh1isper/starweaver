@@ -198,11 +198,7 @@ async fn live_mcp_discovered_tool_executes_through_host_client() {
 
 #[tokio::test]
 async fn rmcp_stdio_client_discovers_executes_and_closes_fixture_server() {
-    let fixture = format!(
-        "{}/tests/fixtures/rmcp_stdio_server.py",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    let transport = McpTransport::stdio("python3").with_args(vec![fixture]);
+    let transport = McpTransport::stdio(env!("CARGO_BIN_EXE_starweaver_agent_rmcp_stdio_fixture"));
     let client = Arc::new(RmcpLiveMcpClient::new());
     let toolset = live_mcp_toolset(client.clone(), "rmcp-fixture", transport.clone())
         .await

@@ -1024,14 +1024,10 @@ async fn runtime_durable_store_resumes_live_mcp_approval_and_deferred_records() 
 #[allow(clippy::too_many_lines, clippy::large_futures)]
 async fn runtime_durable_store_resumes_rmcp_stdio_approval_and_deferred_records() {
     async fn rmcp_fixture_toolset(id: &str) -> DynToolset {
-        let fixture = format!(
-            "{}/tests/fixtures/rmcp_stdio_server.py",
-            env!("CARGO_MANIFEST_DIR")
-        );
         live_mcp_toolset(
             Arc::new(RmcpLiveMcpClient::new()),
             id,
-            McpTransport::stdio("python3").with_args(vec![fixture]),
+            McpTransport::stdio(env!("CARGO_BIN_EXE_starweaver_agent_rmcp_stdio_fixture")),
         )
         .await
         .unwrap()
