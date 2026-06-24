@@ -38,8 +38,11 @@ starweaver-tools.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+axum = "0.8.7"
+rmcp = { version = "1.7.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 starweaver-core.workspace = true
 starweaver-tools.workspace = true
+tokio-util = "0.7.17"
 
 [lints]
 workspace = true

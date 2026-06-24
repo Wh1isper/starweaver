@@ -1,8 +1,7 @@
 # Install
 
-Starweaver is preparing its first public release, `0.0.1`. Before that release exists, run the
-CLI and SDK examples from a checkout. After the release is published, use GitHub Release artifacts
-or crates.io packages.
+Install Starweaver from GitHub Release artifacts, use crates.io packages for SDK code, or run from a
+checkout while developing inside this repository.
 
 ## From source
 
@@ -23,8 +22,6 @@ make cli -- -p "hello" --output text
 
 ## From GitHub Releases
 
-After `v0.0.1` is published:
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
 ```
@@ -32,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/in
 Pinned install:
 
 ```bash
-STARWEAVER_VERSION=v0.0.1 \
+STARWEAVER_VERSION=vX.Y.Z \
   curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
 ```
 
@@ -47,7 +44,7 @@ Installer environment variables:
 
 | Variable                    | Purpose                                                  |
 | --------------------------- | -------------------------------------------------------- |
-| `STARWEAVER_VERSION`        | Install a specific release tag, such as `v0.0.1`.        |
+| `STARWEAVER_VERSION`        | Install a specific release tag, such as `vX.Y.Z`.        |
 | `STARWEAVER_INSTALL_DIR`    | Choose an install directory.                             |
 | `STARWEAVER_COMPONENTS`     | Component list; current release artifacts provide `cli`. |
 | `STARWEAVER_NO_MODIFY_PATH` | Set to `1` to skip shell profile updates.                |
@@ -57,11 +54,9 @@ The CLI component installs `starweaver`, `starweaver-cli`, `sw`, and `starweaver
 
 ## Crates
 
-After `0.0.1` is published:
-
 ```toml
 [dependencies]
-starweaver-agent = "0.0.1"
+starweaver-agent = "X.Y.Z"
 ```
 
 Use the workspace path while developing inside this repository:

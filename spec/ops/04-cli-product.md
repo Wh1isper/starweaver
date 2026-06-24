@@ -381,11 +381,11 @@ Current live semantics: `run.start` returns after durable run creation and activ
 Example stdio handshake:
 
 ```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"desktop","version":"0.0.1"}}}
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"desktop","version":"X.Y.Z"}}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2026-06-08","serverInfo":{"name":"starweaver-cli","version":"0.0.1"},"capabilities":{"sessions":true,"runs":true,"management":true,"profiles":true,"clientModelSelection":true,"blockingRunStart":false,"blockingRunPrompt":true,"nonBlockingRunStart":true,"liveDisplay":true,"streamReplay":true,"streamSubscribe":true,"cancel":true,"steering":true,"attach":true,"defaultStreamPayload":"agui","approvals":true,"deferred":true},"config":{"globalDir":"/home/user/.starweaver","tuiStateDir":"/home/user/.starweaver/tui","desktopStateDir":"/home/user/.starweaver/desktop","defaultProfile":"general"}}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2026-06-08","serverInfo":{"name":"starweaver-cli","version":"X.Y.Z"},"capabilities":{"sessions":true,"runs":true,"management":true,"profiles":true,"clientModelSelection":true,"blockingRunStart":false,"blockingRunPrompt":true,"nonBlockingRunStart":true,"liveDisplay":true,"streamReplay":true,"streamSubscribe":true,"cancel":true,"steering":true,"attach":true,"defaultStreamPayload":"agui","approvals":true,"deferred":true},"config":{"globalDir":"/home/user/.starweaver","tuiStateDir":"/home/user/.starweaver/tui","desktopStateDir":"/home/user/.starweaver/desktop","defaultProfile":"general"}}}
 ```
 
 Unary HTTP returns the same method surface for request/response calls but sets `liveDisplay` and `streamSubscribe` to `false` in `initialize`.

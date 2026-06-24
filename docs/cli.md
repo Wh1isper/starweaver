@@ -53,7 +53,7 @@ matches the current version, so explicit rollbacks remain possible. Use `--force
 The CLI also performs a short background release lookup and caches the result in `~/.starweaver/update-check.json`. Human-readable commands append a compact hint when the cache reports a newer release:
 
 ```text
-Update available: starweaver 0.0.1 -> 0.0.2. Run `starweaver update`.
+Update available: starweaver X.Y.Z -> A.B.C. Run `starweaver update`.
 ```
 
 Scripted environments can disable the hint and background lookup:

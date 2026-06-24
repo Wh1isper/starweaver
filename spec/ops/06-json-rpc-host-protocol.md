@@ -297,7 +297,7 @@ Result:
   },
   "serverInfo": {
     "name": "starweaver-cli",
-    "version": "0.0.1"
+    "version": "X.Y.Z"
   },
   "connectionId": "conn_...",
   "capabilities": {

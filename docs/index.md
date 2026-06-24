@@ -46,9 +46,9 @@ flowchart LR
 6. [Session and Stream Contracts](session-stream.md): integrate durable product surfaces.
 7. [Release](release.md): prepare and publish Starweaver releases.
 
-## Stability in `0.0.1`
+## Stability
 
-The first public release focuses on SDK foundations, deterministic testing, tool/runtime
-contracts, local CLI workflows, and release automation. Some host integration surfaces are
-intentionally explicit: live external resources, product-specific service transports, and hosted
-platform adapters remain integration points rather than hidden defaults.
+The public surface focuses on SDK foundations, deterministic testing, tool/runtime contracts, local
+CLI workflows, and release automation. Some host integration surfaces are intentionally explicit:
+live external resources, product-specific service transports, and hosted platform adapters remain
+integration points rather than hidden defaults.

@@ -9,10 +9,10 @@ From a published release:
 
 ```toml
 [dependencies]
-starweaver-agent = "0.0.1"
+starweaver-agent = "X.Y.Z"
 ```
 
-From a checkout before the first release:
+From a checkout:
 
 ```toml
 [dependencies]

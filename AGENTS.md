@@ -198,10 +198,10 @@ make scripts-check
 To ask the assistant to prepare a unified-version release, use GitHub CLI from the repository root:
 
 ```bash
-gh workflow run prepare-release.yml -f version=0.0.1
+gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
-This pushes `release/v0.0.1` for review. After the release commit reaches `main`, publish `v0.0.1` as a GitHub Release. The `release.yml` workflow runs from the published Release event, builds `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`, uploads `checksums.txt`, and publishes crates through the `Release` environment.
+This pushes `release/vX.Y.Z` for review. After the release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The `release.yml` workflow runs from the published Release event, builds `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`, uploads `checksums.txt`, and publishes crates through the `Release` environment.
 
 Use squash merge only for GitHub pull requests. Do not merge pull requests with merge commits into `main`.
 
