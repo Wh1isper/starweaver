@@ -7,12 +7,15 @@ use std::{
 
 use crate::common::{root, run_capture, run_command};
 
-const WORKSPACE_DEPENDENCIES: [&str; 15] = [
+const WORKSPACE_DEPENDENCIES: [&str; 18] = [
     "starweaver-agent",
     "starweaver-cli",
     "starweaver-context",
     "starweaver-core",
     "starweaver-environment",
+    "starweaver-envd",
+    "starweaver-envd-client",
+    "starweaver-envd-core",
     "starweaver-model",
     "starweaver-oauth",
     "starweaver-oauth-provider",
@@ -26,7 +29,7 @@ const WORKSPACE_DEPENDENCIES: [&str; 15] = [
 ];
 const NON_PUBLISH_WORKSPACE_CRATES: [&str; 1] = ["starweaver-rpc"];
 const DRY_RUN_PACKAGES: [&str; 3] = ["starweaver-core", "starweaver-usage", "starweaver-oauth"];
-const PUBLISH_PACKAGES: [&str; 15] = [
+const PUBLISH_PACKAGES: [&str; 18] = [
     "starweaver-core",
     "starweaver-usage",
     "starweaver-oauth",
@@ -34,7 +37,10 @@ const PUBLISH_PACKAGES: [&str; 15] = [
     "starweaver-context",
     "starweaver-tools",
     "starweaver-runtime",
+    "starweaver-envd-core",
     "starweaver-environment",
+    "starweaver-envd-client",
+    "starweaver-envd",
     "starweaver-session",
     "starweaver-stream",
     "starweaver-rpc-core",
