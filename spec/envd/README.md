@@ -101,14 +101,16 @@ flowchart TD
 
 ## Ownership Rules
 
-- Envd owns environment state, mount state, operation/effect records, process
-  state, shell session state, resource refs, and policy decisions.
+- Envd owns environment state, mount state, operation/effect records, command
+  and background process state when advertised, resource refs, and policy
+  decisions.
 - `starweaver-environment` owns the SDK-facing `EnvironmentProvider` adapter and
   shared environment DTOs only where they are useful to tools.
 - `starweaver-runtime` stays provider-neutral and does not import envd protocol
   transport types.
 - `starweaver-rpc` owns agent host-control: sessions, runs, stream replay,
-  steering, HITL, model selection, and environment attachment selection.
+  steering, HITL, model selection, and the environment attachment manager that
+  resolves host refs into run environment bindings.
 - Envd RPC owns environment data/effect methods over stdio/http.
 - CLI can use `LocalEnvd` directly for one local environment to avoid RPC
   overhead. Ephemeral memory is a state-store choice, not a separate service

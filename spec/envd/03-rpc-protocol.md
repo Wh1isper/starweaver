@@ -48,6 +48,46 @@ semantics must not change across transports.
 - unary HTTP does not carry live notifications unless a future long-connection
   profile is negotiated.
 
+## Health and Readiness
+
+Envd health has two layers:
+
+- transport health: the daemon process is reachable and can parse requests.
+- environment readiness: a specific `environmentId` is open, its mounts are
+  ready, and advertised capabilities are currently usable.
+
+The current HTTP transport may expose lightweight `GET /health` and
+`GET /healthz` for process liveness. Transport-neutral clients should probe by
+calling `initialize`, then `environment.open` or `environment.state` for each
+environment they intend to use.
+
+A future typed method can expose the same readiness shape over every transport:
+
+```json
+{
+  "status": "ready",
+  "protocol": {
+    "name": "envd",
+    "major": 1,
+    "revision": "2026-06-23"
+  },
+  "environments": [{
+    "environmentId": "env_cli_default",
+    "status": "open",
+    "stateVersion": 3,
+    "mounts": [{
+      "mountId": "workspace",
+      "status": "ready",
+      "mode": "read_write"
+    }]
+  }]
+}
+```
+
+Host integrations should treat readiness failures as attachment-resolution
+errors before starting a run. Runtime tools should still handle per-operation
+errors because readiness can change after a run begins.
+
 ## Method Groups
 
 | Group       | Methods                                                                                                                                                     |
@@ -59,14 +99,8 @@ semantics must not change across transports.
 | Process     | `process.start`, `process.wait`, `process.list`, `process.input`, `process.signal`, `process.kill`                                                          |
 | Context     | `context.render`, `shell.review_context`                                                                                                                    |
 
-Shell session methods are planned after PTY/session semantics are specified:
-
-- `shell_session.create`
-- `shell_session.attach`
-- `shell_session.input`
-- `shell_session.resize`
-- `shell_session.close`
-- `shell_session.output`
+Interactive terminal state is not part of envd v1. Execution capabilities are
+exposed as foreground commands and background process handles.
 
 ## Common Params
 

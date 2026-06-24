@@ -140,6 +140,9 @@ flowchart TD
   their own adapters.
 - Envd has runtime-neutral core and client crates; the client must be usable
   without Starweaver's Agent SDK.
+- Dynamic environment attachment management belongs to Starweaver host-control;
+  it resolves host refs into run environment bindings without making envd a
+  Starweaver-only protocol.
 - Durable state is split between `starweaver-session`, `starweaver-stream`, and `starweaver-storage`.
 - CLI is the current product surface and stays focused on local/headless execution.
 - `starweaver-rpc-core` owns shared JSON-RPC frame parsing, standard request/error envelopes, replay cursor helpers, and stream payload projection; `starweaver-rpc` is the standalone local host process and calls the shared RPC server API while deeper method-handler extraction continues.

@@ -75,7 +75,7 @@ Example:
 {
   "name": "starweaver.host",
   "major": 1,
-  "revision": "2026-06-20",
+  "revision": "2026-06-23",
   "features": [
     "session.lifecycle",
     "run.lifecycle",
@@ -83,6 +83,7 @@ Example:
     "stream.subscribe",
     "hitl.approvals",
     "hitl.deferred",
+    "environment.attachments",
     "projection.agui"
   ]
 }
@@ -102,6 +103,7 @@ Feature names:
 | `stream.snapshot`            | Compact replay snapshots               |
 | `hitl.approvals`             | Approval list/show/decide              |
 | `hitl.deferred`              | Deferred tool list/show/complete/fail  |
+| `environment.attachments`    | Host-managed environment attachments   |
 | `client.model_selection`     | Frontend-local model selection         |
 | `projection.display_message` | Starweaver display-message projection  |
 | `projection.agui`            | AGUI projection                        |
@@ -283,8 +285,13 @@ Result:
   "protocol": {
     "name": "starweaver.host",
     "major": 1,
-    "revision": "2026-06-20",
-    "features": ["run.lifecycle", "stream.replay", "stream.subscribe"]
+    "revision": "2026-06-23",
+    "features": [
+      "run.lifecycle",
+      "stream.replay",
+      "stream.subscribe",
+      "environment.attachments"
+    ]
   },
   "serverInfo": {
     "name": "starweaver-cli",
@@ -297,6 +304,7 @@ Result:
     "streams": true,
     "approvals": true,
     "deferredTools": true,
+    "environmentAttachments": true,
     "clientModelSelection": true,
     "projections": ["starweaver.display_message", "agui"],
     "defaultProjectionFormat": "starweaver.display_message"
@@ -380,6 +388,7 @@ The protocol uses domain-qualified method names.
 | Lifecycle   | `initialize`, `shutdown`                                                                                                    |
 | Session     | `session.create`, `session.list`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`             |
 | Run         | `run.start`, `run.get`, `run.status`, `run.await`, `run.cancel`, `run.steer`                                                |
+| Environment | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`                                        |
 | Stream      | `stream.replay`, `stream.subscribe`, `stream.unsubscribe`, `stream.snapshot`, `stream.cursorRange`                          |
 | HITL        | `approval.list`, `approval.show`, `approval.decide`, `deferred.list`, `deferred.show`, `deferred.complete`, `deferred.fail` |
 | Model       | `model.list`, `model.current`, `model.select`                                                                               |
@@ -535,17 +544,18 @@ Delete invariants:
 
 Params:
 
-| Field              | Type   | Required | Meaning                                             |
-| ------------------ | ------ | -------- | --------------------------------------------------- |
-| `input`            | object | yes      | Run input object with `parts`                       |
-| `session`          | object | no       | Session selection policy                            |
-| `model`            | object | no       | One-run model/profile override                      |
-| `clientStateScope` | string | no       | Frontend-local model selection scope                |
-| `environment`      | object | no       | Workspace and environment selection hints           |
-| `hitl`             | object | no       | Approval/deferred policy overrides                  |
-| `stream`           | object | no       | Initial subscription and projection options         |
-| `metadata`         | object | no       | Run metadata                                        |
-| `idempotencyKey`   | string | no       | Idempotent run creation key scoped to client/method |
+| Field                    | Type   | Required | Meaning                                             |
+| ------------------------ | ------ | -------- | --------------------------------------------------- |
+| `input`                  | object | yes      | Run input object with `parts`                       |
+| `session`                | object | no       | Session selection policy                            |
+| `model`                  | object | no       | One-run model/profile override                      |
+| `clientStateScope`       | string | no       | Frontend-local model selection scope                |
+| `environment`            | object | no       | Workspace and environment selection hints           |
+| `environmentAttachments` | array  | no       | Inline or pre-attached environments for the run     |
+| `hitl`                   | object | no       | Approval/deferred policy overrides                  |
+| `stream`                 | object | no       | Initial subscription and projection options         |
+| `metadata`               | object | no       | Run metadata                                        |
+| `idempotencyKey`         | string | no       | Idempotent run creation key scoped to client/method |
 
 Input object:
 
@@ -645,6 +655,53 @@ Environment options:
 ```
 
 Environment fields are hints resolved by the product host against Starweaver environment provider configuration. Unsupported providers, worktree modes, or workspace roots fail with `configuration_failed` or `invalid_params`; they must not silently widen file or shell policy.
+
+Run environment attachments:
+
+```json
+{
+  "environmentAttachments": [
+    {
+      "id": "workspace",
+      "attachmentLeaseId": "envatt_workspace",
+      "default": true
+    },
+    {
+      "id": "data",
+      "kind": "envd",
+      "endpointRef": "http://127.0.0.1:8770/rpc",
+      "environmentId": "dataset",
+      "mode": "read_only"
+    }
+  ]
+}
+```
+
+`environmentAttachments` entries have two allowed forms:
+
+- A pre-attached lease ref with `attachmentLeaseId`, plus run-local fields such
+  as `id`, `mode`, and `default`.
+- An inline attachment source with `kind`, endpoint/source fields, `mode`, and
+  `default`. The server resolves it through the same attachment manager used by
+  `environment.attach`.
+
+Attachment invariants:
+
+- `id` is the run-local agent-facing mount identity. It is an ASCII slug and is
+  exposed to tools as `/environment/{id}`.
+- One attachment is the default for unqualified paths. Multiple attachments
+  require exactly one `default: true`. A single attachment defaults to true when
+  omitted.
+- `attachmentLeaseId` is a host-control lease id, not an envd environment id and
+  not visible to the model.
+- Inline envd attachments identify envd by `endpointRef` and `environmentId`.
+  `endpointRef` can be a literal endpoint or a host-resolved alias.
+- Run preparation must resolve and probe all attachments before creating the
+  runtime session. A failure in any required attachment fails `run.start` before
+  active-run registration.
+- The runtime receives one SDK `EnvironmentProvider`, normally a
+  `CompositeEnvironmentProvider`; it does not receive a list of host-control
+  attachments.
 
 HITL options:
 
@@ -802,6 +859,379 @@ Result:
   "queued": true
 }
 ```
+
+## Environment Attachment Methods
+
+The host owns an `EnvironmentAttachmentManager` between JSON-RPC handlers and
+run preparation. It resolves host-control refs into SDK providers and leases.
+Envd remains the environment data/effect plane; the host manager only owns
+selection, probing, lifecycle, and run binding.
+
+```mermaid
+flowchart TD
+    client[Host client]
+    rpc[starweaver.host RPC]
+    manager[EnvironmentAttachmentManager]
+    registry[Endpoint and launch resolver]
+    probe[Readiness probe]
+    lease_store[Attachment lease store]
+    envd_client[EnvdRpcClient]
+    local_provider[Local or virtual provider]
+    envd_provider[EnvdEnvironmentProvider]
+    composite[CompositeEnvironmentProvider]
+    runtime[AgentSession]
+
+    client --> rpc
+    rpc --> manager
+    manager --> registry
+    manager --> probe
+    manager --> lease_store
+    registry --> envd_client
+    registry --> local_provider
+    envd_client --> envd_provider
+    manager --> composite
+    local_provider --> composite
+    envd_provider --> composite
+    composite --> runtime
+```
+
+Manager responsibilities:
+
+- Validate attachment ids, default selection, access modes, and source shape.
+- Resolve `endpointRef` aliases to concrete local or remote transports.
+- Optionally launch host-owned envd daemons when a configured endpoint requires
+  it.
+- Construct SDK providers such as local, virtual, sandbox, or envd-backed
+  providers.
+- Probe process liveness and environment readiness before a run uses an
+  attachment.
+- Track connection-scoped and session-scoped attachment leases.
+- Materialize one run-scoped `RunEnvironmentBinding` from inline attachments
+  and lease refs, then construct the SDK provider composition.
+- Release manager-owned leases when their scope closes, while leaving envd
+  service-owned environment state to envd.
+
+Manager non-goals:
+
+- It does not expose envd file, process, mount, or operation DTOs through
+  `starweaver.host`.
+- It does not store full envd state in Starweaver session storage.
+- It does not mutate an already running AgentSession in host protocol v1.
+  Active-run mount/unmount requires a future `environment.active_mounts`
+  feature because it must update the runtime environment handle and reinject
+  environment context safely.
+
+### Attachment Source
+
+Attachment source shape:
+
+```json
+{
+  "id": "data",
+  "kind": "envd",
+  "endpointRef": "http://127.0.0.1:8770/rpc",
+  "environmentId": "dataset",
+  "mode": "read_only",
+  "default": false,
+  "metadata": {}
+}
+```
+
+Fields:
+
+| Field           | Type    | Required | Meaning                                                       |
+| --------------- | ------- | -------- | ------------------------------------------------------------- |
+| `id`            | string  | yes      | Agent-facing mount identity within the lease or run           |
+| `kind`          | string  | no       | `local`, `virtual`, `sandbox`, or `envd`; defaults to `local` |
+| `endpointRef`   | string  | for envd | Literal endpoint or host-configured endpoint alias            |
+| `environmentId` | string  | no       | Concrete environment id inside the implementation             |
+| `mode`          | string  | no       | `read_write` or `read_only`; defaults to `read_write`         |
+| `default`       | boolean | no       | Default preference when materialized into a run               |
+| `metadata`      | object  | no       | Host metadata, never model-visible by default                 |
+
+Endpoint refs:
+
+- Literal `http://...` endpoints connect through `EnvdRpcClient::http`.
+- Stdio, local socket, named pipe, and launched daemon aliases are resolved by
+  host configuration before the SDK provider is constructed.
+- Alias resolution failures return `configuration_failed`.
+- Transport liveness failures return `environment_unavailable`.
+
+### `environment.attach`
+
+Creates or reuses an attachment lease for a connection or session.
+
+Params:
+
+```json
+{
+  "scope": {
+    "kind": "session",
+    "sessionId": "session_..."
+  },
+  "attachment": {
+    "id": "data",
+    "kind": "envd",
+    "endpointRef": "remote-data",
+    "environmentId": "dataset",
+    "mode": "read_only"
+  },
+  "readiness": {
+    "policy": "required",
+    "timeoutMs": 5000
+  },
+  "idempotencyKey": "attach-data"
+}
+```
+
+Params fields:
+
+| Field            | Type   | Required | Meaning                                           |
+| ---------------- | ------ | -------- | ------------------------------------------------- |
+| `scope`          | object | no       | `connection` or `session`; defaults to connection |
+| `attachment`     | object | yes      | Attachment source                                 |
+| `readiness`      | object | no       | Probe policy and timeout                          |
+| `idempotencyKey` | string | no       | Idempotent attach key                             |
+
+Scope shape:
+
+```json
+{
+  "kind": "connection"
+}
+```
+
+```json
+{
+  "kind": "session",
+  "sessionId": "session_..."
+}
+```
+
+Readiness policy:
+
+| Policy        | Meaning                                                              |
+| ------------- | -------------------------------------------------------------------- |
+| `required`    | Attach fails if liveness or environment readiness cannot be proven   |
+| `best_effort` | Attach succeeds but reports degraded readiness                       |
+| `skip`        | Construct the lease without probing; run materialization may reprobe |
+
+Result:
+
+```json
+{
+  "attachment": {
+    "attachmentLeaseId": "envatt_...",
+    "scope": {
+      "kind": "session",
+      "sessionId": "session_..."
+    },
+    "id": "data",
+    "kind": "envd",
+    "endpointRef": "remote-data",
+    "environmentId": "dataset",
+    "mode": "read_only",
+    "default": false,
+    "mountRoot": "/environment/data",
+    "status": "ready",
+    "readiness": {
+      "transport": "ready",
+      "environment": "ready",
+      "capabilities": {
+        "files": ["read", "list", "stat", "glob", "grep"],
+        "command": [],
+        "process": []
+      }
+    }
+  }
+}
+```
+
+Attach invariants:
+
+- A repeated idempotent attach returns the original lease.
+- Reusing the same `id` in the same scope with a different source returns
+  `already_exists` unless a future replace mode is specified.
+- Session-scoped leases may be reused by future runs for that session.
+- Connection-scoped leases are released on `shutdown` or connection loss.
+- The manager may share one transport client between compatible leases, but
+  lease ids remain distinct host-control records.
+
+Attachment status values:
+
+| Status        | Meaning                                        |
+| ------------- | ---------------------------------------------- |
+| `ready`       | Probe succeeded and the provider can be used   |
+| `degraded`    | Lease exists but readiness is only best-effort |
+| `unavailable` | Probe failed or transport is unreachable       |
+| `detached`    | Lease was released                             |
+
+### `environment.detach`
+
+Releases an attachment lease.
+
+Params:
+
+```json
+{
+  "attachmentLeaseId": "envatt_...",
+  "force": false,
+  "idempotencyKey": "detach-data"
+}
+```
+
+Params fields:
+
+| Field               | Type    | Required | Meaning                                      |
+| ------------------- | ------- | -------- | -------------------------------------------- |
+| `attachmentLeaseId` | string  | yes      | Lease id returned by `environment.attach`    |
+| `force`             | boolean | no       | Reserved for future force-after-run policies |
+| `idempotencyKey`    | string  | no       | Idempotent detach key                        |
+
+Result:
+
+```json
+{
+  "attachmentLeaseId": "envatt_...",
+  "detached": true
+}
+```
+
+Detach invariants:
+
+- Detaching a lease used by an active run returns `run_conflict` unless a future
+  force policy explicitly detaches only after the active run finishes.
+- Detach releases host manager resources and host-launched processes when no
+  remaining lease uses them.
+- Detach does not imply envd `environment.close` or `environment.unload`.
+  Concrete envd lifecycle remains envd-owned.
+
+### `environment.list`
+
+Lists attachment leases visible to the connection.
+
+Params:
+
+```json
+{
+  "scope": {
+    "kind": "session",
+    "sessionId": "session_..."
+  },
+  "status": "ready",
+  "limit": 50,
+  "pageToken": null
+}
+```
+
+Result:
+
+```json
+{
+  "attachments": [],
+  "nextPageToken": null
+}
+```
+
+The result uses the same attachment lease shape returned by
+`environment.attach`, but secrets and launch credentials are always redacted.
+
+### `environment.health`
+
+Probes one existing lease or one inline attachment source.
+
+Params:
+
+```json
+{
+  "attachmentLeaseId": "envatt_...",
+  "timeoutMs": 5000
+}
+```
+
+Inline probe:
+
+```json
+{
+  "attachment": {
+    "id": "data",
+    "kind": "envd",
+    "endpointRef": "http://127.0.0.1:8770/rpc",
+    "environmentId": "dataset"
+  },
+  "timeoutMs": 5000
+}
+```
+
+Result:
+
+```json
+{
+  "status": "ready",
+  "readiness": {
+    "transport": "ready",
+    "environment": "ready",
+    "capabilities": {
+      "files": ["read", "write", "list", "stat", "glob", "grep"],
+      "command": ["run"],
+      "process": ["start", "wait", "input", "signal", "kill"]
+    }
+  }
+}
+```
+
+Health invariants:
+
+- `environment.health` is diagnostic. A ready result is not a permanent
+  guarantee; tool calls still handle per-operation failures.
+- For envd, HTTP `/health` or transport initialization proves process liveness.
+  `initialize` plus `environment.open` or `environment.state` proves
+  environment readiness.
+- Health results must not include provider credentials, raw shell output, or
+  host filesystem paths beyond declared agent-facing mount roots.
+
+### Run Materialization
+
+Before `run.start` creates an active run, the server materializes environment
+attachments:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant RPC as starweaver.host RPC
+    participant Manager as EnvironmentAttachmentManager
+    participant Envd as EnvdRpcClient or LocalEnvd
+    participant SDK as CompositeEnvironmentProvider
+    participant Runtime as AgentSession
+
+    Client->>RPC: environment.attach(optional)
+    RPC->>Manager: create lease and probe
+    Manager->>Envd: initialize/open/state
+    Envd-->>Manager: descriptor and readiness
+    Manager-->>RPC: attachmentLeaseId
+    Client->>RPC: run.start(environmentAttachments)
+    RPC->>Manager: materialize run attachments
+    Manager->>Manager: validate ids/default/modes
+    Manager->>Manager: build RunEnvironmentBinding
+    Manager->>SDK: construct CompositeEnvironmentProvider
+    RPC->>Runtime: start run with one provider
+```
+
+Materialization rules:
+
+- Inline attachments and `attachmentLeaseId` refs can be mixed in one run.
+- `RunEnvironmentBinding` is a host-side run-local value:
+  `mounts`, `defaultMountId`, `defaultShellMountId`, readiness summary, and
+  safe lease refs. It is not a general graph abstraction.
+- The run-local `id` determines the agent-facing path even when a lease has a
+  different source identity.
+- The materialized `RunEnvironmentBinding` is immutable for the run in host
+  protocol v1.
+- The run record should store safe attachment refs, lease ids when applicable,
+  readiness summary, and start/end state versions when providers expose them.
+- Failed required probes fail `run.start` before durable active-run
+  registration. If the server has already created a durable run record, it must
+  mark that run failed instead of leaving an active orphan.
 
 ## Stream Methods
 
@@ -1369,6 +1799,7 @@ Diagnostic sections may include:
 - protocol identity
 - storage paths
 - active run counts
+- environment attachment summaries and readiness
 - selected client state roots
 - configured model profile names
 - environment policy summaries
@@ -1385,6 +1816,8 @@ Recommended methods:
 - `run.start`
 - `run.cancel`
 - `run.steer`
+- `environment.attach`
+- `environment.detach`
 - `approval.decide`
 - `deferred.complete`
 - `deferred.fail`
@@ -1414,28 +1847,29 @@ JSON-RPC standard codes:
 
 Starweaver domain codes:
 
-| Code     | Kind                    | Meaning                                                   |
-| -------- | ----------------------- | --------------------------------------------------------- |
-| `-32001` | `not_initialized`       | Method requires successful initialize                     |
-| `-32002` | `unsupported_feature`   | Required feature is unavailable                           |
-| `-32010` | `not_found`             | Session, run, approval, deferred, or subscription missing |
-| `-32011` | `already_exists`        | Create conflicts with existing record                     |
-| `-32012` | `idempotency_conflict`  | Same key used with different params                       |
-| `-32013` | `run_conflict`          | Run state does not allow requested action                 |
-| `-32014` | `run_not_active`        | Active-run-only action requested for inactive run         |
-| `-32015` | `stream_cursor_invalid` | Cursor scope or sequence is invalid                       |
-| `-32016` | `stream_trimmed`        | Requested cursor is before retained range                 |
-| `-32017` | `subscription_closed`   | Subscription no longer accepts events                     |
-| `-32018` | `timeout`               | Operation timed out                                       |
-| `-32019` | `cancelled`             | Operation was cancelled                                   |
-| `-32020` | `approval_conflict`     | Approval has already reached a terminal decision          |
-| `-32021` | `deferred_conflict`     | Deferred record has already reached a terminal state      |
-| `-32022` | `replay_limit_exceeded` | Subscribe replay would exceed requested limit             |
-| `-32030` | `execution_failed`      | Runtime or tool execution failed                          |
-| `-32040` | `storage_failed`        | Durable storage operation failed                          |
-| `-32050` | `configuration_failed`  | Config/profile resolution failed                          |
-| `-32060` | `payload_too_large`     | Request, response, or frame exceeds advertised limits     |
-| `-32061` | `resource_exhausted`    | Subscription, page, or server resource limit reached      |
+| Code     | Kind                      | Meaning                                                   |
+| -------- | ------------------------- | --------------------------------------------------------- |
+| `-32001` | `not_initialized`         | Method requires successful initialize                     |
+| `-32002` | `unsupported_feature`     | Required feature is unavailable                           |
+| `-32010` | `not_found`               | Session, run, approval, deferred, or subscription missing |
+| `-32011` | `already_exists`          | Create conflicts with existing record                     |
+| `-32012` | `idempotency_conflict`    | Same key used with different params                       |
+| `-32013` | `run_conflict`            | Run state does not allow requested action                 |
+| `-32014` | `run_not_active`          | Active-run-only action requested for inactive run         |
+| `-32015` | `stream_cursor_invalid`   | Cursor scope or sequence is invalid                       |
+| `-32016` | `stream_trimmed`          | Requested cursor is before retained range                 |
+| `-32017` | `subscription_closed`     | Subscription no longer accepts events                     |
+| `-32018` | `timeout`                 | Operation timed out                                       |
+| `-32019` | `cancelled`               | Operation was cancelled                                   |
+| `-32020` | `approval_conflict`       | Approval has already reached a terminal decision          |
+| `-32021` | `deferred_conflict`       | Deferred record has already reached a terminal state      |
+| `-32022` | `replay_limit_exceeded`   | Subscribe replay would exceed requested limit             |
+| `-32030` | `execution_failed`        | Runtime or tool execution failed                          |
+| `-32031` | `environment_unavailable` | Environment transport or readiness probe failed           |
+| `-32040` | `storage_failed`          | Durable storage operation failed                          |
+| `-32050` | `configuration_failed`    | Config/profile resolution failed                          |
+| `-32060` | `payload_too_large`       | Request, response, or frame exceeds advertised limits     |
+| `-32061` | `resource_exhausted`      | Subscription, page, or server resource limit reached      |
 
 Error data shape:
 
@@ -1460,6 +1894,9 @@ Error invariants:
 - `error.data.retryable` tells clients whether immediate retry is meaningful.
 - Validation errors include a field path when possible.
 - Storage and runtime failures should preserve a safe failure category without exposing secrets.
+- Environment availability failures should include safe fields such as
+  `attachmentLeaseId`, `id`, `endpointRef`, `environmentId`, `phase`, and
+  `retryable`, but not credentials, command output, or daemon stderr.
 - Oversized requests fail with `payload_too_large` when the server can still emit a JSON-RPC error; otherwise the transport may close.
 - Exhausted subscription slots or other advertised resource limits fail with `resource_exhausted`.
 
@@ -1504,13 +1941,14 @@ Current `starweaver-rpc-core` ownership:
 - JSON-RPC request/error/notification envelopes
 - stream payload format parsing
 - replay cursor parsing and scope validation
-- replay result and attachment result helpers
+- replay result and environment attachment result helpers
 - `DisplayMessage` and AGUI output projection helpers
 
 Target `starweaver-rpc-core` ownership:
 
 - method constants or `RpcMethod`
 - params/result structs
+- environment attachment params/result structs and validation helpers
 - event envelope structs
 - error code/data structs
 - protocol identity and feature names
@@ -1528,6 +1966,7 @@ Current `starweaver-cli` ownership during extraction:
 - stdio and HTTP transport profiles
 - local server adapter
 - router wiring to `CliRuntimeCoordinator`
+- local `EnvironmentAttachmentManager` implementation
 - local session/current-state/profile/config handlers
 - projection adapters for AGUI and native display messages
 - local process lifecycle and shutdown
@@ -1547,6 +1986,8 @@ flowchart TD
     run_handlers[run handlers]
     stream_handlers[stream handlers]
     hitl_handlers[hitl handlers]
+    env_handlers[environment attachment handlers]
+    env_manager[EnvironmentAttachmentManager]
     model_handlers[model and profile handlers]
     config_handlers[config and diagnostics handlers]
     coordinator[CliRuntimeCoordinator]
@@ -1558,10 +1999,13 @@ flowchart TD
     server --> router
     router --> session_handlers
     router --> run_handlers
+    router --> env_handlers
     router --> stream_handlers
     router --> hitl_handlers
     router --> model_handlers
     router --> config_handlers
+    env_handlers --> env_manager
+    run_handlers --> env_manager
     run_handlers --> coordinator
     stream_handlers --> coordinator
     stream_handlers --> stores
@@ -1592,6 +2036,8 @@ Architecture review:
 - RPC is a host-control protocol, not a CLI helper module.
 - TUI is not routed through RPC.
 - CLI commands are not the protocol source of truth.
+- Environment attachment management is host-control; envd remains the
+  environment data/effect plane.
 - Runtime checkpoint and stream record types remain durable upstream evidence, not a new protocol crate.
 - Session and stream persistence are accessed through shared contracts.
 - Projection stays at protocol/product edges.
@@ -1603,6 +2049,8 @@ Wire review:
 - Every replay/live event carries a scope and cursor.
 - Every list method has a pagination story.
 - Every error has a machine-readable kind.
+- Environment attachment ids, default selection, readiness, and lease scope have
+  typed validation.
 - Every notification kind has required payload fields.
 - Advertised limits have defined failure behavior.
 - Embedded shared records keep their existing serde shape.
@@ -1623,6 +2071,7 @@ Operational review:
 - Config reads are allowlisted.
 - Secrets are redacted.
 - Shutdown closes subscriptions predictably.
+- Attachment manager leases have explicit scope and release behavior.
 - Transport profiles do not change method semantics.
 
 Future-surface review:
@@ -1655,6 +2104,10 @@ Required tests:
 - Error fixtures for `payload_too_large` and `resource_exhausted`.
 - `run.start` idempotency fixture proving no duplicate run.
 - `run.start` model override and HITL policy validation fixtures.
+- `environment.attach` idempotency fixture proving no duplicate lease.
+- `environment.detach` conflict fixture for an active run attachment.
+- `environment.health` fixture covering ready, unavailable, and redacted error data.
+- `run.start` multi-attachment fixture proving default selection and `/environment/{id}` materialization.
 - Current-session pointer set, clear, and missing-session fixtures.
 - `stream.replay` run scope and session scope fixtures.
 - `stream.subscribe` replay-before-live no-gap fixture.

@@ -47,7 +47,6 @@ Optional extension traits can cover:
 - glob and grep
 - one-shot commands
 - background process lifecycle
-- shell sessions
 - resources
 - scratch storage
 - policy and approval hooks
@@ -67,8 +66,7 @@ Every provider should describe itself without exposing transport internals.
   "capabilities": {
     "files": ["read", "write", "list", "stat", "glob", "grep"],
     "command": ["run"],
-    "process": ["start", "wait", "input", "signal", "kill"],
-    "shellSession": []
+    "process": ["start", "wait", "input", "signal", "kill"]
   },
   "stateRef": {
     "kind": "envd",

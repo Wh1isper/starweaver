@@ -6,10 +6,11 @@ use starweaver_envd::LocalEnvd;
 use starweaver_envd_client::EnvdRpcClient;
 use starweaver_envd_core::DEFAULT_ENVIRONMENT_ID;
 use starweaver_environment::{
-    DynEnvironmentProvider, DynProcessShellProvider, EnvdEnvironmentProvider, EnvironmentPolicy,
-    FilePolicy, LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
+    CompositeEnvironmentProvider, DynEnvironmentProvider, DynProcessShellProvider,
+    EnvdEnvironmentProvider, EnvironmentMount, EnvironmentMountMode, EnvironmentPolicy, FilePolicy,
+    LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
 };
-use starweaver_rpc_core::EnvironmentAttachmentRef;
+use starweaver_rpc_core::{EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef};
 
 use crate::{CliConfig, CliError, CliResult};
 
@@ -51,7 +52,29 @@ pub fn resolve_environment_for_session_with_attachments(
     if attachments.is_empty() {
         return resolve_environment_for_session(config, session_id);
     }
-    resolve_environment_attachment(config, Some(session_id), &attachments[0])
+    if attachments.len() == 1 {
+        return resolve_environment_attachment(config, Some(session_id), &attachments[0]);
+    }
+    let mut mounts = Vec::new();
+    for attachment in attachments {
+        let resolved = resolve_environment_attachment(config, Some(session_id), attachment)?;
+        mounts.push(
+            EnvironmentMount::new(&attachment.id, resolved.provider)
+                .map_err(|error| CliError::Config(error.to_string()))?
+                .with_mode(environment_mount_mode(attachment.mode))
+                .with_default(attachment.is_default)
+                .with_default_for_shell(attachment.is_default),
+        );
+    }
+    let provider: DynEnvironmentProvider = Arc::new(
+        CompositeEnvironmentProvider::new(mounts)
+            .map_err(|error| CliError::Config(error.to_string()))?,
+    );
+    let process_provider = provider.clone().process_shell_provider();
+    Ok(ResolvedEnvironment {
+        provider,
+        process_provider,
+    })
 }
 
 fn resolve_environment_with_tmp_namespace(
@@ -125,6 +148,13 @@ fn resolve_envd_attachment(
         provider,
         process_provider,
     })
+}
+
+const fn environment_mount_mode(mode: EnvironmentAttachmentAccessMode) -> EnvironmentMountMode {
+    match mode {
+        EnvironmentAttachmentAccessMode::ReadOnly => EnvironmentMountMode::ReadOnly,
+        EnvironmentAttachmentAccessMode::ReadWrite => EnvironmentMountMode::ReadWrite,
+    }
 }
 
 fn envd_backed_provider(provider: DynEnvironmentProvider, id: &str) -> DynEnvironmentProvider {
@@ -298,6 +328,65 @@ additional_dirs = ["../custom-skills"]
             Err(starweaver_environment::EnvironmentError::AccessDenied(_))
         ));
         let _ = std::fs::remove_file(unrelated_tmp);
+    }
+
+    #[tokio::test]
+    async fn cli_resolves_multiple_environment_attachments_as_composite_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::write(config.workspace_root.join("README.md"), "local workspace").unwrap();
+        let attachments = vec![
+            EnvironmentAttachmentRef {
+                id: "workspace".to_string(),
+                kind: "local".to_string(),
+                mode: EnvironmentAttachmentAccessMode::ReadWrite,
+                is_default: true,
+                attachment_lease_id: None,
+                endpoint_ref: None,
+                environment_id: None,
+                metadata: serde_json::Map::new(),
+            },
+            EnvironmentAttachmentRef {
+                id: "tools".to_string(),
+                kind: "local".to_string(),
+                mode: EnvironmentAttachmentAccessMode::ReadOnly,
+                is_default: false,
+                attachment_lease_id: None,
+                endpoint_ref: None,
+                environment_id: None,
+                metadata: serde_json::Map::new(),
+            },
+        ];
+
+        let environment =
+            resolve_environment_for_session_with_attachments(&config, "session_123", &attachments)
+                .unwrap();
+
+        assert_eq!(environment.provider.id(), "composite");
+        assert_eq!(
+            environment.provider.read_text("README.md").await.unwrap(),
+            "local workspace"
+        );
+        assert_eq!(
+            environment
+                .provider
+                .read_text("/environment/tools/README.md")
+                .await
+                .unwrap(),
+            "local workspace"
+        );
+        assert!(matches!(
+            environment
+                .provider
+                .write_text("/environment/tools/new.txt", "blocked")
+                .await,
+            Err(starweaver_environment::EnvironmentError::AccessDenied(_))
+        ));
+        assert!(environment.process_provider.is_some());
     }
 
     fn write_skill(path: &Path, name: &str, description: &str) {

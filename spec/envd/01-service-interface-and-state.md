@@ -79,7 +79,6 @@ EnvironmentState
   files or file_backend_ref
   resources
   processes
-  shell_sessions
   operations
   effects
   policy_revision
@@ -199,24 +198,12 @@ Process state is service-owned.
 The `EnvironmentProvider` adapter can translate this into
 `ShellProcessSnapshot` for current tools.
 
-## Shell Session State
+## Command and Process State
 
-Durable shell sessions are not required in the first slice, but the state model
-must leave room for them.
-
-```json
-{
-  "shellSessionId": "sh_123",
-  "environmentId": "env_123",
-  "mountId": "workspace",
-  "status": "attached",
-  "transcriptCursor": "term_55",
-  "rows": 40,
-  "cols": 120
-}
-```
-
-Shell session support should be a capability, not part of the minimum service.
+Shell is an optional execution capability, not part of envd core semantics.
+Agent-facing tools should rely on stateless foreground commands and background
+process handles. Interactive terminal state is intentionally out of scope for
+the envd API because agents should not need to understand it.
 
 ## Capabilities
 
@@ -227,7 +214,6 @@ Every environment descriptor includes capabilities.
   "files": ["read", "write", "list", "stat", "glob", "grep"],
   "command": ["run"],
   "process": ["start", "wait", "input", "signal", "kill"],
-  "shellSession": [],
   "resources": [],
   "policy": ["static"]
 }
