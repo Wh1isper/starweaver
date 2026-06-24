@@ -137,8 +137,8 @@ pub struct EnvironmentAttachmentRef {
     #[serde(default = "default_environment_attachment_kind")]
     pub kind: String,
     /// Requested access mode.
-    #[serde(default)]
-    pub mode: EnvironmentAttachmentAccessMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<EnvironmentAttachmentAccessMode>,
     /// Whether this attachment is the default SDK environment mount.
     #[serde(default, rename = "default")]
     pub is_default: bool,
@@ -157,6 +157,18 @@ pub struct EnvironmentAttachmentRef {
 }
 
 impl EnvironmentAttachmentRef {
+    /// Return the effective access mode, defaulting omitted refs to read-write.
+    #[must_use]
+    pub fn resolved_mode(&self) -> EnvironmentAttachmentAccessMode {
+        self.mode.unwrap_or_default()
+    }
+
+    /// Return the access mode explicitly requested by this ref, if any.
+    #[must_use]
+    pub const fn requested_mode(&self) -> Option<EnvironmentAttachmentAccessMode> {
+        self.mode
+    }
+
     /// Return the environment id requested by this ref, if any.
     #[must_use]
     pub fn requested_environment_id(&self) -> Option<&str> {

@@ -10,10 +10,10 @@ use serde_json::{json, Map, Value};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     get_model_settings, AnthropicSettings, AuthConfig, BedrockSettings, CodexSettings, ContentPart,
-    GatewaySettings, GoogleSettings, HttpModelConfig, HttpRequest, HttpRequestOptions,
-    HttpResponse, InMemoryProviderRequestAuditRecorder, MessageNormalization, ModelAdapter,
-    ModelError, ModelEventStream, ModelHttpClient, ModelMessage, ModelProfile, ModelRequest,
-    ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelSettings,
+    GatewaySettings, GoogleCloudServiceTier, GoogleSettings, HttpModelConfig, HttpRequest,
+    HttpRequestOptions, HttpResponse, InMemoryProviderRequestAuditRecorder, MessageNormalization,
+    ModelAdapter, ModelError, ModelEventStream, ModelHttpClient, ModelMessage, ModelProfile,
+    ModelRequest, ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelSettings,
     NativeToolDefinition, OpenAiChatSettings, OpenAiResponsesSettings, OutputMode, ProtocolFamily,
     ProtocolModelClient, ProviderRequestAuditPolicy, ProviderSettings, ServiceTier,
     StructuredOutputMode, ThinkingSettings, ToolChoice, ToolDefinition,
@@ -1826,6 +1826,7 @@ async fn gemini_maps_seed_and_typed_google_settings() {
                         response_logprobs: Some(true),
                         logprobs: Some(3),
                         service_tier: Some("priority".to_string()),
+                        cloud_service_tier: None,
                     }),
                     ..ProviderSettings::default()
                 },
@@ -1848,6 +1849,56 @@ async fn gemini_maps_seed_and_typed_google_settings() {
     assert_eq!(request.body["cachedContent"], "cachedContents/cache-1");
     assert_eq!(request.body["labels"]["app"], "starweaver");
     assert_eq!(request.body["serviceTier"], "priority");
+}
+
+#[tokio::test]
+async fn google_cloud_maps_service_tier_to_vertex_headers() {
+    let http = CaptureHttpClient::with_response(text_response(json!({
+        "candidates": [{
+            "content": {"parts": [{"text": "ok"}]},
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}
+    })));
+    let client = ProtocolModelClient::new(
+        "google-cloud",
+        "gemini-2.5-flash",
+        ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent),
+        HttpModelConfig::new(
+            "https://aiplatform.googleapis.com/v1beta1",
+            "publishers/google/models/gemini-2.5-flash:generateContent",
+        ),
+        Arc::new(http.clone()),
+    );
+
+    client
+        .request(
+            history(),
+            Some(ModelSettings {
+                service_tier: Some(ServiceTier::Priority),
+                provider_settings: ProviderSettings {
+                    google: Some(GoogleSettings {
+                        service_tier: Some("priority".to_string()),
+                        cloud_service_tier: Some(GoogleCloudServiceTier::FlexOnly),
+                        ..GoogleSettings::default()
+                    }),
+                    ..ProviderSettings::default()
+                },
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let request = http.last_request();
+    assert_eq!(request.headers["X-Vertex-AI-LLM-Request-Type"], "shared");
+    assert_eq!(
+        request.headers["X-Vertex-AI-LLM-Shared-Request-Type"],
+        "flex"
+    );
+    assert!(request.body.get("serviceTier").is_none());
 }
 
 #[tokio::test]

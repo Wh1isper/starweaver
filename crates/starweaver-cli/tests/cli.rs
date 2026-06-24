@@ -929,6 +929,70 @@ fn cli_text_output_profiles_config_init_and_provider_config_work() {
 }
 
 #[test]
+fn cli_google_provider_config_aliases_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let init = cli(&temp)
+        .args(["config", "init", "--global", "--force"])
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let set_google_cloud_project = cli(&temp)
+        .args([
+            "config",
+            "set",
+            "--global",
+            "providers.google-cloud.project",
+            "starweaver-project",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        set_google_cloud_project.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&set_google_cloud_project.stderr)
+    );
+    let get_google_cloud_project = cli(&temp)
+        .args(["config", "get", "providers.google-cloud.project"])
+        .output()
+        .unwrap();
+    assert!(get_google_cloud_project.status.success());
+    assert_eq!(
+        String::from_utf8(get_google_cloud_project.stdout).unwrap(),
+        "starweaver-project\n"
+    );
+
+    let set_google_alias = cli(&temp)
+        .args([
+            "config",
+            "set",
+            "--global",
+            "providers.google.base_url",
+            "https://gateway.example/google",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        set_google_alias.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&set_google_alias.stderr)
+    );
+    let get_google_alias = cli(&temp)
+        .args(["config", "get", "providers.gemini.base_url"])
+        .output()
+        .unwrap();
+    assert!(get_google_alias.status.success());
+    assert_eq!(
+        String::from_utf8(get_google_alias.stdout).unwrap(),
+        "https://gateway.example/google\n"
+    );
+}
+
+#[test]
 fn cli_provider_missing_or_empty_key_does_not_create_session() {
     let temp = tempfile::tempdir().unwrap();
     let invalid_env = cli(&temp)

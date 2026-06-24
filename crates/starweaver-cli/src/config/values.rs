@@ -229,6 +229,50 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
             max_tokens_parameter_name(config.providers.gemini.max_tokens_parameter).to_string()
         }
         "providers.gemini.ready" => provider_ready(&config.providers.gemini).to_string(),
+        "providers.google-cloud.enabled" => config.providers.google_cloud.enabled.to_string(),
+        "providers.google-cloud.api_key_env" => config
+            .providers
+            .google_cloud
+            .api_key_env
+            .clone()
+            .unwrap_or_default(),
+        "providers.google-cloud.auth_token_env" => config
+            .providers
+            .google_cloud
+            .auth_token_env
+            .clone()
+            .unwrap_or_default(),
+        "providers.google-cloud.project" => config
+            .providers
+            .google_cloud
+            .project
+            .clone()
+            .unwrap_or_default(),
+        "providers.google-cloud.location" => config
+            .providers
+            .google_cloud
+            .location
+            .clone()
+            .unwrap_or_default(),
+        "providers.google-cloud.base_url" => config
+            .providers
+            .google_cloud
+            .base_url
+            .clone()
+            .unwrap_or_default(),
+        "providers.google-cloud.endpoint_path" => config
+            .providers
+            .google_cloud
+            .endpoint_path
+            .clone()
+            .unwrap_or_default(),
+        "providers.google-cloud.max_tokens_parameter" => {
+            max_tokens_parameter_name(config.providers.google_cloud.max_tokens_parameter)
+                .to_string()
+        }
+        "providers.google-cloud.ready" => {
+            provider_ready(&config.providers.google_cloud).to_string()
+        }
         "trim.auto_after_run" => config.auto_trim.to_string(),
         "trim.current_session_keep_recent_runs" => {
             config.current_session_keep_recent_runs.to_string()
@@ -260,7 +304,8 @@ fn provider_config_by_name<'a>(
         "openai" => Some(&config.providers.openai),
         "codex" => Some(&config.providers.codex),
         "anthropic" => Some(&config.providers.anthropic),
-        "gemini" => Some(&config.providers.gemini),
+        "gemini" | "google" | "google-gla" => Some(&config.providers.gemini),
+        "google-cloud" | "google_cloud" | "google-vertex" => Some(&config.providers.google_cloud),
         gateway => config.providers.gateways.get(gateway),
     }
 }
@@ -269,6 +314,9 @@ fn provider_config_value(provider: &ProviderConfig, field: &str) -> CliResult<St
     let value = match field {
         "enabled" => provider.enabled.to_string(),
         "api_key_env" => provider.api_key_env.clone().unwrap_or_default(),
+        "auth_token_env" => provider.auth_token_env.clone().unwrap_or_default(),
+        "project" => provider.project.clone().unwrap_or_default(),
+        "location" => provider.location.clone().unwrap_or_default(),
         "base_url" => provider.base_url.clone().unwrap_or_default(),
         "endpoint_path" => provider.endpoint_path.clone().unwrap_or_default(),
         "max_tokens_parameter" => {
@@ -282,10 +330,15 @@ fn provider_config_value(provider: &ProviderConfig, field: &str) -> CliResult<St
 
 fn provider_ready(provider: &ProviderConfig) -> bool {
     provider.enabled
-        && provider.api_key_env.as_deref().is_some_and(|name| {
-            let name = name.trim();
-            !name.is_empty() && env::var(name).is_ok_and(|value| !value.trim().is_empty())
-        })
+        && (env_value_present(provider.api_key_env.as_deref())
+            || env_value_present(provider.auth_token_env.as_deref()))
+}
+
+fn env_value_present(name: Option<&str>) -> bool {
+    name.is_some_and(|name| {
+        let name = name.trim();
+        !name.is_empty() && env::var(name).is_ok_and(|value| !value.trim().is_empty())
+    })
 }
 
 const fn output_mode_name(output: OutputMode) -> &'static str {
@@ -341,6 +394,9 @@ fn split_provider_config_key(key: &str) -> Option<(&str, &str)> {
     match field {
         "enabled"
         | "api_key_env"
+        | "auth_token_env"
+        | "project"
+        | "location"
         | "base_url"
         | "endpoint_path"
         | "max_tokens_parameter"
@@ -573,7 +629,9 @@ fn parse_provider_config_value(key: &str, field: &str, value: &str) -> CliResult
             .parse::<bool>()
             .map(Value::Boolean)
             .map_err(|error| CliError::Usage(error.to_string()))?,
-        "api_key_env" => Value::String(validated_non_empty(key, value)?.to_string()),
+        "api_key_env" | "auth_token_env" | "project" | "location" => {
+            Value::String(validated_non_empty(key, value)?.to_string())
+        }
         "base_url" | "endpoint_path" => Value::String(value.to_string()),
         "max_tokens_parameter" => Value::String(
             max_tokens_parameter_name(validated_max_tokens_parameter(value)?).to_string(),

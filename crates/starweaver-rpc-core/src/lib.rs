@@ -518,7 +518,14 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].id, "workspace");
         assert_eq!(refs[0].kind, "envd");
-        assert_eq!(refs[0].mode, EnvironmentAttachmentAccessMode::ReadWrite);
+        assert_eq!(
+            refs[0].resolved_mode(),
+            EnvironmentAttachmentAccessMode::ReadWrite
+        );
+        assert_eq!(
+            refs[0].requested_mode(),
+            Some(EnvironmentAttachmentAccessMode::ReadWrite)
+        );
         assert!(refs[0].is_default);
         assert_eq!(
             refs[0].requested_endpoint_ref(),
@@ -580,7 +587,19 @@ mod tests {
             refs[0].requested_attachment_lease_id(),
             Some("envatt_workspace")
         );
-        assert_eq!(refs[1].mode, EnvironmentAttachmentAccessMode::ReadOnly);
+        assert_eq!(
+            refs[0].requested_mode(),
+            None,
+            "lease refs can omit run-local mode override"
+        );
+        assert_eq!(
+            refs[1].requested_mode(),
+            Some(EnvironmentAttachmentAccessMode::ReadOnly)
+        );
+        assert_eq!(
+            refs[1].resolved_mode(),
+            EnvironmentAttachmentAccessMode::ReadOnly
+        );
 
         let lease = EnvironmentAttachmentLease {
             attachment_lease_id: "envatt_workspace".to_string(),

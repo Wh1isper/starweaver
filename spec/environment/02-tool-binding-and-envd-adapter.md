@@ -143,7 +143,7 @@ a run. That manager belongs above the SDK provider layer.
 flowchart TD
     host_rpc[starweaver.host RPC]
     manager[EnvironmentAttachmentManager]
-    resolver[Provider and endpoint resolver]
+    resolver[Provider resolver]
     composite[CompositeEnvironmentProvider]
     context[AgentContext]
     tools[Environment tools]
@@ -157,8 +157,8 @@ flowchart TD
 
 Boundary rules:
 
-- The manager validates host-control refs, endpoint aliases, readiness policy,
-  idempotency, and lease scope.
+- The manager validates host-control refs, literal endpoint refs, readiness
+  policy, idempotency, and lease scope.
 - The manager materializes one host-side `RunEnvironmentBinding`, then passes
   one SDK-facing `EnvironmentProvider` to the Agent SDK. For multi-environment
   runs, that provider is a composite provider.
@@ -169,6 +169,9 @@ Boundary rules:
 - Active-run mount/unmount is a future host feature because it must update the
   runtime environment handle and reinject environment context. The first
   manager slice materializes attachments before run start.
+- Named endpoint aliases and host-launched envd daemons are future manager
+  capabilities. The first manager slice accepts literal `http://...` envd
+  endpoints.
 
 ## Envd Adapter
 
@@ -290,7 +293,7 @@ internals.
 {
   "environment": {
     "kind": "envd",
-    "endpointRef": "local-envd",
+    "endpointRef": "http://127.0.0.1:8766/rpc",
     "environmentId": "env_123",
     "mode": "read_write"
   }

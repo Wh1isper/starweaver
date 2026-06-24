@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -18,12 +18,10 @@ use starweaver_rpc_core::{
     EnvironmentDetachParams, EnvironmentHealthParams, EnvironmentListParams, EnvironmentReadiness,
     EnvironmentReadinessCapabilities, EnvironmentReadinessPhase, EnvironmentReadinessPolicy,
     EnvironmentReadinessRequest, RpcError, ALREADY_EXISTS, ENVIRONMENT_UNAVAILABLE, INVALID_PARAMS,
-    SERVER_ERROR, UNSUPPORTED_FEATURE,
+    RUN_CONFLICT, SERVER_ERROR, UNSUPPORTED_FEATURE,
 };
 use tokio::time::timeout;
 use uuid::Uuid;
-
-use crate::CliConfig;
 
 const DEFAULT_READINESS_TIMEOUT_MS: u64 = 5_000;
 
@@ -31,6 +29,7 @@ const DEFAULT_READINESS_TIMEOUT_MS: u64 = 5_000;
 pub(super) struct EnvironmentAttachmentManager {
     leases: Arc<Mutex<BTreeMap<String, LeaseRecord>>>,
     attach_idempotency: Arc<Mutex<BTreeMap<String, String>>>,
+    active_runs: Arc<Mutex<BTreeMap<String, BTreeSet<String>>>>,
 }
 
 #[derive(Clone)]
@@ -40,10 +39,11 @@ struct LeaseRecord {
 }
 
 impl EnvironmentAttachmentManager {
-    pub(super) fn new(_config: CliConfig) -> Self {
+    pub(super) fn new() -> Self {
         Self {
             leases: Arc::new(Mutex::new(BTreeMap::new())),
             attach_idempotency: Arc::new(Mutex::new(BTreeMap::new())),
+            active_runs: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -105,7 +105,7 @@ impl EnvironmentAttachmentManager {
             serde_json::from_value::<EnvironmentDetachParams>(params.clone()).map_err(|error| {
                 RpcError::new(INVALID_PARAMS, format!("invalid detach params: {error}"))
             })?;
-        let detached = self.mark_detached(&params.attachment_lease_id)?;
+        let detached = self.detach_lease(&params.attachment_lease_id)?;
         Ok(json!({
             "attachmentLeaseId": params.attachment_lease_id,
             "detached": detached,
@@ -179,6 +179,7 @@ impl EnvironmentAttachmentManager {
     pub(super) async fn materialize_run_attachments(
         &self,
         refs: Vec<EnvironmentAttachmentRef>,
+        run_session_id: Option<&str>,
     ) -> Result<Vec<EnvironmentAttachmentRef>, RpcError> {
         let mut materialized = Vec::with_capacity(refs.len());
         for attachment in refs {
@@ -198,7 +199,12 @@ impl EnvironmentAttachmentManager {
                         format!("environment attachment lease is detached: {lease_id}"),
                     ));
                 }
+                validate_lease_scope_for_run(&record.lease, run_session_id)?;
                 let mut source = record.source;
+                if let Some(mode) = attachment.requested_mode() {
+                    ensure_mode_override(source.resolved_mode(), mode)?;
+                    source.mode = Some(mode);
+                }
                 source.id = attachment.id;
                 source.is_default = attachment.is_default;
                 source.attachment_lease_id = Some(lease_id);
@@ -219,6 +225,46 @@ impl EnvironmentAttachmentManager {
             }
         }
         Ok(materialized)
+    }
+
+    pub(super) fn mark_run_started(
+        &self,
+        run_id: &str,
+        attachments: &[EnvironmentAttachmentRef],
+    ) -> Result<(), RpcError> {
+        let lease_ids = attachments
+            .iter()
+            .filter_map(|attachment| attachment.requested_attachment_lease_id())
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>();
+        if lease_ids.is_empty() {
+            return Ok(());
+        }
+        let mut active_runs = self.active_runs.lock().map_err(lock_error)?;
+        let leases = self.leases.lock().map_err(lock_error)?;
+        for lease_id in &lease_ids {
+            let Some(record) = leases.get(lease_id) else {
+                return Err(RpcError::new(
+                    INVALID_PARAMS,
+                    format!("unknown environment attachment lease: {lease_id}"),
+                ));
+            };
+            if record.lease.status == EnvironmentAttachmentStatus::Detached {
+                return Err(RpcError::new(
+                    INVALID_PARAMS,
+                    format!("environment attachment lease is detached: {lease_id}"),
+                ));
+            }
+        }
+        active_runs.insert(run_id.to_string(), lease_ids);
+        drop(leases);
+        drop(active_runs);
+        Ok(())
+    }
+
+    pub(super) fn mark_run_finished(&self, run_id: &str) -> Result<(), RpcError> {
+        self.active_runs.lock().map_err(lock_error)?.remove(run_id);
+        Ok(())
     }
 
     fn idempotent_attach_result(
@@ -282,7 +328,17 @@ impl EnvironmentAttachmentManager {
         Ok(self.lease_record(lease_id)?.map(|record| record.source))
     }
 
-    fn mark_detached(&self, lease_id: &str) -> Result<bool, RpcError> {
+    fn detach_lease(&self, lease_id: &str) -> Result<bool, RpcError> {
+        let active_runs = self.active_runs.lock().map_err(lock_error)?;
+        if let Some((run_id, _)) = active_runs
+            .iter()
+            .find(|(_, lease_ids)| lease_ids.contains(lease_id))
+        {
+            return Err(RpcError::new(
+                RUN_CONFLICT,
+                format!("environment attachment lease is still used by active run: {run_id}"),
+            ));
+        }
         let mut leases = self.leases.lock().map_err(lock_error)?;
         let Some(record) = leases.get_mut(lease_id) else {
             return Err(RpcError::new(
@@ -295,6 +351,7 @@ impl EnvironmentAttachmentManager {
         record.lease.readiness.transport = EnvironmentReadinessPhase::Skipped;
         record.lease.readiness.environment = EnvironmentReadinessPhase::Skipped;
         drop(leases);
+        drop(active_runs);
         Ok(detached)
     }
 
@@ -306,7 +363,7 @@ impl EnvironmentAttachmentManager {
         match request.policy {
             EnvironmentReadinessPolicy::Skip => Ok((
                 EnvironmentAttachmentStatus::Degraded,
-                skipped_readiness(source.mode),
+                skipped_readiness(source.resolved_mode()),
             )),
             EnvironmentReadinessPolicy::Required => match self.probe(source, request).await {
                 Ok(readiness) => Ok((EnvironmentAttachmentStatus::Ready, readiness)),
@@ -327,7 +384,7 @@ impl EnvironmentAttachmentManager {
             Ok(readiness) => (EnvironmentAttachmentStatus::Ready, readiness),
             Err(error) => (
                 EnvironmentAttachmentStatus::Unavailable,
-                unavailable_readiness(source.mode, error),
+                unavailable_readiness(source.resolved_mode(), error),
             ),
         }
     }
@@ -338,7 +395,7 @@ impl EnvironmentAttachmentManager {
         request: &EnvironmentReadinessRequest,
     ) -> Result<EnvironmentReadiness, String> {
         match source.kind.as_str() {
-            "local" => Ok(ready_readiness(source.mode)),
+            "local" => Ok(ready_readiness(source.resolved_mode())),
             "envd" => self.probe_envd(source, request).await,
             other => Err(format!("unsupported environment attachment kind: {other}")),
         }
@@ -379,12 +436,12 @@ impl EnvironmentAttachmentManager {
             .await
             .map_err(|_| format!("envd readiness probe timed out after {timeout_ms}ms"))?
             .map_err(|error| error.to_string())?;
-        Ok(ready_readiness(source.mode))
+        Ok(ready_readiness(source.resolved_mode()))
     }
 }
 
 fn validate_attachment_source(
-    attachment: EnvironmentAttachmentRef,
+    mut attachment: EnvironmentAttachmentRef,
     allow_lease_ref: bool,
 ) -> Result<EnvironmentAttachmentRef, RpcError> {
     if !is_valid_environment_attachment_id(&attachment.id) {
@@ -403,7 +460,10 @@ fn validate_attachment_source(
         ));
     }
     match attachment.kind.as_str() {
-        "local" => Ok(attachment),
+        "local" => {
+            attachment.mode = Some(attachment.resolved_mode());
+            Ok(attachment)
+        }
         "envd" => {
             let Some(endpoint) = attachment.requested_endpoint_ref() else {
                 return Err(RpcError::new(
@@ -412,6 +472,7 @@ fn validate_attachment_source(
                 ));
             };
             if endpoint.starts_with("http://") {
+                attachment.mode = Some(attachment.resolved_mode());
                 Ok(attachment)
             } else {
                 Err(RpcError::new(
@@ -459,7 +520,7 @@ fn lease_from_source(
         scope,
         id: source.id.clone(),
         kind: source.kind.clone(),
-        mode: source.mode,
+        mode: source.resolved_mode(),
         is_default: source.is_default,
         mount_root: format!("/environment/{}", source.id),
         status,
@@ -539,9 +600,60 @@ fn scope_matches(left: &EnvironmentAttachmentScope, right: &EnvironmentAttachmen
 
 fn same_source(left: &EnvironmentAttachmentRef, right: &EnvironmentAttachmentRef) -> bool {
     left.kind == right.kind
-        && left.mode == right.mode
+        && left.resolved_mode() == right.resolved_mode()
         && left.endpoint_ref == right.endpoint_ref
         && left.environment_id == right.environment_id
+}
+
+fn ensure_mode_override(
+    lease_mode: EnvironmentAttachmentAccessMode,
+    requested_mode: EnvironmentAttachmentAccessMode,
+) -> Result<(), RpcError> {
+    if lease_mode == EnvironmentAttachmentAccessMode::ReadOnly
+        && requested_mode == EnvironmentAttachmentAccessMode::ReadWrite
+    {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "run-local environment attachment mode cannot widen a read-only lease",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_lease_scope_for_run(
+    lease: &EnvironmentAttachmentLease,
+    run_session_id: Option<&str>,
+) -> Result<(), RpcError> {
+    if lease.scope.kind == EnvironmentAttachmentScopeKind::Connection {
+        return Ok(());
+    }
+    let Some(lease_session_id) = lease.scope.session_id.as_deref() else {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!(
+                "session-scoped environment attachment lease is missing sessionId: {}",
+                lease.attachment_lease_id
+            ),
+        ));
+    };
+    let Some(run_session_id) = run_session_id else {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!(
+                "session-scoped environment attachment lease requires run sessionId: {}",
+                lease.attachment_lease_id
+            ),
+        ));
+    };
+    if lease_session_id != run_session_id {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            format!(
+                "environment attachment lease belongs to session {lease_session_id}, not {run_session_id}"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn idempotency_key(scope: &EnvironmentAttachmentScope, key: &str) -> String {
@@ -561,4 +673,201 @@ fn lock_error(error: impl std::fmt::Display) -> RpcError {
         SERVER_ERROR,
         format!("environment attachment lock poisoned: {error}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use serde_json::json;
+    use starweaver_rpc_core::environment_attachment_refs;
+
+    #[tokio::test]
+    async fn detach_rejects_lease_used_by_active_run() {
+        let manager = EnvironmentAttachmentManager::new();
+        let attached = manager
+            .attach(&json!({
+                "attachment": {"id": "workspace", "kind": "local"},
+                "readiness": {"policy": "required"}
+            }))
+            .await
+            .unwrap();
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let attachments = manager
+            .materialize_run_attachments(
+                environment_attachment_refs(&json!({
+                    "environmentAttachments": [
+                        {"id": "workspace", "attachmentLeaseId": lease_id, "default": true}
+                    ]
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        manager.mark_run_started("run_1", &attachments).unwrap();
+        let error = manager
+            .detach(&json!({"attachmentLeaseId": lease_id}))
+            .unwrap_err();
+        assert_eq!(error.code, RUN_CONFLICT);
+        assert!(error.message.contains("run_1"));
+
+        manager.mark_run_finished("run_1").unwrap();
+        let detached = manager
+            .detach(&json!({"attachmentLeaseId": lease_id}))
+            .unwrap();
+        assert_eq!(detached["detached"], true);
+    }
+
+    #[tokio::test]
+    async fn mark_run_started_rejects_lease_detached_after_materialization() {
+        let manager = EnvironmentAttachmentManager::new();
+        let attached = manager
+            .attach(&json!({
+                "attachment": {"id": "workspace", "kind": "local"},
+                "readiness": {"policy": "required"}
+            }))
+            .await
+            .unwrap();
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let attachments = manager
+            .materialize_run_attachments(
+                environment_attachment_refs(&json!({
+                    "environmentAttachments": [
+                        {"id": "workspace", "attachmentLeaseId": lease_id, "default": true}
+                    ]
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        manager
+            .detach(&json!({"attachmentLeaseId": lease_id}))
+            .unwrap();
+
+        let error = manager.mark_run_started("run_1", &attachments).unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(error.message.contains("detached"));
+    }
+
+    #[tokio::test]
+    async fn lease_refs_can_only_downgrade_run_local_mode() {
+        let manager = EnvironmentAttachmentManager::new();
+        let read_write = manager
+            .attach(&json!({
+                "attachment": {"id": "workspace", "kind": "local", "mode": "read_write"},
+                "readiness": {"policy": "required"}
+            }))
+            .await
+            .unwrap();
+        let read_write_lease = read_write["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let downgraded = manager
+            .materialize_run_attachments(
+                environment_attachment_refs(&json!({
+                    "environmentAttachments": [
+                        {
+                            "id": "workspace",
+                            "attachmentLeaseId": read_write_lease,
+                            "mode": "read_only",
+                            "default": true
+                        }
+                    ]
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            downgraded[0].resolved_mode(),
+            EnvironmentAttachmentAccessMode::ReadOnly
+        );
+
+        let read_only = manager
+            .attach(&json!({
+                "attachment": {"id": "data", "kind": "local", "mode": "read_only"},
+                "readiness": {"policy": "required"}
+            }))
+            .await
+            .unwrap();
+        let read_only_lease = read_only["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let error = manager
+            .materialize_run_attachments(
+                environment_attachment_refs(&json!({
+                    "environmentAttachments": [
+                        {
+                            "id": "data",
+                            "attachmentLeaseId": read_only_lease,
+                            "mode": "read_write",
+                            "default": true
+                        }
+                    ]
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(error.message.contains("cannot widen"));
+    }
+
+    #[tokio::test]
+    async fn session_scoped_lease_refs_must_match_run_session() {
+        let manager = EnvironmentAttachmentManager::new();
+        let attached = manager
+            .attach(&json!({
+                "scope": {"kind": "session", "sessionId": "session_a"},
+                "attachment": {"id": "workspace", "kind": "local"},
+                "readiness": {"policy": "required"}
+            }))
+            .await
+            .unwrap();
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let refs = || {
+            environment_attachment_refs(&json!({
+                "environmentAttachments": [
+                    {"id": "workspace", "attachmentLeaseId": lease_id, "default": true}
+                ]
+            }))
+            .unwrap()
+        };
+
+        let missing_session = manager
+            .materialize_run_attachments(refs(), None)
+            .await
+            .unwrap_err();
+        assert_eq!(missing_session.code, INVALID_PARAMS);
+        assert!(missing_session.message.contains("requires run sessionId"));
+
+        let wrong_session = manager
+            .materialize_run_attachments(refs(), Some("session_b"))
+            .await
+            .unwrap_err();
+        assert_eq!(wrong_session.code, INVALID_PARAMS);
+        assert!(wrong_session.message.contains("session_a"));
+        assert!(wrong_session.message.contains("session_b"));
+
+        let materialized = manager
+            .materialize_run_attachments(refs(), Some("session_a"))
+            .await
+            .unwrap();
+        assert_eq!(
+            materialized[0].requested_attachment_lease_id(),
+            Some(lease_id)
+        );
+    }
 }

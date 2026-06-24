@@ -116,6 +116,9 @@ pub(super) fn apply_env(config: &mut CliConfig) {
     if let Some(value) = env::var_os("STARWEAVER_GEMINI_BASE_URL") {
         config.providers.gemini.base_url = Some(value.to_string_lossy().to_string());
     }
+    if let Some(value) = env::var_os("STARWEAVER_GOOGLE_CLOUD_BASE_URL") {
+        config.providers.google_cloud.base_url = Some(value.to_string_lossy().to_string());
+    }
     if let Some(value) = env::var_os("STARWEAVER_OPENAI_API_KEY_ENV") {
         config.providers.openai.api_key_env = Some(value.to_string_lossy().to_string());
     }
@@ -124,6 +127,22 @@ pub(super) fn apply_env(config: &mut CliConfig) {
     }
     if let Some(value) = env::var_os("STARWEAVER_GEMINI_API_KEY_ENV") {
         config.providers.gemini.api_key_env = Some(value.to_string_lossy().to_string());
+    }
+    if let Some(value) = env::var_os("STARWEAVER_GOOGLE_CLOUD_API_KEY_ENV") {
+        config.providers.google_cloud.api_key_env = Some(value.to_string_lossy().to_string());
+    }
+    if let Some(value) = env::var_os("STARWEAVER_GOOGLE_CLOUD_AUTH_TOKEN_ENV") {
+        config.providers.google_cloud.auth_token_env = Some(value.to_string_lossy().to_string());
+    }
+    if let Some(value) = env::var_os("STARWEAVER_GOOGLE_CLOUD_PROJECT") {
+        config.providers.google_cloud.project = Some(value.to_string_lossy().to_string());
+    } else if let Some(value) = env::var_os("GOOGLE_CLOUD_PROJECT") {
+        config.providers.google_cloud.project = Some(value.to_string_lossy().to_string());
+    }
+    if let Some(value) = env::var_os("STARWEAVER_GOOGLE_CLOUD_LOCATION") {
+        config.providers.google_cloud.location = Some(value.to_string_lossy().to_string());
+    } else if let Some(value) = env::var_os("GOOGLE_CLOUD_LOCATION") {
+        config.providers.google_cloud.location = Some(value.to_string_lossy().to_string());
     }
     if env::var_os("STARWEAVER_NO_AUTO_TRIM").is_some() {
         config.auto_trim = false;

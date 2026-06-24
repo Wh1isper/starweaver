@@ -314,6 +314,8 @@ pub struct ProviderConfigs {
     pub anthropic: ProviderConfig,
     /// Gemini provider config.
     pub gemini: ProviderConfig,
+    /// Google Cloud Gemini provider config.
+    pub google_cloud: ProviderConfig,
     /// Codex OAuth provider config.
     pub codex: ProviderConfig,
     /// Named gateway provider configs.
@@ -326,6 +328,13 @@ struct FileProviderConfigs {
     openai: Option<FileProviderConfig>,
     anthropic: Option<FileProviderConfig>,
     gemini: Option<FileProviderConfig>,
+    google: Option<FileProviderConfig>,
+    #[serde(rename = "google-gla")]
+    google_gla: Option<FileProviderConfig>,
+    #[serde(rename = "google-cloud", alias = "google_cloud")]
+    google_cloud: Option<FileProviderConfig>,
+    #[serde(rename = "google-vertex")]
+    google_vertex: Option<FileProviderConfig>,
     codex: Option<FileProviderConfig>,
     #[serde(flatten)]
     gateways: BTreeMap<String, FileProviderConfig>,
@@ -335,6 +344,9 @@ struct FileProviderConfigs {
 struct FileProviderConfig {
     enabled: Option<bool>,
     api_key_env: Option<String>,
+    auth_token_env: Option<String>,
+    project: Option<String>,
+    location: Option<String>,
     base_url: Option<String>,
     endpoint_path: Option<String>,
     max_tokens_parameter: Option<MaxTokensParameter>,
@@ -347,6 +359,12 @@ pub struct ProviderConfig {
     pub enabled: bool,
     /// Environment variable containing the provider API key.
     pub api_key_env: Option<String>,
+    /// Environment variable containing a bearer access token.
+    pub auth_token_env: Option<String>,
+    /// Provider project identifier when required by the backend.
+    pub project: Option<String>,
+    /// Provider location or region when required by the backend.
+    pub location: Option<String>,
     /// Provider or gateway base URL.
     pub base_url: Option<String>,
     /// Override endpoint path.
@@ -360,6 +378,9 @@ impl Default for ProviderConfig {
         Self {
             enabled: true,
             api_key_env: None,
+            auth_token_env: None,
+            project: None,
+            location: None,
             base_url: None,
             endpoint_path: None,
             max_tokens_parameter: MaxTokensParameter::Default,
@@ -593,6 +614,12 @@ fn default_provider_configs() -> ProviderConfigs {
         gemini: ProviderConfig {
             api_key_env: Some("GEMINI_API_KEY".to_string()),
             base_url: Some("https://generativelanguage.googleapis.com/v1beta".to_string()),
+            ..ProviderConfig::default()
+        },
+        google_cloud: ProviderConfig {
+            api_key_env: Some("GOOGLE_API_KEY".to_string()),
+            auth_token_env: Some("GOOGLE_CLOUD_ACCESS_TOKEN".to_string()),
+            base_url: Some("https://aiplatform.googleapis.com".to_string()),
             ..ProviderConfig::default()
         },
         codex: ProviderConfig {
@@ -880,6 +907,18 @@ fn merge_provider_configs(target: &mut ProviderConfigs, overlay: FileProviderCon
     if let Some(gemini) = overlay.gemini {
         merge_provider_config(&mut target.gemini, gemini);
     }
+    if let Some(google) = overlay.google {
+        merge_provider_config(&mut target.gemini, google);
+    }
+    if let Some(google_gla) = overlay.google_gla {
+        merge_provider_config(&mut target.gemini, google_gla);
+    }
+    if let Some(google_cloud) = overlay.google_cloud {
+        merge_provider_config(&mut target.google_cloud, google_cloud);
+    }
+    if let Some(google_vertex) = overlay.google_vertex {
+        merge_provider_config(&mut target.google_cloud, google_vertex);
+    }
     if let Some(codex) = overlay.codex {
         merge_provider_config(&mut target.codex, codex);
     }
@@ -894,6 +933,15 @@ fn merge_provider_config(target: &mut ProviderConfig, overlay: FileProviderConfi
     }
     if overlay.api_key_env.is_some() {
         target.api_key_env = overlay.api_key_env;
+    }
+    if overlay.auth_token_env.is_some() {
+        target.auth_token_env = overlay.auth_token_env;
+    }
+    if overlay.project.is_some() {
+        target.project = overlay.project;
+    }
+    if overlay.location.is_some() {
+        target.location = overlay.location;
     }
     if overlay.base_url.is_some() {
         target.base_url = overlay.base_url;

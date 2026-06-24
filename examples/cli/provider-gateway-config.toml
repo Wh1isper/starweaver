@@ -15,7 +15,7 @@ model_cfg = "gpt5_270k"
 
 [model_profiles.gemini-gateway]
 label = "Gemini via gateway"
-model = "homelab@google-vertex:gemini-2.5-pro"
+model = "homelab@google-cloud:gemini-2.5-pro"
 model_settings = "google_default"
 model_cfg = "gemini_1m"
 
@@ -43,3 +43,9 @@ enabled = true
 api_key_env = "GEMINI_API_KEY"
 base_url = "https://gateway.example/gemini/v1beta"
 endpoint_path = "/models/{model}:generateContent"
+
+[providers.google-cloud]
+enabled = true
+api_key_env = "GOOGLE_API_KEY"
+base_url = "https://gateway.example/google-cloud/v1beta1"
+endpoint_path = "/publishers/google/models/{model}:generateContent"
