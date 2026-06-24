@@ -68,7 +68,8 @@ RPC methods.
 - `starweaver-runtime` owns the agent loop and tool execution, but stays
   provider-neutral.
 - `starweaver-rpc` owns host-control: sessions, runs, stream replay, steering,
-  HITL, model selection, and environment attachment selection.
+  HITL, model selection, and the environment attachment manager that resolves
+  host refs into run environment bindings.
 - `spec/envd` owns envd service methods, RPC transports, daemon lifecycle, envd
   state, mounts, operation/effect records, and envd protocol errors.
 

@@ -1,5 +1,6 @@
 //! Environment provider abstractions for filesystem, shell, and resource access.
 
+mod composite_provider;
 mod context_xml;
 mod envd_provider;
 mod error;
@@ -38,6 +39,9 @@ pub(crate) use shell::{
     shell_process_metadata,
 };
 
+pub use composite_provider::{
+    CompositeEnvironmentProvider, EnvironmentMount, EnvironmentMountMode,
+};
 pub use envd_provider::{
     EnvdEnvironmentProvider, ENVD_ENVIRONMENT_ID_KEY, ENVD_KIND_KEY, ENVD_STATE_VERSION_KEY,
     ENVD_STORE_KEY,

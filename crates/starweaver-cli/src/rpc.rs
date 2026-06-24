@@ -1,5 +1,6 @@
 //! JSON-RPC host service and local transports.
 
+mod environment_manager;
 mod transport;
 
 use std::{
@@ -12,14 +13,16 @@ use std::{
     time::Duration,
 };
 
+use self::environment_manager::EnvironmentAttachmentManager;
 use serde_json::{json, Value};
 use starweaver_rpc_core::{
     attachment_result, environment_attachment_refs, environment_attachment_result,
-    handle_json_rpc_text, notification, output_item, replay_cursor_from_params, replay_result,
-    stream_payload_format, RpcError, StreamPayloadFormat, INVALID_PARAMS, METHOD_NOT_FOUND,
-    SERVER_ERROR, UNSUPPORTED_FEATURE,
+    handle_json_rpc_text_async, notification, output_item, replay_cursor_from_params,
+    replay_result, stream_payload_format, RpcError, StreamPayloadFormat, INVALID_PARAMS,
+    METHOD_NOT_FOUND, SERVER_ERROR, UNSUPPORTED_FEATURE,
 };
 use starweaver_stream::ReplayScope;
+use tokio::runtime::Runtime;
 
 use crate::{
     args::{HitlPolicy, OutputMode, RpcCommand, RpcTransport, RunCommand},
@@ -66,6 +69,8 @@ struct RpcService {
     output_sender: mpsc::Sender<Value>,
     subscriptions: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     notifications: RpcNotificationMode,
+    runtime: Arc<Runtime>,
+    environment_manager: EnvironmentAttachmentManager,
 }
 
 impl RpcService {
@@ -82,12 +87,15 @@ impl RpcService {
         output_sender: mpsc::Sender<Value>,
         notifications: RpcNotificationMode,
     ) -> Self {
+        let environment_manager = EnvironmentAttachmentManager::new(config.clone());
         Self {
             coordinator: CliRuntimeCoordinator::new(config.clone()),
             config,
             output_sender,
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
             notifications,
+            environment_manager,
+            runtime: build_rpc_runtime(),
         }
     }
 
@@ -96,12 +104,19 @@ impl RpcService {
     }
 
     fn handle_text(&self, text: &str) -> (Option<Value>, bool) {
-        let outcome = handle_json_rpc_text(text, |method, params| self.dispatch(method, params));
+        let outcome = self.runtime.block_on(self.handle_text_async(text));
         (outcome.response, outcome.shutdown)
     }
 
+    async fn handle_text_async(&self, text: &str) -> starweaver_rpc_core::JsonRpcOutcome {
+        handle_json_rpc_text_async(text, |method, params| async move {
+            self.dispatch_async(&method, &params).await
+        })
+        .await
+    }
+
     #[allow(clippy::too_many_lines)]
-    fn dispatch(&self, method: &str, params: &Value) -> Result<Value, RpcError> {
+    async fn dispatch_async(&self, method: &str, params: &Value) -> Result<Value, RpcError> {
         let config = &self.config;
         match method {
             "initialize" => Ok(initialize_result(config, self.notifications)),
@@ -206,8 +221,8 @@ impl RpcService {
             "session.output" => self.session_output(params),
             "stream.subscribe" => self.stream_subscribe(params),
             "stream.unsubscribe" => self.stream_unsubscribe(params),
-            "run.prompt" => run_prompt(config, params),
-            "run.start" => self.run_start(params),
+            "run.prompt" => self.run_prompt(params).await,
+            "run.start" => self.run_start(params).await,
             "run.attach" => self.run_attach(params),
             "run.status" => self.run_status(params),
             "run.await" => self.run_await(params),
@@ -288,6 +303,10 @@ impl RpcService {
                     .map_err(RpcError::from)?;
                 Ok(json!({"deferred": deferred}))
             }
+            "environment.attach" => self.environment_manager.attach(params).await,
+            "environment.detach" => self.environment_manager.detach(params),
+            "environment.list" => self.environment_manager.list(params),
+            "environment.health" => self.environment_manager.health(params).await,
             other => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 format!("method not found: {other}"),
@@ -295,9 +314,13 @@ impl RpcService {
         }
     }
 
-    fn run_start(&self, params: &Value) -> Result<Value, RpcError> {
+    async fn run_start(&self, params: &Value) -> Result<Value, RpcError> {
         let format = stream_payload_format(params)?;
-        let command = run_command_from_params(&self.config, params, OutputMode::Json)?;
+        let mut command = run_command_from_params(&self.config, params, OutputMode::Json)?;
+        command.environment_attachments = self
+            .environment_manager
+            .materialize_run_attachments(command.environment_attachments)
+            .await?;
         let environment_attachments = command.environment_attachments.clone();
         let started = self
             .coordinator
@@ -319,6 +342,22 @@ impl RpcService {
             );
         }
         Ok(result)
+    }
+
+    async fn run_prompt(&self, params: &Value) -> Result<Value, RpcError> {
+        let mut command = run_command_from_params(&self.config, params, OutputMode::Json)?;
+        command.environment_attachments = self
+            .environment_manager
+            .materialize_run_attachments(command.environment_attachments)
+            .await?;
+        let config = self.config.clone();
+        let output =
+            tokio::task::spawn_blocking(move || CliService::open(config)?.run_prompt(&command))
+                .await
+                .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))?
+                .map_err(RpcError::from)?;
+        serde_json::from_str(output.trim())
+            .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))
     }
 
     fn run_attach(&self, params: &Value) -> Result<Value, RpcError> {
@@ -611,6 +650,17 @@ impl RpcService {
     }
 }
 
+fn build_rpc_runtime() -> Arc<Runtime> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("starweaver-rpc")
+        .build();
+    match runtime {
+        Ok(runtime) => Arc::new(runtime),
+        Err(error) => panic!("failed to build RPC async runtime: {error}"),
+    }
+}
+
 fn run_command_from_params(
     config: &CliConfig,
     params: &Value,
@@ -676,38 +726,32 @@ fn run_command_from_params(
 fn validate_environment_attachments_for_run(
     attachments: &[starweaver_rpc_core::EnvironmentAttachmentRef],
 ) -> Result<(), RpcError> {
-    if attachments.len() > 1 {
-        return Err(RpcError::new(
-            UNSUPPORTED_FEATURE,
-            "multiple environment attachments require multi-mount environment support",
-        ));
-    }
-    let Some(attachment) = attachments.first() else {
-        return Ok(());
-    };
-    match attachment.kind.as_str() {
-        "local" => Ok(()),
-        "envd" => {
-            let Some(endpoint) = attachment.requested_endpoint_ref() else {
+    for attachment in attachments {
+        match attachment.kind.as_str() {
+            "local" => {}
+            "envd" => {
+                let Some(endpoint) = attachment.requested_endpoint_ref() else {
+                    return Err(RpcError::new(
+                        INVALID_PARAMS,
+                        "envd environment attachment requires endpointRef",
+                    ));
+                };
+                if !endpoint.starts_with("http://") {
+                    return Err(RpcError::new(
+                        UNSUPPORTED_FEATURE,
+                        "envd environment attachment currently supports http:// endpoint refs",
+                    ));
+                }
+            }
+            other => {
                 return Err(RpcError::new(
-                    INVALID_PARAMS,
-                    "envd environment attachment requires endpointRef",
-                ));
-            };
-            if endpoint.starts_with("http://") {
-                Ok(())
-            } else {
-                Err(RpcError::new(
                     UNSUPPORTED_FEATURE,
-                    "envd environment attachment currently supports http:// endpoint refs",
-                ))
+                    format!("unsupported environment attachment kind: {other}"),
+                ));
             }
         }
-        other => Err(RpcError::new(
-            UNSUPPORTED_FEATURE,
-            format!("unsupported environment attachment kind: {other}"),
-        )),
     }
+    Ok(())
 }
 
 fn steering_id(params: &Value) -> String {
@@ -840,6 +884,7 @@ fn initialize_result(config: &CliConfig, notifications: RpcNotificationMode) -> 
             "cancel": true,
             "steering": true,
             "attach": true,
+            "environmentAttachments": true,
             "defaultStreamPayload": "agui",
             "approvals": true,
             "deferred": true
@@ -852,16 +897,6 @@ fn initialize_result(config: &CliConfig, notifications: RpcNotificationMode) -> 
             "defaultProfile": config.default_profile,
         }
     })
-}
-
-fn run_prompt(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
-    let command = run_command_from_params(config, params, OutputMode::Json)?;
-    let output = CliService::open(config.clone())
-        .map_err(RpcError::from)?
-        .run_prompt(&command)
-        .map_err(RpcError::from)?;
-    serde_json::from_str(output.trim())
-        .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))
 }
 
 fn config_get(config: &CliConfig, params: &Value) -> Result<Value, RpcError> {
@@ -1049,6 +1084,28 @@ mod tests {
             "unexpected RPC error: {response}"
         );
         response["result"].clone()
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn request_error_with_server(
+        server: &RpcService,
+        id: u64,
+        method: &str,
+        params: Value,
+    ) -> Value {
+        let line = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        })
+        .to_string();
+        let (response, shutdown) = server.handle_line(&line);
+        assert!(!shutdown);
+        let response = response.unwrap();
+        assert_eq!(response["jsonrpc"], "2.0");
+        assert_eq!(response["id"], id);
+        response["error"].clone()
     }
 
     fn http_post(config: &CliConfig, body: &Value) -> (String, Arc<AtomicBool>) {
@@ -1381,7 +1438,7 @@ model = "test:coding"
     }
 
     #[test]
-    fn run_start_rejects_multiple_environment_attachments() {
+    fn run_start_accepts_multiple_environment_attachments() {
         let temp = tempfile::tempdir().unwrap();
         let config = test_config(temp.path());
         let (output_sender, _output_receiver) = mpsc::channel::<Value>();
@@ -1393,7 +1450,7 @@ model = "test:coding"
             "params": {
                 "prompt": "hello",
                 "environmentAttachments": [
-                    {"id": "workspace"},
+                    {"id": "workspace", "default": true},
                     {"id": "tools"}
                 ]
             },
@@ -1402,11 +1459,265 @@ model = "test:coding"
         let (response, shutdown) = server.handle_line(&line);
         assert!(!shutdown);
         let response = response.unwrap();
-        assert_eq!(response["error"]["code"], UNSUPPORTED_FEATURE);
-        assert!(response["error"]["message"]
+        let result = response["result"].as_object().unwrap();
+        assert_eq!(result["status"], "running");
+        assert_eq!(
+            result["environmentAttachments"].as_array().unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn environment_attachment_methods_manage_local_lease_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let attached = request_with_server(
+            &server,
+            1,
+            "environment.attach",
+            json!({
+                "scope": {"kind": "connection"},
+                "attachment": {"id": "workspace", "kind": "local", "mode": "read_only"},
+                "readiness": {"policy": "required"},
+                "idempotencyKey": "workspace"
+            }),
+        );
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
             .as_str()
             .unwrap()
-            .contains("multi-mount environment support"));
+            .to_string();
+        assert!(lease_id.starts_with("envatt_workspace_"));
+        assert_eq!(attached["attachment"]["status"], "ready");
+        assert_eq!(attached["attachment"]["readiness"]["transport"], "ready");
+        assert_eq!(attached["attachment"]["mode"], "read_only");
+
+        let repeated = request_with_server(
+            &server,
+            2,
+            "environment.attach",
+            json!({
+                "scope": {"kind": "connection"},
+                "attachment": {"id": "workspace", "kind": "local", "mode": "read_only"},
+                "readiness": {"policy": "required"},
+                "idempotencyKey": "workspace"
+            }),
+        );
+        assert_eq!(
+            repeated["attachment"]["attachmentLeaseId"],
+            attached["attachment"]["attachmentLeaseId"]
+        );
+
+        let listed = request_with_server(&server, 3, "environment.list", json!({}));
+        assert_eq!(listed["attachments"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["attachments"][0]["attachmentLeaseId"], lease_id);
+
+        let health = request_with_server(
+            &server,
+            4,
+            "environment.health",
+            json!({"attachmentLeaseId": lease_id}),
+        );
+        assert_eq!(health["status"], "ready");
+        assert_eq!(health["readiness"]["environment"], "ready");
+
+        let detached = request_with_server(
+            &server,
+            5,
+            "environment.detach",
+            json!({"attachmentLeaseId": lease_id}),
+        );
+        assert_eq!(detached["detached"], true);
+        let listed_detached = request_with_server(
+            &server,
+            6,
+            "environment.list",
+            json!({"status": "detached"}),
+        );
+        assert_eq!(listed_detached["attachments"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn run_start_materializes_environment_attachment_lease_refs() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let attached = request_with_server(
+            &server,
+            1,
+            "environment.attach",
+            json!({
+                "attachment": {"id": "workspace", "kind": "local", "mode": "read_only"},
+                "readiness": {"policy": "required"}
+            }),
+        );
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let started = request_with_server(
+            &server,
+            2,
+            "run.start",
+            json!({
+                "prompt": "hello leased environment",
+                "environmentAttachments": [
+                    {"id": "workspace", "attachmentLeaseId": lease_id, "default": true}
+                ]
+            }),
+        );
+        assert_eq!(started["status"], "running");
+        assert_eq!(started["environmentAttachments"][0]["id"], "workspace");
+        assert_eq!(
+            started["environmentAttachments"][0]["attachmentLeaseId"],
+            lease_id
+        );
+        assert_eq!(started["environmentAttachments"][0]["mode"], "read_only");
+    }
+
+    #[test]
+    fn run_prompt_materializes_environment_attachment_lease_refs() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let attached = request_with_server(
+            &server,
+            1,
+            "environment.attach",
+            json!({
+                "attachment": {"id": "workspace", "kind": "local", "mode": "read_only"},
+                "readiness": {"policy": "required"}
+            }),
+        );
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let run = request_with_server(
+            &server,
+            2,
+            "run.prompt",
+            json!({
+                "prompt": "hello leased blocking environment",
+                "newSession": true,
+                "environmentAttachments": [
+                    {"id": "workspace", "attachmentLeaseId": lease_id, "default": true}
+                ]
+            }),
+        );
+        assert_eq!(run["status"], "completed");
+        assert!(run["sessionId"].as_str().unwrap().starts_with("session_"));
+        assert!(run["runId"].as_str().unwrap().starts_with("run_"));
+    }
+
+    #[test]
+    fn envd_attachment_health_reports_unavailable_without_creating_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/rpc", listener.local_addr().unwrap());
+        drop(listener);
+
+        let health = request_with_server(
+            &server,
+            1,
+            "environment.health",
+            json!({
+                "attachment": {
+                    "id": "remote",
+                    "kind": "envd",
+                    "endpointRef": endpoint,
+                    "environmentId": "dataset"
+                },
+                "timeoutMs": 100
+            }),
+        );
+        assert_eq!(health["status"], "unavailable");
+        assert_eq!(health["readiness"]["transport"], "unavailable");
+    }
+
+    #[test]
+    fn run_start_fails_before_start_when_required_envd_is_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/rpc", listener.local_addr().unwrap());
+        drop(listener);
+
+        let error = request_error_with_server(
+            &server,
+            1,
+            "run.start",
+            json!({
+                "prompt": "hello",
+                "environmentAttachments": [
+                    {
+                        "id": "workspace",
+                        "kind": "envd",
+                        "endpointRef": endpoint,
+                        "environmentId": "dataset",
+                        "default": true
+                    }
+                ]
+            }),
+        );
+        assert_eq!(error["code"], starweaver_rpc_core::ENVIRONMENT_UNAVAILABLE);
+        assert!(error["message"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("connection"));
+    }
+
+    #[test]
+    fn run_start_reprobes_best_effort_envd_lease_before_starting() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/rpc", listener.local_addr().unwrap());
+        drop(listener);
+
+        let attached = request_with_server(
+            &server,
+            1,
+            "environment.attach",
+            json!({
+                "attachment": {
+                    "id": "remote",
+                    "kind": "envd",
+                    "endpointRef": endpoint,
+                    "environmentId": "dataset"
+                },
+                "readiness": {"policy": "best_effort", "timeoutMs": 100}
+            }),
+        );
+        assert_eq!(attached["attachment"]["status"], "unavailable");
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+
+        let error = request_error_with_server(
+            &server,
+            2,
+            "run.start",
+            json!({
+                "prompt": "hello",
+                "environmentAttachments": [
+                    {"id": "workspace", "attachmentLeaseId": lease_id, "default": true}
+                ]
+            }),
+        );
+        assert_eq!(error["code"], starweaver_rpc_core::ENVIRONMENT_UNAVAILABLE);
     }
 
     #[test]

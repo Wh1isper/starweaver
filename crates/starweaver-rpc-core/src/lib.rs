@@ -1,11 +1,24 @@
 //! JSON-RPC host protocol helpers for Starweaver.
 
-use std::collections::BTreeSet;
+use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use starweaver_stream::{
     display_to_agui_event, DisplayMessage, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayScope,
+};
+
+mod environment;
+
+pub use environment::{
+    environment_attachment_lease_result, environment_attachment_list_result,
+    environment_attachment_refs, environment_attachment_result, environment_health_result,
+    is_valid_environment_attachment_id, EnvironmentAttachParams, EnvironmentAttachmentAccessMode,
+    EnvironmentAttachmentLease, EnvironmentAttachmentRef, EnvironmentAttachmentScope,
+    EnvironmentAttachmentScopeKind, EnvironmentAttachmentStatus, EnvironmentDetachParams,
+    EnvironmentHealthParams, EnvironmentListParams, EnvironmentReadiness,
+    EnvironmentReadinessCapabilities, EnvironmentReadinessPhase, EnvironmentReadinessPolicy,
+    EnvironmentReadinessRequest,
 };
 
 /// JSON-RPC parse error code.
@@ -20,6 +33,14 @@ pub const INVALID_PARAMS: i64 = -32_602;
 pub const SERVER_ERROR: i64 = -32_000;
 /// Starweaver host error code for a feature unavailable on this connection.
 pub const UNSUPPORTED_FEATURE: i64 = -32_002;
+/// Starweaver host error code for a create conflict with an existing record.
+pub const ALREADY_EXISTS: i64 = -32_011;
+/// Starweaver host error code for a run-state conflict.
+pub const RUN_CONFLICT: i64 = -32_013;
+/// Starweaver host error code for an unavailable environment attachment.
+pub const ENVIRONMENT_UNAVAILABLE: i64 = -32_031;
+/// Starweaver host error code for configuration or profile resolution failures.
+pub const CONFIGURATION_FAILED: i64 = -32_050;
 
 /// JSON-RPC 2.0 request object accepted by Starweaver host transports.
 #[derive(Debug, Deserialize)]
@@ -118,6 +139,59 @@ pub fn handle_json_rpc_text(
     }
 }
 
+/// Parse and dispatch one JSON-RPC 2.0 text frame through an async dispatcher.
+///
+/// # Errors
+///
+/// The dispatcher returns method-level errors as `RpcError`; framing errors are
+/// converted into JSON-RPC error responses directly.
+pub async fn handle_json_rpc_text_async<F, Fut>(text: &str, mut dispatch: F) -> JsonRpcOutcome
+where
+    F: FnMut(String, Value) -> Fut,
+    Fut: Future<Output = Result<Value, RpcError>>,
+{
+    let value = match serde_json::from_str::<Value>(text) {
+        Ok(value) => value,
+        Err(error) => {
+            return JsonRpcOutcome {
+                response: Some(error_response(
+                    &Value::Null,
+                    PARSE_ERROR,
+                    &format!("parse error: {error}"),
+                )),
+                shutdown: false,
+            };
+        }
+    };
+    let request = match request_from_value(value) {
+        Ok(request) => request,
+        Err(response) => {
+            return JsonRpcOutcome {
+                response: Some(response),
+                shutdown: false,
+            };
+        }
+    };
+    let id = request.id.clone();
+    let method = request.method;
+    let result = dispatch(method.clone(), request.params).await;
+    let shutdown = method == "shutdown" && result.is_ok();
+    let Some(id) = id else {
+        return JsonRpcOutcome {
+            response: None,
+            shutdown,
+        };
+    };
+    let response = match result {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err(error) => error_response(&id, error.code, &error.message),
+    };
+    JsonRpcOutcome {
+        response: Some(response),
+        shutdown,
+    }
+}
+
 fn request_from_value(value: Value) -> Result<JsonRpcRequest, Value> {
     if value.is_array() {
         return Err(error_response(
@@ -200,54 +274,6 @@ pub struct RunOutputItem {
     display_message: Option<DisplayMessage>,
 }
 
-/// Environment access mode requested by a host RPC environment attachment.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentAttachmentAccessMode {
-    /// Read-only access.
-    ReadOnly,
-    /// Read and write access.
-    #[default]
-    ReadWrite,
-}
-
-/// Host-control reference to an environment attached to a run.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EnvironmentAttachmentRef {
-    /// Stable attachment id within the run.
-    pub id: String,
-    /// Attachment implementation kind, such as `local` or `envd`.
-    #[serde(default = "default_environment_attachment_kind")]
-    pub kind: String,
-    /// Requested access mode.
-    #[serde(default)]
-    pub mode: EnvironmentAttachmentAccessMode,
-    /// Endpoint reference or URL for remote implementations.
-    #[serde(default, alias = "endpoint", skip_serializing_if = "Option::is_none")]
-    pub endpoint_ref: Option<String>,
-    /// Concrete environment id within the implementation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment_id: Option<String>,
-    /// Host metadata for the attachment.
-    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
-    pub metadata: serde_json::Map<String, Value>,
-}
-
-impl EnvironmentAttachmentRef {
-    /// Return the environment id requested by this ref, if any.
-    #[must_use]
-    pub fn requested_environment_id(&self) -> Option<&str> {
-        self.environment_id.as_deref()
-    }
-
-    /// Return the endpoint ref requested by this ref, if any.
-    #[must_use]
-    pub fn requested_endpoint_ref(&self) -> Option<&str> {
-        self.endpoint_ref.as_deref()
-    }
-}
-
 /// Build a JSON-RPC notification frame.
 #[must_use]
 pub fn notification(method: &str, params: &Value) -> Value {
@@ -255,39 +281,6 @@ pub fn notification(method: &str, params: &Value) -> Value {
         "jsonrpc": "2.0",
         "method": method,
         "params": params,
-    })
-}
-
-/// Parse environment attachment refs from host RPC params.
-///
-/// # Errors
-///
-/// Returns an RPC invalid-params error when the shape is invalid or ids are duplicated.
-pub fn environment_attachment_refs(
-    params: &Value,
-) -> Result<Vec<EnvironmentAttachmentRef>, RpcError> {
-    let Some(value) = params
-        .get("environmentAttachments")
-        .or_else(|| params.get("environments"))
-        .or_else(|| params.get("environment"))
-    else {
-        return Ok(Vec::new());
-    };
-    let refs = if value.is_array() {
-        serde_json::from_value::<Vec<EnvironmentAttachmentRef>>(value.clone())
-    } else {
-        serde_json::from_value::<EnvironmentAttachmentRef>(value.clone()).map(|value| vec![value])
-    }
-    .map_err(|error| RpcError::new(INVALID_PARAMS, format!("invalid environment refs: {error}")))?;
-    validate_environment_attachment_refs(&refs)?;
-    Ok(refs)
-}
-
-/// Build a serializable environment attachment result.
-#[must_use]
-pub fn environment_attachment_result(refs: &[EnvironmentAttachmentRef]) -> Value {
-    json!({
-        "environmentAttachments": refs,
     })
 }
 
@@ -428,29 +421,6 @@ fn optional_usize(params: &Value, key: &str) -> Option<usize> {
         .and_then(|value| usize::try_from(value).ok())
 }
 
-fn validate_environment_attachment_refs(refs: &[EnvironmentAttachmentRef]) -> Result<(), RpcError> {
-    let mut ids = BTreeSet::new();
-    for attachment in refs {
-        if attachment.id.trim().is_empty() {
-            return Err(RpcError::new(
-                INVALID_PARAMS,
-                "environment attachment id must be non-empty",
-            ));
-        }
-        if !ids.insert(attachment.id.clone()) {
-            return Err(RpcError::new(
-                INVALID_PARAMS,
-                format!("duplicate environment attachment id: {}", attachment.id),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn default_environment_attachment_kind() -> String {
-    "local".to_string()
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -538,6 +508,7 @@ mod tests {
                     "id": "workspace",
                     "kind": "envd",
                     "mode": "read_write",
+                    "default": true,
                     "endpointRef": "http://127.0.0.1:8766/rpc",
                     "environmentId": "env_cli_default"
                 }
@@ -548,6 +519,7 @@ mod tests {
         assert_eq!(refs[0].id, "workspace");
         assert_eq!(refs[0].kind, "envd");
         assert_eq!(refs[0].mode, EnvironmentAttachmentAccessMode::ReadWrite);
+        assert!(refs[0].is_default);
         assert_eq!(
             refs[0].requested_endpoint_ref(),
             Some("http://127.0.0.1:8766/rpc")
@@ -560,6 +532,90 @@ mod tests {
             ]
         }));
         assert!(duplicate.is_err());
+
+        let invalid_id = environment_attachment_refs(&json!({
+            "environment": {"id": "../bad"}
+        }));
+        assert!(invalid_id.is_err());
+
+        let missing_default = environment_attachment_refs(&json!({
+            "environmentAttachments": [
+                {"id": "workspace"},
+                {"id": "data"}
+            ]
+        }));
+        assert!(missing_default.is_err());
+
+        let one_default = environment_attachment_refs(&json!({
+            "environmentAttachments": [
+                {"id": "workspace", "default": true},
+                {"id": "data"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(one_default.len(), 2);
+        assert!(one_default[0].is_default);
+    }
+
+    #[test]
+    fn parses_environment_attachment_lease_refs_and_results() {
+        let refs = environment_attachment_refs(&json!({
+            "environmentAttachments": [
+                {
+                    "id": "workspace",
+                    "attachmentLeaseId": "envatt_workspace",
+                    "default": true
+                },
+                {
+                    "id": "data",
+                    "kind": "envd",
+                    "mode": "read_only",
+                    "endpointRef": "http://127.0.0.1:8770/rpc",
+                    "environmentId": "dataset"
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            refs[0].requested_attachment_lease_id(),
+            Some("envatt_workspace")
+        );
+        assert_eq!(refs[1].mode, EnvironmentAttachmentAccessMode::ReadOnly);
+
+        let lease = EnvironmentAttachmentLease {
+            attachment_lease_id: "envatt_workspace".to_string(),
+            scope: EnvironmentAttachmentScope {
+                kind: EnvironmentAttachmentScopeKind::Session,
+                session_id: Some("session_123".to_string()),
+            },
+            id: "workspace".to_string(),
+            kind: "local".to_string(),
+            mode: EnvironmentAttachmentAccessMode::ReadWrite,
+            is_default: true,
+            mount_root: "/environment/workspace".to_string(),
+            status: EnvironmentAttachmentStatus::Ready,
+            readiness: EnvironmentReadiness {
+                transport: EnvironmentReadinessPhase::Ready,
+                environment: EnvironmentReadinessPhase::Ready,
+                capabilities: EnvironmentReadinessCapabilities {
+                    files: vec!["read".to_string(), "list".to_string()],
+                    command: vec!["run".to_string()],
+                    process: Vec::new(),
+                },
+                message: None,
+            },
+            endpoint_ref: None,
+            environment_id: None,
+            metadata: serde_json::Map::new(),
+        };
+        let result = environment_attachment_lease_result(&lease);
+        assert_eq!(
+            result["attachment"]["attachmentLeaseId"],
+            "envatt_workspace"
+        );
+        assert_eq!(result["attachment"]["scope"]["kind"], "session");
+        assert_eq!(result["attachment"]["default"], true);
+        assert_eq!(result["attachment"]["readiness"]["transport"], "ready");
     }
 
     #[test]

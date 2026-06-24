@@ -1370,6 +1370,258 @@ async fn policy_denies_disallowed_file_access() {
     ));
 }
 
+#[tokio::test]
+async fn composite_provider_routes_default_and_environment_namespace_paths() {
+    let workspace = Arc::new(
+        VirtualEnvironmentProvider::new("workspace")
+            .with_file("README.md", "workspace")
+            .with_file("environment/README.md", "default environment dir")
+            .with_file("src/lib.rs", "lib"),
+    );
+    let data = Arc::new(
+        VirtualEnvironmentProvider::new("data")
+            .with_file("README.md", "data")
+            .with_file("table.csv", "x,y\n1,2\n"),
+    );
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("workspace", workspace)
+            .unwrap()
+            .with_default(true)
+            .with_default_for_shell(true),
+        EnvironmentMount::new("data", data)
+            .unwrap()
+            .with_mode(EnvironmentMountMode::ReadOnly),
+    ])
+    .unwrap();
+
+    assert_eq!(provider.read_text("README.md").await.unwrap(), "workspace");
+    assert_eq!(
+        provider.read_text("environment/README.md").await.unwrap(),
+        "default environment dir"
+    );
+    assert_eq!(
+        provider
+            .read_text("/environment/data/README.md")
+            .await
+            .unwrap(),
+        "data"
+    );
+    assert_eq!(
+        provider.list("/environment").await.unwrap(),
+        vec![
+            "/environment/workspace".to_string(),
+            "/environment/data".to_string()
+        ]
+    );
+    assert_eq!(
+        provider.list("/environment/data").await.unwrap(),
+        vec![
+            "/environment/data/README.md".to_string(),
+            "/environment/data/table.csv".to_string()
+        ]
+    );
+    assert!(matches!(
+        provider.write_text("/environment/data/new.txt", "no").await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    provider.write_text("new.txt", "ok").await.unwrap();
+    assert_eq!(provider.read_text("new.txt").await.unwrap(), "ok");
+}
+
+#[tokio::test]
+async fn composite_provider_rebases_local_mount_list_entries_from_subdirs() {
+    let workspace_root = unique_test_dir().join("workspace");
+    let data_root = unique_test_dir().join("data");
+    std::fs::create_dir_all(workspace_root.join("environment")).unwrap();
+    std::fs::create_dir_all(data_root.join("src")).unwrap();
+    std::fs::write(
+        workspace_root.join("environment").join("note.txt"),
+        "default",
+    )
+    .unwrap();
+    std::fs::write(data_root.join("src").join("lib.rs"), "data").unwrap();
+    std::fs::write(data_root.join("src").join("main.rs"), "data").unwrap();
+    let workspace = Arc::new(LocalEnvironmentProvider::new(&workspace_root));
+    let data = Arc::new(LocalEnvironmentProvider::new(&data_root));
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("workspace", workspace)
+            .unwrap()
+            .with_default(true)
+            .with_default_for_shell(true),
+        EnvironmentMount::new("data", data).unwrap(),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        provider.read_text("environment/note.txt").await.unwrap(),
+        "default"
+    );
+    assert_eq!(
+        provider.list("/environment/data/src").await.unwrap(),
+        vec![
+            "/environment/data/src/lib.rs".to_string(),
+            "/environment/data/src/main.rs".to_string()
+        ]
+    );
+    assert_eq!(
+        provider
+            .list_with_options(
+                "/environment/data/src",
+                FileListOptions {
+                    ignore_patterns: Vec::new(),
+                    max_entries: 1,
+                },
+            )
+            .await
+            .unwrap(),
+        FileListResult {
+            entries: vec!["/environment/data/src/lib.rs".to_string()],
+            truncated: true,
+            total_entries: 2,
+        }
+    );
+}
+
+#[tokio::test]
+async fn composite_provider_does_not_render_non_default_file_trees() {
+    let workspace = Arc::new(
+        VirtualEnvironmentProvider::new("workspace").with_file("default-only.txt", "visible"),
+    );
+    let data =
+        Arc::new(VirtualEnvironmentProvider::new("data").with_file("hidden-data.csv", "secret"));
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("workspace", workspace)
+            .unwrap()
+            .with_default(true)
+            .with_default_for_shell(true),
+        EnvironmentMount::new("data", data).unwrap(),
+    ])
+    .unwrap();
+
+    let context = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(context.contains("/environment/data"));
+    assert!(context.contains("default-only.txt"));
+    assert!(!context.contains("hidden-data.csv"));
+}
+
+#[tokio::test]
+async fn composite_provider_routes_shell_by_cwd_and_process_id() {
+    let workspace = Arc::new(
+        VirtualEnvironmentProvider::new("workspace").with_shell_output(
+            "echo workspace",
+            ShellOutput {
+                status: 0,
+                stdout: "workspace\n".to_string(),
+                stderr: String::new(),
+                metadata: Metadata::default(),
+            },
+        ),
+    );
+    let data = Arc::new(VirtualEnvironmentProvider::new("data").with_shell_output(
+        "echo data",
+        ShellOutput {
+            status: 0,
+            stdout: "data\n".to_string(),
+            stderr: String::new(),
+            metadata: Metadata::default(),
+        },
+    ));
+    let provider = Arc::new(
+        CompositeEnvironmentProvider::new(vec![
+            EnvironmentMount::new("workspace", workspace)
+                .unwrap()
+                .with_default(true)
+                .with_default_for_shell(true),
+            EnvironmentMount::new("data", data).unwrap(),
+        ])
+        .unwrap(),
+    );
+
+    let workspace_output = provider
+        .run_shell(ShellCommand {
+            command: "echo workspace".to_string(),
+            ..ShellCommand::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(workspace_output.stdout, "workspace\n");
+
+    let data_output = provider
+        .run_shell(ShellCommand {
+            command: "echo data".to_string(),
+            cwd: Some("/environment/data".to_string()),
+            ..ShellCommand::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(data_output.stdout, "data\n");
+
+    let process_provider = provider.clone().process_shell_provider().unwrap();
+    let started = process_provider
+        .start_process(ShellCommand {
+            command: "sleep 1".to_string(),
+            cwd: Some("/environment/data/jobs".to_string()),
+            ..ShellCommand::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(started.process_id, "data:process_1");
+    assert_eq!(
+        started.metadata.get("cwd"),
+        Some(&serde_json::json!("/environment/data/jobs"))
+    );
+    let waited = process_provider
+        .wait_process(&started.process_id, 0)
+        .await
+        .unwrap();
+    assert_eq!(waited.process_id, "data:process_1");
+    let listed = process_provider.list_processes().await.unwrap();
+    assert!(listed
+        .iter()
+        .any(|process| process.process_id == "data:process_1"));
+}
+
+#[tokio::test]
+async fn composite_provider_supports_text_cross_mount_copy_and_move() {
+    let workspace =
+        Arc::new(VirtualEnvironmentProvider::new("workspace").with_file("README.md", "workspace"));
+    let data = Arc::new(VirtualEnvironmentProvider::new("data").with_file("source.txt", "data"));
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("workspace", workspace)
+            .unwrap()
+            .with_default(true)
+            .with_default_for_shell(true),
+        EnvironmentMount::new("data", data).unwrap(),
+    ])
+    .unwrap();
+
+    provider
+        .copy_path("/environment/data/source.txt", "copied.txt", false)
+        .await
+        .unwrap();
+    assert_eq!(provider.read_text("copied.txt").await.unwrap(), "data");
+
+    provider
+        .move_path("README.md", "/environment/data/moved.txt", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        provider
+            .read_text("/environment/data/moved.txt")
+            .await
+            .unwrap(),
+        "workspace"
+    );
+    assert!(matches!(
+        provider.read_text("README.md").await,
+        Err(EnvironmentError::NotFound(_))
+    ));
+}
+
 fn unique_test_dir() -> PathBuf {
     let suffix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

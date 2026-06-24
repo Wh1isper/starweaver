@@ -83,33 +83,39 @@ This is the desired special case: no RPC, one env, direct code path.
 
 ## RPC Host Mode
 
-Host RPC can select an envd environment and pass it into run preparation. The
-current host runtime has one active `EnvironmentProvider`, so remote envd HTTP
-attachments are resolved as that active provider. Multiple simultaneous
-environment refs require a composite or multi-mount SDK provider and should
-return `UNSUPPORTED_FEATURE` until that provider exists.
+Host RPC can select one or more envd environments and pass them into run
+preparation. The dynamic host-control contract is defined in
+`../ops/06-json-rpc-host-protocol.md` as the Environment Attachment Manager.
+This page only records how Starweaver uses envd after the host has selected an
+attachment.
 
 ```mermaid
 sequenceDiagram
     participant Client
     participant HostRPC as starweaver.host RPC
-    participant Host as HeadlessHostService
+    participant Manager as EnvironmentAttachmentManager
     participant EnvdClient as EnvdRpcClient
     participant Provider as EnvdEnvironmentProvider
+    participant Composite as CompositeEnvironmentProvider
     participant Runtime
 
-    Client->>HostRPC: run.start(environmentAttachments)
-    HostRPC->>Host: prepare run
-    Host->>EnvdClient: open environment
-    EnvdClient-->>Host: descriptor
-    Host->>Provider: wrap EnvdRpcClient
-    Host->>Runtime: run AgentSession
-    Runtime->>Provider: tool call
-    Provider->>EnvdClient: service method
+    Client->>HostRPC: environment.attach or run.start(environmentAttachments)
+    HostRPC->>Manager: resolve envd endpoint and lease
+    Manager->>EnvdClient: initialize/open/state
+    EnvdClient-->>Manager: descriptor and readiness
+    Manager->>Provider: wrap EnvdRpcClient
+    Manager->>Manager: build RunEnvironmentBinding
+    Manager->>Composite: construct composite provider
+    HostRPC->>Runtime: run AgentSession with one provider
+    Runtime->>Composite: tool call
+    Composite->>Provider: routed call
+    Provider->>EnvdClient: envd service method
 ```
 
 Host RPC remains the agent-control plane. Envd RPC is the environment
-data/effect plane.
+data/effect plane. The attachment manager owns endpoint alias resolution,
+liveness/readiness probes, lease scope, and run materialization. Envd owns
+environment state and operation effects behind the selected service boundary.
 
 ## Run Environment Reference
 
@@ -127,6 +133,38 @@ DTOs in the host-control protocol.
   }]
 }
 ```
+
+In multi-environment runs, `id` is also the agent-facing mount identity. The SDK
+composite provider exposes each attachment at `/environment/{id}` and chooses
+one attachment as the default for unqualified relative paths. Exactly one
+attachment should set `default: true`; if omitted for a single attachment, that
+attachment is the default.
+
+```json
+{
+  "environmentAttachments": [
+    {
+      "id": "workspace",
+      "kind": "envd",
+      "endpointRef": "http://127.0.0.1:8766/rpc",
+      "environmentId": "env_cli_default",
+      "mode": "read_write",
+      "default": true
+    },
+    {
+      "id": "data",
+      "kind": "envd",
+      "endpointRef": "http://127.0.0.1:8770/rpc",
+      "environmentId": "dataset",
+      "mode": "read_only"
+    }
+  ]
+}
+```
+
+The same attachment can also be prepared through `environment.attach` and then
+referenced from `run.start` by `attachmentLeaseId`. That lease id is a
+Starweaver host-control handle and is not part of the envd protocol.
 
 CLI direct mode can omit endpoint:
 
