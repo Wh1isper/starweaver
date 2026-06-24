@@ -1,12 +1,28 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use std::{
-    process::Stdio,
-    sync::{Arc, Mutex},
-    time::Duration,
+    future::Future,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use async_trait::async_trait;
+use rmcp::{
+    model::{
+        AnnotateAble, CallToolRequestParams, CallToolResult, Implementation, ListPromptsResult,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument,
+        RawResource, ServerCapabilities, ServerInfo, Tool,
+    },
+    service::{MaybeSendFuture, RequestContext},
+    transport::{
+        streamable_http_server::session::local::LocalSessionManager, StreamableHttpServerConfig,
+        StreamableHttpService,
+    },
+    ErrorData as McpError, RoleServer, ServerHandler,
+};
 use starweaver_agent::{
     live_mcp_toolset, AgentBuilder, AgentContext, LiveMcpClient, LiveMcpError,
     LiveMcpServerSnapshot, McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec,
@@ -15,10 +31,8 @@ use starweaver_agent::{
 };
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::ToolCallPart;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
-    process::{Child, Command},
-};
+use tokio::{net::TcpListener, task::JoinHandle};
+use tokio_util::sync::CancellationToken;
 
 #[tokio::test]
 async fn live_mcp_adapter_discovers_toolset() {
@@ -225,66 +239,189 @@ async fn rmcp_stdio_client_discovers_executes_and_closes_fixture_server() {
     client.close("rmcp-fixture", &transport).await.unwrap();
 }
 
-async fn start_streamable_http_fixture(fixture_name: &str) -> (Child, String) {
-    let fixture = format!(
-        "{}/tests/fixtures/{fixture_name}",
-        env!("CARGO_MANIFEST_DIR")
+#[derive(Clone, Copy)]
+enum StreamableHttpFixtureKind {
+    Standard,
+    Reconnect,
+}
+
+struct StreamableHttpFixture {
+    url: String,
+    session_manager: Arc<LocalSessionManager>,
+    shutdown: CancellationToken,
+    handle: JoinHandle<()>,
+}
+
+impl StreamableHttpFixture {
+    async fn expire_sessions(&self) {
+        self.session_manager.sessions.write().await.clear();
+    }
+
+    async fn stop(self) {
+        self.shutdown.cancel();
+        self.handle.await.unwrap();
+    }
+}
+
+#[derive(Clone)]
+struct FixtureMcpServer {
+    kind: StreamableHttpFixtureKind,
+    session: Option<String>,
+    initialize_count: Arc<AtomicUsize>,
+}
+
+impl FixtureMcpServer {
+    fn new(kind: StreamableHttpFixtureKind, initialize_count: Arc<AtomicUsize>) -> Self {
+        let session = match kind {
+            StreamableHttpFixtureKind::Standard => None,
+            StreamableHttpFixtureKind::Reconnect => {
+                let count = initialize_count.fetch_add(1, Ordering::SeqCst) + 1;
+                Some(format!("session-{count}"))
+            }
+        };
+        Self {
+            kind,
+            session,
+            initialize_count,
+        }
+    }
+
+    const fn instructions(&self) -> &'static str {
+        match self.kind {
+            StreamableHttpFixtureKind::Standard => "Use HTTP fixture MCP tools.",
+            StreamableHttpFixtureKind::Reconnect => "Use reconnect fixture MCP tools.",
+        }
+    }
+
+    const fn answer(&self) -> &'static str {
+        match self.kind {
+            StreamableHttpFixtureKind::Standard => "http fixture result",
+            StreamableHttpFixtureKind::Reconnect => "reconnected result",
+        }
+    }
+}
+
+impl ServerHandler for FixtureMcpServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build(),
+        )
+        .with_instructions(self.instructions())
+        .with_server_info(Implementation::new("starweaver-http-fixture", "0.0.1"))
+    }
+
+    fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListToolsResult, McpError>> + MaybeSendFuture + '_ {
+        std::future::ready(Ok(ListToolsResult::with_all_items(vec![Tool::new(
+            "lookup",
+            "Look up HTTP fixture data.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )])))
+    }
+
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, McpError>> + MaybeSendFuture + '_ {
+        std::future::ready(Ok(ListResourcesResult::with_all_items(vec![
+            RawResource::new("resource://fixture/http-docs", "HTTP Fixture Docs")
+                .with_description("HTTP fixture documentation.")
+                .with_mime_type("text/markdown")
+                .no_annotation(),
+        ])))
+    }
+
+    fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListPromptsResult, McpError>> + MaybeSendFuture + '_ {
+        std::future::ready(Ok(ListPromptsResult::with_all_items(vec![Prompt::new(
+            "summarize",
+            Some("Summarize HTTP fixture docs."),
+            Some(vec![PromptArgument::new("topic")
+                .with_description("Topic to summarize.")
+                .with_required(false)]),
+        )])))
+    }
+
+    fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<CallToolResult, McpError>> + MaybeSendFuture + '_ {
+        let query = request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("query"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let mut structured = serde_json::json!({
+            "answer": self.answer(),
+            "query": query,
+        });
+        if let Some(session) = &self.session {
+            structured["session"] = serde_json::Value::String(session.clone());
+            structured["initialize_count"] =
+                serde_json::Value::from(self.initialize_count.load(Ordering::SeqCst));
+        }
+        std::future::ready(Ok(CallToolResult::structured(structured)))
+    }
+}
+
+async fn start_streamable_http_fixture(kind: StreamableHttpFixtureKind) -> StreamableHttpFixture {
+    let session_manager = Arc::new(LocalSessionManager::default());
+    let shutdown = CancellationToken::new();
+    let initialize_count = Arc::new(AtomicUsize::new(0));
+    let service = StreamableHttpService::new(
+        {
+            let initialize_count = initialize_count.clone();
+            move || Ok(FixtureMcpServer::new(kind, initialize_count.clone()))
+        },
+        session_manager.clone(),
+        StreamableHttpServerConfig::default()
+            .with_sse_keep_alive(None)
+            .with_cancellation_token(shutdown.child_token()),
     );
-    let mut command = Command::new("python3");
-    command
-        .arg("-u")
-        .arg(&fixture)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = command.spawn().unwrap_or_else(|error| {
-        panic!("failed to spawn streamable HTTP fixture {fixture}: {error}")
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let handle = tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(async move { shutdown.cancelled_owned().await })
+                .await
+                .unwrap();
+        }
     });
-    let Some(stdout) = child.stdout.take() else {
-        panic!("streamable HTTP fixture stdout should be piped")
-    };
-    let Some(mut stderr) = child.stderr.take() else {
-        panic!("streamable HTTP fixture stderr should be piped")
-    };
-    let mut lines = BufReader::new(stdout).lines();
-    let url = match tokio::time::timeout(Duration::from_secs(30), lines.next_line()).await {
-        Ok(Ok(Some(url))) => url,
-        Ok(Ok(None)) => {
-            let mut stderr_text = String::new();
-            let _ = stderr.read_to_string(&mut stderr_text).await;
-            let status = child.wait().await.ok();
-            panic!(
-                "streamable HTTP fixture {fixture} exited before printing its URL; status: {status:?}; stderr:\n{stderr_text}"
-            );
-        }
-        Ok(Err(error)) => {
-            let _ = child.kill().await;
-            let mut stderr_text = String::new();
-            let _ = stderr.read_to_string(&mut stderr_text).await;
-            panic!(
-                "failed reading streamable HTTP fixture {fixture} URL from stdout: {error}; stderr:\n{stderr_text}"
-            );
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            let mut stderr_text = String::new();
-            let _ = stderr.read_to_string(&mut stderr_text).await;
-            panic!(
-                "timed out waiting for streamable HTTP fixture {fixture} to print its URL; stderr:\n{stderr_text}"
-            );
-        }
-    };
-    tokio::spawn(async move {
-        let mut stderr_text = String::new();
-        let _ = stderr.read_to_string(&mut stderr_text).await;
-    });
-    (child, url)
+    StreamableHttpFixture {
+        url: format!("http://{addr}/mcp"),
+        session_manager,
+        shutdown,
+        handle,
+    }
 }
 
 #[tokio::test]
 async fn rmcp_streamable_http_client_discovers_executes_and_closes_fixture_server() {
-    let (mut child, url) = start_streamable_http_fixture("rmcp_streamable_http_server.py").await;
-    let transport = McpTransport::streamable_http(url);
+    let fixture = start_streamable_http_fixture(StreamableHttpFixtureKind::Standard).await;
+    let transport = McpTransport::streamable_http(fixture.url.clone());
     let client = Arc::new(RmcpLiveMcpClient::new());
     let toolset = live_mcp_toolset(client.clone(), "rmcp-http-fixture", transport.clone())
         .await
@@ -319,19 +456,18 @@ async fn rmcp_streamable_http_client_discovers_executes_and_closes_fixture_serve
     assert_eq!(result.metadata["rmcp_live"], true);
 
     client.close("rmcp-http-fixture", &transport).await.unwrap();
-    child.kill().await.unwrap();
-    let _ = child.wait().await;
+    fixture.stop().await;
 }
 
 #[tokio::test]
 async fn rmcp_streamable_http_client_reinitializes_after_expired_session() {
-    let (mut child, url) =
-        start_streamable_http_fixture("rmcp_streamable_http_reconnect_server.py").await;
-    let transport = McpTransport::streamable_http(url);
+    let fixture = start_streamable_http_fixture(StreamableHttpFixtureKind::Reconnect).await;
+    let transport = McpTransport::streamable_http(fixture.url.clone());
     let client = Arc::new(RmcpLiveMcpClient::new());
     let toolset = live_mcp_toolset(client.clone(), "rmcp-reconnect-fixture", transport.clone())
         .await
         .unwrap();
+    fixture.expire_sessions().await;
     let registry = ToolRegistry::new().with_toolset(&toolset);
     let call = ToolCallPart {
         id: "call_lookup_reconnect".to_string(),
@@ -358,8 +494,7 @@ async fn rmcp_streamable_http_client_reinitializes_after_expired_session() {
         .close("rmcp-reconnect-fixture", &transport)
         .await
         .unwrap();
-    child.kill().await.unwrap();
-    let _ = child.wait().await;
+    fixture.stop().await;
 }
 
 #[tokio::test]

@@ -1,45 +1,45 @@
 # Release
 
 Starweaver uses one workspace version for crates and CLI artifacts. The repository development
-version should stay on a pre-release version such as `0.0.1-dev.0`. A release commit promotes that
-version to the public release version, such as `0.0.1`.
+version should stay on a pre-release version such as `X.Y.Z-dev.0`. A release commit promotes that
+version to the public release version `X.Y.Z`.
 
 Publishing a GitHub Release for a `vX.Y.Z` tag is the publishing trigger. The tag must point at a
 commit whose workspace version is exactly `X.Y.Z`.
 
-## First release
+## Prepare release
 
-Prepare the first public release branch from the repository root:
+Prepare a release branch from the repository root:
 
 ```bash
-gh workflow run prepare-release.yml -f version=0.0.1
+gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
 The workflow:
 
 1. validates the requested semver version,
-2. runs `make upversion VERSION=0.0.1`,
+2. runs `make upversion VERSION=X.Y.Z`,
 3. runs fast release preparation checks,
-4. pushes `release/v0.0.1`,
+4. pushes `release/vX.Y.Z`,
 5. writes the manual pull request URL to the workflow summary.
 
 After the release pull request is merged into `main`, publish the GitHub Release:
 
 ```bash
-gh release create v0.0.1 --target main --title "Starweaver v0.0.1" --generate-notes
+gh release create vX.Y.Z --target main --title "Starweaver vX.Y.Z" --generate-notes
 ```
 
 For fully local preparation:
 
 ```bash
-make upversion VERSION=0.0.1
+make upversion VERSION=X.Y.Z
 make ci
 make cli-smoke
 make publish-dry-run
-git add Cargo.toml Cargo.lock crates/*/Cargo.toml
-git commit -m "Prepare release v0.0.1"
+git add Cargo.toml Cargo.lock
+git commit -m "Prepare release vX.Y.Z"
 git push
-gh release create v0.0.1 --target main --title "Starweaver v0.0.1" --generate-notes
+gh release create vX.Y.Z --target main --title "Starweaver vX.Y.Z" --generate-notes
 ```
 
 ## Release workflow
@@ -88,10 +88,10 @@ Manual dry-run:
 make publish-dry-run
 ```
 
-For the first release, dependent crates cannot be fully dry-run against crates.io until their
-Starweaver dependencies have been published. The dry-run target validates the release package
-lists and dry-runs the dependency-free first-wave crates: `starweaver-core`, `starweaver-usage`,
-and `starweaver-oauth`.
+Dependent crates cannot always be fully dry-run against crates.io before the matching Starweaver
+dependency versions are published. The dry-run target validates the release package lists and
+dry-runs the dependency-free first-wave crates: `starweaver-core`, `starweaver-usage`, and
+`starweaver-oauth`.
 
 Manual publish after validation and approval:
 
@@ -103,7 +103,7 @@ make publish
 
 - `CARGO_REGISTRY_TOKEN` secret is configured.
 - The `Release` environment exists and requires the intended approval policy.
-- The target tag, such as `v0.0.1`, does not already exist.
+- The target tag, such as `vX.Y.Z`, does not already exist.
 - GitHub Actions has `contents: write` permission so release assets can be uploaded.
 
 ## After publishing
@@ -111,7 +111,7 @@ make publish
 Verify the public install path:
 
 ```bash
-STARWEAVER_VERSION=v0.0.1 \
+STARWEAVER_VERSION=vX.Y.Z \
   curl -fsSL https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh | sh
 
 starweaver version
