@@ -12,6 +12,13 @@ readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
+[[bin]]
+name = "starweaver_agent_rmcp_stdio_fixture"
+path = "tests/fixtures/rmcp_stdio_server.rs"
+test = false
+bench = false
+doc = false
+
 [dependencies]
 base64.workspace = true
 async-trait.workspace = true
@@ -23,7 +30,7 @@ schemars.workspace = true
 yaml_serde.workspace = true
 thiserror.workspace = true
 reqwest.workspace = true
-rmcp = { version = "1.7.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "1.7.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest"] }
 uuid.workspace = true
 starweaver-context.workspace = true
 starweaver-core.workspace = true
@@ -39,7 +46,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 axum = "0.8.7"
-rmcp = { version = "1.7.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
+rmcp = { version = "1.7.0", default-features = false, features = ["client", "server", "transport-child-process", "transport-io", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 starweaver-core.workspace = true
 starweaver-tools.workspace = true
 tokio-util = "0.7.17"
