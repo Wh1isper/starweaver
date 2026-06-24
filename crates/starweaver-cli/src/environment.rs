@@ -52,18 +52,17 @@ pub fn resolve_environment_for_session_with_attachments(
     if attachments.is_empty() {
         return resolve_environment_for_session(config, session_id);
     }
-    if attachments.len() == 1 {
-        return resolve_environment_attachment(config, Some(session_id), &attachments[0]);
-    }
+    let default_id = default_attachment_id(attachments);
     let mut mounts = Vec::new();
     for attachment in attachments {
         let resolved = resolve_environment_attachment(config, Some(session_id), attachment)?;
+        let is_default = attachment.is_default || default_id == Some(attachment.id.as_str());
         mounts.push(
             EnvironmentMount::new(&attachment.id, resolved.provider)
                 .map_err(|error| CliError::Config(error.to_string()))?
-                .with_mode(environment_mount_mode(attachment.mode))
-                .with_default(attachment.is_default)
-                .with_default_for_shell(attachment.is_default),
+                .with_mode(environment_mount_mode(attachment.resolved_mode()))
+                .with_default(is_default)
+                .with_default_for_shell(is_default),
         );
     }
     let provider: DynEnvironmentProvider = Arc::new(
@@ -75,6 +74,16 @@ pub fn resolve_environment_for_session_with_attachments(
         provider,
         process_provider,
     })
+}
+
+fn default_attachment_id(attachments: &[EnvironmentAttachmentRef]) -> Option<&str> {
+    if attachments.len() == 1 {
+        return Some(attachments[0].id.as_str());
+    }
+    attachments
+        .iter()
+        .find(|attachment| attachment.is_default)
+        .map(|attachment| attachment.id.as_str())
 }
 
 fn resolve_environment_with_tmp_namespace(
@@ -331,6 +340,56 @@ additional_dirs = ["../custom-skills"]
     }
 
     #[tokio::test]
+    async fn cli_resolves_single_environment_attachment_as_composite_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::write(config.workspace_root.join("README.md"), "local workspace").unwrap();
+        let attachments = vec![EnvironmentAttachmentRef {
+            id: "workspace".to_string(),
+            kind: "local".to_string(),
+            mode: Some(EnvironmentAttachmentAccessMode::ReadOnly),
+            is_default: false,
+            attachment_lease_id: None,
+            endpoint_ref: None,
+            environment_id: None,
+            metadata: serde_json::Map::new(),
+        }];
+
+        let environment =
+            resolve_environment_for_session_with_attachments(&config, "session_123", &attachments)
+                .unwrap();
+
+        assert_eq!(environment.provider.id(), "composite");
+        assert_eq!(
+            environment.provider.read_text("README.md").await.unwrap(),
+            "local workspace"
+        );
+        assert_eq!(
+            environment
+                .provider
+                .read_text("/environment/workspace/README.md")
+                .await
+                .unwrap(),
+            "local workspace"
+        );
+        assert!(matches!(
+            environment.provider.write_text("new.txt", "blocked").await,
+            Err(starweaver_environment::EnvironmentError::AccessDenied(_))
+        ));
+        assert!(matches!(
+            environment
+                .provider
+                .write_text("/environment/workspace/new.txt", "blocked")
+                .await,
+            Err(starweaver_environment::EnvironmentError::AccessDenied(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn cli_resolves_multiple_environment_attachments_as_composite_provider() {
         let temp = tempfile::tempdir().unwrap();
         let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
@@ -343,7 +402,7 @@ additional_dirs = ["../custom-skills"]
             EnvironmentAttachmentRef {
                 id: "workspace".to_string(),
                 kind: "local".to_string(),
-                mode: EnvironmentAttachmentAccessMode::ReadWrite,
+                mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
                 is_default: true,
                 attachment_lease_id: None,
                 endpoint_ref: None,
@@ -353,7 +412,7 @@ additional_dirs = ["../custom-skills"]
             EnvironmentAttachmentRef {
                 id: "tools".to_string(),
                 kind: "local".to_string(),
-                mode: EnvironmentAttachmentAccessMode::ReadOnly,
+                mode: Some(EnvironmentAttachmentAccessMode::ReadOnly),
                 is_default: false,
                 attachment_lease_id: None,
                 endpoint_ref: None,

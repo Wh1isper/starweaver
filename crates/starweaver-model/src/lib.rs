@@ -37,9 +37,10 @@ pub use oauth::{
 };
 pub use presets::{
     anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
-    list_model_config_presets, list_model_settings_presets, model_runtime_preset,
-    openai_chat_http_config, openai_responses_http_config, ModelConfigPreset,
-    ModelConfigPresetData, ModelPresetError, ModelRuntimePreset, ModelSettingsPreset,
+    google_cloud_http_config, google_cloud_project_http_config, list_model_config_presets,
+    list_model_settings_presets, model_runtime_preset, openai_chat_http_config,
+    openai_responses_http_config, ModelConfigPreset, ModelConfigPresetData, ModelPresetError,
+    ModelRuntimePreset, ModelSettingsPreset,
 };
 pub use profile::{
     JsonSchemaTransformer, MessageNormalization, ModelProfile, NativeToolKind, ProtocolFamily,
@@ -57,9 +58,9 @@ pub use request::{
 };
 pub use settings::{
     format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key, AnthropicSettings,
-    BedrockSettings, CodexSettings, GatewaySettings, GoogleSettings, ModelSettings,
-    OpenAiChatSettings, OpenAiResponsesSettings, ProviderReplaySettings, ProviderSettings,
-    ServiceTier, ThinkingSettings, ToolChoice,
+    BedrockSettings, CodexSettings, GatewaySettings, GoogleCloudServiceTier, GoogleSettings,
+    ModelSettings, OpenAiChatSettings, OpenAiResponsesSettings, ProviderReplaySettings,
+    ProviderSettings, ServiceTier, ThinkingSettings, ToolChoice,
 };
 pub use stream::{
     ModelResponseStreamEvent, ModelStreamState, PartDelta, PartEnd, PartStart, StreamDelta,

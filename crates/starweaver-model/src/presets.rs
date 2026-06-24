@@ -10,8 +10,8 @@ mod tests;
 mod types;
 
 pub use http::{
-    anthropic_http_config, gemini_http_config, openai_chat_http_config,
-    openai_responses_http_config,
+    anthropic_http_config, gemini_http_config, google_cloud_http_config,
+    google_cloud_project_http_config, openai_chat_http_config, openai_responses_http_config,
 };
 pub use types::{
     ModelConfigPreset, ModelConfigPresetData, ModelPresetError, ModelRuntimePreset,

@@ -139,10 +139,14 @@ Provider-backed model ids use these prefixes:
 | `anthropic:<model>`                  | Anthropic Messages                |
 | `claude:<model>`                     | Anthropic Messages                |
 | `gemini:<model>`                     | Gemini generateContent            |
-| `google-vertex:<model>`              | Gemini generateContent            |
+| `google:<model>`                     | Gemini generateContent            |
+| `google-gla:<model>`                 | Gemini generateContent            |
+| `google-cloud:<model>`               | Google Cloud Gemini               |
+| `google-vertex:<model>`              | Google Cloud Gemini               |
 | `<gateway>@openai-responses:<model>` | gateway-routed OpenAI Responses   |
 | `<gateway>@openai-chat:<model>`      | gateway-routed OpenAI Chat        |
-| `<gateway>@google-vertex:<model>`    | gateway-routed Gemini             |
+| `<gateway>@google:<model>`           | gateway-routed Gemini             |
+| `<gateway>@google-cloud:<model>`     | gateway-routed Google Cloud       |
 | `oauth@codex:<model>`                | Codex OAuth over OpenAI Responses |
 
 Deterministic local model ids remain available for tests and offline validation: `local_echo`, `approval_model`, and `deferred_model`.
@@ -156,6 +160,7 @@ starweaver-cli config init --global
 export OPENAI_API_KEY=...
 export ANTHROPIC_API_KEY=...
 export GEMINI_API_KEY=...
+export GOOGLE_API_KEY=...
 ```
 
 Provider config stores environment variable names and gateway URLs. It keeps raw API keys in the shell or secret manager. Configuration examples live under `examples/cli/` and can be validated with `make cli-examples-check`.
@@ -175,6 +180,12 @@ base_url = "https://api.anthropic.com/v1"
 enabled = true
 api_key_env = "GEMINI_API_KEY"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+[providers.google-cloud]
+enabled = true
+api_key_env = "GOOGLE_API_KEY"
+auth_token_env = "GOOGLE_CLOUD_ACCESS_TOKEN"
+base_url = "https://aiplatform.googleapis.com"
 
 [providers.codex]
 base_url = "https://chatgpt.com/backend-api/codex"
@@ -197,7 +208,9 @@ base_url = "https://gateway.example/v1"
 max_tokens_parameter = "omit"
 ```
 
-Provider presets treat a `base_url` with no path as a provider API host and insert the provider API root before the endpoint (`/v1` for OpenAI and Anthropic, `/v1beta` for Gemini). A `base_url` with a path is treated as a gateway mount point, so Starweaver appends only the provider endpoint. Set `endpoint_path` when the gateway needs a fully custom route.
+Provider presets treat a `base_url` with no path as a provider API host and insert the provider API root before the endpoint (`/v1` for OpenAI and Anthropic, `/v1beta` for Gemini, `/v1beta1` for Google Cloud). A `base_url` with a path is treated as a gateway mount point, so Starweaver appends only the provider endpoint. Set `endpoint_path` when the gateway needs a fully custom route.
+
+`google:<model>` and `google-gla:<model>` use the Gemini API config from `[providers.gemini]`, so Gemini-compatible gateways can be reached by overriding `base_url` or `endpoint_path`. `google-cloud:<model>` and `google-vertex:<model>` use `[providers.google-cloud]`. With only `api_key_env`, Google Cloud uses Vertex AI Express Mode and sends the key as `x-goog-api-key`. When `project` is set, Starweaver uses `auth_token_env` as a bearer access token and builds `projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`; `location` defaults to `us-central1` for that project-scoped path.
 
 ```bash
 export HOMELAB_API_KEY=...
@@ -225,9 +238,14 @@ Provider environment overrides:
 STARWEAVER_OPENAI_BASE_URL=https://gateway.example/v1
 STARWEAVER_ANTHROPIC_BASE_URL=https://gateway.example/anthropic
 STARWEAVER_GEMINI_BASE_URL=https://gateway.example/gemini
+STARWEAVER_GOOGLE_CLOUD_BASE_URL=https://gateway.example/google-cloud
 STARWEAVER_OPENAI_API_KEY_ENV=MY_OPENAI_KEY
 STARWEAVER_ANTHROPIC_API_KEY_ENV=MY_ANTHROPIC_KEY
 STARWEAVER_GEMINI_API_KEY_ENV=MY_GEMINI_KEY
+STARWEAVER_GOOGLE_CLOUD_API_KEY_ENV=MY_GOOGLE_KEY
+STARWEAVER_GOOGLE_CLOUD_AUTH_TOKEN_ENV=MY_GOOGLE_CLOUD_TOKEN
+STARWEAVER_GOOGLE_CLOUD_PROJECT=my-project
+STARWEAVER_GOOGLE_CLOUD_LOCATION=us-central1
 ```
 
 ## Setup

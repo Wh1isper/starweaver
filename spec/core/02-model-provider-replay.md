@@ -33,7 +33,7 @@ Provider mappers consume these presets through the same `ModelSettings`, `ModelP
 | `OpenAiChatSettings`      | Chat-specific `user`, `store`, logprobs, prediction, and prompt-cache controls                                                                                             |
 | `OpenAiResponsesSettings` | Responses-specific `store`, `user`, truncation, text verbosity, context management, include list, and prompt-cache controls                                                |
 | `AnthropicSettings`       | Messages metadata, `anthropic-beta` betas, context management, container, and service tier                                                                                 |
-| `GoogleSettings`          | Gemini safety settings, cached content, labels, logprobs, and service tier                                                                                                 |
+| `GoogleSettings`          | Gemini safety settings, cached content, labels, logprobs, Gemini API service tier, and Google Cloud routing tier                                                           |
 | `BedrockSettings`         | Converse guardrails, performance config, request metadata, additional response paths, prompt variables, additional request fields, and inference profile `modelId` routing |
 | `CodexSettings`           | Codex OAuth session/thread routing IDs                                                                                                                                     |
 | `GatewaySettings`         | Gateway sticky `x-session-id` and gateway-scoped extra headers                                                                                                             |

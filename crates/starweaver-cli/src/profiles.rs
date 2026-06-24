@@ -17,7 +17,8 @@ use starweaver_agent::{
 };
 use starweaver_model::{
     anthropic_http_config, build_codex_model_with_profile, codex_model_profile, gemini_http_config,
-    get_model_config, get_model_settings, openai_chat_http_config, openai_responses_http_config,
+    get_model_config, get_model_settings, google_cloud_http_config,
+    google_cloud_project_http_config, openai_chat_http_config, openai_responses_http_config,
     HttpModelConfig, ModelAdapter, ModelProfile, ModelSettings, ProtocolFamily,
     ProtocolModelClient, ReqwestHttpClient,
 };
@@ -775,6 +776,38 @@ fn provider_model(
             parsed.provider
         )));
     }
+    let mut http_config = match parsed.protocol {
+        ProtocolFamily::OpenAiResponses => {
+            openai_responses_http_config(provider_api_key(&provider_config, &parsed, model_id)?)
+        }
+        ProtocolFamily::OpenAiChatCompletions => {
+            openai_chat_http_config(provider_api_key(&provider_config, &parsed, model_id)?)
+        }
+        ProtocolFamily::AnthropicMessages => {
+            anthropic_http_config(provider_api_key(&provider_config, &parsed, model_id)?)
+        }
+        ProtocolFamily::GeminiGenerateContent => {
+            google_http_config(&provider_config, &parsed, model_id)?
+        }
+        ProtocolFamily::BedrockConverse => return Ok(None),
+    };
+    apply_provider_http_config_overrides(&mut http_config, &provider_config);
+    let profile = provider_model_profile(model_config_preset, parsed.protocol)?;
+    let client = ProtocolModelClient::new(
+        parsed.provider,
+        parsed.model_name,
+        profile,
+        http_config,
+        Arc::new(ReqwestHttpClient::new().map_err(|error| CliError::Config(error.to_string()))?),
+    );
+    Ok(Some(Arc::new(client)))
+}
+
+fn provider_api_key(
+    provider_config: &ProviderConfig,
+    parsed: &ProviderModelId,
+    model_id: &str,
+) -> CliResult<String> {
     let api_key_env = provider_config
         .api_key_env
         .as_deref()
@@ -792,25 +825,67 @@ fn provider_model(
     if api_key.trim().is_empty() {
         return Err(missing_provider_key(&api_key_env, model_id));
     }
-    let mut http_config = match parsed.protocol {
-        ProtocolFamily::OpenAiResponses => openai_responses_http_config(api_key),
-        ProtocolFamily::OpenAiChatCompletions => openai_chat_http_config(api_key),
-        ProtocolFamily::AnthropicMessages => anthropic_http_config(api_key),
-        ProtocolFamily::GeminiGenerateContent => {
-            gemini_http_config(api_key, parsed.model_name.clone())
+    Ok(api_key)
+}
+
+fn provider_auth_token(
+    provider_config: &ProviderConfig,
+    parsed: &ProviderModelId,
+    model_id: &str,
+) -> CliResult<String> {
+    let token_env = provider_config
+        .auth_token_env
+        .as_deref()
+        .unwrap_or("GOOGLE_CLOUD_ACCESS_TOKEN")
+        .trim()
+        .to_string();
+    if token_env.is_empty() {
+        return Err(CliError::Config(format!(
+            "empty auth_token_env for provider {} and model id {model_id}",
+            parsed.provider
+        )));
+    }
+    let token = env::var(&token_env).map_err(|_| missing_provider_token(&token_env, model_id))?;
+    if token.trim().is_empty() {
+        return Err(missing_provider_token(&token_env, model_id));
+    }
+    Ok(token)
+}
+
+fn google_http_config(
+    provider_config: &ProviderConfig,
+    parsed: &ProviderModelId,
+    model_id: &str,
+) -> CliResult<HttpModelConfig> {
+    if parsed.provider == "google-cloud" {
+        let project = provider_config
+            .project
+            .as_deref()
+            .map(str::trim)
+            .filter(|project| !project.is_empty());
+        if let Some(project) = project {
+            let location = provider_config
+                .location
+                .as_deref()
+                .map(str::trim)
+                .filter(|location| !location.is_empty())
+                .unwrap_or("us-central1");
+            return Ok(google_cloud_project_http_config(
+                provider_auth_token(provider_config, parsed, model_id)?,
+                parsed.model_name.clone(),
+                project,
+                location,
+            ));
         }
-        ProtocolFamily::BedrockConverse => return Ok(None),
-    };
-    apply_provider_http_config_overrides(&mut http_config, &provider_config);
-    let profile = provider_model_profile(model_config_preset, parsed.protocol)?;
-    let client = ProtocolModelClient::new(
-        parsed.provider,
-        parsed.model_name,
-        profile,
-        http_config,
-        Arc::new(ReqwestHttpClient::new().map_err(|error| CliError::Config(error.to_string()))?),
-    );
-    Ok(Some(Arc::new(client)))
+        return Ok(google_cloud_http_config(
+            provider_api_key(provider_config, parsed, model_id)?,
+            parsed.model_name.clone(),
+        ));
+    }
+    Ok(gemini_http_config(
+        provider_api_key(provider_config, parsed, model_id)?,
+        parsed.model_name.clone(),
+    ))
 }
 
 fn apply_provider_http_config_overrides(
@@ -852,20 +927,16 @@ impl ProviderModelId {
                 oauth_provider: Some("codex".to_string()),
             });
         }
-        let protocol = match provider_prefix {
-            "openai" | "openai-responses" => ProtocolFamily::OpenAiResponses,
-            "openai-chat" => ProtocolFamily::OpenAiChatCompletions,
-            "anthropic" | "claude" => ProtocolFamily::AnthropicMessages,
-            "gemini" | "google" | "google-vertex" | "google-cloud" | "google-gla" => {
-                ProtocolFamily::GeminiGenerateContent
+        let (provider, protocol) = match provider_prefix {
+            "openai" | "openai-responses" => ("openai", ProtocolFamily::OpenAiResponses),
+            "openai-chat" => ("openai", ProtocolFamily::OpenAiChatCompletions),
+            "anthropic" | "claude" => ("anthropic", ProtocolFamily::AnthropicMessages),
+            "gemini" => ("gemini", ProtocolFamily::GeminiGenerateContent),
+            "google" | "google-gla" => ("google", ProtocolFamily::GeminiGenerateContent),
+            "google-cloud" | "google-vertex" => {
+                ("google-cloud", ProtocolFamily::GeminiGenerateContent)
             }
             _ => return None,
-        };
-        let provider = match protocol {
-            ProtocolFamily::OpenAiResponses | ProtocolFamily::OpenAiChatCompletions => "openai",
-            ProtocolFamily::AnthropicMessages => "anthropic",
-            ProtocolFamily::GeminiGenerateContent => "gemini",
-            ProtocolFamily::BedrockConverse => "bedrock",
         };
         Some(Self {
             provider: provider.to_string(),
@@ -897,7 +968,8 @@ impl ProviderModelId {
         match self.provider.as_str() {
             "openai" => config.providers.openai.clone(),
             "anthropic" => config.providers.anthropic.clone(),
-            "gemini" => config.providers.gemini.clone(),
+            "gemini" | "google" => config.providers.gemini.clone(),
+            "google-cloud" => config.providers.google_cloud.clone(),
             _ => ProviderConfig::default(),
         }
     }
@@ -907,6 +979,7 @@ impl ProviderModelId {
             "openai" => "OPENAI_API_KEY",
             "anthropic" => "ANTHROPIC_API_KEY",
             "gemini" => "GEMINI_API_KEY",
+            "google" | "google-cloud" => "GOOGLE_API_KEY",
             _ => "STARWEAVER_API_KEY",
         }
     }
@@ -926,6 +999,12 @@ fn provider_model_profile(
 fn missing_provider_key(api_key_env: &str, model_id: &str) -> CliError {
     CliError::Config(format!(
         "missing {api_key_env} for model id {model_id}; run `starweaver-cli config init --global` and export the provider API key"
+    ))
+}
+
+fn missing_provider_token(token_env: &str, model_id: &str) -> CliError {
+    CliError::Config(format!(
+        "missing {token_env} for model id {model_id}; export a Google Cloud bearer access token or remove the provider project setting to use API-key Express Mode"
     ))
 }
 

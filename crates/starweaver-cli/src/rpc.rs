@@ -23,6 +23,7 @@ use starweaver_rpc_core::{
 };
 use starweaver_stream::ReplayScope;
 use tokio::runtime::Runtime;
+use uuid::Uuid;
 
 use crate::{
     args::{HitlPolicy, OutputMode, RpcCommand, RpcTransport, RunCommand},
@@ -87,7 +88,7 @@ impl RpcService {
         output_sender: mpsc::Sender<Value>,
         notifications: RpcNotificationMode,
     ) -> Self {
-        let environment_manager = EnvironmentAttachmentManager::new(config.clone());
+        let environment_manager = EnvironmentAttachmentManager::new();
         Self {
             coordinator: CliRuntimeCoordinator::new(config.clone()),
             config,
@@ -303,7 +304,10 @@ impl RpcService {
                     .map_err(RpcError::from)?;
                 Ok(json!({"deferred": deferred}))
             }
-            "environment.attach" => self.environment_manager.attach(params).await,
+            "environment.attach" => {
+                self.validate_environment_attach_scope(params)?;
+                self.environment_manager.attach(params).await
+            }
             "environment.detach" => self.environment_manager.detach(params),
             "environment.list" => self.environment_manager.list(params),
             "environment.health" => self.environment_manager.health(params).await,
@@ -317,17 +321,40 @@ impl RpcService {
     async fn run_start(&self, params: &Value) -> Result<Value, RpcError> {
         let format = stream_payload_format(params)?;
         let mut command = run_command_from_params(&self.config, params, OutputMode::Json)?;
+        let run_session_id = command.session.clone();
         command.environment_attachments = self
             .environment_manager
-            .materialize_run_attachments(command.environment_attachments)
+            .materialize_run_attachments(command.environment_attachments, run_session_id.as_deref())
             .await?;
         let environment_attachments = command.environment_attachments.clone();
-        let started = self
+        let pending_environment_run_id = pending_active_environment_run_id();
+        self.environment_manager
+            .mark_run_started(&pending_environment_run_id, &environment_attachments)?;
+        let started = match self
             .coordinator
             .start_run(command, None)
-            .map_err(RpcError::from)?;
+            .map_err(RpcError::from)
+        {
+            Ok(started) => started,
+            Err(error) => {
+                self.environment_manager
+                    .mark_run_finished(&pending_environment_run_id)?;
+                return Err(error);
+            }
+        };
         let session_id = started.session_id.clone();
         let run_id = started.run_id.clone();
+        if let Err(error) = self
+            .environment_manager
+            .mark_run_started(&run_id, &environment_attachments)
+        {
+            let _ = self
+                .environment_manager
+                .mark_run_finished(&pending_environment_run_id);
+            return Err(error);
+        }
+        self.environment_manager
+            .mark_run_finished(&pending_environment_run_id)?;
         self.spawn_run_notifications(started, format);
         let mut result = json!({
             "sessionId": session_id,
@@ -346,16 +373,27 @@ impl RpcService {
 
     async fn run_prompt(&self, params: &Value) -> Result<Value, RpcError> {
         let mut command = run_command_from_params(&self.config, params, OutputMode::Json)?;
+        let run_session_id = command.session.clone();
         command.environment_attachments = self
             .environment_manager
-            .materialize_run_attachments(command.environment_attachments)
+            .materialize_run_attachments(command.environment_attachments, run_session_id.as_deref())
             .await?;
+        let active_environment_run_id = prompt_active_environment_run_id();
+        self.environment_manager
+            .mark_run_started(&active_environment_run_id, &command.environment_attachments)?;
         let config = self.config.clone();
-        let output =
+        let join_result =
             tokio::task::spawn_blocking(move || CliService::open(config)?.run_prompt(&command))
-                .await
-                .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))?
-                .map_err(RpcError::from)?;
+                .await;
+        let finish_result = self
+            .environment_manager
+            .mark_run_finished(&active_environment_run_id);
+        let output_result = match join_result {
+            Ok(result) => result.map_err(RpcError::from),
+            Err(error) => Err(RpcError::new(SERVER_ERROR, error.to_string())),
+        };
+        let output = output_result?;
+        finish_result?;
         serde_json::from_str(output.trim())
             .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))
     }
@@ -586,23 +624,49 @@ impl RpcService {
     }
 
     fn spawn_run_notifications(&self, started: StartedRun, format: StreamPayloadFormat) {
-        if !self.notifications.supports_live_notifications() {
-            return;
-        }
         let output_sender = self.output_sender.clone();
+        let environment_manager = self.environment_manager.clone();
+        let send_notifications = self.notifications.supports_live_notifications();
         thread::spawn(move || {
             let session_id = started.session_id.clone();
             let run_id = started.run_id.clone();
-            let _ = output_sender.send(notification(
-                "run.started",
-                &json!({
-                    "sessionId": session_id,
-                    "runId": run_id,
-                    "status": "running",
-                }),
-            ));
-            forward_run_events(&output_sender, started.events, format);
+            if send_notifications {
+                let _ = output_sender.send(notification(
+                    "run.started",
+                    &json!({
+                        "sessionId": session_id,
+                        "runId": run_id,
+                        "status": "running",
+                    }),
+                ));
+            }
+            forward_started_run_events(
+                &output_sender,
+                started.events,
+                format,
+                send_notifications,
+                &environment_manager,
+                &run_id,
+            );
         });
+    }
+
+    fn validate_environment_attach_scope(&self, params: &Value) -> Result<(), RpcError> {
+        if self.notifications.supports_live_notifications() {
+            return Ok(());
+        }
+        let scope_kind = params
+            .get("scope")
+            .and_then(|scope| scope.get("kind"))
+            .and_then(Value::as_str)
+            .unwrap_or("connection");
+        if scope_kind == "connection" {
+            return Err(RpcError::new(
+                UNSUPPORTED_FEATURE,
+                "connection-scoped environment attachments are not supported by replay-only transports; use session scope",
+            ));
+        }
+        Ok(())
     }
 
     fn spawn_attachment_notifications(
@@ -669,6 +733,7 @@ fn run_command_from_params(
     let prompt = required_string(params, "prompt")?;
     let environment_attachments = environment_attachment_refs(params)?;
     validate_environment_attachments_for_run(&environment_attachments)?;
+    validate_run_session_selectors(params)?;
     let client = params.get("client").and_then(Value::as_str);
     let client_profile = client
         .map(|client| client_state::read_selected_profile(config, client).map_err(RpcError::from))
@@ -721,6 +786,27 @@ fn run_command_from_params(
         session_affinity_id: None,
         environment_attachments,
     })
+}
+
+fn validate_run_session_selectors(params: &Value) -> Result<(), RpcError> {
+    let session_id = params.get("sessionId").and_then(Value::as_str).is_some();
+    let continue_latest = params
+        .get("continueLatest")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let new_session = params
+        .get("newSession")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let selected =
+        usize::from(session_id) + usize::from(continue_latest) + usize::from(new_session);
+    if selected > 1 {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "run session selectors are mutually exclusive: use only one of sessionId, continueLatest, or newSession",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_environment_attachments_for_run(
@@ -778,25 +864,63 @@ fn subscription_id(params: &Value) -> String {
         )
 }
 
+fn prompt_active_environment_run_id() -> String {
+    format!("run_prompt_{}", Uuid::new_v4().simple())
+}
+
+fn pending_active_environment_run_id() -> String {
+    format!("run_start_pending_{}", Uuid::new_v4().simple())
+}
+
 fn forward_run_events(
     output_sender: &mpsc::Sender<Value>,
     receiver: mpsc::Receiver<RunStreamEvent>,
     format: StreamPayloadFormat,
 ) {
     for event in receiver {
-        let frame = match event {
-            RunStreamEvent::Output(output) => {
-                let Some(output) = output_item(&output, format) else {
-                    continue;
-                };
-                notification("run.output", &json!(output))
-            }
-            RunStreamEvent::Status(status) => notification("run.status", &json!(status)),
-            RunStreamEvent::Raw(_) => continue,
+        let Some(frame) = run_event_notification(event, format) else {
+            continue;
         };
         if output_sender.send(frame).is_err() {
             break;
         }
+    }
+}
+
+fn forward_started_run_events(
+    output_sender: &mpsc::Sender<Value>,
+    receiver: mpsc::Receiver<RunStreamEvent>,
+    format: StreamPayloadFormat,
+    send_notifications: bool,
+    environment_manager: &EnvironmentAttachmentManager,
+    run_id: &str,
+) {
+    for event in receiver {
+        let terminal = matches!(
+            &event,
+            RunStreamEvent::Status(status) if status_is_terminal(&status.status)
+        );
+        if send_notifications {
+            if let Some(frame) = run_event_notification(event, format) {
+                let _ = output_sender.send(frame);
+            }
+        }
+        if terminal {
+            let _ = environment_manager.mark_run_finished(run_id);
+            return;
+        }
+    }
+    let _ = environment_manager.mark_run_finished(run_id);
+}
+
+fn run_event_notification(event: RunStreamEvent, format: StreamPayloadFormat) -> Option<Value> {
+    match event {
+        RunStreamEvent::Output(output) => {
+            let output = output_item(&output, format)?;
+            Some(notification("run.output", &json!(output)))
+        }
+        RunStreamEvent::Status(status) => Some(notification("run.status", &json!(status))),
+        RunStreamEvent::Raw(_) => None,
     }
 }
 
@@ -1438,6 +1562,41 @@ model = "test:coding"
     }
 
     #[test]
+    fn replay_only_transport_requires_session_scoped_environment_leases() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let server = RpcService::replay_only(config, transport::closed_notification_sender());
+
+        let connection_error = request_error_with_server(
+            &server,
+            1,
+            "environment.attach",
+            json!({
+                "attachment": {"id": "workspace", "kind": "local"},
+                "readiness": {"policy": "required"}
+            }),
+        );
+        assert_eq!(connection_error["code"], UNSUPPORTED_FEATURE);
+        assert!(connection_error["message"]
+            .as_str()
+            .unwrap()
+            .contains("session scope"));
+
+        let attached = request_with_server(
+            &server,
+            2,
+            "environment.attach",
+            json!({
+                "scope": {"kind": "session", "sessionId": "session_http"},
+                "attachment": {"id": "workspace", "kind": "local"},
+                "readiness": {"policy": "required"}
+            }),
+        );
+        assert_eq!(attached["attachment"]["scope"]["kind"], "session");
+        assert_eq!(attached["attachment"]["scope"]["sessionId"], "session_http");
+    }
+
+    #[test]
     fn run_start_accepts_multiple_environment_attachments() {
         let temp = tempfile::tempdir().unwrap();
         let config = test_config(temp.path());
@@ -1576,6 +1735,83 @@ model = "test:coding"
             lease_id
         );
         assert_eq!(started["environmentAttachments"][0]["mode"], "read_only");
+    }
+
+    #[test]
+    fn run_start_rejects_session_scoped_environment_lease_for_other_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let attached = request_with_server(
+            &server,
+            1,
+            "environment.attach",
+            json!({
+                "scope": {"kind": "session", "sessionId": "session_a"},
+                "attachment": {"id": "workspace", "kind": "local"},
+                "readiness": {"policy": "required"}
+            }),
+        );
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let error = request_error_with_server(
+            &server,
+            2,
+            "run.start",
+            json!({
+                "prompt": "hello wrong session",
+                "sessionId": "session_b",
+                "environmentAttachments": [
+                    {"id": "workspace", "attachmentLeaseId": lease_id, "default": true}
+                ]
+            }),
+        );
+        assert_eq!(error["code"], INVALID_PARAMS);
+        assert!(error["message"].as_str().unwrap().contains("session_a"));
+        assert!(error["message"].as_str().unwrap().contains("session_b"));
+    }
+
+    #[test]
+    fn run_start_rejects_ambiguous_session_selector_for_session_scoped_lease() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let attached = request_with_server(
+            &server,
+            1,
+            "environment.attach",
+            json!({
+                "scope": {"kind": "session", "sessionId": "session_a"},
+                "attachment": {"id": "workspace", "kind": "local"},
+                "readiness": {"policy": "required"}
+            }),
+        );
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let error = request_error_with_server(
+            &server,
+            2,
+            "run.start",
+            json!({
+                "prompt": "hello ambiguous session",
+                "sessionId": "session_a",
+                "newSession": true,
+                "environmentAttachments": [
+                    {"id": "workspace", "attachmentLeaseId": lease_id, "default": true}
+                ]
+            }),
+        );
+        assert_eq!(error["code"], INVALID_PARAMS);
+        assert!(error["message"]
+            .as_str()
+            .unwrap()
+            .contains("mutually exclusive"));
     }
 
     #[test]

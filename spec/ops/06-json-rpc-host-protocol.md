@@ -216,6 +216,8 @@ HTTP profile:
 - `GET /health` and `GET /healthz` may expose a lightweight local health response.
 - Unary HTTP does not carry live server notifications. HTTP clients use `run.await`, `run.status`, `stream.replay`, or a future long-connection profile for progress.
 - Unary HTTP `initialize` responses must not advertise live subscription features such as `stream.subscribe` unless the server is also negotiating a long-connection notification profile.
+- Unary HTTP does not support connection-scoped environment attachment leases.
+  HTTP clients use session-scoped leases or inline run attachments.
 - The server stops accepting new HTTP requests after a successful `shutdown` response is written.
 
 Local socket and named-pipe profile:
@@ -590,6 +592,12 @@ Session selection:
 
 `current` fails with `not_found` when no current project session exists. `current_or_latest` is the protocol form of the CLI continue behavior.
 
+Current CLI compatibility parameters map `sessionId` to `selected`,
+`continueLatest=true` to `current_or_latest`, and `newSession=true` to `new`.
+These session selectors are mutually exclusive. A request that supplies more
+than one target selector is rejected before environment attachment
+materialization.
+
 Model options:
 
 ```json
@@ -694,8 +702,16 @@ Attachment invariants:
   omitted.
 - `attachmentLeaseId` is a host-control lease id, not an envd environment id and
   not visible to the model.
+- A run-local `mode` on a lease ref may keep or narrow the leased mode. It must
+  not widen a `read_only` lease to `read_write`.
 - Inline envd attachments identify envd by `endpointRef` and `environmentId`.
-  `endpointRef` can be a literal endpoint or a host-resolved alias.
+  The initial local host accepts literal `http://...` endpoints. Named aliases
+  are future host capabilities.
+- A session-scoped `attachmentLeaseId` can only be used by a run bound to the
+  same `sessionId`. If the run target session is not explicit or cannot be
+  proven before materialization, the server rejects the lease ref.
+- Session target selection is resolved before lease materialization and must not
+  change after lease scope validation.
 - Run preparation must resolve and probe all attachments before creating the
   runtime session. A failure in any required attachment fails `run.start` before
   active-run registration.
@@ -872,7 +888,7 @@ flowchart TD
     client[Host client]
     rpc[starweaver.host RPC]
     manager[EnvironmentAttachmentManager]
-    registry[Endpoint and launch resolver]
+    registry[Literal endpoint resolver]
     probe[Readiness probe]
     lease_store[Attachment lease store]
     envd_client[EnvdRpcClient]
@@ -898,9 +914,9 @@ flowchart TD
 Manager responsibilities:
 
 - Validate attachment ids, default selection, access modes, and source shape.
-- Resolve `endpointRef` aliases to concrete local or remote transports.
-- Optionally launch host-owned envd daemons when a configured endpoint requires
-  it.
+- Resolve literal `endpointRef` transport refs supported by the advertised
+  protocol revision. The initial local host supports literal `http://...` envd
+  endpoints.
 - Construct SDK providers such as local, virtual, sandbox, or envd-backed
   providers.
 - Probe process liveness and environment readiness before a run uses an
@@ -910,6 +926,12 @@ Manager responsibilities:
   and lease refs, then construct the SDK provider composition.
 - Release manager-owned leases when their scope closes, while leaving envd
   service-owned environment state to envd.
+
+Future manager capabilities:
+
+- Resolve named `endpointRef` aliases to concrete local or remote transports.
+- Launch host-owned envd daemons when a configured endpoint requires it.
+- Support stdio, local socket, named pipe, and WebSocket envd transports.
 
 Manager non-goals:
 
@@ -943,7 +965,7 @@ Fields:
 | --------------- | ------- | -------- | ------------------------------------------------------------- |
 | `id`            | string  | yes      | Agent-facing mount identity within the lease or run           |
 | `kind`          | string  | no       | `local`, `virtual`, `sandbox`, or `envd`; defaults to `local` |
-| `endpointRef`   | string  | for envd | Literal endpoint or host-configured endpoint alias            |
+| `endpointRef`   | string  | for envd | Literal endpoint, initially `http://...` for envd             |
 | `environmentId` | string  | no       | Concrete environment id inside the implementation             |
 | `mode`          | string  | no       | `read_write` or `read_only`; defaults to `read_write`         |
 | `default`       | boolean | no       | Default preference when materialized into a run               |
@@ -952,9 +974,11 @@ Fields:
 Endpoint refs:
 
 - Literal `http://...` endpoints connect through `EnvdRpcClient::http`.
-- Stdio, local socket, named pipe, and launched daemon aliases are resolved by
-  host configuration before the SDK provider is constructed.
-- Alias resolution failures return `configuration_failed`.
+- Named aliases, stdio, local socket, named pipe, WebSocket, and launched daemon
+  transports are future host capabilities. Servers that do not advertise those
+  capabilities reject them with `unsupported_feature`.
+- Alias resolution failures return `configuration_failed` once alias resolvers
+  are supported.
 - Transport liveness failures return `environment_unavailable`.
 
 ### `environment.attach`
@@ -972,7 +996,7 @@ Params:
   "attachment": {
     "id": "data",
     "kind": "envd",
-    "endpointRef": "remote-data",
+    "endpointRef": "http://127.0.0.1:8770/rpc",
     "environmentId": "dataset",
     "mode": "read_only"
   },
@@ -1028,7 +1052,7 @@ Result:
     },
     "id": "data",
     "kind": "envd",
-    "endpointRef": "remote-data",
+    "endpointRef": "http://127.0.0.1:8770/rpc",
     "environmentId": "dataset",
     "mode": "read_only",
     "default": false,
@@ -1053,6 +1077,9 @@ Attach invariants:
 - Reusing the same `id` in the same scope with a different source returns
   `already_exists` unless a future replace mode is specified.
 - Session-scoped leases may be reused by future runs for that session.
+- Connection-scoped leases require a stateful connection profile such as stdio,
+  local socket, named pipe, or WebSocket. Unary HTTP rejects connection-scoped
+  environment leases.
 - Connection-scoped leases are released on `shutdown` or connection loss.
 - The manager may share one transport client between compatible leases, but
   lease ids remain distinct host-control records.

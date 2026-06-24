@@ -136,7 +136,7 @@ impl CliService {
 
     pub(super) fn diagnostics(&self) -> CliResult<String> {
         Ok(format!(
-            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\noauth_refresh.enabled={}\noauth_refresh.interval_seconds={}\noauth_refresh.failure_retry_seconds={}\noauth_refresh.refresh_on_startup={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nskills={}\nsubagents={}\nmcp_servers={}\ntools={}\ntools.need_approval={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.codex.logged_in={}\nprovider.codex.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nwal=true\n",
+            "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\noauth_refresh.enabled={}\noauth_refresh.interval_seconds={}\noauth_refresh.failure_retry_seconds={}\noauth_refresh.refresh_on_startup={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nskills={}\nsubagents={}\nmcp_servers={}\ntools={}\ntools.need_approval={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.codex.logged_in={}\nprovider.codex.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nprovider.google-cloud.ready={}\nprovider.google-cloud.api_key_env={}\nprovider.google-cloud.auth_token_env={}\nprovider.google-cloud.project={}\nprovider.google-cloud.location={}\nprovider.google-cloud.base_url={}\nwal=true\n",
             sdk_name(),
             env!("CARGO_PKG_VERSION"),
             self.config.database_path.display(),
@@ -174,15 +174,26 @@ impl CliService {
             self.config.providers.anthropic.base_url.as_deref().unwrap_or_default(),
             provider_ready(&self.config.providers.gemini),
             self.config.providers.gemini.api_key_env.as_deref().unwrap_or_default(),
-            self.config.providers.gemini.base_url.as_deref().unwrap_or_default()
+            self.config.providers.gemini.base_url.as_deref().unwrap_or_default(),
+            provider_ready(&self.config.providers.google_cloud),
+            self.config.providers.google_cloud.api_key_env.as_deref().unwrap_or_default(),
+            self.config.providers.google_cloud.auth_token_env.as_deref().unwrap_or_default(),
+            self.config.providers.google_cloud.project.as_deref().unwrap_or_default(),
+            self.config.providers.google_cloud.location.as_deref().unwrap_or_default(),
+            self.config.providers.google_cloud.base_url.as_deref().unwrap_or_default()
         ))
     }
 }
 
 fn provider_ready(provider: &ProviderConfig) -> bool {
     provider.enabled
-        && provider.api_key_env.as_deref().is_some_and(|name| {
-            let name = name.trim();
-            !name.is_empty() && std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
-        })
+        && (env_value_present(provider.api_key_env.as_deref())
+            || env_value_present(provider.auth_token_env.as_deref()))
+}
+
+fn env_value_present(name: Option<&str>) -> bool {
+    name.is_some_and(|name| {
+        let name = name.trim();
+        !name.is_empty() && std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
+    })
 }

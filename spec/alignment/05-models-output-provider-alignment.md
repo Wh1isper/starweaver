@@ -52,7 +52,7 @@ Current evidence:
 - `openai_responses/previous_response_auto_trim.json`, `openai_responses/conversation_auto_trim.json`, and `openai_responses/previous_response_compaction_boundary.json` prove OpenAI Responses server-side continuation trimming and compaction-boundary behavior remain stable after fixture-state restore.
 - `anthropic/provider_thinking_replay.json` and `anthropic_private_thinking_replay_fixture_maps_signature_natively` prove same-provider Anthropic private thinking signatures replay as native provider thinking blocks and survive fixture-state restore.
 - `openai_chat/prompt_cache_settings.json` and `openai_responses/prompt_cache_settings.json` prove typed OpenAI prompt-cache settings map to provider request bodies.
-- `gemini/generation_config_seed_topk.json` proves Gemini `topK`, `seed`, cached content, and logprob settings map to provider request bodies.
+- `gemini/generation_config_seed_topk.json` proves Gemini `topK`, `seed`, cached content, and logprob settings map to provider request bodies; request-parameter tests cover Google Cloud service-tier routing headers.
 - `bedrock/typed_request_fields.json` proves Bedrock guardrail, performance, request metadata, response field paths, prompt variables, and inference profile settings map to provider request bodies.
 - `anthropic/tool_choice_parallel_policy.json` proves Anthropic named tool choice, disabled parallel tool use, context management, container, service tier, and tool schema mapping.
 - Media request fixtures cover OpenAI Chat/Responses file inputs, Anthropic document inputs, Gemini audio/video/document inputs, and Bedrock resource-backed document inputs.

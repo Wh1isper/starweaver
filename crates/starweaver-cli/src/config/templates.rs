@@ -646,6 +646,12 @@ enabled = true
 api_key_env = "GEMINI_API_KEY"
 base_url = "https://generativelanguage.googleapis.com/v1beta"
 
+[providers.google-cloud]
+enabled = true
+api_key_env = "GOOGLE_API_KEY"
+auth_token_env = "GOOGLE_CLOUD_ACCESS_TOKEN"
+base_url = "https://aiplatform.googleapis.com"
+
 [security.shell_review]
 enabled = false
 on_needs_approval = "defer"

@@ -113,8 +113,9 @@ sequenceDiagram
 ```
 
 Host RPC remains the agent-control plane. Envd RPC is the environment
-data/effect plane. The attachment manager owns endpoint alias resolution,
-liveness/readiness probes, lease scope, and run materialization. Envd owns
+data/effect plane. The attachment manager owns literal endpoint validation,
+liveness/readiness probes, lease scope, and run materialization. Named endpoint
+aliases and host-launched envd daemons are future host capabilities. Envd owns
 environment state and operation effects behind the selected service boundary.
 
 ## Run Environment Reference
@@ -187,7 +188,7 @@ Session/run records store environment refs:
   "environment": {
     "kind": "envd",
     "environmentId": "env_123",
-    "endpointRef": "local-envd",
+    "endpointRef": "http://127.0.0.1:8766/rpc",
     "startStateVersion": "sv_10",
     "endStateVersion": "sv_15",
     "operationIds": ["op_1", "op_2"]

@@ -4,7 +4,8 @@ use crate::{
     adapter::{ModelRequestContext, ModelRequestParameters},
     profile::ProtocolFamily,
     settings::{
-        format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key, ModelSettings,
+        format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key,
+        GoogleCloudServiceTier, ModelSettings, ServiceTier,
     },
     transport::{extend_headers_case_insensitive, HttpRequest, HttpRequestOptions},
 };
@@ -28,6 +29,14 @@ impl ProtocolModelClient {
                             .insert("anthropic-beta".to_string(), anthropic.betas.join(","));
                     }
                 }
+            }
+            if self.provider_name == "google-cloud"
+                && matches!(self.profile.protocol, ProtocolFamily::GeminiGenerateContent)
+            {
+                extend_headers_case_insensitive(
+                    &mut options.headers,
+                    google_cloud_service_tier_headers(settings),
+                );
             }
             if let Some(gateway) = &settings.provider_settings.gateway {
                 if let Some(x_session_id) = &gateway.x_session_id {
@@ -94,6 +103,73 @@ impl ProtocolModelClient {
                 supports_automatic_openai_prompt_cache_key(&self.model_name),
             );
         }
+        if self.provider_name == "google-cloud"
+            && matches!(self.profile.protocol, ProtocolFamily::GeminiGenerateContent)
+        {
+            body.remove("serviceTier");
+        }
+    }
+}
+
+fn google_cloud_service_tier_headers(settings: &ModelSettings) -> Vec<(String, String)> {
+    let tier = settings
+        .provider_settings
+        .google
+        .as_ref()
+        .and_then(|google| google.cloud_service_tier.as_ref())
+        .cloned()
+        .or_else(|| {
+            settings
+                .service_tier
+                .as_ref()
+                .map(map_service_tier_to_google_cloud)
+        });
+    match tier {
+        None | Some(GoogleCloudServiceTier::PtThenOnDemand) => Vec::new(),
+        Some(GoogleCloudServiceTier::PtOnly) => vec![(
+            "X-Vertex-AI-LLM-Request-Type".to_string(),
+            "dedicated".to_string(),
+        )],
+        Some(GoogleCloudServiceTier::OnDemand) => vec![(
+            "X-Vertex-AI-LLM-Request-Type".to_string(),
+            "shared".to_string(),
+        )],
+        Some(GoogleCloudServiceTier::PtThenFlex) => vec![(
+            "X-Vertex-AI-LLM-Shared-Request-Type".to_string(),
+            "flex".to_string(),
+        )],
+        Some(GoogleCloudServiceTier::PtThenPriority) => vec![(
+            "X-Vertex-AI-LLM-Shared-Request-Type".to_string(),
+            "priority".to_string(),
+        )],
+        Some(GoogleCloudServiceTier::FlexOnly) => vec![
+            (
+                "X-Vertex-AI-LLM-Request-Type".to_string(),
+                "shared".to_string(),
+            ),
+            (
+                "X-Vertex-AI-LLM-Shared-Request-Type".to_string(),
+                "flex".to_string(),
+            ),
+        ],
+        Some(GoogleCloudServiceTier::PriorityOnly) => vec![
+            (
+                "X-Vertex-AI-LLM-Request-Type".to_string(),
+                "shared".to_string(),
+            ),
+            (
+                "X-Vertex-AI-LLM-Shared-Request-Type".to_string(),
+                "priority".to_string(),
+            ),
+        ],
+    }
+}
+
+const fn map_service_tier_to_google_cloud(tier: &ServiceTier) -> GoogleCloudServiceTier {
+    match tier {
+        ServiceTier::Auto | ServiceTier::Default => GoogleCloudServiceTier::PtThenOnDemand,
+        ServiceTier::Flex => GoogleCloudServiceTier::PtThenFlex,
+        ServiceTier::Priority => GoogleCloudServiceTier::PtThenPriority,
     }
 }
 

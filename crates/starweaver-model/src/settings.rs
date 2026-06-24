@@ -346,6 +346,10 @@ fn merge_google(
             .service_tier
             .clone()
             .or_else(|| base.service_tier.clone()),
+        cloud_service_tier: overlay
+            .cloud_service_tier
+            .clone()
+            .or_else(|| base.cloud_service_tier.clone()),
     })
 }
 
@@ -510,6 +514,29 @@ pub struct GoogleSettings {
     /// Cloud service tier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
+    /// Google Cloud routing tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_service_tier: Option<GoogleCloudServiceTier>,
+}
+
+/// Google Cloud Gemini routing tier.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoogleCloudServiceTier {
+    /// Provisioned throughput when available, then standard on-demand spillover.
+    PtThenOnDemand,
+    /// Provisioned throughput only.
+    PtOnly,
+    /// Provisioned throughput when available, then Flex `PayGo` spillover.
+    PtThenFlex,
+    /// Provisioned throughput when available, then Priority `PayGo` spillover.
+    PtThenPriority,
+    /// Standard on-demand only.
+    OnDemand,
+    /// Flex `PayGo` only.
+    FlexOnly,
+    /// Priority `PayGo` only.
+    PriorityOnly,
 }
 
 /// Bedrock Converse typed settings.
