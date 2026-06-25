@@ -272,7 +272,7 @@ impl CliShellReviewConfig {
             && self
                 .model
                 .as_deref()
-                .map_or(true, |model| model.trim().is_empty())
+                .is_none_or(|model| model.trim().is_empty())
         {
             return Err(CliError::Config(
                 "security.shell_review.model is required when shell review is enabled".to_string(),
@@ -842,10 +842,10 @@ fn upsert_slash_command(config: &mut CliConfig, mut definition: SlashCommandDefi
     let active_aliases = requested_aliases
         .into_iter()
         .filter(|alias| {
-            !config
+            config
                 .slash_commands
                 .get(alias)
-                .is_some_and(|existing| existing.name != canonical)
+                .is_none_or(|existing| existing.name == canonical)
         })
         .collect::<Vec<_>>();
     definition.aliases.clone_from(&active_aliases);

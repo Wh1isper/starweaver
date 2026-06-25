@@ -37,7 +37,7 @@ pub struct Usage {
 
 impl Usage {
     /// Add another usage value into this one.
-    pub fn add_assign(&mut self, other: &Self) {
+    pub const fn add_assign(&mut self, other: &Self) {
         self.requests = self.requests.saturating_add(other.requests);
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.cache_write_tokens = self
@@ -87,7 +87,7 @@ impl PricingEstimate {
     }
 
     /// Add another estimate into this one.
-    pub fn add_assign(&mut self, other: &Self) {
+    pub const fn add_assign(&mut self, other: &Self) {
         self.amount_micros_usd = self
             .amount_micros_usd
             .saturating_add(other.amount_micros_usd);

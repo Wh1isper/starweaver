@@ -130,12 +130,12 @@ impl EnvironmentAttachmentManager {
                 params
                     .scope
                     .as_ref()
-                    .map_or(true, |scope| scope_matches(scope, &record.lease.scope))
+                    .is_none_or(|scope| scope_matches(scope, &record.lease.scope))
             })
             .filter(|record| {
                 params
                     .status
-                    .map_or(true, |status| status == record.lease.status)
+                    .is_none_or(|status| status == record.lease.status)
             })
             .take(limit)
             .map(|record| record.lease.clone())

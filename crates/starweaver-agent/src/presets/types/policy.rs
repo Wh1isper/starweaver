@@ -35,7 +35,7 @@ pub struct RetryPolicyPreset {
 }
 
 impl RetryPolicyPreset {
-    pub(in crate::presets) fn merge(&mut self, overlay: &Self) {
+    pub(in crate::presets) const fn merge(&mut self, overlay: &Self) {
         if overlay.max_steps.is_some() {
             self.max_steps = overlay.max_steps;
         }

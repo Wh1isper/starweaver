@@ -188,7 +188,7 @@ where
 }
 
 #[allow(dead_code)]
-fn _method_type_check() {
+const fn _method_type_check() {
     let _ = std::any::TypeId::of::<InitializeEnvdRequest>();
     let _ = std::any::TypeId::of::<OpenEnvironmentRequest>();
     let _ = std::any::TypeId::of::<EnvironmentRequest>();

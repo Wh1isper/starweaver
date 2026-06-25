@@ -88,7 +88,7 @@ impl SubagentRegistry {
 
     /// Return whether there are no registered subagents.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.subagents.is_empty()
     }
 

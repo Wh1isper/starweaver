@@ -124,7 +124,7 @@ pub struct ToolSearchLoadResult {
 impl ToolSearchLoadResult {
     /// Return whether no tools or namespaces were loaded.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.loaded_tools.is_empty() && self.loaded_namespaces.is_empty()
     }
 }
@@ -147,7 +147,7 @@ pub struct ToolSearchInvalidationResult {
 impl ToolSearchInvalidationResult {
     /// Return whether invalidation removed no loaded entries.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.removed_loaded_tools.is_empty() && self.removed_loaded_namespaces.is_empty()
     }
 }
@@ -170,7 +170,7 @@ pub struct ToolSearchRefreshResult {
 impl ToolSearchRefreshResult {
     /// Return whether refresh removed no loaded entries.
     #[must_use]
-    pub fn removed_nothing(&self) -> bool {
+    pub const fn removed_nothing(&self) -> bool {
         self.removed_loaded_tools.is_empty() && self.removed_loaded_namespaces.is_empty()
     }
 }

@@ -616,7 +616,7 @@ impl InteractiveTuiState {
         self.selection_mode = true;
         if self
             .selection_index
-            .map_or(true, |index| index >= self.body.len())
+            .is_none_or(|index| index >= self.body.len())
         {
             self.selection_index = self.last_selectable_body_index();
         }

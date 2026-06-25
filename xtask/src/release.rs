@@ -81,7 +81,7 @@ fn valid_version(version: &str) -> bool {
     let mut parts = version.splitn(2, ['-', '+']);
     let core = parts.next().unwrap_or_default();
     let nums: Vec<_> = core.split('.').collect();
-    let suffix_ok = parts.next().map_or(true, |suffix| {
+    let suffix_ok = parts.next().is_none_or(|suffix| {
         !suffix.is_empty()
             && suffix
                 .chars()

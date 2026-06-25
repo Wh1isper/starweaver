@@ -73,7 +73,7 @@ impl InteractiveTuiState {
             .map(|input| self.record_steering_message(input.display_text()))
     }
 
-    pub(crate) fn take_pending_submission_display_prompt(&mut self) -> Option<String> {
+    pub(crate) const fn take_pending_submission_display_prompt(&mut self) -> Option<String> {
         self.pending_submission_display_prompt.take()
     }
 
@@ -184,7 +184,7 @@ impl InteractiveTuiState {
         }
     }
 
-    pub(in crate::tui) fn composer_is_empty(&self) -> bool {
+    pub(in crate::tui) const fn composer_is_empty(&self) -> bool {
         self.input.is_empty() && self.pending_attachments.is_empty()
     }
 
@@ -196,15 +196,15 @@ impl InteractiveTuiState {
         self.input_scroll_offset
     }
 
-    pub(in crate::tui::state) fn reset_composer_scroll(&mut self) {
+    pub(in crate::tui::state) const fn reset_composer_scroll(&mut self) {
         self.input_scroll_offset = 0;
     }
 
-    pub(in crate::tui) fn scroll_composer_up(&mut self, amount: usize) {
+    pub(in crate::tui) const fn scroll_composer_up(&mut self, amount: usize) {
         self.input_scroll_offset = self.input_scroll_offset.saturating_add(amount);
     }
 
-    pub(in crate::tui) fn scroll_composer_down(&mut self, amount: usize) {
+    pub(in crate::tui) const fn scroll_composer_down(&mut self, amount: usize) {
         self.input_scroll_offset = self.input_scroll_offset.saturating_sub(amount);
     }
 
@@ -324,7 +324,7 @@ impl InteractiveTuiState {
         self.reset_composer_scroll();
     }
 
-    pub(in crate::tui::state) fn move_composer_cursor_to_end(&mut self) {
+    pub(in crate::tui::state) const fn move_composer_cursor_to_end(&mut self) {
         self.input_cursor = self.input.len();
         self.input_cursor_input_len = self.input.len();
     }
@@ -348,7 +348,7 @@ impl InteractiveTuiState {
         self.insert_composer_str("\n");
     }
 
-    pub(crate) fn pasted_image_count(&self) -> usize {
+    pub(crate) const fn pasted_image_count(&self) -> usize {
         self.pending_attachments.len()
     }
 

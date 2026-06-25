@@ -465,7 +465,7 @@ impl CliRuntimeCoordinator {
             let events = state
                 .display_messages
                 .iter()
-                .filter(|message| cursor.map_or(true, |cursor| message.sequence > cursor.sequence))
+                .filter(|message| cursor.is_none_or(|cursor| message.sequence > cursor.sequence))
                 .cloned()
                 .map(|message| run_replay_event(run_id, message))
                 .collect();
@@ -682,7 +682,7 @@ fn filter_replay_events(
 ) -> Vec<ReplayEvent> {
     events
         .into_iter()
-        .filter(|event| cursor.map_or(true, |cursor| event.sequence > cursor.sequence))
+        .filter(|event| cursor.is_none_or(|cursor| event.sequence > cursor.sequence))
         .collect()
 }
 

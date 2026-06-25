@@ -318,7 +318,7 @@ pub struct ResolvedHitlToolReturns {
 impl ResolvedHitlToolReturns {
     /// Return whether the resolution produced no tool returns.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.tool_returns.is_empty()
     }
 }
@@ -411,7 +411,7 @@ impl AgentSession {
 
     /// Return the mutable session context.
     #[must_use]
-    pub fn context_mut(&mut self) -> &mut AgentContext {
+    pub const fn context_mut(&mut self) -> &mut AgentContext {
         &mut self.context
     }
 

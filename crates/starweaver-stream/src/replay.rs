@@ -210,7 +210,7 @@ impl ReplaySubscription {
                 && self
                     .cursor
                     .as_ref()
-                    .map_or(true, |cursor| event.sequence > cursor.sequence)
+                    .is_none_or(|cursor| event.sequence > cursor.sequence)
             {
                 self.cursor = Some(ReplayCursor::new(event.scope.clone(), event.sequence));
                 return Ok(event);

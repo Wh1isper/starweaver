@@ -86,7 +86,7 @@ pub struct LocalGrepSink<'a> {
 }
 
 impl<'a> LocalGrepSink<'a> {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         path: &'a str,
         grep_matches: &'a mut Vec<FileGrepMatch>,
         max_results: usize,
@@ -110,7 +110,7 @@ impl<'a> LocalGrepSink<'a> {
             .unwrap_or(1)
     }
 
-    fn should_accept_match(&self) -> bool {
+    const fn should_accept_match(&self) -> bool {
         self.max_results == 0 || self.grep_matches.len() < self.max_results
     }
 }

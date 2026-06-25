@@ -132,7 +132,7 @@ pub trait SessionStore: Send + Sync {
         let records = self.replay_stream_records(session_id, run_id).await?;
         Ok(records
             .into_iter()
-            .filter(|record| after_sequence.map_or(true, |cursor| record.sequence > cursor))
+            .filter(|record| after_sequence.is_none_or(|cursor| record.sequence > cursor))
             .collect())
     }
 

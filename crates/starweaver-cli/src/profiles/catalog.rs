@@ -126,7 +126,7 @@ pub fn list_subagents(config: &CliConfig) -> Vec<SubagentSummary> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.extension().is_some_and(|extension| extension == "md") {
+            if path.extension().is_none_or(|extension| extension != "md") {
                 continue;
             }
             let Ok(content) = fs::read_to_string(&path) else {
@@ -162,7 +162,7 @@ pub fn show_subagent(config: &CliConfig, name: &str) -> CliResult<String> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.extension().is_some_and(|extension| extension == "md") {
+            if path.extension().is_none_or(|extension| extension != "md") {
                 continue;
             }
             let content = fs::read_to_string(&path).map_err(|error| io_error(&path, error))?;

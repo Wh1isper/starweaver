@@ -198,7 +198,7 @@ pub struct AgentStreamQueueRegistry {
 impl AgentStreamQueueRegistry {
     /// Return whether no queues are registered.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.queues.is_empty()
     }
 }
@@ -217,7 +217,7 @@ pub struct ToolSearchState {
 impl ToolSearchState {
     /// Return whether no tool-search state is present.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.loaded_tools.is_empty() && self.loaded_namespaces.is_empty()
     }
 }
@@ -236,7 +236,7 @@ pub struct ToolSearchInvalidation {
 impl ToolSearchInvalidation {
     /// Return whether no loaded tool-search entries were removed.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.removed_tools.is_empty() && self.removed_namespaces.is_empty()
     }
 }

@@ -102,7 +102,7 @@ async fn refresh_supervisor_start_and_shutdown() {
             "codex".to_string(),
             source.clone() as Arc<dyn OAuthTokenSource>,
         )]),
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_mins(1),
         std::time::Duration::from_secs(1),
         true,
     );

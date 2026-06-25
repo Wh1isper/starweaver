@@ -186,7 +186,7 @@ impl ModelStreamState {
     }
 
     /// Mark stream as interrupted.
-    pub fn interrupt(&mut self) {
+    pub const fn interrupt(&mut self) {
         self.lifecycle = StreamLifecycle::Interrupted;
     }
 }

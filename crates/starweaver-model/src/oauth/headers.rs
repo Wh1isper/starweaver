@@ -114,7 +114,7 @@ pub fn patch_codex_responses_body(request: &mut HttpRequest) {
     };
     if body
         .get("instructions")
-        .map_or(true, codex_instructions_value_is_falsy)
+        .is_none_or(codex_instructions_value_is_falsy)
     {
         body.insert("instructions".to_string(), Value::String(String::new()));
     }

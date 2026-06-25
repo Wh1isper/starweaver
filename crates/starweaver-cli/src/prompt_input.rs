@@ -81,7 +81,7 @@ impl PromptInput {
     /// Deliberately excludes `guidance_text_parts`: guidance is injected by
     /// `CliGuidanceAdapter` as cacheable canonical system prompts, not user prompt content.
     #[must_use]
-    pub fn has_content_parts(&self) -> bool {
+    pub const fn has_content_parts(&self) -> bool {
         !self.attachments.is_empty() || !self.extra_text_parts.is_empty()
     }
 

@@ -658,7 +658,7 @@ fn validate_named<T>(
     Ok(())
 }
 
-fn approval_policy_empty(policy: &ApprovalPolicyPreset) -> bool {
+const fn approval_policy_empty(policy: &ApprovalPolicyPreset) -> bool {
     policy.approval_required_tools.is_empty()
         && policy.deferred_tools.is_empty()
         && !policy.network_requires_approval

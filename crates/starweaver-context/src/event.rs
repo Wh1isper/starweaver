@@ -56,13 +56,13 @@ impl EventBus {
 
     /// Return the number of retained events.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.events.len()
     }
 
     /// Return whether the event bus is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.events.is_empty()
     }
 
