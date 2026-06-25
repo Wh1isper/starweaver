@@ -43,7 +43,7 @@ impl AgentInput {
 
     /// Return true when no content parts are present.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.content.is_empty()
     }
 

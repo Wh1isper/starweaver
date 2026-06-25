@@ -524,7 +524,7 @@ fn sync_cli_guidance_history(messages: &mut [ModelMessage], current_guidance: &[
             replace_cli_guidance_part(part, guidance);
         }
         request.parts.retain(|part| {
-            cli_guidance_key(part).map_or(true, |existing_key| {
+            cli_guidance_key(part).is_none_or(|existing_key| {
                 let is_current = current_guidance.iter().any(|guidance| {
                     guidance.key == existing_key && guidance.text == part_text(part)
                 });

@@ -148,8 +148,8 @@ impl OAuthRefreshSupervisor {
     pub fn new(token_sources: BTreeMap<String, Arc<dyn OAuthTokenSource>>) -> Self {
         Self::with_options(
             token_sources,
-            Duration::from_secs(30 * 60),
-            Duration::from_secs(60),
+            Duration::from_mins(30),
+            Duration::from_mins(1),
             true,
         )
     }
@@ -354,8 +354,8 @@ pub fn create_oauth_refresh_supervisor_for_models<'a>(
 ) -> Result<Option<OAuthRefreshSupervisor>, OAuthError> {
     create_oauth_refresh_supervisor_for_models_with_options(
         models,
-        Duration::from_secs(30 * 60),
-        Duration::from_secs(60),
+        Duration::from_mins(30),
+        Duration::from_mins(1),
         true,
     )
 }

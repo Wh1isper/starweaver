@@ -476,7 +476,7 @@ impl DeferredToolRequests {
 
     /// Return whether the collection is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.requests.is_empty()
     }
 }
@@ -565,7 +565,7 @@ impl DeferredToolResults {
 
     /// Return whether the collection is empty.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.results.is_empty()
     }
 }

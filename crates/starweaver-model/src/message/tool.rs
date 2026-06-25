@@ -120,7 +120,7 @@ impl ToolArguments {
 
     /// Return the invalid parser error when present.
     #[must_use]
-    pub fn invalid_error(&self) -> Option<&str> {
+    pub const fn invalid_error(&self) -> Option<&str> {
         match self {
             Self::Invalid { error, .. } => Some(error.as_str()),
             Self::Parsed(_) | Self::RawJsonString(_) => None,

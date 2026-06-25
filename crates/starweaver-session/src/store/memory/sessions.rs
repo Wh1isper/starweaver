@@ -39,21 +39,18 @@ impl InMemorySessionStore {
         let mut sessions = inner
             .sessions
             .values()
-            .filter(|session| {
-                filter
-                    .status
-                    .map_or(true, |status| session.status == status)
-            })
+            .filter(|session| filter.status.is_none_or(|status| session.status == status))
             .filter(|session| {
                 filter
                     .profile
                     .as_ref()
-                    .map_or(true, |profile| session.profile.as_ref() == Some(profile))
+                    .is_none_or(|profile| session.profile.as_ref() == Some(profile))
             })
             .filter(|session| {
-                filter.workspace.as_ref().map_or(true, |workspace| {
-                    session.workspace.as_ref() == Some(workspace)
-                })
+                filter
+                    .workspace
+                    .as_ref()
+                    .is_none_or(|workspace| session.workspace.as_ref() == Some(workspace))
             })
             .cloned()
             .collect::<Vec<_>>();

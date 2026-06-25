@@ -574,7 +574,7 @@ impl AgentContext {
     }
 
     /// Record usage in the context ledger.
-    pub fn add_usage(&mut self, usage: &Usage) {
+    pub const fn add_usage(&mut self, usage: &Usage) {
         self.usage.add_assign(usage);
     }
 

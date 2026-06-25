@@ -209,7 +209,7 @@ impl Agent {
 
     /// Set the agent-level retry default for runtime tools.
     #[must_use]
-    pub fn with_tool_retries(mut self, max_retries: usize) -> Self {
+    pub const fn with_tool_retries(mut self, max_retries: usize) -> Self {
         self.tools.set_max_retries(max_retries);
         self
     }

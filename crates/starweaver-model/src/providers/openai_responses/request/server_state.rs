@@ -107,7 +107,7 @@ fn get_conversation_id_and_new_messages<'a>(
                     .and_then(|provider| provider.details.get("conversation_id"))
                     .and_then(Value::as_str)
                     .filter(|candidate| {
-                        expected_conversation_id.map_or(true, |expected| expected == *candidate)
+                        expected_conversation_id.is_none_or(|expected| expected == *candidate)
                     })
                 {
                     trimmed.reverse();

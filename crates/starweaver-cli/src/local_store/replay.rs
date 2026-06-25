@@ -79,6 +79,6 @@ fn filter_replay_events(
 ) -> Vec<ReplayEvent> {
     events
         .into_iter()
-        .filter(|event| cursor.map_or(true, |cursor| event.sequence > cursor.sequence))
+        .filter(|event| cursor.is_none_or(|cursor| event.sequence > cursor.sequence))
         .collect()
 }

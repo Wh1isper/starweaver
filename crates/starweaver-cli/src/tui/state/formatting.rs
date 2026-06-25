@@ -352,7 +352,7 @@ pub(super) fn streaming_tool_state_is_available(state: &StreamingToolCallState, 
         && state
             .linked_call_key
             .as_deref()
-            .map_or(true, |linked| linked == key)
+            .is_none_or(|linked| linked == key)
 }
 
 pub(super) fn streaming_tool_arguments_match(

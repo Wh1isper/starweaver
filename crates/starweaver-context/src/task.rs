@@ -119,7 +119,7 @@ impl Task {
 
     /// Return whether task is blocked by any incomplete tasks.
     #[must_use]
-    pub fn is_blocked(&self) -> bool {
+    pub const fn is_blocked(&self) -> bool {
         !self.blocked_by.is_empty()
     }
 

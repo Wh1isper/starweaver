@@ -70,7 +70,7 @@ impl ToolProxyInner {
         self.namespace_descriptions = descriptions;
     }
 
-    pub(super) fn set_max_results(&mut self, max_results: usize) {
+    pub(super) const fn set_max_results(&mut self, max_results: usize) {
         self.max_results = max_results;
     }
 

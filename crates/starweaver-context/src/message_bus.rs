@@ -248,7 +248,7 @@ impl MessageBus {
             .skip(cursor)
             .filter(|message| {
                 is_deliverable(message, agent_id)
-                    && consumed.map_or(true, |ids| !ids.contains(&message.id))
+                    && consumed.is_none_or(|ids| !ids.contains(&message.id))
             })
             .cloned()
             .collect()
@@ -282,7 +282,7 @@ impl MessageBus {
 
     /// Return number of retained messages.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.messages.len()
     }
 
@@ -294,7 +294,7 @@ impl MessageBus {
 
     /// Return whether the bus has no messages.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
 

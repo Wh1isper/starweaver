@@ -29,7 +29,7 @@ pub(super) fn tool_return_control_flow(
         .and_then(serde_json::Value::as_str)
 }
 
-pub(super) fn has_pending_tool_control_flow(state: &AgentRunState) -> bool {
+pub(super) const fn has_pending_tool_control_flow(state: &AgentRunState) -> bool {
     !state.pending_approval_tool_returns.is_empty() || !state.deferred_tool_returns.is_empty()
 }
 

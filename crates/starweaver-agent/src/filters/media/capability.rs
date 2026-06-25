@@ -89,7 +89,7 @@ fn filter_content_parts(
             has_video,
             has_document,
         )
-        .map_or(true, |kind| {
+        .is_none_or(|kind| {
             removed.mark(kind);
             false
         })
@@ -254,7 +254,7 @@ struct RemovalOutcome {
 }
 
 impl RemovalOutcome {
-    fn mark(&mut self, kind: FilteredMediaKind) {
+    const fn mark(&mut self, kind: FilteredMediaKind) {
         match kind {
             FilteredMediaKind::Image => self.images += 1,
             FilteredMediaKind::Video => self.videos += 1,
@@ -280,7 +280,7 @@ impl RemovalOutcome {
         reminders
     }
 
-    fn merge(&mut self, other: &Self) {
+    const fn merge(&mut self, other: &Self) {
         self.images += other.images;
         self.videos += other.videos;
         self.documents += other.documents;

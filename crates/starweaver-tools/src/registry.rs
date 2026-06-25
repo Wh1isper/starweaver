@@ -41,13 +41,13 @@ pub struct ToolAvailabilityReport {
 impl ToolAvailabilityReport {
     /// Return whether no tools were skipped.
     #[must_use]
-    pub fn is_all_available(&self) -> bool {
+    pub const fn is_all_available(&self) -> bool {
         self.unavailable.is_empty()
     }
 
     /// Return whether no tools are exposed.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.available.is_empty() && self.unavailable.is_empty()
     }
 }

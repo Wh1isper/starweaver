@@ -508,7 +508,7 @@ impl AgentRuntime {
     }
 
     /// Return the mutable active session.
-    pub fn session_mut(&mut self) -> &mut AgentSession {
+    pub const fn session_mut(&mut self) -> &mut AgentSession {
         &mut self.session
     }
 

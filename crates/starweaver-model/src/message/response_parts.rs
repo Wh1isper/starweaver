@@ -92,7 +92,7 @@ pub enum ModelResponsePart {
 impl ModelResponsePart {
     /// Return text content for text-like parts.
     #[must_use]
-    pub fn text(&self) -> Option<&str> {
+    pub const fn text(&self) -> Option<&str> {
         match self {
             Self::Text { text } | Self::ProviderText { text, .. } => Some(text.as_str()),
             Self::Thinking { .. }

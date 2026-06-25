@@ -73,11 +73,11 @@ impl ChildGuard {
         Self { child }
     }
 
-    fn stdin(&mut self) -> ChildStdin {
+    const fn stdin(&mut self) -> ChildStdin {
         self.child.stdin.take().expect("child stdin")
     }
 
-    fn stdout(&mut self) -> ChildStdout {
+    const fn stdout(&mut self) -> ChildStdout {
         self.child.stdout.take().expect("child stdout")
     }
 
