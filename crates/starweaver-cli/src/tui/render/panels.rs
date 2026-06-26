@@ -1,7 +1,7 @@
 use super::{
     pad_styled_line_with_style, push_detail_row, take_prefix_width, truncate_line, visible_width,
-    with_codex_border, HitlPanelState, InteractiveTuiState, SegmentStyle, SteeringStatus,
-    StyledLine, StyledSegment, TaskPanelItem,
+    with_codex_border, HitlPanelState, InteractiveTuiState, SegmentStyle, StyledLine,
+    StyledSegment, TaskPanelItem,
 };
 
 pub(super) fn render_selection_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
@@ -230,42 +230,6 @@ fn task_status_style(status: &str) -> SegmentStyle {
         }
         _ => SegmentStyle::default(),
     }
-}
-
-pub(super) fn render_steering_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
-    let style = SegmentStyle::steering_bar();
-    if state.steering_items().is_empty() {
-        return vec![pad_styled_line_with_style(
-            StyledLine::styled(
-                truncate_line(
-                    " [Steering messages will appear here during agent execution]",
-                    width,
-                ),
-                style,
-            ),
-            width,
-            style,
-        )];
-    }
-    state
-        .steering_items()
-        .iter()
-        .rev()
-        .map(|item| {
-            let prefix = match item.status {
-                SteeringStatus::Acked => "[v] ",
-                SteeringStatus::Pending => ">>> ",
-            };
-            pad_styled_line_with_style(
-                StyledLine::styled(
-                    truncate_line(&format!("{prefix}{}", item.text), width),
-                    style,
-                ),
-                width,
-                style,
-            )
-        })
-        .collect()
 }
 
 pub(super) fn render_status_bar_lines(

@@ -17,17 +17,14 @@ mod panels;
 mod pickers;
 
 use panels::{
-    render_hitl_panel, render_selection_panel, render_status_bar_lines, render_steering_lines,
-    render_task_panel,
+    render_hitl_panel, render_selection_panel, render_status_bar_lines, render_task_panel,
 };
 use pickers::{push_detail_row, render_model_picker_panel, render_session_picker_panel};
 
 use super::{
     markdown::{render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
     snapshot::TuiSnapshot,
-    state::{
-        HitlPanelState, InteractiveTuiState, SteeringStatus, TaskPanelItem, COMPOSER_VISIBLE_LINES,
-    },
+    state::{HitlPanelState, InteractiveTuiState, TaskPanelItem, COMPOSER_VISIBLE_LINES},
 };
 
 const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56;
@@ -284,7 +281,6 @@ pub(super) fn render_footer_lines(state: &InteractiveTuiState, width: usize) -> 
     if !state.task_panel_items().is_empty() {
         lines.extend(render_task_panel(state.task_panel_items(), width));
     }
-    lines.extend(render_steering_lines(state, width));
     lines.extend(render_status_bar_lines(state, width));
     lines
 }
@@ -622,6 +618,7 @@ fn wrap_input_line(line: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut current_width = 0usize;
+    let mut ended_at_wrap_boundary = false;
     for ch in line.chars() {
         let char_width = ch.width().unwrap_or(0);
         if current_width > 0 && current_width.saturating_add(char_width) > width {
@@ -635,10 +632,15 @@ fn wrap_input_line(line: &str, width: usize) -> Vec<String> {
             lines.push(current);
             current = String::new();
             current_width = 0;
+            ended_at_wrap_boundary = true;
+        } else {
+            ended_at_wrap_boundary = false;
         }
     }
     if !current.is_empty() {
         lines.push(current);
+    } else if ended_at_wrap_boundary {
+        lines.push(String::new());
     }
     if lines.is_empty() {
         lines.push(String::new());
@@ -697,7 +699,6 @@ impl SegmentStyle {
     pub(super) const MAGENTA: u16 = 0b00_0100_0000_0000;
     pub(super) const STATUS_BG: u16 = 0b00_1000_0000_0000;
     pub(super) const MODE_BG: u16 = 0b01_0000_0000_0000;
-    pub(super) const STEERING_BG: u16 = 0b10_0000_0000_0000;
 
     pub(super) const fn bold() -> Self {
         Self(Self::BOLD)
@@ -749,10 +750,6 @@ impl SegmentStyle {
 
     pub(super) const fn mode_badge() -> Self {
         Self(Self::MODE_BG)
-    }
-
-    pub(super) const fn steering_bar() -> Self {
-        Self(Self::STEERING_BG)
     }
 
     pub(super) const fn status_warning() -> Self {
@@ -882,13 +879,6 @@ fn queue_segment_style(stdout: &mut io::Stdout, style: SegmentStyle) -> CliResul
             stdout,
             SetForegroundColor(Color::AnsiValue(16)),
             SetBackgroundColor(Color::AnsiValue(42))
-        )
-        .map_err(terminal_error)?;
-    } else if style.contains(SegmentStyle::STEERING_BG) {
-        queue!(
-            stdout,
-            SetForegroundColor(Color::White),
-            SetBackgroundColor(Color::AnsiValue(100))
         )
         .map_err(terminal_error)?;
     } else if style.contains(SegmentStyle::STATUS_BG) {
