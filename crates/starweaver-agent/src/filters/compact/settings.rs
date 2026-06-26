@@ -1,5 +1,5 @@
 use serde_json::{Map, Value};
-use starweaver_model::{ModelRequestParameters, ModelSettings};
+use starweaver_model::{ModelRequestParameters, ModelSettings, ProviderReplaySettings};
 
 pub(super) fn compact_model_settings(
     defaults: Option<&ModelSettings>,
@@ -18,6 +18,11 @@ pub(super) fn compact_model_settings(
 fn strip_compact_model_settings(settings: &mut ModelSettings) {
     settings.max_tokens = Some(settings.max_tokens.unwrap_or(4096).min(4096));
     settings.thinking = None;
+    settings.provider_replay = Some(ProviderReplaySettings {
+        send_item_ids: Some(false),
+        include_encrypted_reasoning: Some(false),
+        ..ProviderReplaySettings::default()
+    });
     strip_compact_unsupported_body(&mut settings.extra_body);
     strip_unsupported_beta_header(&mut settings.extra_headers);
     if let Some(Value::Object(provider_options)) = &mut settings.provider_options {

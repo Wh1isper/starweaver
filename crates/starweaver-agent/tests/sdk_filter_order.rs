@@ -2,7 +2,10 @@
 
 #![allow(clippy::expect_used)]
 
-use std::{io::Cursor, sync::Arc};
+use std::{
+    io::Cursor,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -18,10 +21,10 @@ use starweaver_core::Metadata;
 use starweaver_environment::VirtualEnvironmentProvider;
 use starweaver_model::{
     ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
-    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderPartInfo,
-    ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
-    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
-    CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderInfo,
+    ProviderPartInfo, ProviderReplaySettings, ToolArguments, ToolCallPart, ToolDefinition,
+    ToolReturnPart, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF,
+    CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
 };
 
 #[tokio::test]
@@ -1114,6 +1117,338 @@ async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_s
         .events()
         .iter()
         .any(|event| event.kind == "compact_complete"));
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn compact_model_heals_openai_reasoning_references_before_summary_request(
+) -> starweaver_agent::CapabilityResult<()> {
+    let captured_messages = Arc::new(Mutex::new(None::<Vec<ModelMessage>>));
+    let captured_messages_model = Arc::clone(&captured_messages);
+    let compact_model = FunctionModel::streaming(
+        move |messages: Vec<ModelMessage>,
+              settings: Option<ModelSettings>,
+              _info: FunctionModelInfo| {
+            let settings = settings.expect("compact settings");
+            let replay = settings
+                .provider_replay
+                .as_ref()
+                .expect("compact replay settings");
+            assert!(replay.previous_response_id.is_none());
+            assert!(replay.conversation_id.is_none());
+            assert_eq!(replay.send_item_ids, Some(false));
+            assert_eq!(replay.include_encrypted_reasoning, Some(false));
+            *captured_messages_model
+                .lock()
+                .expect("captured messages lock should not be poisoned") = Some(messages);
+            Ok(vec![ModelResponseStreamEvent::FinalResult(Box::new(
+                ModelResponse::text("## Condensed conversation summary\n\n### Analysis\n\nHealed."),
+            ))])
+        },
+    );
+    let compact_model = Arc::new(compact_model) as Arc<dyn starweaver_model::ModelAdapter>;
+    let mut reasoning_details = Metadata::default();
+    reasoning_details.insert(
+        "encrypted_content".to_string(),
+        serde_json::json!("encrypted-reasoning"),
+    );
+    reasoning_details.insert(
+        "raw_content".to_string(),
+        serde_json::json!(["raw-reasoning"]),
+    );
+    let mut response_provider_details = Metadata::default();
+    response_provider_details.insert(
+        "conversation_id".to_string(),
+        serde_json::json!("conv_stale"),
+    );
+    let response = ModelMessage::Response(ModelResponse {
+        parts: vec![
+            ModelResponsePart::ProviderText {
+                text: "visible output".to_string(),
+                provider: ProviderPartInfo::new("openai").with_id("msg_1"),
+            },
+            ModelResponsePart::ProviderThinking {
+                text: "stale reasoning".to_string(),
+                signature: Some("encrypted-reasoning".to_string()),
+                provider: ProviderPartInfo::new("openai")
+                    .with_id("rs_1")
+                    .with_details(reasoning_details),
+            },
+            ModelResponsePart::ProviderToolCall {
+                call: ToolCallPart {
+                    id: "call_1|fc_1".to_string(),
+                    name: "lookup".to_string(),
+                    arguments: serde_json::Value::Null.into(),
+                },
+                provider: ProviderPartInfo::new("openai").with_id("fc_1"),
+            },
+        ],
+        usage: Usage {
+            requests: 1,
+            input_tokens: 90,
+            output_tokens: 5,
+            total_tokens: 95,
+            ..Usage::default()
+        },
+        model_name: None,
+        provider: Some(ProviderInfo {
+            name: "openai".to_string(),
+            response_id: Some("resp_1".to_string()),
+            details: response_provider_details,
+        }),
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    });
+    let tool_return = ModelMessage::Request(ModelRequest {
+        parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+            "call_1|fc_1",
+            "lookup",
+            serde_json::json!({"ok": true}),
+        ))],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    });
+    let mut settings = ModelSettings {
+        provider_replay: Some(ProviderReplaySettings {
+            previous_response_id: Some("auto".to_string()),
+            send_item_ids: Some(true),
+            include_encrypted_reasoning: Some(true),
+            ..ProviderReplaySettings::default()
+        }),
+        ..ModelSettings::default()
+    };
+    settings
+        .extra_body
+        .insert("route".to_string(), serde_json::json!("main"));
+    let compact_capability =
+        CacheFriendlyCompactCapability::new(Some(compact_model)).with_model_settings(settings);
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_auto_compact_openai_heal"),
+        ConversationId::new(),
+    );
+    state.message_history = vec![
+        ModelMessage::Request(user_request(vec![ContentPart::Text {
+            text: "first".to_string(),
+        }])),
+        response,
+        tool_return,
+    ];
+    let mut context = AgentContext {
+        model_config: ModelConfig {
+            context_window: Some(100),
+            compact_threshold: PerThousandRatio::from_per_thousand(900),
+            ..ModelConfig::default()
+        },
+        message_history: state.message_history.clone(),
+        ..AgentContext::default()
+    };
+
+    let input_messages = context.message_history.clone();
+    let output = compact_capability
+        .prepare_model_messages_with_context(&mut state, &mut context, input_messages)
+        .await?;
+
+    let captured = captured_messages
+        .lock()
+        .expect("captured messages lock should not be poisoned")
+        .clone()
+        .expect("compact model should receive messages");
+    let serialized = serde_json::to_string(&captured).expect("messages should serialize");
+    assert!(serialized.contains("visible output"));
+    assert!(serialized.contains("stale reasoning"));
+    assert!(!serialized.contains("rs_1"));
+    assert!(!serialized.contains("encrypted-reasoning"));
+    assert!(!serialized.contains("raw-reasoning"));
+    assert!(!serialized.contains("resp_1"));
+    assert!(!serialized.contains("conv_stale"));
+    assert!(!serialized.contains("fc_1"));
+    assert!(captured.iter().any(|message| match message {
+        ModelMessage::Response(response) => response.parts.iter().any(|part| matches!(
+            part,
+            ModelResponsePart::ProviderThinking { text, signature, provider }
+                if text == "stale reasoning"
+                    && signature.is_none()
+                    && provider.id.is_none()
+                    && provider.details.is_empty()
+        )),
+        ModelMessage::Request(_) => false,
+    }));
+    let tool_return_id = captured.iter().find_map(|message| match message {
+        ModelMessage::Request(request) => request.parts.iter().find_map(|part| match part {
+            ModelRequestPart::ToolReturn(tool_return) => Some(tool_return.tool_call_id.as_str()),
+            _ => None,
+        }),
+        ModelMessage::Response(_) => None,
+    });
+    assert_eq!(tool_return_id, Some("call_1"));
+    let output_serialized = serde_json::to_string(&output).expect("output should serialize");
+    assert!(!output_serialized.contains("rs_1"));
+    assert!(!output_serialized.contains("encrypted-reasoning"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn manual_compact_keep_heals_openai_references_even_without_trimming(
+) -> starweaver_agent::CapabilityResult<()> {
+    let mut reasoning_details = Metadata::default();
+    reasoning_details.insert(
+        "encrypted_content".to_string(),
+        serde_json::json!("manual-encrypted"),
+    );
+    reasoning_details.insert("raw_content".to_string(), serde_json::json!(["manual-raw"]));
+    let response = ModelMessage::Response(ModelResponse {
+        parts: vec![
+            ModelResponsePart::ProviderThinking {
+                text: "manual reasoning".to_string(),
+                signature: Some("manual-encrypted".to_string()),
+                provider: ProviderPartInfo::new("openai")
+                    .with_id("rs_manual")
+                    .with_details(reasoning_details),
+            },
+            ModelResponsePart::ProviderToolCall {
+                call: ToolCallPart {
+                    id: "call_manual|fc_manual".to_string(),
+                    name: "lookup".to_string(),
+                    arguments: serde_json::Value::Null.into(),
+                },
+                provider: ProviderPartInfo::new("openai").with_id("fc_manual"),
+            },
+        ],
+        usage: Usage::default(),
+        model_name: None,
+        provider: Some(ProviderInfo {
+            name: "openai".to_string(),
+            response_id: Some("resp_manual".to_string()),
+            details: Metadata::from_iter([(
+                "conversation_id".to_string(),
+                serde_json::json!("conv_manual"),
+            )]),
+        }),
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    });
+    let tool_return = ModelMessage::Request(ModelRequest {
+        parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+            "call_manual|fc_manual",
+            "lookup",
+            serde_json::json!({"ok": true}),
+        ))],
+        timestamp: None,
+        instructions: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    });
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_manual_compact_no_trim_heal"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_compact_keep_messages".to_string(),
+        serde_json::json!(99),
+    );
+    state.message_history = vec![response, tool_return];
+    let mut context = AgentContext {
+        message_history: state.message_history.clone(),
+        ..AgentContext::default()
+    };
+
+    let input_messages = context.message_history.clone();
+    let output = CacheFriendlyCompactCapability::new(None)
+        .prepare_model_messages_with_context(&mut state, &mut context, input_messages)
+        .await?;
+
+    let serialized = serde_json::to_string(&output).expect("messages should serialize");
+    assert!(serialized.contains("manual reasoning"));
+    assert!(!serialized.contains("rs_manual"));
+    assert!(!serialized.contains("manual-encrypted"));
+    assert!(!serialized.contains("manual-raw"));
+    assert!(!serialized.contains("resp_manual"));
+    assert!(!serialized.contains("conv_manual"));
+    assert!(!serialized.contains("fc_manual"));
+    let tool_return_id = output.iter().find_map(|message| match message {
+        ModelMessage::Request(request) => request.parts.iter().find_map(|part| match part {
+            ModelRequestPart::ToolReturn(tool_return) => Some(tool_return.tool_call_id.as_str()),
+            _ => None,
+        }),
+        ModelMessage::Response(_) => None,
+    });
+    assert_eq!(tool_return_id, Some("call_manual"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn compact_trim_preserves_response_thinking_parts_like_summary_trim(
+) -> starweaver_agent::CapabilityResult<()> {
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_compact_preserve_thinking"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_compact_keep_messages".to_string(),
+        serde_json::json!(2),
+    );
+    let response = ModelMessage::Response(ModelResponse {
+        parts: vec![
+            ModelResponsePart::Thinking {
+                text: "keep reasoning".to_string(),
+                signature: Some("thinking-signature".to_string()),
+            },
+            ModelResponsePart::Text {
+                text: "visible answer".to_string(),
+            },
+        ],
+        usage: Usage::default(),
+        model_name: None,
+        provider: None,
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: Metadata::default(),
+    });
+    state.message_history = vec![
+        ModelMessage::Request(user_request(vec![ContentPart::Text {
+            text: "older request".to_string(),
+        }])),
+        response,
+        ModelMessage::Request(user_request(vec![ContentPart::Text {
+            text: "latest request".to_string(),
+        }])),
+    ];
+    let mut context = AgentContext {
+        message_history: state.message_history.clone(),
+        ..AgentContext::default()
+    };
+
+    let input_messages = context.message_history.clone();
+    let output = CacheFriendlyCompactCapability::new(None)
+        .prepare_model_messages_with_context(&mut state, &mut context, input_messages)
+        .await?;
+
+    assert!(output.iter().any(|message| match message {
+        ModelMessage::Response(response) => response.parts.iter().any(|part| matches!(
+            part,
+            ModelResponsePart::Thinking { text, signature }
+                if text == "keep reasoning"
+                    && signature.as_deref() == Some("thinking-signature")
+        )),
+        ModelMessage::Request(_) => false,
+    }));
+    assert!(output.iter().any(|message| match message {
+        ModelMessage::Response(response) => response.text_output().contains("visible answer"),
+        ModelMessage::Request(_) => false,
+    }));
     Ok(())
 }
 

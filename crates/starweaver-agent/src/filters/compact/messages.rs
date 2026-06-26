@@ -3,7 +3,7 @@ use starweaver_context::AgentContext;
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ToolReturnPart,
 };
-use starweaver_runtime::AgentRunState;
+use starweaver_runtime::{heal_openai_item_reference_history, AgentRunState};
 
 use super::super::message::{
     build_restored_request_parts, metadata_content_parts, metadata_string_array, metadata_text,
@@ -144,8 +144,9 @@ pub(super) fn build_trimmed_compact_messages(
     messages: &[ModelMessage],
     keep: usize,
 ) -> Vec<ModelMessage> {
+    let messages = compact_safe_messages(messages);
     if keep == 0 || messages.len() <= keep {
-        return messages.to_vec();
+        return messages;
     }
 
     let mut compacted = Vec::new();
@@ -168,6 +169,12 @@ pub(super) fn build_trimmed_compact_messages(
     }
     request_metadata_mut(&mut compacted).insert("starweaver_compacted".to_string(), json!(true));
     compacted
+}
+
+pub(super) fn compact_safe_messages(messages: &[ModelMessage]) -> Vec<ModelMessage> {
+    let mut messages = messages.to_vec();
+    heal_openai_item_reference_history(&mut messages);
+    messages
 }
 
 pub(super) fn trim_message_for_compact(
