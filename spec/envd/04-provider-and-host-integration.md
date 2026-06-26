@@ -125,14 +125,21 @@ DTOs in the host-control protocol.
 
 ```json
 {
-  "environmentAttachments": [{
-    "id": "workspace",
-    "kind": "envd",
-    "endpointRef": "http://127.0.0.1:8766/rpc",
-    "authToken": "request-only bearer token",
-    "environmentId": "env_cli_default",
-    "mode": "read_write"
-  }]
+  "environmentAttachments": [
+    {
+      "id": "local",
+      "kind": "local",
+      "default": true
+    },
+    {
+      "id": "data",
+      "kind": "envd",
+      "endpointRef": "http://127.0.0.1:8766/rpc",
+      "authToken": "request-only bearer token",
+      "environmentId": "dataset",
+      "mode": "read_only"
+    }
+  ]
 }
 ```
 
@@ -140,36 +147,34 @@ In multi-environment runs, `id` is also the agent-facing mount identity. The SDK
 composite provider exposes each attachment at `/environment/{id}` and chooses
 one attachment as the default for unqualified relative paths. Exactly one
 attachment should set `default: true`; if omitted for a single attachment, that
-attachment is the default.
+attachment is the default. `local` is reserved for the host's configured local
+Starweaver environment. Envd attachments must use non-reserved ids such as
+`data`, `review`, or `scratch`.
 
 TUI materializes envd attachments from named config profiles instead of
 envd-specific command-line flags:
 
 ```toml
-[envd_profiles.workspace]
+[envd_profiles.data]
 endpoint = "http://127.0.0.1:8766/rpc"
-auth_token_env = "STARWEAVER_WORKSPACE_ENVD_TOKEN"
-environment_id = "env_cli_default"
-mount_id = "workspace"
-mode = "read_write"
-default = true
+auth_token_env = "STARWEAVER_DATA_ENVD_TOKEN"
+environment_id = "dataset"
+mode = "read_only"
 ```
 
-Each enabled profile becomes a normal `EnvironmentAttachmentRef` before run
-start. `auth_token_env` values are resolved by the host; direct token values are
+TUI startup materializes the reserved `local` mount plus each enabled envd
+profile into normal `EnvironmentAttachmentRef` values before run start.
+`auth_token_env` values are resolved by the host; direct token values are
 request-only and must not appear in session, replay, stream, or model context
-payloads.
+payloads. The local mount remains the default unless one enabled envd profile
+explicitly sets `default = true`.
 
 ```json
 {
   "environmentAttachments": [
     {
-      "id": "workspace",
-      "kind": "envd",
-      "endpointRef": "http://127.0.0.1:8766/rpc",
-      "authToken": "request-only bearer token",
-      "environmentId": "env_cli_default",
-      "mode": "read_write",
+      "id": "local",
+      "kind": "local",
       "default": true
     },
     {

@@ -114,6 +114,10 @@ root = "/"
 backend = in-memory file tree or local workspace backend
 ```
 
+This `mount_id` is envd-internal state. Starweaver host-control mount ids live
+in `environmentAttachments`; the reserved host id `local` maps to the selected
+local environment even if envd's own default mount is named `workspace`.
+
 File and command/process methods must resolve paths through the same mount
 state.
 

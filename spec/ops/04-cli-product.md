@@ -147,6 +147,8 @@ The Starweaver JSON-RPC host protocol is the complete local host-control API. Th
 
 Model choice is client state. `~/.starweaver/config.toml` defines shared model profiles, envd profiles, and provider settings, while `~/.starweaver/tui/state.json` and `~/.starweaver/desktop/state.json` store the selected model profile for each frontend. Headless CLI runs can still pass `--profile`; RPC `run.start` can pass an explicit `profile`/`modelProfile` or fall back to the selected profile for the supplied `client`. TUI envd attachments come from config-backed `[envd_profiles.*]` entries rather than TUI-specific argv.
 
+Environment mount choice is run state. `local` is the reserved mount id for the configured local Starweaver workspace. Interactive TUI startup materializes `local` plus every enabled envd profile so the first run can see several environments at once. RPC startup uses the same attachment contract: omitted attachments mean the reserved local environment only, while an explicit `environmentAttachments` list is authoritative and must include `{"id": "local", "kind": "local"}` when local workspace access is desired alongside envd mounts.
+
 ## Session Affinity and Durable Sessions
 
 The CLI separates durable local sessions from provider-routing affinity:
@@ -179,17 +181,17 @@ The standalone `starweaver-rpc` process owns its argv parser and starts one tran
 
 Local state roots:
 
-| Path                               | Owner                     | Purpose                                                                                        |
-| ---------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------- |
-| `~/.starweaver/config.toml`        | shared CLI/runtime config | default profile, provider settings, config-backed model/envd profiles, output/HITL defaults    |
-| `~/.starweaver/tools.toml`         | shared CLI/runtime config | tool policy metadata                                                                           |
-| `~/.starweaver/mcp.json`           | shared CLI/runtime config | MCP server metadata                                                                            |
-| `~/.starweaver/skills`             | shared catalog            | global skill definitions                                                                       |
-| `~/.starweaver/subagents`          | shared catalog            | global subagent definitions                                                                    |
-| `~/.starweaver/tui/state.json`     | TUI client                | selected profile and durable terminal UI state; process-level affinity is generated at startup |
-| `~/.starweaver/desktop/state.json` | Desktop client            | selected profile and future desktop UI state                                                   |
-| `.starweaver/config.toml`          | project config            | workspace-specific environment, trim, provider, and profile overrides                          |
-| `.starweaver/state.json`           | project runtime state     | current session pointer                                                                        |
+| Path                               | Owner                     | Purpose                                                                                                           |
+| ---------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `~/.starweaver/config.toml`        | shared CLI/runtime config | default profile, provider settings, config-backed model/envd profiles, environment defaults, output/HITL defaults |
+| `~/.starweaver/tools.toml`         | shared CLI/runtime config | tool policy metadata                                                                                              |
+| `~/.starweaver/mcp.json`           | shared CLI/runtime config | MCP server metadata                                                                                               |
+| `~/.starweaver/skills`             | shared catalog            | global skill definitions                                                                                          |
+| `~/.starweaver/subagents`          | shared catalog            | global subagent definitions                                                                                       |
+| `~/.starweaver/tui/state.json`     | TUI client                | selected profile and durable terminal UI state; process-level affinity is generated at startup                    |
+| `~/.starweaver/desktop/state.json` | Desktop client            | selected profile and future desktop UI state                                                                      |
+| `.starweaver/config.toml`          | project config            | workspace-specific environment, trim, provider, and profile overrides                                             |
+| `.starweaver/state.json`           | project runtime state     | current session pointer                                                                                           |
 
 The target protocol treats JSON-RPC as the semantic protocol and stdio/HTTP as transport profiles. The current CLI adapter is the first local server implementation:
 

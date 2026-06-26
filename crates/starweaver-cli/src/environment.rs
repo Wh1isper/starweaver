@@ -10,7 +10,10 @@ use starweaver_environment::{
     EnvdEnvironmentProvider, EnvironmentMount, EnvironmentMountMode, EnvironmentPolicy, FilePolicy,
     LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
 };
-use starweaver_rpc_core::{EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef};
+use starweaver_rpc_core::{
+    EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+    LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
+};
 
 use crate::{CliConfig, CliError, CliResult};
 
@@ -128,6 +131,13 @@ fn resolve_environment_attachment(
     tmp_namespace: Option<&str>,
     attachment: &EnvironmentAttachmentRef,
 ) -> CliResult<ResolvedEnvironment> {
+    if attachment.id == LOCAL_ENVIRONMENT_ATTACHMENT_ID
+        && attachment.kind != LOCAL_ENVIRONMENT_ATTACHMENT_KIND
+    {
+        return Err(CliError::Config(
+            "reserved environment attachment id local requires kind local".to_string(),
+        ));
+    }
     match attachment.kind.as_str() {
         "local" => resolve_environment_with_tmp_namespace(config, tmp_namespace),
         "envd" => resolve_envd_attachment(attachment),

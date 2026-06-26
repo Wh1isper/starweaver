@@ -18,7 +18,8 @@ use starweaver_rpc_core::{
     EnvironmentDetachParams, EnvironmentHealthParams, EnvironmentListParams, EnvironmentReadiness,
     EnvironmentReadinessCapabilities, EnvironmentReadinessPhase, EnvironmentReadinessPolicy,
     EnvironmentReadinessRequest, RpcError, ALREADY_EXISTS, ENVIRONMENT_UNAVAILABLE, INVALID_PARAMS,
-    RUN_CONFLICT, SERVER_ERROR, UNSUPPORTED_FEATURE,
+    LOCAL_ENVIRONMENT_ATTACHMENT_ID, LOCAL_ENVIRONMENT_ATTACHMENT_KIND, RUN_CONFLICT, SERVER_ERROR,
+    UNSUPPORTED_FEATURE,
 };
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -208,6 +209,7 @@ impl EnvironmentAttachmentManager {
                 source.id = attachment.id;
                 source.is_default = attachment.is_default;
                 source.attachment_lease_id = Some(lease_id);
+                ensure_reserved_local_kind(&source)?;
                 let request = EnvironmentReadinessRequest {
                     policy: EnvironmentReadinessPolicy::Required,
                     timeout_ms: Some(DEFAULT_READINESS_TIMEOUT_MS),
@@ -457,6 +459,7 @@ fn validate_attachment_source(
             ),
         ));
     }
+    ensure_reserved_local_kind(&attachment)?;
     if attachment.attachment_lease_id.is_some() && !allow_lease_ref {
         return Err(RpcError::new(
             INVALID_PARAMS,
@@ -491,6 +494,18 @@ fn validate_attachment_source(
             format!("unsupported environment attachment kind: {other}"),
         )),
     }
+}
+
+fn ensure_reserved_local_kind(attachment: &EnvironmentAttachmentRef) -> Result<(), RpcError> {
+    if attachment.id == LOCAL_ENVIRONMENT_ATTACHMENT_ID
+        && attachment.kind != LOCAL_ENVIRONMENT_ATTACHMENT_KIND
+    {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "reserved environment attachment id local requires kind local",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_envd_auth_token(auth_token: Option<&str>) -> Result<(), RpcError> {
@@ -710,6 +725,60 @@ mod tests {
     use super::*;
     use serde_json::json;
     use starweaver_rpc_core::environment_attachment_refs;
+
+    #[tokio::test]
+    async fn attach_rejects_reserved_local_id_for_envd_source() {
+        let manager = EnvironmentAttachmentManager::new();
+        let error = manager
+            .attach(&json!({
+                "attachment": {
+                    "id": "local",
+                    "kind": "envd",
+                    "endpointRef": "http://127.0.0.1:8766/rpc",
+                    "authToken": "secret"
+                },
+                "readiness": {"policy": "skip"}
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(error.message.contains("reserved"));
+    }
+
+    #[tokio::test]
+    async fn lease_ref_cannot_remap_envd_source_to_reserved_local_id() {
+        let manager = EnvironmentAttachmentManager::new();
+        let attached = manager
+            .attach(&json!({
+                "attachment": {
+                    "id": "remote",
+                    "kind": "envd",
+                    "endpointRef": "http://127.0.0.1:8766/rpc",
+                    "authToken": "secret"
+                },
+                "readiness": {"policy": "skip"}
+            }))
+            .await
+            .unwrap();
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+
+        let error = manager
+            .materialize_run_attachments(
+                environment_attachment_refs(&json!({
+                    "environmentAttachments": [
+                        {"id": "local", "attachmentLeaseId": lease_id, "default": true}
+                    ]
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
+        assert!(error.message.contains("reserved"));
+    }
 
     #[tokio::test]
     async fn detach_rejects_lease_used_by_active_run() {

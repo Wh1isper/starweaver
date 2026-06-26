@@ -194,12 +194,12 @@ fn envd_profiles_parse_from_config_and_redact_auth_tokens() {
     fs::write(
         global.join("config.toml"),
         r#"
-[envd_profiles.workspace]
-label = "Workspace"
+[envd_profiles.review]
+label = "Review"
 endpoint = "http://127.0.0.1:8766/rpc"
 auth_token = "secret-token"
-environment_id = "env_cli_default"
-mount_id = "workspace"
+environment_id = "review"
+mount_id = "review"
 default = true
 
 [envd_profiles.data]
@@ -220,10 +220,10 @@ mode = "read_only"
 
     assert_eq!(config.envd_profiles.len(), 2);
     assert_eq!(
-        config.envd_profiles["workspace"].auth_token.as_deref(),
+        config.envd_profiles["review"].auth_token.as_deref(),
         Some("secret-token")
     );
-    assert!(config.envd_profiles["workspace"].is_default);
+    assert!(config.envd_profiles["review"].is_default);
     assert_eq!(
         config.envd_profiles["data"].mode,
         EnvironmentAttachmentAccessMode::ReadOnly
@@ -241,4 +241,16 @@ fn envd_profile_requires_token_source() {
     };
     let error = resolve_envd_profile("workspace", profile).unwrap_err();
     assert!(error.to_string().contains("auth_token"));
+}
+
+#[test]
+fn envd_profile_rejects_reserved_local_mount_id() {
+    let profile = FileEnvdProfile {
+        endpoint: Some("http://127.0.0.1:8766/rpc".to_string()),
+        auth_token: Some("secret-token".to_string()),
+        mount_id: Some("local".to_string()),
+        ..FileEnvdProfile::default()
+    };
+    let error = resolve_envd_profile("data", profile).unwrap_err();
+    assert!(error.to_string().contains("reserved mount_id"));
 }

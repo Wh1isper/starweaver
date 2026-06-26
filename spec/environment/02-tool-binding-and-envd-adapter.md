@@ -37,13 +37,13 @@ flowchart TD
     tool[Tool call]
     handle[EnvironmentHandle]
     composite[CompositeEnvironmentProvider]
-    workspace[workspace mount]
+    local[reserved local mount]
     data[data mount]
     remote[remote envd mount]
 
     tool --> handle
     handle --> composite
-    composite --> workspace
+    composite --> local
     composite --> data
     composite --> remote
 ```
@@ -70,12 +70,18 @@ Routing rules:
 
 - Exactly one mount is the default mount. Unqualified relative paths and `/`
   route to that mount for backward-compatible tools and prompts.
+- `local` is a reserved mount id for the host's configured local Starweaver
+  environment. It may be the default mount, and product entry points should use
+  `local` instead of aliases such as `workspace` when they expose the local
+  workspace alongside remote or envd-backed mounts.
+- Remote, envd-backed, virtual, or sandbox mounts must not use the reserved
+  `local` id.
 - Every mounted environment is also exposed under
   `/environment/{environment_identity}`.
   `environment_identity` is the host attachment id after strict slug
   validation, not necessarily the provider's internal environment id.
-- Valid identities are ASCII slugs such as `workspace`, `data-1`, or
-  `review_copy`. They must not contain `/`, be empty, be `.` or `..`, or use
+- Valid non-reserved identities are ASCII slugs such as `data-1`, `review_copy`,
+  or `scratch`. They must not contain `/`, be empty, be `.` or `..`, or use
   reserved names owned by the composite provider.
 - `/environment` is a reserved virtual namespace owned by the composite
   provider. It does not need to exist in any child provider. This avoids
@@ -100,7 +106,7 @@ Routing rules:
   `default_for_shell`.
 - Background shell start uses the same `cwd` routing. The composite provider
   records `returned_process_id -> mount_id` and returns a composite id such as
-  `workspace:process_123`.
+  `local:process_123`.
 - `shell_wait`, `shell_input`, `shell_signal`, and `shell_kill` route by the
   composite process id. The model only sees one process handle namespace.
 - `shell_status` returns snapshots from all process-capable mounts with
@@ -117,8 +123,8 @@ Example model-facing context:
 
 ```xml
 <environment-mounts>
-  <default mount="workspace" root="/" />
-  <mount id="workspace" root="/environment/workspace" files="read_write" command="run" process="background" />
+  <default mount="local" root="/" />
+  <mount id="local" root="/environment/local" files="read_write" command="run" process="background" />
   <mount id="data" root="/environment/data" files="read_only" command="none" process="none" />
 </environment-mounts>
 <default-environment-context>
@@ -126,7 +132,7 @@ Example model-facing context:
 </default-environment-context>
 <shell-routing>
   shell_exec without cwd runs in the default mount.
-  Use cwd="/environment/workspace/..." or cwd="/environment/data/..." to choose a mounted environment explicitly.
+  Use cwd="/environment/local/..." or cwd="/environment/data/..." to choose a mounted environment explicitly.
   Commands can run only in mounts that advertise command capability.
 </shell-routing>
 ```
@@ -309,17 +315,23 @@ visible environment context.
 TUI uses config-backed envd profiles instead of envd-specific argv:
 
 ```toml
-[envd_profiles.workspace]
+[envd_profiles.data]
 endpoint = "http://127.0.0.1:8766/rpc"
-auth_token_env = "STARWEAVER_WORKSPACE_ENVD_TOKEN"
-environment_id = "env_cli_default"
-mount_id = "workspace"
-default = true
+auth_token_env = "STARWEAVER_DATA_ENVD_TOKEN"
+environment_id = "dataset"
+mode = "read_only"
 ```
 
-The host resolves each enabled profile into a normal envd
-`EnvironmentAttachmentRef` before run start. Profile names and mount ids are
-safe metadata; token values are not.
+The host resolves the reserved local mount plus each enabled profile into normal
+`EnvironmentAttachmentRef` values before run start. The reserved `local` mount
+is the default unless one enabled envd profile explicitly sets `default = true`.
+Profile names and mount ids are safe metadata; token values are not.
+
+RPC startup follows the same run materialization contract. If
+`environmentAttachments` is omitted, the host starts with the reserved local
+environment only. If an explicit list is present, clients include
+`{"id": "local", "kind": "local"}` when local workspace access should be
+available next to envd-backed mounts.
 
 ## Active-Run Mounting Design
 

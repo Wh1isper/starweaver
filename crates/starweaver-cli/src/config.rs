@@ -8,7 +8,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use starweaver_model::MaxTokensParameter;
-use starweaver_rpc_core::{is_valid_environment_attachment_id, EnvironmentAttachmentAccessMode};
+use starweaver_rpc_core::{
+    is_valid_environment_attachment_id, EnvironmentAttachmentAccessMode,
+    LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+};
 use toml::Value;
 
 use crate::{
@@ -883,6 +886,11 @@ fn resolve_envd_profile(name: &str, profile: FileEnvdProfile) -> CliResult<CliEn
     if !is_valid_environment_attachment_id(&mount_id) {
         return Err(CliError::Config(format!(
             "envd profile {name} has invalid mount_id: {mount_id}; expected an ASCII slug"
+        )));
+    }
+    if mount_id == LOCAL_ENVIRONMENT_ATTACHMENT_ID {
+        return Err(CliError::Config(format!(
+            "envd profile {name} cannot use reserved mount_id: {mount_id}"
         )));
     }
     let auth_token = profile
