@@ -844,6 +844,7 @@ async fn local_provider_search_preserves_gitignore_negations() {
 #[tokio::test]
 async fn virtual_context_file_tree_matches_starweaver_sdk_semantics() {
     let provider = VirtualEnvironmentProvider::new("test")
+        .with_file(".agents/skills/research/SKILL.md", "skill")
         .with_file(".git/config", "git")
         .with_file(".gitignore", "*.log\nbuild/\n")
         .with_file(".hidden/secret.txt", "secret")
@@ -876,6 +877,7 @@ async fn virtual_context_file_tree_matches_starweaver_sdk_semantics() {
     assert!(instructions.contains("node_modules/ (skipped)"));
     assert!(instructions.contains("build/ (gitignored)"));
     assert!(instructions.contains("error.log (gitignored)"));
+    assert!(instructions.contains(".agents/skills/research/SKILL.md"));
     assert!(instructions.contains(".env"));
     assert!(instructions.contains("README.md"));
     assert!(instructions.contains("src/main.rs"));
@@ -890,12 +892,14 @@ async fn virtual_context_file_tree_matches_starweaver_sdk_semantics() {
 async fn local_context_file_tree_matches_starweaver_sdk_semantics() {
     let root = unique_test_dir();
     std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::create_dir_all(root.join(".agents/skills/research")).unwrap();
     std::fs::create_dir_all(root.join(".hidden")).unwrap();
     std::fs::create_dir_all(root.join("build")).unwrap();
     std::fs::create_dir_all(root.join("level1/level2/level3")).unwrap();
     std::fs::create_dir_all(root.join("node_modules")).unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join(".git/config"), "git").unwrap();
+    std::fs::write(root.join(".agents/skills/research/SKILL.md"), "skill").unwrap();
     std::fs::write(root.join(".gitignore"), "*.log\nbuild/\n").unwrap();
     std::fs::write(root.join(".hidden/secret.txt"), "secret").unwrap();
     std::fs::write(root.join(".env"), "ENV=value").unwrap();
@@ -930,6 +934,7 @@ async fn local_context_file_tree_matches_starweaver_sdk_semantics() {
     assert!(instructions.contains("node_modules/ (skipped)"));
     assert!(instructions.contains("build/ (gitignored)"));
     assert!(instructions.contains("error.log (gitignored)"));
+    assert!(instructions.contains(".agents/skills/research/SKILL.md"));
     assert!(instructions.contains(".env"));
     assert!(instructions.contains("README.md"));
     assert!(instructions.contains("src/main.rs"));
@@ -1155,6 +1160,43 @@ async fn local_context_file_tree_deduplicates_visible_nested_allowed_roots() {
         display_local_path(&root.join("skills"))
     )));
     assert!(instructions.contains("skills/research/SKILL.md"));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn local_context_file_tree_deduplicates_visible_agents_skill_roots() {
+    let root = unique_test_dir();
+    let allowed_root = root.join(".agents/skills");
+    std::fs::create_dir_all(allowed_root.join("research")).unwrap();
+    std::fs::write(root.join("README.md"), "readme").unwrap();
+    std::fs::write(allowed_root.join("research/SKILL.md"), "skill").unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_allowed_paths([allowed_root.clone()])
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        instructions
+            .matches(&format!(
+                "<directory path=\"{}\">",
+                display_local_path(&root)
+            ))
+            .count(),
+        1
+    );
+    assert!(!instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&allowed_root)
+    )));
+    assert!(instructions.contains(".agents/skills/research/SKILL.md"));
 
     std::fs::remove_dir_all(root).unwrap();
 }

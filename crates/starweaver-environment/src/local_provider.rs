@@ -10,10 +10,11 @@ use std::{
 use starweaver_core::Metadata;
 
 use crate::{
-    copy_local_dir, create_local_tmp_dir, display_local_path, list_ignore_match,
-    local_grep_file_match_limit, local_search_walk_builder, local_shell_metadata, map_io_error,
-    normalize_local_config_path, normalize_match_path, normalize_path, normalize_tmp_namespace,
-    path_match_candidates, prepare_local_destination, push_unique_candidate, push_unique_path,
+    copy_local_dir, create_local_tmp_dir, display_local_path, file_tree_directory_depth_increment,
+    file_tree_directory_is_visible, list_ignore_match, local_grep_file_match_limit,
+    local_search_walk_builder, local_shell_metadata, map_io_error, normalize_local_config_path,
+    normalize_match_path, normalize_path, normalize_tmp_namespace, path_match_candidates,
+    prepare_local_destination, push_unique_candidate, push_unique_path,
     render_environment_context_xml, render_local_file_tree_listing, run_local_shell_command,
     DynProcessShellProvider, EnvironmentError, EnvironmentPolicy, EnvironmentProvider,
     EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
@@ -622,19 +623,19 @@ fn path_is_visible_under_root(path: &Path, root: &Path) -> bool {
         return false;
     };
     let components = relative.components().collect::<Vec<_>>();
-    if components.is_empty() || components.len() >= DEFAULT_FILE_TREE_MAX_DEPTH {
+    if components.is_empty() {
         return false;
     }
     let gitignore = root_gitignore(root);
     let mut logical = String::new();
+    let mut depth = 0;
     for component in components {
         let name = component.as_os_str().to_string_lossy();
-        if name.starts_with('.')
-            || matches!(
-                name.as_ref(),
-                "node_modules" | ".git" | ".venv" | "__pycache__"
-            )
-        {
+        if !file_tree_directory_is_visible(&name) {
+            return false;
+        }
+        depth += file_tree_directory_depth_increment(&name);
+        if depth >= DEFAULT_FILE_TREE_MAX_DEPTH {
             return false;
         }
         if !logical.is_empty() {

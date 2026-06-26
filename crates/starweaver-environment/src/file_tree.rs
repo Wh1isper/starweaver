@@ -11,6 +11,7 @@ use crate::{
 
 const DEFAULT_FILE_TREE_SKIPPED_DIR_NAMES: &[&str] =
     &["node_modules", ".git", ".venv", "__pycache__"];
+const DEFAULT_FILE_TREE_VISIBLE_DOT_DIR_NAMES: &[&str] = &[".agents"];
 pub const DEFAULT_FILE_TREE_MAX_DEPTH: usize = 3;
 
 pub fn render_virtual_file_tree_listing(
@@ -179,7 +180,8 @@ fn append_local_file_tree_lines(
             output.push(format!("{logical}/ (gitignored)"));
             continue;
         }
-        if depth < max_depth {
+        let next_depth = depth + file_tree_directory_depth_increment(name);
+        if next_depth <= max_depth {
             append_local_file_tree_lines(
                 root,
                 &path,
@@ -187,7 +189,7 @@ fn append_local_file_tree_lines(
                 visible_root,
                 policy,
                 gitignore,
-                depth + 1,
+                next_depth,
                 max_depth,
                 output,
             )?;
@@ -273,10 +275,11 @@ fn append_virtual_file_tree_lines(
             continue;
         }
         if entry.is_dir {
-            if depth < max_depth {
+            let next_depth = depth + file_tree_directory_depth_increment(name);
+            if next_depth <= max_depth {
                 append_virtual_file_tree_lines(
                     &entry.path,
-                    depth + 1,
+                    next_depth,
                     max_depth,
                     by_parent,
                     gitignore,
@@ -296,10 +299,21 @@ fn classify_file_tree_entry_visibility(name: &str, is_dir: bool) -> (bool, bool)
     if !name.starts_with('.') {
         return (false, false);
     }
-    if name == ".env" {
+    if is_dir && DEFAULT_FILE_TREE_VISIBLE_DOT_DIR_NAMES.contains(&name) {
+        return (false, false);
+    }
+    if !is_dir && name == ".env" {
         return (false, false);
     }
     (true, false)
+}
+
+pub fn file_tree_directory_is_visible(name: &str) -> bool {
+    !classify_file_tree_entry_visibility(name, true).0
+}
+
+pub fn file_tree_directory_depth_increment(name: &str) -> usize {
+    usize::from(!DEFAULT_FILE_TREE_VISIBLE_DOT_DIR_NAMES.contains(&name))
 }
 
 fn is_gitignored(
