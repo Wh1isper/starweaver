@@ -670,8 +670,8 @@ Run environment attachments:
 {
   "environmentAttachments": [
     {
-      "id": "workspace",
-      "attachmentLeaseId": "envatt_workspace",
+      "id": "local",
+      "kind": "local",
       "default": true
     },
     {
@@ -698,9 +698,19 @@ Attachment invariants:
 
 - `id` is the run-local agent-facing mount identity. It is an ASCII slug and is
   exposed to tools as `/environment/{id}`.
+- `local` is a reserved mount id for the host's configured local Starweaver
+  environment. A non-local attachment source must not use `id: "local"`.
+  Product surfaces should use `{"id": "local", "kind": "local"}` for the local
+  workspace mount instead of inventing aliases such as `workspace`.
 - One attachment is the default for unqualified paths. Multiple attachments
   require exactly one `default: true`. A single attachment defaults to true when
   omitted.
+- When `environmentAttachments` is omitted, the local host behaves as if the run
+  had one reserved local attachment with `id: "local"`, `kind: "local"`, and
+  `default: true`.
+- When `environmentAttachments` is present, the list is authoritative. Clients
+  that want local workspace access alongside envd-backed environments must
+  include the reserved `local` attachment explicitly.
 - `attachmentLeaseId` is a host-control lease id, not an envd environment id and
   not visible to the model.
 - A run-local `mode` on a lease ref may keep or narrow the leased mode. It must
@@ -725,30 +735,33 @@ Attachment invariants:
 
 ### Config-Backed TUI Envd Profiles
 
-TUI envd attachments are configured in shared `config.toml` instead of TUI argv.
-The config owns zero or more named envd profiles:
+Interactive TUI startup always materializes the reserved local mount first and
+then appends enabled envd profiles from shared `config.toml`. TUI envd
+attachments are configured in shared config instead of TUI argv. The config owns
+zero or more named envd profiles:
 
 ```toml
-[envd_profiles.workspace]
-label = "Workspace"
-endpoint = "http://127.0.0.1:8766/rpc"
-auth_token_env = "STARWEAVER_WORKSPACE_ENVD_TOKEN"
-environment_id = "env_cli_default"
-mount_id = "workspace"
-mode = "read_write"
-default = true
-
 [envd_profiles.data]
-endpoint = "http://127.0.0.1:8770/rpc"
+label = "Data"
+endpoint = "http://127.0.0.1:8766/rpc"
 auth_token_env = "STARWEAVER_DATA_ENVD_TOKEN"
 environment_id = "dataset"
 mode = "read_only"
+
+[envd_profiles.review]
+endpoint = "http://127.0.0.1:8770/rpc"
+auth_token_env = "STARWEAVER_REVIEW_ENVD_TOKEN"
+environment_id = "review"
+mount_id = "review"
+mode = "read_write"
 ```
 
 Profile rules:
 
 - The table name is the stable envd profile name. `mount_id` defaults to the
   table name and must be an ASCII attachment slug.
+- `mount_id = "local"` is invalid for an envd profile because `local` is
+  reserved for the host's configured local Starweaver environment.
 - `endpoint` is currently a literal `http://...` envd RPC endpoint.
 - A profile must provide either `auth_token_env` or request-only `auth_token`.
   `auth_token_env` is preferred for real deployments. Direct `auth_token` values
@@ -756,10 +769,12 @@ Profile rules:
   model-visible context.
 - `mode` is `read_write` by default and may be `read_only`.
 - `enabled = false` excludes a profile from TUI run materialization.
-- TUI materializes all enabled envd profiles into run-local
-  `environmentAttachments`. If several enabled profiles exist, exactly one
-  `default = true` may be supplied; otherwise the host selects the first
-  configured profile by stable profile-name order.
+- TUI materializes a run-local `environmentAttachments` list containing
+  `{"id": "local", "kind": "local"}` plus all enabled envd profiles.
+- The reserved `local` mount is the default unless exactly one enabled envd
+  profile has `default = true`. More than one enabled envd profile with
+  `default = true` is invalid. This preserves existing local-workspace behavior
+  unless the user explicitly chooses a remote default.
 - These config-backed profiles are a TUI convenience over the same attachment
   manager semantics. RPC callers can still pass inline attachments or prepared
   leases explicitly.
@@ -1023,6 +1038,9 @@ Endpoint refs:
 
 - Literal `http://...` endpoints connect through authenticated
   `EnvdRpcClient::http_with_token`.
+- `id: "local"` is reserved for `kind: "local"` and does not use endpoint
+  fields. A host should reject `id: "local"` with `kind: "envd"` or any future
+  remote source kind.
 - Named aliases, stdio, local socket, named pipe, WebSocket, and launched daemon
   transports are future host capabilities. Servers that do not advertise those
   capabilities reject them with `unsupported_feature`.
@@ -1407,20 +1425,32 @@ Environment stream payload shape:
   "kind": "environment_info",
   "runId": "run_...",
   "environment": {
-    "defaultMountId": "workspace",
+    "defaultMountId": "local",
     "mounts": [
       {
-        "id": "workspace",
-        "kind": "envd",
-        "root": "/environment/workspace",
+        "id": "local",
+        "kind": "local",
+        "root": "/environment/local",
         "mode": "read_write",
         "default": true,
         "status": "ready",
         "readiness": {},
-        "environmentId": "env_cli_default",
+        "source": {
+          "kind": "local"
+        }
+      },
+      {
+        "id": "data",
+        "kind": "envd",
+        "root": "/environment/data",
+        "mode": "read_only",
+        "default": false,
+        "status": "ready",
+        "readiness": {},
+        "environmentId": "dataset",
         "source": {
           "kind": "envd_profile",
-          "profile": "workspace"
+          "profile": "data"
         }
       }
     ]

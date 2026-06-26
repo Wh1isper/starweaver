@@ -18,7 +18,8 @@ pub use environment::{
     EnvironmentAttachmentScopeKind, EnvironmentAttachmentStatus, EnvironmentDetachParams,
     EnvironmentHealthParams, EnvironmentListParams, EnvironmentReadiness,
     EnvironmentReadinessCapabilities, EnvironmentReadinessPhase, EnvironmentReadinessPolicy,
-    EnvironmentReadinessRequest,
+    EnvironmentReadinessRequest, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+    LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
 };
 
 /// JSON-RPC parse error code.
@@ -551,6 +552,16 @@ mod tests {
             "environment": {"id": "../bad"}
         }));
         assert!(invalid_id.is_err());
+
+        let reserved_local = environment_attachment_refs(&json!({
+            "environment": {
+                "id": "local",
+                "kind": "envd",
+                "endpointRef": "http://127.0.0.1:8766/rpc",
+                "authToken": "secret"
+            }
+        }));
+        assert!(reserved_local.is_err());
 
         let missing_default = environment_attachment_refs(&json!({
             "environmentAttachments": [

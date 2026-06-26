@@ -1632,7 +1632,7 @@ model = "test:coding"
             "params": {
                 "prompt": "hello",
                 "environmentAttachments": [
-                    {"id": "workspace", "default": true},
+                    {"id": "local", "kind": "local", "default": true},
                     {"id": "tools"}
                 ]
             },
@@ -1647,6 +1647,7 @@ model = "test:coding"
             result["environmentAttachments"].as_array().unwrap().len(),
             2
         );
+        assert_eq!(result["environmentAttachments"][0]["id"], "local");
     }
 
     #[test]

@@ -5,6 +5,12 @@ use serde_json::{json, Value};
 
 use crate::{RpcError, INVALID_PARAMS};
 
+/// Reserved agent-facing mount id for the host's configured local environment.
+pub const LOCAL_ENVIRONMENT_ATTACHMENT_ID: &str = "local";
+
+/// Attachment kind for the host's configured local environment.
+pub const LOCAL_ENVIRONMENT_ATTACHMENT_KIND: &str = "local";
+
 /// Environment access mode requested by a host RPC environment attachment.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -387,6 +393,14 @@ fn validate_environment_attachment_refs(refs: &[EnvironmentAttachmentRef]) -> Re
                 ),
             ));
         }
+        if attachment.id == LOCAL_ENVIRONMENT_ATTACHMENT_ID
+            && attachment.kind != LOCAL_ENVIRONMENT_ATTACHMENT_KIND
+        {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                "reserved environment attachment id local requires kind local",
+            ));
+        }
         if !ids.insert(attachment.id.clone()) {
             return Err(RpcError::new(
                 INVALID_PARAMS,
@@ -407,5 +421,5 @@ fn validate_environment_attachment_refs(refs: &[EnvironmentAttachmentRef]) -> Re
 }
 
 fn default_environment_attachment_kind() -> String {
-    "local".to_string()
+    LOCAL_ENVIRONMENT_ATTACHMENT_KIND.to_string()
 }

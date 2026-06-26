@@ -7,7 +7,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use starweaver_rpc_core::EnvironmentAttachmentRef;
+use starweaver_rpc_core::{
+    EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+    LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
+};
 use starweaver_runtime::AgentStreamRecord;
 
 use super::CliService;
@@ -467,17 +470,13 @@ fn tui_environment_attachments(config: &CliConfig) -> CliResult<Vec<EnvironmentA
         .iter()
         .filter(|(_, profile)| profile.enabled)
         .collect::<Vec<_>>();
-    if active_profiles.is_empty() {
-        return Ok(Vec::new());
-    }
-
     let explicit_defaults = active_profiles
         .iter()
         .filter_map(|(name, profile)| profile.is_default.then_some((*name, *profile)))
         .collect::<Vec<_>>();
     let default_profile_name = match explicit_defaults.as_slice() {
-        [] => active_profiles[0].0.as_str(),
-        [(name, _profile)] => name.as_str(),
+        [] => None,
+        [(name, _profile)] => Some(name.as_str()),
         _ => {
             return Err(CliError::Config(
                 "TUI envd profiles require at most one default profile".to_string(),
@@ -486,11 +485,28 @@ fn tui_environment_attachments(config: &CliConfig) -> CliResult<Vec<EnvironmentA
     };
 
     let mut seen_mounts = BTreeSet::new();
-    let mut attachments = Vec::new();
+    seen_mounts.insert(LOCAL_ENVIRONMENT_ATTACHMENT_ID.to_string());
+    let mut attachments = vec![EnvironmentAttachmentRef {
+        id: LOCAL_ENVIRONMENT_ATTACHMENT_ID.to_string(),
+        kind: LOCAL_ENVIRONMENT_ATTACHMENT_KIND.to_string(),
+        mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
+        is_default: default_profile_name.is_none(),
+        attachment_lease_id: None,
+        endpoint_ref: None,
+        environment_id: None,
+        auth_token: None,
+        metadata: serde_json::Map::new(),
+    }];
     for (name, profile) in active_profiles {
         if !profile.endpoint.starts_with("http://") {
             return Err(CliError::Config(format!(
                 "TUI envd profile {name} currently supports http:// endpoints"
+            )));
+        }
+        if profile.mount_id == LOCAL_ENVIRONMENT_ATTACHMENT_ID {
+            return Err(CliError::Config(format!(
+                "TUI envd profile {name} cannot use reserved mount id: {}",
+                profile.mount_id
             )));
         }
         if !seen_mounts.insert(profile.mount_id.clone()) {
@@ -506,7 +522,7 @@ fn tui_environment_attachments(config: &CliConfig) -> CliResult<Vec<EnvironmentA
             id: profile.mount_id.clone(),
             kind: "envd".to_string(),
             mode: Some(profile.mode),
-            is_default: name == default_profile_name,
+            is_default: default_profile_name == Some(name.as_str()),
             attachment_lease_id: None,
             endpoint_ref: Some(profile.endpoint.clone()),
             environment_id: profile.environment_id.clone(),
@@ -664,49 +680,66 @@ mod tests {
     }
 
     #[test]
+    fn tui_environment_attachments_include_reserved_local_without_envd_profiles() {
+        let config = config_with_envd_profiles("");
+
+        let attachments = tui_environment_attachments(&config).unwrap();
+
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].id, "local");
+        assert_eq!(attachments[0].kind, "local");
+        assert!(attachments[0].is_default);
+    }
+
+    #[test]
     fn tui_envd_attachments_build_from_config_profiles() {
         let config = config_with_envd_profiles(
             r#"
-[envd_profiles.workspace]
-endpoint = "http://127.0.0.1:8766/rpc"
-auth_token = "workspace-secret"
-environment_id = "env_cli_default"
-mount_id = "workspace"
-default = true
-
 [envd_profiles.data]
-endpoint = "http://127.0.0.1:8770/rpc"
+endpoint = "http://127.0.0.1:8766/rpc"
 auth_token = "data-secret"
 environment_id = "dataset"
 mode = "read_only"
+
+[envd_profiles.review]
+endpoint = "http://127.0.0.1:8770/rpc"
+auth_token = "review-secret"
+environment_id = "review-env"
+mode = "read_write"
+default = true
 "#,
         );
 
         let attachments = tui_environment_attachments(&config).unwrap();
 
-        assert_eq!(attachments.len(), 2);
-        assert_eq!(attachments[0].id, "data");
-        assert_eq!(attachments[0].kind, "envd");
-        assert_eq!(attachments[0].requested_auth_token(), Some("data-secret"));
+        assert_eq!(attachments.len(), 3);
+        assert_eq!(attachments[0].id, "local");
+        assert_eq!(attachments[0].kind, "local");
+        assert!(!attachments[0].is_default);
+        assert!(attachments[0].requested_auth_token().is_none());
+
+        assert_eq!(attachments[1].id, "data");
+        assert_eq!(attachments[1].kind, "envd");
+        assert_eq!(attachments[1].requested_auth_token(), Some("data-secret"));
         assert_eq!(
-            attachments[0].resolved_mode(),
+            attachments[1].resolved_mode(),
             EnvironmentAttachmentAccessMode::ReadOnly
         );
-        let serialized = serde_json::to_value(&attachments[0]).unwrap();
+        let serialized = serde_json::to_value(&attachments[1]).unwrap();
         assert!(serialized.get("authToken").is_none());
 
-        assert_eq!(attachments[1].id, "workspace");
-        assert!(attachments[1].is_default);
+        assert_eq!(attachments[2].id, "review");
+        assert!(attachments[2].is_default);
         assert_eq!(
-            attachments[1].requested_environment_id(),
-            Some("env_cli_default")
+            attachments[2].requested_environment_id(),
+            Some("review-env")
         );
         assert_eq!(
-            attachments[1]
+            attachments[2]
                 .metadata
                 .get("envd_profile")
                 .and_then(serde_json::Value::as_str),
-            Some("workspace")
+            Some("review")
         );
     }
 
