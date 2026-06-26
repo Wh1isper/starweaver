@@ -99,7 +99,7 @@ fn codex_style_opening_renders_header_composer_and_footer() {
 
     let footer_lines = render_footer_lines(&state, 120);
     let footer_text = line_texts(&footer_lines).join("\n");
-    assert!(footer_text.contains("[Steering messages will appear here during agent execution]"));
+    assert!(!footer_text.contains("Steering messages"));
     assert!(footer_text.contains(" ACT  | State: IDLE"));
     assert!(footer_text.contains("Model: local_echo"));
     assert!(footer_text.contains("Context: 0%"));
@@ -331,9 +331,10 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     assert_eq!(steering.id, "steer_0");
     assert_eq!(steering.text, "steer now");
     assert!(state.input.is_empty());
-    assert!(line_texts(&render_footer_lines(&state, 120))
+    assert!(state.body.iter().any(|line| line == "Steering: steer now"));
+    assert!(!line_texts(&render_footer_lines(&state, 120))
         .join("\n")
-        .contains(">>> steer now"));
+        .contains("steer now"));
 
     state.input = "/paste-image".to_string();
     assert_eq!(
@@ -3161,13 +3162,13 @@ fn fullscreen_composer_tracks_paste_images_and_steering_status() {
     assert_eq!(state.input_mode_label(), "STEER");
     let steer_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(steer_footer.contains("STEER"));
-    assert!(steer_footer.contains("[Steering messages will appear here during agent execution]"));
+    assert!(!steer_footer.contains("Steering messages"));
     let steering = state.take_steering_prompt().unwrap();
     assert_eq!(steering.id, "steer_0");
     assert_eq!(steering.text, "tighten this section");
     assert!(state.input_status_text().contains("steer sent"));
     let pending_steer_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(pending_steer_footer.contains(">>> tighten this section"));
+    assert!(!pending_steer_footer.contains("tighten this section"));
     state.apply_stream_record(&AgentStreamRecord::new(
         0,
         AgentStreamEvent::Custom {
@@ -3178,7 +3179,15 @@ fn fullscreen_composer_tracks_paste_images_and_steering_status() {
         },
     ));
     let acked_steer_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
-    assert!(acked_steer_footer.contains("[v] tighten this section"));
+    assert!(!acked_steer_footer.contains("tighten this section"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Steering: tighten this section"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "Steering received: tighten this section"));
 }
 
 #[test]
@@ -3629,6 +3638,30 @@ fn composer_soft_wraps_long_input_and_tracks_visual_cursor() {
     assert_eq!(
         composer_cursor_position_wrapped(&state.input, state.input.len(), input_width),
         (2, 2)
+    );
+}
+
+#[test]
+fn composer_adds_cursor_row_when_input_ends_on_wrap_boundary() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.input = "abcdefgh".to_string();
+
+    let width = 6;
+    let input_width = composer_input_width(width);
+    let rendered = render_composer_lines(&state, width);
+    let texts = line_texts(&rendered);
+    assert_eq!(texts[1], "> abcd");
+    assert_eq!(texts[2], "  efgh");
+    assert_eq!(texts[3], "");
+    assert!(rendered.iter().all(|line| line.visible_width() <= width));
+    assert_eq!(input_visual_line_count(&state.input, input_width), 3);
+    assert_eq!(
+        input_viewport_lines_wrapped(&state.input, 5, 0, input_width),
+        vec!["abcd".to_string(), "efgh".to_string(), String::new()]
+    );
+    assert_eq!(
+        composer_cursor_position_wrapped(&state.input, state.input.len(), input_width),
+        (2, 0)
     );
 }
 

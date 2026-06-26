@@ -13,7 +13,6 @@ use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStrea
 use starweaver_usage::UsageSnapshot;
 
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
-const MAX_STEERING_ITEMS: usize = 5;
 const SHELL_OUTPUT_MAX_LINES: usize = 200;
 const SHELL_STREAM_PREVIEW_MAX_LINES: usize = 6;
 const TOOL_PREVIEW_MAX_CHARS: usize = 240;
@@ -103,20 +102,6 @@ pub(super) enum PendingSessionCommand {
 pub(super) enum BodyScrollDirection {
     Up,
     Down,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum SteeringStatus {
-    Pending,
-    Acked,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct SteeringItem {
-    pub(super) id: String,
-    pub(super) text: String,
-    pub(super) status: SteeringStatus,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -299,7 +284,6 @@ pub struct InteractiveTuiState {
     pub(super) latest_request_total_tokens: Option<u64>,
     pub(super) context_window: Option<u64>,
     usage_snapshots: BTreeMap<String, UsageSnapshot>,
-    pub(super) steering_items: Vec<SteeringItem>,
     next_steering_id: u64,
 }
 
@@ -367,7 +351,6 @@ impl InteractiveTuiState {
             latest_request_total_tokens: None,
             context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
             usage_snapshots: BTreeMap::new(),
-            steering_items: Vec::new(),
             next_steering_id: 0,
         }
     }
@@ -552,7 +535,6 @@ impl InteractiveTuiState {
         self.subagent_states.clear();
         self.pending_hitl = None;
         self.task_panel_items.clear();
-        self.steering_items.clear();
         self.goal_task = None;
         self.goal_active = false;
         self.pending_goal_submission = None;
@@ -693,10 +675,6 @@ impl InteractiveTuiState {
         self.footer_mode = FooterMode::Context;
     }
 
-    pub(super) fn steering_items(&self) -> &[SteeringItem] {
-        &self.steering_items
-    }
-
     pub(super) const fn pending_hitl(&self) -> Option<&HitlPanelState> {
         self.pending_hitl.as_ref()
     }
@@ -705,36 +683,10 @@ impl InteractiveTuiState {
         &self.task_panel_items
     }
 
-    pub(crate) fn ack_steering_event(&mut self, id: Option<&str>, text: Option<&str>) {
-        let index = if let Some(id) = id {
-            self.steering_items
-                .iter()
-                .position(|item| matches!(item.status, SteeringStatus::Pending) && item.id == id)
-        } else {
-            text.and_then(|text| {
-                self.steering_items.iter().position(|item| {
-                    matches!(item.status, SteeringStatus::Pending) && item.text == text
-                })
-            })
-        };
-        if let Some(index) = index {
-            self.steering_items[index].status = SteeringStatus::Acked;
-        }
-    }
-
     fn record_steering_message(&mut self, text: String) -> SteeringSubmission {
         let id = format!("steer_{}", self.next_steering_id);
         self.next_steering_id = self.next_steering_id.saturating_add(1);
         self.body.push(format!("Steering: {text}"));
-        self.steering_items.push(SteeringItem {
-            id: id.clone(),
-            text: text.clone(),
-            status: SteeringStatus::Pending,
-        });
-        let overflow = self.steering_items.len().saturating_sub(MAX_STEERING_ITEMS);
-        if overflow > 0 {
-            self.steering_items.drain(0..overflow);
-        }
         SteeringSubmission { id, text }
     }
 

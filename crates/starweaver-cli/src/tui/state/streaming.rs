@@ -127,12 +127,7 @@ impl InteractiveTuiState {
         } else if let Some(lines) = format_custom_context_event_lines(kind, payload) {
             self.body.extend(lines);
         } else if kind == "steering_received" {
-            let steering_id = payload
-                .get("id")
-                .or_else(|| payload.get("message_id"))
-                .and_then(serde_json::Value::as_str);
             let text = payload.get("text").and_then(serde_json::Value::as_str);
-            self.ack_steering_event(steering_id, text);
             if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
                 self.body.push(format!("Steering received: {text}"));
             } else {
