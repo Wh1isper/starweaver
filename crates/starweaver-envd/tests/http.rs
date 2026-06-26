@@ -14,6 +14,8 @@ use starweaver_envd_core::{
     DEFAULT_ENVIRONMENT_ID,
 };
 
+const TEST_TOKEN: &str = "envd-test-token";
+
 #[tokio::test]
 async fn standalone_http_round_trips_file_operations() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -24,10 +26,12 @@ async fn standalone_http_round_trips_file_operations() {
             .arg(temp.path())
             .arg("http")
             .arg("--port")
-            .arg("0"),
+            .arg("0")
+            .arg("--token")
+            .arg(TEST_TOKEN),
     );
     let endpoint = child.endpoint();
-    let client = EnvdRpcClient::http(&endpoint).unwrap();
+    let client = EnvdRpcClient::http_with_token(&endpoint, TEST_TOKEN).unwrap();
 
     let descriptor = client
         .open_environment(OpenEnvironmentRequest::default())
@@ -55,6 +59,42 @@ async fn standalone_http_round_trips_file_operations() {
         .unwrap();
     assert_eq!(String::from_utf8(read.bytes).unwrap(), "http ok");
 
+    let shutdown = client.shutdown().await.unwrap();
+    assert_eq!(shutdown["status"], "shutdown");
+    child.wait_for_exit();
+}
+
+#[tokio::test]
+async fn standalone_http_rejects_missing_or_wrong_token() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let mut child = ChildGuard::spawn(
+        Command::new(env!("CARGO_BIN_EXE_starweaver-envd"))
+            .current_dir(temp.path())
+            .arg("--root")
+            .arg(temp.path())
+            .arg("http")
+            .arg("--port")
+            .arg("0")
+            .arg("--token")
+            .arg(TEST_TOKEN),
+    );
+    let endpoint = child.endpoint();
+
+    let missing = EnvdRpcClient::http(&endpoint)
+        .unwrap()
+        .open_environment(OpenEnvironmentRequest::default())
+        .await
+        .unwrap_err();
+    assert!(missing.to_string().contains("401 Unauthorized"));
+
+    let wrong = EnvdRpcClient::http_with_token(&endpoint, "wrong-token")
+        .unwrap()
+        .open_environment(OpenEnvironmentRequest::default())
+        .await
+        .unwrap_err();
+    assert!(wrong.to_string().contains("401 Unauthorized"));
+
+    let client = EnvdRpcClient::http_with_token(&endpoint, TEST_TOKEN).unwrap();
     let shutdown = client.shutdown().await.unwrap();
     assert_eq!(shutdown["status"], "shutdown");
     child.wait_for_exit();

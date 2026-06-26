@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use starweaver_rpc_core::EnvironmentAttachmentAccessMode;
 
 fn resolver_with_current_dir(root: &Path, current_dir: &Path) -> ConfigResolver {
     ConfigResolver {
@@ -183,4 +184,61 @@ fn set_config_value_writes_nested_shell_review_table() {
         parsed["security"]["shell_review"]["risk_threshold"].as_str(),
         Some("extra_high")
     );
+}
+
+#[test]
+fn envd_profiles_parse_from_config_and_redact_auth_tokens() {
+    let temp = tempfile::tempdir().unwrap();
+    let global = temp.path().join("global");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(
+        global.join("config.toml"),
+        r#"
+[envd_profiles.workspace]
+label = "Workspace"
+endpoint = "http://127.0.0.1:8766/rpc"
+auth_token = "secret-token"
+environment_id = "env_cli_default"
+mount_id = "workspace"
+default = true
+
+[envd_profiles.data]
+enabled = true
+endpoint = "http://127.0.0.1:8770/rpc"
+auth_token_env = "STARWEAVER_DATA_ENVD_TOKEN"
+environment_id = "dataset"
+mode = "read_only"
+"#,
+    )
+    .unwrap();
+    let cli =
+        crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+
+    let config = ConfigResolver::for_tests(temp.path())
+        .resolve(&cli)
+        .unwrap();
+
+    assert_eq!(config.envd_profiles.len(), 2);
+    assert_eq!(
+        config.envd_profiles["workspace"].auth_token.as_deref(),
+        Some("secret-token")
+    );
+    assert!(config.envd_profiles["workspace"].is_default);
+    assert_eq!(
+        config.envd_profiles["data"].mode,
+        EnvironmentAttachmentAccessMode::ReadOnly
+    );
+    let rendered = get_config_value(&config, "envd.profiles").unwrap();
+    assert!(rendered.contains("STARWEAVER_DATA_ENVD_TOKEN"));
+    assert!(!rendered.contains("secret-token"));
+}
+
+#[test]
+fn envd_profile_requires_token_source() {
+    let profile = FileEnvdProfile {
+        endpoint: Some("http://127.0.0.1:8766/rpc".to_string()),
+        ..FileEnvdProfile::default()
+    };
+    let error = resolve_envd_profile("workspace", profile).unwrap_err();
+    assert!(error.to_string().contains("auth_token"));
 }

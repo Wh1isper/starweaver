@@ -165,13 +165,14 @@ Boundary rules:
 - The SDK environment layer owns path, shell, process, and context routing after
   the binding is constructed.
 - The SDK layer should not know whether a child provider came from an inline
-  `run.start` attachment, an `environment.attach` lease, or direct CLI config.
-- Active-run mount/unmount is a future host feature because it must update the
-  runtime environment handle and reinject environment context. The first
-  manager slice materializes attachments before run start.
+  `run.start` attachment, an `environment.attach` lease, or TUI
+  `[envd_profiles.*]` config.
+- Active-run mount/unmount is a future host feature. It must update the runtime
+  environment handle for future tool calls and inject environment context as an
+  append-only steering message captured at the moment the mount changes.
 - Named endpoint aliases and host-launched envd daemons are future manager
   capabilities. The first manager slice accepts literal `http://...` envd
-  endpoints.
+  endpoints with request-only bearer tokens.
 
 ## Envd Adapter
 
@@ -269,7 +270,7 @@ sequenceDiagram
 
     Client->>HostRPC: environment.attach or run.start(environmentAttachments)
     HostRPC->>Manager: resolve and probe attachments
-    Manager->>EnvdClient: initialize/open/state
+    Manager->>EnvdClient: initialize/open/state with bearer auth
     EnvdClient-->>Manager: descriptor and readiness
     Manager->>Provider: wrap EnvdRpcClient
     Manager->>Manager: build RunEnvironmentBinding
@@ -294,11 +295,77 @@ internals.
   "environment": {
     "kind": "envd",
     "endpointRef": "http://127.0.0.1:8766/rpc",
+    "authToken": "request-only bearer token",
     "environmentId": "env_123",
     "mode": "read_write"
   }
 }
 ```
+
+`authToken` is accepted only on inbound host-control requests. It must not be
+serialized into run metadata, lease-list results, replay streams, or model
+visible environment context.
+
+TUI uses config-backed envd profiles instead of envd-specific argv:
+
+```toml
+[envd_profiles.workspace]
+endpoint = "http://127.0.0.1:8766/rpc"
+auth_token_env = "STARWEAVER_WORKSPACE_ENVD_TOKEN"
+environment_id = "env_cli_default"
+mount_id = "workspace"
+default = true
+```
+
+The host resolves each enabled profile into a normal envd
+`EnvironmentAttachmentRef` before run start. Profile names and mount ids are
+safe metadata; token values are not.
+
+## Active-Run Mounting Design
+
+Active-run environment mounting should extend host-control semantics without
+turning envd into the agent-control plane.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant HostRPC as starweaver.host RPC
+    participant Manager as EnvironmentAttachmentManager
+    participant Runtime as Active run
+    participant Stream as Run stream
+
+    Client->>HostRPC: environment.active_mount(runId, attachment)
+    HostRPC->>Manager: validate, probe, and materialize mount
+    Manager->>Runtime: update active environment binding
+    Manager->>Stream: append environment_mounted
+    Manager->>Runtime: steer environment context delta
+    Runtime->>Stream: append steering/context event
+```
+
+Design rules:
+
+- Active mount is a host-control operation over an existing run. It can consume
+  an inline attachment source or an existing `attachmentLeaseId`, but the active
+  run still sees one SDK `EnvironmentProvider`.
+- Runtime environment binding updates affect future tool calls only. Tool calls
+  already executing complete against the binding they started with.
+- Context injection is append-only. The host renders the current mount summary
+  after the binding update and sends it through the same steering path as
+  `run.steer`; it does not rewrite the original system prompt, earlier context,
+  or replay history.
+- The injected context describes the mount state at that instant. Later
+  mount/unmount changes append new steering/context events instead of mutating
+  older ones.
+- Active unmount follows the same rule: update future routing first, then append
+  an `environment_unmounted` event and a steering message that says the mount is
+  no longer available.
+- Every run stream starts with an `environment_info` event that summarizes the
+  materialized environment binding before model/tool work begins. Active mount
+  and unmount operations append `environment_mounted` and
+  `environment_unmounted` events after the binding update and before any
+  steering context injection.
+- Secrets such as envd bearer tokens stay in the manager's in-memory source
+  record and are never included in the steering text or stream payload.
 
 Direct mode can use an in-process ref:
 

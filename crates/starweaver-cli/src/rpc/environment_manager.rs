@@ -409,7 +409,11 @@ impl EnvironmentAttachmentManager {
         let endpoint = source
             .requested_endpoint_ref()
             .ok_or_else(|| "envd attachment requires endpointRef".to_string())?;
-        let client = EnvdRpcClient::http(endpoint).map_err(|error| error.to_string())?;
+        let auth_token = source
+            .requested_auth_token()
+            .ok_or_else(|| "envd attachment requires authToken".to_string())?;
+        let client = EnvdRpcClient::http_with_token(endpoint, auth_token)
+            .map_err(|error| error.to_string())?;
         let environment_id = source
             .requested_environment_id()
             .unwrap_or(DEFAULT_ENVIRONMENT_ID)
@@ -471,6 +475,7 @@ fn validate_attachment_source(
                     "envd environment attachment requires endpointRef",
                 ));
             };
+            validate_envd_auth_token(attachment.requested_auth_token())?;
             if endpoint.starts_with("http://") {
                 attachment.mode = Some(attachment.resolved_mode());
                 Ok(attachment)
@@ -486,6 +491,28 @@ fn validate_attachment_source(
             format!("unsupported environment attachment kind: {other}"),
         )),
     }
+}
+
+fn validate_envd_auth_token(auth_token: Option<&str>) -> Result<(), RpcError> {
+    let Some(auth_token) = auth_token else {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "envd environment attachment requires authToken",
+        ));
+    };
+    if auth_token.trim().is_empty() {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "envd environment attachment authToken cannot be empty",
+        ));
+    }
+    if auth_token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "envd environment attachment authToken cannot contain newlines",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_scope(scope: &EnvironmentAttachmentScope) -> Result<(), RpcError> {
@@ -603,6 +630,7 @@ fn same_source(left: &EnvironmentAttachmentRef, right: &EnvironmentAttachmentRef
         && left.resolved_mode() == right.resolved_mode()
         && left.endpoint_ref == right.endpoint_ref
         && left.environment_id == right.environment_id
+        && left.auth_token == right.auth_token
 }
 
 fn ensure_mode_override(
@@ -869,5 +897,40 @@ mod tests {
             materialized[0].requested_attachment_lease_id(),
             Some(lease_id)
         );
+    }
+
+    #[tokio::test]
+    async fn envd_attach_rejects_invalid_auth_token_before_readiness() {
+        let manager = EnvironmentAttachmentManager::new();
+
+        let empty = manager
+            .attach(&json!({
+                "attachment": {
+                    "id": "remote",
+                    "kind": "envd",
+                    "endpointRef": "http://127.0.0.1:8766/rpc",
+                    "authToken": " "
+                },
+                "readiness": {"policy": "skip"}
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(empty.code, INVALID_PARAMS);
+        assert!(empty.message.contains("cannot be empty"));
+
+        let newline = manager
+            .attach(&json!({
+                "attachment": {
+                    "id": "remote",
+                    "kind": "envd",
+                    "endpointRef": "http://127.0.0.1:8766/rpc",
+                    "authToken": "line\nbreak"
+                },
+                "readiness": {"policy": "skip"}
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(newline.code, INVALID_PARAMS);
+        assert!(newline.message.contains("cannot contain newlines"));
     }
 }

@@ -145,7 +145,7 @@ Headless output modes:
 
 The Starweaver JSON-RPC host protocol is the complete local host-control API. The CLI product exposes it through stdio and HTTP transport modes. CLI commands are the shell-friendly subset over the same service handlers. TUI is a terminal client over the same in-process runtime coordinator and local store, while Desktop applications can use the JSON-RPC host protocol as a desktop client.
 
-Model choice is client state. `~/.starweaver/config.toml` defines shared model profiles and provider settings, while `~/.starweaver/tui/state.json` and `~/.starweaver/desktop/state.json` store the selected profile for each frontend. Headless CLI runs can still pass `--profile`; RPC `run.start` can pass an explicit `profile`/`modelProfile` or fall back to the selected profile for the supplied `client`.
+Model choice is client state. `~/.starweaver/config.toml` defines shared model profiles, envd profiles, and provider settings, while `~/.starweaver/tui/state.json` and `~/.starweaver/desktop/state.json` store the selected model profile for each frontend. Headless CLI runs can still pass `--profile`; RPC `run.start` can pass an explicit `profile`/`modelProfile` or fall back to the selected profile for the supplied `client`. TUI envd attachments come from config-backed `[envd_profiles.*]` entries rather than TUI-specific argv.
 
 ## Session Affinity and Durable Sessions
 
@@ -181,7 +181,7 @@ Local state roots:
 
 | Path                               | Owner                     | Purpose                                                                                        |
 | ---------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------- |
-| `~/.starweaver/config.toml`        | shared CLI/runtime config | default profile, provider settings, config-backed model profiles, output/HITL defaults         |
+| `~/.starweaver/config.toml`        | shared CLI/runtime config | default profile, provider settings, config-backed model/envd profiles, output/HITL defaults    |
 | `~/.starweaver/tools.toml`         | shared CLI/runtime config | tool policy metadata                                                                           |
 | `~/.starweaver/mcp.json`           | shared CLI/runtime config | MCP server metadata                                                                            |
 | `~/.starweaver/skills`             | shared catalog            | global skill definitions                                                                       |

@@ -143,7 +143,10 @@ fn resolve_envd_attachment(
     let endpoint = attachment
         .requested_endpoint_ref()
         .ok_or_else(|| CliError::Config("envd attachment requires endpointRef".to_string()))?;
-    let client = EnvdRpcClient::http(endpoint)
+    let auth_token = attachment
+        .requested_auth_token()
+        .ok_or_else(|| CliError::Config("envd attachment requires authToken".to_string()))?;
+    let client = EnvdRpcClient::http_with_token(endpoint, auth_token)
         .map_err(|error| CliError::Config(format!("invalid envd endpoint: {error}")))?;
     let environment_id = attachment
         .requested_environment_id()
@@ -356,6 +359,7 @@ additional_dirs = ["../custom-skills"]
             attachment_lease_id: None,
             endpoint_ref: None,
             environment_id: None,
+            auth_token: None,
             metadata: serde_json::Map::new(),
         }];
 
@@ -407,6 +411,7 @@ additional_dirs = ["../custom-skills"]
                 attachment_lease_id: None,
                 endpoint_ref: None,
                 environment_id: None,
+                auth_token: None,
                 metadata: serde_json::Map::new(),
             },
             EnvironmentAttachmentRef {
@@ -417,6 +422,7 @@ additional_dirs = ["../custom-skills"]
                 attachment_lease_id: None,
                 endpoint_ref: None,
                 environment_id: None,
+                auth_token: None,
                 metadata: serde_json::Map::new(),
             },
         ];

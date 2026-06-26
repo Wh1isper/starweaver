@@ -11,6 +11,13 @@ use starweaver_environment::{
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = EnvdCli::parse();
+    let http_token = match required_http_token(&cli) {
+        Ok(token) => token,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::from(2);
+        }
+    };
     let provider = LocalEnvironmentProvider::new(cli.root).with_policy(EnvironmentPolicy {
         files: if cli.read_only {
             FilePolicy::read_only()
@@ -26,7 +33,13 @@ async fn main() -> ExitCode {
     let service = Arc::new(LocalEnvd::new(Arc::new(provider)));
     let result = match cli.transport {
         EnvdTransport::Stdio => run_stdio(service).await,
-        EnvdTransport::Http => run_http(service, &cli.host, cli.port).await,
+        EnvdTransport::Http => {
+            let Some(token) = http_token else {
+                eprintln!("error: envd HTTP transport requires --token");
+                return ExitCode::from(2);
+            };
+            run_http(service, &cli.host, cli.port, token).await
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -59,6 +72,9 @@ struct EnvdCli {
     /// HTTP bind port.
     #[arg(long, default_value_t = 8766)]
     port: u16,
+    /// Bearer token required for HTTP access.
+    #[arg(long)]
+    token: Option<String>,
 }
 
 /// Envd transport profile.
@@ -68,6 +84,23 @@ enum EnvdTransport {
     Stdio,
     /// JSON-RPC over HTTP POST /rpc.
     Http,
+}
+
+fn required_http_token(cli: &EnvdCli) -> Result<Option<String>, String> {
+    if cli.transport != EnvdTransport::Http {
+        return Ok(None);
+    }
+    let token = cli
+        .token
+        .as_deref()
+        .ok_or_else(|| "envd HTTP transport requires --token".to_string())?;
+    if token.trim().is_empty() {
+        return Err("envd HTTP --token cannot be empty".to_string());
+    }
+    if token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return Err("envd HTTP --token cannot contain newlines".to_string());
+    }
+    Ok(Some(token.to_string()))
 }
 
 #[cfg(test)]
@@ -86,11 +119,24 @@ mod tests {
             "http",
             "--port",
             "0",
+            "--token",
+            "secret",
         ])
         .unwrap();
         assert_eq!(parsed.root, PathBuf::from("/tmp/workspace"));
         assert!(parsed.read_only);
         assert_eq!(parsed.transport, EnvdTransport::Http);
         assert_eq!(parsed.port, 0);
+        assert_eq!(
+            required_http_token(&parsed).unwrap(),
+            Some("secret".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_http_without_token() {
+        let parsed = EnvdCli::try_parse_from(["starweaver-envd", "http"]).unwrap();
+        let error = required_http_token(&parsed).unwrap_err();
+        assert!(error.contains("--token"));
     }
 }

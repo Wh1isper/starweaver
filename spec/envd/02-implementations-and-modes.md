@@ -146,7 +146,8 @@ Current implementation stack:
 - `EnvdRpcClient` exposes stdio/http envd endpoints through the same service
   trait.
 - `starweaver-envd` exposes stdio/http daemon transports over any
-  `EnvdService`.
+  `EnvdService`. HTTP mode requires a startup bearer token and rejects every
+  request that omits `Authorization: Bearer <token>`.
 
 Remaining backend work is tracked in `05-api-backlog.md` when it requires new
 public methods or protocol fields. Implementation-owned state lifecycle should

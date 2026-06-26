@@ -54,16 +54,26 @@ pub async fn run_stdio(service: Arc<dyn EnvdService>) -> io::Result<()> {
 /// # Errors
 ///
 /// Returns listener bind, accept, or response I/O errors.
-pub async fn run_http(service: Arc<dyn EnvdService>, host: &str, port: u16) -> io::Result<()> {
+pub async fn run_http(
+    service: Arc<dyn EnvdService>,
+    host: &str,
+    port: u16,
+    auth_token: impl Into<String>,
+) -> io::Result<()> {
+    let auth_token = validate_auth_token(auth_token.into())?;
     let address = format!("{host}:{port}");
     let listener = TcpListener::bind(&address).await?;
     let local_address = listener.local_addr()?;
     eprintln!("starweaver envd http listening on http://{local_address}{DEFAULT_HTTP_PATH}");
     let rpc = Arc::new(EnvdRpcService::new(service));
-    serve_http(&listener, &rpc).await
+    serve_http(&listener, &rpc, Arc::from(auth_token)).await
 }
 
-async fn serve_http(listener: &TcpListener, rpc: &Arc<EnvdRpcService>) -> io::Result<()> {
+async fn serve_http(
+    listener: &TcpListener,
+    rpc: &Arc<EnvdRpcService>,
+    auth_token: Arc<str>,
+) -> io::Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_notify = Arc::new(Notify::new());
     while !shutdown.load(Ordering::SeqCst) {
@@ -71,10 +81,11 @@ async fn serve_http(listener: &TcpListener, rpc: &Arc<EnvdRpcService>) -> io::Re
             accepted = listener.accept() => {
                 let (stream, _address) = accepted?;
                 let rpc = Arc::clone(rpc);
+                let auth_token = Arc::clone(&auth_token);
                 let shutdown = Arc::clone(&shutdown);
                 let shutdown_notify = Arc::clone(&shutdown_notify);
                 tokio::spawn(async move {
-                    if let Err(error) = handle_http_connection(stream, &rpc, &shutdown, &shutdown_notify).await {
+                    if let Err(error) = handle_http_connection(stream, &rpc, &auth_token, &shutdown, &shutdown_notify).await {
                         eprintln!("envd http connection error: {error}");
                     }
                 });
@@ -88,6 +99,7 @@ async fn serve_http(listener: &TcpListener, rpc: &Arc<EnvdRpcService>) -> io::Re
 async fn handle_http_connection(
     mut stream: TcpStream,
     rpc: &EnvdRpcService,
+    auth_token: &str,
     shutdown: &AtomicBool,
     shutdown_notify: &Notify,
 ) -> io::Result<()> {
@@ -95,6 +107,9 @@ async fn handle_http_connection(
         Ok(request) => request,
         Err(response) => return write_http_response(&mut stream, &response).await,
     };
+    if !request_is_authorized(&request, auth_token) {
+        return write_http_text(&mut stream, "401 Unauthorized", "unauthorized").await;
+    }
     if request.method == "GET" && matches!(request.path.as_str(), "/health" | "/healthz") {
         return write_http_json(
             &mut stream,
@@ -132,6 +147,7 @@ async fn handle_http_connection(
 struct HttpRequest {
     method: String,
     path: String,
+    headers: Vec<(String, String)>,
     body: String,
 }
 
@@ -139,6 +155,13 @@ struct HttpResponse {
     status: &'static str,
     content_type: &'static str,
     body: Vec<u8>,
+}
+
+struct ParsedHttpHeader {
+    method: String,
+    path: String,
+    headers: Vec<(String, String)>,
+    content_length: usize,
 }
 
 async fn read_http_request(
@@ -171,19 +194,19 @@ async fn read_http_request(
             "invalid http headers",
         )));
     };
-    let Some((method, path, content_length)) = parse_http_header(header) else {
+    let Some(parsed) = parse_http_header(header) else {
         return Ok(Err(http_text_response(
             "400 Bad Request",
             "invalid http request",
         )));
     };
-    if header_end + content_length > MAX_HTTP_REQUEST_BYTES {
+    if header_end + parsed.content_length > MAX_HTTP_REQUEST_BYTES {
         return Ok(Err(http_text_response(
             "413 Payload Too Large",
             "request too large",
         )));
     }
-    while buffer.len() < header_end + content_length {
+    while buffer.len() < header_end + parsed.content_length {
         let mut chunk = [0_u8; 4096];
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
@@ -194,11 +217,16 @@ async fn read_http_request(
         }
         buffer.extend_from_slice(&chunk[..read]);
     }
-    let body_bytes = &buffer[header_end..header_end + content_length];
+    let body_bytes = &buffer[header_end..header_end + parsed.content_length];
     let body = std::str::from_utf8(body_bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
         .to_string();
-    Ok(Ok(HttpRequest { method, path, body }))
+    Ok(Ok(HttpRequest {
+        method: parsed.method,
+        path: parsed.path,
+        headers: parsed.headers,
+        body,
+    }))
 }
 
 fn http_header_end(buffer: &[u8]) -> Option<usize> {
@@ -208,23 +236,56 @@ fn http_header_end(buffer: &[u8]) -> Option<usize> {
         .map(|position| position + 4)
 }
 
-fn parse_http_header(header: &str) -> Option<(String, String, usize)> {
+fn parse_http_header(header: &str) -> Option<ParsedHttpHeader> {
     let mut lines = header.split("\r\n");
     let request_line = lines.next()?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next()?.to_string();
     let path = parts.next()?.to_string();
     let _version = parts.next()?;
+    let mut headers = Vec::new();
     let mut content_length = 0_usize;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
+        let name = name.trim().to_string();
+        let value = value.trim().to_string();
         if name.eq_ignore_ascii_case("content-length") {
-            content_length = value.trim().parse().ok()?;
+            content_length = value.parse().ok()?;
         }
+        headers.push((name, value));
     }
-    Some((method, path, content_length))
+    Some(ParsedHttpHeader {
+        method,
+        path,
+        headers,
+        content_length,
+    })
+}
+
+fn request_is_authorized(request: &HttpRequest, auth_token: &str) -> bool {
+    request
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .any(|(_, value)| value == &format!("Bearer {auth_token}"))
+}
+
+fn validate_auth_token(token: String) -> io::Result<String> {
+    if token.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "envd HTTP auth token cannot be empty",
+        ));
+    }
+    if token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "envd HTTP auth token cannot contain newlines",
+        ));
+    }
+    Ok(token)
 }
 
 fn http_text_response(status: &'static str, body: &'static str) -> HttpResponse {

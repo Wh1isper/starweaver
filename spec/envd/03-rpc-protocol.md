@@ -9,13 +9,14 @@ transports. The protocol must match the service semantics exactly.
 {
   "name": "envd",
   "major": 1,
-  "revision": "2026-06-23",
+  "revision": "2026-06-26",
   "features": [
     "environment.lifecycle",
     "files",
     "command",
     "process",
-    "state.snapshot"
+    "state.snapshot",
+    "http.bearer_auth"
   ]
 }
 ```
@@ -44,9 +45,18 @@ semantics must not change across transports.
 - `POST /rpc` carries one JSON-RPC request.
 - successful JSON-RPC response uses HTTP `200`.
 - parsing failures can use HTTP `4xx` before JSON-RPC dispatch.
-- `GET /health` and `GET /healthz` can expose lightweight health.
+- HTTP mode requires a non-empty bearer token configured when the daemon starts.
+- Every HTTP request, including `GET /health` and `GET /healthz`, must include
+  `Authorization: Bearer <token>` or the server returns HTTP `401` before
+  JSON-RPC dispatch.
+- `GET /health` and `GET /healthz` can expose lightweight health after
+  authorization succeeds.
 - unary HTTP does not carry live notifications unless a future long-connection
   profile is negotiated.
+
+Bearer tokens are transport credentials. They are not JSON-RPC params, must not
+be included in envd operation records, and must not be echoed by host-control
+attachment results.
 
 ## Health and Readiness
 
@@ -69,7 +79,7 @@ A future typed method can expose the same readiness shape over every transport:
   "protocol": {
     "name": "envd",
     "major": 1,
-    "revision": "2026-06-23"
+    "revision": "2026-06-26"
   },
   "environments": [{
     "environmentId": "env_cli_default",

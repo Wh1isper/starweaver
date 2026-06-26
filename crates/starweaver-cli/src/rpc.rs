@@ -822,6 +822,7 @@ fn validate_environment_attachments_for_run(
                         "envd environment attachment requires endpointRef",
                     ));
                 };
+                validate_envd_auth_token(attachment.requested_auth_token())?;
                 if !endpoint.starts_with("http://") {
                     return Err(RpcError::new(
                         UNSUPPORTED_FEATURE,
@@ -836,6 +837,28 @@ fn validate_environment_attachments_for_run(
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_envd_auth_token(auth_token: Option<&str>) -> Result<(), RpcError> {
+    let Some(auth_token) = auth_token else {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "envd environment attachment requires authToken",
+        ));
+    };
+    if auth_token.trim().is_empty() {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "envd environment attachment authToken cannot be empty",
+        ));
+    }
+    if auth_token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "envd environment attachment authToken cannot contain newlines",
+        ));
     }
     Ok(())
 }
@@ -1869,13 +1892,72 @@ model = "test:coding"
                     "id": "remote",
                     "kind": "envd",
                     "endpointRef": endpoint,
-                    "environmentId": "dataset"
+                    "environmentId": "dataset",
+                    "authToken": "secret"
                 },
                 "timeoutMs": 100
             }),
         );
         assert_eq!(health["status"], "unavailable");
         assert_eq!(health["readiness"]["transport"], "unavailable");
+    }
+
+    #[test]
+    fn envd_attachment_requires_auth_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let error = request_error_with_server(
+            &server,
+            1,
+            "run.start",
+            json!({
+                "prompt": "hello",
+                "environmentAttachments": [
+                    {
+                        "id": "workspace",
+                        "kind": "envd",
+                        "endpointRef": "http://127.0.0.1:8766/rpc",
+                        "default": true
+                    }
+                ]
+            }),
+        );
+        assert_eq!(error["code"], INVALID_PARAMS);
+        assert!(error["message"].as_str().unwrap().contains("authToken"));
+    }
+
+    #[test]
+    fn envd_attachment_rejects_empty_auth_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let error = request_error_with_server(
+            &server,
+            1,
+            "run.start",
+            json!({
+                "prompt": "hello",
+                "environmentAttachments": [
+                    {
+                        "id": "workspace",
+                        "kind": "envd",
+                        "endpointRef": "http://127.0.0.1:8766/rpc",
+                        "authToken": " ",
+                        "default": true
+                    }
+                ]
+            }),
+        );
+        assert_eq!(error["code"], INVALID_PARAMS);
+        assert!(error["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot be empty"));
     }
 
     #[test]
@@ -1900,6 +1982,7 @@ model = "test:coding"
                         "kind": "envd",
                         "endpointRef": endpoint,
                         "environmentId": "dataset",
+                        "authToken": "secret",
                         "default": true
                     }
                 ]
@@ -1932,12 +2015,14 @@ model = "test:coding"
                     "id": "remote",
                     "kind": "envd",
                     "endpointRef": endpoint,
-                    "environmentId": "dataset"
+                    "environmentId": "dataset",
+                    "authToken": "secret"
                 },
                 "readiness": {"policy": "best_effort", "timeoutMs": 100}
             }),
         );
         assert_eq!(attached["attachment"]["status"], "unavailable");
+        assert!(attached["attachment"].get("authToken").is_none());
         let lease_id = attached["attachment"]["attachmentLeaseId"]
             .as_str()
             .unwrap();

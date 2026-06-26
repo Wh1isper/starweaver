@@ -69,6 +69,7 @@ struct StdioClientState {
 struct HttpEndpoint {
     authority: String,
     path: String,
+    auth_token: Option<String>,
 }
 
 impl EnvdRpcClient {
@@ -116,9 +117,30 @@ impl EnvdRpcClient {
     ///
     /// Returns an error when the endpoint is not a supported HTTP URL.
     pub fn http(endpoint: impl AsRef<str>) -> Result<Self, EnvdClientError> {
+        Self::http_with_optional_token(endpoint, None)
+    }
+
+    /// Connect to an authenticated envd HTTP endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the endpoint or bearer token is not supported.
+    pub fn http_with_token(
+        endpoint: impl AsRef<str>,
+        auth_token: impl Into<String>,
+    ) -> Result<Self, EnvdClientError> {
+        Self::http_with_optional_token(endpoint, Some(auth_token.into()))
+    }
+
+    fn http_with_optional_token(
+        endpoint: impl AsRef<str>,
+        auth_token: Option<String>,
+    ) -> Result<Self, EnvdClientError> {
+        let mut endpoint = parse_http_endpoint(endpoint.as_ref())?;
+        endpoint.auth_token = auth_token.map(validate_http_auth_token).transpose()?;
         Ok(Self {
             inner: Arc::new(EnvdRpcClientInner {
-                transport: EnvdRpcTransport::Http(parse_http_endpoint(endpoint.as_ref())?),
+                transport: EnvdRpcTransport::Http(endpoint),
                 next_id: AtomicU64::new(1),
             }),
         })
@@ -311,10 +333,16 @@ async fn request_http(endpoint: &HttpEndpoint, frame: &Value) -> EnvdResult<Valu
     let mut stream = TcpStream::connect(&endpoint.authority)
         .await
         .map_err(envd_provider_error)?;
+    let auth_header = endpoint
+        .auth_token
+        .as_deref()
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default();
     let request = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "POST {} HTTP/1.1\r\nHost: {}\r\n{}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         endpoint.path,
         endpoint.authority,
+        auth_header,
         body.len(),
         body
     );
@@ -329,9 +357,22 @@ async fn request_http(endpoint: &HttpEndpoint, frame: &Value) -> EnvdResult<Valu
         .await
         .map_err(envd_provider_error)?;
     let text = String::from_utf8(bytes).map_err(envd_provider_error)?;
-    let (_, body) = text
+    let (header, body) = text
         .split_once("\r\n\r\n")
         .ok_or_else(|| EnvdError::provider("invalid HTTP response from envd"))?;
+    let status_line = header
+        .lines()
+        .next()
+        .ok_or_else(|| EnvdError::provider("invalid HTTP response from envd"))?;
+    if !status_line.contains(" 200 ") {
+        let status = status_line
+            .strip_prefix("HTTP/1.1 ")
+            .unwrap_or(status_line)
+            .to_string();
+        return Err(EnvdError::provider(format!(
+            "envd HTTP request failed: {status}"
+        )));
+    }
     serde_json::from_str(body).map_err(envd_provider_error)
 }
 
@@ -388,7 +429,22 @@ fn parse_http_endpoint(endpoint: &str) -> Result<HttpEndpoint, EnvdClientError> 
     Ok(HttpEndpoint {
         authority: authority.to_string(),
         path,
+        auth_token: None,
     })
+}
+
+fn validate_http_auth_token(token: String) -> Result<String, EnvdClientError> {
+    if token.trim().is_empty() {
+        return Err(EnvdClientError::InvalidEndpoint(
+            "envd HTTP auth token cannot be empty".to_string(),
+        ));
+    }
+    if token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return Err(EnvdClientError::InvalidEndpoint(
+            "envd HTTP auth token cannot contain newlines".to_string(),
+        ));
+    }
+    Ok(token)
 }
 
 fn envd_provider_error(error: impl std::error::Error) -> EnvdError {
