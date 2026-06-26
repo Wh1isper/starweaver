@@ -18,6 +18,7 @@ mod virtual_provider;
 
 pub(crate) use context_xml::{local_shell_metadata, render_environment_context_xml, FileTreeBlock};
 pub(crate) use file_tree::{
+    file_tree_directory_depth_increment, file_tree_directory_is_visible,
     render_local_file_tree_listing, render_virtual_file_tree_listing, DEFAULT_FILE_TREE_MAX_DEPTH,
 };
 pub(crate) use local_io::{
