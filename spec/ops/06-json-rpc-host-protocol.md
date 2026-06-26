@@ -678,6 +678,7 @@ Run environment attachments:
       "id": "data",
       "kind": "envd",
       "endpointRef": "http://127.0.0.1:8770/rpc",
+      "authToken": "request-only bearer token",
       "environmentId": "dataset",
       "mode": "read_only"
     }
@@ -704,9 +705,12 @@ Attachment invariants:
   not visible to the model.
 - A run-local `mode` on a lease ref may keep or narrow the leased mode. It must
   not widen a `read_only` lease to `read_write`.
-- Inline envd attachments identify envd by `endpointRef` and `environmentId`.
-  The initial local host accepts literal `http://...` endpoints. Named aliases
-  are future host capabilities.
+- Inline envd attachments identify envd by `endpointRef`, request-only
+  `authToken`, and `environmentId`. The initial local host accepts literal
+  `http://...` endpoints. Named aliases are future host capabilities.
+- `authToken` is a transport credential. It is never returned by
+  `environment.attach`, `environment.list`, `run.start`, stream replay, or model
+  visible environment context.
 - A session-scoped `attachmentLeaseId` can only be used by a run bound to the
   same `sessionId`. If the run target session is not explicit or cannot be
   proven before materialization, the server rejects the lease ref.
@@ -718,6 +722,47 @@ Attachment invariants:
 - The runtime receives one SDK `EnvironmentProvider`, normally a
   `CompositeEnvironmentProvider`; it does not receive a list of host-control
   attachments.
+
+### Config-Backed TUI Envd Profiles
+
+TUI envd attachments are configured in shared `config.toml` instead of TUI argv.
+The config owns zero or more named envd profiles:
+
+```toml
+[envd_profiles.workspace]
+label = "Workspace"
+endpoint = "http://127.0.0.1:8766/rpc"
+auth_token_env = "STARWEAVER_WORKSPACE_ENVD_TOKEN"
+environment_id = "env_cli_default"
+mount_id = "workspace"
+mode = "read_write"
+default = true
+
+[envd_profiles.data]
+endpoint = "http://127.0.0.1:8770/rpc"
+auth_token_env = "STARWEAVER_DATA_ENVD_TOKEN"
+environment_id = "dataset"
+mode = "read_only"
+```
+
+Profile rules:
+
+- The table name is the stable envd profile name. `mount_id` defaults to the
+  table name and must be an ASCII attachment slug.
+- `endpoint` is currently a literal `http://...` envd RPC endpoint.
+- A profile must provide either `auth_token_env` or request-only `auth_token`.
+  `auth_token_env` is preferred for real deployments. Direct `auth_token` values
+  must not be returned by `config.get`, diagnostics, stream events, replay, or
+  model-visible context.
+- `mode` is `read_write` by default and may be `read_only`.
+- `enabled = false` excludes a profile from TUI run materialization.
+- TUI materializes all enabled envd profiles into run-local
+  `environmentAttachments`. If several enabled profiles exist, exactly one
+  `default = true` may be supplied; otherwise the host selects the first
+  configured profile by stable profile-name order.
+- These config-backed profiles are a TUI convenience over the same attachment
+  manager semantics. RPC callers can still pass inline attachments or prepared
+  leases explicitly.
 
 HITL options:
 
@@ -916,7 +961,7 @@ Manager responsibilities:
 - Validate attachment ids, default selection, access modes, and source shape.
 - Resolve literal `endpointRef` transport refs supported by the advertised
   protocol revision. The initial local host supports literal `http://...` envd
-  endpoints.
+  endpoints with request-only bearer tokens.
 - Construct SDK providers such as local, virtual, sandbox, or envd-backed
   providers.
 - Probe process liveness and environment readiness before a run uses an
@@ -932,16 +977,17 @@ Future manager capabilities:
 - Resolve named `endpointRef` aliases to concrete local or remote transports.
 - Launch host-owned envd daemons when a configured endpoint requires it.
 - Support stdio, local socket, named pipe, and WebSocket envd transports.
+- Support active-run environment mount/unmount after the runtime exposes an
+  updatable environment binding.
 
 Manager non-goals:
 
 - It does not expose envd file, process, mount, or operation DTOs through
   `starweaver.host`.
 - It does not store full envd state in Starweaver session storage.
-- It does not mutate an already running AgentSession in host protocol v1.
-  Active-run mount/unmount requires a future `environment.active_mounts`
-  feature because it must update the runtime environment handle and reinject
-  environment context safely.
+- The current implementation does not mutate an already running AgentSession.
+  The target active-run mount design below requires an updatable environment
+  binding and append-only context injection through steering.
 
 ### Attachment Source
 
@@ -952,6 +998,7 @@ Attachment source shape:
   "id": "data",
   "kind": "envd",
   "endpointRef": "http://127.0.0.1:8770/rpc",
+  "authToken": "request-only bearer token",
   "environmentId": "dataset",
   "mode": "read_only",
   "default": false,
@@ -966,6 +1013,7 @@ Fields:
 | `id`            | string  | yes      | Agent-facing mount identity within the lease or run           |
 | `kind`          | string  | no       | `local`, `virtual`, `sandbox`, or `envd`; defaults to `local` |
 | `endpointRef`   | string  | for envd | Literal endpoint, initially `http://...` for envd             |
+| `authToken`     | string  | for envd | Request-only bearer token for HTTP envd                       |
 | `environmentId` | string  | no       | Concrete environment id inside the implementation             |
 | `mode`          | string  | no       | `read_write` or `read_only`; defaults to `read_write`         |
 | `default`       | boolean | no       | Default preference when materialized into a run               |
@@ -973,7 +1021,8 @@ Fields:
 
 Endpoint refs:
 
-- Literal `http://...` endpoints connect through `EnvdRpcClient::http`.
+- Literal `http://...` endpoints connect through authenticated
+  `EnvdRpcClient::http_with_token`.
 - Named aliases, stdio, local socket, named pipe, WebSocket, and launched daemon
   transports are future host capabilities. Servers that do not advertise those
   capabilities reject them with `unsupported_feature`.
@@ -997,6 +1046,7 @@ Params:
     "id": "data",
     "kind": "envd",
     "endpointRef": "http://127.0.0.1:8770/rpc",
+    "authToken": "request-only bearer token",
     "environmentId": "dataset",
     "mode": "read_only"
   },
@@ -1184,6 +1234,7 @@ Inline probe:
     "id": "data",
     "kind": "envd",
     "endpointRef": "http://127.0.0.1:8770/rpc",
+    "authToken": "request-only bearer token",
     "environmentId": "dataset"
   },
   "timeoutMs": 5000
@@ -1259,6 +1310,135 @@ Materialization rules:
 - Failed required probes fail `run.start` before durable active-run
   registration. If the server has already created a durable run record, it must
   mark that run failed instead of leaving an active orphan.
+
+### Active-Run Environment Mounting
+
+Active-run mounting is the target design for attaching envd-backed environments
+to a run that is already active. It is not implemented by the current local
+host, but the protocol boundary is:
+
+| Method                       | Purpose                                               |
+| ---------------------------- | ----------------------------------------------------- |
+| `environment.active_mount`   | Add or replace one mount on an active run             |
+| `environment.active_unmount` | Remove one active-run mount for future tool calls     |
+| `environment.active_list`    | Return the active run's current materialized bindings |
+
+`environment.active_mount` params:
+
+```json
+{
+  "runId": "run_...",
+  "attachment": {
+    "id": "data",
+    "kind": "envd",
+    "endpointRef": "http://127.0.0.1:8770/rpc",
+    "authToken": "request-only bearer token",
+    "environmentId": "dataset",
+    "mode": "read_only"
+  },
+  "injectContext": true,
+  "idempotencyKey": "mount-data-run_..."
+}
+```
+
+The method may also accept `attachmentLeaseId` instead of an inline source. The
+server materializes the lease into the active run with the same narrowing rule
+used by `run.start`: a read-only lease cannot be widened to read-write.
+
+Active mount sequence:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant RPC as starweaver.host RPC
+    participant Manager as EnvironmentAttachmentManager
+    participant Runtime as Active AgentSession
+    participant Stream as Replay stream
+
+    Client->>RPC: environment.active_mount(runId, attachment)
+    RPC->>Manager: validate source, mode, default, and token
+    Manager->>Manager: probe readiness
+    Manager->>Runtime: update active environment binding
+    Manager->>Stream: append environment_mounted
+    Manager->>Runtime: run.steer(rendered mount context)
+    Runtime->>Stream: append steering/context evidence
+    RPC-->>Client: active mount result
+```
+
+Active mount invariants:
+
+- The runtime still observes one SDK `EnvironmentProvider`. The active binding
+  swap is a host/runtime handle update, not a new envd-aware runtime API.
+- Binding updates affect future tool calls only. Tool calls already executing
+  finish against the binding they started with.
+- Context injection is append-only. After the binding update, the host renders
+  the environment context for that exact mount state and injects it through the
+  same steering path used by `run.steer`.
+- The injected context is a new stream/replay event. It must not rewrite the
+  original system prompt, prior environment context, or earlier replay records.
+- If the model turn is already in flight, the steering message is queued as the
+  next user/host steering input. It does not interrupt provider streaming.
+- `environment.active_unmount` applies the same rule in reverse: remove future
+  routing first, then append `environment_unmounted` and a steering message that
+  the mount is unavailable.
+- Secrets such as `authToken`, endpoint launch credentials, and host filesystem
+  paths outside declared mount roots must not appear in the steering text,
+  stream payloads, or active mount results.
+- The active mount result includes `runId`, mount id, readiness, mode, mount root,
+  and a stream cursor for the injected context event when `injectContext` is
+  true.
+
+Environment stream item contract:
+
+| Item kind               | When emitted                                                                                      |
+| ----------------------- | ------------------------------------------------------------------------------------------------- |
+| `environment_info`      | At the beginning of every run stream after environment materialization and before model/tool work |
+| `environment_mounted`   | After an active mount updates the runtime binding for future tool calls                           |
+| `environment_unmounted` | After an active unmount removes or disables a mount for future tool calls                         |
+
+These are canonical run stream items delivered to subscribers through the
+existing `stream.event` notification wrapper. They are not separate
+`starweaver.event` notification kinds.
+
+Environment stream payload shape:
+
+```json
+{
+  "kind": "environment_info",
+  "runId": "run_...",
+  "environment": {
+    "defaultMountId": "workspace",
+    "mounts": [
+      {
+        "id": "workspace",
+        "kind": "envd",
+        "root": "/environment/workspace",
+        "mode": "read_write",
+        "default": true,
+        "status": "ready",
+        "readiness": {},
+        "environmentId": "env_cli_default",
+        "source": {
+          "kind": "envd_profile",
+          "profile": "workspace"
+        }
+      }
+    ]
+  }
+}
+```
+
+`environment_mounted` and `environment_unmounted` use the same mount summary
+shape and add `action`, `previousDefaultMountId`, `currentDefaultMountId`, and
+the stream cursor for any appended steering/context event when `injectContext`
+is true. The event is emitted after the binding update, so it describes the
+state that future tool calls will observe. The steering/context event is emitted
+afterward and remains append-only.
+
+No environment stream item may contain `authToken`, token environment variable
+values, host launch credentials, or undeclared host filesystem paths. Endpoint
+refs may be omitted or redacted by host policy; clients must use mount ids and
+readiness fields for display decisions.
 
 ## Stream Methods
 
@@ -1485,6 +1665,10 @@ Event kinds:
 | `approval.changed`    | Approval record changed                                            |
 | `deferred.changed`    | Deferred tool record changed                                       |
 | `diagnostic`          | Non-fatal server diagnostic                                        |
+
+Environment lifecycle details such as `environment_info`,
+`environment_mounted`, and `environment_unmounted` are `stream.event` payloads,
+not top-level notification kinds.
 
 Event payload rules:
 

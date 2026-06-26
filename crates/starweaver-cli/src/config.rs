@@ -8,6 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use starweaver_model::MaxTokensParameter;
+use starweaver_rpc_core::{is_valid_environment_attachment_id, EnvironmentAttachmentAccessMode};
 use toml::Value;
 
 use crate::{
@@ -84,6 +85,8 @@ pub struct CliConfig {
     pub default_model: Option<CliModelProfile>,
     /// Named model profiles from `[model_profiles.*]` fields.
     pub model_profiles: BTreeMap<String, CliModelProfile>,
+    /// Named envd profiles from `[envd_profiles.*]` fields.
+    pub envd_profiles: BTreeMap<String, CliEnvdProfile>,
     /// Environment variables loaded from config `[env]` sections.
     pub env_vars: BTreeMap<String, String>,
     /// Provider API configuration.
@@ -124,6 +127,7 @@ struct FileConfig {
     providers: Option<FileProviderConfigs>,
     oauth_refresh: Option<FileOAuthRefreshConfig>,
     model_profiles: Option<BTreeMap<String, FileModelProfile>>,
+    envd_profiles: Option<BTreeMap<String, FileEnvdProfile>>,
     env: Option<BTreeMap<String, String>>,
     skills: Option<SkillsConfig>,
     subagents: Option<SubagentsConfig>,
@@ -181,6 +185,21 @@ struct FileModelProfile {
     model: Option<String>,
     model_settings: Option<String>,
     model_cfg: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct FileEnvdProfile {
+    label: Option<String>,
+    enabled: Option<bool>,
+    #[serde(alias = "endpoint_ref", alias = "endpointRef")]
+    endpoint: Option<String>,
+    auth_token: Option<String>,
+    auth_token_env: Option<String>,
+    environment_id: Option<String>,
+    mount_id: Option<String>,
+    mode: Option<String>,
+    #[serde(rename = "default")]
+    is_default: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -303,6 +322,35 @@ pub struct CliModelProfile {
     /// Model settings preset name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_settings: Option<String>,
+}
+
+/// Envd profile resolved from config.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CliEnvdProfile {
+    /// Human label for display.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Whether this profile is active for TUI runs.
+    pub enabled: bool,
+    /// HTTP endpoint for the envd JSON-RPC transport.
+    pub endpoint: String,
+    /// Bearer token stored directly in config. This is intentionally
+    /// request-only and must not be returned by config display surfaces.
+    #[serde(default, skip_serializing)]
+    pub auth_token: Option<String>,
+    /// Environment variable that contains the bearer token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token_env: Option<String>,
+    /// Concrete envd environment id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    /// Agent-facing mount id.
+    pub mount_id: String,
+    /// Access mode for the mount.
+    pub mode: EnvironmentAttachmentAccessMode,
+    /// Whether this profile should be the default TUI environment.
+    #[serde(rename = "default")]
+    pub is_default: bool,
 }
 
 /// Provider API configuration.
@@ -453,6 +501,7 @@ impl ConfigResolver {
             oauth_refresh: OAuthRefreshConfig::default(),
             default_model: None,
             model_profiles: BTreeMap::new(),
+            envd_profiles: BTreeMap::new(),
             env_vars: BTreeMap::new(),
             providers: default_provider_configs(),
             tools_config: serde_json::Value::Null,
@@ -735,6 +784,12 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
             }
         }
     }
+    if let Some(envd_profiles) = parsed.envd_profiles {
+        for (name, profile) in envd_profiles {
+            let profile = resolve_envd_profile(&name, profile)?;
+            config.envd_profiles.insert(name, profile);
+        }
+    }
     if let Some(skills) = parsed.skills {
         merge_skill_dirs(config, skills, base);
     }
@@ -819,6 +874,99 @@ fn merge_slash_commands(config: &mut CliConfig, commands: BTreeMap<String, FileC
         };
         upsert_slash_command(config, definition);
     }
+}
+
+fn resolve_envd_profile(name: &str, profile: FileEnvdProfile) -> CliResult<CliEnvdProfile> {
+    let endpoint = required_trimmed_envd_field(name, "endpoint", profile.endpoint)?;
+    let mount_id = profile.mount_id.unwrap_or_else(|| name.to_string());
+    let mount_id = mount_id.trim().to_string();
+    if !is_valid_environment_attachment_id(&mount_id) {
+        return Err(CliError::Config(format!(
+            "envd profile {name} has invalid mount_id: {mount_id}; expected an ASCII slug"
+        )));
+    }
+    let auth_token = profile
+        .auth_token
+        .as_deref()
+        .map(|token| validate_envd_token_field(name, "auth_token", token))
+        .transpose()?;
+    let auth_token_env = profile
+        .auth_token_env
+        .as_deref()
+        .map(|env| validate_envd_token_env_field(name, env))
+        .transpose()?;
+    if auth_token.is_none() && auth_token_env.is_none() {
+        return Err(CliError::Config(format!(
+            "envd profile {name} requires auth_token or auth_token_env"
+        )));
+    }
+    let mode = match profile.mode.as_deref().unwrap_or("read_write").trim() {
+        "read_only" | "read-only" => EnvironmentAttachmentAccessMode::ReadOnly,
+        "read_write" | "read-write" => EnvironmentAttachmentAccessMode::ReadWrite,
+        other => {
+            return Err(CliError::Config(format!(
+                "envd profile {name} has invalid mode: {other}; expected read_only or read_write"
+            )));
+        }
+    };
+    Ok(CliEnvdProfile {
+        label: profile.label,
+        enabled: profile.enabled.unwrap_or(true),
+        endpoint,
+        auth_token,
+        auth_token_env,
+        environment_id: profile
+            .environment_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        mount_id,
+        mode,
+        is_default: profile.is_default.unwrap_or(false),
+    })
+}
+
+fn required_trimmed_envd_field(
+    profile_name: &str,
+    field: &str,
+    value: Option<String>,
+) -> CliResult<String> {
+    let Some(value) = value else {
+        return Err(CliError::Config(format!(
+            "envd profile {profile_name} requires {field}"
+        )));
+    };
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(CliError::Config(format!(
+            "envd profile {profile_name} {field} cannot be empty"
+        )));
+    }
+    Ok(value)
+}
+
+fn validate_envd_token_field(profile_name: &str, field: &str, token: &str) -> CliResult<String> {
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err(CliError::Config(format!(
+            "envd profile {profile_name} {field} cannot be empty"
+        )));
+    }
+    if token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return Err(CliError::Config(format!(
+            "envd profile {profile_name} {field} cannot contain newlines"
+        )));
+    }
+    Ok(token)
+}
+
+fn validate_envd_token_env_field(profile_name: &str, env: &str) -> CliResult<String> {
+    let env = env.trim().to_string();
+    if env.is_empty() {
+        return Err(CliError::Config(format!(
+            "envd profile {profile_name} auth_token_env cannot be empty"
+        )));
+    }
+    Ok(env)
 }
 
 fn upsert_slash_command(config: &mut CliConfig, mut definition: SlashCommandDefinition) {

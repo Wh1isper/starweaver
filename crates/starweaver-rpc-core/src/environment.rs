@@ -151,6 +151,10 @@ pub struct EnvironmentAttachmentRef {
     /// Concrete environment id within the implementation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_id: Option<String>,
+    /// Bearer token for authenticated transports. This is request-only and must
+    /// not be echoed in host results or persisted run metadata.
+    #[serde(default, alias = "token", skip_serializing)]
+    pub auth_token: Option<String>,
     /// Host metadata for the attachment.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub metadata: serde_json::Map<String, Value>,
@@ -179,6 +183,12 @@ impl EnvironmentAttachmentRef {
     #[must_use]
     pub fn requested_endpoint_ref(&self) -> Option<&str> {
         self.endpoint_ref.as_deref()
+    }
+
+    /// Return the bearer token requested by this ref, if any.
+    #[must_use]
+    pub fn requested_auth_token(&self) -> Option<&str> {
+        self.auth_token.as_deref()
     }
 
     /// Return the existing host-control lease id, if any.

@@ -1,10 +1,13 @@
 use std::{
+    collections::BTreeSet,
+    env,
     io::IsTerminal as _,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
+use starweaver_rpc_core::EnvironmentAttachmentRef;
 use starweaver_runtime::AgentStreamRecord;
 
 use super::CliService;
@@ -17,7 +20,7 @@ use crate::{
     prompt_input::PromptInput,
     runner::CliSteeringMessage,
     runtime_coordinator::{CliRuntimeCoordinator, RunStreamEvent},
-    CliResult,
+    CliError, CliResult,
 };
 
 struct CompletedPromptRun {
@@ -46,6 +49,7 @@ const TUI_MIN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 impl CliService {
     pub(super) fn tui(&mut self, command: &TuiCommand) -> CliResult<String> {
         if should_run_interactive_tui(command) {
+            tui_environment_attachments(&self.config)?;
             self.interactive_tui(command)?;
             return Ok(String::new());
         }
@@ -378,10 +382,23 @@ fn spawn_tui_run(
     profile: Option<String>,
     goal: Option<GoalCommandOptions>,
 ) -> ActiveTuiRun {
-    let mut config = config.clone();
-    config.oauth_refresh.enabled = false;
     let command = command.clone();
     let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
+    let mut config = config.clone();
+    config.oauth_refresh.enabled = false;
+    let environment_attachments = match tui_environment_attachments(&config) {
+        Ok(attachments) => attachments,
+        Err(error) => {
+            let _ = ui_sender.send(TuiRunMessage::Failed(error.to_string()));
+            let coordinator = CliRuntimeCoordinator::new(config);
+            return ActiveTuiRun {
+                receiver,
+                coordinator,
+                run_id: String::new(),
+                cancelling: false,
+            };
+        }
+    };
     let coordinator = CliRuntimeCoordinator::new(config);
     let run_command = RunCommand {
         prompt: Some(prompt_input.text.clone()),
@@ -401,7 +418,7 @@ fn spawn_tui_run(
         worktree_name: None,
         branch: None,
         session_affinity_id,
-        environment_attachments: Vec::new(),
+        environment_attachments,
     };
     let started = match coordinator.start_run_with_raw(run_command, Some(prompt_input)) {
         Ok(started) => started,
@@ -442,6 +459,92 @@ fn spawn_tui_run(
         run_id,
         cancelling: false,
     }
+}
+
+fn tui_environment_attachments(config: &CliConfig) -> CliResult<Vec<EnvironmentAttachmentRef>> {
+    let active_profiles = config
+        .envd_profiles
+        .iter()
+        .filter(|(_, profile)| profile.enabled)
+        .collect::<Vec<_>>();
+    if active_profiles.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let explicit_defaults = active_profiles
+        .iter()
+        .filter_map(|(name, profile)| profile.is_default.then_some((*name, *profile)))
+        .collect::<Vec<_>>();
+    let default_profile_name = match explicit_defaults.as_slice() {
+        [] => active_profiles[0].0.as_str(),
+        [(name, _profile)] => name.as_str(),
+        _ => {
+            return Err(CliError::Config(
+                "TUI envd profiles require at most one default profile".to_string(),
+            ));
+        }
+    };
+
+    let mut seen_mounts = BTreeSet::new();
+    let mut attachments = Vec::new();
+    for (name, profile) in active_profiles {
+        if !profile.endpoint.starts_with("http://") {
+            return Err(CliError::Config(format!(
+                "TUI envd profile {name} currently supports http:// endpoints"
+            )));
+        }
+        if !seen_mounts.insert(profile.mount_id.clone()) {
+            return Err(CliError::Config(format!(
+                "duplicate TUI envd mount id: {}",
+                profile.mount_id
+            )));
+        }
+        let auth_token = tui_envd_profile_auth_token(name, profile)?;
+        let mut metadata = serde_json::Map::new();
+        metadata.insert("envd_profile".to_string(), serde_json::json!(name));
+        attachments.push(EnvironmentAttachmentRef {
+            id: profile.mount_id.clone(),
+            kind: "envd".to_string(),
+            mode: Some(profile.mode),
+            is_default: name == default_profile_name,
+            attachment_lease_id: None,
+            endpoint_ref: Some(profile.endpoint.clone()),
+            environment_id: profile.environment_id.clone(),
+            auth_token: Some(auth_token),
+            metadata,
+        });
+    }
+    Ok(attachments)
+}
+
+fn tui_envd_profile_auth_token(
+    name: &str,
+    profile: &crate::config::CliEnvdProfile,
+) -> CliResult<String> {
+    if let Some(token) = &profile.auth_token {
+        return Ok(token.clone());
+    }
+    let Some(env_name) = profile.auth_token_env.as_deref() else {
+        return Err(CliError::Config(format!(
+            "TUI envd profile {name} requires auth_token or auth_token_env"
+        )));
+    };
+    let token = env::var(env_name).map_err(|_| {
+        CliError::Config(format!(
+            "TUI envd profile {name} auth_token_env {env_name} is not set"
+        ))
+    })?;
+    if token.trim().is_empty() {
+        return Err(CliError::Config(format!(
+            "TUI envd profile {name} auth_token_env {env_name} is empty"
+        )));
+    }
+    if token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return Err(CliError::Config(format!(
+            "TUI envd profile {name} auth_token_env {env_name} cannot contain newlines"
+        )));
+    }
+    Ok(token)
 }
 
 fn status_is_terminal(status: &str) -> bool {
@@ -539,4 +642,87 @@ fn tui_empty_state(config: &CliConfig) -> String {
         "Starweaver\n\nWelcome to Starweaver.\nstatus=ready\nsession=none\nconfig_dir={}\n\nSetup status: ready for configuration\n\nStart:\n  sw cli -p \"hello\"\n  sw cli setup --global\n  sw cli diagnostics\n\nRuntime state is created after the first run.\n",
         config.global_dir.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::{args, ConfigResolver};
+    use starweaver_rpc_core::EnvironmentAttachmentAccessMode;
+
+    fn config_with_envd_profiles(content: &str) -> CliConfig {
+        let temp = tempfile::tempdir().unwrap();
+        let global = temp.path().join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(global.join("config.toml"), content).unwrap();
+        let cli = args::parse(["starweaver-cli".to_string(), "tui".to_string()]).unwrap();
+        ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap()
+    }
+
+    #[test]
+    fn tui_envd_attachments_build_from_config_profiles() {
+        let config = config_with_envd_profiles(
+            r#"
+[envd_profiles.workspace]
+endpoint = "http://127.0.0.1:8766/rpc"
+auth_token = "workspace-secret"
+environment_id = "env_cli_default"
+mount_id = "workspace"
+default = true
+
+[envd_profiles.data]
+endpoint = "http://127.0.0.1:8770/rpc"
+auth_token = "data-secret"
+environment_id = "dataset"
+mode = "read_only"
+"#,
+        );
+
+        let attachments = tui_environment_attachments(&config).unwrap();
+
+        assert_eq!(attachments.len(), 2);
+        assert_eq!(attachments[0].id, "data");
+        assert_eq!(attachments[0].kind, "envd");
+        assert_eq!(attachments[0].requested_auth_token(), Some("data-secret"));
+        assert_eq!(
+            attachments[0].resolved_mode(),
+            EnvironmentAttachmentAccessMode::ReadOnly
+        );
+        let serialized = serde_json::to_value(&attachments[0]).unwrap();
+        assert!(serialized.get("authToken").is_none());
+
+        assert_eq!(attachments[1].id, "workspace");
+        assert!(attachments[1].is_default);
+        assert_eq!(
+            attachments[1].requested_environment_id(),
+            Some("env_cli_default")
+        );
+        assert_eq!(
+            attachments[1]
+                .metadata
+                .get("envd_profile")
+                .and_then(serde_json::Value::as_str),
+            Some("workspace")
+        );
+    }
+
+    #[test]
+    fn tui_envd_profile_requires_available_token_env() {
+        let config = config_with_envd_profiles(
+            r#"
+[envd_profiles.remote]
+endpoint = "http://127.0.0.1:8766/rpc"
+auth_token_env = "STARWEAVER_TEST_MISSING_ENVD_TOKEN_DO_NOT_SET"
+"#,
+        );
+
+        let error = tui_environment_attachments(&config).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("STARWEAVER_TEST_MISSING_ENVD_TOKEN_DO_NOT_SET"));
+    }
 }

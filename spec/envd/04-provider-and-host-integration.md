@@ -129,6 +129,7 @@ DTOs in the host-control protocol.
     "id": "workspace",
     "kind": "envd",
     "endpointRef": "http://127.0.0.1:8766/rpc",
+    "authToken": "request-only bearer token",
     "environmentId": "env_cli_default",
     "mode": "read_write"
   }]
@@ -141,6 +142,24 @@ one attachment as the default for unqualified relative paths. Exactly one
 attachment should set `default: true`; if omitted for a single attachment, that
 attachment is the default.
 
+TUI materializes envd attachments from named config profiles instead of
+envd-specific command-line flags:
+
+```toml
+[envd_profiles.workspace]
+endpoint = "http://127.0.0.1:8766/rpc"
+auth_token_env = "STARWEAVER_WORKSPACE_ENVD_TOKEN"
+environment_id = "env_cli_default"
+mount_id = "workspace"
+mode = "read_write"
+default = true
+```
+
+Each enabled profile becomes a normal `EnvironmentAttachmentRef` before run
+start. `auth_token_env` values are resolved by the host; direct token values are
+request-only and must not appear in session, replay, stream, or model context
+payloads.
+
 ```json
 {
   "environmentAttachments": [
@@ -148,6 +167,7 @@ attachment is the default.
       "id": "workspace",
       "kind": "envd",
       "endpointRef": "http://127.0.0.1:8766/rpc",
+      "authToken": "request-only bearer token",
       "environmentId": "env_cli_default",
       "mode": "read_write",
       "default": true
@@ -156,6 +176,7 @@ attachment is the default.
       "id": "data",
       "kind": "envd",
       "endpointRef": "http://127.0.0.1:8770/rpc",
+      "authToken": "request-only bearer token",
       "environmentId": "dataset",
       "mode": "read_only"
     }

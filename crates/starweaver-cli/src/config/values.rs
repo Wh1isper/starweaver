@@ -158,6 +158,7 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
             .and_then(|profile| profile.model_cfg.clone())
             .unwrap_or_default(),
         "model.profiles" => serde_json::to_string(&config.model_profiles)?,
+        "envd.profiles" => serde_json::to_string(&config.envd_profiles)?,
         "env" => serde_json::to_string(&config.env_vars)?,
         "providers.openai.enabled" => config.providers.openai.enabled.to_string(),
         "providers.openai.api_key_env" => config

@@ -510,7 +510,8 @@ mod tests {
                     "mode": "read_write",
                     "default": true,
                     "endpointRef": "http://127.0.0.1:8766/rpc",
-                    "environmentId": "env_cli_default"
+                    "environmentId": "env_cli_default",
+                    "authToken": "secret"
                 }
             ]
         }))
@@ -530,6 +531,12 @@ mod tests {
         assert_eq!(
             refs[0].requested_endpoint_ref(),
             Some("http://127.0.0.1:8766/rpc")
+        );
+        assert_eq!(refs[0].requested_auth_token(), Some("secret"));
+        let serialized = serde_json::to_value(&refs[0]).unwrap();
+        assert!(
+            serialized.get("authToken").is_none(),
+            "auth tokens must not be echoed in host-visible attachment refs"
         );
 
         let duplicate = environment_attachment_refs(&json!({
@@ -578,7 +585,8 @@ mod tests {
                     "kind": "envd",
                     "mode": "read_only",
                     "endpointRef": "http://127.0.0.1:8770/rpc",
-                    "environmentId": "dataset"
+                    "environmentId": "dataset",
+                    "authToken": "secret"
                 }
             ]
         }))
