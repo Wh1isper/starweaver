@@ -1,16 +1,24 @@
-use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
-use starweaver_core::{Metadata, SubagentLifecycleEvent, SubagentLifecycleKind, TaskId};
+use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent, BusMessage};
+use starweaver_core::{
+    escape_xml_attribute, escape_xml_text, Metadata, SubagentLifecycleEvent, SubagentLifecycleKind,
+    TaskId,
+};
 use starweaver_runtime::{
-    AgentCapability, AgentError, AgentResult, AgentStreamRecord, AgentStreamSink,
-    AgentStreamSource, CapabilityBundle, TraceRecorderHandle,
+    AgentCapability, AgentError, AgentResult, AgentRunState, AgentStreamRecord, AgentStreamSink,
+    AgentStreamSource, CapabilityBundle, CapabilityResult, CapabilitySpec, TraceRecorderHandle,
 };
 use starweaver_tools::{
-    typed_json_tool, DynTool, EmptyToolArgs, ToolContext, ToolError, ToolRegistry, ToolResult,
+    typed_json_tool, DynTool, EmptyToolArgs, ToolContext, ToolError, ToolInstruction, ToolRegistry,
+    ToolResult,
 };
+use uuid::Uuid;
 
 use crate::bundles::attach_environment;
 
@@ -20,6 +28,52 @@ use super::{
 };
 
 const SUBAGENT_STACK_KEY: &str = "starweaver.subagent_stack";
+
+/// Hidden delegate backend tool used by async delegation wrappers.
+pub const DELEGATE_BACKEND_TOOL_NAME: &str = "__delegate_backend";
+
+/// Tool name for explicit background delegation when blocking delegate remains visible.
+pub const SPAWN_DELEGATE_TOOL_NAME: &str = "spawn_delegate";
+
+const BACKGROUND_SUBAGENT_CAPABILITY_ID: &str = "starweaver.subagent.background";
+
+/// Model-visible subagent delegation topology.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SubagentDelegationMode {
+    /// Expose `delegate` as a blocking tool.
+    #[default]
+    Blocking,
+    /// Expose `delegate` as an asynchronous background tool backed by hidden `__delegate_backend`.
+    Async,
+    /// Expose blocking `delegate` plus explicit `spawn_delegate`.
+    BlockingAndAsync,
+}
+
+impl SubagentDelegationMode {
+    /// Return whether this mode exposes blocking `delegate`.
+    #[must_use]
+    pub const fn exposes_blocking_delegate(self) -> bool {
+        matches!(self, Self::Blocking | Self::BlockingAndAsync)
+    }
+
+    /// Return whether this mode exposes asynchronous `delegate`.
+    #[must_use]
+    pub const fn exposes_async_delegate(self) -> bool {
+        matches!(self, Self::Async)
+    }
+
+    /// Return whether this mode exposes explicit `spawn_delegate`.
+    #[must_use]
+    pub const fn exposes_spawn_delegate(self) -> bool {
+        matches!(self, Self::BlockingAndAsync)
+    }
+
+    /// Return whether this mode needs a background monitor.
+    #[must_use]
+    pub const fn needs_background_monitor(self) -> bool {
+        matches!(self, Self::Async | Self::BlockingAndAsync)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct DelegateArgs {
@@ -35,6 +89,183 @@ struct DelegateArgs {
     #[serde(default)]
     #[schemars(skip)]
     metadata: Option<serde_json::Value>,
+}
+
+/// Snapshot of one active background subagent task.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackgroundSubagentTaskInfo {
+    /// Stable background subagent id.
+    pub agent_id: String,
+    /// Registered subagent name.
+    pub subagent_name: String,
+    /// Prompt sent to the background subagent.
+    pub prompt: String,
+    /// Whether this task resumes an existing subagent conversation.
+    pub is_resume: bool,
+}
+
+#[derive(Default)]
+struct BackgroundSubagentState {
+    active_tasks: BTreeMap<String, BackgroundSubagentTaskInfo>,
+    pending_messages: Vec<BusMessage>,
+}
+
+/// Shared monitor for detached subagent runs and pending result redelivery.
+#[derive(Default)]
+pub struct BackgroundSubagentMonitor {
+    state: Mutex<BackgroundSubagentState>,
+}
+
+impl BackgroundSubagentMonitor {
+    /// Create an empty background subagent monitor.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn register_task(
+        &self,
+        agent_id: String,
+        subagent_name: String,
+        prompt: String,
+        is_resume: bool,
+    ) {
+        let info = BackgroundSubagentTaskInfo {
+            agent_id: agent_id.clone(),
+            subagent_name,
+            prompt,
+            is_resume,
+        };
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.active_tasks.insert(agent_id, info);
+            }
+            Err(error) => {
+                let mut state = error.into_inner();
+                state.active_tasks.insert(agent_id, info);
+            }
+        }
+    }
+
+    fn complete_task(&self, agent_id: &str) {
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.active_tasks.remove(agent_id);
+            }
+            Err(error) => {
+                let mut state = error.into_inner();
+                state.active_tasks.remove(agent_id);
+            }
+        }
+    }
+
+    /// Return active background subagent tasks.
+    #[must_use]
+    pub fn active_tasks(&self) -> Vec<BackgroundSubagentTaskInfo> {
+        match self.state.lock() {
+            Ok(state) => state.active_tasks.values().cloned().collect(),
+            Err(error) => error.into_inner().active_tasks.values().cloned().collect(),
+        }
+    }
+
+    /// Return whether any background task is active.
+    #[must_use]
+    pub fn has_active_tasks(&self) -> bool {
+        match self.state.lock() {
+            Ok(state) => !state.active_tasks.is_empty(),
+            Err(error) => !error.into_inner().active_tasks.is_empty(),
+        }
+    }
+
+    fn enqueue_message(&self, message: BusMessage) {
+        match self.state.lock() {
+            Ok(mut state) => state.pending_messages.push(message),
+            Err(error) => {
+                let mut state = error.into_inner();
+                state.pending_messages.push(message);
+            }
+        }
+    }
+
+    /// Return whether pending completion messages are waiting for redelivery.
+    #[must_use]
+    pub fn has_pending_messages(&self) -> bool {
+        match self.state.lock() {
+            Ok(state) => !state.pending_messages.is_empty(),
+            Err(error) => !error.into_inner().pending_messages.is_empty(),
+        }
+    }
+
+    fn drain_pending_messages(&self) -> Vec<BusMessage> {
+        match self.state.lock() {
+            Ok(mut state) => std::mem::take(&mut state.pending_messages),
+            Err(error) => {
+                let mut state = error.into_inner();
+                std::mem::take(&mut state.pending_messages)
+            }
+        }
+    }
+}
+
+/// Runtime hook that redelivers completed background subagent messages.
+#[derive(Clone)]
+pub struct BackgroundSubagentCapability {
+    monitor: Arc<BackgroundSubagentMonitor>,
+}
+
+impl BackgroundSubagentCapability {
+    /// Create a capability bound to a shared monitor.
+    #[must_use]
+    pub const fn new(monitor: Arc<BackgroundSubagentMonitor>) -> Self {
+        Self { monitor }
+    }
+
+    fn drain_into_context(&self, context: &mut AgentContext) {
+        for message in self.monitor.drain_pending_messages() {
+            let agent_id = context.agent_id.as_str().to_string();
+            context.messages.subscribe(agent_id);
+            context.send_message(message);
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentCapability for BackgroundSubagentCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new(BACKGROUND_SUBAGENT_CAPABILITY_ID)
+    }
+
+    async fn on_run_start_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+    ) -> CapabilityResult<()> {
+        context.dependencies.insert_arc(self.monitor.clone());
+        self.drain_into_context(context);
+        Ok(())
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        messages: Vec<starweaver_model::ModelMessage>,
+    ) -> CapabilityResult<Vec<starweaver_model::ModelMessage>> {
+        context.dependencies.insert_arc(self.monitor.clone());
+        self.drain_into_context(context);
+        Ok(messages)
+    }
+
+    async fn before_tool_execution_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut AgentContext,
+        tool_context: &mut ToolContext,
+        _call: &starweaver_model::ToolCallPart,
+    ) -> CapabilityResult<()> {
+        tool_context.dependencies.insert_arc(self.monitor.clone());
+        Ok(())
+    }
 }
 
 /// Application-level subagent registry.
@@ -113,6 +344,38 @@ impl SubagentRegistry {
         self.delegate_tool_named("delegate")
     }
 
+    /// Create a hidden blocking delegate backend for async wrappers.
+    #[must_use]
+    pub fn hidden_delegate_backend_tool(self: &Arc<Self>) -> DynTool {
+        self.delegate_tool_named_with_visibility(DELEGATE_BACKEND_TOOL_NAME, false)
+    }
+
+    /// Create an asynchronous background delegate tool named `delegate`.
+    #[must_use]
+    pub fn async_delegate_tool(
+        self: &Arc<Self>,
+        monitor: Arc<BackgroundSubagentMonitor>,
+    ) -> DynTool {
+        self.background_delegate_tool_named(
+            "delegate",
+            "Delegate task to a registered SDK subagent asynchronously. Result delivered via message bus.",
+            monitor,
+        )
+    }
+
+    /// Create an explicit asynchronous background delegate tool named `spawn_delegate`.
+    #[must_use]
+    pub fn spawn_delegate_tool(
+        self: &Arc<Self>,
+        monitor: Arc<BackgroundSubagentMonitor>,
+    ) -> DynTool {
+        self.background_delegate_tool_named(
+            SPAWN_DELEGATE_TOOL_NAME,
+            "Spawn a registered SDK subagent in the background. Result delivered via message bus.",
+            monitor,
+        )
+    }
+
     /// Create a subagent information tool bound to this registry.
     #[must_use]
     pub fn subagent_info_tool(self: &Arc<Self>) -> DynTool {
@@ -153,9 +416,17 @@ impl SubagentRegistry {
     /// Create a typed delegation tool bound to this registry with a caller-provided name.
     #[must_use]
     pub fn delegate_tool_named(self: &Arc<Self>, tool_name: impl Into<String>) -> DynTool {
+        self.delegate_tool_named_with_visibility(tool_name, true)
+    }
+
+    fn delegate_tool_named_with_visibility(
+        self: &Arc<Self>,
+        tool_name: impl Into<String>,
+        visible: bool,
+    ) -> DynTool {
         let registry = self.clone();
         let tool_name = tool_name.into();
-        Arc::new(typed_json_tool::<DelegateArgs, _, _>(
+        let tool = typed_json_tool::<DelegateArgs, _, _>(
             tool_name.clone(),
             Some("Delegate a task to a registered SDK subagent.".to_string()),
             move |context: ToolContext, arguments: DelegateArgs| {
@@ -211,7 +482,167 @@ impl SubagentRegistry {
                     Ok(tool_result)
                 }
             },
-        ))
+        )
+        .with_tag("delegation");
+        if visible {
+            Arc::new(tool)
+        } else {
+            Arc::new(tool.with_prepare_definition(|_, _| None))
+        }
+    }
+
+    fn background_delegate_tool_named(
+        self: &Arc<Self>,
+        tool_name: impl Into<String>,
+        description: impl Into<String>,
+        monitor: Arc<BackgroundSubagentMonitor>,
+    ) -> DynTool {
+        let registry = self.clone();
+        let tool_name = tool_name.into();
+        let description = description.into();
+        Arc::new(
+            typed_json_tool::<DelegateArgs, _, _>(
+                tool_name.clone(),
+                Some(description),
+                move |context: ToolContext, arguments: DelegateArgs| {
+                    let registry = registry.clone();
+                    let monitor = monitor.clone();
+                    let tool_name = tool_name.clone();
+                    async move {
+                        let context_handle =
+                            context.dependency::<AgentContextHandle>().ok_or_else(|| {
+                                ToolError::Execution {
+                                    tool: tool_name.clone(),
+                                    message: "missing AgentContextHandle dependency".to_string(),
+                                }
+                            })?;
+                        let parent_context = context_handle.snapshot();
+                        if parent_context.parent_run_id.is_some()
+                            || parent_context.metadata.contains_key("parent_agent_id")
+                        {
+                            return Err(ToolError::Execution {
+                                tool: tool_name.clone(),
+                                message: "background subagent delegation is only available to the main agent"
+                                    .to_string(),
+                            });
+                        }
+                        let subagent_name = arguments.subagent_name.clone();
+                        let agent_id = arguments
+                            .agent_id
+                            .clone()
+                            .filter(|value| !value.trim().is_empty())
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "{}-bg-{}",
+                                    subagent_name,
+                                    Uuid::new_v4().simple().to_string().chars().take(8).collect::<String>()
+                                )
+                            });
+                        let is_resume = parent_context.subagent_history.contains_key(&agent_id);
+                        monitor.register_task(
+                            agent_id.clone(),
+                            subagent_name.clone(),
+                            arguments.prompt.clone(),
+                            is_resume,
+                        );
+                        let target_agent_id = parent_context.agent_id.as_str().to_string();
+                        let background_context = context.clone();
+                        tokio::spawn(run_background_delegate(
+                            registry,
+                            monitor.clone(),
+                            context_handle,
+                            background_context,
+                            arguments,
+                            agent_id.clone(),
+                            target_agent_id,
+                        ));
+                        let action = if is_resume { "resumed" } else { "spawned" };
+                        Ok(ToolResult::new(serde_json::json!({
+                            "status": action,
+                            "subagent_name": subagent_name,
+                            "agent_id": agent_id,
+                            "message": format!(
+                                "{action} delegate: {subagent_name} (id: {agent_id}). Result will be delivered via message bus when complete."
+                            ),
+                        })))
+                    }
+                },
+            )
+            .with_tag("delegation"),
+        )
+    }
+
+    /// Create a blocking delegate instruction block with the available subagent roster.
+    #[must_use]
+    pub fn delegate_instruction(
+        &self,
+        parent_tools: Option<&ToolRegistry>,
+    ) -> Option<ToolInstruction> {
+        let roster = self.roster_instruction(parent_tools)?;
+        let content = format!(
+            "Use the delegate tool for bounded subtasks that can return compact results.\n\n\
+<delegation-best-practices>\n\
+Plan first, then call multiple delegates in the same response for independent work.\n\
+Use named specialist subagents when a listed role matches the task.\n\
+Ask each delegate to return concise findings, changed files, tests run, and risks.\n\
+</delegation-best-practices>\n\n\
+{roster}\n\n\
+<execution-model>\n\
+Delegate calls are blocking: the parent waits for each delegated result before proceeding.\n\
+Multiple delegate calls in the same model response run concurrently.\n\
+The parent resumes after all delegate calls in that response complete.\n\
+Sequential delegate calls across turns run serially.\n\
+</execution-model>"
+        );
+        Some(ToolInstruction::new("delegate", content))
+    }
+
+    /// Create an async delegate instruction block with the available subagent roster.
+    #[must_use]
+    pub fn async_delegate_instruction(
+        &self,
+        parent_tools: Option<&ToolRegistry>,
+    ) -> Option<ToolInstruction> {
+        let roster = self.roster_instruction(parent_tools)?;
+        let content = format!(
+            "In this agent, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.\n\
+Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.\n\n\
+{roster}"
+        );
+        Some(ToolInstruction::new("delegate", content))
+    }
+
+    /// Create an explicit `spawn_delegate` instruction block for dual blocking/async mode.
+    #[must_use]
+    pub fn spawn_delegate_instruction(&self) -> ToolInstruction {
+        ToolInstruction::new(
+            SPAWN_DELEGATE_TOOL_NAME,
+            "Use this to run a subagent asynchronously when immediate results are not required.\n\
+Use the same subagent_name values listed for delegate.\n\
+The call returns right away with an agent ID; the final result is delivered via message bus.\n\
+Pass agent_id to resume a previous background subagent.",
+        )
+    }
+
+    fn roster_instruction(&self, parent_tools: Option<&ToolRegistry>) -> Option<String> {
+        let mut lines = vec!["Available subagents:".to_string()];
+        for subagent in &self.subagents {
+            if !subagent_available_for_parent(subagent, parent_tools) {
+                continue;
+            }
+            lines.push(format!(
+                "<subagent name=\"{}\">",
+                escape_xml_attribute(&subagent.name)
+            ));
+            lines.push(escape_xml_text(
+                subagent
+                    .description
+                    .as_deref()
+                    .unwrap_or("Registered subagent"),
+            ));
+            lines.push("</subagent>\n".to_string());
+        }
+        (lines.len() > 1).then(|| lines.join("\n").trim_end().to_string())
     }
 
     /// Return a subagent by name.
@@ -489,6 +920,108 @@ impl SubagentRegistry {
     }
 }
 
+async fn run_background_delegate(
+    registry: Arc<SubagentRegistry>,
+    monitor: Arc<BackgroundSubagentMonitor>,
+    context_handle: Arc<AgentContextHandle>,
+    tool_context: ToolContext,
+    mut arguments: DelegateArgs,
+    agent_id: String,
+    target_agent_id: String,
+) {
+    let message = match Box::pin(run_background_delegate_inner(
+        registry,
+        &context_handle,
+        &tool_context,
+        &mut arguments,
+        &agent_id,
+    ))
+    .await
+    {
+        Ok(output) => {
+            BusMessage::text(output, agent_id.clone()).with_target(target_agent_id.as_str())
+        }
+        Err(error) => BusMessage::text(
+            format!(
+                "Spawned delegate '{}' (id: {agent_id}) failed: {error}",
+                arguments.subagent_name
+            ),
+            agent_id.clone(),
+        )
+        .with_target(target_agent_id.as_str()),
+    };
+    if context_handle
+        .snapshot()
+        .messages
+        .is_subscribed(&target_agent_id)
+    {
+        context_handle.update(|context| {
+            context.send_message(message.clone());
+        });
+    } else {
+        monitor.enqueue_message(message);
+    }
+    monitor.complete_task(&agent_id);
+}
+
+async fn run_background_delegate_inner(
+    registry: Arc<SubagentRegistry>,
+    context_handle: &AgentContextHandle,
+    tool_context: &ToolContext,
+    arguments: &mut DelegateArgs,
+    agent_id: &str,
+) -> Result<String, AgentError> {
+    let mut parent_context = context_handle.snapshot();
+    parent_context.trace_context = tool_context.trace_context.clone();
+    if let Some(trace_recorder) = tool_context.dependency::<TraceRecorderHandle>() {
+        parent_context
+            .dependencies
+            .insert(trace_recorder.as_ref().clone());
+    }
+    if let Some(parent_tools) = tool_context.dependency::<SubagentParentTools>() {
+        parent_context
+            .dependencies
+            .insert(parent_tools.as_ref().clone());
+    }
+    let mut metadata = arguments
+        .metadata
+        .take()
+        .unwrap_or_else(|| serde_json::json!({}));
+    metadata["agent_id"] = serde_json::json!(agent_id);
+    metadata["background"] = serde_json::json!(true);
+    let stream_sink = tool_context.dependency::<AgentStreamSink>();
+    let task = SubagentTask::new(arguments.prompt.clone()).with_metadata(metadata);
+    let result = Box::pin(registry.delegate_task_with_stream_sink(
+        &arguments.subagent_name,
+        task,
+        &mut parent_context,
+        stream_sink,
+    ))
+    .await?;
+    context_handle.update(|context| merge_background_subagent_context(context, &parent_context));
+    Ok(result.output().to_string())
+}
+
+fn merge_background_subagent_context(target: &mut AgentContext, source: &AgentContext) {
+    target.usage = source.usage.clone();
+    target
+        .usage_snapshot_entries
+        .clone_from(&source.usage_snapshot_entries);
+    for (agent_id, info) in &source.agent_registry {
+        target.agent_registry.insert(agent_id.clone(), info.clone());
+    }
+    for (agent_id, history) in &source.subagent_history {
+        target
+            .subagent_history
+            .insert(agent_id.clone(), history.clone());
+    }
+    for event in source.events.events() {
+        if !target.events.events().contains(event) {
+            target.events.publish(event.clone());
+        }
+    }
+}
+
 /// Parent tool registry dependency used to resolve subagent inherited tools.
 #[derive(Clone)]
 pub struct SubagentParentTools(pub ToolRegistry);
@@ -607,6 +1140,13 @@ fn attach_subagent_availability(
             );
         }
     }
+}
+
+fn subagent_available_for_parent(
+    subagent: &SubagentConfig,
+    parent_tools: Option<&ToolRegistry>,
+) -> bool {
+    parent_tools.is_none_or(|tools| subagent.tool_inheritance.resolve(tools).is_ok())
 }
 
 fn publish_subagent_failed(

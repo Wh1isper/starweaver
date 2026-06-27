@@ -84,6 +84,7 @@ Example:
     "hitl.approvals",
     "hitl.deferred",
     "environment.attachments",
+    "environment.active_mounts",
     "projection.agui"
   ]
 }
@@ -104,6 +105,7 @@ Feature names:
 | `hitl.approvals`             | Approval list/show/decide              |
 | `hitl.deferred`              | Deferred tool list/show/complete/fail  |
 | `environment.attachments`    | Host-managed environment attachments   |
+| `environment.active_mounts`  | Active-run environment mount mutations |
 | `client.model_selection`     | Frontend-local model selection         |
 | `projection.display_message` | Starweaver display-message projection  |
 | `projection.agui`            | AGUI projection                        |
@@ -292,7 +294,8 @@ Result:
       "run.lifecycle",
       "stream.replay",
       "stream.subscribe",
-      "environment.attachments"
+      "environment.attachments",
+      "environment.active_mounts"
     ]
   },
   "serverInfo": {
@@ -307,6 +310,7 @@ Result:
     "approvals": true,
     "deferredTools": true,
     "environmentAttachments": true,
+    "environmentActiveMounts": true,
     "clientModelSelection": true,
     "projections": ["starweaver.display_message", "agui"],
     "defaultProjectionFormat": "starweaver.display_message"
@@ -385,18 +389,18 @@ Replay limit rules:
 
 The protocol uses domain-qualified method names.
 
-| Group       | Methods                                                                                                                     |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Lifecycle   | `initialize`, `shutdown`                                                                                                    |
-| Session     | `session.create`, `session.list`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`             |
-| Run         | `run.start`, `run.get`, `run.status`, `run.await`, `run.cancel`, `run.steer`                                                |
-| Environment | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`                                        |
-| Stream      | `stream.replay`, `stream.subscribe`, `stream.unsubscribe`, `stream.snapshot`, `stream.cursorRange`                          |
-| HITL        | `approval.list`, `approval.show`, `approval.decide`, `deferred.list`, `deferred.show`, `deferred.complete`, `deferred.fail` |
-| Model       | `model.list`, `model.current`, `model.select`                                                                               |
-| Profile     | `profile.list`, `profile.get`                                                                                               |
-| Config      | `config.get`                                                                                                                |
-| Diagnostics | `diagnostics.get`                                                                                                           |
+| Group       | Methods                                                                                                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lifecycle   | `initialize`, `shutdown`                                                                                                                                                  |
+| Session     | `session.create`, `session.list`, `session.get`, `session.current.get`, `session.current.set`, `session.delete`                                                           |
+| Run         | `run.start`, `run.get`, `run.status`, `run.await`, `run.cancel`, `run.steer`                                                                                              |
+| Environment | `environment.attach`, `environment.detach`, `environment.list`, `environment.health`, `environment.active_mount`, `environment.active_unmount`, `environment.active_list` |
+| Stream      | `stream.replay`, `stream.subscribe`, `stream.unsubscribe`, `stream.snapshot`, `stream.cursorRange`                                                                        |
+| HITL        | `approval.list`, `approval.show`, `approval.decide`, `deferred.list`, `deferred.show`, `deferred.complete`, `deferred.fail`                                               |
+| Model       | `model.list`, `model.current`, `model.select`                                                                                                                             |
+| Profile     | `profile.list`, `profile.get`                                                                                                                                             |
+| Config      | `config.get`                                                                                                                                                              |
+| Diagnostics | `diagnostics.get`                                                                                                                                                         |
 
 `stream.*` is the canonical stream API. Product-specific command shortcuts can call shared handlers, but protocol clients should not need separate methods for run attach, session output, and replay export.
 
@@ -984,6 +988,8 @@ Manager responsibilities:
 - Track connection-scoped and session-scoped attachment leases.
 - Materialize one run-scoped `RunEnvironmentBinding` from inline attachments
   and lease refs, then construct the SDK provider composition.
+- Mutate active-run environment bindings when `environment.active_mounts` is
+  advertised, while preserving one SDK provider handle for runtime tools.
 - Release manager-owned leases when their scope closes, while leaving envd
   service-owned environment state to envd.
 
@@ -992,8 +998,6 @@ Future manager capabilities:
 - Resolve named `endpointRef` aliases to concrete local or remote transports.
 - Launch host-owned envd daemons when a configured endpoint requires it.
 - Support stdio, local socket, named pipe, and WebSocket envd transports.
-- Support active-run environment mount/unmount after the runtime exposes an
-  updatable environment binding.
 
 Manager non-goals:
 
@@ -1017,22 +1021,24 @@ Attachment source shape:
   "environmentId": "dataset",
   "mode": "read_only",
   "default": false,
+  "defaultForShell": false,
   "metadata": {}
 }
 ```
 
 Fields:
 
-| Field           | Type    | Required | Meaning                                                       |
-| --------------- | ------- | -------- | ------------------------------------------------------------- |
-| `id`            | string  | yes      | Agent-facing mount identity within the lease or run           |
-| `kind`          | string  | no       | `local`, `virtual`, `sandbox`, or `envd`; defaults to `local` |
-| `endpointRef`   | string  | for envd | Literal endpoint, initially `http://...` for envd             |
-| `authToken`     | string  | for envd | Request-only bearer token for HTTP envd                       |
-| `environmentId` | string  | no       | Concrete environment id inside the implementation             |
-| `mode`          | string  | no       | `read_write` or `read_only`; defaults to `read_write`         |
-| `default`       | boolean | no       | Default preference when materialized into a run               |
-| `metadata`      | object  | no       | Host metadata, never model-visible by default                 |
+| Field             | Type    | Required | Meaning                                                       |
+| ----------------- | ------- | -------- | ------------------------------------------------------------- |
+| `id`              | string  | yes      | Agent-facing mount identity within the lease or run           |
+| `kind`            | string  | no       | `local`, `virtual`, `sandbox`, or `envd`; defaults to `local` |
+| `endpointRef`     | string  | for envd | Literal endpoint, initially `http://...` for envd             |
+| `authToken`       | string  | for envd | Request-only bearer token for HTTP envd                       |
+| `environmentId`   | string  | no       | Concrete environment id inside the implementation             |
+| `mode`            | string  | no       | `read_write` or `read_only`; defaults to `read_write`         |
+| `default`         | boolean | no       | Default preference when materialized into a run               |
+| `defaultForShell` | boolean | no       | Shell default preference; requires command/process capability |
+| `metadata`        | object  | no       | Host metadata, never model-visible by default                 |
 
 Endpoint refs:
 
@@ -1041,6 +1047,18 @@ Endpoint refs:
 - `id: "local"` is reserved for `kind: "local"` and does not use endpoint
   fields. A host should reject `id: "local"` with `kind: "envd"` or any future
   remote source kind.
+- Endpoint URLs must not contain userinfo credentials, credential-like query
+  parameters, fragments, or embedded bearer material. Transport credentials must
+  flow through request-only fields such as `authToken` or configured secret
+  sources, never through `endpointRef`.
+- The first local product should accept loopback HTTP endpoints by default.
+  Non-loopback endpoints require explicit host policy or endpoint alias
+  configuration and should otherwise fail with `configuration_failed` or
+  `unsupported_feature`.
+- Results, stream payloads, diagnostics, and error data may include a redacted
+  endpoint ref only when it is safe. They must omit or redact query strings,
+  userinfo, launch credentials, and any host path outside declared
+  agent-facing mount roots.
 - Named aliases, stdio, local socket, named pipe, WebSocket, and launched daemon
   transports are future host capabilities. Servers that do not advertise those
   capabilities reject them with `unsupported_feature`.
@@ -1321,8 +1339,11 @@ Materialization rules:
   safe lease refs. It is not a general graph abstraction.
 - The run-local `id` determines the agent-facing path even when a lease has a
   different source identity.
-- The materialized `RunEnvironmentBinding` is immutable for the run in host
-  protocol v1.
+- The initial `RunEnvironmentBinding` starts at `bindingVersion = 1`. When
+  `environment.active_mounts` is not advertised, the binding remains immutable
+  for the run. When the feature is advertised, active mount/unmount operations
+  create new binding versions; previous stream/replay records keep describing
+  the binding version that existed when they were emitted.
 - The run record should store safe attachment refs, lease ids when applicable,
   readiness summary, and start/end state versions when providers expose them.
 - Failed required probes fail `run.start` before durable active-run
@@ -1331,9 +1352,10 @@ Materialization rules:
 
 ### Active-Run Environment Mounting
 
-Active-run mounting is the target design for attaching envd-backed environments
-to a run that is already active. It is not implemented by the current local
-host, but the protocol boundary is:
+Active-run mounting is part of the `environment.active_mounts` feature. Servers
+that do not advertise this feature must reject the methods below with
+`unsupported_feature`. The feature attaches or removes run-local mounts while a
+run is active; it does not turn envd into the agent-control plane.
 
 | Method                       | Purpose                                               |
 | ---------------------------- | ----------------------------------------------------- |
@@ -1352,18 +1374,211 @@ host, but the protocol boundary is:
     "endpointRef": "http://127.0.0.1:8770/rpc",
     "authToken": "request-only bearer token",
     "environmentId": "dataset",
-    "mode": "read_only"
+    "mode": "read_only",
+    "default": false,
+    "defaultForShell": false
   },
+  "replace": false,
   "injectContext": true,
+  "expectedBindingVersion": 3,
   "idempotencyKey": "mount-data-run_..."
 }
 ```
 
-The method may also accept `attachmentLeaseId` instead of an inline source. The
-server materializes the lease into the active run with the same narrowing rule
-used by `run.start`: a read-only lease cannot be widened to read-write.
+`attachment` is the same host-control attachment ref used by `run.start`: it may
+be an inline source or a lease ref with `attachmentLeaseId`, run-local `id`,
+optional `mode`, optional `default`, and optional `defaultForShell`.
+`defaultForShell` maps to the SDK `default_for_shell` flag and may only select a
+ready mount with command/process capability. Lease refs inherit the same rules
+as run materialization: read-only leases cannot be widened, session-scoped
+leases must belong to the run's session, connection-scoped leases must belong
+to the calling connection, and the server must reject ambiguous or unproven
+ownership.
 
-Active mount sequence:
+`environment.active_mount` result:
+
+```json
+{
+  "runId": "run_...",
+  "operationId": "envop_...",
+  "mountId": "data",
+  "previousBindingVersion": 3,
+  "bindingVersion": 4,
+  "replace": false,
+  "previousDefaultMountId": "local",
+  "currentDefaultMountId": "local",
+  "previousDefaultShellMountId": "local",
+  "currentDefaultShellMountId": "local",
+  "mount": {
+    "id": "data",
+    "kind": "envd",
+    "root": "/environment/data",
+    "mode": "read_only",
+    "default": false,
+    "defaultForShell": false,
+    "status": "ready",
+    "readiness": {},
+    "environmentId": "dataset"
+  },
+  "environment": {
+    "bindingVersion": 4,
+    "defaultMountId": "local",
+    "defaultShellMountId": "local",
+    "mounts": [
+      {
+        "id": "local",
+        "kind": "local",
+        "root": "/environment/local",
+        "mode": "read_write",
+        "default": true,
+        "defaultForShell": true,
+        "status": "ready",
+        "readiness": {}
+      },
+      {
+        "id": "data",
+        "kind": "envd",
+        "root": "/environment/data",
+        "mode": "read_only",
+        "default": false,
+        "defaultForShell": false,
+        "status": "ready",
+        "readiness": {},
+        "environmentId": "dataset"
+      }
+    ]
+  },
+  "eventCursor": {
+    "scope": "run:run_...",
+    "sequence": 42
+  },
+  "steeringCursor": {
+    "scope": "run:run_...",
+    "sequence": 43
+  }
+}
+```
+
+`environment.active_unmount` params:
+
+```json
+{
+  "runId": "run_...",
+  "mountId": "data",
+  "newDefaultMountId": "local",
+  "newDefaultShellMountId": "local",
+  "injectContext": true,
+  "expectedBindingVersion": 4,
+  "idempotencyKey": "unmount-data-run_..."
+}
+```
+
+`newDefaultMountId` is required when `mountId` is the current default mount and
+must name another ready mount in the active binding. The first implementation
+rejects unmounting a mount that owns live background processes with
+`run_conflict`; future protocol revisions may add an explicit process policy
+such as wait, detach, or terminate.
+
+`newDefaultShellMountId` is required when `mountId` is the current shell default
+and another ready command/process-capable mount should become the shell default.
+If the active binding has no remaining shell-capable mount, the server sets
+`defaultShellMountId` to null and future shell calls without an explicit
+`/environment/{id}` cwd fail as shell-unavailable.
+
+`environment.active_unmount` result:
+
+```json
+{
+  "runId": "run_...",
+  "operationId": "envop_...",
+  "mountId": "data",
+  "previousBindingVersion": 4,
+  "bindingVersion": 5,
+  "previousDefaultMountId": "local",
+  "currentDefaultMountId": "local",
+  "previousDefaultShellMountId": "local",
+  "currentDefaultShellMountId": "local",
+  "removedMount": {
+    "id": "data",
+    "kind": "envd",
+    "root": "/environment/data",
+    "mode": "read_only",
+    "default": false,
+    "defaultForShell": false,
+    "status": "detached",
+    "readiness": {}
+  },
+  "environment": {
+    "bindingVersion": 5,
+    "defaultMountId": "local",
+    "defaultShellMountId": "local",
+    "mounts": [
+      {
+        "id": "local",
+        "kind": "local",
+        "root": "/environment/local",
+        "mode": "read_write",
+        "default": true,
+        "defaultForShell": true,
+        "status": "ready",
+        "readiness": {}
+      }
+    ]
+  },
+  "eventCursor": {
+    "scope": "run:run_...",
+    "sequence": 44
+  },
+  "steeringCursor": {
+    "scope": "run:run_...",
+    "sequence": 45
+  }
+}
+```
+
+`environment.active_list` params:
+
+```json
+{
+  "runId": "run_..."
+}
+```
+
+`environment.active_list` result:
+
+```json
+{
+  "runId": "run_...",
+  "environment": {
+    "bindingVersion": 5,
+    "defaultMountId": "local",
+    "defaultShellMountId": "local",
+    "mounts": [
+      {
+        "id": "local",
+        "kind": "local",
+        "root": "/environment/local",
+        "mode": "read_write",
+        "default": true,
+        "defaultForShell": true,
+        "status": "ready",
+        "readiness": {}
+      }
+    ]
+  },
+  "latestEnvironmentCursor": {
+    "scope": "run:run_...",
+    "sequence": 44
+  }
+}
+```
+
+Active mutation results may include a `warnings` array. Warning entries must be
+safe to display and should include a stable `code` plus short `message`, for
+example when lifecycle replay succeeded but optional steering context injection
+failed.
+
+Active binding mutation sequence:
 
 ```mermaid
 sequenceDiagram
@@ -1374,8 +1589,9 @@ sequenceDiagram
     participant Stream as Replay stream
 
     Client->>RPC: environment.active_mount(runId, attachment)
-    RPC->>Manager: validate source, mode, default, and token
-    Manager->>Manager: probe readiness
+    RPC->>Manager: validate source, lease scope, mode, default, and token
+    Manager->>Manager: probe readiness outside mutation lock
+    Manager->>Manager: acquire per-run environment mutation lock
     Manager->>Runtime: update active environment binding
     Manager->>Stream: append environment_mounted
     Manager->>Runtime: run.steer(rendered mount context)
@@ -1383,30 +1599,61 @@ sequenceDiagram
     RPC-->>Client: active mount result
 ```
 
-Active mount invariants:
+Active binding invariants:
 
 - The runtime still observes one SDK `EnvironmentProvider`. The active binding
   swap is a host/runtime handle update, not a new envd-aware runtime API.
+- Each active run has one environment mutation lock. Mount, unmount, and default
+  updates are serialized under that lock.
+- Every successful mutation increments `bindingVersion` exactly once. Clients may
+  pass `expectedBindingVersion`; a mismatch fails with `run_conflict` and does
+  not mutate the binding.
 - Binding updates affect future tool calls only. Tool calls already executing
-  finish against the binding they started with.
+  finish against the binding version they started with.
+- Same-id `active_mount` fails with `already_exists` unless `replace: true`.
+  Replacement validates and probes the new source before acquiring the mutation
+  lock, then atomically swaps the mount. Replacing the current default mount
+  keeps that mount id as default. Replacing a non-default mount with
+  `attachment.default: true` moves the default to the replaced mount.
+- Adding a new mount with `attachment.default: true` moves `defaultMountId` to
+  the new ready mount. Adding or replacing a mount with
+  `attachment.defaultForShell: true` moves `defaultShellMountId` to that mount
+  after verifying command/process capability.
+- A request that would leave the active binding without a default mount fails
+  with `invalid_params` or `run_conflict` and leaves the old binding active.
+- A request that would leave the active binding with an invalid shell default
+  fails with `invalid_params` or `run_conflict`. If no shell-capable mount
+  remains after a valid unmount, `defaultShellMountId` becomes null and implicit
+  shell calls fail as shell-unavailable.
+- If no mount explicitly selects `defaultForShell`, the host recomputes
+  `defaultShellMountId` from `defaultMountId` when the default mount is ready
+  and command/process-capable; otherwise it sets `defaultShellMountId` to null.
+  Explicit-cwd shell calls to `/environment/{id}` can still use non-default
+  shell-capable mounts.
+- The reserved id `local` keeps the same rule as run materialization:
+  `id: "local"` must use `kind: "local"` and remote sources cannot replace it.
+- If stream append fails after the binding update, the server must mark the run
+  failed or unavailable before acknowledging success; it must not silently return
+  a successful mount result without replay evidence.
+- If steering/context injection fails after the environment lifecycle event was
+  appended, the mount remains active and the result omits `steeringCursor` while
+  including a safe `warnings` entry. Clients can use `active_list` to recover
+  the current binding.
 - Context injection is append-only. After the binding update, the host renders
   the environment context for that exact mount state and injects it through the
   same steering path used by `run.steer`.
-- The injected context is a new stream/replay event. It must not rewrite the
-  original system prompt, prior environment context, or earlier replay records.
 - If the model turn is already in flight, the steering message is queued as the
   next user/host steering input. It does not interrupt provider streaming.
-- `environment.active_unmount` applies the same rule in reverse: remove future
-  routing first, then append `environment_unmounted` and a steering message that
-  the mount is unavailable.
-- Secrets such as `authToken`, endpoint launch credentials, and host filesystem
-  paths outside declared mount roots must not appear in the steering text,
-  stream payloads, or active mount results.
-- The active mount result includes `runId`, mount id, readiness, mode, mount root,
-  and a stream cursor for the injected context event when `injectContext` is
-  true.
+- Active unmount removes future routing first, appends `environment_unmounted`,
+  then queues a steering message that says the mount is unavailable.
+- Active unmount releases the active-run use of any lease-backed mount. After
+  the unmount event is durable, `environment.detach` no longer conflicts with
+  that run for the removed lease.
+- Secrets such as `authToken`, token environment variables, endpoint launch
+  credentials, and host filesystem paths outside declared mount roots must not
+  appear in steering text, stream payloads, active results, or error data.
 
-Environment stream item contract:
+Environment lifecycle replay events:
 
 | Item kind               | When emitted                                                                                      |
 | ----------------------- | ------------------------------------------------------------------------------------------------- |
@@ -1414,18 +1661,26 @@ Environment stream item contract:
 | `environment_mounted`   | After an active mount updates the runtime binding for future tool calls                           |
 | `environment_unmounted` | After an active unmount removes or disables a mount for future tool calls                         |
 
-These are canonical run stream items delivered to subscribers through the
-existing `stream.event` notification wrapper. They are not separate
+These are canonical typed run replay events. The target implementation should
+add a typed environment lifecycle replay event rather than encoding these as
+ordinary display text. Until a dedicated enum variant exists, the transitional
+wire shape may use `ReplayEventKind::Raw` with the stable payload shape below,
+but RPC projection must preserve the event for native replay, display-message
+projection, and AGUI projection. They are delivered to subscribers through the
+existing `stream.event` notification wrapper and are not separate
 `starweaver.event` notification kinds.
 
-Environment stream payload shape:
+Environment lifecycle payload shape:
 
 ```json
 {
   "kind": "environment_info",
   "runId": "run_...",
+  "bindingVersion": 1,
   "environment": {
+    "bindingVersion": 1,
     "defaultMountId": "local",
+    "defaultShellMountId": "local",
     "mounts": [
       {
         "id": "local",
@@ -1433,6 +1688,7 @@ Environment stream payload shape:
         "root": "/environment/local",
         "mode": "read_write",
         "default": true,
+        "defaultForShell": true,
         "status": "ready",
         "readiness": {},
         "source": {
@@ -1445,6 +1701,7 @@ Environment stream payload shape:
         "root": "/environment/data",
         "mode": "read_only",
         "default": false,
+        "defaultForShell": false,
         "status": "ready",
         "readiness": {},
         "environmentId": "dataset",
@@ -1458,17 +1715,19 @@ Environment stream payload shape:
 }
 ```
 
-`environment_mounted` and `environment_unmounted` use the same mount summary
-shape and add `action`, `previousDefaultMountId`, `currentDefaultMountId`, and
-the stream cursor for any appended steering/context event when `injectContext`
-is true. The event is emitted after the binding update, so it describes the
-state that future tool calls will observe. The steering/context event is emitted
-afterward and remains append-only.
+`environment_mounted` and `environment_unmounted` use the same environment
+summary shape and add `operationId`, `action`, `mount`,
+`previousDefaultMountId`, `currentDefaultMountId`, `previousBindingVersion`,
+`bindingVersion`, `previousDefaultShellMountId`, `currentDefaultShellMountId`,
+and the stream cursor for any appended steering/context event when
+`injectContext` is true. The event is emitted after the binding update, so it
+describes the state that future tool calls will observe. The steering/context
+event is emitted afterward and remains append-only.
 
-No environment stream item may contain `authToken`, token environment variable
-values, host launch credentials, or undeclared host filesystem paths. Endpoint
-refs may be omitted or redacted by host policy; clients must use mount ids and
-readiness fields for display decisions.
+No environment lifecycle item may contain `authToken`, token environment
+variable values, host launch credentials, or undeclared host filesystem paths.
+Endpoint refs may be omitted or redacted by host policy; clients must use mount
+ids, binding versions, and readiness fields for display decisions.
 
 ## Stream Methods
 
@@ -1736,10 +1995,10 @@ Projection request:
 
 Projection formats:
 
-| Format                       | Meaning                                                |
-| ---------------------------- | ------------------------------------------------------ |
-| `starweaver.display_message` | Extracted `DisplayMessage` when the event contains one |
-| `agui`                       | AGUI top-level event mapped from `DisplayMessage`      |
+| Format                       | Meaning                                                                 |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| `starweaver.display_message` | Extracted or synthesized `DisplayMessage` for displayable replay events |
+| `agui`                       | AGUI top-level event mapped from the display projection                 |
 
 Projection result entry:
 
@@ -1747,7 +2006,7 @@ Projection result entry:
 {
   "format": "agui",
   "payload": {
-    "type": "TEXT_MESSAGE_CHUNK",
+    "type": "TEXT_MESSAGE_CONTENT",
     "delta": "hello"
   }
 }
@@ -1760,6 +2019,24 @@ Projection invariants:
 - The default projection format is `starweaver.display_message`.
 - Multiple projections can be returned when requested.
 - Projection adapters live at protocol/product edges, not in `CliRuntimeCoordinator`.
+
+Environment lifecycle projection:
+
+- Canonical `environment_info`, `environment_mounted`, and
+  `environment_unmounted` replay events project to a `DisplayMessage` with
+  `type: "HOST_OPERATION"`, diagnostic visibility by default, and the safe
+  lifecycle payload under `payload`.
+- The display payload includes `operationKind` with the lifecycle kind,
+  `bindingVersion`, `environment`, and mutation fields such as `mount`,
+  `previousDefaultMountId`, `currentDefaultMountId`,
+  `previousDefaultShellMountId`, and `currentDefaultShellMountId` when present.
+- The AGUI projection maps that display message through the normal display
+  adapter, producing a top-level `HOST_OPERATION` event whose payload contains
+  the same safe lifecycle payload. It must not degrade lifecycle records into
+  text chunks.
+- Transitional `ReplayEventKind::Raw` lifecycle events use the same projection
+  path by detecting `payload.kind` in the environment lifecycle set. Native
+  replay still returns the raw canonical event unchanged.
 
 ## HITL Methods
 
@@ -2059,6 +2336,8 @@ Recommended methods:
 - `run.steer`
 - `environment.attach`
 - `environment.detach`
+- `environment.active_mount`
+- `environment.active_unmount`
 - `approval.decide`
 - `deferred.complete`
 - `deferred.fail`
@@ -2072,6 +2351,10 @@ Semantics:
 - Repeating the same method with the same key and same params returns the original result.
 - Repeating the same method with the same key and different params returns `idempotency_conflict`.
 - For `run.start`, idempotency must prevent duplicate durable runs.
+- For `environment.active_mount` and `environment.active_unmount`, idempotency
+  must prevent duplicate binding mutations, duplicate environment lifecycle
+  events, and duplicate steering context injections. Replays of the same key
+  return the original result including the original cursors.
 - For process-local stdio servers, in-memory idempotency is acceptable for methods that do not create durable state. Durable run creation should persist enough metadata to survive a client reconnect when practical.
 
 ## Error Model
@@ -2349,6 +2632,28 @@ Required tests:
 - `environment.detach` conflict fixture for an active run attachment.
 - `environment.health` fixture covering ready, unavailable, and redacted error data.
 - `run.start` multi-attachment fixture proving default selection and `/environment/{id}` materialization.
+- `environment_info` first-event fixture proving the initial binding is emitted
+  before model/tool work and is replayable after reconnect.
+- `environment.active_mount` fixtures covering inline source, lease ref, mode
+  narrowing, `replace: false` conflict, `replace: true` replacement,
+  `attachment.default: true`, `attachment.defaultForShell: true`,
+  `expectedBindingVersion` conflict, and reserved `local` rejection.
+- `environment.active_unmount` fixtures covering ordinary unmount, default
+  unmount requiring `newDefaultMountId`, live background process conflict, lease
+  active-run conflict release, and idempotent retry without duplicate events.
+- Default shell mutation fixtures covering `defaultShellMountId` recompute,
+  invalid shell default rejection, current shell default unmount with
+  `newDefaultShellMountId`, and the no-shell-capable-mount null case.
+- `environment.active_list` fixture proving the latest binding version, default
+  mount, default shell mount, safe mount summaries, and latest environment cursor.
+- Environment lifecycle stream fixtures proving `environment_mounted` and
+  `environment_unmounted` ordering, redaction, native replay preservation,
+  display projection, AGUI projection, and no-gap live subscribe replay.
+- Environment lifecycle projection fixtures proving both typed lifecycle replay
+  events and transitional `ReplayEventKind::Raw` lifecycle payloads project to
+  `HOST_OPERATION` `DisplayMessage` and AGUI events without becoming text chunks.
+- Concurrent active environment mutation fixture proving per-run serialization
+  and monotonic `bindingVersion`.
 - Current-session pointer set, clear, and missing-session fixtures.
 - `stream.replay` run scope and session scope fixtures.
 - `stream.subscribe` replay-before-live no-gap fixture.

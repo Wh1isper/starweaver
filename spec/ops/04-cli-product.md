@@ -10,6 +10,7 @@ Prioritize the CLI as the bootstrap product for Starweaver:
 - shared configuration rooted at `~/.starweaver/config.toml`
 - client UI state rooted at `~/.starweaver/tui` and `~/.starweaver/desktop`
 - Starweaver JSON-RPC host protocol with stdio and HTTP local management and execution transports
+- environment attachment and active-mount controls shared by RPC, TUI, and Desktop
 - CLI commands as a shell-friendly subset over the same runtime/service handlers
 - TUI as the terminal client over the runtime surface
 - Desktop as the desktop client over the runtime surface
@@ -103,6 +104,8 @@ Primary postponed migration gaps:
 - live stdout streaming for one-shot headless output
 - deeper TUI session/task/HITL/media workflows
 - startup asset seeding and config import
+- envd environment attachments, active-run mount/unmount/list controls, and
+  lifecycle stream projection
 - shell environment isolation, shell review, media config, browser config, and OAuth refresh settings
 - worktree flag semantics and session-folder import/export
 
@@ -147,7 +150,7 @@ The Starweaver JSON-RPC host protocol is the complete local host-control API. Th
 
 Model choice is client state. `~/.starweaver/config.toml` defines shared model profiles, envd profiles, and provider settings, while `~/.starweaver/tui/state.json` and `~/.starweaver/desktop/state.json` store the selected model profile for each frontend. Headless CLI runs can still pass `--profile`; RPC `run.start` can pass an explicit `profile`/`modelProfile` or fall back to the selected profile for the supplied `client`. TUI envd attachments come from config-backed `[envd_profiles.*]` entries rather than TUI-specific argv.
 
-Environment mount choice is run state. `local` is the reserved mount id for the configured local Starweaver workspace. Interactive TUI startup materializes `local` plus every enabled envd profile so the first run can see several environments at once. RPC startup uses the same attachment contract: omitted attachments mean the reserved local environment only, while an explicit `environmentAttachments` list is authoritative and must include `{"id": "local", "kind": "local"}` when local workspace access is desired alongside envd mounts.
+Environment mount choice is run state. `local` is the reserved mount id for the configured local Starweaver workspace. Interactive TUI startup materializes `local` plus every enabled envd profile so the first run can see several environments at once. RPC startup uses the same attachment contract: omitted attachments mean the reserved local environment only, while an explicit `environmentAttachments` list is authoritative and must include `{"id": "local", "kind": "local"}` when local workspace access is desired alongside envd mounts. After `environment.active_mounts` lands, RPC, TUI, and Desktop active runs use the same host-control mutation path for active mount, active unmount, and active list instead of frontend-specific environment wiring.
 
 ## Session Affinity and Durable Sessions
 
@@ -415,7 +418,7 @@ Example run start:
 Example live event:
 
 ```json
-{"jsonrpc":"2.0","method":"run.output","params":{"sessionId":"session_...","runId":"run_...","cursor":{"scope":"run:run_...","sequence":3},"payloadFormat":"agui","payload":{"type":"TEXT_MESSAGE_CHUNK","messageId":"run_...","delta":"Hello"}}}
+{"jsonrpc":"2.0","method":"run.output","params":{"sessionId":"session_...","runId":"run_...","cursor":{"scope":"run:run_...","sequence":3},"payloadFormat":"agui","payload":{"type":"TEXT_MESSAGE_CONTENT","messageId":"run_...","delta":"Hello"}}}
 ```
 
 CLI commands remain a subset/facade over the same handlers:
@@ -442,19 +445,31 @@ Implementation impact on the current CLI:
 - project live runtime records into `DisplayMessage` values, wrap them in scoped replay events, and preserve raw runtime records for TUI state updates
 - keep raw `AgentStreamRecord` capture for debugging, replay evidence, and TUI state updates
 - maintain an active-run registry keyed by `runId` with cancellation sender, steering sender, status, live display messages, and stream subscribers
+- maintain run-local environment binding state with monotonic `bindingVersion`,
+  active mount mutation serialization, and environment lifecycle replay events
 - expose management methods through RPC first, then map CLI command subset onto the same service handlers
 - reuse `LocalStore` methods for session/approval/deferred management, expose shared lifecycle and replay through `LocalSessionStore`, `LocalStreamArchive`, and `ReplayScope` / `ReplayCursor` windows, then converge concrete storage calls onto `starweaver-storage` adapters when the CLI persistence migration lands
 
-Implemented build slices and target cleanup:
+Implemented build slices:
 
 1. Protocol shell: `sw cli rpc`, `initialize`, `shutdown`, newline JSON-RPC framing tests, stderr diagnostics contract.
 2. Management API: `session.create`, `session.list`, `session.get`, current-session pointer methods, `session.replay`, `profile.*`, `model.*`, `config.get`, `diagnostics.get`.
 3. Run lifecycle: shared prompt preparation/execution/completion, blocking `run.prompt`, non-blocking `run.start`, session selection, and client-state model selection.
 4. Live display: shared runtime coordinator, non-blocking active-run registry, `run.output`, terminal `run.status` notification, AGUI/default payload projection, `session.output`, and `run.attach`.
 5. Active control: `run.cancel`, `run.steer`, `session.steer`, `approval.*`, `deferred.*`, `run.await`.
-6. CLI facade: normalize `--output json`, keep `display-jsonl` run/replay streams, and map command handlers onto the same runtime service methods.
-7. TUI client migration: route TUI active runs through the in-process coordinator while preserving the retained terminal renderer.
-8. Desktop client: consume the standardized host protocol, display stream, and replay/subscription semantics from `06-json-rpc-host-protocol.md`.
+
+Target cleanup slices:
+
+1. Environment attachments: `environment.attach`, `environment.detach`,
+   `environment.list`, `environment.health`, run-start `environmentAttachments`,
+   `environment_info`, and config-backed TUI envd profile materialization.
+2. Active environment mounts: `environment.active_mount`,
+   `environment.active_unmount`, `environment.active_list`, binding-version
+   conflict handling, lease-scope checks, lifecycle replay projection, and
+   append-only steering context injection.
+3. CLI facade: normalize `--output json`, keep `display-jsonl` run/replay streams, and map command handlers onto the same runtime service methods.
+4. TUI client migration: route TUI active runs through the in-process coordinator while preserving the retained terminal renderer.
+5. Desktop client: consume the standardized host protocol, display stream, and replay/subscription semantics from `06-json-rpc-host-protocol.md`.
 
 ## Display Protocol as the UI Boundary
 
@@ -507,7 +522,7 @@ sw session replay <session-id> --run <run-id> --output display-jsonl
 
 ## AGUI Compatibility Path
 
-`DisplayMessage` is the Starweaver wire event. It carries AGUI-style lifecycle event names in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads. Starweaver/AGUI projection is an adapter that maps `DisplayMessage` into top-level protocol events such as `RUN_STARTED`, `TEXT_MESSAGE_CHUNK`, `TOOL_CALL_CHUNK`, and `TOOL_CALL_RESULT`.
+`DisplayMessage` is the Starweaver wire event. It carries AGUI-style lifecycle event names in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads. Starweaver/AGUI projection is an adapter that maps `DisplayMessage` into top-level protocol events such as `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_ARGS`, `TOOL_CALL_RESULT`, and the Starweaver extension `HOST_OPERATION`. Environment lifecycle replay records project to `HOST_OPERATION` display messages, not text chunks.
 
 Starweaver mapping layers:
 

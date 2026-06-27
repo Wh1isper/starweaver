@@ -15,5 +15,9 @@ pub use inheritance::{
     SubagentCapabilityInheritancePolicy, SubagentToolInheritanceError,
     SubagentToolInheritancePolicy,
 };
-pub use registry::{SubagentParentTools, SubagentRegistry};
+pub use registry::{
+    BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,
+    SubagentDelegationMode, SubagentParentTools, SubagentRegistry, DELEGATE_BACKEND_TOOL_NAME,
+    SPAWN_DELEGATE_TOOL_NAME,
+};
 pub use task::{SubagentResult, SubagentTask};

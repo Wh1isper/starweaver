@@ -30,7 +30,7 @@ use thiserror::Error;
 use crate::{
     AgentApp, AgentBuilder, AgentHitlError, AgentHitlResults, AgentRunOptions, AgentSession,
     AgentStreamCompletion, AgentStreamError, AgentStreamHandle, AgentStreamOptions, MediaUploader,
-    SkillRegistry, SkillScanReport, SubagentConfig, SubagentRegistry,
+    SkillRegistry, SkillScanReport, SubagentConfig, SubagentDelegationMode, SubagentRegistry,
 };
 
 /// Errors returned by durable SDK runtime orchestration.
@@ -348,6 +348,13 @@ impl AgentRuntimeBuilder {
     #[must_use]
     pub fn subagent_registry(mut self, registry: SubagentRegistry) -> Self {
         self.builder = self.builder.subagent_registry(registry);
+        self
+    }
+
+    /// Set how registered subagents are exposed as model-callable tools.
+    #[must_use]
+    pub fn subagent_delegation_mode(mut self, mode: SubagentDelegationMode) -> Self {
+        self.builder = self.builder.subagent_delegation_mode(mode);
         self
     }
 
