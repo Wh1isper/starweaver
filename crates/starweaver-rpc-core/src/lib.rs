@@ -13,7 +13,8 @@ mod environment;
 pub use environment::{
     environment_attachment_lease_result, environment_attachment_list_result,
     environment_attachment_refs, environment_attachment_result, environment_health_result,
-    is_valid_environment_attachment_id, EnvironmentAttachParams, EnvironmentAttachmentAccessMode,
+    is_valid_environment_attachment_id, EnvironmentActiveListParams, EnvironmentActiveMountParams,
+    EnvironmentActiveUnmountParams, EnvironmentAttachParams, EnvironmentAttachmentAccessMode,
     EnvironmentAttachmentLease, EnvironmentAttachmentRef, EnvironmentAttachmentScope,
     EnvironmentAttachmentScopeKind, EnvironmentAttachmentStatus, EnvironmentDetachParams,
     EnvironmentHealthParams, EnvironmentListParams, EnvironmentReadiness,
@@ -630,6 +631,7 @@ mod tests {
             kind: "local".to_string(),
             mode: EnvironmentAttachmentAccessMode::ReadWrite,
             is_default: true,
+            is_default_for_shell: true,
             mount_root: "/environment/workspace".to_string(),
             status: EnvironmentAttachmentStatus::Ready,
             readiness: EnvironmentReadiness {

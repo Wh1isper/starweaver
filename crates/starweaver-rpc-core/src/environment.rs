@@ -148,6 +148,9 @@ pub struct EnvironmentAttachmentRef {
     /// Whether this attachment is the default SDK environment mount.
     #[serde(default, rename = "default")]
     pub is_default: bool,
+    /// Whether this attachment is the default shell/process mount.
+    #[serde(default, rename = "defaultForShell")]
+    pub is_default_for_shell: bool,
     /// Existing host-control lease id, when this ref points at a pre-attached environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_lease_id: Option<String>,
@@ -221,6 +224,9 @@ pub struct EnvironmentAttachmentLease {
     /// Whether this attachment prefers to be the default mount.
     #[serde(default, rename = "default")]
     pub is_default: bool,
+    /// Whether this attachment prefers to be the default shell/process mount.
+    #[serde(default, rename = "defaultForShell")]
+    pub is_default_for_shell: bool,
     /// Agent-facing mount root.
     pub mount_root: String,
     /// Attachment status.
@@ -300,6 +306,61 @@ pub struct EnvironmentHealthParams {
     /// Optional readiness timeout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+}
+
+/// Params for `environment.active_mount`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentActiveMountParams {
+    /// Active run id.
+    pub run_id: String,
+    /// Attachment source or lease ref to mount.
+    pub attachment: EnvironmentAttachmentRef,
+    /// Replace an existing mount with the same id.
+    #[serde(default)]
+    pub replace: bool,
+    /// Whether to inject model-visible context after the lifecycle event.
+    #[serde(default = "default_true")]
+    pub inject_context: bool,
+    /// Optional optimistic binding version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_binding_version: Option<u64>,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+/// Params for `environment.active_unmount`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentActiveUnmountParams {
+    /// Active run id.
+    pub run_id: String,
+    /// Mount id to remove.
+    pub mount_id: String,
+    /// Required when removing the current default mount.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_default_mount_id: Option<String>,
+    /// Required when removing the current default shell mount.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_default_shell_mount_id: Option<String>,
+    /// Whether to inject model-visible context after the lifecycle event.
+    #[serde(default = "default_true")]
+    pub inject_context: bool,
+    /// Optional optimistic binding version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_binding_version: Option<u64>,
+    /// Idempotency key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+}
+
+/// Params for `environment.active_list`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentActiveListParams {
+    /// Active run id.
+    pub run_id: String,
 }
 
 /// Parse environment attachment refs from host RPC params.
@@ -383,6 +444,7 @@ pub fn is_valid_environment_attachment_id(id: &str) -> bool {
 fn validate_environment_attachment_refs(refs: &[EnvironmentAttachmentRef]) -> Result<(), RpcError> {
     let mut ids = BTreeSet::new();
     let mut default_count = 0_usize;
+    let mut default_for_shell_count = 0_usize;
     for attachment in refs {
         if !is_valid_environment_attachment_id(&attachment.id) {
             return Err(RpcError::new(
@@ -410,6 +472,9 @@ fn validate_environment_attachment_refs(refs: &[EnvironmentAttachmentRef]) -> Re
         if attachment.is_default {
             default_count += 1;
         }
+        if attachment.is_default_for_shell {
+            default_for_shell_count += 1;
+        }
     }
     if refs.len() > 1 && default_count != 1 {
         return Err(RpcError::new(
@@ -417,9 +482,19 @@ fn validate_environment_attachment_refs(refs: &[EnvironmentAttachmentRef]) -> Re
             "multiple environment attachments require exactly one default attachment",
         ));
     }
+    if default_for_shell_count > 1 {
+        return Err(RpcError::new(
+            INVALID_PARAMS,
+            "environment attachments allow at most one defaultForShell attachment",
+        ));
+    }
     Ok(())
 }
 
 fn default_environment_attachment_kind() -> String {
     LOCAL_ENVIRONMENT_ATTACHMENT_KIND.to_string()
+}
+
+const fn default_true() -> bool {
+    true
 }

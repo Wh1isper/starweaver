@@ -9,6 +9,13 @@ use std::{
 
 use serde::Serialize;
 use serde_json::{json, Value};
+use starweaver_environment::{
+    ShellProcessStatus, SwitchableEnvironmentProvider, SwitchableEnvironmentTarget,
+};
+use starweaver_rpc_core::{
+    EnvironmentActiveMountParams, EnvironmentActiveUnmountParams, EnvironmentAttachmentRef,
+    ALREADY_EXISTS, INVALID_PARAMS, RUN_CONFLICT,
+};
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{RunRecord, RunStatus};
 use starweaver_stream::{
@@ -19,6 +26,7 @@ use starweaver_stream::{
 use crate::{
     args::RunCommand,
     config::CliConfig,
+    environment::{resolve_environment_target_for_session_with_attachments, ResolvedEnvironment},
     local_store::{LocalStore, LocalStreamArchive},
     prompt_input::PromptInput,
     runner::CliSteeringMessage,
@@ -75,6 +83,55 @@ struct ActiveRunState {
     steering_sender: mpsc::Sender<CliSteeringMessage>,
     cancel_sender: mpsc::Sender<()>,
     subscribers: Vec<RunSubscriber>,
+    environment: Option<ActiveEnvironmentBinding>,
+}
+
+struct ActiveEnvironmentBinding {
+    attachments: Vec<EnvironmentAttachmentRef>,
+    binding_version: u64,
+    switchable: Arc<SwitchableEnvironmentProvider>,
+    latest_environment_sequence: Option<usize>,
+    idempotency: HashMap<String, Value>,
+}
+
+struct ActiveMountMutation {
+    mounted: EnvironmentAttachmentRef,
+    previous_binding_version: u64,
+    binding_version: u64,
+    previous_default: Option<String>,
+    current_default: Option<String>,
+    previous_default_shell: Option<String>,
+    current_default_shell: Option<String>,
+    attachments: Vec<EnvironmentAttachmentRef>,
+}
+
+struct ActiveUnmountMutation {
+    removed: EnvironmentAttachmentRef,
+    previous_binding_version: u64,
+    binding_version: u64,
+    previous_default: Option<String>,
+    current_default: Option<String>,
+    previous_default_shell: Option<String>,
+    current_default_shell: Option<String>,
+    attachments: Vec<EnvironmentAttachmentRef>,
+}
+
+enum ActiveUnmountPreparation {
+    Idempotent {
+        result: Value,
+        removed: EnvironmentAttachmentRef,
+    },
+    Mutation(PreparedActiveUnmount),
+}
+
+struct PreparedActiveUnmount {
+    session_id: String,
+    switchable: Arc<SwitchableEnvironmentProvider>,
+    removed: EnvironmentAttachmentRef,
+    updated: Vec<EnvironmentAttachmentRef>,
+    previous_binding_version: u64,
+    previous_default: Option<String>,
+    previous_default_shell: Option<String>,
 }
 
 struct RunSubscriber {
@@ -103,6 +160,7 @@ struct BackgroundRunWorker {
 }
 
 impl BackgroundRunWorker {
+    #[allow(clippy::too_many_lines)]
     fn run(self) {
         let mut service = match CliService::open(self.config.clone()) {
             Ok(service) => service,
@@ -121,6 +179,7 @@ impl BackgroundRunWorker {
         let run_on_error = prepared.run.clone();
         let session_id = prepared.session_id.clone();
         let run_id = prepared.run_id.clone();
+        let active_environment = active_environment_binding(&prepared.environment);
         insert_active_run(
             &self.active_runs,
             &session_id,
@@ -133,6 +192,7 @@ impl BackgroundRunWorker {
                 cursor: SubscriberCursor::Run,
                 sender: self.event_sender,
             },
+            active_environment,
         );
         publish_status(
             &self.active_runs,
@@ -147,6 +207,7 @@ impl BackgroundRunWorker {
             &run_id,
             vec![queued_display_message(&prepared.run)],
         );
+        publish_initial_environment_info(&self.active_runs, &run_id);
         let _ = self
             .started_sender
             .send(Ok((session_id.clone(), run_id.clone())));
@@ -165,30 +226,36 @@ impl BackgroundRunWorker {
         );
         let _ = stream_handle.join();
         match executed {
-            Ok(executed) => match service.complete_prompt_run(executed) {
-                Ok(execution) => {
-                    publish_status(
-                        &self.active_runs,
-                        &execution.session_id,
-                        &execution.run_id,
-                        &execution.status,
-                        output_preview(&execution.messages),
-                        None,
-                    );
-                    remove_active_if_terminal(&self.active_runs, &execution.run_id);
+            Ok(mut executed) => {
+                executed.merge_display_message_inserts(environment_lifecycle_message_inserts(
+                    &self.active_runs,
+                    &run_id,
+                ));
+                match service.complete_prompt_run(executed) {
+                    Ok(execution) => {
+                        publish_status(
+                            &self.active_runs,
+                            &execution.session_id,
+                            &execution.run_id,
+                            &execution.status,
+                            output_preview(&execution.messages),
+                            None,
+                        );
+                        remove_active_if_terminal(&self.active_runs, &execution.run_id);
+                    }
+                    Err(error) => {
+                        publish_status(
+                            &self.active_runs,
+                            &session_id,
+                            &run_id,
+                            "failed",
+                            None,
+                            Some(error.to_string()),
+                        );
+                        remove_active_if_terminal(&self.active_runs, &run_id);
+                    }
                 }
-                Err(error) => {
-                    publish_status(
-                        &self.active_runs,
-                        &session_id,
-                        &run_id,
-                        "failed",
-                        None,
-                        Some(error.to_string()),
-                    );
-                    remove_active_if_terminal(&self.active_runs, &run_id);
-                }
-            },
+            }
             Err(error) => {
                 let _ = service.fail_prepared_prompt_run(run_on_error, &error);
                 publish_status(
@@ -425,6 +492,422 @@ impl CliRuntimeCoordinator {
             .map_err(|error| CliError::Run(error.to_string()))
     }
 
+    pub(super) fn active_environment_list(&self, run_id: &str) -> CliResult<Value> {
+        let runs = self
+            .active_runs
+            .lock()
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        let Some(state) = runs.get(run_id) else {
+            return Err(CliError::NotFound(run_id.to_string()));
+        };
+        let Some(environment) = state.environment.as_ref() else {
+            return Err(CliError::Run(
+                "active run has no mutable environment binding".to_string(),
+            ));
+        };
+        let result = json!({
+            "runId": run_id,
+            "environment": environment_summary(
+                environment.binding_version,
+                &environment.attachments,
+            ),
+            "latestEnvironmentCursor": environment.latest_environment_sequence.map(|sequence| {
+                json!({
+                    "scope": ReplayScope::run(run_id).as_str(),
+                    "sequence": sequence,
+                })
+            }),
+        });
+        drop(runs);
+        Ok(result)
+    }
+
+    pub(super) fn active_run_session_id(&self, run_id: &str) -> CliResult<String> {
+        let runs = self
+            .active_runs
+            .lock()
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        let Some(state) = runs.get(run_id) else {
+            return Err(CliError::NotFound(run_id.to_string()));
+        };
+        let session_id = state.session_id.clone();
+        drop(runs);
+        Ok(session_id)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn active_environment_mount(
+        &self,
+        params: &EnvironmentActiveMountParams,
+        attachment: EnvironmentAttachmentRef,
+    ) -> Result<Value, starweaver_rpc_core::RpcError> {
+        let mut runs = self
+            .active_runs
+            .lock()
+            .map_err(|error| starweaver_rpc_core::RpcError::new(RUN_CONFLICT, error.to_string()))?;
+        let Some(state) = runs.get_mut(&params.run_id) else {
+            return Err(starweaver_rpc_core::RpcError::new(
+                RUN_CONFLICT,
+                format!("active run not found: {}", params.run_id),
+            ));
+        };
+        let operation_id = format!("envop_{}", chrono::Utc::now().timestamp_micros());
+        let event_sequence = next_display_sequence(state);
+        let mutation = {
+            let Some(environment) = state.environment.as_mut() else {
+                return Err(starweaver_rpc_core::RpcError::new(
+                    RUN_CONFLICT,
+                    "active run has no mutable environment binding",
+                ));
+            };
+            if let Some(key) = params.idempotency_key.as_deref() {
+                if let Some(result) = environment.idempotency.get(&mutation_key("mount", key)) {
+                    return Ok(result.clone());
+                }
+            }
+            ensure_expected_binding(environment, params.expected_binding_version)?;
+            let previous_binding_version = environment.binding_version;
+            let previous_default = default_mount_id(&environment.attachments);
+            let previous_default_shell = default_shell_mount_id(&environment.attachments);
+            let existing_index = environment
+                .attachments
+                .iter()
+                .position(|current| current.id == attachment.id);
+            if existing_index.is_some() && !params.replace {
+                return Err(starweaver_rpc_core::RpcError::new(
+                    ALREADY_EXISTS,
+                    format!("environment mount already exists: {}", attachment.id),
+                ));
+            }
+            let mut updated = environment.attachments.clone();
+            let mut mounted = attachment;
+            if let Some(index) = existing_index {
+                if updated[index].is_default && !mounted.is_default {
+                    mounted.is_default = true;
+                }
+                if updated[index].is_default_for_shell && !mounted.is_default_for_shell {
+                    mounted.is_default_for_shell = true;
+                }
+                updated[index] = mounted.clone();
+            } else {
+                updated.push(mounted.clone());
+            }
+            normalize_default_flags(&mut updated)?;
+            let target = resolve_environment_target_for_session_with_attachments(
+                &self.config,
+                &state.session_id,
+                &updated,
+            )
+            .map_err(configuration_rpc_error)?;
+            environment
+                .switchable
+                .replace_target(SwitchableEnvironmentTarget::new(
+                    target.provider,
+                    target.process_provider,
+                ))
+                .map_err(environment_rpc_error)?;
+            environment.attachments = updated;
+            environment.binding_version = environment.binding_version.saturating_add(1);
+            let binding_version = environment.binding_version;
+            let attachments = environment.attachments.clone();
+            let current_default = default_mount_id(&attachments);
+            let current_default_shell = default_shell_mount_id(&attachments);
+            ActiveMountMutation {
+                mounted,
+                previous_binding_version,
+                binding_version,
+                previous_default,
+                current_default,
+                previous_default_shell,
+                current_default_shell,
+                attachments,
+            }
+        };
+        let lifecycle_extra = json!({
+            "action": "mounted",
+            "mount": mount_summary(&mutation.mounted, "ready"),
+            "previousBindingVersion": mutation.previous_binding_version,
+            "previousDefaultMountId": mutation.previous_default,
+            "currentDefaultMountId": mutation.current_default,
+            "previousDefaultShellMountId": mutation.previous_default_shell,
+            "currentDefaultShellMountId": mutation.current_default_shell,
+        });
+        let lifecycle_environment =
+            environment_summary(mutation.binding_version, &mutation.attachments);
+        let message = environment_lifecycle_message(
+            &params.run_id,
+            &state.session_id,
+            event_sequence,
+            &operation_id,
+            "environment_mounted",
+            mutation.binding_version,
+            &lifecycle_environment,
+            &lifecycle_extra,
+        );
+        publish_display_message_to_state(&params.run_id, state, message);
+        let mut warnings = Vec::new();
+        let steering_cursor = if params.inject_context {
+            match state.steering_sender.send(CliSteeringMessage {
+                id: operation_id.clone(),
+                text: render_environment_steering_text("mounted", &mutation.mounted),
+            }) {
+                Ok(()) => Some(event_sequence),
+                Err(error) => {
+                    warnings.push(json!({
+                        "code": "steering_injection_failed",
+                        "message": error.to_string(),
+                    }));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let result = active_mount_result(
+            &params.run_id,
+            &operation_id,
+            &mutation.mounted,
+            mutation.previous_binding_version,
+            mutation.binding_version,
+            params.replace,
+            mutation.previous_default,
+            mutation.current_default,
+            mutation.previous_default_shell,
+            mutation.current_default_shell,
+            &mutation.attachments,
+            event_sequence,
+            steering_cursor,
+            warnings,
+        );
+        if let Some(key) = params.idempotency_key.as_deref() {
+            if let Some(environment) = state.environment.as_mut() {
+                environment
+                    .idempotency
+                    .insert(mutation_key("mount", key), result.clone());
+            }
+        }
+        drop(runs);
+        Ok(result)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(super) async fn active_environment_unmount(
+        &self,
+        params: &EnvironmentActiveUnmountParams,
+    ) -> Result<(Value, EnvironmentAttachmentRef), starweaver_rpc_core::RpcError> {
+        let prepared = match self.prepare_active_unmount(params)? {
+            ActiveUnmountPreparation::Idempotent { result, removed } => {
+                return Ok((result, removed));
+            }
+            ActiveUnmountPreparation::Mutation(prepared) => prepared,
+        };
+        ensure_mount_has_no_live_processes(&prepared.switchable, &params.mount_id).await?;
+        let target = resolve_environment_target_for_session_with_attachments(
+            &self.config,
+            &prepared.session_id,
+            &prepared.updated,
+        )
+        .map_err(configuration_rpc_error)?;
+        let mut runs = self
+            .active_runs
+            .lock()
+            .map_err(|error| starweaver_rpc_core::RpcError::new(RUN_CONFLICT, error.to_string()))?;
+        let Some(state) = runs.get_mut(&params.run_id) else {
+            return Err(starweaver_rpc_core::RpcError::new(
+                RUN_CONFLICT,
+                format!("active run not found: {}", params.run_id),
+            ));
+        };
+        let operation_id = format!("envop_{}", chrono::Utc::now().timestamp_micros());
+        let event_sequence = next_display_sequence(state);
+        let mutation = {
+            let Some(environment) = state.environment.as_mut() else {
+                return Err(starweaver_rpc_core::RpcError::new(
+                    RUN_CONFLICT,
+                    "active run has no mutable environment binding",
+                ));
+            };
+            if let Some(key) = params.idempotency_key.as_deref() {
+                if let Some(result) = environment.idempotency.get(&mutation_key("unmount", key)) {
+                    let removed = environment
+                        .attachments
+                        .iter()
+                        .find(|attachment| attachment.id == params.mount_id)
+                        .cloned()
+                        .unwrap_or_else(|| tombstone_attachment(&params.mount_id));
+                    return Ok((result.clone(), removed));
+                }
+            }
+            if environment.binding_version != prepared.previous_binding_version {
+                return Err(starweaver_rpc_core::RpcError::new(
+                    RUN_CONFLICT,
+                    format!(
+                        "environment binding changed during unmount: expected {}, current {}",
+                        prepared.previous_binding_version, environment.binding_version
+                    ),
+                ));
+            }
+            environment
+                .switchable
+                .replace_target(SwitchableEnvironmentTarget::new(
+                    target.provider,
+                    target.process_provider,
+                ))
+                .map_err(environment_rpc_error)?;
+            environment.attachments = prepared.updated;
+            environment.binding_version = environment.binding_version.saturating_add(1);
+            let binding_version = environment.binding_version;
+            let attachments = environment.attachments.clone();
+            let current_default = default_mount_id(&attachments);
+            let current_default_shell = default_shell_mount_id(&attachments);
+            ActiveUnmountMutation {
+                removed: prepared.removed,
+                previous_binding_version: prepared.previous_binding_version,
+                binding_version,
+                previous_default: prepared.previous_default,
+                current_default,
+                previous_default_shell: prepared.previous_default_shell,
+                current_default_shell,
+                attachments,
+            }
+        };
+        let lifecycle_extra = json!({
+            "action": "unmounted",
+            "mount": mount_summary(&mutation.removed, "detached"),
+            "previousBindingVersion": mutation.previous_binding_version,
+            "previousDefaultMountId": mutation.previous_default,
+            "currentDefaultMountId": mutation.current_default,
+            "previousDefaultShellMountId": mutation.previous_default_shell,
+            "currentDefaultShellMountId": mutation.current_default_shell,
+        });
+        let lifecycle_environment =
+            environment_summary(mutation.binding_version, &mutation.attachments);
+        let message = environment_lifecycle_message(
+            &params.run_id,
+            &state.session_id,
+            event_sequence,
+            &operation_id,
+            "environment_unmounted",
+            mutation.binding_version,
+            &lifecycle_environment,
+            &lifecycle_extra,
+        );
+        publish_display_message_to_state(&params.run_id, state, message);
+        let mut warnings = Vec::new();
+        let steering_cursor = if params.inject_context {
+            match state.steering_sender.send(CliSteeringMessage {
+                id: operation_id.clone(),
+                text: render_environment_steering_text("unmounted", &mutation.removed),
+            }) {
+                Ok(()) => Some(event_sequence),
+                Err(error) => {
+                    warnings.push(json!({
+                        "code": "steering_injection_failed",
+                        "message": error.to_string(),
+                    }));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let result = active_unmount_result(
+            &params.run_id,
+            &operation_id,
+            &mutation.removed,
+            mutation.previous_binding_version,
+            mutation.binding_version,
+            mutation.previous_default,
+            mutation.current_default,
+            mutation.previous_default_shell,
+            mutation.current_default_shell,
+            &mutation.attachments,
+            event_sequence,
+            steering_cursor,
+            warnings,
+        );
+        if let Some(key) = params.idempotency_key.as_deref() {
+            if let Some(environment) = state.environment.as_mut() {
+                environment
+                    .idempotency
+                    .insert(mutation_key("unmount", key), result.clone());
+            }
+        }
+        drop(runs);
+        Ok((result, mutation.removed))
+    }
+
+    fn prepare_active_unmount(
+        &self,
+        params: &EnvironmentActiveUnmountParams,
+    ) -> Result<ActiveUnmountPreparation, starweaver_rpc_core::RpcError> {
+        let mut runs = self
+            .active_runs
+            .lock()
+            .map_err(|error| starweaver_rpc_core::RpcError::new(RUN_CONFLICT, error.to_string()))?;
+        let Some(state) = runs.get_mut(&params.run_id) else {
+            return Err(starweaver_rpc_core::RpcError::new(
+                RUN_CONFLICT,
+                format!("active run not found: {}", params.run_id),
+            ));
+        };
+        let Some(environment) = state.environment.as_mut() else {
+            return Err(starweaver_rpc_core::RpcError::new(
+                RUN_CONFLICT,
+                "active run has no mutable environment binding",
+            ));
+        };
+        if let Some(key) = params.idempotency_key.as_deref() {
+            if let Some(result) = environment.idempotency.get(&mutation_key("unmount", key)) {
+                let result = result.clone();
+                let removed = environment
+                    .attachments
+                    .iter()
+                    .find(|attachment| attachment.id == params.mount_id)
+                    .cloned()
+                    .unwrap_or_else(|| tombstone_attachment(&params.mount_id));
+                drop(runs);
+                return Ok(ActiveUnmountPreparation::Idempotent { result, removed });
+            }
+        }
+        ensure_expected_binding(environment, params.expected_binding_version)?;
+        let previous_binding_version = environment.binding_version;
+        let previous_default = default_mount_id(&environment.attachments);
+        let previous_default_shell = default_shell_mount_id(&environment.attachments);
+        let Some(index) = environment
+            .attachments
+            .iter()
+            .position(|attachment| attachment.id == params.mount_id)
+        else {
+            return Err(starweaver_rpc_core::RpcError::new(
+                INVALID_PARAMS,
+                format!("unknown environment mount: {}", params.mount_id),
+            ));
+        };
+        let removed = environment.attachments[index].clone();
+        let mut updated = environment.attachments.clone();
+        updated.remove(index);
+        if updated.is_empty() {
+            return Err(starweaver_rpc_core::RpcError::new(
+                INVALID_PARAMS,
+                "active environment binding must keep at least one mount",
+            ));
+        }
+        apply_unmount_defaults(&mut updated, &removed, params)?;
+        normalize_default_flags(&mut updated)?;
+        let preparation = ActiveUnmountPreparation::Mutation(PreparedActiveUnmount {
+            session_id: state.session_id.clone(),
+            switchable: environment.switchable.clone(),
+            removed,
+            updated,
+            previous_binding_version,
+            previous_default,
+            previous_default_shell,
+        });
+        drop(runs);
+        Ok(preparation)
+    }
+
     pub(super) fn run_status(&self, session_id: &str, run_id: &str) -> CliResult<RunStatusItem> {
         if let Ok(runs) = self.active_runs.lock() {
             if let Some(state) = runs.get(run_id) {
@@ -489,6 +972,7 @@ impl CliRuntimeCoordinator {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_active_run(
     active_runs: &Arc<Mutex<HashMap<String, ActiveRunState>>>,
     session_id: &str,
@@ -497,6 +981,7 @@ fn insert_active_run(
     cancel_sender: mpsc::Sender<()>,
     sequence_no: usize,
     subscriber: RunSubscriber,
+    environment: Option<ActiveEnvironmentBinding>,
 ) {
     if let Ok(mut runs) = active_runs.lock() {
         runs.insert(
@@ -511,9 +996,563 @@ fn insert_active_run(
                 steering_sender,
                 cancel_sender,
                 subscribers: vec![subscriber],
+                environment,
             },
         );
     }
+}
+
+fn active_environment_binding(
+    environment: &ResolvedEnvironment,
+) -> Option<ActiveEnvironmentBinding> {
+    Some(ActiveEnvironmentBinding {
+        attachments: environment.attachments.clone(),
+        binding_version: 1,
+        switchable: environment.switchable.clone()?,
+        latest_environment_sequence: None,
+        idempotency: HashMap::new(),
+    })
+}
+
+fn ensure_expected_binding(
+    environment: &ActiveEnvironmentBinding,
+    expected: Option<u64>,
+) -> Result<(), starweaver_rpc_core::RpcError> {
+    if expected.is_some_and(|expected| expected != environment.binding_version) {
+        return Err(starweaver_rpc_core::RpcError::new(
+            RUN_CONFLICT,
+            format!(
+                "environment binding version mismatch: expected {}, current {}",
+                expected.unwrap_or_default(),
+                environment.binding_version
+            ),
+        ));
+    }
+    Ok(())
+}
+
+async fn ensure_mount_has_no_live_processes(
+    switchable: &SwitchableEnvironmentProvider,
+    mount_id: &str,
+) -> Result<(), starweaver_rpc_core::RpcError> {
+    let Some(process_provider) = switchable
+        .process_provider()
+        .map_err(environment_rpc_error)?
+    else {
+        return Ok(());
+    };
+    let process_prefix = format!("{mount_id}:");
+    let processes = process_provider
+        .list_processes()
+        .await
+        .map_err(environment_rpc_error)?;
+    if let Some(process) = processes.into_iter().find(|process| {
+        process.status == ShellProcessStatus::Running
+            && process.process_id.starts_with(&process_prefix)
+    }) {
+        return Err(starweaver_rpc_core::RpcError::new(
+            RUN_CONFLICT,
+            format!(
+                "environment mount owns a live background process: {}",
+                process.process_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_default_flags(
+    attachments: &mut [EnvironmentAttachmentRef],
+) -> Result<(), starweaver_rpc_core::RpcError> {
+    let default_ids = attachments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, attachment)| attachment.is_default.then_some(index))
+        .collect::<Vec<_>>();
+    match default_ids.as_slice() {
+        [default_index] => {
+            for (index, attachment) in attachments.iter_mut().enumerate() {
+                attachment.is_default = index == *default_index;
+            }
+        }
+        [] if attachments.len() == 1 => {
+            attachments[0].is_default = true;
+        }
+        [] => {
+            return Err(starweaver_rpc_core::RpcError::new(
+                INVALID_PARAMS,
+                "active environment binding requires one default mount",
+            ));
+        }
+        _ => {
+            let last_default = *default_ids.last().unwrap_or(&0);
+            for (index, attachment) in attachments.iter_mut().enumerate() {
+                attachment.is_default = index == last_default;
+            }
+        }
+    }
+
+    let default_shell_ids = attachments
+        .iter()
+        .enumerate()
+        .filter_map(|(index, attachment)| attachment.is_default_for_shell.then_some(index))
+        .collect::<Vec<_>>();
+    match default_shell_ids.as_slice() {
+        [default_shell_index] => {
+            if !attachment_supports_shell_default(&attachments[*default_shell_index]) {
+                return Err(starweaver_rpc_core::RpcError::new(
+                    INVALID_PARAMS,
+                    format!(
+                        "environment mount cannot be defaultForShell: {}",
+                        attachments[*default_shell_index].id
+                    ),
+                ));
+            }
+            for (index, attachment) in attachments.iter_mut().enumerate() {
+                attachment.is_default_for_shell = index == *default_shell_index;
+            }
+        }
+        [] => {
+            let default_index = attachments
+                .iter()
+                .position(|attachment| attachment.is_default)
+                .ok_or_else(|| {
+                    starweaver_rpc_core::RpcError::new(
+                        INVALID_PARAMS,
+                        "active environment binding requires one default mount",
+                    )
+                })?;
+            if attachment_supports_shell_default(&attachments[default_index]) {
+                attachments[default_index].is_default_for_shell = true;
+            }
+        }
+        _ => {
+            let last_default_shell = *default_shell_ids.last().unwrap_or(&0);
+            if !attachment_supports_shell_default(&attachments[last_default_shell]) {
+                return Err(starweaver_rpc_core::RpcError::new(
+                    INVALID_PARAMS,
+                    format!(
+                        "environment mount cannot be defaultForShell: {}",
+                        attachments[last_default_shell].id
+                    ),
+                ));
+            }
+            for (index, attachment) in attachments.iter_mut().enumerate() {
+                attachment.is_default_for_shell = index == last_default_shell;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn attachment_supports_shell_default(attachment: &EnvironmentAttachmentRef) -> bool {
+    attachment.resolved_mode() == starweaver_rpc_core::EnvironmentAttachmentAccessMode::ReadWrite
+}
+
+fn apply_unmount_defaults(
+    attachments: &mut [EnvironmentAttachmentRef],
+    removed: &EnvironmentAttachmentRef,
+    params: &EnvironmentActiveUnmountParams,
+) -> Result<(), starweaver_rpc_core::RpcError> {
+    if removed.is_default {
+        let Some(new_default) = params.new_default_mount_id.as_deref() else {
+            return Err(starweaver_rpc_core::RpcError::new(
+                INVALID_PARAMS,
+                "newDefaultMountId is required when unmounting the default mount",
+            ));
+        };
+        set_default_mount(attachments, new_default)?;
+    }
+    if removed.is_default_for_shell {
+        if let Some(new_default_shell) = params.new_default_shell_mount_id.as_deref() {
+            set_default_shell_mount(attachments, new_default_shell)?;
+        } else {
+            for attachment in attachments.iter_mut() {
+                attachment.is_default_for_shell = false;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn set_default_mount(
+    attachments: &mut [EnvironmentAttachmentRef],
+    id: &str,
+) -> Result<(), starweaver_rpc_core::RpcError> {
+    if !attachments.iter().any(|attachment| attachment.id == id) {
+        return Err(starweaver_rpc_core::RpcError::new(
+            INVALID_PARAMS,
+            format!("unknown new default mount: {id}"),
+        ));
+    }
+    for attachment in attachments {
+        attachment.is_default = attachment.id == id;
+    }
+    Ok(())
+}
+
+fn set_default_shell_mount(
+    attachments: &mut [EnvironmentAttachmentRef],
+    id: &str,
+) -> Result<(), starweaver_rpc_core::RpcError> {
+    if !attachments.iter().any(|attachment| attachment.id == id) {
+        return Err(starweaver_rpc_core::RpcError::new(
+            INVALID_PARAMS,
+            format!("unknown new default shell mount: {id}"),
+        ));
+    }
+    for attachment in attachments {
+        attachment.is_default_for_shell = attachment.id == id;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn environment_lifecycle_message(
+    run_id: &str,
+    session_id: &str,
+    sequence: usize,
+    operation_id: &str,
+    kind: &str,
+    binding_version: u64,
+    environment: &Value,
+    extra: &Value,
+) -> DisplayMessage {
+    let mut payload = json!({
+        "operationKind": kind,
+        "kind": kind,
+        "operationId": operation_id,
+        "runId": run_id,
+        "bindingVersion": binding_version,
+        "environment": environment,
+    });
+    merge_json_object(&mut payload, extra);
+    DisplayMessage::new(
+        sequence,
+        starweaver_core::SessionId::from_string(session_id.to_string()),
+        starweaver_core::RunId::from_string(run_id),
+        DisplayMessageKind::HostOperation,
+    )
+    .with_payload(payload)
+    .with_preview(format!("environment {kind}"))
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn publish_display_message_to_state(
+    run_id: &str,
+    state: &mut ActiveRunState,
+    message: DisplayMessage,
+) {
+    let sequence = message.sequence;
+    state.display_messages.push(message.clone());
+    if let Some(environment) = state.environment.as_mut() {
+        environment.latest_environment_sequence = Some(sequence);
+    }
+    state.subscribers.retain(|subscriber| {
+        let event = replay_event_for_subscriber(run_id, message.clone(), subscriber);
+        subscriber
+            .sender
+            .send(RunStreamEvent::Output(Box::new(event)))
+            .is_ok()
+    });
+}
+
+fn publish_initial_environment_info(
+    active_runs: &Arc<Mutex<HashMap<String, ActiveRunState>>>,
+    run_id: &str,
+) {
+    let Ok(mut runs) = active_runs.lock() else {
+        return;
+    };
+    let Some(state) = runs.get_mut(run_id) else {
+        return;
+    };
+    let Some(environment) = state.environment.as_ref() else {
+        return;
+    };
+    let binding_version = environment.binding_version;
+    let attachments = environment.attachments.clone();
+    let sequence = next_display_sequence(state);
+    let operation_id = format!("envop_{}", chrono::Utc::now().timestamp_micros());
+    let lifecycle_environment = environment_summary(binding_version, &attachments);
+    let lifecycle_extra = json!({});
+    let message = environment_lifecycle_message(
+        run_id,
+        &state.session_id,
+        sequence,
+        &operation_id,
+        "environment_info",
+        binding_version,
+        &lifecycle_environment,
+        &lifecycle_extra,
+    );
+    publish_display_message_to_state(run_id, state, message);
+}
+
+fn environment_lifecycle_message_inserts(
+    active_runs: &Arc<Mutex<HashMap<String, ActiveRunState>>>,
+    run_id: &str,
+) -> Vec<(usize, DisplayMessage)> {
+    let Ok(runs) = active_runs.lock() else {
+        return Vec::new();
+    };
+    let Some(state) = runs.get(run_id) else {
+        return Vec::new();
+    };
+    let mut non_lifecycle_count = 0_usize;
+    let mut inserts = Vec::new();
+    for message in &state.display_messages {
+        if is_environment_lifecycle_message(message) {
+            inserts.push((non_lifecycle_count, message.clone()));
+        } else {
+            non_lifecycle_count = non_lifecycle_count.saturating_add(1);
+        }
+    }
+    inserts
+}
+
+fn is_environment_lifecycle_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "environment_info" | "environment_mounted" | "environment_unmounted"
+    )
+}
+
+fn is_environment_lifecycle_message(message: &DisplayMessage) -> bool {
+    message.kind == DisplayMessageKind::HostOperation
+        && message
+            .payload
+            .get("operationKind")
+            .and_then(Value::as_str)
+            .is_some_and(is_environment_lifecycle_kind)
+}
+
+fn next_display_sequence(state: &ActiveRunState) -> usize {
+    state
+        .display_messages
+        .iter()
+        .map(|message| message.sequence)
+        .max()
+        .map_or(0, |sequence| sequence.saturating_add(1))
+}
+
+fn environment_summary(binding_version: u64, attachments: &[EnvironmentAttachmentRef]) -> Value {
+    json!({
+        "bindingVersion": binding_version,
+        "defaultMountId": default_mount_id(attachments),
+        "defaultShellMountId": default_shell_mount_id(attachments),
+        "mounts": attachments
+            .iter()
+            .map(|attachment| mount_summary(attachment, "ready"))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn mount_summary(attachment: &EnvironmentAttachmentRef, status: &str) -> Value {
+    json!({
+        "id": attachment.id,
+        "kind": attachment.kind,
+        "root": format!("/environment/{}", attachment.id),
+        "mode": attachment.resolved_mode(),
+        "default": attachment.is_default,
+        "defaultForShell": attachment.is_default_for_shell,
+        "status": status,
+        "readiness": {},
+        "environmentId": attachment.environment_id.clone(),
+        "metadata": attachment.metadata.clone(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn active_mount_result(
+    run_id: &str,
+    operation_id: &str,
+    mounted: &EnvironmentAttachmentRef,
+    previous_binding_version: u64,
+    binding_version: u64,
+    replace: bool,
+    previous_default: Option<String>,
+    current_default: Option<String>,
+    previous_default_shell: Option<String>,
+    current_default_shell: Option<String>,
+    attachments: &[EnvironmentAttachmentRef],
+    event_sequence: usize,
+    steering_sequence: Option<usize>,
+    warnings: Vec<Value>,
+) -> Value {
+    mutation_result(
+        run_id,
+        operation_id,
+        &mounted.id,
+        previous_binding_version,
+        binding_version,
+        previous_default,
+        current_default,
+        previous_default_shell,
+        current_default_shell,
+        attachments,
+        event_sequence,
+        steering_sequence,
+        warnings,
+        json!({
+            "replace": replace,
+            "mount": mount_summary(mounted, "ready"),
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn active_unmount_result(
+    run_id: &str,
+    operation_id: &str,
+    removed: &EnvironmentAttachmentRef,
+    previous_binding_version: u64,
+    binding_version: u64,
+    previous_default: Option<String>,
+    current_default: Option<String>,
+    previous_default_shell: Option<String>,
+    current_default_shell: Option<String>,
+    attachments: &[EnvironmentAttachmentRef],
+    event_sequence: usize,
+    steering_sequence: Option<usize>,
+    warnings: Vec<Value>,
+) -> Value {
+    mutation_result(
+        run_id,
+        operation_id,
+        &removed.id,
+        previous_binding_version,
+        binding_version,
+        previous_default,
+        current_default,
+        previous_default_shell,
+        current_default_shell,
+        attachments,
+        event_sequence,
+        steering_sequence,
+        warnings,
+        json!({
+            "removedMount": mount_summary(removed, "detached"),
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_pass_by_value)]
+fn mutation_result(
+    run_id: &str,
+    operation_id: &str,
+    mount_id: &str,
+    previous_binding_version: u64,
+    binding_version: u64,
+    previous_default: Option<String>,
+    current_default: Option<String>,
+    previous_default_shell: Option<String>,
+    current_default_shell: Option<String>,
+    attachments: &[EnvironmentAttachmentRef],
+    event_sequence: usize,
+    steering_sequence: Option<usize>,
+    warnings: Vec<Value>,
+    extra: Value,
+) -> Value {
+    let mut result = json!({
+        "runId": run_id,
+        "operationId": operation_id,
+        "mountId": mount_id,
+        "previousBindingVersion": previous_binding_version,
+        "bindingVersion": binding_version,
+        "previousDefaultMountId": previous_default,
+        "currentDefaultMountId": current_default,
+        "previousDefaultShellMountId": previous_default_shell,
+        "currentDefaultShellMountId": current_default_shell,
+        "environment": environment_summary(binding_version, attachments),
+        "eventCursor": cursor_value(run_id, event_sequence),
+    });
+    if let Some(sequence) = steering_sequence {
+        result["steeringCursor"] = cursor_value(run_id, sequence);
+    }
+    if !warnings.is_empty() {
+        result["warnings"] = Value::Array(warnings);
+    }
+    merge_json_object(&mut result, &extra);
+    result
+}
+
+fn cursor_value(run_id: &str, sequence: usize) -> Value {
+    json!({
+        "scope": ReplayScope::run(run_id).as_str(),
+        "sequence": sequence,
+    })
+}
+
+fn default_mount_id(attachments: &[EnvironmentAttachmentRef]) -> Option<String> {
+    attachments
+        .iter()
+        .find(|attachment| attachment.is_default)
+        .map(|attachment| attachment.id.clone())
+}
+
+fn default_shell_mount_id(attachments: &[EnvironmentAttachmentRef]) -> Option<String> {
+    attachments
+        .iter()
+        .find(|attachment| attachment.is_default_for_shell)
+        .map(|attachment| attachment.id.clone())
+}
+
+fn render_environment_steering_text(action: &str, attachment: &EnvironmentAttachmentRef) -> String {
+    format!(
+        "<environment-context action=\"{}\" mount=\"{}\" root=\"/environment/{}\" mode=\"{:?}\" />",
+        action,
+        attachment.id,
+        attachment.id,
+        attachment.resolved_mode()
+    )
+}
+
+fn mutation_key(action: &str, key: &str) -> String {
+    format!("{action}:{key}")
+}
+
+fn tombstone_attachment(mount_id: &str) -> EnvironmentAttachmentRef {
+    EnvironmentAttachmentRef {
+        id: mount_id.to_string(),
+        kind: "unknown".to_string(),
+        mode: None,
+        is_default: false,
+        is_default_for_shell: false,
+        attachment_lease_id: None,
+        endpoint_ref: None,
+        environment_id: None,
+        auth_token: None,
+        metadata: serde_json::Map::new(),
+    }
+}
+
+fn merge_json_object(target: &mut Value, source: &Value) {
+    let Some(target) = target.as_object_mut() else {
+        return;
+    };
+    let Some(source) = source.as_object() else {
+        return;
+    };
+    for (key, value) in source {
+        target.insert(key.clone(), value.clone());
+    }
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn configuration_rpc_error(error: CliError) -> starweaver_rpc_core::RpcError {
+    starweaver_rpc_core::RpcError::new(starweaver_rpc_core::CONFIGURATION_FAILED, error.to_string())
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn environment_rpc_error(
+    error: starweaver_environment::EnvironmentError,
+) -> starweaver_rpc_core::RpcError {
+    starweaver_rpc_core::RpcError::new(
+        starweaver_rpc_core::ENVIRONMENT_UNAVAILABLE,
+        error.to_string(),
+    )
 }
 
 fn forward_runtime_stream(
@@ -572,7 +1611,8 @@ fn publish_display_messages(
     let Some(state) = runs.get_mut(run_id) else {
         return;
     };
-    for message in messages {
+    for mut message in messages {
+        message.sequence = next_display_sequence(state);
         let terminal = terminal_status(message.kind);
         state.display_messages.push(message.clone());
         state.subscribers.retain(|subscriber| {
@@ -765,13 +1805,39 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use serde_json::json;
+    use starweaver_environment::EnvironmentProvider;
+    use starweaver_rpc_core::{
+        EnvironmentActiveMountParams, EnvironmentActiveUnmountParams,
+        EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef,
+    };
 
     use super::*;
-    use crate::{args, ConfigResolver};
+    use crate::{
+        args, environment::resolve_environment_for_session_with_attachments, ConfigResolver,
+    };
 
     fn test_config(root: &std::path::Path) -> CliConfig {
         let cli = args::parse(["starweaver-cli".to_string(), "rpc".to_string()]).unwrap();
         ConfigResolver::for_tests(root).resolve(&cli).unwrap()
+    }
+
+    fn local_attachment(
+        id: &str,
+        is_default: bool,
+        is_default_for_shell: bool,
+    ) -> EnvironmentAttachmentRef {
+        EnvironmentAttachmentRef {
+            id: id.to_string(),
+            kind: "local".to_string(),
+            mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
+            is_default,
+            is_default_for_shell,
+            attachment_lease_id: None,
+            endpoint_ref: None,
+            environment_id: None,
+            auth_token: None,
+            metadata: serde_json::Map::new(),
+        }
     }
 
     #[test]
@@ -794,6 +1860,7 @@ mod tests {
                 cursor: SubscriberCursor::Run,
                 sender: subscriber_sender,
             },
+            None,
         );
 
         let run_id = coordinator
@@ -825,6 +1892,188 @@ mod tests {
 
         coordinator.cancel_run("run_1").unwrap();
         cancel_receiver.recv().unwrap();
+    }
+
+    #[tokio::test]
+    async fn active_environment_mutations_update_binding_and_stream_lifecycle() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let coordinator = CliRuntimeCoordinator::new(config.clone());
+        let attachments = vec![local_attachment("local", true, true)];
+        let environment =
+            resolve_environment_for_session_with_attachments(&config, "session_1", &attachments)
+                .unwrap();
+        let (steering_sender, steering_receiver) = mpsc::channel::<CliSteeringMessage>();
+        let (cancel_sender, _cancel_receiver) = mpsc::channel::<()>();
+        let (subscriber_sender, subscriber_receiver) = mpsc::channel::<RunStreamEvent>();
+        insert_active_run(
+            &coordinator.active_runs,
+            "session_1",
+            "run_1",
+            steering_sender,
+            cancel_sender,
+            0,
+            RunSubscriber {
+                include_raw: false,
+                cursor: SubscriberCursor::Run,
+                sender: subscriber_sender,
+            },
+            active_environment_binding(&environment),
+        );
+
+        let initial = coordinator.active_environment_list("run_1").unwrap();
+        assert_eq!(initial["environment"]["bindingVersion"], 1);
+        assert_eq!(initial["environment"]["defaultMountId"], "local");
+
+        let mount_params = EnvironmentActiveMountParams {
+            run_id: "run_1".to_string(),
+            attachment: local_attachment("scratch", false, false),
+            replace: false,
+            inject_context: true,
+            expected_binding_version: Some(1),
+            idempotency_key: Some("mount-scratch".to_string()),
+        };
+        let mounted = coordinator
+            .active_environment_mount(&mount_params, mount_params.attachment.clone())
+            .unwrap();
+        assert_eq!(mounted["bindingVersion"], 2);
+        assert_eq!(mounted["mountId"], "scratch");
+        assert_eq!(
+            mounted["environment"]["mounts"].as_array().unwrap().len(),
+            2
+        );
+        let RunStreamEvent::Output(event) = subscriber_receiver.recv().unwrap() else {
+            panic!("expected lifecycle output event");
+        };
+        let ReplayEventKind::DisplayMessage(message) = &event.event else {
+            panic!("expected display message");
+        };
+        assert_eq!(message.kind, DisplayMessageKind::HostOperation);
+        assert_eq!(message.payload["operationKind"], "environment_mounted");
+        assert!(steering_receiver
+            .recv()
+            .unwrap()
+            .text
+            .contains("mount=\"scratch\""));
+
+        let replayed = coordinator
+            .active_environment_mount(&mount_params, mount_params.attachment.clone())
+            .unwrap();
+        assert_eq!(replayed, mounted);
+
+        let unmount_params = EnvironmentActiveUnmountParams {
+            run_id: "run_1".to_string(),
+            mount_id: "scratch".to_string(),
+            new_default_mount_id: None,
+            new_default_shell_mount_id: None,
+            inject_context: false,
+            expected_binding_version: Some(2),
+            idempotency_key: Some("unmount-scratch".to_string()),
+        };
+        let (unmounted, removed) = coordinator
+            .active_environment_unmount(&unmount_params)
+            .await
+            .unwrap();
+        assert_eq!(removed.id, "scratch");
+        assert_eq!(unmounted["bindingVersion"], 3);
+        assert_eq!(
+            unmounted["environment"]["mounts"].as_array().unwrap().len(),
+            1
+        );
+        let current = coordinator.active_environment_list("run_1").unwrap();
+        assert_eq!(current["environment"]["bindingVersion"], 3);
+        assert_eq!(current["environment"]["mounts"][0]["id"], "local");
+    }
+
+    #[tokio::test]
+    async fn active_environment_unmount_rejects_mount_with_live_processes() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let coordinator = CliRuntimeCoordinator::new(config);
+        let attachments = vec![
+            local_attachment("local", true, true),
+            local_attachment("scratch", false, false),
+        ];
+        let local_provider = Arc::new(starweaver_environment::VirtualEnvironmentProvider::new(
+            "local",
+        ));
+        let scratch_provider = Arc::new(
+            starweaver_environment::VirtualEnvironmentProvider::new("scratch").with_process(
+                starweaver_environment::ShellProcessSnapshot {
+                    process_id: "process_1".to_string(),
+                    command: "sleep 5".to_string(),
+                    status: ShellProcessStatus::Running,
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    return_code: None,
+                    metadata: starweaver_core::Metadata::default(),
+                },
+            ),
+        );
+        let composite = Arc::new(
+            starweaver_environment::CompositeEnvironmentProvider::new(vec![
+                starweaver_environment::EnvironmentMount::new("local", local_provider)
+                    .unwrap()
+                    .with_default(true)
+                    .with_default_for_shell(true),
+                starweaver_environment::EnvironmentMount::new("scratch", scratch_provider).unwrap(),
+            ])
+            .unwrap(),
+        );
+        let target_process_provider = composite.clone().process_shell_provider();
+        let switchable = Arc::new(SwitchableEnvironmentProvider::new(
+            "test-active-environment",
+            SwitchableEnvironmentTarget::new(composite, target_process_provider),
+        ));
+        let environment = ResolvedEnvironment {
+            provider: switchable.clone() as starweaver_environment::DynEnvironmentProvider,
+            process_provider: Some(
+                switchable.clone() as starweaver_environment::DynProcessShellProvider
+            ),
+            switchable: Some(switchable),
+            attachments,
+        };
+        let (steering_sender, _steering_receiver) = mpsc::channel::<CliSteeringMessage>();
+        let (cancel_sender, _cancel_receiver) = mpsc::channel::<()>();
+        let (subscriber_sender, _subscriber_receiver) = mpsc::channel::<RunStreamEvent>();
+        insert_active_run(
+            &coordinator.active_runs,
+            "session_1",
+            "run_1",
+            steering_sender,
+            cancel_sender,
+            0,
+            RunSubscriber {
+                include_raw: false,
+                cursor: SubscriberCursor::Run,
+                sender: subscriber_sender,
+            },
+            active_environment_binding(&environment),
+        );
+
+        let error = coordinator
+            .active_environment_unmount(&EnvironmentActiveUnmountParams {
+                run_id: "run_1".to_string(),
+                mount_id: "scratch".to_string(),
+                new_default_mount_id: None,
+                new_default_shell_mount_id: None,
+                inject_context: false,
+                expected_binding_version: Some(1),
+                idempotency_key: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, RUN_CONFLICT);
+        assert!(error.message.contains("scratch:process_1"));
+        let current = coordinator.active_environment_list("run_1").unwrap();
+        assert_eq!(current["environment"]["bindingVersion"], 1);
+        assert_eq!(
+            current["environment"]["mounts"].as_array().unwrap().len(),
+            2
+        );
     }
 
     #[test]
@@ -867,6 +2116,7 @@ mod tests {
                 cursor: SubscriberCursor::Run,
                 sender: subscriber_sender,
             },
+            None,
         );
         publish_display_messages(
             &coordinator.active_runs,
@@ -941,6 +2191,7 @@ mod tests {
                 cursor: SubscriberCursor::Run,
                 sender: subscriber_sender,
             },
+            None,
         );
         publish_display_messages(
             &coordinator.active_runs,
@@ -1053,6 +2304,7 @@ mod tests {
                 cursor: SubscriberCursor::Run,
                 sender: subscriber_sender,
             },
+            None,
         );
         publish_display_messages(&coordinator.active_runs, &run_id, vec![persisted_message]);
 

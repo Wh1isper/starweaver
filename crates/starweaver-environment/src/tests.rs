@@ -1628,6 +1628,29 @@ async fn composite_provider_routes_shell_by_cwd_and_process_id() {
 }
 
 #[tokio::test]
+async fn composite_provider_allows_no_default_shell_mount() {
+    let data = Arc::new(VirtualEnvironmentProvider::new("data"));
+    let provider = CompositeEnvironmentProvider::new(vec![EnvironmentMount::new("data", data)
+        .unwrap()
+        .with_mode(EnvironmentMountMode::ReadOnly)
+        .with_default(true)])
+    .unwrap();
+
+    assert!(matches!(
+        provider
+            .run_shell(ShellCommand {
+                command: "echo no-default-shell".to_string(),
+                ..ShellCommand::default()
+            })
+            .await,
+        Err(EnvironmentError::InvalidRequest(_))
+    ));
+    let state = provider.export_state().await.unwrap();
+    let mounts = state.metadata["mounts"].as_array().unwrap();
+    assert_eq!(mounts[0]["default_for_shell"], false);
+}
+
+#[tokio::test]
 async fn composite_provider_supports_text_cross_mount_copy_and_move() {
     let workspace =
         Arc::new(VirtualEnvironmentProvider::new("workspace").with_file("README.md", "workspace"));
