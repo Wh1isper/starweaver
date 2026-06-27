@@ -70,6 +70,10 @@ Routing rules:
 
 - Exactly one mount is the default mount. Unqualified relative paths and `/`
   route to that mount for backward-compatible tools and prompts.
+- At most one ready, command-capable mount is the shell default. If no mount is
+  shell-capable, `defaultShellMountId` is absent/null and shell tools are
+  unavailable. If no shell default is explicitly requested and the default mount
+  is shell-capable, the shell default follows the default mount.
 - `local` is a reserved mount id for the host's configured local Starweaver
   environment. It may be the default mount, and product entry points should use
   `local` instead of aliases such as `workspace` when they expose the local
@@ -173,9 +177,10 @@ Boundary rules:
 - The SDK layer should not know whether a child provider came from an inline
   `run.start` attachment, an `environment.attach` lease, or TUI
   `[envd_profiles.*]` config.
-- Active-run mount/unmount is a future host feature. It must update the runtime
-  environment handle for future tool calls and inject environment context as an
-  append-only steering message captured at the moment the mount changes.
+- Active-run mount/unmount is the host feature advertised as
+  `environment.active_mounts`. It updates the runtime environment handle for
+  future tool calls and injects environment context as an append-only steering
+  message captured at the moment the mount changes.
 - Named endpoint aliases and host-launched envd daemons are future manager
   capabilities. The first manager slice accepts literal `http://...` envd
   endpoints with request-only bearer tokens.
@@ -274,7 +279,7 @@ sequenceDiagram
     participant Composite as CompositeEnvironmentProvider
     participant Runtime
 
-    Client->>HostRPC: environment.attach or run.start(environmentAttachments)
+    Client->>HostRPC: environment.attach, run.start(environmentAttachments), or active_mount
     HostRPC->>Manager: resolve and probe attachments
     Manager->>EnvdClient: initialize/open/state with bearer auth
     EnvdClient-->>Manager: descriptor and readiness
@@ -335,8 +340,10 @@ available next to envd-backed mounts.
 
 ## Active-Run Mounting Design
 
-Active-run environment mounting should extend host-control semantics without
-turning envd into the agent-control plane.
+Active-run environment mounting extends host-control semantics without turning
+envd into the agent-control plane. The complete wire contract lives in
+`../ops/06-json-rpc-host-protocol.md`; this section defines the SDK/provider
+binding behavior that contract relies on.
 
 ```mermaid
 sequenceDiagram
@@ -359,8 +366,36 @@ Design rules:
 - Active mount is a host-control operation over an existing run. It can consume
   an inline attachment source or an existing `attachmentLeaseId`, but the active
   run still sees one SDK `EnvironmentProvider`.
+- The host owns a run-local `RunEnvironmentBinding` with `bindingVersion`,
+  `mounts`, `defaultMountId`, `defaultShellMountId`, readiness summaries, and
+  safe lease refs. The SDK environment layer receives one updatable provider
+  handle backed by the current binding snapshot.
+- Active mount, active unmount, and default updates are serialized by one
+  per-run environment mutation lock. Successful mutations increment
+  `bindingVersion` exactly once; stale `expectedBindingVersion` values fail
+  without mutating the binding.
+- `defaultForShell` on host-control attachment refs maps to the SDK
+  `default_for_shell` flag. Active mutations must recompute and validate
+  `defaultShellMountId` with the same rules as run materialization.
 - Runtime environment binding updates affect future tool calls only. Tool calls
   already executing complete against the binding they started with.
+- Same-id active mount requires `replace: true`. Replacement probes the new
+  source before the mutation lock, then atomically swaps the mount under the
+  lock. Remote sources cannot replace the reserved `local` mount.
+- Unmounting the current default requires `newDefaultMountId`. The active
+  binding must always keep one ready default mount; attempts that would leave no
+  default fail and preserve the old binding.
+- Unmounting the current shell default requires `newDefaultShellMountId` when
+  another shell-capable mount should handle future shell calls. If no
+  shell-capable mount remains, `defaultShellMountId` becomes null and shell
+  tools become unavailable for implicit-cwd calls.
+- The first implementation rejects unmounting a mount that owns live background
+  processes. Later protocol revisions can add an explicit wait, detach, or
+  terminate policy without changing the provider boundary.
+- Lease-backed active mounts inherit the same scope and mode rules as
+  run-start materialization. Session-scoped leases must belong to the run's
+  session, connection-scoped leases must belong to the calling connection, and
+  read-only leases cannot be widened by active mount.
 - Context injection is append-only. The host renders the current mount summary
   after the binding update and sends it through the same steering path as
   `run.steer`; it does not rewrite the original system prompt, earlier context,
@@ -376,8 +411,16 @@ Design rules:
   and unmount operations append `environment_mounted` and
   `environment_unmounted` events after the binding update and before any
   steering context injection.
+- Environment lifecycle records should become typed replay events owned by the
+  shared stream contract. While the enum variant is being introduced, host RPC
+  may carry the stable payload as raw replay data, but native replay, display
+  projection, and AGUI projection must all preserve the lifecycle item.
+- `environment.active_list` reads the current host binding and returns
+  `bindingVersion`, default ids, safe mount summaries, and the latest lifecycle
+  cursor. It must not call envd for secrets or expose endpoint credentials.
 - Secrets such as envd bearer tokens stay in the manager's in-memory source
-  record and are never included in the steering text or stream payload.
+  record and are never included in the steering text, stream payload, active
+  mutation results, or error data.
 
 Direct mode can use an in-process ref:
 

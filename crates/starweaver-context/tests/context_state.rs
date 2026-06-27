@@ -14,8 +14,11 @@ use starweaver_usage::{PricingEstimate, Usage};
 #[test]
 fn message_bus_supports_subscribers_targets_idempotency_and_matching() {
     let mut bus = MessageBus::with_maxlen(10);
+    assert!(!bus.is_subscribed("main"));
     bus.subscribe("main");
     bus.subscribe("debugger");
+    assert!(bus.is_subscribed("main"));
+    assert!(bus.is_subscribed("debugger"));
 
     let broadcast = BusMessage::text("broadcast", "system").with_id("broadcast-1");
     assert_eq!(bus.send(broadcast.clone()).id, "broadcast-1");
@@ -50,6 +53,8 @@ fn message_bus_supports_subscribers_targets_idempotency_and_matching() {
             .collect::<Vec<_>>(),
         vec!["broadcast-1", "target-1", "steer-1"]
     );
+    bus.unsubscribe("debugger");
+    assert!(!bus.is_subscribed("debugger"));
 }
 
 #[test]

@@ -4,16 +4,33 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    AgentBuilder, AgentContext, AgentContextHandle, AgentRuntimePolicy, AgentStreamEvent,
-    AgentStreamSourceKind, FunctionTool, SubagentConfig, SubagentExecutionHook,
-    SubagentExecutionMetadata, SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry,
-    SubagentToolInheritancePolicy, TestModel, ToolContext, ToolRegistry, ToolResult,
+    AgentBuilder, AgentCapability, AgentContext, AgentContextHandle, AgentRunState,
+    AgentRuntimePolicy, AgentStreamEvent, AgentStreamSourceKind, BackgroundSubagentCapability,
+    BackgroundSubagentMonitor, FunctionTool, SubagentConfig, SubagentDelegationMode,
+    SubagentExecutionHook, SubagentExecutionMetadata, SubagentExecutionOutcome,
+    SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy, TestModel, ToolContext,
+    ToolRegistry, ToolResult, DELEGATE_BACKEND_TOOL_NAME, SPAWN_DELEGATE_TOOL_NAME,
 };
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
 };
 use starweaver_usage::Usage;
+
+fn delegation_tool_context(parent: &AgentContext, handle: AgentContextHandle) -> ToolContext {
+    let mut dependencies = parent.dependencies.clone();
+    dependencies.insert(parent.clone());
+    dependencies.insert(handle);
+    ToolContext::new(RunId::default(), ConversationId::default(), 0).with_dependencies(dependencies)
+}
+
+fn visible_tool_names(tools: &ToolRegistry) -> Vec<String> {
+    tools
+        .definitions_for_context(&AgentContext::default())
+        .into_iter()
+        .map(|definition| definition.name)
+        .collect()
+}
 
 #[tokio::test]
 async fn subagent_registry_exports_typed_delegate_tool() {
@@ -160,6 +177,193 @@ fn subagent_registry_reports_names_and_availability() {
     assert!(registry.is_available("child"));
     assert!(!registry.is_available("missing"));
     assert!(!registry.is_empty());
+}
+
+#[test]
+fn async_delegation_mode_makes_delegate_async_and_hides_backend() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+    let agent = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
+        .subagent(SubagentConfig::new("child", child).with_description("Child helper"))
+        .subagent_delegation_mode(SubagentDelegationMode::Async)
+        .build();
+    let tools = agent.tools();
+
+    assert_eq!(
+        tools.names(),
+        vec![
+            DELEGATE_BACKEND_TOOL_NAME.to_string(),
+            "delegate".to_string(),
+            "subagent_info".to_string()
+        ]
+    );
+    assert_eq!(
+        visible_tool_names(&tools),
+        vec!["delegate".to_string(), "subagent_info".to_string()]
+    );
+    let instructions = tools.get_instructions().join("\n");
+    assert!(instructions.contains("delegate is asynchronous"));
+    assert!(instructions.contains("Child helper"));
+    assert!(!instructions.contains("Delegate calls are blocking"));
+}
+
+#[test]
+fn dual_delegation_mode_keeps_blocking_delegate_and_adds_spawn_delegate() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+    let agent = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
+        .subagent(SubagentConfig::new("child", child))
+        .subagent_delegation_mode(SubagentDelegationMode::BlockingAndAsync)
+        .build();
+    let tools = agent.tools();
+
+    assert_eq!(
+        tools.names(),
+        vec![
+            "delegate".to_string(),
+            SPAWN_DELEGATE_TOOL_NAME.to_string(),
+            "subagent_info".to_string()
+        ]
+    );
+    assert_eq!(
+        visible_tool_names(&tools),
+        vec![
+            "delegate".to_string(),
+            SPAWN_DELEGATE_TOOL_NAME.to_string(),
+            "subagent_info".to_string()
+        ]
+    );
+    let instructions = tools.get_instructions().join("\n");
+    assert!(instructions.contains("Delegate calls are blocking"));
+    assert!(instructions.contains("Use this to run a subagent asynchronously"));
+}
+
+#[tokio::test]
+async fn hidden_delegate_backend_is_executable_but_not_model_visible() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let backend = registry.hidden_delegate_backend_tool();
+    let tools = ToolRegistry::new()
+        .with_tool(backend.clone())
+        .with_tool(registry.async_delegate_tool(monitor));
+
+    assert_eq!(visible_tool_names(&tools), vec!["delegate".to_string()]);
+
+    let parent = AgentContext::default();
+    let context_handle = AgentContextHandle::new(parent.clone());
+    let result = backend
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help"
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(backend.name(), DELEGATE_BACKEND_TOOL_NAME);
+    assert_eq!(result.content["name"], "child");
+    assert_eq!(result.content["output"], "child output");
+    assert_eq!(result.metadata["context_mutated"], true);
+    assert!(context_handle
+        .snapshot()
+        .events
+        .events()
+        .iter()
+        .any(|event| event.kind == "subagent_completed"));
+}
+
+#[tokio::test]
+async fn async_delegate_delivers_result_to_subscribed_parent_bus() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let delegate = registry.async_delegate_tool(monitor.clone());
+    let parent = AgentContext::default();
+    let context_handle = AgentContextHandle::new(parent.clone());
+
+    let result = delegate
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help",
+                "agent_id": "child-bg-test"
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.content["status"], "spawned");
+    assert_eq!(result.content["agent_id"], "child-bg-test");
+
+    let mut delivered = None;
+    for _ in 0..50 {
+        let snapshot = context_handle.snapshot();
+        let pending = snapshot.messages.peek(snapshot.agent_id.as_str());
+        if !monitor.has_active_tasks() && !pending.is_empty() {
+            delivered = Some(pending);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let Some(delivered) = delivered else {
+        panic!("background delegate message");
+    };
+    assert!(!monitor.has_pending_messages());
+    assert_eq!(delivered[0].source, "child-bg-test");
+    assert_eq!(delivered[0].target.as_deref(), Some("main"));
+    assert_eq!(delivered[0].content_text(), "child output");
+}
+
+#[tokio::test]
+async fn async_delegate_redelivers_pending_result_when_parent_is_not_subscribed() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let delegate = registry.async_delegate_tool(monitor.clone());
+    let mut parent = AgentContext::default();
+    parent.messages.unsubscribe(parent.agent_id.as_str());
+    let context_handle = AgentContextHandle::new(parent.clone());
+
+    delegate
+        .call(
+            delegation_tool_context(&parent, context_handle),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help",
+                "agent_id": "child-bg-pending"
+            }),
+        )
+        .await
+        .unwrap();
+
+    for _ in 0..50 {
+        if !monitor.has_active_tasks() && monitor.has_pending_messages() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!monitor.has_active_tasks());
+    assert!(monitor.has_pending_messages());
+
+    let capability = BackgroundSubagentCapability::new(monitor.clone());
+    let mut state = AgentRunState::new(RunId::default(), ConversationId::default());
+    let mut resumed = AgentContext::default();
+    capability
+        .on_run_start_with_context(&mut state, &mut resumed)
+        .await
+        .unwrap();
+
+    assert!(!monitor.has_pending_messages());
+    let pending = resumed.messages.peek(resumed.agent_id.as_str());
+    assert_eq!(pending[0].source, "child-bg-pending");
+    assert_eq!(pending[0].target.as_deref(), Some("main"));
+    assert_eq!(pending[0].content_text(), "child output");
 }
 
 #[tokio::test]

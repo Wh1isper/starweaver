@@ -99,7 +99,7 @@ sequenceDiagram
     participant Composite as CompositeEnvironmentProvider
     participant Runtime
 
-    Client->>HostRPC: environment.attach or run.start(environmentAttachments)
+    Client->>HostRPC: environment.attach, run.start(environmentAttachments), or environment.active_mount
     HostRPC->>Manager: resolve envd endpoint and lease
     Manager->>EnvdClient: initialize/open/state
     EnvdClient-->>Manager: descriptor and readiness
@@ -114,9 +114,10 @@ sequenceDiagram
 
 Host RPC remains the agent-control plane. Envd RPC is the environment
 data/effect plane. The attachment manager owns literal endpoint validation,
-liveness/readiness probes, lease scope, and run materialization. Named endpoint
-aliases and host-launched envd daemons are future host capabilities. Envd owns
-environment state and operation effects behind the selected service boundary.
+liveness/readiness probes, lease scope, run materialization, and active-run
+mount mutations. Named endpoint aliases and host-launched envd daemons are
+future host capabilities. Envd owns environment state and operation effects
+behind the selected service boundary.
 
 ## Run Environment Reference
 
@@ -205,6 +206,30 @@ CLI direct mode can omit endpoint:
 }
 ```
 
+## Active-Run Mounting
+
+Active-run mounting is a host-control feature exposed by
+`environment.active_mount`, `environment.active_unmount`, and
+`environment.active_list` when the host advertises
+`environment.active_mounts`. It does not add envd RPC methods.
+
+Envd integration rules:
+
+- An active mount can wrap an inline envd source or a host
+  `attachmentLeaseId`. The host validates lease ownership, mode narrowing,
+  endpoint policy, and readiness before updating the active run binding.
+- The active run still receives one SDK `EnvironmentProvider`, usually a
+  composite provider. Envd remains one child provider behind that boundary.
+- Binding mutation, `bindingVersion`, default mount selection, lifecycle replay
+  events, idempotency, and active-list results are owned by the host protocol in
+  `../ops/06-json-rpc-host-protocol.md`.
+- Active unmount releases the run's use of a lease-backed envd mount only after
+  the durable `environment_unmounted` lifecycle record is appended. The lease
+  itself remains a Starweaver host-control object, not an envd object.
+- Envd endpoint refs and bearer tokens are request-only host inputs. Replay
+  records, display projections, AGUI events, model-visible context, and error
+  data must use redacted endpoint summaries or mount ids instead of credentials.
+
 ## Session and Replay Metadata
 
 Session/run records store environment refs:
@@ -214,7 +239,8 @@ Session/run records store environment refs:
   "environment": {
     "kind": "envd",
     "environmentId": "env_123",
-    "endpointRef": "http://127.0.0.1:8766/rpc",
+    "endpointAlias": "data",
+    "redactedEndpointRef": "http://127.0.0.1:8766/rpc",
     "startStateVersion": "sv_10",
     "endStateVersion": "sv_15",
     "operationIds": ["op_1", "op_2"]
@@ -222,7 +248,11 @@ Session/run records store environment refs:
 }
 ```
 
-Session storage does not store full envd state.
+Session storage does not store full envd state. Durable user-visible records
+store endpoint aliases or redacted endpoint refs only. Raw literal endpoints,
+launch arguments, and bearer material can exist only in the protected host
+attachment store for live leases and must not appear in replay, display,
+model-visible context, diagnostics, or exported session data.
 
 ## Approval and Policy Flow
 

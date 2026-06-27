@@ -180,6 +180,12 @@ impl MessageBus {
         self.consumed_ids.remove(agent_id);
     }
 
+    /// Return whether the given agent currently has a subscriber cursor.
+    #[must_use]
+    pub fn is_subscribed(&self, agent_id: &str) -> bool {
+        self.cursors.contains_key(agent_id)
+    }
+
     /// Send a message idempotently.
     pub fn send(&mut self, message: BusMessage) -> BusMessage {
         if self.message_ids.contains(&message.id) {

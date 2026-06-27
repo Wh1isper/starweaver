@@ -152,10 +152,12 @@ pub use streaming::{
     AgentStreamStatus,
 };
 pub use subagent::{
-    AgentApp, DynSubagentExecutionHook, SubagentCapabilityInheritancePolicy, SubagentConfig,
-    SubagentExecutionHook, SubagentExecutionMetadata, SubagentExecutionOutcome,
-    SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
-    SubagentToolInheritanceError, SubagentToolInheritancePolicy,
+    AgentApp, BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,
+    DynSubagentExecutionHook, SubagentCapabilityInheritancePolicy, SubagentConfig,
+    SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
+    SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
+    SubagentToolInheritanceError, SubagentToolInheritancePolicy, DELEGATE_BACKEND_TOOL_NAME,
+    SPAWN_DELEGATE_TOOL_NAME,
 };
 pub use subagent_config::{
     load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown,
@@ -290,6 +292,7 @@ pub struct AgentBuilder {
     capabilities: Vec<Arc<dyn AgentCapability>>,
     capability_bundles: Vec<Arc<dyn CapabilityBundle>>,
     subagents: SubagentRegistry,
+    subagent_delegation_mode: SubagentDelegationMode,
     executor: Option<starweaver_runtime::DynAgentExecutor>,
     trace_recorder: Option<starweaver_runtime::DynTraceRecorder>,
     media_uploader: Option<Arc<dyn MediaUploader>>,
@@ -325,6 +328,7 @@ impl AgentBuilder {
             capabilities: Vec::new(),
             capability_bundles: Vec::new(),
             subagents: SubagentRegistry::new(),
+            subagent_delegation_mode: SubagentDelegationMode::default(),
             executor: None,
             trace_recorder: None,
             media_uploader: None,
@@ -603,6 +607,13 @@ impl AgentBuilder {
         self
     }
 
+    /// Set how registered subagents are exposed as model-callable tools.
+    #[must_use]
+    pub const fn subagent_delegation_mode(mut self, mode: SubagentDelegationMode) -> Self {
+        self.subagent_delegation_mode = mode;
+        self
+    }
+
     /// Set runtime trace recorder.
     #[must_use]
     pub fn trace_recorder(mut self, recorder: starweaver_runtime::DynTraceRecorder) -> Self {
@@ -655,6 +666,11 @@ impl AgentBuilder {
     #[allow(clippy::too_many_lines)]
     pub fn build(self) -> RuntimeAgent {
         let subagents = self.resolved_subagents();
+        let subagent_delegation_mode = self.subagent_delegation_mode;
+        let subagents = (!subagents.is_empty()).then(|| Arc::new(subagents));
+        let background_subagents = subagent_delegation_mode
+            .needs_background_monitor()
+            .then(|| Arc::new(BackgroundSubagentMonitor::new()));
         let model_profile_capabilities = model_capabilities_from_profile(self.model.profile());
         let mut configured_model_config = self.model_config;
         if !model_profile_capabilities.is_empty() {
@@ -678,9 +694,21 @@ impl AgentBuilder {
         let media_capability_hook = Arc::new(HostMediaCapabilityHook { media_capabilities });
         let mut tools = self.tools;
         let trace_recorder = self.trace_recorder.clone();
-        if !subagents.is_empty() {
-            let subagents = Arc::new(subagents);
-            tools.insert(subagents.delegate_tool());
+        if let Some(subagents) = &subagents {
+            if subagent_delegation_mode.exposes_blocking_delegate() {
+                tools.insert(subagents.delegate_tool());
+            }
+            if subagent_delegation_mode.exposes_async_delegate() {
+                tools.insert(subagents.hidden_delegate_backend_tool());
+                if let Some(monitor) = &background_subagents {
+                    tools.insert(subagents.async_delegate_tool(monitor.clone()));
+                }
+            }
+            if subagent_delegation_mode.exposes_spawn_delegate() {
+                if let Some(monitor) = &background_subagents {
+                    tools.insert(subagents.spawn_delegate_tool(monitor.clone()));
+                }
+            }
             tools.insert(subagents.subagent_info_tool());
         }
         let toolsets = approval_wrapped_toolsets(self.toolsets, &self.approval_required_tools);
@@ -689,6 +717,28 @@ impl AgentBuilder {
             tool_preview.insert_toolset(toolset);
         }
         let parent_tools = tool_preview.clone();
+        if let Some(subagents) = &subagents {
+            match subagent_delegation_mode {
+                SubagentDelegationMode::Blocking => {
+                    if let Some(instruction) = subagents.delegate_instruction(Some(&parent_tools)) {
+                        tools.insert_instruction(instruction);
+                    }
+                }
+                SubagentDelegationMode::Async => {
+                    if let Some(instruction) =
+                        subagents.async_delegate_instruction(Some(&parent_tools))
+                    {
+                        tools.insert_instruction(instruction);
+                    }
+                }
+                SubagentDelegationMode::BlockingAndAsync => {
+                    if let Some(instruction) = subagents.delegate_instruction(Some(&parent_tools)) {
+                        tools.insert_instruction(instruction);
+                    }
+                    tools.insert_instruction(subagents.spawn_delegate_instruction());
+                }
+            }
+        }
         let model = self.model.clone();
         let compact_model = self.compact_model.unwrap_or_else(|| model.clone());
         let compact_model_settings = self
@@ -699,7 +749,8 @@ impl AgentBuilder {
             .compact_request_params
             .unwrap_or_else(|| self.request_params.clone());
         if !compact_request_params_explicit {
-            compact_request_params.tools = tool_preview.definitions();
+            compact_request_params.tools =
+                tool_preview.definitions_for_context(&AgentContext::default());
         }
         let parent_tools_hook = Arc::new(ParentToolsCapabilityHook { parent_tools });
         let environment_context_hook = Arc::new(EnvironmentContextCapability);
@@ -741,6 +792,9 @@ impl AgentBuilder {
         }
         if let Some(context_window) = self.context_window {
             agent = agent.with_context_window(context_window);
+        }
+        if let Some(monitor) = background_subagents {
+            agent = agent.with_capability(Arc::new(BackgroundSubagentCapability::new(monitor)));
         }
         for capability in crate::filters::default_filter_capabilities_with_media_uploader(
             Some(&compact_model),

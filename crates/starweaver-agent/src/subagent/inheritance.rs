@@ -116,6 +116,8 @@ impl SubagentToolInheritancePolicy {
         if !self.allow_nested_delegation {
             inherited.remove("delegate");
             inherited.remove("subagent_info");
+            inherited.remove("spawn_delegate");
+            inherited.remove("__delegate_backend");
         }
         Ok(inherited)
     }
