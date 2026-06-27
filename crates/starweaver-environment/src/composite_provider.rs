@@ -103,7 +103,7 @@ pub struct CompositeEnvironmentProvider {
     id: String,
     mounts: Vec<EnvironmentMount>,
     default_index: usize,
-    default_shell_index: usize,
+    default_shell_index: Option<usize>,
     process_routes: Mutex<BTreeMap<String, ProcessRoute>>,
 }
 
@@ -196,10 +196,22 @@ impl CompositeEnvironmentProvider {
             .collect::<Vec<_>>();
         let default_shell_index = match default_shell_indices.as_slice() {
             [] => {
-                mounts[default_index].default_for_shell = true;
-                default_index
+                if mount_supports_shell_default(&mounts[default_index]) {
+                    mounts[default_index].default_for_shell = true;
+                    Some(default_index)
+                } else {
+                    None
+                }
             }
-            [index] => *index,
+            [index] => {
+                if !mount_supports_shell_default(&mounts[*index]) {
+                    return Err(EnvironmentError::InvalidRequest(format!(
+                        "environment mount cannot be default_for_shell: {}",
+                        mounts[*index].id
+                    )));
+                }
+                Some(*index)
+            }
             _ => {
                 return Err(EnvironmentError::InvalidRequest(
                     "only one environment mount can be default_for_shell".to_string(),
@@ -220,8 +232,14 @@ impl CompositeEnvironmentProvider {
         &self.mounts[self.default_index]
     }
 
-    fn default_shell_mount(&self) -> &EnvironmentMount {
-        &self.mounts[self.default_shell_index]
+    fn default_shell_mount(&self) -> EnvironmentResult<&EnvironmentMount> {
+        self.default_shell_index
+            .map(|index| &self.mounts[index])
+            .ok_or_else(|| {
+                EnvironmentError::InvalidRequest(
+                    "no default shell-capable environment mount is available".to_string(),
+                )
+            })
     }
 
     fn mount_by_id(&self, id: &str) -> EnvironmentResult<&EnvironmentMount> {
@@ -269,7 +287,7 @@ impl CompositeEnvironmentProvider {
                 "shell cwd cannot be the environment mount root".to_string(),
             ));
         }
-        let mount = self.default_shell_mount();
+        let mount = self.default_shell_mount()?;
         Ok(RoutedProvider {
             id: mount.id.clone(),
             agent_root: mount.agent_root.clone(),
@@ -299,7 +317,7 @@ impl CompositeEnvironmentProvider {
                 child_process_id.to_string(),
             ));
         }
-        Ok((self.default_shell_mount().clone(), process_id.to_string()))
+        Ok((self.default_shell_mount()?.clone(), process_id.to_string()))
     }
 
     fn reserved_root_entries(&self) -> Vec<String> {
@@ -329,7 +347,10 @@ impl EnvironmentProvider for CompositeEnvironmentProvider {
     }
 
     fn shell_review_context(&self) -> ShellReviewEnvironmentContext {
-        let mut context = self.default_shell_mount().provider.shell_review_context();
+        let mut context = self.default_shell_mount().map_or_else(
+            |_| ShellReviewEnvironmentContext::default(),
+            |mount| mount.provider.shell_review_context(),
+        );
         for mount in &self.mounts {
             if !context
                 .allowed_paths
@@ -735,6 +756,10 @@ fn process_provider_for_mount(
                 mount.id
             ))
         })
+}
+
+fn mount_supports_shell_default(mount: &EnvironmentMount) -> bool {
+    mount.mode.permits_write() && mount.provider.clone().process_shell_provider().is_some()
 }
 
 fn route_from_mount(mount: &EnvironmentMount) -> RoutedProvider {

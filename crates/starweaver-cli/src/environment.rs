@@ -8,7 +8,8 @@ use starweaver_envd_core::DEFAULT_ENVIRONMENT_ID;
 use starweaver_environment::{
     CompositeEnvironmentProvider, DynEnvironmentProvider, DynProcessShellProvider,
     EnvdEnvironmentProvider, EnvironmentMount, EnvironmentMountMode, EnvironmentPolicy, FilePolicy,
-    LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
+    LocalEnvironmentProvider, ShellPolicy, SwitchableEnvironmentProvider,
+    SwitchableEnvironmentTarget, VirtualEnvironmentProvider,
 };
 use starweaver_rpc_core::{
     EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
@@ -24,6 +25,10 @@ pub struct ResolvedEnvironment {
     pub provider: DynEnvironmentProvider,
     /// Optional process-capable provider override for background shell tools.
     pub process_provider: Option<DynProcessShellProvider>,
+    /// Switchable provider handle used by active-run host mutations.
+    pub switchable: Option<Arc<SwitchableEnvironmentProvider>>,
+    /// Effective run-local attachment refs backing this environment.
+    pub attachments: Vec<EnvironmentAttachmentRef>,
 }
 
 /// Validate environment configuration before creating run/session records.
@@ -52,20 +57,52 @@ pub fn resolve_environment_for_session_with_attachments(
     session_id: &str,
     attachments: &[EnvironmentAttachmentRef],
 ) -> CliResult<ResolvedEnvironment> {
+    let target =
+        resolve_environment_target_for_session_with_attachments(config, session_id, attachments)?;
+    let switchable = Arc::new(SwitchableEnvironmentProvider::new(
+        "cli-active-environment",
+        SwitchableEnvironmentTarget::new(target.provider.clone(), target.process_provider.clone()),
+    ));
+    let provider: DynEnvironmentProvider = switchable.clone();
+    let process_provider = target
+        .process_provider
+        .is_some()
+        .then(|| switchable.clone() as DynProcessShellProvider);
+    Ok(ResolvedEnvironment {
+        provider,
+        process_provider,
+        switchable: Some(switchable),
+        attachments: target.attachments,
+    })
+}
+
+/// Build a non-switchable target for a session and attachment list.
+pub fn resolve_environment_target_for_session_with_attachments(
+    config: &CliConfig,
+    session_id: &str,
+    attachments: &[EnvironmentAttachmentRef],
+) -> CliResult<ResolvedEnvironment> {
     if attachments.is_empty() {
-        return resolve_environment_for_session(config, session_id);
+        let mut resolved = resolve_environment_for_session(config, session_id)?;
+        resolved.attachments = vec![default_local_attachment()];
+        return Ok(resolved);
     }
     let default_id = default_attachment_id(attachments);
+    let default_shell_id = default_shell_attachment_id(attachments, default_id);
+    let mut effective_attachments = attachments.to_vec();
+    for attachment in &mut effective_attachments {
+        attachment.is_default = default_id == Some(attachment.id.as_str());
+        attachment.is_default_for_shell = default_shell_id == Some(attachment.id.as_str());
+    }
     let mut mounts = Vec::new();
-    for attachment in attachments {
+    for attachment in &effective_attachments {
         let resolved = resolve_environment_attachment(config, Some(session_id), attachment)?;
-        let is_default = attachment.is_default || default_id == Some(attachment.id.as_str());
         mounts.push(
             EnvironmentMount::new(&attachment.id, resolved.provider)
                 .map_err(|error| CliError::Config(error.to_string()))?
                 .with_mode(environment_mount_mode(attachment.resolved_mode()))
-                .with_default(is_default)
-                .with_default_for_shell(is_default),
+                .with_default(attachment.is_default)
+                .with_default_for_shell(attachment.is_default_for_shell),
         );
     }
     let provider: DynEnvironmentProvider = Arc::new(
@@ -76,6 +113,8 @@ pub fn resolve_environment_for_session_with_attachments(
     Ok(ResolvedEnvironment {
         provider,
         process_provider,
+        switchable: None,
+        attachments: effective_attachments,
     })
 }
 
@@ -86,6 +125,24 @@ fn default_attachment_id(attachments: &[EnvironmentAttachmentRef]) -> Option<&st
     attachments
         .iter()
         .find(|attachment| attachment.is_default)
+        .map(|attachment| attachment.id.as_str())
+}
+
+fn default_shell_attachment_id<'a>(
+    attachments: &'a [EnvironmentAttachmentRef],
+    default_id: Option<&'a str>,
+) -> Option<&'a str> {
+    if let Some(explicit) = attachments
+        .iter()
+        .find(|attachment| attachment.is_default_for_shell)
+        .map(|attachment| attachment.id.as_str())
+    {
+        return Some(explicit);
+    }
+    let default_id = default_id?;
+    attachments
+        .iter()
+        .find(|attachment| attachment.id == default_id && attachment_supports_shell(attachment))
         .map(|attachment| attachment.id.as_str())
 }
 
@@ -123,7 +180,24 @@ fn resolve_environment_with_tmp_namespace(
     Ok(ResolvedEnvironment {
         provider,
         process_provider,
+        switchable: None,
+        attachments: vec![default_local_attachment()],
     })
+}
+
+fn default_local_attachment() -> EnvironmentAttachmentRef {
+    EnvironmentAttachmentRef {
+        id: LOCAL_ENVIRONMENT_ATTACHMENT_ID.to_string(),
+        kind: LOCAL_ENVIRONMENT_ATTACHMENT_KIND.to_string(),
+        mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
+        is_default: true,
+        is_default_for_shell: true,
+        attachment_lease_id: None,
+        endpoint_ref: None,
+        environment_id: None,
+        auth_token: None,
+        metadata: serde_json::Map::new(),
+    }
 }
 
 fn resolve_environment_attachment(
@@ -169,6 +243,8 @@ fn resolve_envd_attachment(
     Ok(ResolvedEnvironment {
         provider,
         process_provider,
+        switchable: None,
+        attachments: vec![attachment.clone()],
     })
 }
 
@@ -177,6 +253,13 @@ const fn environment_mount_mode(mode: EnvironmentAttachmentAccessMode) -> Enviro
         EnvironmentAttachmentAccessMode::ReadOnly => EnvironmentMountMode::ReadOnly,
         EnvironmentAttachmentAccessMode::ReadWrite => EnvironmentMountMode::ReadWrite,
     }
+}
+
+fn attachment_supports_shell(attachment: &EnvironmentAttachmentRef) -> bool {
+    matches!(
+        attachment.resolved_mode(),
+        EnvironmentAttachmentAccessMode::ReadWrite
+    )
 }
 
 fn envd_backed_provider(provider: DynEnvironmentProvider, id: &str) -> DynEnvironmentProvider {
@@ -366,6 +449,7 @@ additional_dirs = ["../custom-skills"]
             kind: "local".to_string(),
             mode: Some(EnvironmentAttachmentAccessMode::ReadOnly),
             is_default: false,
+            is_default_for_shell: false,
             attachment_lease_id: None,
             endpoint_ref: None,
             environment_id: None,
@@ -377,7 +461,11 @@ additional_dirs = ["../custom-skills"]
             resolve_environment_for_session_with_attachments(&config, "session_123", &attachments)
                 .unwrap();
 
-        assert_eq!(environment.provider.id(), "composite");
+        assert_eq!(environment.provider.id(), "cli-active-environment");
+        assert!(environment.switchable.is_some());
+        assert_eq!(environment.attachments[0].id, "workspace");
+        assert!(environment.attachments[0].is_default);
+        assert!(!environment.attachments[0].is_default_for_shell);
         assert_eq!(
             environment.provider.read_text("README.md").await.unwrap(),
             "local workspace"
@@ -418,6 +506,7 @@ additional_dirs = ["../custom-skills"]
                 kind: "local".to_string(),
                 mode: Some(EnvironmentAttachmentAccessMode::ReadWrite),
                 is_default: true,
+                is_default_for_shell: true,
                 attachment_lease_id: None,
                 endpoint_ref: None,
                 environment_id: None,
@@ -429,6 +518,7 @@ additional_dirs = ["../custom-skills"]
                 kind: "local".to_string(),
                 mode: Some(EnvironmentAttachmentAccessMode::ReadOnly),
                 is_default: false,
+                is_default_for_shell: false,
                 attachment_lease_id: None,
                 endpoint_ref: None,
                 environment_id: None,
@@ -441,7 +531,12 @@ additional_dirs = ["../custom-skills"]
             resolve_environment_for_session_with_attachments(&config, "session_123", &attachments)
                 .unwrap();
 
-        assert_eq!(environment.provider.id(), "composite");
+        assert_eq!(environment.provider.id(), "cli-active-environment");
+        assert!(environment.switchable.is_some());
+        assert!(environment.attachments[0].is_default);
+        assert!(environment.attachments[0].is_default_for_shell);
+        assert!(!environment.attachments[1].is_default);
+        assert!(!environment.attachments[1].is_default_for_shell);
         assert_eq!(
             environment.provider.read_text("README.md").await.unwrap(),
             "local workspace"

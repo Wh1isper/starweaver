@@ -18,8 +18,9 @@ use serde_json::{json, Value};
 use starweaver_rpc_core::{
     attachment_result, environment_attachment_refs, environment_attachment_result,
     handle_json_rpc_text_async, notification, output_item, replay_cursor_from_params,
-    replay_result, stream_payload_format, RpcError, StreamPayloadFormat, INVALID_PARAMS,
-    METHOD_NOT_FOUND, SERVER_ERROR, UNSUPPORTED_FEATURE,
+    replay_result, stream_payload_format, EnvironmentActiveListParams,
+    EnvironmentActiveMountParams, EnvironmentActiveUnmountParams, RpcError, StreamPayloadFormat,
+    INVALID_PARAMS, METHOD_NOT_FOUND, RUN_CONFLICT, SERVER_ERROR, UNSUPPORTED_FEATURE,
 };
 use starweaver_stream::ReplayScope;
 use tokio::runtime::Runtime;
@@ -311,11 +312,73 @@ impl RpcService {
             "environment.detach" => self.environment_manager.detach(params),
             "environment.list" => self.environment_manager.list(params),
             "environment.health" => self.environment_manager.health(params).await,
+            "environment.active_mount" => self.environment_active_mount(params).await,
+            "environment.active_unmount" => self.environment_active_unmount(params).await,
+            "environment.active_list" => self.environment_active_list(params),
             other => Err(RpcError::new(
                 METHOD_NOT_FOUND,
                 format!("method not found: {other}"),
             )),
         }
+    }
+
+    async fn environment_active_mount(&self, params: &Value) -> Result<Value, RpcError> {
+        let params = serde_json::from_value::<EnvironmentActiveMountParams>(params.clone())
+            .map_err(|error| {
+                RpcError::new(
+                    INVALID_PARAMS,
+                    format!("invalid active mount params: {error}"),
+                )
+            })?;
+        let session_id = self
+            .coordinator
+            .active_run_session_id(&params.run_id)
+            .map_err(RpcError::from)?;
+        let attachment = self
+            .environment_manager
+            .materialize_active_attachment(params.attachment.clone(), Some(&session_id))
+            .await?;
+        self.environment_manager
+            .mark_run_mounted(&params.run_id, &attachment)?;
+        match self
+            .coordinator
+            .active_environment_mount(&params, attachment.clone())
+        {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let _ = self
+                    .environment_manager
+                    .mark_run_unmounted(&params.run_id, &attachment);
+                Err(error)
+            }
+        }
+    }
+
+    async fn environment_active_unmount(&self, params: &Value) -> Result<Value, RpcError> {
+        let params = serde_json::from_value::<EnvironmentActiveUnmountParams>(params.clone())
+            .map_err(|error| {
+                RpcError::new(
+                    INVALID_PARAMS,
+                    format!("invalid active unmount params: {error}"),
+                )
+            })?;
+        let (result, removed) = self.coordinator.active_environment_unmount(&params).await?;
+        self.environment_manager
+            .mark_run_unmounted(&params.run_id, &removed)?;
+        Ok(result)
+    }
+
+    fn environment_active_list(&self, params: &Value) -> Result<Value, RpcError> {
+        let params = serde_json::from_value::<EnvironmentActiveListParams>(params.clone())
+            .map_err(|error| {
+                RpcError::new(
+                    INVALID_PARAMS,
+                    format!("invalid active list params: {error}"),
+                )
+            })?;
+        self.coordinator
+            .active_environment_list(&params.run_id)
+            .map_err(active_run_rpc_error)
     }
 
     async fn run_start(&self, params: &Value) -> Result<Value, RpcError> {
@@ -863,6 +926,15 @@ fn validate_envd_auth_token(auth_token: Option<&str>) -> Result<(), RpcError> {
     Ok(())
 }
 
+fn active_run_rpc_error(error: CliError) -> RpcError {
+    match error {
+        CliError::NotFound(value) => {
+            RpcError::new(RUN_CONFLICT, format!("active run not found: {value}"))
+        }
+        other => RpcError::from(other),
+    }
+}
+
 fn steering_id(params: &Value) -> String {
     params
         .get("steeringId")
@@ -1032,6 +1104,7 @@ fn initialize_result(config: &CliConfig, notifications: RpcNotificationMode) -> 
             "steering": true,
             "attach": true,
             "environmentAttachments": true,
+            "environmentActiveMounts": true,
             "defaultStreamPayload": "agui",
             "approvals": true,
             "deferred": true
@@ -1297,12 +1370,32 @@ mod tests {
         let initialized = request_with_server(&live, 1, "initialize", json!({}));
         assert_eq!(initialized["capabilities"]["liveDisplay"], true);
         assert_eq!(initialized["capabilities"]["streamSubscribe"], true);
+        assert_eq!(initialized["capabilities"]["environmentActiveMounts"], true);
 
         let replay_only = RpcService::replay_only(config, transport::closed_notification_sender());
         let initialized = request_with_server(&replay_only, 2, "initialize", json!({}));
         assert_eq!(initialized["capabilities"]["liveDisplay"], false);
         assert_eq!(initialized["capabilities"]["streamSubscribe"], false);
         assert_eq!(initialized["capabilities"]["streamReplay"], true);
+        assert_eq!(initialized["capabilities"]["environmentActiveMounts"], true);
+    }
+
+    #[test]
+    fn active_environment_methods_are_dispatched() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let error = request_error_with_server(
+            &server,
+            1,
+            "environment.active_list",
+            json!({"runId": "run_missing"}),
+        );
+
+        assert_eq!(error["code"], RUN_CONFLICT);
+        assert!(error["message"].as_str().unwrap().contains("run_missing"));
     }
 
     #[test]

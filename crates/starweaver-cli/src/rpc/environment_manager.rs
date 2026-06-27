@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -30,7 +30,7 @@ const DEFAULT_READINESS_TIMEOUT_MS: u64 = 5_000;
 pub(super) struct EnvironmentAttachmentManager {
     leases: Arc<Mutex<BTreeMap<String, LeaseRecord>>>,
     attach_idempotency: Arc<Mutex<BTreeMap<String, String>>>,
-    active_runs: Arc<Mutex<BTreeMap<String, BTreeSet<String>>>>,
+    active_runs: Arc<Mutex<BTreeMap<String, BTreeMap<String, usize>>>>,
 }
 
 #[derive(Clone)]
@@ -208,6 +208,7 @@ impl EnvironmentAttachmentManager {
                 }
                 source.id = attachment.id;
                 source.is_default = attachment.is_default;
+                source.is_default_for_shell = attachment.is_default_for_shell;
                 source.attachment_lease_id = Some(lease_id);
                 ensure_reserved_local_kind(&source)?;
                 let request = EnvironmentReadinessRequest {
@@ -229,22 +230,72 @@ impl EnvironmentAttachmentManager {
         Ok(materialized)
     }
 
+    pub(super) async fn materialize_active_attachment(
+        &self,
+        attachment: EnvironmentAttachmentRef,
+        run_session_id: Option<&str>,
+    ) -> Result<EnvironmentAttachmentRef, RpcError> {
+        if let Some(lease_id) = attachment
+            .requested_attachment_lease_id()
+            .map(ToString::to_string)
+        {
+            let record = self.lease_record(&lease_id)?.ok_or_else(|| {
+                RpcError::new(
+                    INVALID_PARAMS,
+                    format!("unknown environment attachment lease: {lease_id}"),
+                )
+            })?;
+            if record.lease.status == EnvironmentAttachmentStatus::Detached {
+                return Err(RpcError::new(
+                    INVALID_PARAMS,
+                    format!("environment attachment lease is detached: {lease_id}"),
+                ));
+            }
+            validate_lease_scope_for_run(&record.lease, run_session_id)?;
+            let mut source = record.source;
+            if let Some(mode) = attachment.requested_mode() {
+                ensure_mode_override(source.resolved_mode(), mode)?;
+                source.mode = Some(mode);
+            }
+            source.id = attachment.id;
+            source.is_default = attachment.is_default;
+            source.is_default_for_shell = attachment.is_default_for_shell;
+            source.attachment_lease_id = Some(lease_id);
+            ensure_reserved_local_kind(&source)?;
+            let request = EnvironmentReadinessRequest {
+                policy: EnvironmentReadinessPolicy::Required,
+                timeout_ms: Some(DEFAULT_READINESS_TIMEOUT_MS),
+            };
+            self.probe_for_policy(&source, &request).await?;
+            return Ok(source);
+        }
+        let source = validate_attachment_source(attachment, false)?;
+        let request = EnvironmentReadinessRequest {
+            policy: EnvironmentReadinessPolicy::Required,
+            timeout_ms: Some(DEFAULT_READINESS_TIMEOUT_MS),
+        };
+        self.probe_for_policy(&source, &request).await?;
+        Ok(source)
+    }
+
     pub(super) fn mark_run_started(
         &self,
         run_id: &str,
         attachments: &[EnvironmentAttachmentRef],
     ) -> Result<(), RpcError> {
-        let lease_ids = attachments
+        let mut lease_counts = BTreeMap::<String, usize>::new();
+        for lease_id in attachments
             .iter()
             .filter_map(|attachment| attachment.requested_attachment_lease_id())
-            .map(ToString::to_string)
-            .collect::<BTreeSet<_>>();
-        if lease_ids.is_empty() {
+        {
+            *lease_counts.entry(lease_id.to_string()).or_default() += 1;
+        }
+        if lease_counts.is_empty() {
             return Ok(());
         }
         let mut active_runs = self.active_runs.lock().map_err(lock_error)?;
         let leases = self.leases.lock().map_err(lock_error)?;
-        for lease_id in &lease_ids {
+        for lease_id in lease_counts.keys() {
             let Some(record) = leases.get(lease_id) else {
                 return Err(RpcError::new(
                     INVALID_PARAMS,
@@ -258,9 +309,61 @@ impl EnvironmentAttachmentManager {
                 ));
             }
         }
-        active_runs.insert(run_id.to_string(), lease_ids);
+        active_runs.insert(run_id.to_string(), lease_counts);
         drop(leases);
         drop(active_runs);
+        Ok(())
+    }
+
+    pub(super) fn mark_run_mounted(
+        &self,
+        run_id: &str,
+        attachment: &EnvironmentAttachmentRef,
+    ) -> Result<(), RpcError> {
+        let Some(lease_id) = attachment.requested_attachment_lease_id() else {
+            return Ok(());
+        };
+        let leases = self.leases.lock().map_err(lock_error)?;
+        let Some(record) = leases.get(lease_id) else {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!("unknown environment attachment lease: {lease_id}"),
+            ));
+        };
+        if record.lease.status == EnvironmentAttachmentStatus::Detached {
+            return Err(RpcError::new(
+                INVALID_PARAMS,
+                format!("environment attachment lease is detached: {lease_id}"),
+            ));
+        }
+        drop(leases);
+        self.active_runs
+            .lock()
+            .map_err(lock_error)?
+            .entry(run_id.to_string())
+            .or_default()
+            .entry(lease_id.to_string())
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
+        Ok(())
+    }
+
+    pub(super) fn mark_run_unmounted(
+        &self,
+        run_id: &str,
+        attachment: &EnvironmentAttachmentRef,
+    ) -> Result<(), RpcError> {
+        let Some(lease_id) = attachment.requested_attachment_lease_id() else {
+            return Ok(());
+        };
+        if let Some(lease_counts) = self.active_runs.lock().map_err(lock_error)?.get_mut(run_id) {
+            if let Some(count) = lease_counts.get_mut(lease_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    lease_counts.remove(lease_id);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -334,7 +437,7 @@ impl EnvironmentAttachmentManager {
         let active_runs = self.active_runs.lock().map_err(lock_error)?;
         if let Some((run_id, _)) = active_runs
             .iter()
-            .find(|(_, lease_ids)| lease_ids.contains(lease_id))
+            .find(|(_, lease_counts)| lease_counts.contains_key(lease_id))
         {
             return Err(RpcError::new(
                 RUN_CONFLICT,
@@ -564,6 +667,7 @@ fn lease_from_source(
         kind: source.kind.clone(),
         mode: source.resolved_mode(),
         is_default: source.is_default,
+        is_default_for_shell: source.is_default_for_shell,
         mount_root: format!("/environment/{}", source.id),
         status,
         readiness,
@@ -814,6 +918,51 @@ mod tests {
         assert!(error.message.contains("run_1"));
 
         manager.mark_run_finished("run_1").unwrap();
+        let detached = manager
+            .detach(&json!({"attachmentLeaseId": lease_id}))
+            .unwrap();
+        assert_eq!(detached["detached"], true);
+    }
+
+    #[tokio::test]
+    async fn active_run_lease_usage_is_reference_counted() {
+        let manager = EnvironmentAttachmentManager::new();
+        let attached = manager
+            .attach(&json!({
+                "attachment": {"id": "workspace", "kind": "local"},
+                "readiness": {"policy": "required"}
+            }))
+            .await
+            .unwrap();
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap();
+        let attachments = manager
+            .materialize_run_attachments(
+                environment_attachment_refs(&json!({
+                    "environmentAttachments": [
+                        {"id": "workspace", "attachmentLeaseId": lease_id, "default": true},
+                        {"id": "workspace-copy", "attachmentLeaseId": lease_id}
+                    ]
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        manager.mark_run_started("run_1", &attachments).unwrap();
+        manager
+            .mark_run_unmounted("run_1", &attachments[0])
+            .unwrap();
+        let error = manager
+            .detach(&json!({"attachmentLeaseId": lease_id}))
+            .unwrap_err();
+        assert_eq!(error.code, RUN_CONFLICT);
+
+        manager
+            .mark_run_unmounted("run_1", &attachments[1])
+            .unwrap();
         let detached = manager
             .detach(&json!({"attachmentLeaseId": lease_id}))
             .unwrap();

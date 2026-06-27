@@ -13,6 +13,7 @@ mod policy;
 mod provider;
 mod search;
 mod shell;
+mod switchable_provider;
 mod types;
 mod virtual_provider;
 
@@ -59,6 +60,7 @@ pub use policy::{EnvironmentPolicy, FilePolicy, ShellPolicy};
 pub use provider::{
     DynEnvironmentProvider, DynProcessShellProvider, EnvironmentProvider, ProcessShellProvider,
 };
+pub use switchable_provider::{SwitchableEnvironmentProvider, SwitchableEnvironmentTarget};
 pub use types::{
     EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions,
     FileListOptions, FileListResult, FileStat, ResourceRef, ShellCommand, ShellOutput,
