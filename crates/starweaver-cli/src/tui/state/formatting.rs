@@ -300,6 +300,17 @@ fn preview_lines(content: &str, max_lines: usize) -> Vec<String> {
     preview
 }
 
+fn full_content_lines(content: &str) -> Vec<String> {
+    let mut lines = content
+        .lines()
+        .map(sanitize_control_chars)
+        .collect::<Vec<_>>();
+    if content.ends_with('\n') {
+        lines.push(String::new());
+    }
+    lines
+}
+
 fn preview_line(line: &str) -> String {
     truncate_line_center(&sanitize_control_chars(line), TOOL_PREVIEW_MAX_CHARS)
 }

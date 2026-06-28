@@ -49,6 +49,9 @@ impl Agent {
             .subagent_history
             .clone_from(&snapshot.subagent_history);
         context
+            .handoff_message
+            .clone_from(&snapshot.handoff_message);
+        context
             .auto_load_files
             .clone_from(&snapshot.auto_load_files);
         context

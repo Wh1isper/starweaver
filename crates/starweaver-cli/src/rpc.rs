@@ -1274,7 +1274,6 @@ mod tests {
         fs,
         io::{Read as _, Write as _},
         net::{TcpListener, TcpStream},
-        os::unix::fs::PermissionsExt as _,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -1292,7 +1291,10 @@ mod tests {
         ConfigResolver::for_tests(root).resolve(&cli).unwrap()
     }
 
+    #[cfg(unix)]
     fn stdio_envd_fixture_endpoint(root: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let script = root.join("envd-stdio-fixture.sh");
         fs::write(
             &script,
@@ -1748,7 +1750,7 @@ model = "test:coding"
             "environment_mounted"
         );
         assert_eq!(frame["params"]["projections"][0]["payloadFormat"], "agui");
-        assert_eq!(frame["params"]["payload"]["type"], "HOST_OPERATION");
+        assert_eq!(frame["params"]["payload"]["type"], "HOST_EVENT");
     }
 
     #[test]
@@ -1994,6 +1996,7 @@ model = "test:coding"
         assert_eq!(detached["detached"], true);
     }
 
+    #[cfg(unix)]
     #[test]
     fn envd_attachment_health_accepts_stdio_endpoint() {
         let temp = tempfile::tempdir().unwrap();

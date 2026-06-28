@@ -7,7 +7,7 @@ use starweaver_model::{
 };
 
 use starweaver_context::AgentContext;
-use starweaver_tools::ToolRegistry;
+use starweaver_tools::{ToolRegistry, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY};
 
 use crate::{
     agent::{runtime_helpers::tool_return_media_prompt, Agent, AgentError},
@@ -35,6 +35,17 @@ impl Agent {
                 .await
                 .map_err(|error| AgentError::Capability(error.to_string()))?;
         }
+        context.context_manage_tool_names = tools
+            .tools()
+            .into_iter()
+            .filter(|tool| {
+                tool.metadata()
+                    .get(TOOL_METADATA_CONTEXT_MANAGEMENT_KEY)
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .map(|tool| tool.name().to_string())
+            .collect();
         Ok(tools)
     }
 

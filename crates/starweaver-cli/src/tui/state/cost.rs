@@ -50,7 +50,8 @@ impl InteractiveTuiState {
     }
 
     pub(in crate::tui) fn context_percent_label(&self) -> String {
-        match (self.context_tokens, self.context_window) {
+        let tokens = self.latest_request_total_tokens.or(self.context_tokens);
+        match (tokens, self.context_window) {
             (Some(tokens), Some(window)) if window > 0 => {
                 format!(
                     "{}%",
@@ -132,7 +133,7 @@ fn format_cost_summary_header(state: &InteractiveTuiState) -> Vec<String> {
             format_u64_with_commas(window)
         ));
         lines.push(format!(
-            "[SYS] Context used: {}",
+            "[SYS] Latest request context used: {}",
             state.context_percent_label()
         ));
     }

@@ -983,6 +983,46 @@ fn compact_custom_events_render_status_lines() {
 }
 
 #[test]
+fn compact_custom_events_render_full_summary_content_without_truncation() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let long_line = format!("{}END_MARKER", "compact-summary-".repeat(24));
+    let lines = (1..=14)
+        .map(|index| format!("line-{index}: {long_line}"))
+        .collect::<Vec<_>>();
+    let content = lines.join("\n");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "compaction_completed",
+                json!({
+                    "payload": {
+                        "compacted_message_count": 12,
+                        "summary": content
+                    }
+                }),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        &("    │ line-14: ".to_string() + &long_line)
+    ));
+    assert!(!state.body.iter().any(|line| line.contains('…')));
+    assert!(!state.body.iter().any(|line| line.contains("more lines")));
+
+    let rendered = render_transcript_lines(&state.body, 72);
+    let rendered_text = line_texts(&rendered).join("\n");
+    let rendered_content = rendered_content_text(&rendered);
+    assert!(rendered_content.contains("line-14:"));
+    assert!(rendered_content.contains("END_MARKER"));
+    assert!(!rendered_text.contains('…'));
+    assert!(!rendered_text.contains("more lines"));
+}
+
+#[test]
 fn handoff_custom_events_render_summary_lines() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -1011,6 +1051,46 @@ fn handoff_custom_events_render_summary_lines() {
         "  Summary: Progress summarized, continuing with fresh context"
     ));
     assert!(body_has_line(&state, "    │ Current state preserved."));
+}
+
+#[test]
+fn summarize_tool_return_renders_full_content_without_truncation() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let long_line = format!("{}END_MARKER", "summary-content-".repeat(24));
+    let lines = (1..=14)
+        .map(|index| format!("line-{index}: {long_line}"))
+        .collect::<Vec<_>>();
+    let content = lines.join("\n");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "summarize_1",
+                "summarize",
+                json!({
+                    "operation": "summarize",
+                    "payload": { "content": content }
+                }),
+            ),
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        &("    │ line-14: ".to_string() + &long_line)
+    ));
+    assert!(!state.body.iter().any(|line| line.contains('…')));
+    assert!(!state.body.iter().any(|line| line.contains("more lines")));
+
+    let rendered = render_transcript_lines(&state.body, 72);
+    let rendered_text = line_texts(&rendered).join("\n");
+    let rendered_content = rendered_content_text(&rendered);
+    assert!(rendered_content.contains("line-14:"));
+    assert!(rendered_content.contains("END_MARKER"));
+    assert!(!rendered_text.contains('…'));
+    assert!(!rendered_text.contains("more lines"));
 }
 
 #[test]
@@ -2265,7 +2345,7 @@ fn session_command_opens_picker_selects_directly_and_blocks_while_running() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
+fn footer_context_uses_latest_usage_snapshot_not_model_response_or_high_water() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.context_window = Some(10_000);
 
@@ -2387,7 +2467,7 @@ fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
             ),
         },
     ));
-    assert_eq!(state.context_percent_label(), "30%");
+    assert_eq!(state.context_percent_label(), "2%");
 
     state.input = "/cost".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
@@ -2398,6 +2478,10 @@ fn footer_context_uses_latest_usage_snapshot_not_model_response_usage() {
     assert!(body_has_line(
         &state,
         "[SYS] Displayed context high-water: 3,000"
+    ));
+    assert!(body_has_line(
+        &state,
+        "[SYS] Latest request context used: 2%"
     ));
 }
 
@@ -3896,6 +3980,19 @@ fn line_text(line: &StyledLine) -> String {
         .collect::<String>()
         .trim_end()
         .to_string()
+}
+
+fn rendered_content_text(lines: &[StyledLine]) -> String {
+    lines
+        .iter()
+        .flat_map(|line| {
+            line.segments
+                .iter()
+                .filter(|segment| segment.style.contains(SegmentStyle::CYAN))
+                .map(|segment| segment.text.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn key_char(ch: char) -> KeyEvent {

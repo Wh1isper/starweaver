@@ -4,23 +4,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    attach_environment, dynamic_tool_proxy, filesystem_tools, host_operation_tools, json_tool,
-    namespaced_toolset, shell_tools, task_tools, AgentCapability, AgentContext,
+    attach_environment, context_tools, dynamic_tool_proxy, filesystem_tools, host_io_tools,
+    json_tool, namespaced_toolset, shell_tools, task_tools, AgentCapability, AgentContext,
     AgentRuntimeBuilder, AgentSession, EnvironmentContextCapability, HostMediaCapabilities,
     HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
     HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
     MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
     SearchResultItem, ToolContext, ToolRegistry, ToolResult,
 };
-use starweaver_context::ToolConfig;
+use starweaver_context::{AgentContextHandle, DependencyStore, ToolConfig};
 use starweaver_core::{ConversationId, Metadata, RunId};
 use starweaver_environment::{
     EnvironmentPolicy, EnvironmentProvider, FilePolicy, LocalEnvironmentProvider, ShellOutput,
     ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
-    tool_call_response, ContentPart, ModelProfile, ModelRequest, ModelRequestPart, ModelResponse,
-    ProtocolFamily, TestModel, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA,
+    tool_call_response, ContentPart, ModelMessage, ModelProfile, ModelRequest, ModelRequestPart,
+    ModelResponse, ProtocolFamily, TestModel, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT,
+    CONTEXT_ORIGIN_METADATA,
 };
 use starweaver_usage::Usage;
 
@@ -191,6 +192,37 @@ async fn environment_context_capability_keeps_initial_context_on_later_turn_even
             if metadata.get(CONTEXT_ORIGIN_METADATA).is_none()
                 && matches!(&content[0], ContentPart::Text { text } if text == "continue")
     ));
+}
+
+fn request_text_parts(message: &ModelMessage) -> Vec<String> {
+    match message {
+        ModelMessage::Request(request) => request
+            .parts
+            .iter()
+            .flat_map(|part| match part {
+                ModelRequestPart::UserPrompt { content, .. } => content
+                    .iter()
+                    .filter_map(|content| match content {
+                        ContentPart::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>(),
+                ModelRequestPart::ToolReturn(tool_return) => vec![tool_return.content.to_string()],
+                ModelRequestPart::SystemPrompt { text, .. }
+                | ModelRequestPart::RetryPrompt { text, .. }
+                | ModelRequestPart::Instruction { text, .. } => vec![text.clone()],
+            })
+            .collect(),
+        ModelMessage::Response(response) => response
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                starweaver_model::ModelResponsePart::Text { text }
+                | starweaver_model::ModelResponsePart::Thinking { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect(),
+    }
 }
 
 fn environment_context_part_count(messages: &[starweaver_model::ModelMessage]) -> usize {
@@ -1102,7 +1134,7 @@ async fn agent_builder_attaches_model_media_capabilities_to_host_tools() {
     ));
     let mut session = AgentSession::new(
         starweaver_agent::AgentBuilder::new(Arc::new(model))
-            .toolset(&host_operation_tools())
+            .toolset(&host_io_tools())
             .build(),
     );
 
@@ -1135,7 +1167,7 @@ async fn agent_builder_filters_media_tools_by_model_capabilities() {
     let model_handle = Arc::new(model.clone());
     let mut session = AgentSession::new(
         starweaver_agent::AgentBuilder::new(model_handle)
-            .toolset(&host_operation_tools())
+            .toolset(&host_io_tools())
             .build(),
     );
 
@@ -1159,7 +1191,7 @@ async fn agent_builder_filters_media_tools_by_model_capabilities() {
     let text_model_handle = Arc::new(text_model.clone());
     let mut text_session = AgentSession::new(
         starweaver_agent::AgentBuilder::new(text_model_handle)
-            .toolset(&host_operation_tools())
+            .toolset(&host_io_tools())
             .build(),
     );
 
@@ -1179,8 +1211,8 @@ async fn agent_builder_filters_media_tools_by_model_capabilities() {
 }
 
 #[tokio::test]
-async fn host_operations_use_injected_clients_and_capabilities() {
-    let toolset = host_operation_tools();
+async fn host_io_tools_use_injected_clients_and_capabilities() {
+    let toolset = host_io_tools();
     let search_tool = toolset
         .get_tools()
         .into_iter()
@@ -1258,6 +1290,45 @@ async fn host_operations_use_injected_clients_and_capabilities() {
 }
 
 #[tokio::test]
+async fn summarize_tool_handoff_replaces_history_on_next_request() {
+    let model = TestModel::with_responses(vec![
+        tool_call_response(
+            "call_summarize",
+            "summarize",
+            serde_json::json!({
+                "content": "## Current State\nSummarized prior work.\n\n## Next Step\nContinue implementation.",
+                "auto_load_files": []
+            }),
+        ),
+        ModelResponse::text("handoff complete"),
+    ]);
+    let model_handle = Arc::new(model.clone());
+    let mut session = AgentSession::new(
+        starweaver_agent::AgentBuilder::new(model_handle)
+            .toolset(&context_tools())
+            .build(),
+    );
+
+    let result = session.run("summarize now").await.unwrap();
+
+    assert_eq!(result.output, "handoff complete");
+    let captured = model.captured_messages();
+    assert_eq!(captured.len(), 2);
+    assert_eq!(captured[1].len(), 1);
+    let restored_text = captured[1]
+        .iter()
+        .flat_map(request_text_parts)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(restored_text.contains("<context-restored>"));
+    assert!(restored_text.contains("# Context Summary"));
+    assert!(restored_text.contains("Continue implementation."));
+    assert!(!restored_text.contains("tool_call_id"));
+    assert!(session.context().handoff_message.is_none());
+    assert!(session.context().force_inject_context);
+}
+
+#[tokio::test]
 async fn agent_runtime_builder_runs_host_search_adapter() {
     let model = TestModel::with_responses(vec![
         tool_call_response(
@@ -1273,7 +1344,7 @@ async fn agent_runtime_builder_runs_host_search_adapter() {
         .insert(HostSearchClientHandle::new(Arc::new(FakeSearchClient)));
     let mut runtime = AgentRuntimeBuilder::new(Arc::new(model))
         .context(context)
-        .toolset(&host_operation_tools())
+        .toolset(&host_io_tools())
         .build();
 
     let result = runtime.run("search docs").await.unwrap();
@@ -1301,6 +1372,54 @@ async fn agent_runtime_builder_runs_host_search_adapter() {
     assert_eq!(
         tool_return.content["results"][0]["citation"]["provider"],
         "fake"
+    );
+}
+
+#[tokio::test]
+async fn summarize_sets_context_handoff_and_auto_load_files() {
+    let toolset = context_tools();
+    let summarize_tool = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "summarize")
+        .unwrap();
+    let mut agent_context = AgentContext {
+        auto_load_files: vec!["AGENTS.md".to_string()],
+        ..AgentContext::default()
+    };
+    let handle = AgentContextHandle::new(agent_context.clone());
+    let mut dependencies = DependencyStore::new();
+    dependencies.insert(handle.clone());
+    let tool_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let result = summarize_tool
+        .call(
+            tool_context,
+            serde_json::json!({
+                "content": "## Current State\nImplemented handoff.",
+                "auto_load_files": ["AGENTS.md", "crates/starweaver-agent/src/bundles/context_tools/context.rs"]
+            }),
+        )
+        .await
+        .unwrap();
+    agent_context = handle.snapshot();
+
+    assert_eq!(result.content["operation"], "summarize");
+    assert_eq!(
+        result.content["payload"]["rendered"],
+        "# Context Summary\n\n## Current State\nImplemented handoff."
+    );
+    assert_eq!(
+        agent_context.handoff_message.as_deref(),
+        Some("# Context Summary\n\n## Current State\nImplemented handoff.")
+    );
+    assert_eq!(
+        agent_context.auto_load_files,
+        vec![
+            "AGENTS.md".to_string(),
+            "crates/starweaver-agent/src/bundles/context_tools/context.rs".to_string(),
+        ]
     );
 }
 
@@ -1362,12 +1481,14 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     let filesystem = filesystem_tools();
     let shell = shell_tools();
     let task = task_tools();
-    let host = host_operation_tools();
+    let context = context_tools();
+    let host_io = host_io_tools();
 
     assert_eq!(filesystem.name(), "filesystem");
     assert_eq!(shell.name(), "shell");
     assert_eq!(task.name(), "task");
-    assert_eq!(host.name(), "host_operations");
+    assert_eq!(context.name(), "context");
+    assert_eq!(host_io.name(), "host_io");
 
     assert_tool_names(
         &filesystem,
@@ -1401,8 +1522,9 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
         &task,
         &["task_create", "task_get", "task_update", "task_list"],
     );
+    assert_tool_names(&context, &["summarize", "note", "note_get", "thinking"]);
     assert_tool_names(
-        &host,
+        &host_io,
         &[
             "search",
             "fetch",
@@ -1412,10 +1534,6 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
             "read_video",
             "read_audio",
             "load_media_url",
-            "summarize",
-            "note",
-            "note_get",
-            "thinking",
         ],
     );
 
@@ -1433,10 +1551,17 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
         .unwrap()
         .definition()
         .metadata;
-    let note_metadata = host
+    let note_metadata = context
         .get_tools()
         .into_iter()
         .find(|tool| tool.name() == "note")
+        .unwrap()
+        .definition()
+        .metadata;
+    let summarize_metadata = context
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "summarize")
         .unwrap()
         .definition()
         .metadata;
@@ -1445,8 +1570,10 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert_eq!(task_metadata["auto_inherit"], true);
     assert_eq!(shell_metadata["bundle"], "shell");
     assert_eq!(shell_metadata["approval_required"], true);
-    assert_eq!(note_metadata["bundle"], "host_operations");
+    assert_eq!(note_metadata["bundle"], "context");
     assert_eq!(note_metadata["auto_inherit"], true);
+    assert_eq!(summarize_metadata["bundle"], "context");
+    assert_eq!(summarize_metadata["starweaver_context_management"], true);
 
     let filesystem_instructions = filesystem.get_instructions();
     assert_eq!(filesystem_instructions.len(), 13);
@@ -1506,8 +1633,9 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert!(task.get_instructions()[0]
         .content
         .contains("Task management tools track multi-step work"));
-    assert_eq!(host.get_instructions().len(), 9);
-    assert!(host
+    assert_eq!(context.get_instructions().len(), 4);
+    assert_eq!(host_io.get_instructions().len(), 6);
+    assert!(host_io
         .get_instructions()
         .iter()
         .any(|instruction| instruction.group == "load_media_url"
@@ -1615,13 +1743,18 @@ fn first_party_tool_arg_schemas_match_starweaver_sdk_and_describe_args() {
             ],
         ),
         (
-            host_operation_tools(),
+            context_tools(),
             vec![
-                ("load_media_url", vec!["url"]),
                 ("summarize", vec!["content", "auto_load_files"]),
                 ("note", vec!["key", "value"]),
                 ("note_get", vec!["key"]),
                 ("thinking", vec!["thought"]),
+            ],
+        ),
+        (
+            host_io_tools(),
+            vec![
+                ("load_media_url", vec!["url"]),
                 ("read_audio", vec!["url"]),
                 ("read_image", vec!["url"]),
                 ("read_video", vec!["url"]),

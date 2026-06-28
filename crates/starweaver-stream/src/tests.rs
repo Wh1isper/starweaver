@@ -133,7 +133,7 @@ fn all_display_message_kinds_serialize_to_agui_event_names() {
         (DisplayMessageKind::NoteEvent, "NOTE_EVENT"),
         (DisplayMessageKind::FileEvent, "FILE_EVENT"),
         (DisplayMessageKind::MediaEvent, "MEDIA_EVENT"),
-        (DisplayMessageKind::HostOperation, "HOST_OPERATION"),
+        (DisplayMessageKind::HostEvent, "HOST_EVENT"),
         (DisplayMessageKind::RunCompleted, "RUN_FINISHED"),
         (DisplayMessageKind::RunFailed, "RUN_ERROR"),
         (DisplayMessageKind::RunCancelled, "RUN_CANCELLED"),
@@ -470,7 +470,7 @@ async fn default_projector_maps_generic_sideband_custom_events() {
         "media_uploaded",
         &json!({"uri": "resource://uploaded/image"}),
     );
-    let host_operation = custom_stream_record(
+    let host_event = custom_stream_record(
         47,
         "host_browser_opened",
         &json!({"operation": "browser_opened"}),
@@ -480,7 +480,7 @@ async fn default_projector_maps_generic_sideband_custom_events() {
     let note_messages = projector.project(&context, &note_set).await;
     let file_messages = projector.project(&context, &file_changed).await;
     let media_messages = projector.project(&context, &media_uploaded).await;
-    let host_messages = projector.project(&context, &host_operation).await;
+    let host_messages = projector.project(&context, &host_event).await;
 
     assert_eq!(task_messages[0].kind, DisplayMessageKind::TaskEvent);
     assert_eq!(
@@ -506,10 +506,10 @@ async fn default_projector_maps_generic_sideband_custom_events() {
         media_messages[0].preview.as_deref(),
         Some("media event: resource://uploaded/image")
     );
-    assert_eq!(host_messages[0].kind, DisplayMessageKind::HostOperation);
+    assert_eq!(host_messages[0].kind, DisplayMessageKind::HostEvent);
     assert_eq!(
         host_messages[0].preview.as_deref(),
-        Some("host operation: browser_opened")
+        Some("host event: browser_opened")
     );
 }
 

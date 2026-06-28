@@ -947,6 +947,48 @@ async fn local_context_file_tree_matches_starweaver_sdk_semantics() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[tokio::test]
+async fn local_context_file_tree_roots_can_be_narrower_than_allowed_paths() {
+    let workspace = unique_test_dir().join("workspace");
+    let cache = unique_test_dir().join("cache");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::write(workspace.join("main.rs"), "fn main() {}").unwrap();
+    std::fs::write(cache.join("cache-marker.txt"), "cache").unwrap();
+
+    let provider = LocalEnvironmentProvider::new(&workspace)
+        .with_allowed_paths([cache.clone()])
+        .with_context_file_tree_roots([workspace.clone()])
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        });
+    let instructions = provider
+        .render_environment_context()
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(provider.allowed_paths().contains(&cache));
+    assert_eq!(instructions.matches("<directory path=").count(), 1);
+    assert!(instructions.contains(&format!(
+        "<directory path=\"{}\">",
+        display_local_path(&workspace)
+    )));
+    assert!(instructions.contains("main.rs"));
+    assert!(!instructions.contains("cache-marker.txt"));
+    assert_eq!(
+        provider
+            .read_text(&cache.join("cache-marker.txt").display().to_string())
+            .await
+            .unwrap(),
+        "cache"
+    );
+
+    std::fs::remove_dir_all(workspace.parent().unwrap()).unwrap();
+    std::fs::remove_dir_all(cache.parent().unwrap()).unwrap();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn local_context_file_tree_marks_permission_denied_directories() {
@@ -1413,6 +1455,65 @@ async fn policy_denies_disallowed_file_access() {
 }
 
 #[tokio::test]
+async fn switchable_provider_preserves_search_and_path_candidate_semantics() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(root.join("crates/example/src")).unwrap();
+    std::fs::write(
+        root.join("crates/example/src/lib.rs"),
+        "pub fn needle() {}\n",
+    )
+    .unwrap();
+    let local = Arc::new(
+        LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        }),
+    );
+    let provider = SwitchableEnvironmentProvider::new(
+        "switchable",
+        SwitchableEnvironmentTarget::new(local.clone(), local.clone().process_shell_provider()),
+    );
+
+    let glob_matches = provider
+        .glob(
+            "crates/example",
+            "*.rs",
+            FileGlobOptions {
+                max_results: 0,
+                ..FileGlobOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(glob_matches[0].path, "crates/example/src/lib.rs");
+
+    let grep_matches = provider
+        .grep(
+            "crates/example",
+            "needle",
+            FileGrepOptions {
+                include: Some("*.rs".to_string()),
+                context_lines: 0,
+                max_results: 10,
+                max_matches_per_file: 10,
+                max_files: 10,
+                include_hidden: false,
+                include_ignored: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(grep_matches[0].path, "crates/example/src/lib.rs");
+
+    let absolute_file = display_local_path(&root.join("crates/example/src/lib.rs"));
+    assert!(provider
+        .path_match_candidates("crates/example/src/lib.rs")
+        .contains(&absolute_file));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn composite_provider_routes_default_and_environment_namespace_paths() {
     let workspace = Arc::new(
         VirtualEnvironmentProvider::new("workspace")
@@ -1462,6 +1563,7 @@ async fn composite_provider_routes_default_and_environment_namespace_paths() {
             "/environment/data/table.csv".to_string()
         ]
     );
+    assert_eq!(provider.read_text("/README.md").await.unwrap(), "workspace");
     assert!(matches!(
         provider.write_text("/environment/data/new.txt", "no").await,
         Err(EnvironmentError::AccessDenied(_))
@@ -1525,6 +1627,69 @@ async fn composite_provider_rebases_local_mount_list_entries_from_subdirs() {
 }
 
 #[tokio::test]
+async fn composite_provider_routes_provider_visible_absolute_file_paths() {
+    let workspace_root = unique_test_dir().join("workspace");
+    let external_root = unique_test_dir().join("external");
+    std::fs::create_dir_all(workspace_root.join("src")).unwrap();
+    std::fs::create_dir_all(external_root.join("nested")).unwrap();
+    std::fs::write(workspace_root.join("src/lib.rs"), "workspace").unwrap();
+    std::fs::write(external_root.join("nested/data.rs"), "external needle").unwrap();
+    let provider = CompositeEnvironmentProvider::new(vec![EnvironmentMount::new(
+        "workspace",
+        Arc::new(
+            LocalEnvironmentProvider::new(&workspace_root)
+                .with_allowed_paths([external_root.clone()])
+                .with_policy(EnvironmentPolicy {
+                    files: FilePolicy::read_only(),
+                    shell: ShellPolicy::default(),
+                }),
+        ),
+    )
+    .unwrap()
+    .with_default(true)])
+    .unwrap();
+    let absolute_file = display_local_path(&external_root.join("nested/data.rs"));
+    let absolute_dir = display_local_path(&external_root.join("nested"));
+
+    assert_eq!(
+        provider.read_text(&absolute_file).await.unwrap(),
+        "external needle"
+    );
+    assert!(provider.stat(&absolute_file).await.unwrap().is_file);
+    assert_eq!(
+        provider
+            .glob(&absolute_dir, "*.rs", FileGlobOptions::default())
+            .await
+            .unwrap()[0]
+            .path,
+        absolute_file
+    );
+    assert_eq!(
+        provider
+            .grep(
+                &absolute_dir,
+                "needle",
+                FileGrepOptions {
+                    include: Some("*.rs".to_string()),
+                    context_lines: 0,
+                    max_results: 10,
+                    max_matches_per_file: 10,
+                    max_files: 10,
+                    include_hidden: false,
+                    include_ignored: false,
+                },
+            )
+            .await
+            .unwrap()[0]
+            .path,
+        absolute_file
+    );
+
+    std::fs::remove_dir_all(workspace_root.parent().unwrap()).unwrap();
+    std::fs::remove_dir_all(external_root.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
 async fn composite_provider_routes_provider_visible_absolute_shell_cwd() {
     let workspace_root = unique_test_dir().join("workspace");
     std::fs::create_dir_all(workspace_root.join("nested")).unwrap();
@@ -1555,6 +1720,31 @@ async fn composite_provider_routes_provider_visible_absolute_shell_cwd() {
     assert_eq!(output.stdout.trim(), absolute_cwd);
 
     std::fs::remove_dir_all(workspace_root.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
+async fn composite_provider_rebases_path_match_candidates_for_explicit_mounts() {
+    let data_root = unique_test_dir().join("data");
+    std::fs::create_dir_all(data_root.join("src")).unwrap();
+    std::fs::write(data_root.join("src/lib.rs"), "data").unwrap();
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new(
+            "workspace",
+            Arc::new(VirtualEnvironmentProvider::new("workspace")),
+        )
+        .unwrap()
+        .with_default(true)
+        .with_default_for_shell(true),
+        EnvironmentMount::new("data", Arc::new(LocalEnvironmentProvider::new(&data_root))).unwrap(),
+    ])
+    .unwrap();
+
+    let candidates = provider.path_match_candidates("/environment/data/src/lib.rs");
+    assert!(candidates.contains(&"/environment/data/src/lib.rs".to_string()));
+    assert!(candidates.contains(&"src/lib.rs".to_string()));
+    assert!(candidates.contains(&display_local_path(&data_root.join("src/lib.rs"))));
+
+    std::fs::remove_dir_all(data_root.parent().unwrap()).unwrap();
 }
 
 #[tokio::test]

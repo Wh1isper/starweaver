@@ -522,7 +522,7 @@ sw session replay <session-id> --run <run-id> --output display-jsonl
 
 ## AGUI Compatibility Path
 
-`DisplayMessage` is the Starweaver wire event. It carries AGUI-style lifecycle event names in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads. Starweaver/AGUI projection is an adapter that maps `DisplayMessage` into top-level protocol events such as `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_ARGS`, `TOOL_CALL_RESULT`, and the Starweaver extension `HOST_OPERATION`. Environment lifecycle replay records project to `HOST_OPERATION` display messages, not text chunks.
+`DisplayMessage` is the Starweaver wire event. It carries AGUI-style lifecycle event names in the serialized `type` field and Starweaver extensions through durable ids, trace context, visibility, metadata, and structured payloads. Starweaver/AGUI projection is an adapter that maps `DisplayMessage` into top-level protocol events such as `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_ARGS`, `TOOL_CALL_RESULT`, and the Starweaver extension `HOST_EVENT`. Environment lifecycle replay records project to `HOST_EVENT` display messages, not text chunks.
 
 Starweaver mapping layers:
 

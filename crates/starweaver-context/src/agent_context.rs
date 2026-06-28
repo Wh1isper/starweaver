@@ -708,15 +708,22 @@ impl AgentContext {
         }
     }
 
-    /// Return the latest model request token usage reported by the provider.
+    /// Return the latest model request usage reported by the provider.
     #[must_use]
-    pub fn latest_request_total_tokens(&self) -> Option<u64> {
+    pub fn latest_request_usage(&self) -> Option<&Usage> {
         self.message_history.iter().rev().find_map(|message| {
             let ModelMessage::Response(response) = message else {
                 return None;
             };
-            (response.usage.total_tokens > 0).then_some(response.usage.total_tokens)
+            (!response.usage.is_empty()).then_some(&response.usage)
         })
+    }
+
+    /// Return the latest model request token usage reported by the provider.
+    #[must_use]
+    pub fn latest_request_total_tokens(&self) -> Option<u64> {
+        self.latest_request_usage()
+            .and_then(|usage| (usage.total_tokens > 0).then_some(usage.total_tokens))
     }
 
     /// Append synthetic error tool returns for any unclosed tool calls in message history.

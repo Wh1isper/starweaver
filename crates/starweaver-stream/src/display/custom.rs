@@ -179,7 +179,7 @@ fn custom_display_kind(normalized: &str) -> Option<DisplayMessageKind> {
     } else if normalized.starts_with("media_") {
         Some(DisplayMessageKind::MediaEvent)
     } else if normalized.starts_with("host_") {
-        Some(DisplayMessageKind::HostOperation)
+        Some(DisplayMessageKind::HostEvent)
     } else {
         None
     }
@@ -253,7 +253,7 @@ fn custom_display_preview(kind: DisplayMessageKind, payload: &Value) -> String {
         DisplayMessageKind::NoteEvent => generic_event_preview("note event", payload),
         DisplayMessageKind::FileEvent => generic_event_preview("file event", payload),
         DisplayMessageKind::MediaEvent => generic_event_preview("media event", payload),
-        DisplayMessageKind::HostOperation => generic_event_preview("host operation", payload),
+        DisplayMessageKind::HostEvent => generic_event_preview("host event", payload),
         DisplayMessageKind::ToolsUnavailable => payload_array_len(payload, &["unavailable"])
             .map_or_else(
                 || "tools unavailable".to_string(),

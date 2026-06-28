@@ -162,7 +162,7 @@ impl EnvironmentLifecycleEvent {
             sequence,
             starweaver_core::SessionId::from_string(self.session_id.clone()),
             starweaver_core::RunId::from_string(self.run_id.clone()),
-            crate::DisplayMessageKind::HostOperation,
+            crate::DisplayMessageKind::HostEvent,
         )
         .with_payload(Value::Object(payload))
         .with_preview(format!("environment {}", self.operation_kind))

@@ -5,10 +5,11 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 
 use crate::{
-    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
-    EnvironmentResult, EnvironmentState, FileListOptions, FileListResult, FileStat,
-    ProcessShellProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
-    ShellReviewEnvironmentContext,
+    path_match_candidates as default_path_match_candidates, DynEnvironmentProvider,
+    DynProcessShellProvider, EnvironmentError, EnvironmentProvider, EnvironmentResult,
+    EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions,
+    FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand, ShellOutput,
+    ShellProcessSnapshot, ShellReviewEnvironmentContext,
 };
 
 /// Current provider target behind a [`SwitchableEnvironmentProvider`].
@@ -157,6 +158,31 @@ impl EnvironmentProvider for SwitchableEnvironmentProvider {
         self.current_provider()?
             .list_with_options(path, options)
             .await
+    }
+
+    fn path_match_candidates(&self, path: &str) -> Vec<String> {
+        self.current_provider().map_or_else(
+            |_| default_path_match_candidates(path),
+            |provider| provider.path_match_candidates(path),
+        )
+    }
+
+    async fn glob(
+        &self,
+        path: &str,
+        pattern: &str,
+        options: FileGlobOptions,
+    ) -> EnvironmentResult<Vec<FileGlobMatch>> {
+        self.current_provider()?.glob(path, pattern, options).await
+    }
+
+    async fn grep(
+        &self,
+        path: &str,
+        pattern: &str,
+        options: FileGrepOptions,
+    ) -> EnvironmentResult<Vec<FileGrepMatch>> {
+        self.current_provider()?.grep(path, pattern, options).await
     }
 
     async fn run_shell(&self, command: ShellCommand) -> EnvironmentResult<ShellOutput> {

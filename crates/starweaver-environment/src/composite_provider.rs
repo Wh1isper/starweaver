@@ -3,15 +3,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
-    path::Path,
     sync::{Arc, Mutex},
 };
 
 use crate::{
-    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
-    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
-    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand,
-    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    is_provider_visible_absolute_path, path_match_candidates as default_path_match_candidates,
+    provider_visible_path_allowed_by_context, push_unique_candidate, DynEnvironmentProvider,
+    DynProcessShellProvider, EnvironmentError, EnvironmentProvider, EnvironmentResult,
+    EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions,
+    FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand, ShellOutput,
+    ShellProcessSnapshot, ShellReviewEnvironmentContext,
 };
 use async_trait::async_trait;
 
@@ -269,12 +270,17 @@ impl CompositeEnvironmentProvider {
             }));
         }
         let mount = self.default_mount();
+        let child_path = if default_mount_allows_provider_visible_path(mount, path, &normalized) {
+            path.replace('\\', "/")
+        } else {
+            provider_root_or_path(&normalized)
+        };
         Ok(PathRoute::Provider(RoutedProvider {
             id: mount.id.clone(),
             agent_root: mount.agent_root.clone(),
             mode: mount.mode,
             provider: mount.provider.clone(),
-            child_path: provider_root_or_path(&normalized),
+            child_path,
             explicit_root: false,
         }))
     }
@@ -311,7 +317,7 @@ impl CompositeEnvironmentProvider {
         }
         let mount = self.default_shell_mount()?;
         let context = mount.provider.shell_review_context();
-        if !shell_context_allows_provider_visible_cwd(&context, cwd) {
+        if !provider_visible_path_allowed_by_context(&context, cwd) {
             return Ok(None);
         }
         Ok(Some(RoutedProvider {
@@ -542,6 +548,17 @@ impl EnvironmentProvider for CompositeEnvironmentProvider {
                 Ok(result)
             }
         }
+    }
+
+    fn path_match_candidates(&self, path: &str) -> Vec<String> {
+        let mut candidates = default_path_match_candidates(path);
+        if let Ok(PathRoute::Provider(route)) = self.route_path(path) {
+            for candidate in route.provider.path_match_candidates(&route.child_path) {
+                push_unique_candidate(&mut candidates, rebase_match_candidate(&route, &candidate));
+                push_unique_candidate(&mut candidates, candidate);
+            }
+        }
+        candidates
     }
 
     async fn glob(
@@ -868,6 +885,13 @@ fn rebase_list_entry(route: &RoutedProvider, entry: &str) -> String {
     }
 }
 
+fn rebase_match_candidate(route: &RoutedProvider, candidate: &str) -> String {
+    if !route.explicit_root || is_provider_visible_absolute_path(candidate) {
+        return candidate.replace('\\', "/");
+    }
+    rebase_child_path(route, candidate)
+}
+
 fn rebase_process_snapshot(
     route: &RoutedProvider,
     mut snapshot: ShellProcessSnapshot,
@@ -916,32 +940,14 @@ fn is_absolute_environment_namespace_path(path: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-fn is_provider_visible_absolute_path(path: &str) -> bool {
-    Path::new(path).is_absolute() || path.replace('\\', "/").starts_with('/')
-}
-
-fn shell_context_allows_provider_visible_cwd(
-    context: &ShellReviewEnvironmentContext,
-    cwd: &str,
+fn default_mount_allows_provider_visible_path(
+    mount: &EnvironmentMount,
+    path: &str,
+    normalized: &str,
 ) -> bool {
-    let normalized_cwd = normalize_agent_path(cwd).unwrap_or_else(|_| cwd.replace('\\', "/"));
-    context
-        .default_cwd
-        .as_deref()
-        .is_some_and(|default_cwd| provider_visible_path_contains(default_cwd, &normalized_cwd))
-        || context
-            .allowed_paths
-            .iter()
-            .any(|path| provider_visible_path_contains(path, &normalized_cwd))
-}
-
-fn provider_visible_path_contains(root: &str, normalized_child: &str) -> bool {
-    if !is_provider_visible_absolute_path(root) || is_absolute_environment_namespace_path(root) {
-        return false;
-    }
-    let normalized_root = normalize_agent_path(root).unwrap_or_else(|_| root.replace('\\', "/"));
-    normalized_child == normalized_root
-        || normalized_child.starts_with(&format!("{normalized_root}/"))
+    is_provider_visible_absolute_path(path)
+        && !normalized.is_empty()
+        && provider_visible_path_allowed_by_context(&mount.provider.shell_review_context(), path)
 }
 
 fn normalize_agent_path(path: &str) -> EnvironmentResult<String> {

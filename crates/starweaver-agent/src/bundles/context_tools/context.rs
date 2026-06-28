@@ -1,19 +1,42 @@
 use serde_json::{Map, Value};
+use starweaver_context::AgentContextHandle;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use super::args::{NoteGetArgs, NoteSetArgs, SummarizeArgs, ThinkingArgs};
 
 pub(super) async fn summarize(
-    _context: ToolContext,
+    context: ToolContext,
     arguments: SummarizeArgs,
 ) -> Result<ToolResult, ToolError> {
+    let Some(handle) = context.dependency::<AgentContextHandle>() else {
+        return Err(ToolError::Execution {
+            tool: "summarize".to_string(),
+            message: "summarize requires AgentContextHandle".to_string(),
+        });
+    };
+    let auto_load_files = arguments.auto_load_files.unwrap_or_default();
+    let rendered = render_handoff_message(&arguments.content);
+    handle.update(|agent_context| {
+        agent_context.handoff_message = Some(rendered.clone());
+        for file in &auto_load_files {
+            if !agent_context.auto_load_files.contains(file) {
+                agent_context.auto_load_files.push(file.clone());
+            }
+        }
+    });
+
     Ok(operation(
         "summarize",
         serde_json::json!({
             "content": arguments.content,
-            "auto_load_files": arguments.auto_load_files.unwrap_or_default(),
+            "rendered": rendered,
+            "auto_load_files": auto_load_files,
         }),
     ))
+}
+
+fn render_handoff_message(content: &str) -> String {
+    format!("# Context Summary\n\n{content}")
 }
 
 pub(super) async fn note_set(

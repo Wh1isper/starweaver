@@ -276,11 +276,11 @@ fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
     second.usage = Usage {
         requests: 1,
         input_tokens: 40,
-        cache_write_tokens: 0,
-        cache_read_tokens: 0,
+        cache_write_tokens: 7,
+        cache_read_tokens: 9,
         output_tokens: 10,
         total_tokens: 50,
-        tool_calls: 0,
+        tool_calls: 3,
     };
     context.push_message(ModelMessage::Response(first));
     context.push_message(ModelMessage::Response(second));
@@ -288,7 +288,13 @@ fn runtime_context_reports_latest_request_tokens_not_accumulated_usage() {
     let injected = context.render_runtime_context(true).unwrap();
 
     assert_eq!(context.latest_request_total_tokens(), Some(50));
+    assert!(injected.contains("<requests>1</requests>"));
+    assert!(injected.contains("<input-tokens>40</input-tokens>"));
+    assert!(injected.contains("<cache-read-tokens>9</cache-read-tokens>"));
+    assert!(injected.contains("<cache-write-tokens>7</cache-write-tokens>"));
+    assert!(injected.contains("<output-tokens>10</output-tokens>"));
     assert!(injected.contains("<total-tokens>50</total-tokens>"));
+    assert!(injected.contains("<tool-calls>3</tool-calls>"));
     assert!(!injected.contains("<total-tokens>200</total-tokens>"));
 }
 

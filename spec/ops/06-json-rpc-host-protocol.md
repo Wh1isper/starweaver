@@ -2039,7 +2039,7 @@ Environment lifecycle projection:
 
 - Canonical `environment_info`, `environment_mounted`, and
   `environment_unmounted` replay events project to a `DisplayMessage` with
-  `type: "HOST_OPERATION"`, diagnostic visibility by default, and the safe
+  `type: "HOST_EVENT"`, diagnostic visibility by default, and the safe
   lifecycle payload under `payload`.
 - The display payload includes `operationKind` with the lifecycle kind,
   `bindingVersion`, `environment`, and mutation fields such as `mount`,
@@ -2049,7 +2049,7 @@ Environment lifecycle projection:
   compatibility field, but native replay events use `operationKind` to avoid
   colliding with the outer `ReplayEventKind` tag.
 - The AGUI projection maps that display message through the normal display
-  adapter, producing a top-level `HOST_OPERATION` event whose payload contains
+  adapter, producing a top-level `HOST_EVENT` event whose payload contains
   the same safe lifecycle payload. It must not degrade lifecycle records into
   text chunks.
 - `ReplayEventKind::EnvironmentLifecycle` uses this projection path. Native
@@ -2668,7 +2668,7 @@ Required tests:
   display projection, AGUI projection, and no-gap live subscribe replay.
 - Environment lifecycle projection fixtures proving both typed lifecycle replay
   events and transitional `ReplayEventKind::Raw` lifecycle payloads project to
-  `HOST_OPERATION` `DisplayMessage` and AGUI events without becoming text chunks.
+  `HOST_EVENT` `DisplayMessage` and AGUI events without becoming text chunks.
 - Concurrent active environment mutation fixture proving per-run serialization
   and monotonic `bindingVersion`.
 - Current-session pointer set, clear, and missing-session fixtures.

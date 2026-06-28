@@ -83,8 +83,9 @@ on product-specific implementations:
 - `filesystem_tools()` for list, view, glob, grep, and file mutation helpers.
 - `shell_tools()` for provider-scoped shell execution and background process handles.
 - `task_tools()` for model-visible task tracking.
+- `context_tools()` for context handoff, notes, and explicit thinking tools.
+- `host_io_tools()` for host-backed search, scrape, download, and media adapters.
 - `skill_tools(...)` for discovered skill packages.
-- `host_operation_tools()` for host-backed search, scrape, download, and media adapters.
 - `live_mcp_toolset(...)` for host-backed live MCP discovery and calls.
 
 ## Choosing the entry point
