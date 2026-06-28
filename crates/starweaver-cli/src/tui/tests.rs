@@ -3059,7 +3059,7 @@ fn bang_command_prints_natural_shell_transcript() {
 }
 
 #[test]
-fn goal_mode_tracks_runtime_goal_events() {
+fn goal_mode_reports_total_tokens_on_goal_complete() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.input = "/goal migrate tui".to_string();
     assert_eq!(
@@ -3072,6 +3072,35 @@ fn goal_mode_tracks_runtime_goal_events() {
     );
     state.apply_stream_record(&AgentStreamRecord::new(
         1,
+        AgentStreamEvent::RunStart {
+            run_id: RunId::from_string("run_goal"),
+            conversation_id: ConversationId::from_string("conversation_goal"),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_goal".to_string(),
+                    total_usage: Usage {
+                        requests: 2,
+                        input_tokens: 10_000,
+                        cache_write_tokens: 222,
+                        cache_read_tokens: 111,
+                        output_tokens: 2_345,
+                        total_tokens: 12_345,
+                        ..Usage::default()
+                    },
+                    ..UsageSnapshot::default()
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
         AgentStreamEvent::Custom {
             event: AgentEvent::new(
                 "goal_iteration",
@@ -3087,7 +3116,7 @@ fn goal_mode_tracks_runtime_goal_events() {
         .any(|line| line == "[Goal] Iteration 1/10"));
 
     state.apply_stream_record(&AgentStreamRecord::new(
-        2,
+        4,
         AgentStreamEvent::Custom {
             event: AgentEvent::new(
                 "goal_complete",
@@ -3100,15 +3129,44 @@ fn goal_mode_tracks_runtime_goal_events() {
         .body
         .iter()
         .any(|line| line == "[Goal] Completed: verified after 1 iteration(s)"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "[Goal] Total tokens: 12,345 (input: 10,000, cache read: 111, cache write: 222, output: 2,345)"));
+}
 
-    let mut max_state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
-    max_state.input = "/goal hard task".to_string();
+#[test]
+fn goal_mode_reports_total_tokens_at_max_iterations() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.input = "/goal hard task".to_string();
     assert_eq!(
-        submit_text(handle_key_event(&mut max_state, key_code(KeyCode::Enter))),
+        submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
         Some("hard task".to_string())
     );
-    max_state.apply_stream_record(&AgentStreamRecord::new(
+    state.apply_stream_record(&AgentStreamRecord::new(
         1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: String::new(),
+                    total_usage: Usage {
+                        requests: 1,
+                        input_tokens: 7_000,
+                        cache_write_tokens: 90,
+                        cache_read_tokens: 80,
+                        output_tokens: 890,
+                        total_tokens: 7_890,
+                        ..Usage::default()
+                    },
+                    ..UsageSnapshot::default()
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
         AgentStreamEvent::Custom {
             event: AgentEvent::new(
                 "goal_complete",
@@ -3116,11 +3174,59 @@ fn goal_mode_tracks_runtime_goal_events() {
             ),
         },
     ));
-    assert!(!max_state.goal_active);
-    assert!(max_state
+    assert!(!state.goal_active);
+    assert!(state
         .body
         .iter()
         .any(|line| line.contains("max iterations reached")));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "[Goal] Total tokens: 7,890 (input: 7,000, cache read: 80, cache write: 90, output: 890)"));
+}
+
+#[test]
+fn goal_mode_reports_total_tokens_when_run_finishes_without_goal_event() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.input = "/goal interrupted task".to_string();
+    assert_eq!(
+        submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
+        Some("interrupted task".to_string())
+    );
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "usage_snapshot",
+                serde_json::to_value(UsageSnapshot {
+                    run_id: "run_unverified".to_string(),
+                    total_usage: Usage {
+                        requests: 3,
+                        input_tokens: 90_000,
+                        cache_write_tokens: 3_000,
+                        cache_read_tokens: 2_000,
+                        output_tokens: 1_234,
+                        total_tokens: 91_234,
+                        ..Usage::default()
+                    },
+                    ..UsageSnapshot::default()
+                })
+                .unwrap(),
+            ),
+        },
+    ));
+
+    state.finish_run(Some("session_goal".to_string()));
+
+    assert!(!state.goal_active);
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "[Goal] Completed: unverified_stop"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line == "[Goal] Total tokens: 91,234 (input: 90,000, cache read: 2,000, cache write: 3,000, output: 1,234)"));
 }
 
 #[test]

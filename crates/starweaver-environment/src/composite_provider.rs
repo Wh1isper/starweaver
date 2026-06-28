@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -280,6 +281,9 @@ impl CompositeEnvironmentProvider {
 
     fn route_shell(&self, cwd: Option<&str>) -> EnvironmentResult<RoutedProvider> {
         if let Some(cwd) = cwd {
+            if let Some(route) = self.route_provider_visible_shell_cwd(cwd)? {
+                return Ok(route);
+            }
             if let PathRoute::Provider(route) = self.route_path(cwd)? {
                 return Ok(route);
             }
@@ -296,6 +300,28 @@ impl CompositeEnvironmentProvider {
             child_path: ".".to_string(),
             explicit_root: false,
         })
+    }
+
+    fn route_provider_visible_shell_cwd(
+        &self,
+        cwd: &str,
+    ) -> EnvironmentResult<Option<RoutedProvider>> {
+        if !is_provider_visible_absolute_path(cwd) || is_absolute_environment_namespace_path(cwd) {
+            return Ok(None);
+        }
+        let mount = self.default_shell_mount()?;
+        let context = mount.provider.shell_review_context();
+        if !shell_context_allows_provider_visible_cwd(&context, cwd) {
+            return Ok(None);
+        }
+        Ok(Some(RoutedProvider {
+            id: mount.id.clone(),
+            agent_root: mount.agent_root.clone(),
+            mode: mount.mode,
+            provider: mount.provider.clone(),
+            child_path: cwd.to_string(),
+            explicit_root: false,
+        }))
     }
 
     fn route_for_process(&self, process_id: &str) -> EnvironmentResult<(EnvironmentMount, String)> {
@@ -888,6 +914,34 @@ fn is_absolute_environment_namespace_path(path: &str) -> bool {
         || trimmed
             .strip_prefix(RESERVED_ROOT)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn is_provider_visible_absolute_path(path: &str) -> bool {
+    Path::new(path).is_absolute() || path.replace('\\', "/").starts_with('/')
+}
+
+fn shell_context_allows_provider_visible_cwd(
+    context: &ShellReviewEnvironmentContext,
+    cwd: &str,
+) -> bool {
+    let normalized_cwd = normalize_agent_path(cwd).unwrap_or_else(|_| cwd.replace('\\', "/"));
+    context
+        .default_cwd
+        .as_deref()
+        .is_some_and(|default_cwd| provider_visible_path_contains(default_cwd, &normalized_cwd))
+        || context
+            .allowed_paths
+            .iter()
+            .any(|path| provider_visible_path_contains(path, &normalized_cwd))
+}
+
+fn provider_visible_path_contains(root: &str, normalized_child: &str) -> bool {
+    if !is_provider_visible_absolute_path(root) || is_absolute_environment_namespace_path(root) {
+        return false;
+    }
+    let normalized_root = normalize_agent_path(root).unwrap_or_else(|_| root.replace('\\', "/"));
+    normalized_child == normalized_root
+        || normalized_child.starts_with(&format!("{normalized_root}/"))
 }
 
 fn normalize_agent_path(path: &str) -> EnvironmentResult<String> {
