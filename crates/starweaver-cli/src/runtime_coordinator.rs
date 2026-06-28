@@ -1380,7 +1380,7 @@ fn is_environment_lifecycle_kind(kind: &str) -> bool {
 }
 
 fn is_environment_lifecycle_message(message: &DisplayMessage) -> bool {
-    message.kind == DisplayMessageKind::HostOperation
+    message.kind == DisplayMessageKind::HostEvent
         && message
             .payload
             .get("operationKind")

@@ -32,8 +32,8 @@ pub use tool::{
     extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, json_tool,
     set_tool_metadata_kind, tool_metadata_hidden_by_tags, tool_metadata_kind, tool_metadata_tags,
     typed_json_tool, DynTool, EmptyToolArgs, FunctionTool, Tool, ToolKind, ToolResult,
-    ToolUserInputPreprocessResult, TypedFunctionTool, TOOL_METADATA_HIDDEN_BY_TAGS_KEY,
-    TOOL_METADATA_KIND_KEY, TOOL_METADATA_TAGS_KEY,
+    ToolUserInputPreprocessResult, TypedFunctionTool, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY,
+    TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY, TOOL_METADATA_TAGS_KEY,
 };
 pub use tool_proxy::{
     dynamic_tool_proxy, dynamic_tool_search, ToolProxyNamePrefixError, ToolProxyToolset,

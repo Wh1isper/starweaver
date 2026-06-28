@@ -3,7 +3,7 @@ use starweaver_runtime::AgentRuntimePolicy;
 
 use super::is_false;
 
-/// Approval policy preset for tools and host operations.
+/// Approval policy preset for tools and supports.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ApprovalPolicyPreset {
     /// Tool names requiring approval.

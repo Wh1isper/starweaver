@@ -216,16 +216,12 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
         )];
     }
     if let Some(error) = line.strip_prefix("Summary failed:") {
-        let mut rendered = StyledLine::styled(
+        return render_status_detail_lines(
             "  x summary failed",
+            error.trim_start(),
             SegmentStyle::error().merge(SegmentStyle::bold()),
+            width,
         );
-        let detail = error.trim_start();
-        if !detail.is_empty() {
-            rendered.push(" ", SegmentStyle::dim());
-            rendered.push(detail, SegmentStyle::dim());
-        }
-        return vec![rendered];
     }
     if let Some(status) = line.strip_prefix("Run completed:") {
         let mut rendered = StyledLine::styled("  ✓ completed", SegmentStyle::blockquote());
@@ -233,8 +229,8 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
         rendered.push(status.trim_start(), SegmentStyle::dim());
         return vec![rendered];
     }
-    if let Some(rendered) = render_file_tool_detail_line(line) {
-        return vec![rendered];
+    if let Some(rendered) = render_file_tool_detail_line(line, width) {
+        return rendered;
     }
     wrap_text_width(line, width)
         .into_iter()
@@ -249,10 +245,11 @@ fn render_task_tool_header_line(label: &str, name: &str, name_style: SegmentStyl
     rendered
 }
 
-fn render_file_tool_detail_line(line: &str) -> Option<StyledLine> {
+fn render_file_tool_detail_line(line: &str, width: usize) -> Option<Vec<StyledLine>> {
     render_file_header_line(line)
-        .or_else(|| render_file_metadata_line(line))
-        .or_else(|| render_file_content_line(line))
+        .map(|line| vec![line])
+        .or_else(|| render_file_metadata_lines(line, width))
+        .or_else(|| render_file_content_lines(line, width))
 }
 
 fn render_file_header_line(line: &str) -> Option<StyledLine> {
@@ -266,7 +263,7 @@ fn render_file_header_line(line: &str) -> Option<StyledLine> {
     None
 }
 
-fn render_file_metadata_line(line: &str) -> Option<StyledLine> {
+fn render_file_metadata_lines(line: &str, width: usize) -> Option<Vec<StyledLine>> {
     for (prefix, value_style) in [
         ("  Summary: ", SegmentStyle::blockquote()),
         ("  Status: ", SegmentStyle::blockquote()),
@@ -288,9 +285,13 @@ fn render_file_metadata_line(line: &str) -> Option<StyledLine> {
         ("  Truncation: ", SegmentStyle::warning()),
     ] {
         if let Some(value) = line.strip_prefix(prefix) {
-            let mut rendered = StyledLine::styled(prefix, SegmentStyle::dim());
-            rendered.push(value, value_style);
-            return Some(rendered);
+            return Some(render_prefixed_content_lines(
+                prefix,
+                SegmentStyle::dim(),
+                value,
+                value_style,
+                width,
+            ));
         }
     }
     if let Some(detail) = line.strip_prefix("  Edit #") {
@@ -299,61 +300,94 @@ fn render_file_metadata_line(line: &str) -> Option<StyledLine> {
             detail,
             SegmentStyle::list_marker().merge(SegmentStyle::bold()),
         );
-        return Some(rendered);
+        return Some(vec![rendered]);
     }
     if matches!(
         line,
         "    Empty file" | "    Empty match string" | "    No changes detected"
     ) || line.starts_with("    ...")
     {
-        return Some(StyledLine::styled(line, SegmentStyle::dim()));
+        return Some(vec![StyledLine::styled(line, SegmentStyle::dim())]);
     }
     None
 }
 
-fn render_file_content_line(line: &str) -> Option<StyledLine> {
+fn render_file_content_lines(line: &str, width: usize) -> Option<Vec<StyledLine>> {
     if line.starts_with("    @@") {
-        return Some(StyledLine::styled(
+        return Some(vec![StyledLine::styled(
             line,
             SegmentStyle::warning().merge(SegmentStyle::bold()),
-        ));
+        )]);
     }
     if let Some(content) = line.strip_prefix("    +") {
-        let mut rendered = StyledLine::styled(
+        return Some(render_prefixed_content_lines(
             "    +",
             SegmentStyle::blockquote().merge(SegmentStyle::bold()),
-        );
-        rendered.push(content, SegmentStyle::blockquote());
-        return Some(rendered);
+            content,
+            SegmentStyle::blockquote(),
+            width,
+        ));
     }
     if let Some(content) = line.strip_prefix("    -") {
-        let mut rendered =
-            StyledLine::styled("    -", SegmentStyle::error().merge(SegmentStyle::bold()));
-        rendered.push(content, SegmentStyle::error());
-        return Some(rendered);
+        return Some(render_prefixed_content_lines(
+            "    -",
+            SegmentStyle::error().merge(SegmentStyle::bold()),
+            content,
+            SegmentStyle::error(),
+            width,
+        ));
     }
     if let Some(rest) = line.strip_prefix("    ") {
         if let Some((line_number, content)) = rest.split_once(" │ ") {
             if line_number.trim().chars().all(|ch| ch.is_ascii_digit()) {
-                let mut rendered = StyledLine::styled("    ", SegmentStyle::dim());
-                rendered.push(line_number, SegmentStyle::list_marker());
-                rendered.push(" │ ", SegmentStyle::dim());
-                rendered.push(content, SegmentStyle::code_block());
-                return Some(rendered);
+                let prefix = format!("    {line_number} │ ");
+                return Some(render_prefixed_content_lines(
+                    &prefix,
+                    SegmentStyle::dim(),
+                    content,
+                    SegmentStyle::code_block(),
+                    width,
+                ));
             }
         }
         if let Some(content) = rest.strip_prefix("│ ") {
-            let mut rendered = StyledLine::styled("    │ ", SegmentStyle::dim());
-            rendered.push(content, SegmentStyle::code_block());
-            return Some(rendered);
+            return Some(render_prefixed_content_lines(
+                "    │ ",
+                SegmentStyle::dim(),
+                content,
+                SegmentStyle::code_block(),
+                width,
+            ));
         }
     }
     if let Some(content) = line.strip_prefix("     ") {
-        let mut rendered = StyledLine::styled("     ", SegmentStyle::dim());
-        rendered.push(content, SegmentStyle::dim());
-        return Some(rendered);
+        return Some(render_prefixed_content_lines(
+            "     ",
+            SegmentStyle::dim(),
+            content,
+            SegmentStyle::dim(),
+            width,
+        ));
     }
     None
+}
+
+fn render_prefixed_content_lines(
+    prefix: &str,
+    prefix_style: SegmentStyle,
+    content: &str,
+    content_style: SegmentStyle,
+    width: usize,
+) -> Vec<StyledLine> {
+    let available = width.max(1).saturating_sub(visible_width(prefix)).max(1);
+    wrap_text_width(content, available)
+        .into_iter()
+        .map(|chunk| {
+            let mut rendered = StyledLine::styled(prefix, prefix_style);
+            rendered.push(chunk, content_style);
+            rendered
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

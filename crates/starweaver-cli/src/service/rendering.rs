@@ -280,7 +280,7 @@ pub(super) fn display_message_to_agui_event(message: &DisplayMessage) -> Option<
         | DisplayMessageKind::NoteEvent
         | DisplayMessageKind::FileEvent
         | DisplayMessageKind::MediaEvent
-        | DisplayMessageKind::HostOperation => custom_agui_event(
+        | DisplayMessageKind::HostEvent => custom_agui_event(
             display_extension_name(message.kind),
             message,
             &message.payload,
@@ -350,7 +350,7 @@ const fn display_extension_name(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::NoteEvent => "starweaver.note_event",
         DisplayMessageKind::FileEvent => "starweaver.file_event",
         DisplayMessageKind::MediaEvent => "starweaver.media_event",
-        DisplayMessageKind::HostOperation => "starweaver.host_operation",
+        DisplayMessageKind::HostEvent => "starweaver.host_event",
         _ => "starweaver.display_message",
     }
 }

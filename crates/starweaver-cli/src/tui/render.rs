@@ -24,7 +24,7 @@ use pickers::{push_detail_row, render_model_picker_panel, render_session_picker_
 use super::{
     markdown::{render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
     snapshot::TuiSnapshot,
-    state::{HitlPanelState, InteractiveTuiState, TaskPanelItem, COMPOSER_VISIBLE_LINES},
+    state::{HitlPanelState, InteractiveTuiState, TaskPanelItem},
 };
 
 const SESSION_HEADER_MAX_INNER_WIDTH: usize = 56;
@@ -221,18 +221,28 @@ fn with_codex_border(rows: Vec<Vec<StyledSegment>>, inner_width: usize) -> Vec<S
     output
 }
 
+#[cfg(test)]
 pub(super) fn render_composer_lines(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {
     let input_width = composer_input_width(width);
-    let input_lines = input_viewport_lines_wrapped(
+    let layout = composer_layout(
         &state.input,
-        COMPOSER_VISIBLE_LINES,
+        state.composer_cursor_byte(),
+        super::state::COMPOSER_VISIBLE_LINES,
         state.composer_scroll_offset(),
         input_width,
     );
-    let mut lines = Vec::with_capacity(input_lines.len().saturating_add(1));
+    render_composer_lines_from_layout(state, width, &layout)
+}
+
+pub(super) fn render_composer_lines_from_layout(
+    state: &InteractiveTuiState,
+    width: usize,
+    layout: &ComposerLayout,
+) -> Vec<StyledLine> {
+    let mut lines = Vec::with_capacity(layout.visible_lines.len().saturating_add(1));
     lines.push(StyledLine::plain(""));
     let prompt = composer_prompt(state);
-    for (offset, input) in input_lines.iter().enumerate() {
+    for (offset, input) in layout.visible_lines.iter().enumerate() {
         let mut line =
             StyledLine::styled(if offset == 0 { prompt } else { " " }, SegmentStyle::bold());
         line.push(" ", SegmentStyle::default());
@@ -569,18 +579,63 @@ pub(super) fn input_viewport_lines(
     viewport_from_lines(lines, max_lines, scroll_from_bottom)
 }
 
+#[cfg(test)]
 pub(super) fn input_visual_line_count(input: &str, content_width: usize) -> usize {
     visual_input_lines(input, content_width).len()
 }
 
+#[cfg(test)]
 pub(super) fn input_viewport_lines_wrapped(
     input: &str,
     max_lines: usize,
     scroll_from_bottom: usize,
     content_width: usize,
 ) -> Vec<String> {
-    let lines = visual_input_lines(input, content_width);
-    viewport_from_lines(lines, max_lines, scroll_from_bottom)
+    composer_layout(
+        input,
+        input.len(),
+        max_lines,
+        scroll_from_bottom,
+        content_width,
+    )
+    .visible_lines
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ComposerLayout {
+    pub(super) visible_lines: Vec<String>,
+    pub(super) total_visual_lines: usize,
+    pub(super) visible_start: usize,
+    pub(super) cursor_line: usize,
+    pub(super) cursor_col: usize,
+}
+
+pub(super) fn composer_layout(
+    input: &str,
+    cursor_byte: usize,
+    max_lines: usize,
+    scroll_from_bottom: usize,
+    content_width: usize,
+) -> ComposerLayout {
+    let width = content_width.max(1);
+    let lines = visual_input_lines(input, width);
+    let total_visual_lines = lines.len();
+    let max_lines = max_lines.max(1);
+    let max_start = total_visual_lines.saturating_sub(max_lines);
+    let visible_start = max_start.saturating_sub(scroll_from_bottom.min(max_start));
+    let visible_lines = lines
+        .into_iter()
+        .skip(visible_start)
+        .take(max_lines)
+        .collect();
+    let (cursor_line, cursor_col) = composer_cursor_position_wrapped(input, cursor_byte, width);
+    ComposerLayout {
+        visible_lines,
+        total_visual_lines,
+        visible_start,
+        cursor_line,
+        cursor_col,
+    }
 }
 
 fn logical_input_lines(input: &str) -> Vec<String> {
@@ -591,6 +646,7 @@ fn logical_input_lines(input: &str) -> Vec<String> {
     lines
 }
 
+#[cfg(test)]
 fn viewport_from_lines(
     lines: Vec<String>,
     max_lines: usize,

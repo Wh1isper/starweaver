@@ -16,10 +16,11 @@ use starweaver_envd_core::{
 };
 
 use crate::{
-    EnvironmentError, EnvironmentProvider, EnvironmentResult, EnvironmentState, FileGlobMatch,
-    FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FileStat,
-    ProcessShellProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
-    ShellReviewEnvironmentContext,
+    path_match_candidates as default_path_match_candidates,
+    push_shell_review_context_path_candidates, EnvironmentError, EnvironmentProvider,
+    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
+    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand,
+    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
 };
 
 use convert::{
@@ -241,6 +242,16 @@ impl EnvironmentProvider for EnvdEnvironmentProvider {
             .await
             .map(file_list_result_from_envd)
             .map_err(envd_error_to_environment)
+    }
+
+    fn path_match_candidates(&self, path: &str) -> Vec<String> {
+        let mut candidates = default_path_match_candidates(path);
+        push_shell_review_context_path_candidates(
+            &mut candidates,
+            &self.shell_review_context,
+            path,
+        );
+        candidates
     }
 
     async fn glob(

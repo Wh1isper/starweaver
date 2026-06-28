@@ -32,6 +32,7 @@ pub struct LocalEnvironmentProvider {
     id: String,
     root: PathBuf,
     allowed_paths: Vec<PathBuf>,
+    context_file_tree_roots: Option<Vec<PathBuf>>,
     tmp_dir: Option<Arc<tempfile::TempDir>>,
     tmp_namespace: Option<String>,
     policy: EnvironmentPolicy,
@@ -60,6 +61,7 @@ impl LocalEnvironmentProvider {
         Self {
             id: "local".to_string(),
             allowed_paths,
+            context_file_tree_roots: None,
             tmp_dir,
             tmp_namespace: None,
             root,
@@ -134,6 +136,26 @@ impl LocalEnvironmentProvider {
             .map(|path| normalize_local_config_path(path.into()))
             .collect::<Vec<_>>();
         self.rebuild_allowed_paths_with_managed_roots(allowed_paths);
+        self
+    }
+
+    /// Set filesystem roots rendered in generated environment context file trees.
+    ///
+    /// This can be narrower than [`Self::allowed_paths`] when auxiliary roots
+    /// should remain available to tools without consuming prompt budget as
+    /// workspace file-tree context.
+    #[must_use]
+    pub fn with_context_file_tree_roots<I, P>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.context_file_tree_roots = Some(
+            paths
+                .into_iter()
+                .map(|path| normalize_local_config_path(path.into()))
+                .collect(),
+        );
         self
     }
 
@@ -558,7 +580,11 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
 
     async fn render_environment_context(&self) -> EnvironmentResult<Option<String>> {
         let mut file_trees = Vec::new();
-        for allowed_path in context_file_tree_roots(&self.allowed_paths) {
+        let file_tree_roots = self
+            .context_file_tree_roots
+            .as_deref()
+            .unwrap_or(&self.allowed_paths);
+        for allowed_path in context_file_tree_roots(file_tree_roots) {
             let visible_root = self.logical_root_for_allowed_path(allowed_path);
             let tree = render_local_file_tree_listing(
                 allowed_path,

@@ -320,9 +320,6 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
             "shell" => {
                 registry = registry.with_toolset_alias("shell", toolset);
             }
-            "host_operations" => {
-                registry = registry.with_toolset_alias("tools", toolset);
-            }
             "task" => {
                 registry = registry.with_toolset_alias("task", toolset);
             }

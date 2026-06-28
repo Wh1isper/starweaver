@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     env,
     path::Path,
-    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
@@ -272,7 +271,6 @@ pub struct InteractiveTuiState {
     session_picker_open: bool,
     session_picker_index: usize,
     pending_session_command: Option<String>,
-    pub(super) last_ctrl_c: Option<Instant>,
     pub(super) cancel_requested: bool,
     pub(super) footer_mode: FooterMode,
     pub(super) goal_task: Option<String>,
@@ -341,7 +339,6 @@ impl InteractiveTuiState {
             session_picker_open: false,
             session_picker_index: 0,
             pending_session_command: None,
-            last_ctrl_c: None,
             cancel_requested: false,
             footer_mode: FooterMode::Context,
             goal_task: None,

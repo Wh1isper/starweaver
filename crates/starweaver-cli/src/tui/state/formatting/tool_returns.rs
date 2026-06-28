@@ -564,7 +564,7 @@ fn format_summarize_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec
     let mut lines = vec!["Tool result: summarize".to_string()];
     lines.push("  Summary: Progress summarized, continuing with fresh context".to_string());
     if !content.trim().is_empty() {
-        for line in preview_lines(&content, 12) {
+        for line in full_content_lines(&content) {
             lines.push(format!("    │ {line}"));
         }
     }

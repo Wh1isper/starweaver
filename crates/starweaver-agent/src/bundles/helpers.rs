@@ -3,7 +3,10 @@ use std::{future::Future, sync::Arc};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use starweaver_core::Metadata;
-use starweaver_tools::{typed_json_tool, DynTool, ToolContext, ToolError, ToolResult};
+use starweaver_tools::{
+    typed_json_tool, DynTool, ToolContext, ToolError, ToolResult,
+    TOOL_METADATA_CONTEXT_MANAGEMENT_KEY,
+};
 
 pub fn static_tool<Args, F, Fut>(
     name: &'static str,
@@ -46,6 +49,19 @@ pub fn tool_metadata(bundle: &str, inherit: bool, approval_required: bool) -> Me
     if approval_required {
         metadata.insert("approval_required".to_string(), serde_json::json!(true));
     }
+    metadata
+}
+
+pub fn context_management_tool_metadata(
+    bundle: &str,
+    inherit: bool,
+    approval_required: bool,
+) -> Metadata {
+    let mut metadata = tool_metadata(bundle, inherit, approval_required);
+    metadata.insert(
+        TOOL_METADATA_CONTEXT_MANAGEMENT_KEY.to_string(),
+        serde_json::json!(true),
+    );
     metadata
 }
 

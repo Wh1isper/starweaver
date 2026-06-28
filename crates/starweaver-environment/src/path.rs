@@ -6,7 +6,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
 
-use crate::{EnvironmentError, EnvironmentResult};
+use crate::{types::ShellReviewEnvironmentContext, EnvironmentError, EnvironmentResult};
 
 pub const DEFAULT_TMP_DIR: &str = ".starweaver/tmp";
 pub const LOCAL_TMP_DIR_PREFIX: &str = "starweaver-";
@@ -131,6 +131,98 @@ pub fn path_match_candidates(path: &str) -> Vec<String> {
     push_unique_candidate(&mut candidates, path.replace('\\', "/"));
     push_unique_candidate(&mut candidates, normalize_match_path(path));
     candidates
+}
+
+/// Return whether a path can represent an absolute provider-visible path.
+///
+/// This intentionally accepts Unix-style slash-prefixed paths even on Windows
+/// so host-provided paths such as MSYS `/tmp/...` can still be routed to the
+/// provider that owns the corresponding shell review context.
+#[must_use]
+pub fn is_provider_visible_absolute_path(path: &str) -> bool {
+    Path::new(path).is_absolute() || path.replace('\\', "/").starts_with('/')
+}
+
+/// Return whether an absolute provider-visible `root` contains `child`.
+#[must_use]
+pub fn provider_visible_path_contains(root: &str, child: &str) -> bool {
+    if !is_provider_visible_absolute_path(root) {
+        return false;
+    }
+    let normalized_root = normalize_provider_visible_path(root);
+    let normalized_child = normalize_provider_visible_path(child);
+    if normalized_root == "/" {
+        return normalized_child.starts_with('/');
+    }
+    normalized_child == normalized_root
+        || normalized_child.starts_with(&format!("{normalized_root}/"))
+}
+
+/// Return whether a provider-visible absolute path is covered by shell review context.
+#[must_use]
+pub fn provider_visible_path_allowed_by_context(
+    context: &ShellReviewEnvironmentContext,
+    path: &str,
+) -> bool {
+    if !is_provider_visible_absolute_path(path) {
+        return false;
+    }
+    context
+        .default_cwd
+        .as_deref()
+        .is_some_and(|default_cwd| provider_visible_path_contains(default_cwd, path))
+        || context
+            .allowed_paths
+            .iter()
+            .any(|allowed_path| provider_visible_path_contains(allowed_path, path))
+}
+
+/// Add path candidates derived from a provider shell review context.
+///
+/// Wrappers that cannot synchronously resolve provider paths can still expose
+/// stable relaxed-view candidates by joining relative paths with the cached
+/// default working directory.
+pub fn push_shell_review_context_path_candidates(
+    candidates: &mut Vec<String>,
+    context: &ShellReviewEnvironmentContext,
+    path: &str,
+) {
+    let normalized_path = path.replace('\\', "/");
+    if is_provider_visible_absolute_path(&normalized_path) {
+        push_unique_candidate(
+            candidates,
+            normalize_provider_visible_path(&normalized_path),
+        );
+        return;
+    }
+    let Some(default_cwd) = context.default_cwd.as_deref() else {
+        return;
+    };
+    if !is_provider_visible_absolute_path(default_cwd) {
+        return;
+    }
+    let normalized_path = normalize_str_path(&normalized_path);
+    let normalized_cwd = normalize_provider_visible_path(default_cwd);
+    let candidate = if normalized_path.is_empty() || normalized_path == "." {
+        normalized_cwd
+    } else if normalized_cwd == "/" {
+        format!("/{normalized_path}")
+    } else {
+        format!(
+            "{}/{}",
+            normalized_cwd.trim_end_matches('/'),
+            normalized_path
+        )
+    };
+    push_unique_candidate(candidates, candidate);
+}
+
+fn normalize_provider_visible_path(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/");
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    normalized
 }
 
 /// Match one path candidate against a relaxed-view pattern.

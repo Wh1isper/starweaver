@@ -156,9 +156,9 @@ pub enum DisplayMessageKind {
     /// Media workflow event.
     #[serde(rename = "MEDIA_EVENT")]
     MediaEvent,
-    /// Host operation workflow event.
-    #[serde(rename = "HOST_OPERATION")]
-    HostOperation,
+    /// Host event workflow event.
+    #[serde(rename = "HOST_EVENT")]
+    HostEvent,
     /// Run completed successfully.
     #[serde(rename = "RUN_FINISHED")]
     RunCompleted,

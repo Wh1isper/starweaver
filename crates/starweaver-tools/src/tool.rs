@@ -27,6 +27,9 @@ pub const TOOL_METADATA_HIDDEN_BY_TAGS_KEY: &str = "hidden_by_tags";
 /// Metadata key for provider-neutral tool kind taxonomy.
 pub const TOOL_METADATA_KIND_KEY: &str = "starweaver_tool_kind";
 
+/// Metadata key for tools that can actively reduce or refresh conversation context.
+pub const TOOL_METADATA_CONTEXT_MANAGEMENT_KEY: &str = "starweaver_context_management";
+
 /// Provider-neutral tool kind used by runtime, output, approval, deferred, and host adapters.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

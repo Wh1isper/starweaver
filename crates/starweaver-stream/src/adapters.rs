@@ -135,7 +135,7 @@ pub fn display_to_vercel_data_stream(message: &DisplayMessage) -> Vec<VercelData
         | DisplayMessageKind::NoteEvent
         | DisplayMessageKind::FileEvent
         | DisplayMessageKind::MediaEvent
-        | DisplayMessageKind::HostOperation => vec![part(
+        | DisplayMessageKind::HostEvent => vec![part(
             "data",
             json!({
                 "type": display_event_type(message.kind),
@@ -232,7 +232,7 @@ const fn display_event_type(kind: DisplayMessageKind) -> &'static str {
         DisplayMessageKind::NoteEvent => "NOTE_EVENT",
         DisplayMessageKind::FileEvent => "FILE_EVENT",
         DisplayMessageKind::MediaEvent => "MEDIA_EVENT",
-        DisplayMessageKind::HostOperation => "HOST_OPERATION",
+        DisplayMessageKind::HostEvent => "HOST_EVENT",
         DisplayMessageKind::RunCompleted => "RUN_FINISHED",
         DisplayMessageKind::RunFailed => "RUN_ERROR",
         DisplayMessageKind::RunCancelled => "RUN_CANCELLED",

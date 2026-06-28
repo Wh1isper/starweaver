@@ -34,6 +34,16 @@ fn shell_review_adjusted_approval_removes_shell_entries_only_when_enabled() {
 }
 
 #[test]
+fn default_registry_uses_scoped_context_and_host_io_toolset_names() {
+    let config = test_config();
+    let registry = default_registry(&config, &AgentSpec::default()).unwrap();
+
+    assert!(registry.resolve_toolset("context").is_some());
+    assert!(registry.resolve_toolset("host_io").is_some());
+    assert!(registry.resolve_toolset("tools").is_none());
+}
+
+#[test]
 fn resolve_profile_builds_configured_shell_review_handle() {
     let mut config = test_config();
     config.shell_review.enabled = true;

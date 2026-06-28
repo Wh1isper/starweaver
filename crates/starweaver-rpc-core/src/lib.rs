@@ -757,7 +757,7 @@ mod tests {
 
         let agui = output_item(&event, StreamPayloadFormat::Agui).unwrap();
         let agui_value = serde_json::to_value(agui).unwrap();
-        assert_eq!(agui_value["payload"]["type"], "HOST_OPERATION");
+        assert_eq!(agui_value["payload"]["type"], "HOST_EVENT");
         assert_eq!(
             agui_value["payload"]["payload"]["operationKind"],
             "environment_mounted"

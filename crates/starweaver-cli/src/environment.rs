@@ -157,6 +157,7 @@ fn resolve_environment_with_tmp_namespace(
             let mut provider = LocalEnvironmentProvider::new(config.workspace_root.clone())
                 .with_id("cli-local")
                 .with_allowed_paths(local_allowed_paths(config))
+                .with_context_file_tree_roots([config.workspace_root.clone()])
                 .with_policy(policy);
             if let Some(namespace) = tmp_namespace {
                 provider = provider.with_tmp_namespace(namespace);
@@ -434,6 +435,10 @@ fn envd_backed_provider(provider: DynEnvironmentProvider, id: &str) -> DynEnviro
 
 fn local_allowed_paths(config: &CliConfig) -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    // Include the system temp dir so CLI/TUI agents can access user-specified
+    // temporary files, while LocalEnvironmentProvider still appends its
+    // provider-managed session temp dir separately.
+    push_allowed_path(&mut paths, std::env::temp_dir());
     push_allowed_path(&mut paths, config.global_dir.clone());
     if let Some(home) = std::env::var_os("HOME") {
         push_allowed_path(&mut paths, PathBuf::from(home).join(".agents"));
@@ -549,7 +554,7 @@ additional_dirs = ["../custom-skills"]
     }
 
     #[tokio::test]
-    async fn cli_local_environment_tmp_outputs_are_readable_without_allowing_all_tmp() {
+    async fn cli_local_environment_tmp_outputs_and_system_tmp_are_readable() {
         let temp = tempfile::tempdir().unwrap();
         let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
         let config = ConfigResolver::for_tests(temp.path())
@@ -581,17 +586,101 @@ additional_dirs = ["../custom-skills"]
             1
         );
 
-        let unrelated_tmp =
-            std::env::temp_dir().join(format!("starweaver-cli-unrelated-{}", std::process::id()));
-        std::fs::write(&unrelated_tmp, "secret").unwrap();
-        assert!(matches!(
+        let system_tmp_file = std::env::temp_dir().join(format!(
+            "starweaver-cli-system-tmp-read-{}",
+            std::process::id()
+        ));
+        let system_tmp_output = std::env::temp_dir().join(format!(
+            "starweaver-cli-system-tmp-write-{}",
+            std::process::id()
+        ));
+        std::fs::write(&system_tmp_file, "user temp").unwrap();
+        assert_eq!(
             environment
                 .provider
-                .read_text(&unrelated_tmp.display().to_string())
-                .await,
-            Err(starweaver_environment::EnvironmentError::AccessDenied(_))
-        ));
-        let _ = std::fs::remove_file(unrelated_tmp);
+                .read_text(&system_tmp_file.display().to_string())
+                .await
+                .unwrap(),
+            "user temp"
+        );
+        environment
+            .provider
+            .write_text(&system_tmp_output.display().to_string(), "agent temp")
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&system_tmp_output).unwrap(),
+            "agent temp"
+        );
+        let _ = std::fs::remove_file(system_tmp_file);
+        let _ = std::fs::remove_file(system_tmp_output);
+    }
+
+    #[tokio::test]
+    async fn cli_local_environment_allows_system_tmp_before_config_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+
+        let allowed_paths = local_allowed_paths(&config);
+        let system_tmp_dir = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+
+        assert_eq!(allowed_paths.first(), Some(&system_tmp_dir));
+        assert!(allowed_paths.contains(&config.global_dir));
+        assert!(allowed_paths.contains(&config.workspace_root));
+        assert!(allowed_paths.contains(&config.project_dir));
+    }
+
+    #[tokio::test]
+    async fn cli_local_environment_file_tree_context_uses_workspace_only() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = args::parse(["starweaver-cli".to_string()]).unwrap();
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&cli)
+            .unwrap();
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        std::fs::create_dir_all(&config.global_dir).unwrap();
+        std::fs::write(config.workspace_root.join("app.rs"), "fn main() {}").unwrap();
+        std::fs::write(config.global_dir.join("config-marker.txt"), "config").unwrap();
+
+        let environment = resolve_environment_for_session(&config, "session_123").unwrap();
+        let context = environment
+            .provider
+            .render_environment_context()
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(context.matches("<directory path=").count(), 1);
+        assert!(context.contains(&format!(
+            "<directory path=\"{}\">",
+            config.workspace_root.display()
+        )));
+        assert!(context.contains("app.rs"));
+        assert!(!context.contains("config-marker.txt"));
+        assert!(!context.contains(&format!(
+            "<directory path=\"{}\">",
+            config.global_dir.display()
+        )));
+
+        assert_eq!(
+            environment
+                .provider
+                .read_text(
+                    &config
+                        .global_dir
+                        .join("config-marker.txt")
+                        .display()
+                        .to_string(),
+                )
+                .await
+                .unwrap(),
+            "config"
+        );
     }
 
     #[tokio::test]

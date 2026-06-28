@@ -19,9 +19,9 @@ use starweaver_runtime::Agent as RuntimeAgent;
 
 pub use bundles::{
     attach_environment, attach_process_shell, attach_shell_review, attach_shell_review_handle,
-    core_toolsets, dynamic_tool_proxy, environment_toolsets, filesystem_tools,
-    host_operation_tools, namespaced_toolset, parse_skill_markdown, process_shell_toolsets,
-    shell_tools, skill_tools, task_tools, EnvironmentContextCapability, EnvironmentHandle,
+    context_tools, core_toolsets, dynamic_tool_proxy, environment_toolsets, filesystem_tools,
+    host_io_tools, namespaced_toolset, parse_skill_markdown, process_shell_toolsets, shell_tools,
+    skill_tools, task_tools, EnvironmentContextCapability, EnvironmentHandle,
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
     MediaUnderstandingRequest, MediaUnderstandingResponse, ProcessShellHandle,
@@ -137,10 +137,10 @@ pub use starweaver_tools::{
     ToolUserInputPreprocessResult, Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy,
     ToolsetLifecycleReport, ToolsetLifecycleState, ToolsetPreparation, TypedFunctionTool,
     TOOLSET_CLOSED_EVENT_KIND, TOOLSET_FAILED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND,
-    TOOLSET_REFRESHED_EVENT_KIND, TOOLSET_UNAVAILABLE_EVENT_KIND, TOOL_METADATA_HIDDEN_BY_TAGS_KEY,
-    TOOL_METADATA_KIND_KEY, TOOL_METADATA_TAGS_KEY, TOOL_SEARCH_FAILED_EVENT_KIND,
-    TOOL_SEARCH_INVALIDATED_EVENT_KIND, TOOL_SEARCH_NO_MATCH_EVENT_KIND,
-    TOOL_SEARCH_REFRESHED_EVENT_KIND,
+    TOOLSET_REFRESHED_EVENT_KIND, TOOLSET_UNAVAILABLE_EVENT_KIND,
+    TOOL_METADATA_CONTEXT_MANAGEMENT_KEY, TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY,
+    TOOL_METADATA_TAGS_KEY, TOOL_SEARCH_FAILED_EVENT_KIND, TOOL_SEARCH_INVALIDATED_EVENT_KIND,
+    TOOL_SEARCH_NO_MATCH_EVENT_KIND, TOOL_SEARCH_REFRESHED_EVENT_KIND,
 };
 pub use starweaver_usage::{
     pricing::CostBudget, PricingEstimate, Usage, UsageAgentTotal, UsageLimitError, UsageLimits,

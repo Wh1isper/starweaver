@@ -287,7 +287,7 @@ starweaver-cli auth logout codex
 
 ## Tools, MCP, skills, and subagents
 
-Built-in and config-backed profiles attach the default first-party CLI tool catalog: filesystem, shell, host operations, task operations, skills, and CLI control-flow probes. CLI tools execute without approval by default; add explicit tool names, toolset ids, or `"*"` to opt back into approval gating:
+Built-in and config-backed profiles attach the default first-party CLI tool catalog: filesystem, shell, context management, host I/O, task operations, skills, and CLI control-flow probes. CLI tools execute without approval by default; add explicit tool names, toolset ids such as `context` or `host_io`, or `"*"` to opt back into approval gating:
 
 ```toml
 [tools]

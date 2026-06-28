@@ -506,9 +506,9 @@ fn display_message_to_stream_record(
                 message.payload.clone(),
             ),
         },
-        DisplayMessageKind::HostOperation => AgentStreamEvent::Custom {
+        DisplayMessageKind::HostEvent => AgentStreamEvent::Custom {
             event: starweaver_context::AgentEvent::new(
-                original_display_event_kind(message, "host_operation"),
+                original_display_event_kind(message, "host_event"),
                 message.payload.clone(),
             ),
         },

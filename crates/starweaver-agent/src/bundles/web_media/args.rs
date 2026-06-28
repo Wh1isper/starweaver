@@ -33,38 +33,6 @@ pub(super) struct DownloadArgs {
     pub(super) save_dir: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub(super) struct SummarizeArgs {
-    /// Context summary to preserve across context handoff.
-    pub(super) content: String,
-    /// File paths to auto-load after summary.
-    #[serde(default)]
-    pub(super) auto_load_files: Option<Vec<String>>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub(super) struct NoteSetArgs {
-    /// Unique key for the note entry.
-    pub(super) key: String,
-    /// Content to store. Omit or set to null to delete the entry.
-    #[serde(default)]
-    pub(super) value: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub(super) struct NoteGetArgs {
-    /// The note key to retrieve. Omit to list all notes.
-    #[serde(default)]
-    pub(super) key: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub(super) struct ThinkingArgs {
-    /// A thought in markdown format.
-    #[serde(alias = "content")]
-    pub(super) thought: String,
-}
-
 const fn default_search_num() -> u8 {
     10
 }

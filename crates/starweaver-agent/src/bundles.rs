@@ -1,16 +1,18 @@
 //! First-party SDK tool bundles.
 
+mod context_tools;
 mod environment;
-mod external;
 mod helpers;
 mod runtime_context;
 mod skills;
 mod task;
+mod web_media;
 
 use std::sync::Arc;
 
 use starweaver_tools::{DynToolset, PrefixedToolset};
 
+pub use context_tools::context_tools;
 pub use environment::{
     attach_environment, attach_process_shell, attach_shell_review, attach_shell_review_handle,
     environment_toolsets, filesystem_tools, process_shell_toolsets, shell_tools,
@@ -18,14 +20,6 @@ pub use environment::{
     ShellReviewConfig, ShellReviewContextSnapshot, ShellReviewDecision, ShellReviewHandle,
     ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
     DEFAULT_SHELL_REVIEW_PROMPT,
-};
-pub use external::{
-    host_operation_tools, HostMediaCapabilities, HostMediaUnderstandingClient,
-    HostMediaUnderstandingClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse,
-};
-pub use external::{
-    HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
-    ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem,
 };
 pub use runtime_context::RuntimeContextCapability;
 pub use skills::{
@@ -38,6 +32,14 @@ pub use skills::{
 };
 pub use starweaver_tools::{dynamic_tool_proxy, ToolProxyNamePrefixError, ToolProxyToolset};
 pub use task::task_tools;
+pub use web_media::{
+    host_io_tools, HostMediaCapabilities, HostMediaUnderstandingClient,
+    HostMediaUnderstandingClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse,
+};
+pub use web_media::{
+    HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
+    ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem,
+};
 
 /// Create the currently implemented first-party core toolsets.
 #[must_use]
@@ -46,7 +48,8 @@ pub fn core_toolsets() -> Vec<DynToolset> {
         filesystem_tools(),
         shell_tools(),
         task_tools(),
-        host_operation_tools(),
+        context_tools(),
+        host_io_tools(),
     ]
 }
 

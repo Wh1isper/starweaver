@@ -1,6 +1,8 @@
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     io::{self, Write},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crossterm::{
@@ -22,9 +24,9 @@ use crate::{prompt_input::PromptInput, CliResult};
 
 use super::{
     render::{
-        composer_cursor_position_wrapped, composer_input_width, input_viewport_lines_wrapped,
-        input_visual_line_count, queue_styled_line_at, render_composer_lines, render_footer_lines,
-        render_live_history_lines, terminal_error,
+        composer_input_width, composer_layout, queue_styled_line_at,
+        render_composer_lines_from_layout, render_footer_lines, render_live_history_lines,
+        terminal_error, StyledLine,
     },
     state::{
         BodyScrollDirection, InteractiveTuiState, PendingSessionCommand, RunMode,
@@ -58,6 +60,23 @@ pub struct InteractiveTui {
     active: bool,
     mouse_capture_enabled: bool,
     keyboard_enhancements_enabled: bool,
+    rendered_body_cache: RenderedBodyCache,
+}
+
+#[derive(Debug, Default)]
+struct RenderedBodyCache {
+    signature: Option<BodyRenderSignature>,
+    lines: Vec<StyledLine>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BodyRenderSignature {
+    width: usize,
+    workspace_dir: String,
+    model: String,
+    body_len: usize,
+    body_total_bytes: usize,
+    body_hash: u64,
 }
 
 impl InteractiveTui {
@@ -81,6 +100,7 @@ impl InteractiveTui {
             active: true,
             mouse_capture_enabled: true,
             keyboard_enhancements_enabled,
+            rendered_body_cache: RenderedBodyCache::default(),
         })
     }
 
@@ -97,20 +117,27 @@ impl InteractiveTui {
         // spill into the next row before the cursor is moved for the next draw.
         let render_width = terminal_width.saturating_sub(1).max(1);
         let height = usize::from(height).max(8);
-        let composer_lines = render_composer_lines(state, render_width);
+        let input_width = composer_input_width(render_width);
+        let composer_layout = composer_layout(
+            &state.input,
+            state.composer_cursor_byte(),
+            COMPOSER_VISIBLE_LINES,
+            state.composer_scroll_offset(),
+            input_width,
+        );
+        let composer_lines =
+            render_composer_lines_from_layout(state, render_width, &composer_layout);
         let status_lines = render_footer_lines(state, render_width);
         let fixed_height = composer_lines.len().saturating_add(status_lines.len());
         let body_height = height.saturating_sub(fixed_height).max(1);
-        let rendered_body = render_live_history_lines(state, render_width);
-        state.update_render_metrics(rendered_body.len(), body_height);
-        let (visible_start, visible_end) =
-            visible_body_bounds(state, rendered_body.len(), body_height);
-
-        let visible_body = rendered_body
-            .iter()
-            .skip(visible_start)
-            .take(visible_end.saturating_sub(visible_start))
-            .collect::<Vec<_>>();
+        let visible_body = {
+            let rendered_body = self.rendered_body_lines(state, render_width);
+            let rendered_body_len = rendered_body.len();
+            state.update_render_metrics(rendered_body_len, body_height);
+            let (visible_start, visible_end) =
+                visible_body_bounds(state, rendered_body_len, body_height);
+            rendered_body[visible_start..visible_end].to_vec()
+        };
         for row in 0..body_height {
             queue!(
                 self.stdout,
@@ -147,27 +174,13 @@ impl InteractiveTui {
                 render_width,
             )?;
         }
-        let input_width = composer_input_width(render_width);
-        let input_tail = input_viewport_lines_wrapped(
-            &state.input,
-            COMPOSER_VISIBLE_LINES,
-            state.composer_scroll_offset(),
-            input_width,
-        );
-        let total_input_lines = input_visual_line_count(&state.input, input_width);
-        let max_start = total_input_lines.saturating_sub(COMPOSER_VISIBLE_LINES);
-        let visible_start = max_start.saturating_sub(state.composer_scroll_offset().min(max_start));
-        let (cursor_line, cursor_col) = composer_cursor_position_wrapped(
-            &state.input,
-            state.composer_cursor_byte(),
-            input_width,
-        );
         let cursor_row = composer_start.saturating_add(1).saturating_add(
-            cursor_line
-                .saturating_sub(visible_start)
-                .min(input_tail.len().saturating_sub(1)),
+            composer_layout
+                .cursor_line
+                .saturating_sub(composer_layout.visible_start)
+                .min(composer_layout.visible_lines.len().saturating_sub(1)),
         );
-        let cursor_col = 2usize.saturating_add(cursor_col);
+        let cursor_col = 2usize.saturating_add(composer_layout.cursor_col);
         queue!(
             self.stdout,
             MoveTo(
@@ -178,6 +191,15 @@ impl InteractiveTui {
         )
         .map_err(terminal_error)?;
         self.stdout.flush().map_err(terminal_error)
+    }
+
+    fn rendered_body_lines(&mut self, state: &InteractiveTuiState, width: usize) -> &[StyledLine] {
+        let signature = body_render_signature(state, width);
+        if self.rendered_body_cache.signature.as_ref() != Some(&signature) {
+            self.rendered_body_cache.lines = render_live_history_lines(state, width);
+            self.rendered_body_cache.signature = Some(signature);
+        }
+        &self.rendered_body_cache.lines
     }
 
     fn sync_mouse_capture(&mut self, should_enable: bool) -> CliResult<()> {
@@ -215,6 +237,21 @@ impl InteractiveTui {
             Event::Resize(_, _) => Ok(Some(InteractiveTuiEvent::Redraw)),
             _ => Ok(None),
         }
+    }
+}
+
+fn body_render_signature(state: &InteractiveTuiState, width: usize) -> BodyRenderSignature {
+    let mut body_hasher = DefaultHasher::new();
+    for line in &state.body {
+        line.hash(&mut body_hasher);
+    }
+    BodyRenderSignature {
+        width,
+        workspace_dir: state.workspace_dir.clone(),
+        model: state.model.clone(),
+        body_len: state.body.len(),
+        body_total_bytes: state.body.iter().map(String::len).sum(),
+        body_hash: body_hasher.finish(),
     }
 }
 
@@ -385,12 +422,7 @@ pub(super) fn handle_key_event(
     }
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let now = Instant::now();
-            let should_exit = state
-                .last_ctrl_c
-                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(900));
-            state.last_ctrl_c = Some(now);
-            if should_exit || state.input.is_empty() {
+            if state.composer_is_empty() {
                 return Some(InteractiveTuiEvent::Quit);
             }
             state.clear_composer();

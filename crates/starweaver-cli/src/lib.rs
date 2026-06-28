@@ -700,7 +700,7 @@ prompt = "Review carefully."
             999,
             starweaver_core::SessionId::from_string(session_id),
             starweaver_core::RunId::from_string(&run.run_id),
-            starweaver_stream::DisplayMessageKind::HostOperation,
+            starweaver_stream::DisplayMessageKind::HostEvent,
         )
         .with_preview("extra archive message");
         runtime

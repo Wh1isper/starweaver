@@ -33,8 +33,8 @@ pub enum AgentSidebandEventCategory {
     File,
     /// Media state or media-operation events.
     Media,
-    /// Host adapter or host operation events.
-    HostOperation,
+    /// Host adapter events.
+    HostEvent,
     /// Subagent lifecycle events.
     Subagent,
     /// Message bus events.
@@ -119,7 +119,7 @@ impl AgentSidebandEvent {
             _ if kind.starts_with("note_") => Some(AgentSidebandEventCategory::Note),
             _ if kind.starts_with("file_") => Some(AgentSidebandEventCategory::File),
             _ if kind.starts_with("media_") => Some(AgentSidebandEventCategory::Media),
-            _ if kind.starts_with("host_") => Some(AgentSidebandEventCategory::HostOperation),
+            _ if kind.starts_with("host_") => Some(AgentSidebandEventCategory::HostEvent),
             _ if kind.starts_with("tool_search_") => Some(AgentSidebandEventCategory::ToolSearch),
             _ if kind.starts_with("tool_") || kind.starts_with("toolset_") => {
                 Some(AgentSidebandEventCategory::Tool)

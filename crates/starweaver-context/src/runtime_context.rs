@@ -25,10 +25,18 @@ pub fn render_runtime_context(context: &AgentContext, is_user_prompt: bool) -> O
             .close("model-config");
     }
 
-    let latest_total_tokens = context.latest_request_total_tokens();
-    if let Some(total_tokens) = latest_total_tokens {
+    let latest_usage = context.latest_request_usage();
+    let latest_total_tokens =
+        latest_usage.and_then(|usage| (usage.total_tokens > 0).then_some(usage.total_tokens));
+    if let Some(usage) = latest_usage {
         xml.open("token-usage")
-            .text_element("total-tokens", total_tokens.to_string())
+            .text_element("requests", usage.requests.to_string())
+            .text_element("input-tokens", usage.input_tokens.to_string())
+            .text_element("cache-read-tokens", usage.cache_read_tokens.to_string())
+            .text_element("cache-write-tokens", usage.cache_write_tokens.to_string())
+            .text_element("output-tokens", usage.output_tokens.to_string())
+            .text_element("total-tokens", usage.total_tokens.to_string())
+            .text_element("tool-calls", usage.tool_calls.to_string())
             .close("token-usage");
     }
 

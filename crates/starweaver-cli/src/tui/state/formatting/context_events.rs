@@ -1,4 +1,4 @@
-use super::{preview_line, preview_lines, Value};
+use super::{full_content_lines, preview_line, preview_lines, Value};
 
 pub(in crate::tui::state) fn format_custom_context_event_lines(
     kind: &str,
@@ -262,7 +262,7 @@ fn format_compaction_completed_lines(payload: &Value, wrapper: &Value) -> Vec<St
         payload,
         &["summary", "summary_markdown", "content", "handoff_content"],
     ) {
-        push_indented_preview(&mut lines, &summary, 8);
+        push_indented_full_content(&mut lines, &summary);
     }
     lines
 }
@@ -292,7 +292,7 @@ fn format_handoff_completed_lines(payload: &Value, wrapper: &Value) -> Vec<Strin
     )
     .or_else(|| payload_string(wrapper, &["preview"]));
     if let Some(content) = content {
-        push_indented_preview(&mut lines, &content, 12);
+        push_indented_full_content(&mut lines, &content);
     }
     lines
 }
@@ -302,6 +302,15 @@ pub(super) fn push_indented_preview(lines: &mut Vec<String>, content: &str, max_
         return;
     }
     for line in preview_lines(content, max_lines) {
+        lines.push(format!("    │ {line}"));
+    }
+}
+
+pub(super) fn push_indented_full_content(lines: &mut Vec<String>, content: &str) {
+    if content.trim().is_empty() {
+        return;
+    }
+    for line in full_content_lines(content) {
         lines.push(format!("    │ {line}"));
     }
 }
