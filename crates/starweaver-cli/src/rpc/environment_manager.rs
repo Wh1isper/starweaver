@@ -5,7 +5,6 @@ use std::{
 };
 
 use serde_json::{json, Value};
-use starweaver_envd_client::EnvdRpcClient;
 use starweaver_envd_core::{
     EnvdService, EnvironmentRequest, InitializeEnvdRequest, OpenEnvironmentRequest,
     DEFAULT_ENVIRONMENT_ID,
@@ -23,6 +22,10 @@ use starweaver_rpc_core::{
 };
 use tokio::time::timeout;
 use uuid::Uuid;
+
+use crate::environment::{
+    envd_client_for_attachment, redacted_envd_endpoint_ref, validate_envd_attachment_transport,
+};
 
 const DEFAULT_READINESS_TIMEOUT_MS: u64 = 5_000;
 
@@ -511,14 +514,7 @@ impl EnvironmentAttachmentManager {
         source: &EnvironmentAttachmentRef,
         request: &EnvironmentReadinessRequest,
     ) -> Result<EnvironmentReadiness, String> {
-        let endpoint = source
-            .requested_endpoint_ref()
-            .ok_or_else(|| "envd attachment requires endpointRef".to_string())?;
-        let auth_token = source
-            .requested_auth_token()
-            .ok_or_else(|| "envd attachment requires authToken".to_string())?;
-        let client = EnvdRpcClient::http_with_token(endpoint, auth_token)
-            .map_err(|error| error.to_string())?;
+        let client = envd_client_for_attachment(source)?;
         let environment_id = source
             .requested_environment_id()
             .unwrap_or(DEFAULT_ENVIRONMENT_ID)
@@ -575,22 +571,10 @@ fn validate_attachment_source(
             Ok(attachment)
         }
         "envd" => {
-            let Some(endpoint) = attachment.requested_endpoint_ref() else {
-                return Err(RpcError::new(
-                    INVALID_PARAMS,
-                    "envd environment attachment requires endpointRef",
-                ));
-            };
-            validate_envd_auth_token(attachment.requested_auth_token())?;
-            if endpoint.starts_with("http://") {
-                attachment.mode = Some(attachment.resolved_mode());
-                Ok(attachment)
-            } else {
-                Err(RpcError::new(
-                    UNSUPPORTED_FEATURE,
-                    "envd environment attachment currently supports http:// endpoint refs",
-                ))
-            }
+            validate_envd_attachment_transport(&attachment)
+                .map_err(|error| RpcError::new(INVALID_PARAMS, error))?;
+            attachment.mode = Some(attachment.resolved_mode());
+            Ok(attachment)
         }
         other => Err(RpcError::new(
             UNSUPPORTED_FEATURE,
@@ -606,28 +590,6 @@ fn ensure_reserved_local_kind(attachment: &EnvironmentAttachmentRef) -> Result<(
         return Err(RpcError::new(
             INVALID_PARAMS,
             "reserved environment attachment id local requires kind local",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_envd_auth_token(auth_token: Option<&str>) -> Result<(), RpcError> {
-    let Some(auth_token) = auth_token else {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "envd environment attachment requires authToken",
-        ));
-    };
-    if auth_token.trim().is_empty() {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "envd environment attachment authToken cannot be empty",
-        ));
-    }
-    if auth_token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "envd environment attachment authToken cannot contain newlines",
         ));
     }
     Ok(())
@@ -671,9 +633,17 @@ fn lease_from_source(
         mount_root: format!("/environment/{}", source.id),
         status,
         readiness,
-        endpoint_ref: source.endpoint_ref.clone(),
+        endpoint_ref: redacted_endpoint_ref(source),
         environment_id: source.environment_id.clone(),
         metadata: source.metadata.clone(),
+    }
+}
+
+fn redacted_endpoint_ref(source: &EnvironmentAttachmentRef) -> Option<String> {
+    if source.kind == "envd" {
+        redacted_envd_endpoint_ref(source)
+    } else {
+        source.endpoint_ref.clone()
     }
 }
 
@@ -1150,5 +1120,76 @@ mod tests {
             .unwrap_err();
         assert_eq!(newline.code, INVALID_PARAMS);
         assert!(newline.message.contains("cannot contain newlines"));
+    }
+
+    #[tokio::test]
+    async fn envd_attach_rejects_unsafe_http_endpoint_refs() {
+        let manager = EnvironmentAttachmentManager::new();
+
+        let non_loopback = manager
+            .attach(&json!({
+                "attachment": {
+                    "id": "remote",
+                    "kind": "envd",
+                    "endpointRef": "http://example.com:8766/rpc",
+                    "authToken": "secret"
+                },
+                "readiness": {"policy": "skip"}
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(non_loopback.code, INVALID_PARAMS);
+        assert!(non_loopback.message.contains("must be loopback"));
+
+        let query = manager
+            .attach(&json!({
+                "attachment": {
+                    "id": "remote",
+                    "kind": "envd",
+                    "endpointRef": "http://127.0.0.1:8766/rpc?token=secret",
+                    "authToken": "secret"
+                },
+                "readiness": {"policy": "skip"}
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(query.code, INVALID_PARAMS);
+        assert!(query.message.contains("query strings"));
+
+        let userinfo = manager
+            .attach(&json!({
+                "attachment": {
+                    "id": "remote",
+                    "kind": "envd",
+                    "endpointRef": "http://user:pass@127.0.0.1:8766/rpc",
+                    "authToken": "secret"
+                },
+                "readiness": {"policy": "skip"}
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(userinfo.code, INVALID_PARAMS);
+        assert!(userinfo.message.contains("userinfo"));
+    }
+
+    #[tokio::test]
+    async fn envd_attach_redacts_stdio_endpoint_ref_in_lease_result() {
+        let manager = EnvironmentAttachmentManager::new();
+        let attached = manager
+            .attach(&json!({
+                "attachment": {
+                    "id": "stdio_data",
+                    "kind": "envd",
+                    "endpointRef": "stdio:///tmp/envd-fixture?arg=--token&arg=secret",
+                    "environmentId": "default"
+                },
+                "readiness": {"policy": "skip"}
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(attached["attachment"]["endpointRef"], "stdio://<redacted>");
+        assert!(!attached["attachment"].to_string().contains("envd-fixture"));
+        assert!(!attached["attachment"].to_string().contains("secret"));
     }
 }

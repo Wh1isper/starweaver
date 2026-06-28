@@ -37,6 +37,8 @@ pub const SERVER_ERROR: i64 = -32_000;
 pub const UNSUPPORTED_FEATURE: i64 = -32_002;
 /// Starweaver host error code for a create conflict with an existing record.
 pub const ALREADY_EXISTS: i64 = -32_011;
+/// Starweaver host error code for idempotency key reuse with different params.
+pub const IDEMPOTENCY_CONFLICT: i64 = -32_012;
 /// Starweaver host error code for a run-state conflict.
 pub const RUN_CONFLICT: i64 = -32_013;
 /// Starweaver host error code for an unavailable environment attachment.
@@ -270,6 +272,18 @@ pub struct RunOutputItem {
     session_id: String,
     run_id: String,
     cursor: ReplayCursor,
+    event: ReplayEvent,
+    projections: Vec<RunOutputProjection>,
+    payload_format: StreamPayloadFormat,
+    payload: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_message: Option<DisplayMessage>,
+}
+
+/// Projection entry carried alongside the canonical stream event.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunOutputProjection {
     payload_format: StreamPayloadFormat,
     payload: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -387,22 +401,32 @@ pub fn replay_result(
 /// Convert one replay event into a projected run output item.
 #[must_use]
 pub fn output_item(event: &ReplayEvent, format: StreamPayloadFormat) -> Option<RunOutputItem> {
-    let ReplayEventKind::DisplayMessage(message) = &event.event else {
-        return None;
+    let display_message = match &event.event {
+        ReplayEventKind::DisplayMessage(message) => (**message).clone(),
+        ReplayEventKind::EnvironmentLifecycle(lifecycle) => {
+            lifecycle.to_display_message(event.sequence)
+        }
+        _ => return None,
     };
-    let display_message = (**message).clone();
     let payload = match format {
         StreamPayloadFormat::Agui => json!(display_to_agui_event(&display_message)),
         StreamPayloadFormat::DisplayMessage => json!(display_message),
     };
+    let display_projection =
+        matches!(format, StreamPayloadFormat::DisplayMessage).then_some(display_message.clone());
     Some(RunOutputItem {
         session_id: display_message.session_id.as_str().to_string(),
         run_id: display_message.run_id.as_str().to_string(),
         cursor: ReplayCursor::new(event.scope.clone(), event.sequence),
+        event: event.clone(),
+        projections: vec![RunOutputProjection {
+            payload_format: format,
+            payload: payload.clone(),
+            display_message: display_projection.clone(),
+        }],
         payload_format: format,
         payload,
-        display_message: matches!(format, StreamPayloadFormat::DisplayMessage)
-            .then_some(display_message),
+        display_message: display_projection,
     })
 }
 
@@ -411,6 +435,9 @@ fn display_messages(events: &[ReplayEvent]) -> Vec<DisplayMessage> {
         .iter()
         .filter_map(|event| match &event.event {
             ReplayEventKind::DisplayMessage(message) => Some((**message).clone()),
+            ReplayEventKind::EnvironmentLifecycle(lifecycle) => {
+                Some(lifecycle.to_display_message(event.sequence))
+            }
             _ => None,
         })
         .collect()
@@ -429,7 +456,9 @@ mod tests {
 
     use serde_json::json;
     use starweaver_core::{RunId, SessionId};
-    use starweaver_stream::{DisplayMessage, DisplayMessageKind, ReplayEvent};
+    use starweaver_stream::{
+        DisplayMessage, DisplayMessageKind, EnvironmentLifecycleEvent, ReplayEvent, ReplayEventKind,
+    };
 
     use super::*;
 
@@ -671,11 +700,67 @@ mod tests {
         let agui = output_item(&event, StreamPayloadFormat::Agui).unwrap();
         let agui_value = serde_json::to_value(agui).unwrap();
         assert_eq!(agui_value["payloadFormat"], "agui");
+        assert_eq!(agui_value["event"]["event"]["kind"], "display_message");
+        assert_eq!(agui_value["projections"][0]["payloadFormat"], "agui");
         assert_eq!(agui_value["payload"]["type"], "RUN_STARTED");
 
         let native = output_item(&event, StreamPayloadFormat::DisplayMessage).unwrap();
         let native_value = serde_json::to_value(native).unwrap();
         assert_eq!(native_value["payloadFormat"], "display_message");
+        assert_eq!(
+            native_value["projections"][0]["displayMessage"]["type"],
+            "RUN_STARTED"
+        );
         assert_eq!(native_value["displayMessage"]["type"], "RUN_STARTED");
+    }
+
+    #[test]
+    fn output_item_projects_environment_lifecycle_events() {
+        let lifecycle = EnvironmentLifecycleEvent {
+            operation_kind: "environment_mounted".to_string(),
+            session_id: "session_rpc".to_string(),
+            run_id: "run_rpc".to_string(),
+            binding_version: 2,
+            environment: json!({"bindingVersion": 2, "mounts": []}),
+            operation_id: Some("envop_1".to_string()),
+            extra: serde_json::Map::from_iter([("action".to_string(), json!("mounted"))]),
+        };
+        let event = ReplayEvent::new(
+            ReplayScope::run("run_rpc"),
+            8,
+            ReplayEventKind::EnvironmentLifecycle(Box::new(lifecycle)),
+        );
+
+        let native = output_item(&event, StreamPayloadFormat::DisplayMessage).unwrap();
+        let native_value = serde_json::to_value(native).unwrap();
+        assert_eq!(native_value["payloadFormat"], "display_message");
+        assert_eq!(
+            native_value["event"]["event"]["kind"],
+            "environment_lifecycle"
+        );
+        assert_eq!(
+            native_value["event"]["event"]["operationKind"],
+            "environment_mounted"
+        );
+        assert_eq!(
+            native_value["payload"]["payload"]["operationKind"],
+            "environment_mounted"
+        );
+        assert_eq!(
+            native_value["projections"][0]["payload"]["payload"]["operationKind"],
+            "environment_mounted"
+        );
+        assert_eq!(
+            native_value["displayMessage"]["payload"]["bindingVersion"],
+            2
+        );
+
+        let agui = output_item(&event, StreamPayloadFormat::Agui).unwrap();
+        let agui_value = serde_json::to_value(agui).unwrap();
+        assert_eq!(agui_value["payload"]["type"], "HOST_OPERATION");
+        assert_eq!(
+            agui_value["payload"]["payload"]["operationKind"],
+            "environment_mounted"
+        );
     }
 }

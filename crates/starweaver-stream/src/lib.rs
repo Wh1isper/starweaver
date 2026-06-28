@@ -25,8 +25,8 @@ pub use display::{
 pub use envelope::{JsonlEnvelope, ReplayEnvelope, SseEnvelope};
 pub use error::{ReplayError, ReplayResult};
 pub use replay::{
-    InMemoryReplayEventLog, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog,
-    ReplayScope, ReplaySnapshot, ReplaySubscription, StreamTerminalMarker,
+    EnvironmentLifecycleEvent, InMemoryReplayEventLog, ReplayCursor, ReplayEvent, ReplayEventKind,
+    ReplayEventLog, ReplayScope, ReplaySnapshot, ReplaySubscription, StreamTerminalMarker,
 };
 pub use sanitizer::{
     sanitize_client_history, ClientHistorySanitizerConfig, ClientHistoryTrust,

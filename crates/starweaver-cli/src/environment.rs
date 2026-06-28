@@ -1,6 +1,6 @@
 //! CLI environment provider resolution.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
 use starweaver_envd::LocalEnvd;
 use starweaver_envd_client::EnvdRpcClient;
@@ -224,13 +224,7 @@ fn resolve_environment_attachment(
 fn resolve_envd_attachment(
     attachment: &EnvironmentAttachmentRef,
 ) -> CliResult<ResolvedEnvironment> {
-    let endpoint = attachment
-        .requested_endpoint_ref()
-        .ok_or_else(|| CliError::Config("envd attachment requires endpointRef".to_string()))?;
-    let auth_token = attachment
-        .requested_auth_token()
-        .ok_or_else(|| CliError::Config("envd attachment requires authToken".to_string()))?;
-    let client = EnvdRpcClient::http_with_token(endpoint, auth_token)
+    let client = envd_client_for_attachment(attachment)
         .map_err(|error| CliError::Config(format!("invalid envd endpoint: {error}")))?;
     let environment_id = attachment
         .requested_environment_id()
@@ -246,6 +240,171 @@ fn resolve_envd_attachment(
         switchable: None,
         attachments: vec![attachment.clone()],
     })
+}
+
+pub fn envd_client_for_attachment(
+    attachment: &EnvironmentAttachmentRef,
+) -> Result<EnvdRpcClient, String> {
+    let endpoint = attachment
+        .requested_endpoint_ref()
+        .ok_or_else(|| "envd attachment requires endpointRef".to_string())?;
+    if endpoint.starts_with("http://") {
+        validate_envd_http_endpoint(endpoint)?;
+        let auth_token = attachment
+            .requested_auth_token()
+            .ok_or_else(|| "envd HTTP attachment requires authToken".to_string())?;
+        validate_envd_http_auth_token(Some(auth_token))?;
+        return EnvdRpcClient::http_with_token(endpoint, auth_token)
+            .map_err(|error| error.to_string());
+    }
+    if endpoint.starts_with("stdio://") {
+        let (program, args) = parse_stdio_envd_endpoint(endpoint)?;
+        return EnvdRpcClient::spawn_stdio(program, args).map_err(|error| error.to_string());
+    }
+    Err("envd attachment supports http:// and stdio:// endpoint refs".to_string())
+}
+
+pub fn validate_envd_attachment_transport(
+    attachment: &EnvironmentAttachmentRef,
+) -> Result<(), String> {
+    let endpoint = attachment
+        .requested_endpoint_ref()
+        .ok_or_else(|| "envd environment attachment requires endpointRef".to_string())?;
+    if endpoint.starts_with("http://") {
+        validate_envd_http_endpoint(endpoint)?;
+        validate_envd_http_auth_token(attachment.requested_auth_token())?;
+        return Ok(());
+    }
+    if endpoint.starts_with("stdio://") {
+        parse_stdio_envd_endpoint(endpoint).map(|_| ())?;
+        return Ok(());
+    }
+    Err("envd environment attachment supports http:// and stdio:// endpoint refs".to_string())
+}
+
+pub fn redacted_envd_endpoint_ref(attachment: &EnvironmentAttachmentRef) -> Option<String> {
+    let endpoint = attachment.requested_endpoint_ref()?;
+    if endpoint.starts_with("stdio://") {
+        return Some("stdio://<redacted>".to_string());
+    }
+    if endpoint.starts_with("http://") {
+        return Some(endpoint.to_string());
+    }
+    None
+}
+
+fn validate_envd_http_endpoint(endpoint: &str) -> Result<(), String> {
+    let rest = endpoint
+        .strip_prefix("http://")
+        .ok_or_else(|| "envd HTTP endpoint must start with http://".to_string())?;
+    if rest.is_empty() {
+        return Err("envd HTTP endpoint host cannot be empty".to_string());
+    }
+    if endpoint.contains('?') || endpoint.contains('#') {
+        return Err("envd HTTP endpoint cannot contain query strings or fragments".to_string());
+    }
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.contains('@') {
+        return Err("envd HTTP endpoint cannot contain userinfo".to_string());
+    }
+    let host = http_authority_host(authority)?;
+    if is_loopback_http_host(host) {
+        Ok(())
+    } else {
+        Err(
+            "envd HTTP endpoint must be loopback unless configured by a future host policy"
+                .to_string(),
+        )
+    }
+}
+
+fn http_authority_host(authority: &str) -> Result<&str, String> {
+    if authority.is_empty() {
+        return Err("envd HTTP endpoint host cannot be empty".to_string());
+    }
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some((host, _)) = rest.split_once(']') else {
+            return Err("envd HTTP endpoint has invalid IPv6 host".to_string());
+        };
+        return Ok(host);
+    }
+    Ok(authority
+        .split_once(':')
+        .map_or(authority, |(host, _)| host))
+}
+
+fn is_loopback_http_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "::1" || host.starts_with("127.")
+}
+
+fn validate_envd_http_auth_token(auth_token: Option<&str>) -> Result<(), String> {
+    let Some(auth_token) = auth_token else {
+        return Err("envd HTTP attachment requires authToken".to_string());
+    };
+    if auth_token.trim().is_empty() {
+        return Err("envd HTTP attachment authToken cannot be empty".to_string());
+    }
+    if auth_token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
+        return Err("envd HTTP attachment authToken cannot contain newlines".to_string());
+    }
+    Ok(())
+}
+
+fn parse_stdio_envd_endpoint(endpoint: &str) -> Result<(PathBuf, Vec<OsString>), String> {
+    let rest = endpoint
+        .strip_prefix("stdio://")
+        .ok_or_else(|| "envd stdio endpoint must start with stdio://".to_string())?;
+    let (program, query) = rest.split_once('?').unwrap_or((rest, ""));
+    if program.trim().is_empty() {
+        return Err("envd stdio endpoint program cannot be empty".to_string());
+    }
+    let mut args = Vec::new();
+    if !query.is_empty() {
+        for part in query.split('&').filter(|part| !part.is_empty()) {
+            let Some(value) = part.strip_prefix("arg=") else {
+                return Err(
+                    "envd stdio endpoint query supports only repeated arg= values".to_string(),
+                );
+            };
+            args.push(OsString::from(percent_decode_component(value)?));
+        }
+    }
+    Ok((PathBuf::from(percent_decode_component(program)?), args))
+}
+
+fn percent_decode_component(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let high = hex_value(bytes[index + 1])?;
+                let low = hex_value(bytes[index + 2])?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            b'%' => return Err("envd stdio endpoint has incomplete percent escape".to_string()),
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_err(|error| error.to_string())
+}
+
+fn hex_value(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err("envd stdio endpoint has invalid percent escape".to_string()),
+    }
 }
 
 const fn environment_mount_mode(mode: EnvironmentAttachmentAccessMode) -> EnvironmentMountMode {
