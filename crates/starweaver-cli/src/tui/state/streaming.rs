@@ -41,7 +41,9 @@ impl InteractiveTuiState {
     pub fn apply_stream_record(&mut self, record: &AgentStreamRecord) {
         let should_auto_scroll = !self.selection_mode;
         match &record.event {
-            AgentStreamEvent::RunStart { .. } => {
+            AgentStreamEvent::RunStart { run_id, .. } => {
+                self.current_run_id = Some(run_id.as_str().to_string());
+                self.current_run_usage = None;
                 self.status = "RUNNING".to_string();
                 self.phase = "started".to_string();
             }
@@ -120,9 +122,13 @@ impl InteractiveTuiState {
         } else if is_task_snapshot_event(kind) {
             self.apply_task_snapshot_payload(payload);
         } else if is_goal_event_kind(kind) {
+            let goal_completed = is_goal_complete_event_kind(kind);
             self.apply_goal_event_payload(kind, payload);
             if let Some(lines) = format_custom_context_event_lines(kind, payload) {
                 self.body.extend(lines);
+            }
+            if goal_completed {
+                self.push_goal_total_tokens_report();
             }
         } else if let Some(lines) = format_custom_context_event_lines(kind, payload) {
             self.body.extend(lines);
@@ -459,6 +465,13 @@ impl InteractiveTuiState {
             self.task_panel_items = items;
         }
     }
+}
+
+fn is_goal_complete_event_kind(kind: &str) -> bool {
+    let normalized = kind.to_ascii_lowercase().replace(['.', '-'], "_");
+    matches!(normalized.as_str(), "goal_complete" | "goal_completed")
+        || normalized.ends_with("_goal_complete")
+        || normalized.ends_with("_goal_completed")
 }
 
 fn is_goal_event_kind(kind: &str) -> bool {

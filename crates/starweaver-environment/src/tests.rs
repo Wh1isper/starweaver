@@ -1525,6 +1525,39 @@ async fn composite_provider_rebases_local_mount_list_entries_from_subdirs() {
 }
 
 #[tokio::test]
+async fn composite_provider_routes_provider_visible_absolute_shell_cwd() {
+    let workspace_root = unique_test_dir().join("workspace");
+    std::fs::create_dir_all(workspace_root.join("nested")).unwrap();
+    let workspace = Arc::new(LocalEnvironmentProvider::new(&workspace_root).with_policy(
+        EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        },
+    ));
+    let provider =
+        CompositeEnvironmentProvider::new(vec![EnvironmentMount::new("workspace", workspace)
+            .unwrap()
+            .with_default(true)
+            .with_default_for_shell(true)])
+        .unwrap();
+    let absolute_cwd = display_local_path(&workspace_root.join("nested"));
+
+    let output = provider
+        .run_shell(ShellCommand {
+            command: "pwd".to_string(),
+            cwd: Some(absolute_cwd.clone()),
+            ..ShellCommand::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(output.status, 0);
+    assert_eq!(output.stdout.trim(), absolute_cwd);
+
+    std::fs::remove_dir_all(workspace_root.parent().unwrap()).unwrap();
+}
+
+#[tokio::test]
 async fn composite_provider_does_not_render_non_default_file_trees() {
     let workspace = Arc::new(
         VirtualEnvironmentProvider::new("workspace").with_file("default-only.txt", "visible"),

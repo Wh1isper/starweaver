@@ -10,7 +10,7 @@ use serde_json::Value;
 use starweaver_core::SessionId;
 use starweaver_model::{PartDelta, StreamDelta};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStreamEvent};
-use starweaver_usage::UsageSnapshot;
+use starweaver_usage::{Usage, UsageSnapshot};
 
 const DEFAULT_CONTEXT_WINDOW_TOKENS: u64 = 200_000;
 const SHELL_OUTPUT_MAX_LINES: usize = 200;
@@ -282,6 +282,8 @@ pub struct InteractiveTuiState {
     pending_goal_submission: Option<String>,
     pub(super) context_tokens: Option<u64>,
     pub(super) latest_request_total_tokens: Option<u64>,
+    pub(super) current_run_id: Option<String>,
+    pub(super) current_run_usage: Option<Usage>,
     pub(super) context_window: Option<u64>,
     usage_snapshots: BTreeMap<String, UsageSnapshot>,
     next_steering_id: u64,
@@ -349,6 +351,8 @@ impl InteractiveTuiState {
             pending_goal_submission: None,
             context_tokens: None,
             latest_request_total_tokens: None,
+            current_run_id: None,
+            current_run_usage: None,
             context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
             usage_snapshots: BTreeMap::new(),
             next_steering_id: 0,
@@ -448,6 +452,8 @@ impl InteractiveTuiState {
         self.session_picker_open = false;
         self.input_status = None;
         self.pending_attachments.clear();
+        self.current_run_id = None;
+        self.current_run_usage = None;
         self.scroll_to_bottom();
         self.body.push(String::new());
         push_user_prompt_lines(&mut self.body, prompt);
@@ -524,6 +530,8 @@ impl InteractiveTuiState {
         self.body.clear();
         self.context_tokens = None;
         self.latest_request_total_tokens = None;
+        self.current_run_id = None;
+        self.current_run_usage = None;
         self.usage_snapshots.clear();
         self.streaming_parts.clear();
         self.streaming_text_seen = false;
@@ -780,10 +788,23 @@ impl InteractiveTuiState {
         }
     }
 
+    pub(super) fn push_goal_total_tokens_report(&mut self) {
+        let usage = self.current_run_usage.clone().unwrap_or_default();
+        self.body.push(format!(
+            "[Goal] Total tokens: {} (input: {}, cache read: {}, cache write: {}, output: {})",
+            format_u64_with_commas(usage.total_tokens),
+            format_u64_with_commas(usage.input_tokens),
+            format_u64_with_commas(usage.cache_read_tokens),
+            format_u64_with_commas(usage.cache_write_tokens),
+            format_u64_with_commas(usage.output_tokens)
+        ));
+    }
+
     fn finish_active_goal_without_runtime_event(&mut self, reason: &str) {
         if self.goal_active {
             self.goal_active = false;
             self.body.push(format!("[Goal] Completed: {reason}"));
+            self.push_goal_total_tokens_report();
         }
         self.pending_goal_submission = None;
     }

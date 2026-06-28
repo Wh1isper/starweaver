@@ -24,6 +24,11 @@ impl InteractiveTuiState {
             } else {
                 snapshot.run_id.clone()
             };
+            if !snapshot.total_usage.is_empty()
+                && current_run_matches_snapshot(self.current_run_id.as_deref(), &snapshot)
+            {
+                self.current_run_usage = Some(snapshot.total_usage.clone());
+            }
             self.usage_snapshots.insert(key, snapshot);
         }
     }
@@ -223,6 +228,10 @@ fn push_pricing_line(lines: &mut Vec<String>, pricing: &PricingEstimate) {
         "[SYS]     Estimated pricing: {} USD",
         format_usd_pricing(pricing)
     ));
+}
+
+fn current_run_matches_snapshot(current_run_id: Option<&str>, snapshot: &UsageSnapshot) -> bool {
+    current_run_id.is_none_or(|run_id| snapshot.run_id.is_empty() || snapshot.run_id == run_id)
 }
 
 fn latest_request_total_tokens(snapshot: &UsageSnapshot) -> Option<u64> {
