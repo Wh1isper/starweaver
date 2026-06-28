@@ -719,9 +719,11 @@ Attachment invariants:
   not visible to the model.
 - A run-local `mode` on a lease ref may keep or narrow the leased mode. It must
   not widen a `read_only` lease to `read_write`.
-- Inline envd attachments identify envd by `endpointRef`, request-only
-  `authToken`, and `environmentId`. The initial local host accepts literal
-  `http://...` endpoints. Named aliases are future host capabilities.
+- Inline envd attachments identify envd by `endpointRef`, optional request-only
+  `authToken`, and `environmentId`. The local host accepts literal `http://...`
+  endpoints with bearer tokens and literal `stdio://...` endpoints for
+  host-launched stdio envd processes. Named aliases are future host
+  capabilities.
 - `authToken` is a transport credential. It is never returned by
   `environment.attach`, `environment.list`, `run.start`, stream replay, or model
   visible environment context.
@@ -766,11 +768,13 @@ Profile rules:
   table name and must be an ASCII attachment slug.
 - `mount_id = "local"` is invalid for an envd profile because `local` is
   reserved for the host's configured local Starweaver environment.
-- `endpoint` is currently a literal `http://...` envd RPC endpoint.
-- A profile must provide either `auth_token_env` or request-only `auth_token`.
-  `auth_token_env` is preferred for real deployments. Direct `auth_token` values
-  must not be returned by `config.get`, diagnostics, stream events, replay, or
-  model-visible context.
+- `endpoint` is currently a literal `http://...` envd RPC endpoint for TUI
+  profiles. Dynamic host-control attachments additionally support literal
+  `stdio://...` endpoint refs.
+- HTTP profiles must provide either `auth_token_env` or request-only
+  `auth_token`. `auth_token_env` is preferred for real deployments. Direct
+  `auth_token` values must not be returned by `config.get`, diagnostics, stream
+  events, replay, or model-visible context.
 - `mode` is `read_write` by default and may be `read_only`.
 - `enabled = false` excludes a profile from TUI run materialization.
 - TUI materializes a run-local `environmentAttachments` list containing
@@ -979,8 +983,9 @@ Manager responsibilities:
 
 - Validate attachment ids, default selection, access modes, and source shape.
 - Resolve literal `endpointRef` transport refs supported by the advertised
-  protocol revision. The initial local host supports literal `http://...` envd
-  endpoints with request-only bearer tokens.
+  protocol revision. The local host supports literal `http://...` envd endpoints
+  with request-only bearer tokens and literal `stdio://...` envd endpoints for
+  local stdio processes.
 - Construct SDK providers such as local, virtual, sandbox, or envd-backed
   providers.
 - Probe process liveness and environment readiness before a run uses an
@@ -997,7 +1002,7 @@ Future manager capabilities:
 
 - Resolve named `endpointRef` aliases to concrete local or remote transports.
 - Launch host-owned envd daemons when a configured endpoint requires it.
-- Support stdio, local socket, named pipe, and WebSocket envd transports.
+- Support local socket, named pipe, and WebSocket envd transports.
 
 Manager non-goals:
 
@@ -1017,7 +1022,7 @@ Attachment source shape:
   "id": "data",
   "kind": "envd",
   "endpointRef": "http://127.0.0.1:8770/rpc",
-  "authToken": "request-only bearer token",
+  "authToken": "request-only bearer token for HTTP",
   "environmentId": "dataset",
   "mode": "read_only",
   "default": false,
@@ -1032,8 +1037,8 @@ Fields:
 | ----------------- | ------- | -------- | ------------------------------------------------------------- |
 | `id`              | string  | yes      | Agent-facing mount identity within the lease or run           |
 | `kind`            | string  | no       | `local`, `virtual`, `sandbox`, or `envd`; defaults to `local` |
-| `endpointRef`     | string  | for envd | Literal endpoint, initially `http://...` for envd             |
-| `authToken`       | string  | for envd | Request-only bearer token for HTTP envd                       |
+| `endpointRef`     | string  | for envd | Literal `http://...` or `stdio://...` envd endpoint           |
+| `authToken`       | string  | for HTTP | Request-only bearer token for HTTP envd                       |
 | `environmentId`   | string  | no       | Concrete environment id inside the implementation             |
 | `mode`            | string  | no       | `read_write` or `read_only`; defaults to `read_write`         |
 | `default`         | boolean | no       | Default preference when materialized into a run               |
@@ -1043,7 +1048,13 @@ Fields:
 Endpoint refs:
 
 - Literal `http://...` endpoints connect through authenticated
-  `EnvdRpcClient::http_with_token`.
+  `EnvdRpcClient::http_with_token`. The local host accepts loopback HTTP
+  endpoints by default.
+- Literal `stdio://program?arg=...` endpoints spawn a host-local envd child
+  process through `EnvdRpcClient::spawn_stdio`. Query parameters are repeated
+  `arg=` values. Stdio endpoints do not use bearer tokens. Literal stdio refs
+  are a trusted-local RPC capability: the requesting host integration is asking
+  the local host process to launch a concrete program.
 - `id: "local"` is reserved for `kind: "local"` and does not use endpoint
   fields. A host should reject `id: "local"` with `kind: "envd"` or any future
   remote source kind.
@@ -1059,8 +1070,11 @@ Endpoint refs:
   endpoint ref only when it is safe. They must omit or redact query strings,
   userinfo, launch credentials, and any host path outside declared
   agent-facing mount roots.
-- Named aliases, stdio, local socket, named pipe, WebSocket, and launched daemon
-  transports are future host capabilities. Servers that do not advertise those
+- The current local host returns `stdio://<redacted>` for literal stdio endpoint
+  refs in lease results. The full program path and args remain request-only host
+  control data.
+- Named aliases, local socket, named pipe, WebSocket, and managed daemon launch
+  policies are future host capabilities. Servers that do not advertise those
   capabilities reject them with `unsupported_feature`.
 - Alias resolution failures return `configuration_failed` once alias resolvers
   are supported.
@@ -1215,7 +1229,10 @@ Detach invariants:
 - Detaching a lease used by an active run returns `run_conflict` unless a future
   force policy explicitly detaches only after the active run finishes.
 - Detach releases host manager resources and host-launched processes when no
-  remaining lease uses them.
+  remaining lease uses them. Literal stdio envd refs are currently per-client
+  ephemeral process launches, not shared host-manager daemon resources; a
+  readiness probe and a runtime mount may use distinct stdio child processes.
+  Shared process ownership belongs to a future managed launch or alias policy.
 - Detach does not imply envd `environment.close` or `environment.unload`.
   Concrete envd lifecycle remains envd-owned.
 
@@ -1661,20 +1678,18 @@ Environment lifecycle replay events:
 | `environment_mounted`   | After an active mount updates the runtime binding for future tool calls                           |
 | `environment_unmounted` | After an active unmount removes or disables a mount for future tool calls                         |
 
-These are canonical typed run replay events. The target implementation should
-add a typed environment lifecycle replay event rather than encoding these as
-ordinary display text. Until a dedicated enum variant exists, the transitional
-wire shape may use `ReplayEventKind::Raw` with the stable payload shape below,
-but RPC projection must preserve the event for native replay, display-message
-projection, and AGUI projection. They are delivered to subscribers through the
-existing `stream.event` notification wrapper and are not separate
-`starweaver.event` notification kinds.
+These are canonical typed run replay events encoded as
+`ReplayEventKind::EnvironmentLifecycle`. RPC projection must preserve the typed
+event for native replay and project it losslessly to display-message and AGUI
+payload formats for clients that request those views. They are delivered to
+subscribers through the existing `stream.event` notification wrapper and are not
+separate `starweaver.event` notification kinds.
 
 Environment lifecycle payload shape:
 
 ```json
 {
-  "kind": "environment_info",
+  "operationKind": "environment_info",
   "runId": "run_...",
   "bindingVersion": 1,
   "environment": {
@@ -1761,7 +1776,7 @@ Stream item shape:
 }
 ```
 
-`event` is the canonical `ReplayEvent`. `projections` contains zero or more projection result entries requested by the client. `stream.replay`, `stream.subscribe` replay results, and `starweaver.event` notifications all use this stream item shape for canonical stream events.
+`event` is the canonical `ReplayEvent`. `projections` contains zero or more projection result entries requested by the client. Current compatibility output items may also include top-level `payloadFormat`, `payload`, and `displayMessage` fields for existing AGUI/display-message consumers, but clients should treat `event` plus `projections` as the canonical stream contract. `stream.replay`, `stream.subscribe` replay results, and `starweaver.event` notifications all use this stream item shape for canonical stream events.
 
 ### `stream.replay`
 
@@ -2030,13 +2045,15 @@ Environment lifecycle projection:
   `bindingVersion`, `environment`, and mutation fields such as `mount`,
   `previousDefaultMountId`, `currentDefaultMountId`,
   `previousDefaultShellMountId`, and `currentDefaultShellMountId` when present.
+- The legacy display projection may also include `payload.kind` as a duplicate
+  compatibility field, but native replay events use `operationKind` to avoid
+  colliding with the outer `ReplayEventKind` tag.
 - The AGUI projection maps that display message through the normal display
   adapter, producing a top-level `HOST_OPERATION` event whose payload contains
   the same safe lifecycle payload. It must not degrade lifecycle records into
   text chunks.
-- Transitional `ReplayEventKind::Raw` lifecycle events use the same projection
-  path by detecting `payload.kind` in the environment lifecycle set. Native
-  replay still returns the raw canonical event unchanged.
+- `ReplayEventKind::EnvironmentLifecycle` uses this projection path. Native
+  replay still returns the typed canonical event unchanged.
 
 ## HITL Methods
 

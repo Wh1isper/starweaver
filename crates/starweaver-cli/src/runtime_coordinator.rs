@@ -14,13 +14,14 @@ use starweaver_environment::{
 };
 use starweaver_rpc_core::{
     EnvironmentActiveMountParams, EnvironmentActiveUnmountParams, EnvironmentAttachmentRef,
-    ALREADY_EXISTS, INVALID_PARAMS, RUN_CONFLICT,
+    ALREADY_EXISTS, IDEMPOTENCY_CONFLICT, INVALID_PARAMS, RUN_CONFLICT,
 };
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{RunRecord, RunStatus};
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,
-    DisplayProjectionContext, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayScope,
+    DisplayProjectionContext, EnvironmentLifecycleEvent, ReplayCursor, ReplayEvent,
+    ReplayEventKind, ReplayScope,
 };
 
 use crate::{
@@ -80,6 +81,7 @@ struct ActiveRunState {
     output_preview: Option<String>,
     error: Option<String>,
     display_messages: Vec<DisplayMessage>,
+    replay_events: Vec<ReplayEvent>,
     steering_sender: mpsc::Sender<CliSteeringMessage>,
     cancel_sender: mpsc::Sender<()>,
     subscribers: Vec<RunSubscriber>,
@@ -91,7 +93,26 @@ struct ActiveEnvironmentBinding {
     binding_version: u64,
     switchable: Arc<SwitchableEnvironmentProvider>,
     latest_environment_sequence: Option<usize>,
-    idempotency: HashMap<String, Value>,
+    idempotency: HashMap<String, ActiveMutationIdempotencyRecord>,
+}
+
+#[derive(Clone)]
+struct ActiveMutationIdempotencyRecord {
+    params_digest: String,
+    result: Value,
+}
+
+#[derive(Debug)]
+pub(super) struct ActiveMountOutcome {
+    pub(super) result: Value,
+    pub(super) applied: bool,
+}
+
+#[derive(Debug)]
+pub(super) struct ActiveUnmountOutcome {
+    pub(super) result: Value,
+    pub(super) removed: EnvironmentAttachmentRef,
+    pub(super) applied: bool,
 }
 
 struct ActiveMountMutation {
@@ -365,7 +386,7 @@ impl CliRuntimeCoordinator {
         validate_cursor_scope(cursor, &scope)?;
         let mut active = false;
         let (subscription_sender, subscription_receiver) = mpsc::channel::<RunStreamEvent>();
-        let mut live_messages = Vec::new();
+        let mut live_events = Vec::new();
         let (store_event_count, store_events) = {
             let archive = LocalStreamArchive::new(self.config.clone());
             let window = archive.replay_display_window(session_id, None, cursor)?;
@@ -382,18 +403,18 @@ impl CliRuntimeCoordinator {
                 if is_subscribable_status(&state.status) {
                     active = true;
                 }
-                live_messages.extend(
+                live_events.extend(
                     state
-                        .display_messages
+                        .replay_events
                         .iter()
-                        .filter(|message| {
-                            !persisted_messages.contains(&display_message_key(message))
+                        .filter(|event| {
+                            replay_event_not_persisted_as_display(event, &persisted_messages)
                         })
                         .cloned(),
                 );
             }
             let all_live_events =
-                append_session_replay_events(&scope, store_event_count, live_messages);
+                append_session_replay_events(&scope, store_event_count, live_events);
             let next_sequence = Arc::new(Mutex::new(store_event_count + all_live_events.len()));
             for state in matching_runs
                 .into_iter()
@@ -540,7 +561,8 @@ impl CliRuntimeCoordinator {
         &self,
         params: &EnvironmentActiveMountParams,
         attachment: EnvironmentAttachmentRef,
-    ) -> Result<Value, starweaver_rpc_core::RpcError> {
+        params_digest: &str,
+    ) -> Result<ActiveMountOutcome, starweaver_rpc_core::RpcError> {
         let mut runs = self
             .active_runs
             .lock()
@@ -561,8 +583,12 @@ impl CliRuntimeCoordinator {
                 ));
             };
             if let Some(key) = params.idempotency_key.as_deref() {
-                if let Some(result) = environment.idempotency.get(&mutation_key("mount", key)) {
-                    return Ok(result.clone());
+                if let Some(record) = environment.idempotency.get(&mutation_key("mount", key)) {
+                    ensure_idempotency_digest(record, params_digest)?;
+                    return Ok(ActiveMountOutcome {
+                        result: record.result.clone(),
+                        applied: false,
+                    });
                 }
             }
             ensure_expected_binding(environment, params.expected_binding_version)?;
@@ -634,17 +660,16 @@ impl CliRuntimeCoordinator {
         });
         let lifecycle_environment =
             environment_summary(mutation.binding_version, &mutation.attachments);
-        let message = environment_lifecycle_message(
+        let lifecycle = environment_lifecycle_event(
             &params.run_id,
             &state.session_id,
-            event_sequence,
             &operation_id,
             "environment_mounted",
             mutation.binding_version,
             &lifecycle_environment,
             &lifecycle_extra,
         );
-        publish_display_message_to_state(&params.run_id, state, message);
+        publish_environment_lifecycle_to_state(&params.run_id, state, event_sequence, lifecycle);
         let mut warnings = Vec::new();
         let steering_cursor = if params.inject_context {
             match state.steering_sender.send(CliSteeringMessage {
@@ -681,23 +706,35 @@ impl CliRuntimeCoordinator {
         );
         if let Some(key) = params.idempotency_key.as_deref() {
             if let Some(environment) = state.environment.as_mut() {
-                environment
-                    .idempotency
-                    .insert(mutation_key("mount", key), result.clone());
+                environment.idempotency.insert(
+                    mutation_key("mount", key),
+                    ActiveMutationIdempotencyRecord {
+                        params_digest: params_digest.to_string(),
+                        result: result.clone(),
+                    },
+                );
             }
         }
         drop(runs);
-        Ok(result)
+        Ok(ActiveMountOutcome {
+            result,
+            applied: true,
+        })
     }
 
     #[allow(clippy::too_many_lines)]
     pub(super) async fn active_environment_unmount(
         &self,
         params: &EnvironmentActiveUnmountParams,
-    ) -> Result<(Value, EnvironmentAttachmentRef), starweaver_rpc_core::RpcError> {
-        let prepared = match self.prepare_active_unmount(params)? {
+        params_digest: &str,
+    ) -> Result<ActiveUnmountOutcome, starweaver_rpc_core::RpcError> {
+        let prepared = match self.prepare_active_unmount(params, params_digest)? {
             ActiveUnmountPreparation::Idempotent { result, removed } => {
-                return Ok((result, removed));
+                return Ok(ActiveUnmountOutcome {
+                    result,
+                    removed,
+                    applied: false,
+                });
             }
             ActiveUnmountPreparation::Mutation(prepared) => prepared,
         };
@@ -728,14 +765,19 @@ impl CliRuntimeCoordinator {
                 ));
             };
             if let Some(key) = params.idempotency_key.as_deref() {
-                if let Some(result) = environment.idempotency.get(&mutation_key("unmount", key)) {
+                if let Some(record) = environment.idempotency.get(&mutation_key("unmount", key)) {
+                    ensure_idempotency_digest(record, params_digest)?;
                     let removed = environment
                         .attachments
                         .iter()
                         .find(|attachment| attachment.id == params.mount_id)
                         .cloned()
                         .unwrap_or_else(|| tombstone_attachment(&params.mount_id));
-                    return Ok((result.clone(), removed));
+                    return Ok(ActiveUnmountOutcome {
+                        result: record.result.clone(),
+                        removed,
+                        applied: false,
+                    });
                 }
             }
             if environment.binding_version != prepared.previous_binding_version {
@@ -782,17 +824,16 @@ impl CliRuntimeCoordinator {
         });
         let lifecycle_environment =
             environment_summary(mutation.binding_version, &mutation.attachments);
-        let message = environment_lifecycle_message(
+        let lifecycle = environment_lifecycle_event(
             &params.run_id,
             &state.session_id,
-            event_sequence,
             &operation_id,
             "environment_unmounted",
             mutation.binding_version,
             &lifecycle_environment,
             &lifecycle_extra,
         );
-        publish_display_message_to_state(&params.run_id, state, message);
+        publish_environment_lifecycle_to_state(&params.run_id, state, event_sequence, lifecycle);
         let mut warnings = Vec::new();
         let steering_cursor = if params.inject_context {
             match state.steering_sender.send(CliSteeringMessage {
@@ -828,18 +869,27 @@ impl CliRuntimeCoordinator {
         );
         if let Some(key) = params.idempotency_key.as_deref() {
             if let Some(environment) = state.environment.as_mut() {
-                environment
-                    .idempotency
-                    .insert(mutation_key("unmount", key), result.clone());
+                environment.idempotency.insert(
+                    mutation_key("unmount", key),
+                    ActiveMutationIdempotencyRecord {
+                        params_digest: params_digest.to_string(),
+                        result: result.clone(),
+                    },
+                );
             }
         }
         drop(runs);
-        Ok((result, mutation.removed))
+        Ok(ActiveUnmountOutcome {
+            result,
+            removed: mutation.removed,
+            applied: true,
+        })
     }
 
     fn prepare_active_unmount(
         &self,
         params: &EnvironmentActiveUnmountParams,
+        params_digest: &str,
     ) -> Result<ActiveUnmountPreparation, starweaver_rpc_core::RpcError> {
         let mut runs = self
             .active_runs
@@ -858,8 +908,9 @@ impl CliRuntimeCoordinator {
             ));
         };
         if let Some(key) = params.idempotency_key.as_deref() {
-            if let Some(result) = environment.idempotency.get(&mutation_key("unmount", key)) {
-                let result = result.clone();
+            if let Some(record) = environment.idempotency.get(&mutation_key("unmount", key)) {
+                ensure_idempotency_digest(record, params_digest)?;
+                let result = record.result.clone();
                 let removed = environment
                     .attachments
                     .iter()
@@ -946,11 +997,10 @@ impl CliRuntimeCoordinator {
             }
             let active = is_subscribable_status(&state.status);
             let events = state
-                .display_messages
+                .replay_events
                 .iter()
-                .filter(|message| cursor.is_none_or(|cursor| message.sequence > cursor.sequence))
+                .filter(|event| cursor.is_none_or(|cursor| event.sequence > cursor.sequence))
                 .cloned()
-                .map(|message| run_replay_event(run_id, message))
                 .collect();
             if active {
                 state.subscribers.push(RunSubscriber {
@@ -993,6 +1043,7 @@ fn insert_active_run(
                 output_preview: None,
                 error: None,
                 display_messages: Vec::new(),
+                replay_events: Vec::new(),
                 steering_sender,
                 cancel_sender,
                 subscribers: vec![subscriber],
@@ -1012,6 +1063,20 @@ fn active_environment_binding(
         latest_environment_sequence: None,
         idempotency: HashMap::new(),
     })
+}
+
+fn ensure_idempotency_digest(
+    record: &ActiveMutationIdempotencyRecord,
+    params_digest: &str,
+) -> Result<(), starweaver_rpc_core::RpcError> {
+    if record.params_digest == params_digest {
+        Ok(())
+    } else {
+        Err(starweaver_rpc_core::RpcError::new(
+            IDEMPOTENCY_CONFLICT,
+            "idempotency key was already used with different params",
+        ))
+    }
 }
 
 fn ensure_expected_binding(
@@ -1208,48 +1273,45 @@ fn set_default_shell_mount(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn environment_lifecycle_message(
+fn environment_lifecycle_event(
     run_id: &str,
     session_id: &str,
-    sequence: usize,
     operation_id: &str,
     kind: &str,
     binding_version: u64,
     environment: &Value,
     extra: &Value,
-) -> DisplayMessage {
-    let mut payload = json!({
-        "operationKind": kind,
-        "kind": kind,
-        "operationId": operation_id,
-        "runId": run_id,
-        "bindingVersion": binding_version,
-        "environment": environment,
-    });
-    merge_json_object(&mut payload, extra);
-    DisplayMessage::new(
-        sequence,
-        starweaver_core::SessionId::from_string(session_id.to_string()),
-        starweaver_core::RunId::from_string(run_id),
-        DisplayMessageKind::HostOperation,
-    )
-    .with_payload(payload)
-    .with_preview(format!("environment {kind}"))
+) -> EnvironmentLifecycleEvent {
+    EnvironmentLifecycleEvent {
+        operation_kind: kind.to_string(),
+        session_id: session_id.to_string(),
+        run_id: run_id.to_string(),
+        binding_version,
+        environment: environment.clone(),
+        operation_id: Some(operation_id.to_string()),
+        extra: extra.as_object().cloned().unwrap_or_default(),
+    }
 }
 
-#[allow(clippy::needless_pass_by_value)]
-fn publish_display_message_to_state(
+fn publish_environment_lifecycle_to_state(
     run_id: &str,
     state: &mut ActiveRunState,
-    message: DisplayMessage,
+    sequence: usize,
+    lifecycle: EnvironmentLifecycleEvent,
 ) {
-    let sequence = message.sequence;
-    state.display_messages.push(message.clone());
+    let display_message = lifecycle.to_display_message(sequence);
+    let event = ReplayEvent::new(
+        ReplayScope::run(run_id),
+        sequence,
+        ReplayEventKind::EnvironmentLifecycle(Box::new(lifecycle)),
+    );
+    state.display_messages.push(display_message);
+    state.replay_events.push(event.clone());
     if let Some(environment) = state.environment.as_mut() {
         environment.latest_environment_sequence = Some(sequence);
     }
     state.subscribers.retain(|subscriber| {
-        let event = replay_event_for_subscriber(run_id, message.clone(), subscriber);
+        let event = replay_event_for_subscriber(event.clone(), subscriber);
         subscriber
             .sender
             .send(RunStreamEvent::Output(Box::new(event)))
@@ -1276,17 +1338,16 @@ fn publish_initial_environment_info(
     let operation_id = format!("envop_{}", chrono::Utc::now().timestamp_micros());
     let lifecycle_environment = environment_summary(binding_version, &attachments);
     let lifecycle_extra = json!({});
-    let message = environment_lifecycle_message(
+    let lifecycle = environment_lifecycle_event(
         run_id,
         &state.session_id,
-        sequence,
         &operation_id,
         "environment_info",
         binding_version,
         &lifecycle_environment,
         &lifecycle_extra,
     );
-    publish_display_message_to_state(run_id, state, message);
+    publish_environment_lifecycle_to_state(run_id, state, sequence, lifecycle);
 }
 
 fn environment_lifecycle_message_inserts(
@@ -1614,9 +1675,11 @@ fn publish_display_messages(
     for mut message in messages {
         message.sequence = next_display_sequence(state);
         let terminal = terminal_status(message.kind);
+        let event = run_replay_event(run_id, message.clone());
         state.display_messages.push(message.clone());
+        state.replay_events.push(event.clone());
         state.subscribers.retain(|subscriber| {
-            let event = replay_event_for_subscriber(run_id, message.clone(), subscriber);
+            let event = replay_event_for_subscriber(event.clone(), subscriber);
             subscriber
                 .sender
                 .send(RunStreamEvent::Output(Box::new(event)))
@@ -1700,6 +1763,22 @@ fn persisted_display_message_keys(events: &[ReplayEvent]) -> HashSet<(String, us
         .collect()
 }
 
+fn replay_event_not_persisted_as_display(
+    event: &ReplayEvent,
+    persisted_messages: &HashSet<(String, usize)>,
+) -> bool {
+    match &event.event {
+        ReplayEventKind::DisplayMessage(message) => {
+            !persisted_messages.contains(&display_message_key(message))
+        }
+        ReplayEventKind::EnvironmentLifecycle(lifecycle) => {
+            let display_message = lifecycle.to_display_message(event.sequence);
+            !persisted_messages.contains(&display_message_key(&display_message))
+        }
+        _ => true,
+    }
+}
+
 fn display_message_key(message: &DisplayMessage) -> (String, usize) {
     (message.run_id.as_str().to_string(), message.sequence)
 }
@@ -1707,12 +1786,12 @@ fn display_message_key(message: &DisplayMessage) -> (String, usize) {
 fn append_session_replay_events(
     scope: &ReplayScope,
     start_sequence: usize,
-    messages: Vec<DisplayMessage>,
+    events: Vec<ReplayEvent>,
 ) -> Vec<ReplayEvent> {
-    messages
+    events
         .into_iter()
         .enumerate()
-        .map(|(offset, message)| display_replay_event(scope, start_sequence + offset, message))
+        .map(|(offset, event)| rebase_replay_event(event, scope.clone(), start_sequence + offset))
         .collect()
 }
 
@@ -1726,21 +1805,28 @@ fn filter_replay_events(
         .collect()
 }
 
-fn replay_event_for_subscriber(
-    run_id: &str,
-    message: DisplayMessage,
-    subscriber: &RunSubscriber,
-) -> ReplayEvent {
+fn replay_event_for_subscriber(event: ReplayEvent, subscriber: &RunSubscriber) -> ReplayEvent {
     match &subscriber.cursor {
-        SubscriberCursor::Run => run_replay_event(run_id, message),
+        SubscriberCursor::Run => event,
         SubscriberCursor::Session { next_sequence } => {
             let sequence = next_session_sequence(next_sequence);
-            display_replay_event(
-                &ReplayScope::session(message.session_id.as_str()),
-                sequence,
-                message,
-            )
+            let scope = ReplayScope::session(replay_event_session_id(&event));
+            rebase_replay_event(event, scope, sequence)
         }
+    }
+}
+
+fn rebase_replay_event(mut event: ReplayEvent, scope: ReplayScope, sequence: usize) -> ReplayEvent {
+    event.scope = scope;
+    event.sequence = sequence;
+    event
+}
+
+fn replay_event_session_id(event: &ReplayEvent) -> &str {
+    match &event.event {
+        ReplayEventKind::DisplayMessage(message) => message.session_id.as_str(),
+        ReplayEventKind::EnvironmentLifecycle(lifecycle) => &lifecycle.session_id,
+        _ => event.scope.as_str(),
     }
 }
 
@@ -1808,7 +1894,7 @@ mod tests {
     use starweaver_environment::EnvironmentProvider;
     use starweaver_rpc_core::{
         EnvironmentActiveMountParams, EnvironmentActiveUnmountParams,
-        EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef,
+        EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, IDEMPOTENCY_CONFLICT,
     };
 
     use super::*;
@@ -1895,6 +1981,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn active_environment_mutations_update_binding_and_stream_lifecycle() {
         let temp = tempfile::tempdir().unwrap();
         let config = test_config(temp.path());
@@ -1935,22 +2022,30 @@ mod tests {
             idempotency_key: Some("mount-scratch".to_string()),
         };
         let mounted = coordinator
-            .active_environment_mount(&mount_params, mount_params.attachment.clone())
+            .active_environment_mount(
+                &mount_params,
+                mount_params.attachment.clone(),
+                "mount-digest",
+            )
             .unwrap();
-        assert_eq!(mounted["bindingVersion"], 2);
-        assert_eq!(mounted["mountId"], "scratch");
+        assert!(mounted.applied);
+        assert_eq!(mounted.result["bindingVersion"], 2);
+        assert_eq!(mounted.result["mountId"], "scratch");
         assert_eq!(
-            mounted["environment"]["mounts"].as_array().unwrap().len(),
+            mounted.result["environment"]["mounts"]
+                .as_array()
+                .unwrap()
+                .len(),
             2
         );
         let RunStreamEvent::Output(event) = subscriber_receiver.recv().unwrap() else {
             panic!("expected lifecycle output event");
         };
-        let ReplayEventKind::DisplayMessage(message) = &event.event else {
-            panic!("expected display message");
+        let ReplayEventKind::EnvironmentLifecycle(lifecycle) = &event.event else {
+            panic!("expected environment lifecycle event");
         };
-        assert_eq!(message.kind, DisplayMessageKind::HostOperation);
-        assert_eq!(message.payload["operationKind"], "environment_mounted");
+        assert_eq!(lifecycle.operation_kind, "environment_mounted");
+        assert_eq!(lifecycle.extra["mount"]["id"], "scratch");
         assert!(steering_receiver
             .recv()
             .unwrap()
@@ -1958,9 +2053,24 @@ mod tests {
             .contains("mount=\"scratch\""));
 
         let replayed = coordinator
-            .active_environment_mount(&mount_params, mount_params.attachment.clone())
+            .active_environment_mount(
+                &mount_params,
+                mount_params.attachment.clone(),
+                "mount-digest",
+            )
             .unwrap();
-        assert_eq!(replayed, mounted);
+        assert!(!replayed.applied);
+        assert_eq!(replayed.result, mounted.result);
+        let mut conflicting_mount_params = mount_params.clone();
+        conflicting_mount_params.attachment = local_attachment("other", false, false);
+        let conflict = coordinator
+            .active_environment_mount(
+                &conflicting_mount_params,
+                conflicting_mount_params.attachment.clone(),
+                "different-mount-digest",
+            )
+            .unwrap_err();
+        assert_eq!(conflict.code, IDEMPOTENCY_CONFLICT);
 
         let unmount_params = EnvironmentActiveUnmountParams {
             run_id: "run_1".to_string(),
@@ -1971,16 +2081,26 @@ mod tests {
             expected_binding_version: Some(2),
             idempotency_key: Some("unmount-scratch".to_string()),
         };
-        let (unmounted, removed) = coordinator
-            .active_environment_unmount(&unmount_params)
+        let unmounted = coordinator
+            .active_environment_unmount(&unmount_params, "unmount-digest")
             .await
             .unwrap();
-        assert_eq!(removed.id, "scratch");
-        assert_eq!(unmounted["bindingVersion"], 3);
+        assert!(unmounted.applied);
+        assert_eq!(unmounted.removed.id, "scratch");
+        assert_eq!(unmounted.result["bindingVersion"], 3);
         assert_eq!(
-            unmounted["environment"]["mounts"].as_array().unwrap().len(),
+            unmounted.result["environment"]["mounts"]
+                .as_array()
+                .unwrap()
+                .len(),
             1
         );
+        let replayed_unmount = coordinator
+            .active_environment_unmount(&unmount_params, "unmount-digest")
+            .await
+            .unwrap();
+        assert!(!replayed_unmount.applied);
+        assert_eq!(replayed_unmount.result, unmounted.result);
         let current = coordinator.active_environment_list("run_1").unwrap();
         assert_eq!(current["environment"]["bindingVersion"], 3);
         assert_eq!(current["environment"]["mounts"][0]["id"], "local");
@@ -2054,15 +2174,18 @@ mod tests {
         );
 
         let error = coordinator
-            .active_environment_unmount(&EnvironmentActiveUnmountParams {
-                run_id: "run_1".to_string(),
-                mount_id: "scratch".to_string(),
-                new_default_mount_id: None,
-                new_default_shell_mount_id: None,
-                inject_context: false,
-                expected_binding_version: Some(1),
-                idempotency_key: None,
-            })
+            .active_environment_unmount(
+                &EnvironmentActiveUnmountParams {
+                    run_id: "run_1".to_string(),
+                    mount_id: "scratch".to_string(),
+                    new_default_mount_id: None,
+                    new_default_shell_mount_id: None,
+                    inject_context: false,
+                    expected_binding_version: Some(1),
+                    idempotency_key: None,
+                },
+                "unmount-live-process",
+            )
             .await
             .unwrap_err();
 
@@ -2074,6 +2197,67 @@ mod tests {
             current["environment"]["mounts"].as_array().unwrap().len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn active_environment_mount_accepts_stdio_envd_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let coordinator = CliRuntimeCoordinator::new(config);
+        let environment =
+            resolve_environment_for_session_with_attachments(&coordinator.config, "session_1", &[])
+                .unwrap();
+        let (steering_sender, _steering_receiver) = mpsc::channel::<CliSteeringMessage>();
+        let (cancel_sender, _cancel_receiver) = mpsc::channel::<()>();
+        let (subscriber_sender, _subscriber_receiver) = mpsc::channel::<RunStreamEvent>();
+        insert_active_run(
+            &coordinator.active_runs,
+            "session_1",
+            "run_1",
+            steering_sender,
+            cancel_sender,
+            0,
+            RunSubscriber {
+                include_raw: false,
+                cursor: SubscriberCursor::Run,
+                sender: subscriber_sender,
+            },
+            active_environment_binding(&environment),
+        );
+
+        let mount_params = EnvironmentActiveMountParams {
+            run_id: "run_1".to_string(),
+            attachment: EnvironmentAttachmentRef {
+                id: "stdio_data".to_string(),
+                kind: "envd".to_string(),
+                mode: Some(EnvironmentAttachmentAccessMode::ReadOnly),
+                is_default: false,
+                is_default_for_shell: false,
+                attachment_lease_id: None,
+                endpoint_ref: Some("stdio:///bin/cat".to_string()),
+                environment_id: Some("default".to_string()),
+                auth_token: None,
+                metadata: serde_json::Map::new(),
+            },
+            replace: false,
+            inject_context: false,
+            expected_binding_version: Some(1),
+            idempotency_key: Some("mount-stdio-envd".to_string()),
+        };
+
+        let mounted = coordinator
+            .active_environment_mount(
+                &mount_params,
+                mount_params.attachment.clone(),
+                "stdio-digest",
+            )
+            .unwrap();
+
+        assert!(mounted.applied);
+        assert_eq!(mounted.result["bindingVersion"], 2);
+        assert_eq!(mounted.result["mount"]["kind"], "envd");
+        assert_eq!(mounted.result["mount"]["id"], "stdio_data");
     }
 
     #[test]

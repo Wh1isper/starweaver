@@ -108,12 +108,75 @@ pub enum StreamTerminalMarker {
     },
 }
 
+/// Environment lifecycle item carried by typed replay events.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentLifecycleEvent {
+    /// Stable lifecycle kind, such as `environment_info`.
+    pub operation_kind: String,
+    /// Session that owns the run.
+    pub session_id: String,
+    /// Run that owns the active environment binding.
+    pub run_id: String,
+    /// Environment binding version described by this event.
+    pub binding_version: u64,
+    /// Current environment summary.
+    pub environment: Value,
+    /// Operation id for active mutations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    /// Additional lifecycle payload fields.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, Value>,
+}
+
+impl EnvironmentLifecycleEvent {
+    /// Project this typed event to the legacy display-message shape.
+    #[must_use]
+    pub fn to_display_message(&self, sequence: usize) -> DisplayMessage {
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "operationKind".to_string(),
+            Value::String(self.operation_kind.clone()),
+        );
+        payload.insert(
+            "kind".to_string(),
+            Value::String(self.operation_kind.clone()),
+        );
+        if let Some(operation_id) = self.operation_id.as_ref() {
+            payload.insert(
+                "operationId".to_string(),
+                Value::String(operation_id.clone()),
+            );
+        }
+        payload.insert("runId".to_string(), Value::String(self.run_id.clone()));
+        payload.insert(
+            "bindingVersion".to_string(),
+            Value::Number(self.binding_version.into()),
+        );
+        payload.insert("environment".to_string(), self.environment.clone());
+        for (key, value) in &self.extra {
+            payload.insert(key.clone(), value.clone());
+        }
+        DisplayMessage::new(
+            sequence,
+            starweaver_core::SessionId::from_string(self.session_id.clone()),
+            starweaver_core::RunId::from_string(self.run_id.clone()),
+            crate::DisplayMessageKind::HostOperation,
+        )
+        .with_payload(Value::Object(payload))
+        .with_preview(format!("environment {}", self.operation_kind))
+    }
+}
+
 /// Replay event kind.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ReplayEventKind {
     /// Display message event.
     DisplayMessage(Box<DisplayMessage>),
+    /// Typed environment lifecycle event.
+    EnvironmentLifecycle(Box<EnvironmentLifecycleEvent>),
     /// Raw payload event.
     Raw(Value),
     /// Compact snapshot marker.

@@ -90,6 +90,7 @@ impl JsonlEnvelope {
 const fn event_name(kind: &ReplayEventKind) -> &'static str {
     match kind {
         ReplayEventKind::DisplayMessage(_) => "display_message",
+        ReplayEventKind::EnvironmentLifecycle(_) => "environment_lifecycle",
         ReplayEventKind::Raw(_) => "raw",
         ReplayEventKind::Snapshot(_) => "snapshot",
         ReplayEventKind::Heartbeat => "heartbeat",
@@ -101,6 +102,9 @@ fn event_data(kind: &ReplayEventKind) -> Value {
     match kind {
         ReplayEventKind::DisplayMessage(message) => {
             serde_json::to_value(message).unwrap_or(Value::Null)
+        }
+        ReplayEventKind::EnvironmentLifecycle(event) => {
+            serde_json::to_value(event).unwrap_or(Value::Null)
         }
         ReplayEventKind::Raw(value) => value.clone(),
         ReplayEventKind::Snapshot(snapshot) => {

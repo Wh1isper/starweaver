@@ -30,6 +30,7 @@ use crate::{
     args::{HitlPolicy, OutputMode, RpcCommand, RpcTransport, RunCommand},
     client_state,
     config::{get_config_value, read_current_session, write_current_session, CliConfig},
+    environment::validate_envd_attachment_transport,
     local_store::{LocalStore, LocalStreamArchive},
     profiles::{list_config_model_profiles, list_profiles, show_profile},
     runner::CliSteeringMessage,
@@ -323,6 +324,7 @@ impl RpcService {
     }
 
     async fn environment_active_mount(&self, params: &Value) -> Result<Value, RpcError> {
+        let params_digest = canonical_json(params);
         let params = serde_json::from_value::<EnvironmentActiveMountParams>(params.clone())
             .map_err(|error| {
                 RpcError::new(
@@ -342,9 +344,15 @@ impl RpcService {
             .mark_run_mounted(&params.run_id, &attachment)?;
         match self
             .coordinator
-            .active_environment_mount(&params, attachment.clone())
+            .active_environment_mount(&params, attachment.clone(), &params_digest)
         {
-            Ok(result) => Ok(result),
+            Ok(outcome) => {
+                if !outcome.applied {
+                    self.environment_manager
+                        .mark_run_unmounted(&params.run_id, &attachment)?;
+                }
+                Ok(outcome.result)
+            }
             Err(error) => {
                 let _ = self
                     .environment_manager
@@ -355,6 +363,7 @@ impl RpcService {
     }
 
     async fn environment_active_unmount(&self, params: &Value) -> Result<Value, RpcError> {
+        let params_digest = canonical_json(params);
         let params = serde_json::from_value::<EnvironmentActiveUnmountParams>(params.clone())
             .map_err(|error| {
                 RpcError::new(
@@ -362,10 +371,15 @@ impl RpcService {
                     format!("invalid active unmount params: {error}"),
                 )
             })?;
-        let (result, removed) = self.coordinator.active_environment_unmount(&params).await?;
-        self.environment_manager
-            .mark_run_unmounted(&params.run_id, &removed)?;
-        Ok(result)
+        let outcome = self
+            .coordinator
+            .active_environment_unmount(&params, &params_digest)
+            .await?;
+        if outcome.applied {
+            self.environment_manager
+                .mark_run_unmounted(&params.run_id, &outcome.removed)?;
+        }
+        Ok(outcome.result)
     }
 
     fn environment_active_list(&self, params: &Value) -> Result<Value, RpcError> {
@@ -879,19 +893,8 @@ fn validate_environment_attachments_for_run(
         match attachment.kind.as_str() {
             "local" => {}
             "envd" => {
-                let Some(endpoint) = attachment.requested_endpoint_ref() else {
-                    return Err(RpcError::new(
-                        INVALID_PARAMS,
-                        "envd environment attachment requires endpointRef",
-                    ));
-                };
-                validate_envd_auth_token(attachment.requested_auth_token())?;
-                if !endpoint.starts_with("http://") {
-                    return Err(RpcError::new(
-                        UNSUPPORTED_FEATURE,
-                        "envd environment attachment currently supports http:// endpoint refs",
-                    ));
-                }
+                validate_envd_attachment_transport(attachment)
+                    .map_err(|error| RpcError::new(INVALID_PARAMS, error))?;
             }
             other => {
                 return Err(RpcError::new(
@@ -900,28 +903,6 @@ fn validate_environment_attachments_for_run(
                 ));
             }
         }
-    }
-    Ok(())
-}
-
-fn validate_envd_auth_token(auth_token: Option<&str>) -> Result<(), RpcError> {
-    let Some(auth_token) = auth_token else {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "envd environment attachment requires authToken",
-        ));
-    };
-    if auth_token.trim().is_empty() {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "envd environment attachment authToken cannot be empty",
-        ));
-    }
-    if auth_token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
-        return Err(RpcError::new(
-            INVALID_PARAMS,
-            "envd environment attachment authToken cannot contain newlines",
-        ));
     }
     Ok(())
 }
@@ -1064,6 +1045,36 @@ fn insert_subscription_id(value: &mut Value, subscription_id: &str) {
             "subscriptionId".to_string(),
             Value::String(subscription_id.to_string()),
         );
+    }
+}
+
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Object(object) => {
+            let mut entries = object.iter().collect::<Vec<_>>();
+            entries.sort_by_key(|(key, _)| *key);
+            let body = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string()),
+                        canonical_json(value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{body}}}")
+        }
+        Value::Array(values) => {
+            let body = values
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{body}]")
+        }
+        _ => serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()),
     }
 }
 
@@ -1260,8 +1271,10 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use std::{
+        fs,
         io::{Read as _, Write as _},
         net::{TcpListener, TcpStream},
+        os::unix::fs::PermissionsExt as _,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -1269,6 +1282,7 @@ mod tests {
     };
 
     use serde_json::json;
+    use starweaver_stream::{EnvironmentLifecycleEvent, ReplayEvent, ReplayEventKind, ReplayScope};
 
     use super::*;
     use crate::{args, ConfigResolver};
@@ -1276,6 +1290,31 @@ mod tests {
     fn test_config(root: &std::path::Path) -> CliConfig {
         let cli = args::parse(["starweaver-cli".to_string(), "rpc".to_string()]).unwrap();
         ConfigResolver::for_tests(root).resolve(&cli).unwrap()
+    }
+
+    fn stdio_envd_fixture_endpoint(root: &std::path::Path) -> String {
+        let script = root.join("envd-stdio-fixture.sh");
+        fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  if printf '%s' "$line" | grep -q '"method":"initialize"'; then
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocol":"starweaver.envd","protocol_version":"2026-06-01","service_name":"fixture","metadata":{}}}'
+  elif printf '%s' "$line" | grep -q '"method":"environment.open"'; then
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"environment_id":"default","kind":"fixture","store":"ephemeral","status":"open","state_version":1,"policy_revision":1,"capabilities":{"features":["files","shell","processes"]},"metadata":{}}}'
+  elif printf '%s' "$line" | grep -q '"method":"environment.state"'; then
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"descriptor":{"environment_id":"default","kind":"fixture","store":"ephemeral","status":"open","state_version":1,"policy_revision":1,"capabilities":{"features":["files","shell","processes"]},"metadata":{}},"mounts":[],"resources":[],"processes":[],"operations":[],"effects":[],"metadata":{}}}'
+  else
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}'
+  fi
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script, permissions).unwrap();
+        format!("stdio://{}", script.display())
     }
 
     #[allow(clippy::needless_pass_by_value)]
@@ -1678,6 +1717,41 @@ model = "test:coding"
     }
 
     #[test]
+    fn run_output_notification_preserves_environment_lifecycle_event() {
+        let event = ReplayEvent::new(
+            ReplayScope::run("run_rpc"),
+            8,
+            ReplayEventKind::EnvironmentLifecycle(Box::new(EnvironmentLifecycleEvent {
+                operation_kind: "environment_mounted".to_string(),
+                session_id: "session_rpc".to_string(),
+                run_id: "run_rpc".to_string(),
+                binding_version: 2,
+                environment: json!({"bindingVersion": 2, "mounts": []}),
+                operation_id: Some("envop_1".to_string()),
+                extra: serde_json::Map::new(),
+            })),
+        );
+
+        let frame = run_event_notification(
+            RunStreamEvent::Output(Box::new(event)),
+            StreamPayloadFormat::Agui,
+        )
+        .unwrap();
+
+        assert_eq!(frame["method"], "run.output");
+        assert_eq!(
+            frame["params"]["event"]["event"]["kind"],
+            "environment_lifecycle"
+        );
+        assert_eq!(
+            frame["params"]["event"]["event"]["operationKind"],
+            "environment_mounted"
+        );
+        assert_eq!(frame["params"]["projections"][0]["payloadFormat"], "agui");
+        assert_eq!(frame["params"]["payload"]["type"], "HOST_OPERATION");
+    }
+
+    #[test]
     fn replay_only_transport_requires_session_scoped_environment_leases() {
         let temp = tempfile::tempdir().unwrap();
         let config = test_config(temp.path());
@@ -1852,6 +1926,100 @@ model = "test:coding"
             lease_id
         );
         assert_eq!(started["environmentAttachments"][0]["mode"], "read_only");
+    }
+
+    #[test]
+    fn active_mount_idempotent_replay_does_not_duplicate_lease_usage() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let attached = request_with_server(
+            &server,
+            1,
+            "environment.attach",
+            json!({
+                "attachment": {"id": "scratch", "kind": "local", "mode": "read_only"},
+                "readiness": {"policy": "required"}
+            }),
+        );
+        let lease_id = attached["attachment"]["attachmentLeaseId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let started = request_with_server(
+            &server,
+            2,
+            "run.start",
+            json!({"prompt": "hello active mount replay"}),
+        );
+        let run_id = started["runId"].as_str().unwrap().to_string();
+        let mount_params = json!({
+            "runId": run_id,
+            "attachment": {
+                "id": "scratch",
+                "attachmentLeaseId": lease_id,
+                "default": false
+            },
+            "injectContext": false,
+            "expectedBindingVersion": 1,
+            "idempotencyKey": "mount-scratch"
+        });
+        let mounted =
+            request_with_server(&server, 3, "environment.active_mount", mount_params.clone());
+        assert_eq!(mounted["bindingVersion"], 2);
+        let replayed = request_with_server(&server, 4, "environment.active_mount", mount_params);
+        assert_eq!(replayed, mounted);
+
+        let unmounted = request_with_server(
+            &server,
+            5,
+            "environment.active_unmount",
+            json!({
+                "runId": run_id,
+                "mountId": "scratch",
+                "injectContext": false,
+                "expectedBindingVersion": 2,
+                "idempotencyKey": "unmount-scratch"
+            }),
+        );
+        assert_eq!(unmounted["bindingVersion"], 3);
+        let detached = request_with_server(
+            &server,
+            6,
+            "environment.detach",
+            json!({"attachmentLeaseId": lease_id}),
+        );
+        assert_eq!(detached["detached"], true);
+    }
+
+    #[test]
+    fn envd_attachment_health_accepts_stdio_endpoint() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let endpoint = stdio_envd_fixture_endpoint(temp.path());
+        let (output_sender, _output_receiver) = mpsc::channel::<Value>();
+        let server = RpcService::new(config, output_sender);
+
+        let health = request_with_server(
+            &server,
+            1,
+            "environment.health",
+            json!({
+                "attachment": {
+                    "id": "stdio_data",
+                    "kind": "envd",
+                    "endpointRef": endpoint,
+                    "environmentId": "default",
+                    "mode": "read_only"
+                }
+            }),
+        );
+
+        assert_eq!(health["status"], "ready");
+        assert_eq!(health["readiness"]["transport"], "ready");
+        assert_eq!(health["readiness"]["environment"], "ready");
     }
 
     #[test]

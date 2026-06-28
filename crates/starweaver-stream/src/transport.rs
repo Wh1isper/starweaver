@@ -81,6 +81,7 @@ pub fn replay_sse_frames(events: &[ReplayEvent]) -> ReplayResult<Vec<ReplaySseFr
 pub const fn replay_sse_event_name(kind: &ReplayEventKind) -> &'static str {
     match kind {
         ReplayEventKind::DisplayMessage(_) => "display_message",
+        ReplayEventKind::EnvironmentLifecycle(_) => "environment_lifecycle",
         ReplayEventKind::Raw(_) => "raw",
         ReplayEventKind::Snapshot(_) => "snapshot",
         ReplayEventKind::Heartbeat => "heartbeat",
