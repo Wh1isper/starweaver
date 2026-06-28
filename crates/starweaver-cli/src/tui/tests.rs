@@ -3039,6 +3039,28 @@ fn transcript_renderer_renders_only_assistant_markdown() {
 }
 
 #[test]
+fn transcript_renderer_wraps_long_user_prompt_lines() {
+    let lines = vec!["User: abcdefghijklmnopqrstuvwxyz".to_string()];
+
+    let rendered = render_transcript_lines(&lines, 12);
+    let texts = line_texts(&rendered);
+
+    assert_eq!(
+        texts,
+        vec![
+            "› abcdefghij".to_string(),
+            "  klmnopqrst".to_string(),
+            "  uvwxyz".to_string(),
+        ]
+    );
+    assert!(rendered.iter().all(|line| line.visible_width() <= 12));
+    assert!(rendered.iter().all(|line| line
+        .segments
+        .iter()
+        .all(|segment| segment.style.contains(SegmentStyle::BOLD))));
+}
+
+#[test]
 fn composer_viewport_scrolls_multiline_input_and_resets_on_edit() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.input = (1..=7)
@@ -3514,6 +3536,14 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     assert_eq!(snapshot.pending_approvals, 1);
     assert_eq!(snapshot.pending_deferred, 1);
     assert_eq!(snapshot.assistant_text, "hello world");
+    assert!(snapshot
+        .transcript_lines
+        .iter()
+        .any(|line| line == &format!("{ASSISTANT_CONTENT_PREFIX}hello world")));
+    assert!(!snapshot
+        .transcript_lines
+        .iter()
+        .any(|line| line == &format!("{ASSISTANT_CONTENT_PREFIX} world")));
     assert_eq!(
         snapshot.tool_calls,
         vec![

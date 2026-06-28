@@ -9,10 +9,15 @@ use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use super::{
     args::{FetchArgs, SearchArgs, UrlArgs},
-    http::{fetch_http_resource, first_env, is_text_like, truncate_text, MAX_FETCH_BYTES},
+    http::{fetch_http_resource, first_env, is_text_like, MAX_FETCH_BYTES},
     json_result,
 };
 use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::output::{
+    append_guidance, dump_tool_output, environment_provider_from_context, fit_text_fields_to_limit,
+    output_too_large_message, tool_output_size, write_tmp_output,
+    DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT,
+};
 
 mod fetch_image;
 mod html;
@@ -180,9 +185,15 @@ pub(super) async fn search(
             .search(request)
             .await
             .map_err(|error| tool_execution_error("search", error))?;
-        return json_result(response, "search");
+        let result = json_result(response, "search")?;
+        return Ok(ToolResult::new(
+            guard_search_result(&context, result.content, "search").await,
+        ));
     }
-    brave_search(request).await
+    let result = brave_search(request).await?;
+    Ok(ToolResult::new(
+        guard_search_result(&context, result.content, "search").await,
+    ))
 }
 
 pub(super) async fn fetch(
@@ -250,18 +261,30 @@ pub(super) async fn fetch(
         })));
     }
     let text = String::from_utf8_lossy(&body);
-    let (text_content, truncated, total_length) = truncate_text(&text);
-    Ok(ToolResult::new(serde_json::json!({
+    let total_length = text.chars().count();
+    let result = serde_json::json!({
         "success": (200..400).contains(&resource.status),
         "url": arguments.url,
         "final_url": resource.final_url,
         "status": resource.status,
         "content_type": resource.content_type,
         "content_length": resource.content_length,
-        "content": text_content,
+        "content": text,
         "total_length": total_length,
-        "truncated": truncated,
-    })))
+        "truncated": false,
+    });
+    Ok(ToolResult::new(
+        guard_text_result(
+            &context,
+            result,
+            "fetch",
+            "txt",
+            "content",
+            "content",
+            "\n\n... (truncated; full content saved in `output_file_path`)",
+        )
+        .await,
+    ))
 }
 
 pub(super) async fn scrape(
@@ -274,17 +297,176 @@ pub(super) async fn scrape(
             .scrape(ScrapeRequest { url: arguments.url })
             .await
             .map_err(|error| tool_execution_error("scrape", error))?;
-        return json_result(response, "scrape");
+        let result = json_result(response, "scrape")?;
+        return Ok(ToolResult::new(
+            guard_scrape_result(&context, result.content).await,
+        ));
     }
     if let Some(key) = first_env(["FIRECRAWL_API_KEY"]) {
         if let Ok(response) = firecrawl_scrape(&context, &arguments.url, &key).await {
-            return json_result(response, "scrape");
+            let result = json_result(response, "scrape")?;
+            return Ok(ToolResult::new(
+                guard_scrape_result(&context, result.content).await,
+            ));
         }
     }
     if let Some(token) = first_env(["CLOUDFLARE_API_TOKEN"]) {
         if let Ok(response) = cloudflare_scrape(&context, &arguments.url, &token) {
-            return json_result(response, "scrape");
+            let result = json_result(response, "scrape")?;
+            return Ok(ToolResult::new(
+                guard_scrape_result(&context, result.content).await,
+            ));
         }
     }
-    local_scrape(&context, &arguments.url).await
+    let result = local_scrape(&context, &arguments.url).await?;
+    Ok(ToolResult::new(
+        guard_scrape_result(&context, result.content).await,
+    ))
+}
+
+async fn guard_scrape_result(context: &ToolContext, result: Value) -> Value {
+    guard_text_result(
+        context,
+        result,
+        "scrape",
+        "md",
+        "markdown_content",
+        "Markdown",
+        "\n\n... (truncated; full Markdown saved in `output_file_path`)",
+    )
+    .await
+}
+
+async fn guard_text_result(
+    context: &ToolContext,
+    result: Value,
+    prefix: &str,
+    extension: &str,
+    text_field: &str,
+    noun: &str,
+    suffix: &str,
+) -> Value {
+    if tool_output_size(&result) <= DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT {
+        return result;
+    }
+    let full_text = result
+        .get(text_field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let provider = environment_provider_from_context(context);
+    let output_path =
+        write_tmp_output(provider.as_deref(), prefix, extension, full_text.as_bytes()).await;
+    let mut preview = match result {
+        Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("result".to_string(), other);
+            map
+        }
+    };
+    preview.insert("truncated".to_string(), Value::Bool(true));
+    if let Some(path) = output_path.as_ref() {
+        preview.insert("output_file_path".to_string(), Value::String(path.clone()));
+    }
+    let size = preview
+        .get("total_length")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or_else(|| full_text.chars().count());
+    let guidance = output_too_large_message(size, output_path.as_deref(), noun);
+    preview.insert("tips".to_string(), Value::String(guidance));
+    fit_text_fields_to_limit(
+        Value::Object(preview),
+        &[text_field],
+        DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT,
+        suffix,
+    )
+}
+
+async fn guard_search_result(context: &ToolContext, result: Value, prefix: &str) -> Value {
+    if tool_output_size(&result) <= DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT {
+        return result;
+    }
+    let serialized = dump_tool_output(&result);
+    let provider = environment_provider_from_context(context);
+    let output_path =
+        write_tmp_output(provider.as_deref(), prefix, "json", serialized.as_bytes()).await;
+    let note = output_too_large_message(
+        serialized.chars().count(),
+        output_path.as_deref(),
+        "search results",
+    );
+
+    let Value::Object(map) = result else {
+        let mut preview = serde_json::Map::new();
+        preview.insert("truncated".to_string(), Value::Bool(true));
+        preview.insert("note".to_string(), Value::String(note));
+        if let Some(path) = output_path {
+            preview.insert("output_file_path".to_string(), Value::String(path));
+        }
+        return Value::Object(preview);
+    };
+
+    let results = map
+        .get("results")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut preview = map;
+    let existing_note = preview
+        .get("note")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    preview.insert(
+        "note".to_string(),
+        Value::String(append_guidance(existing_note.as_deref(), &note)),
+    );
+    preview.insert("truncated".to_string(), Value::Bool(true));
+    preview.insert("results".to_string(), Value::Array(Vec::new()));
+    preview.insert(
+        "results_total".to_string(),
+        serde_json::json!(results.len()),
+    );
+    preview.insert("results_showing".to_string(), serde_json::json!(0));
+    if let Some(path) = output_path.as_ref() {
+        preview.insert("output_file_path".to_string(), Value::String(path.clone()));
+    }
+
+    if tool_output_size(&Value::Object(preview.clone())) > DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT {
+        let mut minimal = serde_json::Map::new();
+        for key in ["success", "query", "provider", "errors"] {
+            if let Some(value) = preview.get(key) {
+                minimal.insert(key.to_string(), value.clone());
+            }
+        }
+        minimal.insert("truncated".to_string(), Value::Bool(true));
+        minimal.insert("note".to_string(), Value::String(note));
+        minimal.insert(
+            "results_total".to_string(),
+            serde_json::json!(results.len()),
+        );
+        minimal.insert("results_showing".to_string(), serde_json::json!(0));
+        if let Some(path) = output_path {
+            minimal.insert("output_file_path".to_string(), Value::String(path));
+        }
+        preview = minimal;
+    }
+
+    let mut kept = Vec::new();
+    for item in results {
+        kept.push(item);
+        let mut candidate = preview.clone();
+        candidate.insert("results".to_string(), Value::Array(kept.clone()));
+        candidate.insert("results_showing".to_string(), serde_json::json!(kept.len()));
+        if tool_output_size(&Value::Object(candidate.clone())) > DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT
+        {
+            kept.pop();
+            break;
+        }
+        preview = candidate;
+    }
+    preview.insert("results".to_string(), Value::Array(kept.clone()));
+    preview.insert("results_showing".to_string(), serde_json::json!(kept.len()));
+    Value::Object(preview)
 }

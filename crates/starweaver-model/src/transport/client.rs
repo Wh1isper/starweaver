@@ -46,9 +46,24 @@ pub trait ModelHttpClient: Send + Sync {
             request.url
         )))
     }
+
+    /// Send a WebSocket model request and return JSON text-frame events as they arrive.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when WebSocket transport setup fails.
+    async fn send_websocket_event_stream_incremental(
+        &self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        Err(ModelError::Transport(format!(
+            "websocket event streaming is not implemented for {}",
+            request.url
+        )))
+    }
 }
 
-/// Receiver for incremental model SSE JSON events.
+/// Receiver for incremental model JSON events.
 pub struct ModelEventStream {
     receiver: tokio::sync::mpsc::Receiver<Result<Value, ModelError>>,
     cancellation_token: CancellationToken,

@@ -7,7 +7,7 @@ use super::ScrapeResponse;
 use crate::bundles::helpers::tool_execution_error;
 
 use super::super::{
-    http::{fetch_http_resource, http_client, truncate_text, validate_http_url, MAX_FETCH_BYTES},
+    http::{fetch_http_resource, http_client, validate_http_url, MAX_FETCH_BYTES},
     json_result,
     media::{classify_media, document_handoff, MediaKind},
 };
@@ -44,7 +44,7 @@ pub(super) async fn firecrawl_scrape(
         .or_else(|| data.get("content"))
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let (markdown_content, truncated, total_length) = truncate_text(markdown);
+    let total_length = markdown.chars().count();
     let metadata = data.get("metadata").unwrap_or(&Value::Null);
     Ok(ScrapeResponse {
         success: true,
@@ -58,9 +58,9 @@ pub(super) async fn firecrawl_scrape(
             .get("title")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
-        markdown_content,
+        markdown_content: markdown.to_string(),
         adapter: "firecrawl".to_string(),
-        truncated,
+        truncated: false,
         total_length,
         content_type: None,
         citation: Some(serde_json::json!({"url": url, "adapter": "firecrawl"})),
@@ -116,16 +116,16 @@ pub(super) async fn local_scrape(
     } else {
         text.to_string()
     };
-    let (markdown_content, truncated, total_length) = truncate_text(&markdown);
+    let total_length = markdown.chars().count();
     json_result(
         ScrapeResponse {
             success: (200..400).contains(&resource.status),
             url: url.to_string(),
             final_url: resource.final_url,
             title,
-            markdown_content,
+            markdown_content: markdown,
             adapter: "local_static_html".to_string(),
-            truncated,
+            truncated: false,
             total_length,
             content_type: resource.content_type,
             citation: Some(serde_json::json!({"url": url, "adapter": "local_static_html"})),

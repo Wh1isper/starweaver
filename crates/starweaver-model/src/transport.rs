@@ -7,6 +7,7 @@ mod reqwest_client;
 mod retry;
 mod sse;
 mod types;
+mod websocket;
 
 pub(crate) use audit::ProviderRequestAuditCapture;
 pub use audit::{
@@ -25,3 +26,4 @@ pub use retry::{
     NoopSleeper, RetryPolicy, TokioSleeper,
 };
 pub use types::{HttpMethod, HttpRequest, HttpResponse, MaxTokensParameter};
+pub use websocket::should_fallback_websocket_to_http;

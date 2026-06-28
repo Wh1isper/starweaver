@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use starweaver_context::{AgentContext, ToolConfig};
 use starweaver_environment::{
-    DynProcessShellProvider, ShellCommand, ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    DynProcessShellProvider, EnvironmentProvider, ShellCommand, ShellProcessSnapshot,
+    ShellReviewEnvironmentContext,
 };
 use starweaver_tools::{
     DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
@@ -16,6 +17,10 @@ use super::{
 };
 use crate::bundles::helpers::{
     static_tool, static_tool_with_metadata, tool_execution_error, tool_metadata,
+};
+use crate::bundles::output::{
+    append_guidance, dump_tool_output, fit_text_fields_to_limit, output_too_large_message,
+    tool_output_size, write_tmp_output, DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT,
 };
 
 /// `AgentContext` dependency for process-capable shell providers.
@@ -66,7 +71,7 @@ Parameters:
 - cwd: Working directory (relative or absolute path).
 - background (default false): Run command in background and return process_id immediately.
 
-Large outputs are saved to temporary files with paths in stdout_file_path/stderr_file_path. When a shell command needs to create temporary files itself, write them under `$TMPDIR` rather than hard-coded `/tmp/...`; local providers map `$TMPDIR` to a provider-managed, session-scoped directory that file tools can read.
+Large outputs are saved to temporary files with paths in stdout_file_path/stderr_file_path. If the complete structured shell result is still too large, the full result is saved to output_file_path and a bounded preview is returned. When a shell command needs to create temporary files itself, write them under `$TMPDIR` rather than hard-coded `/tmp/...`; local providers map `$TMPDIR` to a provider-managed, session-scoped directory that file tools can read.
 
 <background-mode>
 Set background=true for long-running commands such as builds, servers, and test suites. Manage background processes with:
@@ -183,7 +188,9 @@ async fn shell_exec(
     if let Some(path) = stderr.file_path {
         result["stderr_file_path"] = serde_json::json!(path);
     }
-    Ok(ToolResult::new(result))
+    Ok(ToolResult::new(
+        guard_shell_result(&context, Some(provider.as_ref()), result, "shell-exec").await,
+    ))
 }
 
 fn merged_shell_environment(
@@ -341,7 +348,99 @@ async fn process_result(
     if let Some(path) = stderr.file_path {
         result["stderr_file_path"] = serde_json::json!(path);
     }
-    Ok(ToolResult::new(result))
+    Ok(ToolResult::new(
+        guard_shell_result(context, environment.as_deref(), result, "shell-process").await,
+    ))
+}
+
+async fn guard_shell_result(
+    context: &ToolContext,
+    provider: Option<&dyn EnvironmentProvider>,
+    result: serde_json::Value,
+    prefix: &str,
+) -> serde_json::Value {
+    let limit = shell_output_truncate_limit(context).max(DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT);
+    if tool_output_size(&result) <= limit {
+        return result;
+    }
+
+    let full_result = dump_tool_output(&result);
+    let output_path = write_tmp_output(provider, prefix, "json", full_result.as_bytes()).await;
+    let guidance = output_too_large_message(
+        full_result.chars().count(),
+        output_path.as_deref(),
+        "shell result",
+    );
+
+    let mut preview = match result {
+        serde_json::Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("result".to_string(), other);
+            map
+        }
+    };
+    preview.insert("truncated".to_string(), serde_json::Value::Bool(true));
+    if let Some(path) = output_path.as_ref() {
+        preview.insert(
+            "output_file_path".to_string(),
+            serde_json::Value::String(path.clone()),
+        );
+    }
+    let hint = preview
+        .get("hint")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    preview.insert(
+        "hint".to_string(),
+        serde_json::Value::String(append_guidance(hint.as_deref(), &guidance)),
+    );
+
+    let suffix = if output_path.is_some() {
+        "\n...(truncated; full shell result saved in `output_file_path`)"
+    } else {
+        "\n...(truncated; failed to save full shell result)"
+    };
+    let fitted = fit_text_fields_to_limit(
+        serde_json::Value::Object(preview.clone()),
+        &["stdout", "stderr"],
+        limit,
+        suffix,
+    );
+    if tool_output_size(&fitted) <= limit {
+        return fitted;
+    }
+
+    minimal_shell_preview(
+        &serde_json::Value::Object(preview),
+        output_path.as_deref(),
+        &guidance,
+    )
+}
+
+fn minimal_shell_preview(
+    result: &serde_json::Value,
+    output_path: Option<&str>,
+    guidance: &str,
+) -> serde_json::Value {
+    let mut preview = serde_json::Map::new();
+    for key in ["command", "process_id", "status", "return_code"] {
+        if let Some(value) = result.get(key) {
+            preview.insert(key.to_string(), value.clone());
+        }
+    }
+    preview.insert("truncated".to_string(), serde_json::Value::Bool(true));
+    preview.insert(
+        "hint".to_string(),
+        serde_json::Value::String(guidance.to_string()),
+    );
+    if let Some(path) = output_path {
+        preview.insert(
+            "output_file_path".to_string(),
+            serde_json::Value::String(path.to_string()),
+        );
+    }
+    serde_json::Value::Object(preview)
 }
 
 struct TruncatedOutput {

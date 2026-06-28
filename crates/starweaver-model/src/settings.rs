@@ -304,6 +304,7 @@ fn merge_openai_responses(
             .prompt_cache_retention
             .clone()
             .or_else(|| base.prompt_cache_retention.clone()),
+        stream_transport: overlay.stream_transport.or(base.stream_transport),
     })
 }
 
@@ -444,6 +445,18 @@ pub struct OpenAiChatSettings {
     pub prompt_cache_retention: Option<String>,
 }
 
+/// Streaming transport policy for Responses-compatible providers.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseStreamTransport {
+    /// Use HTTP streaming over server-sent events.
+    Http,
+    /// Use Responses WebSocket mode.
+    WebSocket,
+    /// Prefer WebSocket and fall back to HTTP streaming for retryable pre-event WebSocket errors.
+    Auto,
+}
+
 /// `OpenAI` Responses typed settings.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OpenAiResponsesSettings {
@@ -471,6 +484,9 @@ pub struct OpenAiResponsesSettings {
     /// Prompt cache retention setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<String>,
+    /// Streaming transport policy for Responses-compatible providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_transport: Option<ResponseStreamTransport>,
 }
 
 /// Anthropic Messages typed settings.

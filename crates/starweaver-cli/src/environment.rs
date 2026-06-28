@@ -458,6 +458,27 @@ fn push_allowed_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
+#[cfg(test)]
+fn display_local_test_path(path: &std::path::Path) -> String {
+    #[cfg(windows)]
+    {
+        let path = path.to_string_lossy();
+        let normalized = path.replace('/', "\\");
+        let stripped = if let Some(stripped) = normalized.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{stripped}")
+        } else if let Some(stripped) = normalized.strip_prefix(r"\\?\") {
+            stripped.to_string()
+        } else {
+            normalized
+        };
+        stripped.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_string_lossy().replace('\\', "/")
+    }
+}
+
 fn validate_environment_provider(provider: &str) -> CliResult<()> {
     match provider {
         "local" | "virtual" => Ok(()),
@@ -630,9 +651,24 @@ additional_dirs = ["../custom-skills"]
             .unwrap_or_else(|_| std::env::temp_dir());
 
         assert_eq!(allowed_paths.first(), Some(&system_tmp_dir));
-        assert!(allowed_paths.contains(&config.global_dir));
-        assert!(allowed_paths.contains(&config.workspace_root));
-        assert!(allowed_paths.contains(&config.project_dir));
+        assert!(allowed_paths.contains(
+            &config
+                .global_dir
+                .canonicalize()
+                .unwrap_or_else(|_| config.global_dir.clone())
+        ));
+        assert!(allowed_paths.contains(
+            &config
+                .workspace_root
+                .canonicalize()
+                .unwrap_or_else(|_| config.workspace_root.clone())
+        ));
+        assert!(allowed_paths.contains(
+            &config
+                .project_dir
+                .canonicalize()
+                .unwrap_or_else(|_| config.project_dir.clone())
+        ));
     }
 
     #[tokio::test]
@@ -658,13 +694,23 @@ additional_dirs = ["../custom-skills"]
         assert_eq!(context.matches("<directory path=").count(), 1);
         assert!(context.contains(&format!(
             "<directory path=\"{}\">",
-            config.workspace_root.display()
+            display_local_test_path(
+                &config
+                    .workspace_root
+                    .canonicalize()
+                    .unwrap_or_else(|_| config.workspace_root.clone())
+            )
         )));
         assert!(context.contains("app.rs"));
         assert!(!context.contains("config-marker.txt"));
         assert!(!context.contains(&format!(
             "<directory path=\"{}\">",
-            config.global_dir.display()
+            display_local_test_path(
+                &config
+                    .global_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| config.global_dir.clone())
+            )
         )));
 
         assert_eq!(

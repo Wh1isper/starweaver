@@ -244,9 +244,27 @@ fn environment_context_part_count(messages: &[starweaver_model::ModelMessage]) -
         .count()
 }
 
-#[tokio::test]
-async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
-    let provider = Arc::new(
+async fn execute_tool_call(
+    registry: &ToolRegistry,
+    context: ToolContext,
+    id: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> starweaver_model::ToolReturnPart {
+    registry
+        .execute_call(
+            context,
+            &starweaver_model::ToolCallPart {
+                id: id.to_string(),
+                name: name.to_string(),
+                arguments: arguments.into(),
+            },
+        )
+        .await
+}
+
+fn filesystem_shell_test_provider() -> Arc<VirtualEnvironmentProvider> {
+    Arc::new(
         VirtualEnvironmentProvider::new("test")
             .with_file("README.md", "hello")
             .with_file("src/lib.rs", "pub fn hello() {}\n")
@@ -269,10 +287,17 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
                     metadata: Metadata::default(),
                 },
             ),
-    );
+    )
+}
+
+fn filesystem_shell_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&filesystem_tools());
     registry.insert_toolset(&shell_tools());
+    registry
+}
+
+fn filesystem_shell_tool_context(provider: Arc<VirtualEnvironmentProvider>) -> ToolContext {
     let mut agent_context = AgentContext::default();
     agent_context
         .shell_env
@@ -280,263 +305,257 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
     agent_context
         .shell_env
         .insert("STARWEAVER_OVERRIDE_ENV".to_string(), "ctx".to_string());
-    attach_environment(&mut agent_context, provider.clone());
+    attach_environment(&mut agent_context, provider);
     let mut dependencies = agent_context.dependencies.clone();
     dependencies.insert(agent_context.clone());
-    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
-        .with_dependencies(dependencies);
+    ToolContext::new(RunId::default(), ConversationId::default(), 0).with_dependencies(dependencies)
+}
 
-    let read = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "read".to_string(),
-                name: "view".to_string(),
-                arguments: serde_json::json!({"path": "README.md"}).into(),
-            },
-        )
-        .await;
-    let write = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "write".to_string(),
-                name: "write".to_string(),
-                arguments:
-                    serde_json::json!({"path": "docs/output.txt", "content": "pub fn ok() {}"})
-                        .into(),
-            },
-        )
-        .await;
-    let glob = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "glob".to_string(),
-                name: "glob".to_string(),
-                arguments: serde_json::json!({"path": "", "pattern": "*.rs"}).into(),
-            },
-        )
-        .await;
-    let grep =
-        registry
-            .execute_call(
-                context.clone(),
-                &starweaver_model::ToolCallPart {
-                    id: "grep".to_string(),
-                    name: "grep".to_string(),
-                    arguments:
-                        serde_json::json!({"path": "", "pattern": "hello", "include": "**/*.rs"})
-                            .into(),
-                },
-            )
-            .await;
-    let resource = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "resource".to_string(),
-                name: "resource_ref".to_string(),
-                arguments: serde_json::json!({"path": "README.md"}).into(),
-            },
-        )
-        .await;
-    let ignored_ls = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "ignored-ls".to_string(),
-                name: "ls".to_string(),
-                arguments: serde_json::json!({"path": "", "ignore": ["src/main.rs"]}).into(),
-            },
-        )
-        .await;
-    let default_ls = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "default-ls".to_string(),
-                name: "ls".to_string(),
-                arguments: serde_json::json!({}).into(),
-            },
-        )
-        .await;
-    let invalid_write_mode = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "invalid-write-mode".to_string(),
-                name: "write".to_string(),
-                arguments:
-                    serde_json::json!({"path": "docs/output.txt", "content": "x", "mode": "bad"})
-                        .into(),
-            },
-        )
-        .await;
-    let edit_existing_create = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "edit-existing-create".to_string(),
-                name: "edit".to_string(),
-                arguments: serde_json::json!({"file_path": "README.md", "old_string": "", "new_string": "overwrite"}).into(),
-            },
-        )
-        .await;
-    let multi_edit_create_then_replace = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "multi-edit-create-then-replace".to_string(),
-                name: "multi_edit".to_string(),
-                arguments: serde_json::json!({"file_path": "created.txt", "edits": [
-                    {"old_string": "", "new_string": "Hello World"},
-                    {"old_string": "World", "new_string": "Universe"}
-                ]})
-                .into(),
-            },
-        )
-        .await;
-    let multi_edit_empty_later = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "multi-edit-empty-later".to_string(),
-                name: "multi_edit".to_string(),
-                arguments: serde_json::json!({"file_path": "README.md", "edits": [
-                    {"old_string": "hello", "new_string": "hi"},
-                    {"old_string": "", "new_string": "boom", "replace_all": true}
-                ]})
-                .into(),
-            },
-        )
-        .await;
-    let shell = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "shell".to_string(),
-                name: "shell_exec".to_string(),
-                arguments: serde_json::json!({"command": "echo ok"}).into(),
-            },
-        )
-        .await;
-    let shell_with_env = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "shell-env".to_string(),
-                name: "shell_exec".to_string(),
-                arguments: serde_json::json!({
-                    "command": "env-check",
-                    "environment": {"STARWEAVER_OVERRIDE_ENV": "override"},
-                })
-                .into(),
-            },
-        )
-        .await;
-    let empty_shell = registry
-        .execute_call(
-            context.clone(),
-            &starweaver_model::ToolCallPart {
-                id: "empty-shell".to_string(),
-                name: "shell_exec".to_string(),
-                arguments: serde_json::json!({"command": "   "}).into(),
-            },
-        )
-        .await;
-    let invalid_grep_context = registry
-        .execute_call(
-            context,
-            &starweaver_model::ToolCallPart {
-                id: "invalid-grep-context".to_string(),
-                name: "grep".to_string(),
-                arguments: serde_json::json!({
-                    "path": "",
-                    "pattern": "hello",
-                    "context_lines": -1,
-                })
-                .into(),
-            },
-        )
-        .await;
+fn process_tool_context(provider: Arc<VirtualEnvironmentProvider>) -> ToolContext {
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider);
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    ToolContext::new(RunId::default(), ConversationId::default(), 0).with_dependencies(dependencies)
+}
 
-    assert_eq!(read.content, serde_json::json!("hello"));
-    assert_eq!(write.content["written"], true);
-    assert_eq!(glob.content["matches"].as_array().unwrap().len(), 2);
-    assert_eq!(grep.content["matches"].as_array().unwrap().len(), 2);
-    assert_eq!(resource.content["uri"], "env://test/README.md");
-    assert_eq!(ignored_ls.content["entries"].as_array().unwrap().len(), 3);
-    assert!(ignored_ls.content["entries"]
+struct FilesystemShellResults {
+    read: starweaver_model::ToolReturnPart,
+    write: starweaver_model::ToolReturnPart,
+    glob: starweaver_model::ToolReturnPart,
+    grep: starweaver_model::ToolReturnPart,
+    resource: starweaver_model::ToolReturnPart,
+    ignored_ls: starweaver_model::ToolReturnPart,
+    default_ls: starweaver_model::ToolReturnPart,
+    invalid_write_mode: starweaver_model::ToolReturnPart,
+    edit_existing_create: starweaver_model::ToolReturnPart,
+    multi_edit_create_then_replace: starweaver_model::ToolReturnPart,
+    multi_edit_empty_later: starweaver_model::ToolReturnPart,
+    shell: starweaver_model::ToolReturnPart,
+    shell_with_env: starweaver_model::ToolReturnPart,
+    empty_shell: starweaver_model::ToolReturnPart,
+    invalid_grep_context: starweaver_model::ToolReturnPart,
+    invalid_glob_multi_root: starweaver_model::ToolReturnPart,
+    invalid_grep_multi_root: starweaver_model::ToolReturnPart,
+}
+
+async fn execute_filesystem_shell_calls(
+    registry: &ToolRegistry,
+    context: ToolContext,
+) -> FilesystemShellResults {
+    macro_rules! call {
+        ($id:literal, $name:literal, $args:expr) => {
+            execute_tool_call(registry, context.clone(), $id, $name, $args).await
+        };
+    }
+
+    FilesystemShellResults {
+        read: call!("read", "view", serde_json::json!({"path": "README.md"})),
+        write: call!(
+            "write",
+            "write",
+            serde_json::json!({"path": "docs/output.txt", "content": "pub fn ok() {}"})
+        ),
+        glob: call!(
+            "glob",
+            "glob",
+            serde_json::json!({"path": "", "pattern": "*.rs"})
+        ),
+        grep: call!(
+            "grep",
+            "grep",
+            serde_json::json!({"path": "", "pattern": "hello", "include": "**/*.rs"})
+        ),
+        resource: call!(
+            "resource",
+            "resource_ref",
+            serde_json::json!({"path": "README.md"})
+        ),
+        ignored_ls: call!(
+            "ignored-ls",
+            "ls",
+            serde_json::json!({"path": "", "ignore": ["src/main.rs"]})
+        ),
+        default_ls: call!("default-ls", "ls", serde_json::json!({})),
+        invalid_write_mode: call!(
+            "invalid-write-mode",
+            "write",
+            serde_json::json!({"path": "docs/output.txt", "content": "x", "mode": "bad"})
+        ),
+        edit_existing_create: call!(
+            "edit-existing-create",
+            "edit",
+            serde_json::json!({"file_path": "README.md", "old_string": "", "new_string": "overwrite"})
+        ),
+        multi_edit_create_then_replace: call!(
+            "multi-edit-create-then-replace",
+            "multi_edit",
+            serde_json::json!({"file_path": "created.txt", "edits": [
+                {"old_string": "", "new_string": "Hello World"},
+                {"old_string": "World", "new_string": "Universe"}
+            ]})
+        ),
+        multi_edit_empty_later: call!(
+            "multi-edit-empty-later",
+            "multi_edit",
+            serde_json::json!({"file_path": "README.md", "edits": [
+                {"old_string": "hello", "new_string": "hi"},
+                {"old_string": "", "new_string": "boom", "replace_all": true}
+            ]})
+        ),
+        shell: call!(
+            "shell",
+            "shell_exec",
+            serde_json::json!({"command": "echo ok"})
+        ),
+        shell_with_env: call!(
+            "shell-env",
+            "shell_exec",
+            serde_json::json!({
+                "command": "env-check",
+                "environment": {"STARWEAVER_OVERRIDE_ENV": "override"},
+            })
+        ),
+        empty_shell: call!(
+            "empty-shell",
+            "shell_exec",
+            serde_json::json!({"command": "   "})
+        ),
+        invalid_grep_context: call!(
+            "invalid-grep-context",
+            "grep",
+            serde_json::json!({"path": "", "pattern": "hello", "context_lines": -1})
+        ),
+        invalid_glob_multi_root: call!(
+            "invalid-glob-multi-root",
+            "glob",
+            serde_json::json!({"root": "src\ndocs", "pattern": "*.rs"})
+        ),
+        invalid_grep_multi_root: call!(
+            "invalid-grep-multi-root",
+            "grep",
+            serde_json::json!({"root": "src\ndocs", "pattern": "hello", "include": "**/*.rs"})
+        ),
+    }
+}
+
+async fn assert_filesystem_shell_results(
+    provider: &VirtualEnvironmentProvider,
+    results: &FilesystemShellResults,
+) {
+    assert_eq!(results.read.content, serde_json::json!("hello"));
+    assert_eq!(results.write.content["written"], true);
+    assert_eq!(results.glob.content["matches"].as_array().unwrap().len(), 2);
+    assert_eq!(results.grep.content["matches"].as_array().unwrap().len(), 2);
+    assert_eq!(results.resource.content["uri"], "env://test/README.md");
+    assert_eq!(
+        results.ignored_ls.content["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(results.ignored_ls.content["entries"]
         .as_array()
         .unwrap()
         .iter()
         .all(|entry| entry.as_str() != Some("src/main.rs")));
     assert_eq!(
-        default_ls.content["entries"],
+        results.default_ls.content["entries"],
         serde_json::json!(["README.md", "docs/output.txt", "src/lib.rs", "src/main.rs"])
     );
-    assert!(invalid_write_mode.is_error);
-    assert!(invalid_write_mode.content["error"]
+    assert!(results.invalid_write_mode.is_error);
+    assert!(results.invalid_write_mode.content["error"]
         .as_str()
         .unwrap()
         .contains("unsupported write mode"));
-    assert!(edit_existing_create.is_error);
-    assert!(edit_existing_create.content["error"]
+    assert!(results.edit_existing_create.is_error);
+    assert!(results.edit_existing_create.content["error"]
         .as_str()
         .unwrap()
         .contains("file already exists"));
-    assert!(!multi_edit_create_then_replace.is_error);
+    assert!(!results.multi_edit_create_then_replace.is_error);
     assert_eq!(
         provider.read_text("created.txt").await.unwrap(),
         "Hello Universe"
     );
-    assert!(multi_edit_empty_later.is_error);
-    assert!(multi_edit_empty_later.content["error"]
+    assert!(results.multi_edit_empty_later.is_error);
+    assert!(results.multi_edit_empty_later.content["error"]
         .as_str()
         .unwrap()
         .contains("old_string must be non-empty"));
-    assert_eq!(shell.content["stdout"], "ok\n");
+    assert_shell_results(results);
+    assert_invalid_search_roots(results);
+}
+
+fn assert_shell_results(results: &FilesystemShellResults) {
+    assert_eq!(results.shell.content["stdout"], "ok\n");
     assert_eq!(
-        shell_with_env.content["environment"]["STARWEAVER_CONTEXT_ENV"],
+        results.shell_with_env.content["environment"]["STARWEAVER_CONTEXT_ENV"],
         "ctx"
     );
     assert_eq!(
-        shell_with_env.content["environment"]["STARWEAVER_OVERRIDE_ENV"],
+        results.shell_with_env.content["environment"]["STARWEAVER_OVERRIDE_ENV"],
         "override"
     );
-    assert_eq!(shell_with_env.content["stdout"], "ctx\noverride\n");
-    assert_eq!(empty_shell.content["return_code"], 1);
-    assert_eq!(empty_shell.content["stdout"], "");
-    assert_eq!(empty_shell.content["stderr"], "");
-    assert!(empty_shell.content["error"]
+    assert_eq!(results.shell_with_env.content["stdout"], "ctx\noverride\n");
+    assert_eq!(results.empty_shell.content["return_code"], 1);
+    assert_eq!(results.empty_shell.content["stdout"], "");
+    assert_eq!(results.empty_shell.content["stderr"], "");
+    assert!(results.empty_shell.content["error"]
         .as_str()
         .unwrap()
         .contains("must not be empty"));
+    assert!(results.invalid_grep_context.is_error);
+    assert!(results.invalid_grep_context.content["error"]
+        .as_str()
+        .unwrap()
+        .contains("context_lines must be greater than or equal to 0"));
+}
 
-    let mut process_agent_context = AgentContext::default();
-    attach_environment(&mut process_agent_context, provider.clone());
-    let mut process_dependencies = process_agent_context.dependencies.clone();
-    process_dependencies.insert(process_agent_context);
-    let process_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
-        .with_dependencies(process_dependencies);
-    let background_shell = registry
-        .execute_call(
-            process_context,
-            &starweaver_model::ToolCallPart {
-                id: "background-shell".to_string(),
-                name: "shell_exec".to_string(),
-                arguments: serde_json::json!({
-                    "command": "sleep 1",
-                    "background": true,
-                    "cwd": "src",
-                    "timeout_seconds": 42,
-                    "environment": {"STARWEAVER_BACKGROUND": "yes"},
-                })
-                .into(),
-            },
-        )
-        .await;
+fn assert_invalid_search_roots(results: &FilesystemShellResults) {
+    assert!(results.invalid_glob_multi_root.is_error);
+    assert_eq!(
+        results.invalid_glob_multi_root.content["kind"],
+        "model_retry"
+    );
+    let invalid_glob_root_error = results.invalid_glob_multi_root.content["error"]
+        .as_str()
+        .unwrap();
+    assert!(invalid_glob_root_error.contains("root must be a single directory path"));
+    assert!(invalid_glob_root_error.contains("parallel tool calls"));
+    assert!(!invalid_glob_root_error.contains("src\ndocs"));
+    assert!(results.invalid_grep_multi_root.is_error);
+    assert_eq!(
+        results.invalid_grep_multi_root.content["kind"],
+        "model_retry"
+    );
+    let invalid_grep_root_error = results.invalid_grep_multi_root.content["error"]
+        .as_str()
+        .unwrap();
+    assert!(invalid_grep_root_error.contains("root must be a single directory path"));
+    assert!(invalid_grep_root_error.contains("parallel tool calls"));
+    assert!(!invalid_grep_root_error.contains("src\ndocs"));
+}
+
+async fn assert_background_shell(
+    registry: &ToolRegistry,
+    provider: Arc<VirtualEnvironmentProvider>,
+) {
+    let background_shell = execute_tool_call(
+        registry,
+        process_tool_context(provider),
+        "background-shell",
+        "shell_exec",
+        serde_json::json!({
+            "command": "sleep 1",
+            "background": true,
+            "cwd": "src",
+            "timeout_seconds": 42,
+            "environment": {"STARWEAVER_BACKGROUND": "yes"},
+        }),
+    )
+    .await;
     assert_eq!(background_shell.content["command"], "sleep 1");
     assert_eq!(background_shell.content["metadata"]["cwd"], "src");
     assert_eq!(background_shell.content["metadata"]["timeout_seconds"], 42);
@@ -544,12 +563,17 @@ async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
         background_shell.content["metadata"]["environment"]["STARWEAVER_BACKGROUND"],
         "yes"
     );
+}
 
-    assert!(invalid_grep_context.is_error);
-    assert!(invalid_grep_context.content["error"]
-        .as_str()
-        .unwrap()
-        .contains("context_lines must be greater than or equal to 0"));
+#[tokio::test]
+async fn filesystem_and_shell_bundles_execute_against_virtual_environment() {
+    let provider = filesystem_shell_test_provider();
+    let registry = filesystem_shell_registry();
+    let context = filesystem_shell_tool_context(provider.clone());
+
+    let results = execute_filesystem_shell_calls(&registry, context).await;
+    assert_filesystem_shell_results(&provider, &results).await;
+    assert_background_shell(&registry, provider).await;
 }
 
 #[tokio::test]
@@ -1042,6 +1066,132 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
         .as_str()
         .unwrap()
         .contains("truncated"));
+    let shell_result_path = shell.content["output_file_path"].as_str().unwrap();
+    assert!(shell_result_path.starts_with(".starweaver/tmp/shell-exec-"));
+    let full_shell_result = provider.read_text(shell_result_path).await.unwrap();
+    assert!(full_shell_result.contains(stdout_path));
+    assert!(full_shell_result.contains(stderr_path));
+    assert!(serde_json::to_string(&shell.content).unwrap().len() <= 20_000);
+}
+
+#[tokio::test]
+async fn host_io_large_outputs_are_bounded_and_saved_to_tmp_files() {
+    let provider = Arc::new(VirtualEnvironmentProvider::new("test"));
+    let toolset = host_io_tools();
+    let search_tool = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "search")
+        .unwrap();
+    let scrape_tool = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "scrape")
+        .unwrap();
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider.clone());
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    dependencies.insert(HostSearchClientHandle::new(Arc::new(LargeSearchClient)));
+    dependencies.insert(HostScrapeClientHandle::new(Arc::new(LargeScrapeClient)));
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let search = search_tool
+        .call(
+            context.clone(),
+            serde_json::json!({"query": "large", "num": 10}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(search.content["truncated"], true);
+    assert_eq!(search.content["results_total"], 8);
+    assert!(search.content["results_showing"].as_u64().unwrap() < 8);
+    let search_path = search.content["output_file_path"].as_str().unwrap();
+    assert!(search_path.starts_with(".starweaver/tmp/search-"));
+    assert!(provider
+        .read_text(search_path)
+        .await
+        .unwrap()
+        .contains("large snippet 7"));
+    assert!(serde_json::to_string(&search.content).unwrap().len() <= 20_000);
+
+    let scrape = scrape_tool
+        .call(
+            context,
+            serde_json::json!({"url": "https://example.com/large"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(scrape.content["truncated"], true);
+    let scrape_path = scrape.content["output_file_path"].as_str().unwrap();
+    assert!(scrape_path.starts_with(".starweaver/tmp/scrape-"));
+    assert_eq!(
+        provider.read_text(scrape_path).await.unwrap(),
+        large_markdown()
+    );
+    assert!(scrape.content["markdown_content"]
+        .as_str()
+        .unwrap()
+        .contains("output_file_path"));
+    assert!(serde_json::to_string(&scrape.content).unwrap().len() <= 20_000);
+}
+
+#[tokio::test]
+async fn fetch_large_text_output_is_bounded_and_saved_to_tmp_file() {
+    let large_text = format!("fetch-large-{}", "f".repeat(30_000));
+    let expected = large_text.clone();
+    let app = axum::Router::new().route(
+        "/large.txt",
+        axum::routing::get(move || {
+            let large_text = large_text.clone();
+            async move {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/plain")],
+                    large_text,
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let provider = Arc::new(VirtualEnvironmentProvider::new("test"));
+    let toolset = host_io_tools();
+    let fetch_tool = toolset
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "fetch")
+        .unwrap();
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider.clone());
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let fetch = fetch_tool
+        .call(
+            context,
+            serde_json::json!({"url": format!("http://{addr}/large.txt")}),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(fetch.content["truncated"], true);
+    let fetch_path = fetch.content["output_file_path"].as_str().unwrap();
+    assert!(fetch_path.starts_with(".starweaver/tmp/fetch-"));
+    assert_eq!(provider.read_text(fetch_path).await.unwrap(), expected);
+    assert!(fetch.content["content"]
+        .as_str()
+        .unwrap()
+        .contains("output_file_path"));
+    assert!(serde_json::to_string(&fetch.content).unwrap().len() <= 20_000);
 }
 
 #[tokio::test]
@@ -2002,6 +2152,61 @@ impl HostScrapeClient for FakeScrapeClient {
             handoff: None,
         })
     }
+}
+
+struct LargeSearchClient;
+
+#[async_trait]
+impl HostSearchClient for LargeSearchClient {
+    async fn search(&self, request: SearchRequest) -> Result<SearchResponse, String> {
+        Ok(SearchResponse {
+            success: true,
+            query: request.query,
+            results: (0..8)
+                .map(|index| SearchResultItem {
+                    title: format!("Large result {index}"),
+                    url: format!("https://example.com/{index}"),
+                    description: format!("large snippet {index} {}", "x".repeat(5_000)),
+                    provider: "large_fake".to_string(),
+                    rank: index + 1,
+                    content_type: Some("text/html".to_string()),
+                    published_at: None,
+                    citation: Some(
+                        serde_json::json!({"provider": "large_fake", "rank": index + 1}),
+                    ),
+                })
+                .collect(),
+            errors: Vec::new(),
+            truncated: false,
+            provider: "large_fake".to_string(),
+        })
+    }
+}
+
+struct LargeScrapeClient;
+
+#[async_trait]
+impl HostScrapeClient for LargeScrapeClient {
+    async fn scrape(&self, request: ScrapeRequest) -> Result<ScrapeResponse, String> {
+        let markdown = large_markdown();
+        Ok(ScrapeResponse {
+            success: true,
+            url: request.url.clone(),
+            final_url: request.url,
+            title: Some("Large Example".to_string()),
+            markdown_content: markdown.clone(),
+            adapter: "large_fake_scrape".to_string(),
+            truncated: false,
+            total_length: markdown.chars().count(),
+            content_type: Some("text/html".to_string()),
+            citation: None,
+            handoff: None,
+        })
+    }
+}
+
+fn large_markdown() -> String {
+    format!("# Large\n\n{}", "m".repeat(30_000))
 }
 
 struct FakeMediaUnderstandingClient;

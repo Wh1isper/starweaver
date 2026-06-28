@@ -262,7 +262,36 @@ pub fn normalize_local_config_path(path: PathBuf) -> PathBuf {
     } else {
         std::env::current_dir().map_or_else(|_| path.clone(), |current_dir| current_dir.join(&path))
     };
-    absolute.canonicalize().unwrap_or(absolute)
+    canonicalize_existing_path_prefix(&absolute)
+}
+
+fn canonicalize_existing_path_prefix(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+
+    let original = path.to_path_buf();
+    let mut probe = path;
+    let mut missing_components = Vec::new();
+    while let Some(parent) = probe.parent() {
+        let Some(file_name) = probe.file_name() else {
+            break;
+        };
+        missing_components.push(file_name.to_os_string());
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            let mut normalized = canonical_parent;
+            for component in missing_components.iter().rev() {
+                normalized.push(component);
+            }
+            return normalized;
+        }
+        if parent == probe {
+            break;
+        }
+        probe = parent;
+    }
+
+    original
 }
 
 pub fn normalize_absolute_request_path(path: &Path) -> EnvironmentResult<PathBuf> {

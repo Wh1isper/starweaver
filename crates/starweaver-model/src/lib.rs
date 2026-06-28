@@ -60,7 +60,7 @@ pub use settings::{
     format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key, AnthropicSettings,
     BedrockSettings, CodexSettings, GatewaySettings, GoogleCloudServiceTier, GoogleSettings,
     ModelSettings, OpenAiChatSettings, OpenAiResponsesSettings, ProviderReplaySettings,
-    ProviderSettings, ServiceTier, ThinkingSettings, ToolChoice,
+    ProviderSettings, ResponseStreamTransport, ServiceTier, ThinkingSettings, ToolChoice,
 };
 pub use stream::{
     ModelResponseStreamEvent, ModelStreamState, PartDelta, PartEnd, PartStart, StreamDelta,

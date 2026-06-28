@@ -591,6 +591,24 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     std::fs::remove_dir_all(external).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn normalize_local_config_path_canonicalizes_existing_parent_for_missing_leaf() {
+    let real_root = unique_test_dir();
+    let alias_parent = unique_test_dir();
+    let alias_root = alias_parent.join("alias-root");
+    std::fs::create_dir_all(&real_root).unwrap();
+    std::os::unix::fs::symlink(&real_root, &alias_root).unwrap();
+
+    let missing_leaf = alias_root.join("missing-output.txt");
+    let normalized = normalize_local_config_path(missing_leaf);
+
+    assert_eq!(normalized, real_root.join("missing-output.txt"));
+    let _ = std::fs::remove_file(alias_root);
+    std::fs::remove_dir_all(alias_parent).unwrap();
+    std::fs::remove_dir_all(real_root).unwrap();
+}
+
 #[cfg(windows)]
 #[test]
 fn display_local_path_strips_windows_verbatim_prefixes() {

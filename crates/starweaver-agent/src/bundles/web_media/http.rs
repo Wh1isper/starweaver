@@ -8,7 +8,6 @@ use crate::bundles::helpers::tool_execution_error;
 pub(super) const MAX_FETCH_BYTES: u64 = 2 * 1024 * 1024;
 pub(super) const MAX_DOWNLOAD_BYTES: u64 = 10 * 1024 * 1024;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 20;
-const TEXT_TRUNCATION_CHARS: usize = 60_000;
 
 #[derive(Clone, Debug)]
 pub(super) struct HttpResource {
@@ -119,19 +118,6 @@ pub(super) fn first_env<const N: usize>(names: [&str; N]) -> Option<String> {
             .filter(|value| !value.is_empty())
     })
 }
-
-pub(super) fn truncate_text(text: &str) -> (String, bool, usize) {
-    let total_length = text.chars().count();
-    if total_length <= TEXT_TRUNCATION_CHARS {
-        return (text.to_string(), false, total_length);
-    }
-    (
-        text.chars().take(TEXT_TRUNCATION_CHARS).collect(),
-        true,
-        total_length,
-    )
-}
-
 pub(super) fn is_text_like(content_type: Option<&str>) -> bool {
     let Some(content_type) = content_type else {
         return false;

@@ -118,7 +118,7 @@ Fast environment-backed file discovery with ripgrep-style glob semantics. Result
 
 <parameters>
 - `pattern`: ripgrep-style glob pattern to match files and directories.
-- `root`: logical root to traverse from, default `.`.
+- `root`: exactly one logical directory root to traverse from, default `.`. Do not put multiple paths in `root`.
 - `include_hidden`: include hidden dot paths such as `.git`, `.venv`, and `.env`.
 - `include_ignored`: include paths excluded by `.gitignore` and nested ignore files.
 - `max_results`: maximum result count; use `-1` for unlimited when the pattern is narrow.
@@ -126,7 +126,8 @@ Fast environment-backed file discovery with ripgrep-style glob semantics. Result
 
 <best-practices>
 - Use specific patterns to narrow results before reading file contents.
-- Use `root` to limit traversal to a subdirectory when the search scope is known.
+- Use `root` to limit traversal to one subdirectory when the search scope is known.
+- For multiple directories, issue multiple glob tool calls in parallel, one root per call; if they share a parent, use that parent as `root` and narrow `pattern`.
 - Prefer glob before grep when you need to inspect candidate file names first.
 - Set `include_hidden=true` for dotfiles and hidden directories.
 - Set `include_ignored=true` for generated, dependency, cache, and build outputs.
@@ -153,7 +154,7 @@ Environment-backed content search with ripgrep-backed regex and glob semantics. 
 <parameters>
 - `pattern`: ripgrep-style regular expression pattern to search for.
 - `include`: ripgrep-style glob used to select files, default `**/*`.
-- `root`: logical root to traverse from, default `.`.
+- `root`: exactly one logical directory root to traverse from, default `.`. Do not put multiple paths in `root`.
 - `context_lines`: lines before and after each match, default `2`.
 - `max_results`: maximum total matches; use `-1` for unlimited when scope is narrow.
 - `max_matches_per_file`: maximum matches per file; use `-1` for unlimited.
@@ -163,7 +164,8 @@ Environment-backed content search with ripgrep-backed regex and glob semantics. 
 </parameters>
 
 <best-practices>
-- Use a specific `include` pattern or `root` for faster and cleaner results.
+- Use a specific `include` pattern or a single `root` for faster and cleaner results.
+- For multiple directories, issue multiple grep tool calls in parallel, one root per call; if they share a parent, use that parent as `root` and narrow `include`.
 - Use glob first when you need to inspect candidate file names.
 - Keep `context_lines` low for broad scans and raise it for targeted inspection.
 - Set `include_hidden=true` for dotfiles and hidden directories.
