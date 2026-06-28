@@ -140,6 +140,56 @@ fn subagent_model_config_can_override_with_preset_or_inline_object() {
 }
 
 #[test]
+fn openai_responses_ws_model_id_prefers_websocket_with_http_fallback() {
+    let parsed = ProviderModelId::parse("openai-responses-ws:gpt-5").unwrap();
+
+    assert_eq!(parsed.provider, "openai");
+    assert_eq!(parsed.model_name, "gpt-5");
+    assert_eq!(parsed.protocol, ProtocolFamily::OpenAiResponses);
+    assert_eq!(parsed.gateway_name, None);
+    assert_eq!(parsed.oauth_provider, None);
+    assert_eq!(parsed.stream_transport, Some(ResponseStreamTransport::Auto));
+}
+
+#[test]
+fn gateway_openai_responses_ws_model_id_prefers_websocket_with_http_fallback() {
+    let parsed = ProviderModelId::parse("homelab@openai-responses-ws:gpt-5").unwrap();
+
+    assert_eq!(parsed.provider, "openai");
+    assert_eq!(parsed.model_name, "gpt-5");
+    assert_eq!(parsed.protocol, ProtocolFamily::OpenAiResponses);
+    assert_eq!(parsed.gateway_name.as_deref(), Some("homelab"));
+    assert_eq!(parsed.oauth_provider, None);
+    assert_eq!(parsed.stream_transport, Some(ResponseStreamTransport::Auto));
+}
+
+#[test]
+fn openai_responses_ws_transport_default_can_be_overridden_by_settings() {
+    let base = openai_responses_stream_transport_settings(ResponseStreamTransport::Auto);
+    let overlay = ModelSettings {
+        provider_settings: ProviderSettings {
+            openai_responses: Some(OpenAiResponsesSettings {
+                stream_transport: Some(ResponseStreamTransport::Http),
+                ..OpenAiResponsesSettings::default()
+            }),
+            ..ProviderSettings::default()
+        },
+        ..ModelSettings::default()
+    };
+
+    let merged = base.merge(&overlay);
+
+    assert_eq!(
+        merged
+            .provider_settings
+            .openai_responses
+            .unwrap()
+            .stream_transport,
+        Some(ResponseStreamTransport::Http)
+    );
+}
+
+#[test]
 fn anthropic_gateway_endpoint_uses_v1_when_base_url_has_no_sub_path() {
     let mut http_config = anthropic_http_config("test-key");
     let provider_config = ProviderConfig {

@@ -124,8 +124,8 @@ async fn session_run_stream_with_options_applies_all_option_builders() {
         .insert("route".to_string(), serde_json::json!("stream"));
     let mut session = AgentSession::new(AgentBuilder::new(model).build());
 
-    let stream = session
-        .run_stream_with_options(
+    let stream = Box::pin(
+        session.run_stream_with_options(
             "hello",
             AgentRunOptions::new()
                 .instruction("stream run instruction")
@@ -138,9 +138,10 @@ async fn session_run_stream_with_options_applies_all_option_builders() {
                 .toolset(&(toolset as starweaver_agent::DynToolset))
                 .toolsets(vec![extra_toolset as starweaver_agent::DynToolset])
                 .append_tool_registry(&registry),
-        )
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(stream.result.output, "streamed");
     assert!(stream.events.iter().any(|record| matches!(

@@ -137,6 +137,133 @@ mod tests {
         CliService::open(config)?.execute(cli)
     }
 
+    fn write_trim_test_config(root: &Path, auto_after_run: bool) {
+        let global = root.join("global");
+        std::fs::create_dir_all(&global).unwrap();
+        std::fs::write(
+            global.join("config.toml"),
+            format!(
+                r#"
+[general]
+model = "local_echo"
+
+[trim]
+auto_after_run = {auto_after_run}
+current_session_keep_recent_runs = 1
+all_sessions_keep_recent_runs = 1
+all_sessions_keep_days = 1
+all_sessions_interval_hours = 1
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn first_session_from_list_json(output: &str) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(output).unwrap()["sessions"][0].clone()
+    }
+
+    fn session_run_count(root: &Path, session_id: &str) -> usize {
+        let show = output(root, &["session", "show", session_id, "--output", "json"]).unwrap();
+        serde_json::from_str::<serde_json::Value>(&show).unwrap()["runs"]
+            .as_array()
+            .unwrap()
+            .len()
+    }
+
+    fn stored_run_dir_count(config: &CliConfig, session_id: &str) -> usize {
+        config
+            .file_store_path
+            .join("sessions")
+            .join(session_id)
+            .join("runs")
+            .read_dir()
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().file_type().unwrap().is_dir())
+            .count()
+    }
+
+    fn create_current_retention_session(root: &Path) -> String {
+        write_trim_test_config(root, true);
+        output(root, &["-p", "one", "--output", "silent"]).unwrap();
+        output(root, &["-p", "two", "--continue", "--output", "silent"]).unwrap();
+        output(root, &["-p", "three", "--continue", "--output", "silent"]).unwrap();
+        let session = first_session_from_list_json(
+            &output(root, &["session", "list", "--output", "json"]).unwrap(),
+        )["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(session_run_count(root, &session), 1);
+        session
+    }
+
+    fn create_archive_retention_session(root: &Path) -> String {
+        write_trim_test_config(root, false);
+        output(
+            root,
+            &["-p", "archive-one", "--new-session", "--output", "silent"],
+        )
+        .unwrap();
+        let session = first_session_from_list_json(
+            &output(root, &["session", "list", "--output", "json"]).unwrap(),
+        )["session_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        output(
+            root,
+            &[
+                "-p",
+                "archive-two",
+                "--session",
+                &session,
+                "--output",
+                "silent",
+            ],
+        )
+        .unwrap();
+        output(
+            root,
+            &[
+                "-p",
+                "archive-three",
+                "--session",
+                &session,
+                "--output",
+                "silent",
+            ],
+        )
+        .unwrap();
+        session
+    }
+
+    fn mark_session_as_retention_eligible(config: &CliConfig, session_id: &str) {
+        let old = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00+00:00")
+            .unwrap()
+            .to_rfc3339();
+        let conn = rusqlite::Connection::open(&config.database_path).unwrap();
+        conn.execute(
+            "UPDATE runs SET updated_at = ?1 WHERE session_id = ?2",
+            rusqlite::params![old, session_id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE sessions SET updated_at = ?1 WHERE session_id = ?2",
+            rusqlite::params![old, session_id],
+        )
+        .unwrap();
+        drop(conn);
+
+        let state_path = config.project_dir.join("state.json");
+        let mut state = serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(&state_path).unwrap(),
+        )
+        .unwrap();
+        state["last_retention_maintenance_at"] = serde_json::json!(old);
+        std::fs::write(&state_path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    }
+
     #[test]
     #[allow(clippy::too_many_lines)]
     fn args_and_error_helpers_cover_edge_branches() {
@@ -789,6 +916,48 @@ prompt = "Review carefully."
             .block_on(session_store.compact_session_trace(&session_id))
             .unwrap();
         assert_eq!(trace.runs, 1);
+    }
+
+    #[test]
+    fn automatic_retention_prunes_old_runs_without_deleting_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let current_session = create_current_retention_session(temp.path());
+        let archive_session = create_archive_retention_session(temp.path());
+        let config = ConfigResolver::for_tests(temp.path())
+            .resolve(&args::parse(["starweaver-cli".to_string()]).unwrap())
+            .unwrap();
+        mark_session_as_retention_eligible(&config, &archive_session);
+        assert_eq!(session_run_count(temp.path(), &archive_session), 3);
+        assert_eq!(stored_run_dir_count(&config, &archive_session), 3);
+
+        write_trim_test_config(temp.path(), true);
+        output(
+            temp.path(),
+            &[
+                "-p",
+                "trigger",
+                "--session",
+                &current_session,
+                "--output",
+                "silent",
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(session_run_count(temp.path(), &current_session), 1);
+        assert_eq!(session_run_count(temp.path(), &archive_session), 1);
+        assert_eq!(stored_run_dir_count(&config, &archive_session), 1);
+        let sessions = output(temp.path(), &["session", "list", "--output", "json"]).unwrap();
+        let sessions = serde_json::from_str::<serde_json::Value>(&sessions).unwrap()["sessions"]
+            .as_array()
+            .unwrap()
+            .len();
+        assert_eq!(sessions, 2);
+        assert!(
+            std::fs::read_to_string(config.project_dir.join("state.json"))
+                .unwrap()
+                .contains("last_retention_maintenance_at")
+        );
     }
 
     #[test]

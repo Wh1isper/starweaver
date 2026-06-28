@@ -63,7 +63,8 @@ pub trait ModelAdapter: Send + Sync {
                 ModelResponseStreamEvent::FinalResult(response) => Some(*response),
                 ModelResponseStreamEvent::PartStart(_)
                 | ModelResponseStreamEvent::PartDelta(_)
-                | ModelResponseStreamEvent::PartEnd(_) => None,
+                | ModelResponseStreamEvent::PartEnd(_)
+                | ModelResponseStreamEvent::Diagnostic(_) => None,
             })
             .ok_or_else(|| {
                 ModelError::UnsupportedResponse(

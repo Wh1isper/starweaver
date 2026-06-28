@@ -131,25 +131,29 @@ starweaver-cli auth logout codex
 
 Provider-backed model ids use these prefixes:
 
-| Model id pattern                     | Protocol                          |
-| ------------------------------------ | --------------------------------- |
-| `openai:<model>`                     | OpenAI Responses                  |
-| `openai-responses:<model>`           | OpenAI Responses                  |
-| `openai-chat:<model>`                | OpenAI Chat Completions           |
-| `anthropic:<model>`                  | Anthropic Messages                |
-| `claude:<model>`                     | Anthropic Messages                |
-| `gemini:<model>`                     | Gemini generateContent            |
-| `google:<model>`                     | Gemini generateContent            |
-| `google-gla:<model>`                 | Gemini generateContent            |
-| `google-cloud:<model>`               | Google Cloud Gemini               |
-| `google-vertex:<model>`              | Google Cloud Gemini               |
-| `<gateway>@openai-responses:<model>` | gateway-routed OpenAI Responses   |
-| `<gateway>@openai-chat:<model>`      | gateway-routed OpenAI Chat        |
-| `<gateway>@google:<model>`           | gateway-routed Gemini             |
-| `<gateway>@google-cloud:<model>`     | gateway-routed Google Cloud       |
-| `oauth@codex:<model>`                | Codex OAuth over OpenAI Responses |
+| Model id pattern                        | Protocol                                                                          |
+| --------------------------------------- | --------------------------------------------------------------------------------- |
+| `openai:<model>`                        | OpenAI Responses                                                                  |
+| `openai-responses:<model>`              | OpenAI Responses                                                                  |
+| `openai-responses-ws:<model>`           | OpenAI Responses, WebSocket-preferred streaming with HTTP fallback                |
+| `openai-chat:<model>`                   | OpenAI Chat Completions                                                           |
+| `anthropic:<model>`                     | Anthropic Messages                                                                |
+| `claude:<model>`                        | Anthropic Messages                                                                |
+| `gemini:<model>`                        | Gemini generateContent                                                            |
+| `google:<model>`                        | Gemini generateContent                                                            |
+| `google-gla:<model>`                    | Gemini generateContent                                                            |
+| `google-cloud:<model>`                  | Google Cloud Gemini                                                               |
+| `google-vertex:<model>`                 | Google Cloud Gemini                                                               |
+| `<gateway>@openai-responses:<model>`    | gateway-routed OpenAI Responses                                                   |
+| `<gateway>@openai-responses-ws:<model>` | gateway-routed OpenAI Responses, WebSocket-preferred streaming with HTTP fallback |
+| `<gateway>@openai-chat:<model>`         | gateway-routed OpenAI Chat                                                        |
+| `<gateway>@google:<model>`              | gateway-routed Gemini                                                             |
+| `<gateway>@google-cloud:<model>`        | gateway-routed Google Cloud                                                       |
+| `oauth@codex:<model>`                   | Codex OAuth over OpenAI Responses                                                 |
 
 Deterministic local model ids remain available for tests and offline validation: `local_echo`, `approval_model`, and `deferred_model`.
+
+Use `openai-responses-ws:<model>` only when you want to opt in to Responses WebSocket streaming. Starweaver will prefer WebSocket for streaming requests and automatically fall back to HTTP server-sent events for retryable pre-event WebSocket failures. Plain `openai-responses:<model>` remains HTTP-first because most Responses-compatible endpoints do not support WebSocket streaming.
 
 ## Provider configuration
 

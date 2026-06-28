@@ -267,6 +267,14 @@ fn render_status_bar_primary(state: &InteractiveTuiState, width: usize) -> Style
         format!("Context: {}", state.context_percent_label()),
         SegmentStyle::status_bar(),
     );
+    if let Some(transport) = state.model_transport_status.as_deref() {
+        push_bounded_status_segment(
+            &mut line,
+            width,
+            transport,
+            SegmentStyle::status_warning().merge(SegmentStyle::bold()),
+        );
+    }
     if state.goal_active {
         push_bounded_status_segment(
             &mut line,

@@ -682,7 +682,9 @@ risk_threshold = "high"
 [trim]
 auto_after_run = true
 current_session_keep_recent_runs = 20
+all_sessions_keep_recent_runs = 20
 all_sessions_keep_days = 60
+all_sessions_interval_hours = 24
 "#
         }
     }

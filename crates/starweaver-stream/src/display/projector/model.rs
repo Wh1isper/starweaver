@@ -45,6 +45,7 @@ pub(super) fn project_model_stream(
             part.index,
             part.part_kind.as_deref(),
         ),
+        ModelResponseStreamEvent::Diagnostic(_) => Vec::new(),
         ModelResponseStreamEvent::FinalResult(response) => {
             project_model_response(context, sequence, &run_id, response)
         }

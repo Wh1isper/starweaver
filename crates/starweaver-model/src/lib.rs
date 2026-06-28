@@ -64,7 +64,7 @@ pub use settings::{
 };
 pub use stream::{
     ModelResponseStreamEvent, ModelStreamState, PartDelta, PartEnd, PartStart, StreamDelta,
-    StreamLifecycle,
+    StreamDiagnostic, StreamLifecycle,
 };
 pub use test::{latest_user_text, tool_call_response, FunctionModel, FunctionModelInfo, TestModel};
 pub use transport::{

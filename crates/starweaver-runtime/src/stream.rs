@@ -87,7 +87,10 @@ impl AgentSidebandEvent {
             "run_start" | "run_complete" | "run_failed" | "run_waiting" | "run_cancelled" => {
                 Some(AgentSidebandEventCategory::Run)
             }
-            "model_error_retry" | "model_stream_resume" => Some(AgentSidebandEventCategory::Model),
+            "model_error_retry"
+            | "model_stream_resume"
+            | "model_transport_selected"
+            | "model_transport_fallback" => Some(AgentSidebandEventCategory::Model),
             "tools_unavailable"
             | "toolset_initialized"
             | "toolset_unavailable"
@@ -115,6 +118,7 @@ impl AgentSidebandEvent {
             "subagent_started" | "subagent_completed" | "subagent_failed" => {
                 Some(AgentSidebandEventCategory::Subagent)
             }
+            _ if kind.starts_with("model_") => Some(AgentSidebandEventCategory::Model),
             _ if kind.starts_with("task_") => Some(AgentSidebandEventCategory::Task),
             _ if kind.starts_with("note_") => Some(AgentSidebandEventCategory::Note),
             _ if kind.starts_with("file_") => Some(AgentSidebandEventCategory::File),

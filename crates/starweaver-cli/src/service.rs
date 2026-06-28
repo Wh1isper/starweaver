@@ -17,7 +17,10 @@ use crate::{
         DeferredCommand, DeferredCompleteCommand, DeferredFailCommand, DeferredListCommand,
         OutputMode, ResumeCommand, RunCommand, SessionCommand, TuiCommand,
     },
-    config::{read_current_session, write_current_session, CliConfig},
+    config::{
+        read_current_session, read_last_retention_maintenance, write_current_session,
+        write_last_retention_maintenance, CliConfig,
+    },
     environment::{
         resolve_environment_for_session_with_attachments, validate_environment_config,
         ResolvedEnvironment,
@@ -476,12 +479,7 @@ impl CliService {
         if execution_failed && matches!(output_mode, OutputMode::Text | OutputMode::Silent) {
             return Err(CliError::Run(output));
         }
-        if self.config.auto_trim {
-            let keep_runs = self.config.current_session_keep_recent_runs;
-            let _report =
-                self.store()?
-                    .trim(vec![run.session_id.as_str().to_string()], keep_runs, false)?;
-        }
+        self.run_retention_maintenance(run.session_id.as_str())?;
         Ok(PromptRunExecution {
             session_id: run.session_id.as_str().to_string(),
             run_id: run.run_id.as_str().to_string(),
@@ -489,6 +487,48 @@ impl CliService {
             output_mode,
             messages,
         })
+    }
+
+    fn run_retention_maintenance(&mut self, current_session_id: &str) -> CliResult<()> {
+        if !self.config.auto_trim {
+            return Ok(());
+        }
+        let current_keep_runs = self.config.current_session_keep_recent_runs;
+        self.store()?.trim(
+            vec![current_session_id.to_string()],
+            current_keep_runs,
+            false,
+        )?;
+        if !self.should_run_all_sessions_retention()? {
+            return Ok(());
+        }
+        let sessions = self.store()?.all_session_ids()?;
+        let all_sessions_keep_runs = self.config.all_sessions_keep_recent_runs;
+        let older_than = chrono::Duration::days(
+            i64::try_from(self.config.all_sessions_keep_days)
+                .unwrap_or(i64::MAX)
+                .max(0),
+        );
+        self.store()?
+            .trim_with_age(sessions, all_sessions_keep_runs, Some(older_than), false)?;
+        write_last_retention_maintenance(&self.config, chrono::Utc::now())?;
+        Ok(())
+    }
+
+    fn should_run_all_sessions_retention(&self) -> CliResult<bool> {
+        if self.config.all_sessions_keep_days == 0 || self.config.all_sessions_interval_hours == 0 {
+            return Ok(false);
+        }
+        let Some(last_run) = read_last_retention_maintenance(&self.config)? else {
+            return Ok(true);
+        };
+        let elapsed = chrono::Utc::now().signed_duration_since(last_run);
+        Ok(elapsed
+            >= chrono::Duration::hours(
+                i64::try_from(self.config.all_sessions_interval_hours)
+                    .unwrap_or(i64::MAX)
+                    .max(0),
+            ))
     }
 
     fn resolve_session(

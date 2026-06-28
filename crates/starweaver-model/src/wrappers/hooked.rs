@@ -247,7 +247,8 @@ impl ModelAdapter for HookedModel {
                     ModelResponseStreamEvent::FinalResult(response) => Some(response.as_ref()),
                     ModelResponseStreamEvent::PartStart(_)
                     | ModelResponseStreamEvent::PartDelta(_)
-                    | ModelResponseStreamEvent::PartEnd(_) => None,
+                    | ModelResponseStreamEvent::PartEnd(_)
+                    | ModelResponseStreamEvent::Diagnostic(_) => None,
                 }) {
                     Self::call_after(&self.hooks, &metadata, response).await?;
                 }

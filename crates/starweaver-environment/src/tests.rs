@@ -1735,7 +1735,17 @@ async fn composite_provider_routes_provider_visible_absolute_shell_cwd() {
         .unwrap();
 
     assert_eq!(output.status, 0);
-    assert_eq!(output.stdout.trim(), absolute_cwd);
+    let stdout = output.stdout.trim();
+    #[cfg(windows)]
+    {
+        let msys_cwd = windows_msys_path(&absolute_cwd);
+        assert!(
+            stdout == absolute_cwd || stdout == msys_cwd,
+            "expected shell cwd {absolute_cwd} or {msys_cwd}, got {stdout}"
+        );
+    }
+    #[cfg(not(windows))]
+    assert_eq!(stdout, absolute_cwd);
 
     std::fs::remove_dir_all(workspace_root.parent().unwrap()).unwrap();
 }

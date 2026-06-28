@@ -1,7 +1,7 @@
 //! Canonical model stream events.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::message::ModelResponse;
 
@@ -15,8 +15,35 @@ pub enum ModelResponseStreamEvent {
     PartDelta(PartDelta),
     /// A response part ended.
     PartEnd(PartEnd),
+    /// Provider or transport diagnostic sideband event.
+    Diagnostic(StreamDiagnostic),
     /// Final response is available.
     FinalResult(Box<ModelResponse>),
+}
+
+/// Diagnostic sideband event emitted during model streaming.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StreamDiagnostic {
+    /// Stable diagnostic event kind.
+    pub kind: String,
+    /// Structured diagnostic payload. Must not contain secrets or raw request bodies.
+    #[serde(default)]
+    pub payload: Value,
+    /// Diagnostic metadata.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub metadata: Map<String, Value>,
+}
+
+impl StreamDiagnostic {
+    /// Build a stream diagnostic event.
+    #[must_use]
+    pub fn new(kind: impl Into<String>, payload: Value) -> Self {
+        Self {
+            kind: kind.into(),
+            payload,
+            metadata: Map::new(),
+        }
+    }
 }
 
 /// Part start event.
@@ -174,7 +201,7 @@ impl ModelStreamState {
             ModelResponseStreamEvent::PartStart(_) => {
                 self.started_parts += 1;
             }
-            ModelResponseStreamEvent::PartDelta(_) => {}
+            ModelResponseStreamEvent::PartDelta(_) | ModelResponseStreamEvent::Diagnostic(_) => {}
             ModelResponseStreamEvent::PartEnd(_) => {
                 self.ended_parts += 1;
             }
