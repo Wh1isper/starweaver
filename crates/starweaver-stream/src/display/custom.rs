@@ -109,6 +109,11 @@ fn custom_display_kind(normalized: &str) -> Option<DisplayMessageKind> {
         Some(DisplayMessageKind::GoalIteration)
     } else if custom_event_kind_matches(normalized, &["goal_complete", "goal_completed"]) {
         Some(DisplayMessageKind::GoalCompleted)
+    } else if custom_event_kind_matches(
+        normalized,
+        &["model_transport_selected", "model_transport_fallback"],
+    ) {
+        Some(DisplayMessageKind::HostEvent)
     } else if custom_event_kind_matches(normalized, &["tools_unavailable"]) {
         Some(DisplayMessageKind::ToolsUnavailable)
     } else if custom_event_kind_matches(normalized, &["tool_search_loaded"]) {
@@ -253,7 +258,8 @@ fn custom_display_preview(kind: DisplayMessageKind, payload: &Value) -> String {
         DisplayMessageKind::NoteEvent => generic_event_preview("note event", payload),
         DisplayMessageKind::FileEvent => generic_event_preview("file event", payload),
         DisplayMessageKind::MediaEvent => generic_event_preview("media event", payload),
-        DisplayMessageKind::HostEvent => generic_event_preview("host event", payload),
+        DisplayMessageKind::HostEvent => model_transport_preview(payload)
+            .unwrap_or_else(|| generic_event_preview("host event", payload)),
         DisplayMessageKind::ToolsUnavailable => payload_array_len(payload, &["unavailable"])
             .map_or_else(
                 || "tools unavailable".to_string(),
@@ -396,6 +402,10 @@ fn subagent_preview(label: &str, payload: &Value) -> String {
         &["name", "subagent", "subagent_name", "agent_name"],
     )
     .map_or_else(|| label.to_string(), |name| format!("{label}: {name}"))
+}
+
+fn model_transport_preview(payload: &Value) -> Option<String> {
+    payload_string(payload, &["message"])
 }
 
 fn generic_event_preview(label: &str, payload: &Value) -> String {

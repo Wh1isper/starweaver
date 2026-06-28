@@ -19,8 +19,9 @@ use starweaver_model::{
     anthropic_http_config, build_codex_model_with_profile, codex_model_profile, gemini_http_config,
     get_model_config, get_model_settings, google_cloud_http_config,
     google_cloud_project_http_config, openai_chat_http_config, openai_responses_http_config,
-    HttpModelConfig, ModelAdapter, ModelProfile, ModelSettings, ProtocolFamily,
-    ProtocolModelClient, ReqwestHttpClient,
+    HttpModelConfig, ModelAdapter, ModelProfile, ModelSettings, OpenAiResponsesSettings,
+    ProtocolFamily, ProtocolModelClient, ProviderSettings, ReqwestHttpClient,
+    ResponseStreamTransport,
 };
 
 use crate::{
@@ -790,13 +791,17 @@ fn provider_model(
     };
     apply_provider_http_config_overrides(&mut http_config, &provider_config);
     let profile = provider_model_profile(model_config_preset, parsed.protocol)?;
-    let client = ProtocolModelClient::new(
+    let mut client = ProtocolModelClient::new(
         parsed.provider,
         parsed.model_name,
         profile,
         http_config,
         Arc::new(ReqwestHttpClient::new().map_err(|error| CliError::Config(error.to_string()))?),
     );
+    if let Some(stream_transport) = parsed.stream_transport {
+        client = client
+            .with_default_settings(openai_responses_stream_transport_settings(stream_transport));
+    }
     Ok(Some(Arc::new(client)))
 }
 
@@ -898,12 +903,28 @@ fn apply_provider_http_config_overrides(
     http_config.max_tokens_parameter = provider_config.max_tokens_parameter;
 }
 
+fn openai_responses_stream_transport_settings(
+    stream_transport: ResponseStreamTransport,
+) -> ModelSettings {
+    ModelSettings {
+        provider_settings: ProviderSettings {
+            openai_responses: Some(OpenAiResponsesSettings {
+                stream_transport: Some(stream_transport),
+                ..OpenAiResponsesSettings::default()
+            }),
+            ..ProviderSettings::default()
+        },
+        ..ModelSettings::default()
+    }
+}
+
 struct ProviderModelId {
     provider: String,
     model_name: String,
     protocol: ProtocolFamily,
     gateway_name: Option<String>,
     oauth_provider: Option<String>,
+    stream_transport: Option<ResponseStreamTransport>,
 }
 
 impl ProviderModelId {
@@ -922,16 +943,22 @@ impl ProviderModelId {
                 protocol: ProtocolFamily::OpenAiResponses,
                 gateway_name: None,
                 oauth_provider: Some("codex".to_string()),
+                stream_transport: None,
             });
         }
-        let (provider, protocol) = match provider_prefix {
-            "openai" | "openai-responses" => ("openai", ProtocolFamily::OpenAiResponses),
-            "openai-chat" => ("openai", ProtocolFamily::OpenAiChatCompletions),
-            "anthropic" | "claude" => ("anthropic", ProtocolFamily::AnthropicMessages),
-            "gemini" => ("gemini", ProtocolFamily::GeminiGenerateContent),
-            "google" | "google-gla" => ("google", ProtocolFamily::GeminiGenerateContent),
+        let (provider, protocol, stream_transport) = match provider_prefix {
+            "openai" | "openai-responses" => ("openai", ProtocolFamily::OpenAiResponses, None),
+            "openai-responses-ws" => (
+                "openai",
+                ProtocolFamily::OpenAiResponses,
+                Some(ResponseStreamTransport::Auto),
+            ),
+            "openai-chat" => ("openai", ProtocolFamily::OpenAiChatCompletions, None),
+            "anthropic" | "claude" => ("anthropic", ProtocolFamily::AnthropicMessages, None),
+            "gemini" => ("gemini", ProtocolFamily::GeminiGenerateContent, None),
+            "google" | "google-gla" => ("google", ProtocolFamily::GeminiGenerateContent, None),
             "google-cloud" | "google-vertex" => {
-                ("google-cloud", ProtocolFamily::GeminiGenerateContent)
+                ("google-cloud", ProtocolFamily::GeminiGenerateContent, None)
             }
             _ => return None,
         };
@@ -941,6 +968,7 @@ impl ProviderModelId {
             protocol,
             gateway_name: gateway_name.map(str::to_string),
             oauth_provider: None,
+            stream_transport,
         })
     }
 

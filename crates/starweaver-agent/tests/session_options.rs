@@ -112,8 +112,8 @@ async fn session_run_options_add_toolsets_settings_params_and_instructions_for_o
         .metadata
         .insert("source".to_string(), serde_json::json!("run-options"));
 
-    let result = session
-        .run_with_options(
+    let result = Box::pin(
+        session.run_with_options(
             "hello",
             AgentRunOptions::new()
                 .instruction("run-only instruction")
@@ -123,9 +123,10 @@ async fn session_run_options_add_toolsets_settings_params_and_instructions_for_o
                 })
                 .request_params(params)
                 .tool(run_tool),
-        )
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(result.output, "ok");
     let captured_snapshot = captured.lock().unwrap().clone();
@@ -172,13 +173,12 @@ async fn session_run_options_can_replace_base_tools_for_one_run() {
         .build_app()
         .session();
 
-    session
-        .run_with_options(
-            "hello",
-            AgentRunOptions::new().tool(run_tool).replace_tools(),
-        )
-        .await
-        .unwrap();
+    Box::pin(session.run_with_options(
+        "hello",
+        AgentRunOptions::new().tool(run_tool).replace_tools(),
+    ))
+    .await
+    .unwrap();
 
     let tool_names = captured.lock().unwrap()[0]
         .params
@@ -201,8 +201,7 @@ async fn session_run_options_do_not_mutate_reusable_session_agent() {
     ));
     let mut session = AgentBuilder::new(model).build_app().session();
 
-    session
-        .run_with_options("first", AgentRunOptions::new().tool(run_tool))
+    Box::pin(session.run_with_options("first", AgentRunOptions::new().tool(run_tool)))
         .await
         .unwrap();
     session.run("second").await.unwrap();
@@ -225,13 +224,12 @@ async fn session_run_options_apply_output_policy_for_one_run() {
     ));
     let mut session = AgentBuilder::new(model).build_app().session();
 
-    let result = session
-        .run_with_options(
-            "typed",
-            AgentRunOptions::new().output_policy(OutputPolicy::typed::<RunAnswer>()),
-        )
-        .await
-        .unwrap();
+    let result = Box::pin(session.run_with_options(
+        "typed",
+        AgentRunOptions::new().output_policy(OutputPolicy::typed::<RunAnswer>()),
+    ))
+    .await
+    .unwrap();
     let parsed = result.structured::<RunAnswer>().unwrap();
     assert_eq!(parsed.answer, "ok");
 
@@ -252,13 +250,12 @@ async fn session_run_iter_accepts_run_options() {
         .build_app()
         .session();
 
-    let result = session
-        .run_iter_with_options(
-            "hello",
-            AgentRunOptions::new().instruction("inspect iterations"),
-        )
-        .await
-        .unwrap();
+    let result = Box::pin(session.run_iter_with_options(
+        "hello",
+        AgentRunOptions::new().instruction("inspect iterations"),
+    ))
+    .await
+    .unwrap();
 
     assert_eq!(result.result.output, "iter");
     assert!(!result.iterations.steps().is_empty());

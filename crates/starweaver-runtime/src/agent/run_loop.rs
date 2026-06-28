@@ -654,18 +654,29 @@ impl Agent {
                                     context.tool_id_wrapper.wrap_response_part(part);
                                 }
                             }
-                            stream_event!(
-                                &state,
-                                AgentStreamEvent::ModelStream {
-                                    step: state.run_step,
-                                    event: model_event.clone(),
+                            if let ModelResponseStreamEvent::Diagnostic(diagnostic) = &model_event {
+                                context.publish_event(
+                                    AgentEvent::new(
+                                        diagnostic.kind.clone(),
+                                        diagnostic.payload.clone(),
+                                    )
+                                    .with_metadata(diagnostic.metadata.clone()),
+                                );
+                                stream_context_events!(&state, context_event_cursor);
+                            } else {
+                                stream_event!(
+                                    &state,
+                                    AgentStreamEvent::ModelStream {
+                                        step: state.run_step,
+                                        event: model_event.clone(),
+                                    }
+                                );
+                                self.record_model_stream_event(&model_span, &model_event);
+                                if let ModelResponseStreamEvent::FinalResult(final_response) =
+                                    model_event
+                                {
+                                    response = Some(*final_response);
                                 }
-                            );
-                            self.record_model_stream_event(&model_span, &model_event);
-                            if let ModelResponseStreamEvent::FinalResult(final_response) =
-                                model_event
-                            {
-                                response = Some(*final_response);
                             }
                         }
                         if let Some(response) = response {

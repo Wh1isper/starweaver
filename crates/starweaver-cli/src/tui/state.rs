@@ -229,6 +229,8 @@ pub struct InteractiveTuiState {
     pub model: String,
     /// Current runtime phase.
     pub phase: String,
+    /// Latest model stream transport diagnostic shown in the status bar.
+    pub(super) model_transport_status: Option<String>,
     /// True while a background run is active.
     pub running: bool,
     /// Current behavior for the Enter key in the composer.
@@ -305,6 +307,7 @@ impl InteractiveTuiState {
             profile: "general".to_string(),
             model: "local_echo".to_string(),
             phase: "ready".to_string(),
+            model_transport_status: None,
             running: false,
             enter_mode: EnterMode::Send,
             scroll_offset: usize::MAX,
@@ -431,6 +434,7 @@ impl InteractiveTuiState {
         self.cancel_requested = false;
         self.status = "RUNNING".to_string();
         self.phase = "queued".to_string();
+        self.model_transport_status = None;
         self.streaming_parts.clear();
         self.streaming_text_seen = false;
         self.streaming_reasoning_seen = false;
@@ -451,6 +455,7 @@ impl InteractiveTuiState {
         self.pending_attachments.clear();
         self.current_run_id = None;
         self.current_run_usage = None;
+        self.model_transport_status = None;
         self.scroll_to_bottom();
         self.body.push(String::new());
         push_user_prompt_lines(&mut self.body, prompt);
@@ -527,6 +532,7 @@ impl InteractiveTuiState {
         self.body.clear();
         self.context_tokens = None;
         self.latest_request_total_tokens = None;
+        self.model_transport_status = None;
         self.current_run_id = None;
         self.current_run_usage = None;
         self.usage_snapshots.clear();

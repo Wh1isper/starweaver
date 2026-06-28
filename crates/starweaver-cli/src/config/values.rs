@@ -278,7 +278,9 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "trim.current_session_keep_recent_runs" => {
             config.current_session_keep_recent_runs.to_string()
         }
+        "trim.all_sessions_keep_recent_runs" => config.all_sessions_keep_recent_runs.to_string(),
         "trim.all_sessions_keep_days" => config.all_sessions_keep_days.to_string(),
+        "trim.all_sessions_interval_hours" => config.all_sessions_interval_hours.to_string(),
         "metadata.tools" => serde_json::to_string(&config.tools_config)?,
         "metadata.mcp" => serde_json::to_string(&config.mcp_config)?,
         "metadata.unmapped" => serde_json::to_string(&config.unmapped_metadata)?,
@@ -446,7 +448,11 @@ fn split_config_key(key: &str) -> CliResult<(&str, &str)> {
             )
             | (
                 "trim",
-                "auto_after_run" | "current_session_keep_recent_runs" | "all_sessions_keep_days",
+                "auto_after_run"
+                | "current_session_keep_recent_runs"
+                | "all_sessions_keep_recent_runs"
+                | "all_sessions_keep_days"
+                | "all_sessions_interval_hours",
             ) => return Ok((section, field)),
             _ => {}
         }
@@ -593,7 +599,11 @@ fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
                 .collect(),
         ),
         "trim.auto_after_run"
-        | "environment.shell_enabled"
+        | "trim.current_session_keep_recent_runs"
+        | "trim.all_sessions_keep_recent_runs"
+        | "trim.all_sessions_keep_days"
+        | "trim.all_sessions_interval_hours" => parse_trim_config_value(key, value)?,
+        "environment.shell_enabled"
         | "security.shell_review.enabled"
         | "oauth_refresh.enabled"
         | "oauth_refresh.refresh_on_startup" => value
@@ -605,23 +615,37 @@ fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
                 .try_into()
                 .map_err(|error: std::num::TryFromIntError| CliError::Usage(error.to_string()))?,
         ),
-        "trim.current_session_keep_recent_runs" => Value::Integer(
-            value
-                .parse::<usize>()
-                .map_err(|error| CliError::Usage(error.to_string()))?
-                .try_into()
-                .map_err(|error: std::num::TryFromIntError| CliError::Usage(error.to_string()))?,
-        ),
-        "trim.all_sessions_keep_days" => Value::Integer(
+        _ => return Err(CliError::NotFound(key.to_string())),
+    };
+    Ok(parsed)
+}
+
+fn parse_trim_config_value(key: &str, value: &str) -> CliResult<Value> {
+    match key {
+        "trim.auto_after_run" => value
+            .parse::<bool>()
+            .map(Value::Boolean)
+            .map_err(|error| CliError::Usage(error.to_string())),
+        "trim.current_session_keep_recent_runs" | "trim.all_sessions_keep_recent_runs" => {
+            Ok(Value::Integer(
+                value
+                    .parse::<usize>()
+                    .map_err(|error| CliError::Usage(error.to_string()))?
+                    .try_into()
+                    .map_err(|error: std::num::TryFromIntError| {
+                        CliError::Usage(error.to_string())
+                    })?,
+            ))
+        }
+        "trim.all_sessions_keep_days" | "trim.all_sessions_interval_hours" => Ok(Value::Integer(
             value
                 .parse::<u64>()
                 .map_err(|error| CliError::Usage(error.to_string()))?
                 .try_into()
                 .map_err(|error: std::num::TryFromIntError| CliError::Usage(error.to_string()))?,
-        ),
-        _ => return Err(CliError::NotFound(key.to_string())),
-    };
-    Ok(parsed)
+        )),
+        _ => Err(CliError::NotFound(key.to_string())),
+    }
 }
 
 fn parse_provider_config_value(key: &str, field: &str, value: &str) -> CliResult<Value> {

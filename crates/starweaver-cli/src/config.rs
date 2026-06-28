@@ -32,7 +32,8 @@ use env_overrides::{apply_cli_overrides, apply_env, parse_hitl_policy, parse_out
 pub use metadata::{mcp_servers, tool_need_approval};
 use metadata::{merge_json_value, read_mcp_config, read_tools_config};
 pub use state::{
-    clear_current_session, ensure_config_dirs, read_current_session, write_current_session,
+    clear_current_session, ensure_config_dirs, read_current_session,
+    read_last_retention_maintenance, write_current_session, write_last_retention_maintenance,
 };
 use templates::default_config_template;
 pub use templates::{
@@ -102,12 +103,16 @@ pub struct CliConfig {
     pub unmapped_metadata: serde_json::Value,
     /// Custom slash commands loaded from `[commands.*]` config sections.
     pub slash_commands: BTreeMap<String, SlashCommandDefinition>,
-    /// Automatic trim after a run.
+    /// Automatic retention maintenance after a run.
     pub auto_trim: bool,
-    /// Recent runs to keep for automatic trim.
+    /// Recent runs to keep for the current session during automatic trim.
     pub current_session_keep_recent_runs: usize,
-    /// Retention horizon for future all-session maintenance.
+    /// Recent runs to keep per session during all-session retention maintenance.
+    pub all_sessions_keep_recent_runs: usize,
+    /// Age horizon for all-session retention maintenance.
     pub all_sessions_keep_days: u64,
+    /// Minimum interval between all-session retention maintenance runs.
+    pub all_sessions_interval_hours: u64,
 }
 
 /// Config resolver.
@@ -317,7 +322,7 @@ pub struct CliModelProfile {
     /// Human label for display.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Provider model id, such as `openai-responses:gpt-5` or `homelab@openai-responses:gpt-5`.
+    /// Provider model id, such as `openai-responses:gpt-5`, `openai-responses-ws:gpt-5`, or `homelab@openai-responses:gpt-5`.
     pub model_id: String,
     /// Model config preset name from `model_cfg`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -443,7 +448,9 @@ impl Default for ProviderConfig {
 struct TrimConfig {
     auto_after_run: Option<bool>,
     current_session_keep_recent_runs: Option<usize>,
+    all_sessions_keep_recent_runs: Option<usize>,
     all_sessions_keep_days: Option<u64>,
+    all_sessions_interval_hours: Option<u64>,
 }
 
 impl Default for ConfigResolver {
@@ -513,7 +520,9 @@ impl ConfigResolver {
             slash_commands: BTreeMap::new(),
             auto_trim: true,
             current_session_keep_recent_runs: 20,
+            all_sessions_keep_recent_runs: 20,
             all_sessions_keep_days: 60,
+            all_sessions_interval_hours: 24,
         };
         bootstrap_global_config_dir(&global_dir)?;
         apply_file_config(&mut config, &global_dir.join("config.toml"))?;
@@ -809,8 +818,14 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
         if let Some(keep) = trim.current_session_keep_recent_runs {
             config.current_session_keep_recent_runs = keep;
         }
+        if let Some(keep) = trim.all_sessions_keep_recent_runs {
+            config.all_sessions_keep_recent_runs = keep;
+        }
         if let Some(days) = trim.all_sessions_keep_days {
             config.all_sessions_keep_days = days;
+        }
+        if let Some(hours) = trim.all_sessions_interval_hours {
+            config.all_sessions_interval_hours = hours;
         }
     }
     Ok(())

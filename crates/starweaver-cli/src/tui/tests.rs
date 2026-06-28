@@ -72,6 +72,50 @@ fn interactive_state_applies_streaming_text() {
 }
 
 #[test]
+fn model_transport_diagnostic_updates_status_bar_only() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("hello");
+    let initial_body_len = state.body.len();
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "model_transport_selected",
+                json!({
+                    "transport": "websocket",
+                    "message": "model transport: websocket"
+                }),
+            ),
+        },
+    ));
+
+    assert_eq!(state.body.len(), initial_body_len);
+    let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(footer.contains("Transport: websocket"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "model_transport_fallback",
+                json!({
+                    "from": "websocket",
+                    "to": "http",
+                    "reason": "websocket_connection_limit_reached",
+                    "message": "model transport: websocket -> http fallback (websocket_connection_limit_reached)"
+                }),
+            ),
+        },
+    ));
+
+    assert_eq!(state.body.len(), initial_body_len);
+    let footer = line_texts(&render_footer_lines(&state, 160)).join("\n");
+    assert!(footer.contains("Transport: websocket -> http"));
+    assert!(footer.contains("websocket_connection_limit_reached"));
+}
+
+#[test]
 fn codex_style_opening_renders_header_composer_and_footer() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.workspace_dir = "/tmp/starweaver".to_string();

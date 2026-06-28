@@ -11,7 +11,7 @@ use crate::{
         build_http_request, send_with_retries, should_fallback_websocket_to_http, HttpRequest,
         ModelEventStream,
     },
-    ModelAdapter, ModelError, ModelResponseEventStream, ModelResponseStreamEvent,
+    ModelAdapter, ModelError, ModelResponseEventStream, ModelResponseStreamEvent, StreamDiagnostic,
 };
 
 use super::ProtocolModelClient;
@@ -276,6 +276,13 @@ impl ProtocolModelClient {
         kind: ResponseStreamRequestKind,
     ) -> Result<ModelResponseEventStream, ModelError> {
         let cancellation_token = request.cancellation_token.clone();
+        let diagnostic = matches!(kind, ResponseStreamRequestKind::WebSocket).then(|| {
+            transport_selected_diagnostic(
+                &self.provider_name,
+                &self.model_name,
+                transport_name(kind),
+            )
+        });
         self.record_stream_request_audit(&request);
         let events = match kind {
             ResponseStreamRequestKind::HttpSse => {
@@ -289,7 +296,11 @@ impl ProtocolModelClient {
                     .await?
             }
         };
-        Ok(canonical_openai_response_stream(events, cancellation_token))
+        Ok(canonical_openai_response_stream(
+            events,
+            cancellation_token,
+            diagnostic,
+        ))
     }
 
     fn openai_response_stream_with_fallback(
@@ -305,6 +316,11 @@ impl ProtocolModelClient {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
             let mut emitted_any_event = false;
+            let _ = sender
+                .send(Ok(ModelResponseStreamEvent::Diagnostic(
+                    transport_selected_diagnostic(&provider_name, &model_name, "websocket"),
+                )))
+                .await;
             if let Some(audit) = request_audit.as_ref() {
                 audit.record(&provider_name, &model_name, true, &websocket_request);
             }
@@ -320,6 +336,11 @@ impl ProtocolModelClient {
             match websocket_result {
                 Ok(()) => {}
                 Err(error) if !emitted_any_event && should_fallback_websocket_to_http(&error) => {
+                    let _ = sender
+                        .send(Ok(ModelResponseStreamEvent::Diagnostic(
+                            transport_fallback_diagnostic(&provider_name, &model_name, &error),
+                        )))
+                        .await;
                     if let Some(audit) = request_audit.as_ref() {
                         audit.record(&provider_name, &model_name, true, &http_request);
                     }
@@ -373,12 +394,93 @@ fn response_websocket_body(body: Value) -> Value {
     Value::Object(envelope)
 }
 
+const fn transport_name(kind: ResponseStreamRequestKind) -> &'static str {
+    match kind {
+        ResponseStreamRequestKind::HttpSse => "http",
+        ResponseStreamRequestKind::WebSocket => "websocket",
+    }
+}
+
+fn transport_selected_diagnostic(
+    provider_name: &str,
+    model_name: &str,
+    transport: &str,
+) -> StreamDiagnostic {
+    StreamDiagnostic::new(
+        "model_transport_selected",
+        json!({
+            "provider": provider_name,
+            "model": model_name,
+            "transport": transport,
+            "message": format!("model transport: {transport}"),
+        }),
+    )
+}
+
+fn transport_fallback_diagnostic(
+    provider_name: &str,
+    model_name: &str,
+    error: &ModelError,
+) -> StreamDiagnostic {
+    StreamDiagnostic::new(
+        "model_transport_fallback",
+        json!({
+            "provider": provider_name,
+            "model": model_name,
+            "from": "websocket",
+            "to": "http",
+            "reason": transport_fallback_reason(error),
+            "message": format!(
+                "model transport: websocket -> http fallback ({})",
+                transport_fallback_reason(error)
+            ),
+        }),
+    )
+}
+
+fn transport_fallback_reason(error: &ModelError) -> &'static str {
+    match error {
+        ModelError::ProviderStatus { body, .. } if websocket_connection_limit_reached(body) => {
+            "websocket_connection_limit_reached"
+        }
+        ModelError::ProviderStatus { .. } => "provider_status",
+        ModelError::Transport(_) => "websocket_transport_error",
+        ModelError::Cancelled { .. } => "cancelled",
+        ModelError::MessageMapping(_)
+        | ModelError::ResponseParsing(_)
+        | ModelError::RealModelRequestBlocked { .. }
+        | ModelError::RetryExhausted { .. }
+        | ModelError::UnsupportedResponse(_) => "model_error",
+    }
+}
+
+fn websocket_connection_limit_reached(body: &Value) -> bool {
+    body.get("error")
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str)
+        .is_some_and(|code| code == "websocket_connection_limit_reached")
+        || body
+            .get("code")
+            .and_then(Value::as_str)
+            .is_some_and(|code| code == "websocket_connection_limit_reached")
+}
+
 fn canonical_openai_response_stream(
     events: ModelEventStream,
     cancellation_token: starweaver_core::CancellationToken,
+    diagnostic: Option<StreamDiagnostic>,
 ) -> ModelResponseEventStream {
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
     tokio::spawn(async move {
+        if let Some(diagnostic) = diagnostic {
+            if sender
+                .send(Ok(ModelResponseStreamEvent::Diagnostic(diagnostic)))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
         let mut emitted_any_event = false;
         if let Err(error) =
             forward_openai_response_events(events, &sender, &mut emitted_any_event).await
@@ -582,11 +684,9 @@ mod tests {
             .await;
         let mut stream = result_or_panic(stream, "stream should be created");
 
-        let first = option_or_panic(stream.recv().await, "first event");
-        let first = result_or_panic(first, "first ok");
+        let first = next_non_diagnostic(&mut stream).await;
         assert!(matches!(first, ModelResponseStreamEvent::PartStart(_)));
-        let second = option_or_panic(stream.recv().await, "second event");
-        let second = result_or_panic(second, "second ok");
+        let second = next_non_diagnostic(&mut stream).await;
         assert!(matches!(
             second,
             ModelResponseStreamEvent::PartDelta(crate::PartDelta {
@@ -762,6 +862,19 @@ mod tests {
             Ok(value) => value,
             Err(error) => panic!("{message}: {error:?}"),
         }
+    }
+
+    async fn next_non_diagnostic(
+        stream: &mut ModelResponseEventStream,
+    ) -> ModelResponseStreamEvent {
+        while let Some(event) = stream.recv().await {
+            let event = result_or_panic(event, "event should parse");
+            if matches!(event, ModelResponseStreamEvent::Diagnostic(_)) {
+                continue;
+            }
+            return event;
+        }
+        panic!("expected non-diagnostic stream event")
     }
 
     fn option_or_panic<T>(value: Option<T>, message: &str) -> T {

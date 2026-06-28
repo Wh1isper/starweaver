@@ -636,14 +636,12 @@ impl AgentRuntime {
         let input = prompt.into();
         if self.durability.is_some() {
             self.ensure_durable_session().await?;
-            let stream = self
-                .session
-                .run_stream_with_options(input.clone(), options)
-                .await?;
+            let stream =
+                Box::pin(self.session.run_stream_with_options(input.clone(), options)).await?;
             self.persist_stream_result(&input, &stream, None).await?;
             Ok(stream.result)
         } else {
-            self.session.run_with_options(input, options).await
+            Box::pin(self.session.run_with_options(input, options)).await
         }
     }
 

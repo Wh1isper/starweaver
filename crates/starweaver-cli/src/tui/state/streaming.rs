@@ -92,8 +92,12 @@ impl InteractiveTuiState {
                 self.phase = format!("checkpoint:{node:?}").to_ascii_lowercase();
             }
             AgentStreamEvent::Custom { event } => {
-                self.phase.clone_from(&event.kind);
-                self.apply_custom_stream_event(&event.kind, &event.payload, record.sequence);
+                if is_model_transport_event(&event.kind) {
+                    self.apply_model_transport_event(&event.kind, &event.payload);
+                } else {
+                    self.phase.clone_from(&event.kind);
+                    self.apply_custom_stream_event(&event.kind, &event.payload, record.sequence);
+                }
             }
             AgentStreamEvent::RunComplete { output, .. } => {
                 self.phase = "completed".to_string();
@@ -111,6 +115,24 @@ impl InteractiveTuiState {
         }
         if should_auto_scroll {
             self.scroll_to_bottom();
+        }
+    }
+
+    fn apply_model_transport_event(&mut self, kind: &str, payload: &Value) {
+        let normalized = normalized_event_kind(kind);
+        if normalized.ends_with("model_transport_fallback") {
+            let reason = payload
+                .get("reason")
+                .and_then(Value::as_str)
+                .filter(|reason| !reason.trim().is_empty());
+            self.model_transport_status = Some(reason.map_or_else(
+                || "Transport: websocket -> http".to_string(),
+                |reason| format!("Transport: websocket -> http ({reason})"),
+            ));
+        } else if normalized.ends_with("model_transport_selected") {
+            if let Some(transport) = payload.get("transport").and_then(Value::as_str) {
+                self.model_transport_status = Some(format!("Transport: {transport}"));
+            }
         }
     }
 
@@ -185,6 +207,7 @@ impl InteractiveTuiState {
             ModelResponseStreamEvent::PartEnd(part) => {
                 self.streaming_parts.remove(&part.index);
             }
+            ModelResponseStreamEvent::Diagnostic(_) => {}
             ModelResponseStreamEvent::FinalResult(response) => {
                 self.phase = "finalizing".to_string();
                 if !self.streaming_text_seen {
@@ -465,6 +488,15 @@ impl InteractiveTuiState {
             self.task_panel_items = items;
         }
     }
+}
+
+fn is_model_transport_event(kind: &str) -> bool {
+    let normalized = kind.to_ascii_lowercase().replace(['.', '-'], "_");
+    matches!(
+        normalized.as_str(),
+        "model_transport_selected" | "model_transport_fallback"
+    ) || normalized.ends_with("_model_transport_selected")
+        || normalized.ends_with("_model_transport_fallback")
 }
 
 fn is_goal_complete_event_kind(kind: &str) -> bool {

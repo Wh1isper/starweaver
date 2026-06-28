@@ -455,6 +455,7 @@ pub(super) fn interrupted_partial_response(
                 }
                 state.ended = true;
             }
+            ModelResponseStreamEvent::Diagnostic(_) => {}
             ModelResponseStreamEvent::FinalResult(_) => return None,
         }
     }
