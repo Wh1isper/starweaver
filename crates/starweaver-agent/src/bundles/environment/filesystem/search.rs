@@ -16,6 +16,7 @@ pub(super) async fn glob_files(
     context: ToolContext,
     arguments: GlobArgs,
 ) -> Result<ToolResult, ToolError> {
+    validate_single_search_root("glob", &arguments.root)?;
     let provider = environment_provider(&context, "glob")?;
     let tool_config = tool_config_from_context(&context, "glob")?;
     let matches = provider
@@ -42,6 +43,7 @@ pub(super) async fn grep_files(
     context: ToolContext,
     arguments: GrepArgs,
 ) -> Result<ToolResult, ToolError> {
+    validate_single_search_root("grep", &arguments.root)?;
     let provider = environment_provider(&context, "grep")?;
     let tool_config = tool_config_from_context(&context, "grep")?;
     let matches = provider
@@ -76,4 +78,14 @@ pub(super) async fn grep_files(
         matches,
     )
     .await
+}
+
+fn validate_single_search_root(tool: &str, root: &str) -> Result<(), ToolError> {
+    if root.chars().any(|ch| matches!(ch, '\n' | '\r' | '\0')) {
+        return Err(ToolError::ModelRetry {
+            tool: tool.to_string(),
+            message: "root must be a single directory path. For multiple directories, issue parallel tool calls with one root per call, or use a shared parent root with a narrower file pattern.".to_string(),
+        });
+    }
+    Ok(())
 }

@@ -177,6 +177,37 @@ impl ModelHttpClient for OAuthBearerHttpClient {
             result => result,
         }
     }
+
+    async fn send_websocket_event_stream_incremental(
+        &self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        let snapshot = self
+            .token_source
+            .get_token()
+            .await
+            .map_err(|error| ModelError::Transport(error.to_string()))?;
+        let request_with_auth = self.prepare_request(request.clone(), &snapshot)?;
+        match self
+            .inner
+            .send_websocket_event_stream_incremental(request_with_auth)
+            .await
+        {
+            Err(ModelError::ProviderStatus { status: 401, .. }) => {
+                let refreshed = self
+                    .token_source
+                    .refresh_token()
+                    .await
+                    .map_err(|error| ModelError::Transport(error.to_string()))?;
+                self.inner
+                    .send_websocket_event_stream_incremental(
+                        self.prepare_request(request, &refreshed)?,
+                    )
+                    .await
+            }
+            result => result,
+        }
+    }
 }
 
 fn codex_user_agent() -> String {

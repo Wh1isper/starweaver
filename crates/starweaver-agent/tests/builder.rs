@@ -9,23 +9,25 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    attach_environment, AgentBuilder, AgentCapability, AgentContext, AgentRunState, AgentSession,
-    CapabilityOrdering, CapabilityResult, CapabilitySpec, DynToolset, FunctionDynamicInstruction,
-    FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
-    FunctionTool, MediaUploadRequest, MediaUploader, ModelCapability, ModelConfig,
-    OutputFunctionDefinition, OutputSchema, OutputValue, StaticCapabilityBundle, StaticToolset,
-    TestModel, ToolContext, ToolExecutionHook, ToolInstruction, ToolRegistry, ToolResult, Toolset,
-    ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetPreparation, UsageLimits,
-    DEFAULT_FILTER_ORDER, TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND,
+    attach_environment, context_tools, AgentBuilder, AgentCapability, AgentContext, AgentRunState,
+    AgentSession, CapabilityOrdering, CapabilityResult, CapabilitySpec, DynToolset,
+    FunctionDynamicInstruction, FunctionModel, FunctionModelInfo, FunctionOutputFunction,
+    FunctionOutputValidator, FunctionTool, MediaUploadRequest, MediaUploader, ModelCapability,
+    ModelConfig, OutputFunctionDefinition, OutputSchema, OutputValue, PerThousandRatio,
+    StaticCapabilityBundle, StaticToolset, TestModel, ToolContext, ToolExecutionHook,
+    ToolInstruction, ToolRegistry, ToolResult, Toolset, ToolsetLifecycleError,
+    ToolsetLifecyclePolicy, ToolsetPreparation, Usage, UsageLimits, DEFAULT_FILTER_ORDER,
+    TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND,
 };
 use starweaver_environment::{
     EnvironmentPolicy, FilePolicy, ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
-    providers::openai_responses::OpenAiResponsesAdapter, ContentPart, ModelAdapter, ModelError,
-    ModelMessage, ModelProfile, ModelRequestContext, ModelRequestParameters, ModelRequestPart,
-    ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily, ToolCallPart,
-    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
+    providers::openai_responses::OpenAiResponsesAdapter, tool_call_response, ContentPart,
+    ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
+    ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
+    ProtocolFamily, ToolCallPart, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_RUNTIME_CONTEXT,
 };
 
 #[derive(Clone)]
@@ -786,6 +788,112 @@ async fn multi_run_session_preserves_previous_model_request_prefix() {
     assert_eq!(first_input[2], second_input[1]);
 }
 
+#[tokio::test]
+async fn summarized_session_preserves_next_request_stable_prefix_before_runtime_context() {
+    let model = TestModel::with_responses(vec![
+        tool_call_response(
+            "call_summarize",
+            "summarize",
+            serde_json::json!({
+                "content": "## Current State\nSummarized prior work.\n\n## Next Step\nContinue implementation.",
+                "auto_load_files": []
+            }),
+        ),
+        ModelResponse::text("handoff complete"),
+        ModelResponse::text("continued"),
+    ]);
+    let mut session = AgentSession::new(
+        AgentBuilder::new(Arc::new(model.clone()))
+            .toolset(&context_tools())
+            .build(),
+    );
+
+    let summarized = session.run("summarize now").await.unwrap();
+    assert_eq!(summarized.output, "handoff complete");
+    let continued = session.run("continue after summary").await.unwrap();
+    assert_eq!(continued.output, "continued");
+
+    let captured = model.captured_messages();
+    assert_eq!(captured.len(), 3);
+    let handoff_wire =
+        OpenAiResponsesAdapter::build_request("gpt-5.5", &captured[1], None, &[], &[]).unwrap();
+    let next_wire =
+        OpenAiResponsesAdapter::build_request("gpt-5.5", &captured[2], None, &[], &[]).unwrap();
+    let handoff_input = handoff_wire["input"].as_array().unwrap();
+    let next_input = next_wire["input"].as_array().unwrap();
+    let stable_prefix_len = input_index_containing(next_input, "<context-restored>")
+        .expect("next request should retain handoff restore marker")
+        + 1;
+
+    assert_eq!(
+        &handoff_input[..stable_prefix_len],
+        &next_input[..stable_prefix_len]
+    );
+    assert!(!handoff_input[..stable_prefix_len]
+        .iter()
+        .any(|input| input_contains_text(input, "<runtime-context>")));
+}
+
+#[tokio::test]
+async fn compacted_session_preserves_next_request_stable_prefix_before_runtime_context() {
+    let captured_messages = Arc::new(Mutex::new(Vec::new()));
+    let main_model = Arc::new(MessageCaptureModel {
+        captured_messages: Arc::clone(&captured_messages),
+    });
+    let compact_model = FunctionModel::new(|_messages, _settings, _info| {
+        Ok(ModelResponse::text(
+            "## Condensed conversation summary\n\nKeep working from the compact summary.",
+        ))
+    });
+    let mut session = AgentSession::new(
+        AgentBuilder::new(main_model)
+            .compact_model(Arc::new(compact_model))
+            .build(),
+    );
+    session.context_mut().model_config = ModelConfig {
+        context_window: Some(100),
+        compact_threshold: PerThousandRatio::from_per_thousand(900),
+        ..ModelConfig::default()
+    };
+    let mut prior_response = ModelResponse::text("large prior response");
+    prior_response.usage = Usage {
+        requests: 1,
+        input_tokens: 90,
+        output_tokens: 5,
+        total_tokens: 95,
+        ..Usage::default()
+    };
+    session.context_mut().message_history = vec![
+        ModelMessage::Request(ModelRequest::user_text("old request")),
+        ModelMessage::Response(prior_response),
+    ];
+
+    let compacted = session.run("resume after compact").await.unwrap();
+    assert_eq!(compacted.output, "captured");
+    let after_compact = session.run("continue after compact").await.unwrap();
+    assert_eq!(after_compact.output, "captured");
+
+    let captured = captured_messages.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    let compact_wire =
+        OpenAiResponsesAdapter::build_request("gpt-5.5", &captured[0], None, &[], &[]).unwrap();
+    let next_wire =
+        OpenAiResponsesAdapter::build_request("gpt-5.5", &captured[1], None, &[], &[]).unwrap();
+    let compact_input = compact_wire["input"].as_array().unwrap();
+    let next_input = next_wire["input"].as_array().unwrap();
+    let stable_prefix_len = input_index_containing(next_input, "<context-restored>")
+        .expect("next request should retain compact restore marker")
+        + 1;
+
+    assert_eq!(
+        &compact_input[..stable_prefix_len],
+        &next_input[..stable_prefix_len]
+    );
+    assert!(!compact_input[..stable_prefix_len]
+        .iter()
+        .any(|input| input_contains_text(input, "<runtime-context>")));
+}
+
 fn tiny_png_bytes(width: u32, height: u32) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"\x89PNG\r\n\x1a\n");
@@ -817,6 +925,27 @@ fn context_origin_count(messages: &[ModelMessage], origin: &str) -> usize {
             )
         })
         .count()
+}
+
+fn input_index_containing(inputs: &[serde_json::Value], needle: &str) -> Option<usize> {
+    inputs
+        .iter()
+        .position(|input| input_contains_text(input, needle))
+}
+
+fn input_contains_text(input: &serde_json::Value, needle: &str) -> bool {
+    match input {
+        serde_json::Value::String(text) => text.contains(needle),
+        serde_json::Value::Array(items) => {
+            items.iter().any(|item| input_contains_text(item, needle))
+        }
+        serde_json::Value::Object(map) => {
+            map.values().any(|value| input_contains_text(value, needle))
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            false
+        }
+    }
 }
 
 #[tokio::test]

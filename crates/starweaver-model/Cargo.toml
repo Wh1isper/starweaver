@@ -29,6 +29,7 @@ starweaver-usage.workspace = true
 starweaver-oauth.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 
 [lints]
 workspace = true

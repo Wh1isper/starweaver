@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde_json::Value;
 use starweaver_context::AgentContext;
 use starweaver_model::{
     context_origin_metadata, ContentPart, ModelMessage, ModelRequest, ModelRequestPart,
@@ -107,11 +108,24 @@ fn request_has_tool_return_or_retry(request: &ModelRequest) -> bool {
 fn insert_context_into_latest_request(messages: &mut [ModelMessage], part: ModelRequestPart) {
     for message in messages.iter_mut().rev() {
         if let ModelMessage::Request(request) = message {
-            let insert_at = request_context_insert_index(request);
-            request.parts.insert(insert_at, part);
+            if appending_runtime_context_preserves_stable_prefix(request) {
+                request.parts.push(part);
+            } else {
+                let insert_at = request_context_insert_index(request);
+                request.parts.insert(insert_at, part);
+            }
             return;
         }
     }
+}
+
+fn appending_runtime_context_preserves_stable_prefix(request: &ModelRequest) -> bool {
+    request
+        .metadata
+        .get("keep")
+        .or_else(|| request.metadata.get("ya_keep"))
+        .and_then(Value::as_str)
+        .is_some_and(|value| matches!(value, "compact" | "handoff"))
 }
 
 fn request_context_insert_index(request: &ModelRequest) -> usize {

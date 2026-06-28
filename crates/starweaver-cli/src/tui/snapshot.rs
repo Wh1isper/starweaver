@@ -5,12 +5,15 @@ use std::fmt::Write as _;
 use serde::Serialize;
 use serde_json::Value;
 use starweaver_context::TASK_SNAPSHOT_EVENT_KIND;
-use starweaver_model::{ToolArguments, ToolCallPart, ToolReturnPart};
+use starweaver_model::{PartDelta, StreamDelta, ToolArguments, ToolCallPart, ToolReturnPart};
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{ApprovalRecord, DeferredToolRecord};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
-use super::state::{display_lines_for_stream_record, TaskPanelItem};
+use super::{
+    markdown::ASSISTANT_CONTENT_PREFIX,
+    state::{display_lines_for_stream_record, TaskPanelItem},
+};
 
 /// Non-interactive TUI snapshot used by the renderer and tests.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -72,9 +75,7 @@ impl TuiSnapshot {
         let mut next_sequence = 0;
         for message in ordered_messages {
             if let Some(record) = display_message_to_stream_record(&message, next_sequence) {
-                snapshot
-                    .transcript_lines
-                    .extend(display_lines_for_stream_record(&record));
+                append_replayed_stream_record_lines(&mut snapshot.transcript_lines, &record);
                 next_sequence = next_sequence.saturating_add(1);
             }
             snapshot.apply_message(&message);
@@ -252,6 +253,85 @@ impl TuiSnapshot {
         }
         output
     }
+}
+
+fn append_replayed_stream_record_lines(lines: &mut Vec<String>, record: &AgentStreamRecord) {
+    match &record.event {
+        AgentStreamEvent::ModelStream {
+            event: starweaver_runtime::ModelResponseStreamEvent::PartDelta(PartDelta { delta, .. }),
+            ..
+        } => match delta {
+            StreamDelta::Text { text } => append_replayed_text_delta(lines, text),
+            StreamDelta::Thinking { text } => append_replayed_thinking_delta(lines, text),
+            _ => {}
+        },
+        _ => lines.extend(display_lines_for_stream_record(record)),
+    }
+}
+
+fn append_replayed_text_delta(lines: &mut Vec<String>, delta: &str) {
+    ensure_replayed_text_line(lines);
+    append_replayed_delta_segments(lines, delta, |line| assistant_content_line(line));
+}
+
+fn append_replayed_thinking_delta(lines: &mut Vec<String>, delta: &str) {
+    ensure_replayed_thinking_line(lines);
+    append_replayed_delta_segments(lines, delta, |line| {
+        assistant_content_line(format!("> {line}"))
+    });
+}
+
+fn ensure_replayed_text_line(lines: &mut Vec<String>) {
+    if lines.is_empty()
+        || lines
+            .last()
+            .is_some_and(|line| !is_assistant_content_line(line) || is_thinking_quote_line(line))
+    {
+        lines.push(assistant_content_line(""));
+    }
+}
+
+fn ensure_replayed_thinking_line(lines: &mut Vec<String>) {
+    if !lines
+        .last()
+        .is_some_and(|line| is_thinking_quote_line(line))
+    {
+        lines.push(assistant_content_line("> "));
+    }
+}
+
+fn append_replayed_delta_segments(
+    lines: &mut Vec<String>,
+    delta: &str,
+    new_line: impl Fn(&str) -> String,
+) {
+    for segment in delta.split_inclusive('\n') {
+        if segment.ends_with('\n') {
+            let trimmed = segment.trim_end_matches('\n').trim_end_matches('\r');
+            if !trimmed.is_empty() {
+                if let Some(last) = lines.last_mut() {
+                    last.push_str(trimmed);
+                }
+            }
+            lines.push(new_line(""));
+        } else if let Some(last) = lines.last_mut() {
+            last.push_str(segment);
+        }
+    }
+}
+
+fn assistant_content_line(line: impl AsRef<str>) -> String {
+    format!("{ASSISTANT_CONTENT_PREFIX}{}", line.as_ref())
+}
+
+fn is_assistant_content_line(line: &str) -> bool {
+    line.starts_with(ASSISTANT_CONTENT_PREFIX)
+}
+
+fn is_thinking_quote_line(line: &str) -> bool {
+    line.strip_prefix(ASSISTANT_CONTENT_PREFIX)
+        .unwrap_or(line)
+        .starts_with('>')
 }
 
 #[allow(clippy::too_many_lines)]

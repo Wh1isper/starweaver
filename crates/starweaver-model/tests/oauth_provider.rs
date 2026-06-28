@@ -80,36 +80,48 @@ impl ModelHttpClient for RecordingHttpClient {
         request: HttpRequest,
     ) -> Result<ModelEventStream, ModelError> {
         self.seen.lock().await.push(request);
-        let (sender, receiver) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(async move {
-            for event in [
-                json!({
-                    "type": "response.created",
-                    "response": {"id": "resp_codex_stream", "status": "in_progress"}
-                }),
-                json!({
-                    "type": "response.completed",
-                    "response": {
-                        "id": "resp_codex_stream",
-                        "status": "completed",
-                        "model": "gpt-5.5",
-                        "output": [
-                            {
-                                "type": "message",
-                                "content": [{"type": "output_text", "text": "ok"}]
-                            }
-                        ],
-                        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
-                    }
-                }),
-            ] {
-                if sender.send(Ok(event)).await.is_err() {
-                    return;
-                }
-            }
-        });
-        Ok(ModelEventStream::new(receiver))
+        Ok(codex_stream_events())
     }
+
+    async fn send_websocket_event_stream_incremental(
+        &self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        self.seen.lock().await.push(request);
+        Ok(codex_stream_events())
+    }
+}
+
+fn codex_stream_events() -> ModelEventStream {
+    let (sender, receiver) = tokio::sync::mpsc::channel(8);
+    tokio::spawn(async move {
+        for event in [
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_codex_stream", "status": "in_progress"}
+            }),
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_codex_stream",
+                    "status": "completed",
+                    "model": "gpt-5.5",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "ok"}]
+                        }
+                    ],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                }
+            }),
+        ] {
+            if sender.send(Ok(event)).await.is_err() {
+                return;
+            }
+        }
+    });
+    ModelEventStream::new(receiver)
 }
 
 fn codex_request() -> HttpRequest {
@@ -326,11 +338,16 @@ async fn codex_oauth_streaming_model_builds_subscription_request_shape() {
     assert_eq!(request.headers["thread-id"], "typed-thread");
     assert_eq!(request.headers["x-client-request-id"], "typed-thread");
     assert!(!request.headers.contains_key("version"));
+    assert_eq!(request.body["type"], "response.create");
     assert_eq!(request.body["model"], "gpt-5.5");
-    assert_eq!(request.body["stream"], true);
+    assert!(request.body.get("stream").is_none());
     assert_eq!(request.body["instructions"], "");
     assert_eq!(request.body["store"], false);
     assert_eq!(request.body["input"][0]["content"][0]["text"], "hello");
+    assert_eq!(
+        request.metadata["starweaver.response_stream_transport"],
+        "websocket"
+    );
     assert_eq!(
         request.metadata["provider.codex.session_id"],
         "typed-session"
@@ -507,6 +524,69 @@ async fn oauth_bearer_http_client_refreshes_once_on_401() {
     assert_eq!(seen[0].headers["thread_id"], "provider-thread-1");
     assert_eq!(seen[0].headers["thread-id"], "provider-thread-1");
     assert_eq!(seen[0].headers["x-client-request-id"], "provider-thread-1");
+}
+
+#[tokio::test]
+async fn oauth_bearer_websocket_client_refreshes_once_on_401() {
+    #[derive(Default)]
+    struct WebSocketRefreshHttpClient {
+        seen: Mutex<Vec<HttpRequest>>,
+    }
+
+    #[async_trait]
+    impl ModelHttpClient for WebSocketRefreshHttpClient {
+        async fn send(&self, _request: HttpRequest) -> Result<HttpResponse, ModelError> {
+            unreachable!("HTTP send is not used by this websocket refresh test")
+        }
+
+        async fn send_websocket_event_stream_incremental(
+            &self,
+            request: HttpRequest,
+        ) -> Result<ModelEventStream, ModelError> {
+            let mut seen = self.seen.lock().await;
+            seen.push(request);
+            if seen.len() == 1 {
+                return Err(ModelError::ProviderStatus {
+                    status: 401,
+                    body: json!({"error": "unauthorized"}),
+                    retryable: false,
+                });
+            }
+            Ok(codex_stream_events())
+        }
+    }
+
+    let token_source = Arc::new(FakeTokenSource::default());
+    let http_client = Arc::new(WebSocketRefreshHttpClient::default());
+    let client = OAuthBearerHttpClient::new(
+        http_client.clone(),
+        token_source.clone(),
+        "codex",
+        BTreeMap::new(),
+    )
+    .unwrap();
+
+    let mut stream = client
+        .send_websocket_event_stream_incremental(codex_request())
+        .await
+        .unwrap();
+    let mut event_count = 0;
+    while let Some(event) = stream.recv().await {
+        event.unwrap();
+        event_count += 1;
+    }
+
+    assert_eq!(event_count, 2);
+    assert_eq!(*token_source.refresh_count.lock().await, 1);
+    let seen = http_client.seen.lock().await;
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].headers["Authorization"], "Bearer access-old");
+    assert_eq!(seen[1].headers["Authorization"], "Bearer access-new");
+    assert_eq!(seen[0].headers["originator"], "starweaver");
+    assert_eq!(seen[0].headers["session_id"], "provider-session-1");
+    assert_eq!(seen[0].headers["thread_id"], "provider-thread-1");
+    assert_eq!(seen[0].body["instructions"], "");
+    assert_eq!(seen[0].body["store"], false);
 }
 
 #[test]

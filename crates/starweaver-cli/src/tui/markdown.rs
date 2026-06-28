@@ -102,9 +102,7 @@ fn is_transcript_boundary(line: &str) -> bool {
 #[allow(clippy::too_many_lines)]
 fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
     if let Some(prompt) = line.strip_prefix("User:") {
-        let mut rendered = StyledLine::styled("› ", SegmentStyle::bold());
-        rendered.push(prompt.trim_start(), SegmentStyle::bold());
-        return vec![rendered];
+        return render_user_prompt_lines(prompt.trim_start(), width);
     }
     if let Some(tool) = line.strip_prefix("Tool call:") {
         return render_tool_lines(tool.trim_start(), ToolLineKind::Call, width);
@@ -235,6 +233,28 @@ fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
     wrap_text_width(line, width)
         .into_iter()
         .map(StyledLine::plain)
+        .collect()
+}
+
+fn render_user_prompt_lines(prompt: &str, width: usize) -> Vec<StyledLine> {
+    let prefix = "› ";
+    let continuation_prefix = "  ";
+    let available = width.saturating_sub(visible_width(prefix)).max(1);
+    wrap_text_width(prompt, available)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| {
+            let mut rendered = StyledLine::styled(
+                if index == 0 {
+                    prefix
+                } else {
+                    continuation_prefix
+                },
+                SegmentStyle::bold(),
+            );
+            rendered.push(chunk, SegmentStyle::bold());
+            rendered
+        })
         .collect()
 }
 

@@ -2235,7 +2235,10 @@ mod tests {
                 is_default: false,
                 is_default_for_shell: false,
                 attachment_lease_id: None,
-                endpoint_ref: Some("stdio:///bin/cat".to_string()),
+                endpoint_ref: Some(format!(
+                    "stdio://{}?arg=--help",
+                    std::env::current_exe().unwrap().display()
+                )),
                 environment_id: Some("default".to_string()),
                 auth_token: None,
                 metadata: serde_json::Map::new(),

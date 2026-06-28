@@ -1348,6 +1348,7 @@ async fn openai_responses_maps_typed_settings_and_preserves_raw_override() {
                         include: vec!["reasoning.encrypted_content".to_string()],
                         prompt_cache_key: Some("typed-resp-cache".to_string()),
                         prompt_cache_retention: Some("24h".to_string()),
+                        stream_transport: None,
                     }),
                     ..ProviderSettings::default()
                 },

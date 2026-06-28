@@ -9,7 +9,7 @@ use crate::{allow_real_model_requests, ModelError};
 
 use super::sse::{push_sse_utf8_buffer, send_sse_parser_events, SseJsonParser, StreamSendError};
 use super::{HttpMethod, HttpRequest, HttpResponse, ModelEventStream, ModelHttpClient};
-use crate::transport::is_retryable_status;
+use crate::transport::{is_retryable_status, websocket};
 
 /// Reqwest-backed HTTP client.
 #[derive(Clone, Debug)]
@@ -216,6 +216,13 @@ impl ModelHttpClient for ReqwestHttpClient {
             receiver,
             cancellation_token,
         ))
+    }
+
+    async fn send_websocket_event_stream_incremental(
+        &self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        websocket::send_websocket_event_stream_incremental(request).await
     }
 }
 

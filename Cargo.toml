@@ -83,6 +83,7 @@ tempfile = "3.23.0"
 unicode-width = "0.2.0"
 base64 = "0.22.1"
 futures-util = "0.3.31"
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 fs2 = "0.4.3"
 image = { version = "0.25.8", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "ico"] }
 
