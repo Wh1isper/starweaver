@@ -55,7 +55,7 @@ impl InteractiveTuiState {
                 state.request_count = request_count;
             }
             if let Some(slot) = self.body.get_mut(state.line_index) {
-                *slot = format_subagent_collapsed_line(&state);
+                *slot = line;
                 return;
             }
         }
