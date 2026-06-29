@@ -330,6 +330,10 @@ async fn codex_oauth_streaming_model_builds_subscription_request_shape() {
     assert_eq!(request.headers["Authorization"], "Bearer access-old");
     assert_eq!(request.headers["originator"], "starweaver");
     assert!(request.headers["User-Agent"].starts_with("starweaver-agent-sdk/"));
+    assert_eq!(
+        request.headers["OpenAI-Beta"],
+        "responses_websockets=2026-02-06"
+    );
     assert_eq!(request.headers["ChatGPT-Account-ID"], "acct_123");
     assert_eq!(request.headers["X-OpenAI-Fedramp"], "true");
     assert_eq!(request.headers["session_id"], "typed-session");
@@ -340,9 +344,15 @@ async fn codex_oauth_streaming_model_builds_subscription_request_shape() {
     assert!(!request.headers.contains_key("version"));
     assert_eq!(request.body["type"], "response.create");
     assert_eq!(request.body["model"], "gpt-5.5");
-    assert!(request.body.get("stream").is_none());
+    assert_eq!(request.body["stream"], true);
     assert_eq!(request.body["instructions"], "");
     assert_eq!(request.body["store"], false);
+    let stream_request_start_ms = request.body["client_metadata"]
+        ["x-codex-ws-stream-request-start-ms"]
+        .as_str()
+        .and_then(|value| value.parse::<u128>().ok())
+        .unwrap();
+    assert!(stream_request_start_ms > 0);
     assert_eq!(request.body["input"][0]["content"][0]["text"], "hello");
     assert_eq!(
         request.metadata["starweaver.response_stream_transport"],
@@ -580,6 +590,10 @@ async fn oauth_bearer_websocket_client_refreshes_once_on_401() {
     assert_eq!(*token_source.refresh_count.lock().await, 1);
     let seen = http_client.seen.lock().await;
     assert_eq!(seen.len(), 2);
+    assert_eq!(
+        seen[0].headers["OpenAI-Beta"],
+        "responses_websockets=2026-02-06"
+    );
     assert_eq!(seen[0].headers["Authorization"], "Bearer access-old");
     assert_eq!(seen[1].headers["Authorization"], "Bearer access-new");
     assert_eq!(seen[0].headers["originator"], "starweaver");
@@ -587,6 +601,7 @@ async fn oauth_bearer_websocket_client_refreshes_once_on_401() {
     assert_eq!(seen[0].headers["thread_id"], "provider-thread-1");
     assert_eq!(seen[0].body["instructions"], "");
     assert_eq!(seen[0].body["store"], false);
+    assert!(seen[0].body["client_metadata"]["x-codex-ws-stream-request-start-ms"].is_string());
 }
 
 #[test]

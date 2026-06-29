@@ -1,12 +1,12 @@
 #![allow(clippy::unwrap_used)]
 
 use serde_json::json;
-use starweaver_core::RunId;
+use starweaver_core::{AgentId, RunId, TaskId};
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
     ProviderPartInfo, ToolCallPart, ToolReturnPart,
 };
-use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
+use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, AgentStreamSource};
 
 use super::*;
 use starweaver_core::SessionId;
@@ -723,6 +723,58 @@ async fn transport_builds_sse_and_jsonl_envelopes() {
         }
         ReplayEnvelope::Sse(_) => panic!("expected jsonl"),
     }
+}
+
+#[tokio::test]
+async fn default_projector_preserves_source_attribution_on_nested_records() {
+    let projector = DefaultDisplayMessageProjector;
+    let context = DisplayProjectionContext::new(
+        SessionId::from_string("session-source"),
+        RunId::from_string("run-parent"),
+    );
+    let record = AgentStreamRecord::new(
+        7,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "child delta")),
+        },
+    )
+    .with_source(AgentStreamSource::subagent(
+        AgentId::from_string("researcher-1"),
+        "researcher",
+        TaskId::from_string("task-research"),
+        Some(RunId::from_string("run-child")),
+        Some(RunId::from_string("run-parent")),
+        3,
+    ));
+
+    let messages = projector.project(&context, &record).await;
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].kind, DisplayMessageKind::AssistantTextDelta);
+    assert_eq!(messages[0].run_id.as_str(), "run-child");
+    assert_eq!(
+        messages[0]
+            .agent_id
+            .as_ref()
+            .map(starweaver_core::AgentId::as_str),
+        Some("researcher-1")
+    );
+    assert_eq!(messages[0].agent_name.as_deref(), Some("researcher"));
+    assert_eq!(messages[0].metadata["source_kind"], json!("subagent"));
+    assert_eq!(
+        messages[0].metadata["source_agent_id"],
+        json!("researcher-1")
+    );
+    assert_eq!(
+        messages[0].metadata["source_agent_name"],
+        json!("researcher")
+    );
+    assert_eq!(
+        messages[0].metadata["source_task_id"],
+        json!("task-research")
+    );
+    assert_eq!(messages[0].metadata["source_sequence"], json!(3));
 }
 
 #[tokio::test]

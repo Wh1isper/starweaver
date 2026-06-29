@@ -16,7 +16,8 @@ use super::{
     shell_review::{review_shell_command_or_block, ShellReviewContextSnapshot},
 };
 use crate::bundles::helpers::{
-    static_tool, static_tool_with_metadata, tool_execution_error, tool_metadata,
+    static_tool, static_tool_with_metadata, tool_execution_error, tool_invalid_arguments,
+    tool_metadata,
 };
 use crate::bundles::output::{
     append_guidance, dump_tool_output, fit_text_fields_to_limit, output_too_large_message,
@@ -111,16 +112,10 @@ async fn shell_exec(
     arguments: ShellExecArgs,
 ) -> Result<ToolResult, ToolError> {
     if arguments.command.trim().is_empty() {
-        return Ok(ToolResult::new(serde_json::json!({
-            "command": arguments.command,
-            "timeout_seconds": arguments.timeout_seconds,
-            "environment": arguments.environment.clone().unwrap_or_default(),
-            "cwd": arguments.cwd,
-            "return_code": 1,
-            "stdout": "",
-            "stderr": "",
-            "error": "Shell command must not be empty",
-        })));
+        return Err(tool_invalid_arguments(
+            "shell_exec",
+            "command must not be empty. Provide a shell command string, or skip shell_exec if there is no command to run.",
+        ));
     }
     let environment = merged_shell_environment(&context, arguments.environment.clone());
     let shell_command = ShellCommand {

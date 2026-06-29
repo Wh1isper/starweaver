@@ -164,7 +164,37 @@ fn host_io_tool_definitions() -> Vec<DynTool> {
 }
 
 fn json_result(value: impl Serialize, tool: &str) -> Result<ToolResult, ToolError> {
-    serde_json::to_value(value)
-        .map(ToolResult::new)
-        .map_err(|error| tool_execution_error(tool, error))
+    let value = serde_json::to_value(value).map_err(|error| tool_execution_error(tool, error))?;
+    if value.get("success").and_then(serde_json::Value::as_bool) == Some(false) {
+        return Err(unsuccessful_tool_result(tool, &value));
+    }
+    Ok(ToolResult::new(value))
+}
+
+fn unsuccessful_tool_result(tool: &str, value: &serde_json::Value) -> ToolError {
+    let message = unsuccessful_result_message(tool, value);
+    ToolError::Execution {
+        tool: tool.to_string(),
+        message,
+    }
+}
+
+fn unsuccessful_result_message(tool: &str, value: &serde_json::Value) -> String {
+    if let Some(message) = value.get("message").and_then(serde_json::Value::as_str) {
+        return message.to_string();
+    }
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        return error.to_string();
+    }
+    if let Some(errors) = value.get("errors").and_then(serde_json::Value::as_array) {
+        let joined = errors
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>()
+            .join("; ");
+        if !joined.is_empty() {
+            return joined;
+        }
+    }
+    format!("{tool} returned an unsuccessful response: {value}")
 }

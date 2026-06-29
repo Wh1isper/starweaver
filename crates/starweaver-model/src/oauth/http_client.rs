@@ -8,8 +8,8 @@ use starweaver_oauth::OAuthTokenSource;
 
 use crate::{
     oauth::headers::{
-        build_codex_headers, patch_codex_responses_body, trace_session_headers,
-        validate_safe_extra_headers, CODEX_USER_AGENT_HEADER,
+        build_codex_headers, patch_codex_responses_body, patch_codex_websocket_request,
+        trace_session_headers, validate_safe_extra_headers, CODEX_USER_AGENT_HEADER,
     },
     transport::{
         extend_headers_case_insensitive, DynHttpClient, HttpRequest, HttpResponse,
@@ -96,6 +96,7 @@ impl OAuthBearerHttpClient {
             );
             restore_case_insensitive_headers(&mut request.headers, explicit_codex_routing_headers);
             patch_codex_responses_body(&mut request);
+            patch_codex_websocket_request(&mut request);
         } else {
             extend_headers_case_insensitive(&mut request.headers, self.extra_headers.clone());
         }
@@ -180,8 +181,12 @@ impl ModelHttpClient for OAuthBearerHttpClient {
 
     async fn send_websocket_event_stream_incremental(
         &self,
-        request: HttpRequest,
+        mut request: HttpRequest,
     ) -> Result<ModelEventStream, ModelError> {
+        request
+            .metadata
+            .entry("starweaver.response_stream_transport".to_string())
+            .or_insert_with(|| Value::String("websocket".to_string()));
         let snapshot = self
             .token_source
             .get_token()

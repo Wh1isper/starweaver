@@ -1,8 +1,7 @@
-use std::collections::BTreeMap;
-
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::{collections::BTreeMap, future::Future, time::Duration};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{
@@ -32,11 +31,11 @@ pub async fn send_websocket_event_stream_incremental(
     }
     ensure_websocket_not_cancelled(&request.cancellation_token)?;
     let cancellation_token = request.cancellation_token.clone();
-    let mut stream = connect_websocket_stream(&request).await?;
+    let mut stream = Box::pin(connect_websocket_stream(&request)).await?;
     send_websocket_request_body(&mut stream, &request).await?;
 
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
-    spawn_websocket_event_worker(stream, sender, cancellation_token.clone());
+    spawn_websocket_event_worker(stream, sender, cancellation_token.clone(), request.timeout);
     Ok(ModelEventStream::new_with_cancellation(
         receiver,
         cancellation_token,
@@ -75,7 +74,9 @@ async fn connect_websocket_stream(
                 reason: "model websocket stream cancellation requested".to_string(),
             });
         }
-        result = connect => result.map_err(map_websocket_connect_error)?,
+        result = with_optional_timeout(request.timeout, "websocket connect timeout", connect) => {
+            result?.map_err(map_websocket_connect_error)?
+        },
     };
     Ok(stream)
 }
@@ -94,8 +95,12 @@ async fn send_websocket_request_body(
                 reason: "model websocket stream cancellation requested".to_string(),
             });
         }
-        result = stream.send(Message::Text(request_text.into())) => {
-            result.map_err(map_websocket_send_error)?;
+        result = with_optional_timeout(
+            request.timeout,
+            "websocket request send timeout",
+            stream.send(Message::Text(request_text.into())),
+        ) => {
+            result?.map_err(map_websocket_send_error)?;
         }
     }
     Ok(())
@@ -105,12 +110,14 @@ fn spawn_websocket_event_worker(
     mut stream: ModelWebSocketStream,
     sender: tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
     cancellation_token: starweaver_core::CancellationToken,
+    timeout: Option<Duration>,
 ) {
     tokio::spawn(async move {
         loop {
-            let message = next_websocket_message(&mut stream, &sender, &cancellation_token).await;
+            let message =
+                next_websocket_message(&mut stream, &sender, &cancellation_token, timeout).await;
             let Some(message) = message else { return };
-            if handle_websocket_message(message, &mut stream, &sender).await {
+            if handle_websocket_message(message, &mut stream, &sender, timeout).await {
                 return;
             }
         }
@@ -121,6 +128,7 @@ async fn next_websocket_message(
     stream: &mut ModelWebSocketStream,
     sender: &tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
     cancellation_token: &starweaver_core::CancellationToken,
+    timeout: Option<Duration>,
 ) -> Option<Result<Message, WebSocketError>> {
     tokio::select! {
         biased;
@@ -130,18 +138,25 @@ async fn next_websocket_message(
                     reason: "model websocket stream cancellation requested".to_string(),
                 }))
                 .await;
-            let _ = stream.close(None).await;
+            let _ = with_optional_timeout(timeout, "websocket close timeout", stream.close(None)).await;
             None
         }
-        message = stream.next() => {
-            if message.is_none() {
-                let _ = sender
-                    .send(Err(ModelError::Transport(
-                        "websocket closed before response.completed".to_string(),
-                    )))
-                    .await;
+        message = with_optional_timeout(timeout, "websocket receive timeout", stream.next()) => {
+            match message {
+                Ok(Some(message)) => Some(message),
+                Ok(None) => {
+                    let _ = sender
+                        .send(Err(ModelError::Transport(
+                            "websocket closed before response.completed".to_string(),
+                        )))
+                        .await;
+                    None
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error)).await;
+                    None
+                }
             }
-            message
         }
     }
 }
@@ -150,9 +165,12 @@ async fn handle_websocket_message(
     message: Result<Message, WebSocketError>,
     stream: &mut ModelWebSocketStream,
     sender: &tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
+    timeout: Option<Duration>,
 ) -> bool {
     match message {
-        Ok(Message::Text(text)) => handle_websocket_text_event(&text, stream, sender).await,
+        Ok(Message::Text(text)) => {
+            handle_websocket_text_event(&text, stream, sender, timeout).await
+        }
         Ok(Message::Binary(_)) => {
             let _ = sender
                 .send(Err(ModelError::ResponseParsing(
@@ -170,11 +188,23 @@ async fn handle_websocket_message(
             true
         }
         Ok(Message::Ping(payload)) => {
-            if let Err(error) = stream.send(Message::Pong(payload)).await {
-                let _ = sender.send(Err(map_websocket_error(error))).await;
-                return true;
+            match with_optional_timeout(
+                timeout,
+                "websocket pong send timeout",
+                stream.send(Message::Pong(payload)),
+            )
+            .await
+            {
+                Ok(Ok(())) => false,
+                Ok(Err(error)) => {
+                    let _ = sender.send(Err(map_websocket_error(error))).await;
+                    true
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error)).await;
+                    true
+                }
             }
-            false
         }
         Ok(Message::Pong(_) | Message::Frame(_)) => false,
         Err(error) => {
@@ -188,6 +218,7 @@ async fn handle_websocket_text_event(
     text: &str,
     stream: &mut ModelWebSocketStream,
     sender: &tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
+    timeout: Option<Duration>,
 ) -> bool {
     if let Some(error) = websocket_error_event(text) {
         let _ = sender.send(Err(error)).await;
@@ -200,7 +231,9 @@ async fn handle_websocket_text_event(
                 return true;
             }
             if completed {
-                let _ = stream.close(None).await;
+                let _ =
+                    with_optional_timeout(timeout, "websocket close timeout", stream.close(None))
+                        .await;
             }
             completed
         }
@@ -212,6 +245,19 @@ async fn handle_websocket_text_event(
                 .await;
             true
         }
+    }
+}
+
+async fn with_optional_timeout<T>(
+    timeout: Option<Duration>,
+    timeout_message: &'static str,
+    future: impl Future<Output = T>,
+) -> Result<T, ModelError> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .map_err(|_| ModelError::Transport(timeout_message.to_string())),
+        None => Ok(future.await),
     }
 }
 
@@ -297,7 +343,10 @@ fn map_websocket_error(error: WebSocketError) -> ModelError {
 
 #[derive(Debug, Deserialize)]
 struct WrappedWebsocketError {
+    #[serde(default)]
     code: Option<String>,
+    #[serde(rename = "type", default)]
+    error_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -317,9 +366,10 @@ fn websocket_error_event(payload: &str) -> Option<ModelError> {
     }
     let body = serde_json::from_str::<Value>(payload)
         .unwrap_or_else(|_| Value::String(payload.to_string()));
-    if event.error.as_ref().and_then(|error| error.code.as_deref())
-        == Some(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
-    {
+    if event.error.as_ref().is_some_and(|error| {
+        error.code.as_deref() == Some(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
+            || error.error_type.as_deref() == Some(WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
+    }) {
         return Some(ModelError::ProviderStatus {
             status: event.status.unwrap_or(400),
             body,
@@ -362,15 +412,21 @@ pub fn should_fallback_websocket_to_http(error: &ModelError) -> bool {
 }
 
 fn is_websocket_connection_limit_error(body: &Value) -> bool {
-    body.get("error")
-        .and_then(|error| error.get("code"))
-        .and_then(Value::as_str)
-        .is_some_and(|code| code == WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
-        || body
-            .get("code")
-            .and_then(Value::as_str)
-            .is_some_and(|code| code == WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
+    response_error_code(body).is_some_and(|code| code == WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE)
         || body == &json!({"code": WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE})
+}
+
+fn response_error_code(body: &Value) -> Option<&str> {
+    body.get("error")
+        .and_then(|error| error.get("code").or_else(|| error.get("type")))
+        .or_else(|| {
+            body.get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("code").or_else(|| error.get("type")))
+        })
+        .or_else(|| body.get("code"))
+        .or_else(|| body.get("type"))
+        .and_then(Value::as_str)
 }
 
 #[cfg(test)]
@@ -383,6 +439,7 @@ mod tests {
             "type": "error",
             "status": 400,
             "error": {
+                "type": "invalid_request_error",
                 "code": "websocket_connection_limit_reached",
                 "message": "Responses websocket connection limit reached"
             }
@@ -400,6 +457,24 @@ mod tests {
                 ..
             }
         ));
+        assert!(should_fallback_websocket_to_http(&error));
+    }
+
+    #[test]
+    fn nested_response_connection_limit_error_is_fallback_safe() {
+        let error = ModelError::ProviderStatus {
+            status: 400,
+            body: json!({
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "code": "websocket_connection_limit_reached"
+                    }
+                }
+            }),
+            retryable: true,
+        };
+
         assert!(should_fallback_websocket_to_http(&error));
     }
 

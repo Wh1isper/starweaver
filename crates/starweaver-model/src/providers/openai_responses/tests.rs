@@ -153,6 +153,66 @@ fn responses_stream_preserves_thinking_and_text_when_completed_output_is_empty()
 }
 
 #[test]
+fn responses_stream_preserves_raw_reasoning_text_delta() {
+    let events = vec![
+        json!({"type": "response.reasoning_text.delta", "item_id": "rs_raw", "content_index": 0, "delta": "raw detail"}),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_raw_reasoning",
+                "status": "completed",
+                "output": []
+            }
+        }),
+    ];
+
+    let stream = OpenAiResponsesAdapter::parse_stream_events(&events).unwrap();
+    assert!(stream.iter().any(|event| matches!(
+        event,
+        ModelResponseStreamEvent::PartDelta(delta)
+            if matches!(&delta.delta, StreamDelta::Thinking { text } if text == "raw detail")
+    )));
+    let response = final_response(&stream);
+    assert!(response.parts.iter().any(|part| matches!(
+        part,
+        ModelResponsePart::ProviderThinking { text, provider, .. }
+            if text == "raw detail" && provider.id.as_deref() == Some("rs_raw")
+    )));
+}
+
+#[test]
+fn responses_stream_ends_raw_reasoning_text_on_done_event() {
+    let events = vec![
+        json!({"type": "response.reasoning_text.delta", "item_id": "rs_raw", "content_index": 0, "delta": "raw detail"}),
+        json!({"type": "response.reasoning_text.done", "item_id": "rs_raw", "content_index": 0}),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_raw_reasoning_done",
+                "status": "completed",
+                "output": []
+            }
+        }),
+    ];
+
+    let stream = OpenAiResponsesAdapter::parse_stream_events(&events).unwrap();
+    let thinking_end_count = stream
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+                    index: 1,
+                    part_kind: Some(kind),
+                }) if kind == "thinking"
+            )
+        })
+        .count();
+
+    assert_eq!(thinking_end_count, 1);
+}
+
+#[test]
 fn responses_parse_preserves_provider_replay_metadata() {
     let response = OpenAiResponsesAdapter::parse_response(&json!({
         "id": "resp_1",
@@ -635,6 +695,52 @@ fn responses_stream_requires_completed_event() {
     assert!(
         matches!(error, ModelError::ResponseParsing(message) if message.contains("missing response.completed"))
     );
+}
+
+#[test]
+fn responses_stream_failed_event_preserves_provider_status_body_and_retryability() {
+    let failed = json!({
+        "type": "response.failed",
+        "response": {
+            "id": "resp_failed",
+            "status": "failed",
+            "error": {
+                "code": "rate_limit_exceeded",
+                "message": "Rate limit reached. Please try again in 2s."
+            }
+        }
+    });
+
+    let error =
+        OpenAiResponsesAdapter::parse_stream_events(std::slice::from_ref(&failed)).unwrap_err();
+
+    assert!(matches!(
+        error,
+        ModelError::ProviderStatus {
+            status: 429,
+            retryable: true,
+            body
+        } if body == failed
+    ));
+}
+
+#[test]
+fn responses_stream_incomplete_event_reports_reason() {
+    let error = OpenAiResponsesAdapter::parse_stream_events(&[json!({
+        "type": "response.incomplete",
+        "response": {
+            "id": "resp_incomplete",
+            "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"}
+        }
+    })])
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        ModelError::UnsupportedResponse(message)
+            if message.contains("incomplete response") && message.contains("max_output_tokens")
+    ));
 }
 
 #[test]

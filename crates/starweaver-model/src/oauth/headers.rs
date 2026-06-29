@@ -1,8 +1,11 @@
 //! Codex OAuth request headers and body patching.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use starweaver_oauth::OAuthAccount;
 
 use crate::{
@@ -14,6 +17,10 @@ use crate::{
 pub const CODEX_ORIGINATOR: &str = "starweaver";
 
 pub(super) const CODEX_USER_AGENT_HEADER: &str = "User-Agent";
+pub(super) const CODEX_OPENAI_BETA_HEADER: &str = "OpenAI-Beta";
+const CODEX_RESPONSES_WEBSOCKET_BETA: &str = "responses_websockets=2026-02-06";
+const CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY: &str =
+    "x-codex-ws-stream-request-start-ms";
 
 /// Reserved headers that user-provided OAuth extra headers may not override.
 pub const RESERVED_OAUTH_EXTRA_HEADERS: &[&str] = &[
@@ -119,6 +126,75 @@ pub fn patch_codex_responses_body(request: &mut HttpRequest) {
         body.insert("instructions".to_string(), Value::String(String::new()));
     }
     body.insert("store".to_string(), Value::Bool(false));
+}
+
+pub(super) fn patch_codex_websocket_request(request: &mut HttpRequest) {
+    if request.method != HttpMethod::Post
+        || !is_codex_responses_path(&request.url)
+        || request
+            .metadata
+            .get("starweaver.response_stream_transport")
+            .and_then(Value::as_str)
+            != Some("websocket")
+    {
+        return;
+    }
+    append_comma_header_value_case_insensitive(
+        &mut request.headers,
+        CODEX_OPENAI_BETA_HEADER,
+        CODEX_RESPONSES_WEBSOCKET_BETA,
+    );
+    insert_websocket_request_start_metadata(&mut request.body);
+}
+
+fn append_comma_header_value_case_insensitive(
+    headers: &mut BTreeMap<String, String>,
+    name: &str,
+    value: &str,
+) {
+    let existing_key = headers
+        .keys()
+        .find(|key| key.eq_ignore_ascii_case(name))
+        .cloned();
+    if let Some(existing_key) = existing_key {
+        if let Some(existing_value) = headers.get_mut(&existing_key) {
+            if existing_value
+                .split(',')
+                .map(str::trim)
+                .any(|part| part.eq_ignore_ascii_case(value))
+            {
+                return;
+            }
+            if !existing_value.trim().is_empty() {
+                existing_value.push_str(", ");
+            }
+            existing_value.push_str(value);
+        }
+    } else {
+        headers.insert(name.to_string(), value.to_string());
+    }
+}
+
+fn insert_websocket_request_start_metadata(body: &mut Value) {
+    let Some(body) = body.as_object_mut() else {
+        return;
+    };
+    let client_metadata = body
+        .entry("client_metadata".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(client_metadata) = client_metadata.as_object_mut() else {
+        return;
+    };
+    client_metadata
+        .entry(CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY.to_string())
+        .or_insert_with(|| Value::String(unix_time_millis_string()));
+}
+
+fn unix_time_millis_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis())
+        .to_string()
 }
 
 fn is_codex_responses_path(url: &str) -> bool {

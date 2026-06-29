@@ -382,15 +382,15 @@ fn response_http_sse_body(mut body: Value) -> Value {
 
 fn response_websocket_body(body: Value) -> Value {
     let mut envelope = serde_json::Map::new();
+    if let Value::Object(mut object) = body {
+        object.remove("background");
+        envelope.extend(object);
+    }
     envelope.insert(
         "type".to_string(),
         Value::String("response.create".to_string()),
     );
-    if let Value::Object(mut object) = body {
-        object.remove("background");
-        object.remove("stream");
-        envelope.extend(object);
-    }
+    envelope.insert("stream".to_string(), Value::Bool(true));
     Value::Object(envelope)
 }
 
@@ -534,11 +534,11 @@ mod tests {
     };
 
     #[test]
-    fn websocket_body_wraps_response_create_and_removes_streaming_fields() {
+    fn websocket_body_wraps_response_create_and_forces_stream_true() {
         let body = response_websocket_body(json!({
             "model": "gpt-5-codex",
             "input": [{"role": "user", "content": "hello"}],
-            "stream": true,
+            "stream": false,
             "background": false,
             "store": false
         }));
@@ -549,6 +549,7 @@ mod tests {
                 "type": "response.create",
                 "model": "gpt-5-codex",
                 "input": [{"role": "user", "content": "hello"}],
+                "stream": true,
                 "store": false
             })
         );

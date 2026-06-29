@@ -71,3 +71,17 @@ pub fn tool_execution_error(tool: &str, error: impl std::fmt::Display) -> ToolEr
         message: error.to_string(),
     }
 }
+
+pub fn tool_invalid_arguments(tool: &str, message: impl Into<String>) -> ToolError {
+    ToolError::InvalidArguments {
+        tool: tool.to_string(),
+        message: message.into(),
+    }
+}
+
+pub fn tool_model_retry(tool: &str, message: impl Into<String>) -> ToolError {
+    ToolError::ModelRetry {
+        tool: tool.to_string(),
+        message: message.into(),
+    }
+}

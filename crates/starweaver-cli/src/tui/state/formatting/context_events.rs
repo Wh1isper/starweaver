@@ -122,19 +122,24 @@ pub(in crate::tui::state) fn subagent_event_payload(payload: &Value) -> &Value {
 
 pub(in crate::tui::state) fn subagent_display_id(payload: &Value) -> String {
     let payload = subagent_event_payload(payload);
-    payload_string(
-        payload,
-        &[
-            "agent_id",
-            "id",
-            "name",
-            "subagent",
-            "subagent_name",
-            "agent_name",
-            "agent",
-        ],
-    )
-    .unwrap_or_else(|| "subagent".to_string())
+    payload
+        .get("metadata")
+        .and_then(|metadata| payload_string(metadata, &["agent_id", "id"]))
+        .or_else(|| {
+            payload_string(
+                payload,
+                &[
+                    "agent_id",
+                    "id",
+                    "name",
+                    "subagent",
+                    "subagent_name",
+                    "agent_name",
+                    "agent",
+                ],
+            )
+        })
+        .unwrap_or_else(|| "subagent".to_string())
 }
 
 pub(in crate::tui::state) fn format_subagent_running_line(payload: &Value) -> String {
@@ -170,14 +175,23 @@ pub(in crate::tui::state) fn format_subagent_finished_line(kind: &str, payload: 
         line.push(')');
     }
     if success {
-        if let Some(request_count) =
-            payload_u64(payload, &["request_count", "requests"]).filter(|count| *count > 0)
+        let metadata = payload.get("metadata");
+        if let Some(request_count) = payload_u64(payload, &["request_count", "requests"])
+            .or_else(|| {
+                metadata.and_then(|value| payload_u64(value, &["request_count", "requests"]))
+            })
+            .filter(|count| *count > 0)
         {
             line.push_str(" | ");
             line.push_str(&request_count.to_string());
             line.push_str(" reqs");
         }
         if let Some(preview) = payload_string(payload, &["result_preview", "preview", "output"])
+            .or_else(|| {
+                metadata.and_then(|value| {
+                    payload_string(value, &["result_preview", "preview", "output"])
+                })
+            })
             .filter(|preview| !preview.trim().is_empty())
         {
             line.push_str(" | \"");

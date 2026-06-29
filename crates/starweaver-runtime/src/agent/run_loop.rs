@@ -1033,12 +1033,31 @@ impl Agent {
                         ),
                     );
                     let tool_started_at = std::time::Instant::now();
-                    let mut tool_return = run_tools.execute_call(tool_context, call).await;
-                    if let Some(stream_sink) = &stream_sink {
-                        for child_record in stream_sink.drain() {
-                            stream_record!(&state, child_record);
+                    let mut tool_return_future =
+                        Box::pin(run_tools.execute_call(tool_context, call));
+                    let mut child_stream_tick =
+                        tokio::time::interval(std::time::Duration::from_millis(50));
+                    child_stream_tick
+                        .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    let mut tool_return = loop {
+                        tokio::select! {
+                            tool_return = &mut tool_return_future => {
+                                if let Some(stream_sink) = &stream_sink {
+                                    for child_record in stream_sink.drain() {
+                                        stream_record!(&state, child_record);
+                                    }
+                                }
+                                break tool_return;
+                            }
+                            _ = child_stream_tick.tick(), if stream_sink.is_some() => {
+                                if let Some(stream_sink) = &stream_sink {
+                                    for child_record in stream_sink.drain() {
+                                        stream_record!(&state, child_record);
+                                    }
+                                }
+                            }
                         }
-                    }
+                    };
                     let tool_duration = tool_started_at.elapsed();
                     let duration_ms = u64::try_from(tool_duration.as_millis()).unwrap_or(u64::MAX);
                     tool_return

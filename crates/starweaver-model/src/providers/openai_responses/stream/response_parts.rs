@@ -10,7 +10,7 @@ use crate::{
     providers::parse_tool_call_arguments,
 };
 
-use super::{OpenAiResponsesStreamParser, StreamedFunctionCall};
+use super::{OpenAiResponsesStreamParser, StreamedFunctionCall, StreamedOpaqueItems};
 
 impl OpenAiResponsesStreamParser {
     pub(super) fn response_with_streamed_parts_fallback(
@@ -50,6 +50,7 @@ impl OpenAiResponsesStreamParser {
                 response.parts.push(part);
             }
         }
+        append_missing_opaque_items(&mut response.parts, &self.opaque_items);
         response
     }
 
@@ -94,6 +95,42 @@ impl OpenAiResponsesStreamParser {
             .filter(|call| !call.name.is_empty())
             .map(streamed_tool_call_part)
             .collect()
+    }
+}
+
+fn append_missing_opaque_items(
+    parts: &mut Vec<ModelResponsePart>,
+    opaque_items: &StreamedOpaqueItems,
+) {
+    let existing_ids = parts
+        .iter()
+        .filter_map(|part| {
+            part.provider_part()
+                .and_then(|provider| provider.id.as_deref())
+        })
+        .map(str::to_string)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut items = opaque_items.iter().collect::<Vec<_>>();
+    items.sort_by_key(|(key, _)| *key);
+    for (key, item) in items {
+        let id = item
+            .get("id")
+            .or_else(|| item.get("call_id"))
+            .and_then(Value::as_str)
+            .unwrap_or(key);
+        if existing_ids.contains(id) {
+            continue;
+        }
+        let item_type = item
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("response_item")
+            .to_string();
+        parts.push(ModelResponsePart::ProviderOpaque {
+            item_type,
+            payload: item.clone(),
+            provider: ProviderPartInfo::new("openai").with_id(id.to_string()),
+        });
     }
 }
 

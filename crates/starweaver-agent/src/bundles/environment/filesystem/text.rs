@@ -9,6 +9,7 @@ use super::{
     context::uses_relaxed_text_limits, default_view_line_limit, default_view_max_line_length,
     tool_execution_error, ViewArgs,
 };
+use crate::bundles::helpers::tool_model_retry;
 
 const BINARY_CHECK_BYTES: usize = 8192;
 
@@ -23,10 +24,13 @@ pub(super) async fn read_text_file(
         .await
         .map_err(|error| tool_execution_error("view", error))?;
     if binary_probe.contains(&0) {
-        return Ok(ToolResult::new(Value::String(format!(
-            "Error: {} appears to be a binary file. Use appropriate tools (e.g. pdf_convert for PDFs, office_to_markdown for Office/EPUB, or xxd for hex dumps) instead.",
-            arguments.file_path
-        ))));
+        return Err(tool_model_retry(
+            "view",
+            format!(
+                "{} appears to be a binary file. Use an appropriate file-specific tool instead: pdf_convert for PDFs, office_to_markdown for Office/EPUB documents, media understanding for images/audio/video, or shell tools such as xxd for hex inspection.",
+                arguments.file_path
+            ),
+        ));
     }
 
     let relaxed = uses_relaxed_text_limits(provider, &arguments.file_path, tool_config)?;
@@ -36,14 +40,14 @@ pub(super) async fn read_text_file(
         tool_config.view_max_text_file_size
     };
     if stat.size > max_file_size {
-        return Ok(ToolResult::new(serde_json::json!({
-            "success": false,
-            "error": format!(
-                "File is too large to inspect safely ({}). Maximum supported text view size is {}. Use shell tools (e.g. head, tail, sed -n) to read portions of this file.",
+        return Err(tool_model_retry(
+            "view",
+            format!(
+                "file is too large to inspect safely ({}). Maximum supported text view size is {}. Use shell tools such as head, tail, or sed -n to read portions of this file, or narrow the request if a range-capable tool is available.",
                 format_size(stat.size),
                 format_size(max_file_size),
             ),
-        })));
+        ));
     }
 
     let line_limit = if relaxed && arguments.line_limit == default_view_line_limit() {
@@ -85,9 +89,9 @@ pub(super) async fn ensure_file_missing(
     path: &str,
 ) -> Result<(), ToolError> {
     match provider.stat(path).await {
-        Ok(_) => Err(tool_execution_error(
+        Ok(_) => Err(tool_model_retry(
             tool,
-            "file already exists; use write to overwrite existing content",
+            "file already exists. Use write with mode \"w\" to overwrite existing content, or choose a different file path for create operations.",
         )),
         Err(EnvironmentError::NotFound(_)) => Ok(()),
         Err(error) => Err(tool_execution_error(tool, error)),

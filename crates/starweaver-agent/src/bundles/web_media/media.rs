@@ -14,7 +14,7 @@ use super::{
     },
     json_result,
 };
-use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::helpers::{tool_execution_error, tool_model_retry};
 
 /// Media URL capability flags supplied by the active model adapter or SDK configuration.
 #[allow(clippy::struct_excessive_bools)]
@@ -218,15 +218,13 @@ async fn read_media(
             .map_err(|error| tool_execution_error(media_kind.as_str(), error))?;
         return json_result(response, media_kind.as_str());
     }
-    Ok(ToolResult::new(serde_json::json!({
-        "success": false,
-        "url": url,
-        "media_kind": media_kind.as_str(),
-        "native_supported": native_supported,
-        "model_id": capabilities.and_then(|capabilities| capabilities.model_id.clone()),
-        "missing_dependency": "HostMediaUnderstandingClientHandle",
-        "message": "configure a HostMediaUnderstandingClientHandle fallback adapter, or use load_media_url when the active model supports this media URL kind",
-    })))
+    Err(tool_model_retry(
+        media_kind.as_str(),
+        format!(
+            "no HostMediaUnderstandingClientHandle fallback adapter is configured for {media_kind}. Configure a fallback adapter, use load_media_url if the active model supports this media URL kind, or switch to a media-capable model. native_supported={native_supported}",
+            media_kind = media_kind.as_str(),
+        ),
+    ))
 }
 
 pub(super) fn classify_media(content_type: Option<&str>, path_or_url: &str) -> MediaKind {

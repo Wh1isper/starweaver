@@ -383,6 +383,17 @@ impl ToolRegistry {
             .or_insert_with(|| serde_json::json!(call.name.clone()));
         match self.tools.get(&call.name) {
             Some(tool) => {
+                if let Some(error) = call.arguments.invalid_error() {
+                    return error_return(
+                        call,
+                        &ToolError::InvalidArguments {
+                            tool: call.name.clone(),
+                            message: format!(
+                                "tool arguments must be valid JSON before execution: {error}"
+                            ),
+                        },
+                    );
+                }
                 let mut arguments = call.arguments.execution_value();
                 if let Err(error) = self
                     .execution_hooks

@@ -96,13 +96,26 @@ async fn live_stream_handle_receives_attributed_subagent_records() {
 
     assert_eq!(result.result.output, "parent done");
     assert_eq!(observed, result.events);
-    let Some(source) = observed.iter().find_map(|record| record.source.as_ref()) else {
+    let Some(source_index) = observed.iter().position(|record| record.source.is_some()) else {
         panic!("attributed child stream record");
     };
+    let source = observed[source_index].source.as_ref().unwrap();
     assert_eq!(&source.kind, &AgentStreamSourceKind::Subagent);
     assert_eq!(source.agent_name, "child");
     assert!(source.run_id.is_some());
     assert!(source.parent_run_id.is_some());
+    let Some(delegate_return_index) = observed.iter().position(|record| {
+        matches!(
+            &record.event,
+            AgentStreamEvent::ToolReturn { tool_return, .. } if tool_return.name == "delegate"
+        )
+    }) else {
+        panic!("parent delegate tool return should be streamed");
+    };
+    assert!(
+        source_index < delegate_return_index,
+        "child stream records must be forwarded before parent delegate ToolReturn"
+    );
     assert!(observed.iter().any(|record| record.source.is_some()
         && matches!(record.event, AgentStreamEvent::RunComplete { .. })));
 }

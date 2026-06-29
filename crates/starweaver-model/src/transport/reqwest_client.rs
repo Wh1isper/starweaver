@@ -222,7 +222,7 @@ impl ModelHttpClient for ReqwestHttpClient {
         &self,
         request: HttpRequest,
     ) -> Result<ModelEventStream, ModelError> {
-        websocket::send_websocket_event_stream_incremental(request).await
+        Box::pin(websocket::send_websocket_event_stream_incremental(request)).await
     }
 }
 
