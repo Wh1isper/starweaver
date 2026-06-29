@@ -3,10 +3,11 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 use tokio_tungstenite::{
-    connect_async,
+    connect_async_with_config,
     tungstenite::{
         client::IntoClientRequest,
         http::{HeaderName, HeaderValue},
+        protocol::WebSocketConfig,
         Error as WebSocketError, Message,
     },
 };
@@ -19,6 +20,8 @@ type ModelWebSocketStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
+const MODEL_WEBSOCKET_MAX_MESSAGE_SIZE: usize = 256 << 20;
+const MODEL_WEBSOCKET_MAX_FRAME_SIZE: usize = 64 << 20;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WebSocketConnectionKey {
@@ -160,7 +163,11 @@ async fn connect_websocket_stream(
         })?;
     insert_headers(websocket_request.headers_mut(), &request.headers)?;
 
-    let connect = connect_async(websocket_request);
+    let connect = connect_async_with_config(
+        websocket_request,
+        Some(model_websocket_config()),
+        /*disable_nagle*/ false,
+    );
     let (stream, _response) = tokio::select! {
         biased;
         () = request.cancellation_token.cancelled() => {
@@ -173,6 +180,12 @@ async fn connect_websocket_stream(
         },
     };
     Ok(stream)
+}
+
+fn model_websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_message_size(Some(MODEL_WEBSOCKET_MAX_MESSAGE_SIZE))
+        .max_frame_size(Some(MODEL_WEBSOCKET_MAX_FRAME_SIZE))
 }
 
 async fn send_websocket_request_body(
@@ -692,6 +705,31 @@ mod tests {
         assert!(!should_fallback_websocket_to_http(&ModelError::Transport(
             "invalid websocket JSON event".to_string()
         )));
+    }
+
+    #[test]
+    fn websocket_config_lifts_default_response_event_limits() {
+        let config = model_websocket_config();
+
+        assert_eq!(
+            config.max_message_size,
+            Some(MODEL_WEBSOCKET_MAX_MESSAGE_SIZE)
+        );
+        assert_eq!(config.max_frame_size, Some(MODEL_WEBSOCKET_MAX_FRAME_SIZE));
+        assert!(
+            MODEL_WEBSOCKET_MAX_MESSAGE_SIZE
+                > option_or_panic(
+                    WebSocketConfig::default().max_message_size,
+                    "default message size should be bounded",
+                )
+        );
+        assert!(
+            MODEL_WEBSOCKET_MAX_FRAME_SIZE
+                > option_or_panic(
+                    WebSocketConfig::default().max_frame_size,
+                    "default frame size should be bounded",
+                )
+        );
     }
 
     #[tokio::test]
