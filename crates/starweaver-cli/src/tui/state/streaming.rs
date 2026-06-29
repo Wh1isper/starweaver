@@ -1,13 +1,16 @@
+use std::fmt::Write as _;
+
 use super::{
-    append_delta_segments, assistant_content_line, format_custom_context_event_lines,
-    format_streaming_tool_call_line, format_subagent_finished_line, format_subagent_running_line,
-    format_tool_call_line, format_tool_return_lines, is_assistant_content_line,
-    is_subagent_lifecycle_event_kind, is_subagent_start_event_kind, is_task_snapshot_event,
-    is_task_tool_name, is_thinking_quote_line, merge_stream_fragment, normalized_event_kind,
-    streaming_part_kind, streaming_tool_arguments_match, streaming_tool_state_is_available,
-    subagent_display_id, task_panel_items_from_value, tool_call_visibility_key, AgentStreamEvent,
-    AgentStreamRecord, HitlPanelState, InteractiveTuiState, ModelResponseStreamEvent, PartDelta,
-    StreamDelta, StreamingPartKind, StreamingToolCallState, Value,
+    append_delta_segments, assistant_content_line, compact_status_text,
+    format_custom_context_event_lines, format_streaming_tool_call_line,
+    format_subagent_finished_line, format_subagent_running_line, format_tool_call_line,
+    format_tool_return_lines, is_assistant_content_line, is_subagent_lifecycle_event_kind,
+    is_subagent_start_event_kind, is_task_snapshot_event, is_task_tool_name,
+    is_thinking_quote_line, merge_stream_fragment, normalized_event_kind, streaming_part_kind,
+    streaming_tool_arguments_match, streaming_tool_state_is_available, subagent_display_id,
+    task_panel_items_from_value, tool_call_visibility_key, AgentStreamEvent, AgentStreamRecord,
+    HitlPanelState, InteractiveTuiState, ModelResponseStreamEvent, PartDelta, StreamDelta,
+    StreamingPartKind, StreamingToolCallState, Value,
 };
 
 impl InteractiveTuiState {
@@ -15,20 +18,42 @@ impl InteractiveTuiState {
         let normalized = normalized_event_kind(kind);
         let agent_id = subagent_display_id(payload);
         if is_subagent_start_event_kind(&normalized) {
+            if let Some(state) = self.subagent_states.get_mut(&agent_id) {
+                if state.status == "running" {
+                    state.agent_name = subagent_agent_name(payload);
+                    self.update_subagent_collapsed_line(&agent_id);
+                }
+                return;
+            }
             let line_index = self.body.len();
             self.body.push(format_subagent_running_line(payload));
             self.subagent_states.insert(
                 agent_id,
                 super::SubagentDisplayState {
                     line_index,
+                    agent_name: subagent_agent_name(payload),
+                    status: "running".to_string(),
                     tool_names: Vec::new(),
+                    output_preview: String::new(),
+                    request_count: 0,
                 },
             );
             return;
         }
 
         let line = format_subagent_finished_line(kind, payload);
-        if let Some(state) = self.subagent_states.remove(&agent_id) {
+        if let Some(mut state) = self.subagent_states.remove(&agent_id) {
+            state.status = if normalized.contains("fail") {
+                "failed".to_string()
+            } else {
+                "done".to_string()
+            };
+            if let Some(preview) = subagent_result_preview(payload) {
+                state.output_preview = preview;
+            }
+            if let Some(request_count) = subagent_request_count(payload) {
+                state.request_count = request_count;
+            }
             if let Some(slot) = self.body.get_mut(state.line_index) {
                 *slot = line;
                 return;
@@ -37,9 +62,97 @@ impl InteractiveTuiState {
         self.body.push(line);
     }
 
+    fn update_subagent_collapsed_line(&mut self, agent_id: &str) {
+        if let Some(state) = self.subagent_states.get(agent_id) {
+            if let Some(slot) = self.body.get_mut(state.line_index) {
+                *slot = format_subagent_collapsed_line(state);
+            }
+        }
+    }
+
+    fn apply_subagent_source_record(&mut self, record: &AgentStreamRecord) -> bool {
+        let Some(source) = record.source.as_ref() else {
+            return false;
+        };
+        if !matches!(
+            source.kind,
+            starweaver_runtime::AgentStreamSourceKind::Subagent
+        ) {
+            return false;
+        }
+        let agent_id = source.agent_id.as_str().to_string();
+        if !self.subagent_states.contains_key(&agent_id) {
+            let line_index = self.body.len();
+            self.body
+                .push(format!("[{}] Running...", source.agent_name));
+            self.subagent_states.insert(
+                agent_id.clone(),
+                super::SubagentDisplayState {
+                    line_index,
+                    agent_name: source.agent_name.clone(),
+                    status: "running".to_string(),
+                    tool_names: Vec::new(),
+                    output_preview: String::new(),
+                    request_count: 0,
+                },
+            );
+        }
+        match &record.event {
+            AgentStreamEvent::ModelRequest { .. } => {
+                if let Some(state) = self.subagent_states.get_mut(&agent_id) {
+                    state.request_count = state.request_count.saturating_add(1);
+                    state.status = "running".to_string();
+                }
+            }
+            AgentStreamEvent::ToolCall { call, .. } => {
+                if let Some(state) = self.subagent_states.get_mut(&agent_id) {
+                    if !state.tool_names.iter().any(|name| name == &call.name) {
+                        state.tool_names.push(call.name.clone());
+                    }
+                }
+            }
+            AgentStreamEvent::ModelStream {
+                event:
+                    ModelResponseStreamEvent::PartDelta(PartDelta {
+                        delta: StreamDelta::Text { text },
+                        ..
+                    }),
+                ..
+            } => {
+                if let Some(state) = self.subagent_states.get_mut(&agent_id) {
+                    state.output_preview =
+                        compact_status_text(&format!("{}{}", state.output_preview, text), 120);
+                }
+            }
+            AgentStreamEvent::RunComplete { output, .. } => {
+                if let Some(state) = self.subagent_states.get_mut(&agent_id) {
+                    state.status = "done".to_string();
+                    if !output.trim().is_empty() {
+                        state.output_preview = compact_status_text(output, 120);
+                    }
+                }
+            }
+            AgentStreamEvent::RunFailed { message, .. } => {
+                if let Some(state) = self.subagent_states.get_mut(&agent_id) {
+                    state.status = "failed".to_string();
+                    state.output_preview = compact_status_text(message, 120);
+                }
+            }
+            _ => {}
+        }
+        self.update_subagent_collapsed_line(&agent_id);
+        true
+    }
+
     /// Apply a live runtime stream event to the view state.
     pub fn apply_stream_record(&mut self, record: &AgentStreamRecord) {
         let should_auto_scroll = !self.selection_mode;
+        if self.apply_subagent_source_record(record) {
+            if should_auto_scroll {
+                self.scroll_to_bottom();
+            }
+            return;
+        }
         match &record.event {
             AgentStreamEvent::RunStart { run_id, .. } => {
                 self.current_run_id = Some(run_id.as_str().to_string());
@@ -488,6 +601,53 @@ impl InteractiveTuiState {
             self.task_panel_items = items;
         }
     }
+}
+
+fn format_subagent_collapsed_line(state: &super::SubagentDisplayState) -> String {
+    let mut line = format!("[{}] {}", state.agent_name, state.status);
+    if state.request_count > 0 {
+        let _ = write!(line, " | {} reqs", state.request_count);
+    }
+    if !state.tool_names.is_empty() {
+        let _ = write!(line, " | tools: {}", state.tool_names.join(", "));
+    }
+    if !state.output_preview.trim().is_empty() {
+        let _ = write!(line, " | \"{}\"", state.output_preview.trim());
+    }
+    line
+}
+
+fn subagent_agent_name(payload: &Value) -> String {
+    let payload = payload.get("payload").unwrap_or(payload);
+    payload
+        .get("name")
+        .or_else(|| payload.get("agent_name"))
+        .or_else(|| payload.get("subagent_name"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("subagent")
+        .to_string()
+}
+
+fn subagent_request_count(payload: &Value) -> Option<usize> {
+    let payload = payload.get("payload").unwrap_or(payload);
+    payload
+        .get("metadata")
+        .and_then(|metadata| metadata.get("request_count"))
+        .or_else(|| payload.get("request_count"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn subagent_result_preview(payload: &Value) -> Option<String> {
+    let payload = payload.get("payload").unwrap_or(payload);
+    payload
+        .get("metadata")
+        .and_then(|metadata| metadata.get("result_preview"))
+        .or_else(|| payload.get("result_preview"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| compact_status_text(value, 120))
 }
 
 fn is_model_transport_event(kind: &str) -> bool {

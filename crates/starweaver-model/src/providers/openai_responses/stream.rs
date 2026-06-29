@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use crate::{message::Metadata, ModelError, ModelResponseStreamEvent};
+use crate::{
+    message::Metadata, transport::is_retryable_status, ModelError, ModelResponseStreamEvent,
+};
 
 use super::response::{parse_response, raw_reasoning_content, reasoning_summary_text};
 
@@ -23,6 +25,8 @@ pub(super) struct StreamedFunctionCall {
     pub(super) started: bool,
     pub(super) ended: bool,
 }
+
+pub(super) type StreamedOpaqueItems = BTreeMap<String, Value>;
 
 pub(super) fn parse_stream_events(
     events: &[Value],
@@ -56,6 +60,7 @@ pub struct OpenAiResponsesStreamParser {
     reasoning_signature: Option<String>,
     reasoning_details: Metadata,
     function_calls: BTreeMap<String, StreamedFunctionCall>,
+    pub(super) opaque_items: StreamedOpaqueItems,
     next_tool_index: usize,
     final_seen: bool,
 }
@@ -93,14 +98,16 @@ impl OpenAiResponsesStreamParser {
             Some(
                 "response.reasoning_summary_text.delta"
                 | "response.reasoning_summary.delta"
-                | "response.reasoning.delta",
+                | "response.reasoning.delta"
+                | "response.reasoning_text.delta",
             ) => {
                 self.push_reasoning_delta(event, &mut stream);
             }
             Some(
                 "response.reasoning_summary_text.done"
                 | "response.reasoning_summary.done"
-                | "response.reasoning.done",
+                | "response.reasoning.done"
+                | "response.reasoning_text.done",
             ) if self.reasoning_started => {
                 self.end_reasoning_part(&mut stream);
             }
@@ -113,8 +120,17 @@ impl OpenAiResponsesStreamParser {
             Some("response.function_call_arguments.done") => {
                 self.push_function_call_arguments_done(event, &mut stream);
             }
+            Some("response.custom_tool_call_input.delta") => {
+                self.push_custom_tool_call_input_delta(event);
+            }
             Some("response.output_item.done") => {
                 self.push_output_item_done(event, &mut stream);
+            }
+            Some("response.failed") => {
+                return Err(response_failed_error(event));
+            }
+            Some("response.incomplete") => {
+                return Err(response_incomplete_error(event));
             }
             Some("response.completed") => {
                 self.end_open_parts(&mut stream);
@@ -197,6 +213,10 @@ impl OpenAiResponsesStreamParser {
                 self.update_function_call_from_item(&key, item, stream, false);
             }
             Some("reasoning") => self.update_reasoning_from_item(item),
+            Some(item_type) if is_opaque_response_item_type(item_type) => {
+                let key = response_item_key(event, item);
+                self.opaque_items.insert(key, item.clone());
+            }
             _ => {}
         }
     }
@@ -247,6 +267,34 @@ impl OpenAiResponsesStreamParser {
         self.update_function_call_arguments(&key, arguments, stream);
     }
 
+    fn push_custom_tool_call_input_delta(&mut self, event: &Value) {
+        let Some(key) = event
+            .get("item_id")
+            .or_else(|| event.get("call_id"))
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+        let delta = event
+            .get("delta")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if delta.is_empty() {
+            return;
+        }
+        let item = self
+            .opaque_items
+            .entry(key.to_string())
+            .or_insert_with(|| json!({"type": "custom_tool_call", "call_id": key, "input": ""}));
+        if let Some(object) = item.as_object_mut() {
+            let input = object
+                .entry("input".to_string())
+                .or_insert_with(|| Value::String(String::new()));
+            let current = input.as_str().unwrap_or_default();
+            *input = json!(format!("{current}{delta}"));
+        }
+    }
+
     fn push_output_item_done(&mut self, event: &Value, stream: &mut Vec<ModelResponseStreamEvent>) {
         let Some(item) = event.get("item") else {
             return;
@@ -267,6 +315,10 @@ impl OpenAiResponsesStreamParser {
                 }
             }
             Some("reasoning") => self.update_reasoning_from_item(item),
+            Some(item_type) if is_opaque_response_item_type(item_type) => {
+                let key = response_item_key(event, item);
+                self.opaque_items.insert(key, item.clone());
+            }
             _ => {}
         }
     }
@@ -435,6 +487,113 @@ impl OpenAiResponsesStreamParser {
             ))
         }
     }
+}
+
+fn response_failed_error(event: &Value) -> ModelError {
+    let body = event.clone();
+    let explicit_status = event_status(event)
+        .or_else(|| event.get("response").and_then(event_status))
+        .or_else(|| event.get("error").and_then(event_status))
+        .or_else(|| {
+            event
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(event_status)
+        });
+    let error = event
+        .get("response")
+        .and_then(|response| response.get("error"))
+        .or_else(|| event.get("error"));
+    let code = error.and_then(response_error_code);
+    let status = explicit_status
+        .or_else(|| code.and_then(status_for_response_error_code))
+        .unwrap_or(500);
+    let retryable = code.is_some_and(retryable_response_error_code) || is_retryable_status(status);
+    ModelError::ProviderStatus {
+        status,
+        body,
+        retryable,
+    }
+}
+
+fn response_incomplete_error(event: &Value) -> ModelError {
+    let reason = event
+        .get("response")
+        .and_then(|response| response.get("incomplete_details"))
+        .and_then(|details| details.get("reason"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    ModelError::UnsupportedResponse(format!("incomplete response returned, reason: {reason}"))
+}
+
+fn event_status(value: &Value) -> Option<u16> {
+    value
+        .get("status")
+        .or_else(|| value.get("status_code"))
+        .and_then(Value::as_u64)
+        .and_then(|status| u16::try_from(status).ok())
+}
+
+fn response_error_code(error: &Value) -> Option<&str> {
+    error
+        .get("code")
+        .or_else(|| error.get("type"))
+        .and_then(Value::as_str)
+}
+
+fn status_for_response_error_code(code: &str) -> Option<u16> {
+    match code {
+        "context_length_exceeded" | "invalid_prompt" | "invalid_request_error" | "cyber_policy" => {
+            Some(400)
+        }
+        "rate_limit_exceeded" | "insufficient_quota" | "usage_not_included" => Some(429),
+        "server_is_overloaded" | "slow_down" => Some(503),
+        "websocket_connection_limit_reached" => Some(400),
+        _ => None,
+    }
+}
+
+fn retryable_response_error_code(code: &str) -> bool {
+    matches!(
+        code,
+        "rate_limit_exceeded"
+            | "server_is_overloaded"
+            | "slow_down"
+            | "websocket_connection_limit_reached"
+    )
+}
+
+fn is_opaque_response_item_type(item_type: &str) -> bool {
+    matches!(
+        item_type,
+        "web_search_call"
+            | "code_interpreter_call"
+            | "mcp_call"
+            | "mcp_list_tools"
+            | "mcp_approval_request"
+            | "tool_search_call"
+            | "custom_tool_call"
+            | "custom_tool_call_output"
+            | "image_generation_call"
+            | "file_search_call"
+            | "compaction"
+    )
+}
+
+fn response_item_key(event: &Value, item: &Value) -> String {
+    event
+        .get("item_id")
+        .or_else(|| item.get("id"))
+        .or_else(|| item.get("call_id"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .map(|index| format!("output-{index}"))
+        })
+        .unwrap_or_else(|| "response-item".to_string())
 }
 
 fn function_call_item_key(event: &Value, item: &Value) -> String {

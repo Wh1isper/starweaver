@@ -1,9 +1,10 @@
 use serde_json::Map;
 use starweaver_context::AgentContext;
-use starweaver_tools::{ToolContext, ToolResult};
+use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
-use crate::media_compression::{
-    compress_image_to_model_limit, data_url, raw_budget_for_encoded_limit,
+use crate::{
+    bundles::helpers::tool_model_retry,
+    media_compression::{compress_image_to_model_limit, data_url, raw_budget_for_encoded_limit},
 };
 
 pub(super) fn fetch_image_result(
@@ -11,7 +12,7 @@ pub(super) fn fetch_image_result(
     requested_url: &str,
     resource: &super::super::http::HttpResource,
     mut body: Vec<u8>,
-) -> ToolResult {
+) -> Result<ToolResult, ToolError> {
     let mut media_type = starweaver_model::detect_media_kind(&body)
         .media_type()
         .unwrap_or_else(|| {
@@ -32,33 +33,24 @@ pub(super) fn fetch_image_result(
             match compress_image_to_model_limit(&body, max_image_bytes, &media_type) {
                 Ok(compressed) => {
                     if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
-                        return ToolResult::new(serde_json::json!({
-                            "success": false,
-                            "url": requested_url,
-                            "final_url": resource.final_url,
-                            "status": resource.status,
-                            "content_type": resource.content_type,
-                            "content_length": resource.content_length,
-                            "error": format!(
-                                "Fetched image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding."
+                        return Err(tool_model_retry(
+                            "fetch",
+                            format!(
+                                "Fetched image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Download the image and resize or convert it to a smaller format before retrying."
                             ),
-                        }));
+                        ));
                     }
                     body = compressed.data;
                     media_type = compressed.media_type;
                     compressed_for_model = compressed.compressed;
                 }
                 Err(error) => {
-                    return ToolResult::new(serde_json::json!({
-                        "success": false,
-                        "url": requested_url,
-                        "final_url": resource.final_url,
-                        "status": resource.status,
-                        "content_type": resource.content_type,
-                        "content_length": resource.content_length,
-                        "error": "Fetched image could not be compressed for inline model input.",
-                        "details": error,
-                    }));
+                    return Err(tool_model_retry(
+                        "fetch",
+                        format!(
+                            "Fetched image could not be compressed for inline model input: {error}. Download the image and resize or convert it to a supported smaller format before retrying."
+                        ),
+                    ));
                 }
             }
         }
@@ -76,7 +68,7 @@ pub(super) fn fetch_image_result(
         "starweaver_tool_return_prompt".to_string(),
         serde_json::json!("The fetch tool loaded an image from the requested URL. Inspect the attached image and answer accordingly."),
     );
-    ToolResult::new(serde_json::json!({
+    Ok(ToolResult::new(serde_json::json!({
         "success": (200..400).contains(&resource.status),
         "url": requested_url,
         "final_url": resource.final_url,
@@ -93,5 +85,5 @@ pub(super) fn fetch_image_result(
     .with_private_metadata(private_metadata)
     .with_model_content(serde_json::json!(
         "The image is attached in the user message."
-    ))
+    )))
 }

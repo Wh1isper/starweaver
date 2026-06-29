@@ -7,9 +7,12 @@ use super::{
     output::{guard_glob_output, guard_grep_output},
     tool_config_from_context, tool_execution_error, GlobArgs, GrepArgs,
 };
-use crate::bundles::environment::{
-    common::{limit_or_unlimited, non_negative_limit},
-    handle::environment_provider,
+use crate::bundles::{
+    environment::{
+        common::{limit_or_unlimited, non_negative_limit},
+        handle::environment_provider,
+    },
+    helpers::tool_model_retry,
 };
 
 pub(super) async fn glob_files(
@@ -82,10 +85,10 @@ pub(super) async fn grep_files(
 
 fn validate_single_search_root(tool: &str, root: &str) -> Result<(), ToolError> {
     if root.chars().any(|ch| matches!(ch, '\n' | '\r' | '\0')) {
-        return Err(ToolError::ModelRetry {
-            tool: tool.to_string(),
-            message: "root must be a single directory path. For multiple directories, issue parallel tool calls with one root per call, or use a shared parent root with a narrower file pattern.".to_string(),
-        });
+        return Err(tool_model_retry(
+            tool,
+            "root must be a single directory path. For multiple directories, issue parallel tool calls with one root per call, or use a shared parent root with a narrower file pattern.",
+        ));
     }
     Ok(())
 }

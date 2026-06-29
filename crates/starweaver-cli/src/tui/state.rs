@@ -176,7 +176,11 @@ struct StreamingToolCallState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SubagentDisplayState {
     pub(super) line_index: usize,
+    pub(super) agent_name: String,
+    pub(super) status: String,
     pub(super) tool_names: Vec<String>,
+    pub(super) output_preview: String,
+    pub(super) request_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -465,22 +465,39 @@ async fn assert_filesystem_shell_results(
         serde_json::json!(["README.md", "docs/output.txt", "src/lib.rs", "src/main.rs"])
     );
     assert!(results.invalid_write_mode.is_error);
-    assert!(results.invalid_write_mode.content["error"]
+    assert_eq!(
+        results.invalid_write_mode.content["kind"],
+        "invalid_arguments"
+    );
+    assert!(results.invalid_write_mode.content["message"]
         .as_str()
         .unwrap()
         .contains("unsupported write mode"));
+    assert!(results.invalid_write_mode.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("JSON schema"));
     assert!(results.edit_existing_create.is_error);
-    assert!(results.edit_existing_create.content["error"]
+    assert_eq!(results.edit_existing_create.content["kind"], "model_retry");
+    assert!(results.edit_existing_create.content["message"]
         .as_str()
         .unwrap()
         .contains("file already exists"));
+    assert!(results.edit_existing_create.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("adjusted arguments"));
     assert!(!results.multi_edit_create_then_replace.is_error);
     assert_eq!(
         provider.read_text("created.txt").await.unwrap(),
         "Hello Universe"
     );
     assert!(results.multi_edit_empty_later.is_error);
-    assert!(results.multi_edit_empty_later.content["error"]
+    assert_eq!(
+        results.multi_edit_empty_later.content["kind"],
+        "invalid_arguments"
+    );
+    assert!(results.multi_edit_empty_later.content["message"]
         .as_str()
         .unwrap()
         .contains("old_string must be non-empty"));
@@ -499,15 +516,19 @@ fn assert_shell_results(results: &FilesystemShellResults) {
         "override"
     );
     assert_eq!(results.shell_with_env.content["stdout"], "ctx\noverride\n");
-    assert_eq!(results.empty_shell.content["return_code"], 1);
-    assert_eq!(results.empty_shell.content["stdout"], "");
-    assert_eq!(results.empty_shell.content["stderr"], "");
-    assert!(results.empty_shell.content["error"]
+    assert!(results.empty_shell.is_error);
+    assert_eq!(results.empty_shell.content["kind"], "invalid_arguments");
+    assert!(results.empty_shell.content["message"]
         .as_str()
         .unwrap()
         .contains("must not be empty"));
+    assert!(results.empty_shell.content["retryable"].as_bool().unwrap());
     assert!(results.invalid_grep_context.is_error);
-    assert!(results.invalid_grep_context.content["error"]
+    assert_eq!(
+        results.invalid_grep_context.content["kind"],
+        "invalid_arguments"
+    );
+    assert!(results.invalid_grep_context.content["message"]
         .as_str()
         .unwrap()
         .contains("context_lines must be greater than or equal to 0"));
@@ -737,11 +758,16 @@ async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
             },
         )
         .await;
-    assert!(binary
-        .content
+    assert!(binary.is_error);
+    assert_eq!(binary.content["kind"], "model_retry");
+    assert!(binary.content["message"]
         .as_str()
         .unwrap()
         .contains("appears to be a binary file"));
+    assert!(binary.content["message"]
+        .as_str()
+        .unwrap()
+        .contains("file-specific tool"));
 
     let image = registry
         .execute_call(
@@ -847,8 +873,9 @@ async fn filesystem_view_uses_relaxed_text_limits_for_configured_paths() {
             },
         )
         .await;
-    assert!(binary
-        .content
+    assert!(binary.is_error);
+    assert_eq!(binary.content["kind"], "model_retry");
+    assert!(binary.content["message"]
         .as_str()
         .unwrap()
         .contains("appears to be a binary file"));
@@ -1437,6 +1464,96 @@ async fn host_io_tools_use_injected_clients_and_capabilities() {
     assert_eq!(media.content["provider_ready"]["type"], "media_url");
     assert_eq!(image.content["content"], "image analysis");
     assert_eq!(image.content["model_id"], "fake-media-model");
+}
+
+#[tokio::test]
+async fn host_io_and_media_failures_return_actionable_tool_errors() {
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&host_io_tools());
+    registry.insert_toolset(&filesystem_tools());
+
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("test")
+            .with_bytes("image.png", b"\x89PNG\r\n\x1a\nsmall".to_vec()),
+    );
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider);
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let empty_search = execute_tool_call(
+        &registry,
+        context.clone(),
+        "empty-search",
+        "search",
+        serde_json::json!({"query": "   "}),
+    )
+    .await;
+    assert!(empty_search.is_error);
+    assert_eq!(empty_search.content["kind"], "invalid_arguments");
+    assert!(empty_search.content["message"]
+        .as_str()
+        .unwrap()
+        .contains("query must not be empty"));
+    assert!(empty_search.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("JSON schema"));
+
+    let missing_media_adapter = execute_tool_call(
+        &registry,
+        context.clone(),
+        "missing-media-adapter",
+        "read_image",
+        serde_json::json!({"url": "https://example.com/image.png"}),
+    )
+    .await;
+    assert!(missing_media_adapter.is_error);
+    assert_eq!(missing_media_adapter.content["kind"], "model_retry");
+    assert!(missing_media_adapter.content["message"]
+        .as_str()
+        .unwrap()
+        .contains("HostMediaUnderstandingClientHandle"));
+
+    let local_media_without_adapter = execute_tool_call(
+        &registry,
+        context,
+        "local-media-without-adapter",
+        "view",
+        serde_json::json!({"path": "image.png"}),
+    )
+    .await;
+    assert!(local_media_without_adapter.is_error);
+    assert_eq!(local_media_without_adapter.content["kind"], "model_retry");
+    assert!(local_media_without_adapter.content["message"]
+        .as_str()
+        .unwrap()
+        .contains("media-capable model"));
+
+    let mut failing_dependencies = starweaver_context::DependencyStore::new();
+    failing_dependencies.insert(HostSearchClientHandle::new(Arc::new(FailingSearchClient)));
+    let failing_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(failing_dependencies);
+    let failing_search = execute_tool_call(
+        &registry,
+        failing_context,
+        "failing-search",
+        "search",
+        serde_json::json!({"query": "rust sdk"}),
+    )
+    .await;
+    assert!(failing_search.is_error);
+    assert_eq!(failing_search.content["kind"], "execution");
+    assert!(failing_search.content["message"]
+        .as_str()
+        .unwrap()
+        .contains("adapter unavailable"));
+    assert!(failing_search.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("underlying condition"));
 }
 
 #[tokio::test]
@@ -2105,6 +2222,15 @@ fn assert_tool_names(toolset: &starweaver_tools::DynToolset, expected: &[&str]) 
             actual.iter().any(|actual| actual == name),
             "missing tool {name}"
         );
+    }
+}
+
+struct FailingSearchClient;
+
+#[async_trait]
+impl HostSearchClient for FailingSearchClient {
+    async fn search(&self, _request: SearchRequest) -> Result<SearchResponse, String> {
+        Err("adapter unavailable".to_string())
     }
 }
 

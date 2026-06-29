@@ -1,7 +1,7 @@
 //! Media detection and view handling for filesystem tools.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde_json::{Map, Value};
+use serde_json::Map;
 use starweaver_context::{AgentContext, ToolConfig};
 use starweaver_environment::{EnvironmentProvider, FileStat};
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::{format_size, tool_execution_error, ViewArgs};
+use crate::bundles::helpers::tool_model_retry;
 
 #[allow(clippy::too_many_lines)]
 pub(super) async fn read_media_file(
@@ -30,17 +31,15 @@ pub(super) async fn read_media_file(
         MediaKind::Audio => tool_config.view_max_inline_audio_bytes,
     };
     if stat.size > max_inline {
-        return Ok(ToolResult::new(serde_json::json!({
-            "success": false,
-            "file_path": arguments.file_path,
-            "media_kind": media_kind.as_str(),
-            "error": format!(
-                "{} file is too large to inline ({}). Maximum supported inline size is {}.",
+        return Err(tool_model_retry(
+            "view",
+            format!(
+                "{} file is too large to inline ({}). Maximum supported inline size is {}. Use a smaller file, compress it first, or use a provider/tool that supports larger media resources.",
                 media_kind.title(),
                 format_size(stat.size),
                 format_size(max_inline),
             ),
-        })));
+        ));
     }
     let mut data = provider
         .read_bytes(&arguments.file_path, 0, None)
@@ -55,10 +54,13 @@ pub(super) async fn read_media_file(
         MediaKind::Audio => audio_media_type(&arguments.file_path).to_string(),
     };
     if media_kind == MediaKind::Image && !is_supported_inline_image(&media_type) {
-        return Ok(ToolResult::new(Value::String(format!(
-            "Error: unsupported image format '{media_type}' for {}. Supported formats: image/gif, image/jpeg, image/png, image/webp.",
-            arguments.file_path
-        ))));
+        return Err(tool_model_retry(
+            "view",
+            format!(
+                "unsupported image format '{media_type}' for {}. Supported formats: image/gif, image/jpeg, image/png, image/webp. Convert the image to a supported format and retry.",
+                arguments.file_path
+            ),
+        ));
     }
 
     let original_bytes = data.len();
@@ -70,30 +72,24 @@ pub(super) async fn read_media_file(
                 match compress_image_to_model_limit(&data, max_image_bytes, &media_type) {
                     Ok(compressed) => {
                         if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
-                            return Ok(ToolResult::new(serde_json::json!({
-                                "success": false,
-                                "file_path": arguments.file_path,
-                                "media_kind": media_kind.as_str(),
-                                "media_type": media_type,
-                                "error": format!(
-                                    "Image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding."
+                            return Err(tool_model_retry(
+                                "view",
+                                format!(
+                                    "Image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Resize or convert it to a smaller supported format before retrying."
                                 ),
-                                "message": "Try resizing or converting it to a smaller format first.",
-                            })));
+                            ));
                         }
                         data = compressed.data;
                         media_type = compressed.media_type;
                         compressed_for_model = compressed.compressed;
                     }
                     Err(error) => {
-                        return Ok(ToolResult::new(serde_json::json!({
-                            "success": false,
-                            "file_path": arguments.file_path,
-                            "media_kind": media_kind.as_str(),
-                            "media_type": media_type,
-                            "error": format!("Image could not be compressed for inline model input: {error}"),
-                            "message": "Try resizing or converting it to a smaller format first.",
-                        })));
+                        return Err(tool_model_retry(
+                            "view",
+                            format!(
+                                "Image could not be compressed for inline model input: {error}. Resize or convert it to a smaller supported format before retrying."
+                            ),
+                        ));
                     }
                 }
             }
@@ -158,16 +154,13 @@ pub(super) async fn read_media_file(
             .map_err(|error| tool_execution_error("view", error));
     }
 
-    Ok(ToolResult::new(serde_json::json!({
-        "success": false,
-        "file_path": arguments.file_path,
-        "media_kind": media_kind.as_str(),
-        "media_type": media_type,
-        "native_supported": false,
-        "model_id": capabilities.and_then(|capabilities| capabilities.model_id.clone()),
-        "missing_dependency": "HostMediaUnderstandingClientHandle",
-        "message": "The active model does not advertise native support for this local media kind. Configure a HostMediaUnderstandingClientHandle fallback adapter or switch to a media-capable model.",
-    })))
+    Err(tool_model_retry(
+        "view",
+        format!(
+            "The active model does not advertise native support for this local {} file and no HostMediaUnderstandingClientHandle fallback adapter is configured. Configure a fallback adapter, switch to a media-capable model, or use a file conversion/transcription workflow.",
+            media_kind.as_str()
+        ),
+    ))
 }
 
 pub(super) enum ViewFileKind {

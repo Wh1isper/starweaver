@@ -1,6 +1,6 @@
 use starweaver_tools::ToolError;
 
-use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::helpers::{tool_execution_error, tool_invalid_arguments};
 
 pub(super) fn non_negative_limit(
     tool: &str,
@@ -8,7 +8,7 @@ pub(super) fn non_negative_limit(
     value: isize,
 ) -> Result<usize, ToolError> {
     if value < 0 {
-        return Err(tool_execution_error(
+        return Err(tool_invalid_arguments(
             tool,
             format!("{field} must be greater than or equal to 0"),
         ));
@@ -22,7 +22,7 @@ pub(super) fn limit_or_unlimited(
     value: isize,
 ) -> Result<usize, ToolError> {
     if value < -1 {
-        return Err(tool_execution_error(
+        return Err(tool_invalid_arguments(
             tool,
             format!("{field} must be greater than or equal to -1"),
         ));

@@ -7,12 +7,14 @@ use crossterm::event::{
 };
 use serde_json::json;
 use starweaver_context::{AgentEvent, TASK_SNAPSHOT_EVENT_KIND};
-use starweaver_core::{ConversationId, Metadata, RunId, SessionId};
+use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TaskId};
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
     ProviderPartInfo, StreamDelta, ToolCallPart, ToolReturnPart,
 };
-use starweaver_runtime::{AgentExecutionNode, AgentStreamEvent, AgentStreamRecord, RunStatus};
+use starweaver_runtime::{
+    AgentExecutionNode, AgentStreamEvent, AgentStreamRecord, AgentStreamSource, RunStatus,
+};
 use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 use starweaver_usage::{PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot};
@@ -2884,6 +2886,122 @@ fn subagent_lifecycle_events_render_as_folded_status_lines() {
         "[debugger-def] Failed (1.2s) | missing_subagent"
     ));
     assert!(!state.body.iter().any(|line| line.contains("inspect files")));
+}
+
+#[test]
+fn source_attributed_subagent_records_update_one_collapsed_line() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("delegate research");
+    let source = AgentStreamSource::subagent(
+        AgentId::from_string("researcher-1"),
+        "researcher",
+        TaskId::from_string("task-research"),
+        Some(RunId::from_string("run-child")),
+        Some(RunId::from_string("run-parent")),
+        0,
+    );
+    let sourced_record = |sequence, event: AgentStreamEvent| {
+        AgentStreamRecord::new(sequence, event).with_source(source.clone())
+    };
+
+    state.apply_stream_record(&sourced_record(
+        0,
+        AgentStreamEvent::ModelRequest { step: 0 },
+    ));
+    state.apply_stream_record(&sourced_record(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 0,
+            call: ToolCallPart {
+                id: "call-search".to_string(),
+                name: "search".to_string(),
+                arguments: json!({"query": "owner"}).into(),
+            },
+        },
+    ));
+    state.apply_stream_record(&sourced_record(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "found ")),
+        },
+    ));
+    state.apply_stream_record(&sourced_record(
+        3,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "owner")),
+        },
+    ));
+    state.apply_stream_record(&sourced_record(
+        4,
+        AgentStreamEvent::RunComplete {
+            run_id: RunId::from_string("run-child"),
+            output: "found owner".to_string(),
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        "[researcher] done | 1 reqs | tools: search | \"found owner\""
+    ));
+    assert_eq!(
+        state
+            .body
+            .iter()
+            .filter(|line| line.starts_with("[researcher]"))
+            .count(),
+        1
+    );
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| line.starts_with("Tool call: search")));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line) == "found owner"));
+}
+
+#[test]
+fn subagent_lifecycle_start_reuses_source_attributed_collapsed_line() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let source = AgentStreamSource::subagent(
+        AgentId::from_string("explorer-1"),
+        "explorer",
+        TaskId::from_string("task-explorer"),
+        Some(RunId::from_string("run-child")),
+        Some(RunId::from_string("run-parent")),
+        0,
+    );
+
+    state.apply_stream_record(
+        &AgentStreamRecord::new(0, AgentStreamEvent::ModelRequest { step: 0 }).with_source(source),
+    );
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "subagent_started",
+                json!({
+                    "kind": "started",
+                    "name": "explorer",
+                    "task_id": "task-explorer",
+                    "metadata": {"agent_id": "explorer-1"}
+                }),
+            ),
+        },
+    ));
+
+    assert_eq!(
+        state
+            .body
+            .iter()
+            .filter(|line| line.starts_with("[explorer]"))
+            .count(),
+        1
+    );
+    assert!(body_has_line(&state, "[explorer] running | 1 reqs"));
 }
 
 #[test]

@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent, BusMessage};
 use starweaver_core::{
-    escape_xml_attribute, escape_xml_text, Metadata, SubagentLifecycleEvent, SubagentLifecycleKind,
-    TaskId,
+    escape_xml_attribute, escape_xml_text, AgentId, Metadata, SubagentLifecycleEvent,
+    SubagentLifecycleKind, TaskId,
 };
 use starweaver_runtime::{
     AgentCapability, AgentError, AgentResult, AgentRunState, AgentStreamRecord, AgentStreamSink,
@@ -705,11 +705,20 @@ Pass agent_id to resume a previous background subagent.",
             ));
             return Err(AgentError::Capability(format!("missing subagent {name}")));
         };
+        let child_agent_id = task
+            .metadata
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(|| format!("{}-{}", name, task.id.as_str()), str::to_string);
         parent_context.publish_event(starweaver_context::AgentEvent::new(
             "subagent_started",
             serde_json::to_value(
                 SubagentLifecycleEvent::new(SubagentLifecycleKind::Started, name, task.id.clone())
-                    .with_metadata(task.metadata.clone()),
+                    .with_metadata(serde_json::Value::Object(subagent_base_metadata(
+                        &task,
+                        Some(&child_agent_id),
+                    ))),
             )
             .unwrap_or_else(|_| serde_json::json!({"name": name})),
         ));
@@ -751,12 +760,6 @@ Pass agent_id to resume a previous background subagent.",
                 return Err(AgentError::Capability(error.to_string()));
             }
         };
-        let child_agent_id = task
-            .metadata
-            .get("agent_id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map_or_else(|| format!("{}-{}", name, task.id.as_str()), str::to_string);
         let mut child_context = parent_context.subagent_context_with_agent_id(name, child_agent_id);
         if let Some(environment) = subagent.environment_provider() {
             attach_environment(&mut child_context, environment);
@@ -788,6 +791,14 @@ Pass agent_id to resume a previous background subagent.",
             .clone()
             .with_appended_tools(&inherited_tools);
         let mut child_agent = child_agent;
+        if let Some(stream_sink) = stream_sink.clone() {
+            child_agent = child_agent.with_stream_observer(Arc::new(SubagentStreamForwarder::new(
+                stream_sink,
+                child_context.agent_id.clone(),
+                name,
+                task.id.clone(),
+            )));
+        }
         if let Some(trace_recorder) = parent_context.dependency::<TraceRecorderHandle>() {
             child_agent = child_agent.with_trace_recorder(trace_recorder.recorder());
         }
@@ -798,6 +809,7 @@ Pass agent_id to resume a previous background subagent.",
             child_agent = child_agent.with_capability_bundle(bundle.as_ref());
         }
         let mut child_stream_records = Vec::new();
+        let subagent_started_at = std::time::Instant::now();
         let result = match child_agent
             .run_with_context_and_stream_events(
                 task.prompt.clone(),
@@ -823,6 +835,14 @@ Pass agent_id to resume a previous background subagent.",
                 }
                 let mut metadata = Metadata::default();
                 metadata.insert("error".to_string(), serde_json::json!(error.to_string()));
+                metadata.insert(
+                    "duration_seconds".to_string(),
+                    serde_json::json!(subagent_started_at.elapsed().as_secs_f64()),
+                );
+                metadata.insert(
+                    "request_count".to_string(),
+                    serde_json::json!(child_context.usage.requests),
+                );
                 if let Some(run_id) = child_context.run_id.clone() {
                     metadata.insert(
                         "child_run_id".to_string(),
@@ -879,7 +899,9 @@ Pass agent_id to resume a previous background subagent.",
                     child_context.run_id.clone(),
                     serde_json::json!({
                         "error": error.to_string(),
-                        "hook": "after_subagent_run"
+                        "hook": "after_subagent_run",
+                        "duration_seconds": subagent_started_at.elapsed().as_secs_f64(),
+                        "request_count": child_context.usage.requests,
                     }),
                 );
                 return Err(error);
@@ -894,6 +916,20 @@ Pass agent_id to resume a previous background subagent.",
             &child_stream_records,
             stream_sink.as_deref(),
         );
+        let mut completion_metadata =
+            subagent_base_metadata(&task, Some(child_context.agent_id.as_str()));
+        completion_metadata.insert(
+            "duration_seconds".to_string(),
+            serde_json::json!(subagent_started_at.elapsed().as_secs_f64()),
+        );
+        completion_metadata.insert(
+            "request_count".to_string(),
+            serde_json::json!(result.state.usage.requests),
+        );
+        completion_metadata.insert(
+            "result_preview".to_string(),
+            serde_json::json!(compact_preview(&result.output, 240)),
+        );
         parent_context.publish_event(starweaver_context::AgentEvent::new(
             "subagent_completed",
             serde_json::to_value(
@@ -903,7 +939,7 @@ Pass agent_id to resume a previous background subagent.",
                     task.id.clone(),
                 )
                 .with_run_id(result.state.run_id.clone())
-                .with_metadata(task.metadata.clone()),
+                .with_metadata(serde_json::Value::Object(completion_metadata)),
             )
             .unwrap_or_else(|_| serde_json::json!({"name": name})),
         ));
@@ -1026,6 +1062,80 @@ fn merge_background_subagent_context(target: &mut AgentContext, source: &AgentCo
 #[derive(Clone)]
 pub struct SubagentParentTools(pub ToolRegistry);
 
+struct SubagentStreamForwarder {
+    stream_sink: Arc<AgentStreamSink>,
+    child_agent_id: AgentId,
+    subagent_name: String,
+    task_id: TaskId,
+}
+
+impl SubagentStreamForwarder {
+    fn new(
+        stream_sink: Arc<AgentStreamSink>,
+        child_agent_id: AgentId,
+        subagent_name: impl Into<String>,
+        task_id: TaskId,
+    ) -> Self {
+        Self {
+            stream_sink,
+            child_agent_id,
+            subagent_name: subagent_name.into(),
+            task_id,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AgentCapability for SubagentStreamForwarder {
+    async fn on_stream_event_with_context(
+        &self,
+        _state: &AgentRunState,
+        context: &AgentContext,
+        record: &AgentStreamRecord,
+    ) -> CapabilityResult<()> {
+        self.stream_sink
+            .push(record.clone().with_source(AgentStreamSource::subagent(
+                self.child_agent_id.clone(),
+                self.subagent_name.clone(),
+                self.task_id.clone(),
+                context.run_id.clone(),
+                context.parent_run_id.clone(),
+                record.sequence,
+            )));
+        Ok(())
+    }
+}
+
+fn subagent_base_metadata(
+    task: &SubagentTask,
+    agent_id: Option<&str>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut metadata = task
+        .metadata
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new);
+    if let Some(agent_id) = agent_id.filter(|value| !value.trim().is_empty()) {
+        metadata.insert("agent_id".to_string(), serde_json::json!(agent_id));
+    }
+    metadata.insert(
+        "prompt_preview".to_string(),
+        serde_json::json!(compact_preview(&task.prompt, 240)),
+    );
+    metadata
+}
+
+fn compact_preview(text: &str, max_chars: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= max_chars {
+        return compact;
+    }
+    let keep = max_chars.saturating_sub(1);
+    let mut preview = compact.chars().take(keep).collect::<String>();
+    preview.push('…');
+    preview
+}
+
 fn publish_subagent_stream_records(
     parent_context: &mut AgentContext,
     name: &str,
@@ -1034,17 +1144,7 @@ fn publish_subagent_stream_records(
     records: &[AgentStreamRecord],
     stream_sink: Option<&AgentStreamSink>,
 ) {
-    if let Some(stream_sink) = stream_sink {
-        stream_sink.extend(records.iter().map(|record| {
-            record.clone().with_source(AgentStreamSource::subagent(
-                child_context.agent_id.clone(),
-                name,
-                task_id.clone(),
-                child_context.run_id.clone(),
-                child_context.parent_run_id.clone(),
-                record.sequence,
-            ))
-        }));
+    if stream_sink.is_some() {
         return;
     }
 

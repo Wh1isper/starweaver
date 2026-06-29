@@ -12,7 +12,7 @@ use super::{
     http::{fetch_http_resource, first_env, is_text_like, MAX_FETCH_BYTES},
     json_result,
 };
-use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::helpers::{tool_execution_error, tool_invalid_arguments};
 use crate::bundles::output::{
     append_guidance, dump_tool_output, environment_provider_from_context, fit_text_fields_to_limit,
     output_too_large_message, tool_output_size, write_tmp_output,
@@ -170,14 +170,10 @@ pub(super) async fn search(
         num: arguments.num.clamp(1, 20),
     };
     if request.query.is_empty() {
-        return Ok(ToolResult::new(serde_json::json!({
-            "success": false,
-            "query": request.query,
-            "results": [],
-            "errors": ["query must not be empty"],
-            "truncated": false,
-            "provider": "none",
-        })));
+        return Err(tool_invalid_arguments(
+            "search",
+            "query must not be empty. Provide a concise search query, or skip search if there is nothing to look up.",
+        ));
     }
     if let Some(handle) = context.dependency::<HostSearchClientHandle>() {
         let response = handle
@@ -226,27 +222,29 @@ pub(super) async fn fetch(
         })));
     }
     let Some(body) = resource.body.clone() else {
-        return Ok(ToolResult::new(serde_json::json!({
-            "success": false,
-            "url": arguments.url,
-            "final_url": resource.final_url,
-            "status": resource.status,
-            "content_type": resource.content_type,
-            "content_length": resource.content_length,
-            "error": "response body was not loaded",
-        })));
+        return Err(tool_execution_error(
+            "fetch",
+            format!(
+                "response body was not loaded for {} after HTTP status {}",
+                resource.final_url, resource.status
+            ),
+        ));
     };
+    if !(200..400).contains(&resource.status) {
+        return Err(tool_execution_error(
+            "fetch",
+            format!(
+                "HTTP {} returned for {}. Verify the URL, authentication, and whether the resource exists. Use head_only=true if you only need availability metadata.",
+                resource.status, resource.final_url
+            ),
+        ));
+    }
     if resource
         .content_type
         .as_deref()
         .is_some_and(|content_type| content_type.to_ascii_lowercase().contains("image"))
     {
-        return Ok(fetch_image_result(
-            &context,
-            &arguments.url,
-            &resource,
-            body,
-        ));
+        return fetch_image_result(&context, &arguments.url, &resource, body);
     }
     if !is_text_like(resource.content_type.as_deref()) && std::str::from_utf8(&body).is_err() {
         return Ok(ToolResult::new(serde_json::json!({

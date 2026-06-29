@@ -72,20 +72,151 @@ pub enum ToolError {
 /// Convert a tool error into a model-visible tool return.
 #[must_use]
 pub fn error_return(call: &ToolCallPart, error: &ToolError) -> ToolReturnPart {
-    let (kind, mut metadata) = tool_error_metadata(error);
-    metadata.insert("error_kind".to_string(), serde_json::json!(kind));
+    let report = ToolErrorReport::from_error(error);
+    let mut metadata = report.metadata;
+    metadata.insert("error_kind".to_string(), serde_json::json!(report.kind));
+    metadata.insert("tool".to_string(), serde_json::json!(report.tool));
+    metadata.insert("message".to_string(), serde_json::json!(report.message));
+    metadata.insert(
+        "how_to_fix".to_string(),
+        serde_json::json!(report.how_to_fix),
+    );
+    metadata.insert("retryable".to_string(), serde_json::json!(report.retryable));
+    metadata.insert(
+        "retry_requires_corrected_input".to_string(),
+        serde_json::json!(report.retry_requires_corrected_input),
+    );
     ToolReturnPart {
         tool_call_id: call.id.clone(),
         name: call.name.clone(),
         content: serde_json::json!({
             "error": error.to_string(),
-            "kind": kind,
+            "kind": report.kind,
+            "tool": report.tool,
+            "message": report.message,
+            "how_to_fix": report.how_to_fix,
+            "retryable": report.retryable,
+            "retry_requires_corrected_input": report.retry_requires_corrected_input,
         }),
         is_error: true,
         metadata,
         app_value: None,
         user_content: None,
         private_metadata: Metadata::default(),
+    }
+}
+
+struct ToolErrorReport {
+    kind: &'static str,
+    tool: String,
+    message: String,
+    how_to_fix: String,
+    retryable: bool,
+    retry_requires_corrected_input: bool,
+    metadata: Metadata,
+}
+
+impl ToolErrorReport {
+    fn from_error(error: &ToolError) -> Self {
+        let (kind, metadata) = tool_error_metadata(error);
+        let tool = error.tool_name().to_string();
+        let message = error.user_message();
+        let (how_to_fix, retryable, retry_requires_corrected_input) = error.recovery_guidance();
+        Self {
+            kind,
+            tool,
+            message,
+            how_to_fix,
+            retryable,
+            retry_requires_corrected_input,
+            metadata,
+        }
+    }
+}
+
+impl ToolError {
+    fn tool_name(&self) -> &str {
+        match self {
+            Self::NotFound(tool)
+            | Self::InvalidArguments { tool, .. }
+            | Self::Execution { tool, .. }
+            | Self::Timeout { tool, .. }
+            | Self::Cancelled { tool, .. }
+            | Self::ModelRetry { tool, .. }
+            | Self::ApprovalRequired { tool, .. }
+            | Self::CallDeferred { tool, .. } => tool,
+        }
+    }
+
+    fn user_message(&self) -> String {
+        match self {
+            Self::NotFound(tool) => format!("tool {tool:?} is not registered for this run"),
+            Self::InvalidArguments { message, .. }
+            | Self::Execution { message, .. }
+            | Self::ModelRetry { message, .. } => message.clone(),
+            Self::Timeout { timeout_ms, .. } => {
+                format!("tool execution exceeded the {timeout_ms}ms timeout")
+            }
+            Self::Cancelled { reason, .. } => reason.clone(),
+            Self::ApprovalRequired { .. } => {
+                "tool call requires approval before execution".to_string()
+            }
+            Self::CallDeferred { .. } => {
+                "tool call was deferred to an external worker or later run".to_string()
+            }
+        }
+    }
+
+    fn recovery_guidance(&self) -> (String, bool, bool) {
+        match self {
+            Self::NotFound(_) => (
+                "Use one of the tools advertised in the current tool list. Check the exact tool name, namespace, and whether the tool is available in this agent context."
+                    .to_string(),
+                true,
+                true,
+            ),
+            Self::InvalidArguments { .. } => (
+                "Correct the tool arguments so they match the tool's JSON schema and retry the same tool call. Include required fields, use the documented field names and types, and avoid unsupported values."
+                    .to_string(),
+                true,
+                true,
+            ),
+            Self::Execution { .. } => (
+                "Read the error message, fix the underlying condition, then retry if the inputs or environment can be corrected. For filesystem paths, verify the path and permissions; for network calls, verify the URL, service availability, and size limits."
+                    .to_string(),
+                false,
+                false,
+            ),
+            Self::Timeout { .. } => (
+                "Retry with a larger timeout, reduce the amount of work, or run long-running work in background mode when the tool supports it."
+                    .to_string(),
+                true,
+                true,
+            ),
+            Self::Cancelled { .. } => (
+                "The owning agent run requested cancellation. Do not retry inside the cancelled run; resume or start a new run if work should continue."
+                    .to_string(),
+                false,
+                false,
+            ),
+            Self::ModelRetry { message, .. } => (
+                format!("Follow this correction request and call the tool again with adjusted arguments: {message}"),
+                true,
+                true,
+            ),
+            Self::ApprovalRequired { .. } => (
+                "Wait for the approval decision. If approval is denied, change the plan or arguments before trying again."
+                    .to_string(),
+                false,
+                false,
+            ),
+            Self::CallDeferred { .. } => (
+                "Wait for the deferred result or use the runtime/session mechanism that resumes deferred tool calls. Do not immediately repeat the same call unless the deferral target changed."
+                    .to_string(),
+                false,
+                false,
+            ),
+        }
     }
 }
 

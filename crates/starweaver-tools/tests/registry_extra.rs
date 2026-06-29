@@ -107,18 +107,31 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     let error = registry.execute_call(context(), &error_call).await;
     assert!(error.is_error);
     assert_eq!(error.metadata["error_kind"], "model_retry");
+    assert_eq!(error.content["kind"], "model_retry");
+    assert_eq!(error.content["tool"], "failing");
+    assert_eq!(error.content["message"], "retry please");
+    assert!(error.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("adjusted arguments"));
+    assert!(error.content["retryable"].as_bool().unwrap());
+    assert!(error.content["retry_requires_corrected_input"]
+        .as_bool()
+        .unwrap());
 
     let missing_call = ToolCallPart {
         id: "call_3".to_string(),
         name: "missing".to_string(),
         arguments: json!({}).into(),
     };
-    assert!(
-        registry
-            .execute_call(context(), &missing_call)
-            .await
-            .is_error
-    );
+    let missing = registry.execute_call(context(), &missing_call).await;
+    assert!(missing.is_error);
+    assert_eq!(missing.content["kind"], "not_found");
+    assert_eq!(missing.content["tool"], "missing");
+    assert!(missing.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("advertised in the current tool list"));
 
     let inherited_only = registry.auto_inherited();
     assert!(inherited_only.contains("inherited"));
@@ -341,6 +354,53 @@ async fn function_tool_argument_validators_run_in_order() {
 
     assert!(rejected.is_error);
     assert_eq!(rejected.metadata["error_kind"], "invalid_arguments");
+    assert_eq!(rejected.content["kind"], "invalid_arguments");
+    assert_eq!(rejected.content["message"], "allow must be true");
+    assert!(rejected.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("JSON schema"));
+}
+
+#[tokio::test]
+async fn registry_rejects_invalid_provider_json_before_tool_execution() {
+    let observed = Arc::new(Mutex::new(false));
+    let observed_for_tool = observed.clone();
+    let tool = FunctionTool::new(
+        "validated_json",
+        Some("Validated JSON".to_string()),
+        json!({"type":"object"}),
+        move |_ctx: ToolContext, _args: serde_json::Value| {
+            let observed_for_tool = observed_for_tool.clone();
+            async move {
+                *observed_for_tool.lock().unwrap() = true;
+                Ok(ToolResult::new(json!({"ok": true})))
+            }
+        },
+    );
+    let registry = ToolRegistry::new().with_tool(Arc::new(tool));
+
+    let rejected = registry
+        .execute_call(
+            context(),
+            &ToolCallPart {
+                id: "invalid-json".to_string(),
+                name: "validated_json".to_string(),
+                arguments: starweaver_model::ToolArguments::invalid("{bad", "expected value"),
+            },
+        )
+        .await;
+
+    assert!(!*observed.lock().unwrap());
+    assert!(rejected.is_error);
+    assert_eq!(rejected.content["kind"], "invalid_arguments");
+    assert!(rejected.content["message"]
+        .as_str()
+        .unwrap()
+        .contains("valid JSON before execution"));
+    assert!(rejected.content["retry_requires_corrected_input"]
+        .as_bool()
+        .unwrap());
 }
 
 struct ArgumentAndResultHook {
@@ -540,6 +600,10 @@ async fn registry_enforces_tool_timeouts() {
     assert_eq!(returned.metadata["error_kind"], "timeout");
     assert_eq!(returned.metadata["timeout_ms"], json!(1));
     assert_eq!(returned.content["kind"], "timeout");
+    assert!(returned.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("larger timeout"));
 }
 
 #[tokio::test]
@@ -585,4 +649,9 @@ async fn registry_cancels_running_tool_when_context_token_is_cancelled() {
     assert!(returned.is_error);
     assert_eq!(returned.metadata["error_kind"], "cancelled");
     assert_eq!(returned.content["kind"], "cancelled");
+    assert!(!returned.content["retryable"].as_bool().unwrap());
+    assert!(returned.content["how_to_fix"]
+        .as_str()
+        .unwrap()
+        .contains("new run"));
 }

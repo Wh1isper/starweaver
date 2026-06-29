@@ -4,7 +4,10 @@ use starweaver_environment::EnvironmentError;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use super::{text::ensure_file_missing, tool_execution_error, EditArgs, MultiEditArgs, WriteArgs};
-use crate::bundles::environment::handle::environment_provider;
+use crate::bundles::{
+    environment::handle::environment_provider,
+    helpers::{tool_invalid_arguments, tool_model_retry},
+};
 
 pub(super) async fn write_text(
     tool_context: ToolContext,
@@ -19,9 +22,9 @@ pub(super) async fn write_text(
         },
         Some("w") | None => arguments.content,
         Some(mode) => {
-            return Err(tool_execution_error(
+            return Err(tool_invalid_arguments(
                 "write",
-                format!("unsupported write mode {mode:?}"),
+                format!("unsupported write mode {mode:?}. Use mode \"w\" to overwrite or \"a\" to append."),
             ));
         }
     };
@@ -126,22 +129,25 @@ fn apply_replacement(
     replace_all: bool,
 ) -> Result<String, ToolError> {
     if old_string.is_empty() {
-        return Err(tool_execution_error(
+        return Err(tool_invalid_arguments(
             tool,
-            "old_string must be non-empty for replacement",
+            "old_string must be non-empty for replacement. In multi_edit, only the first edit may use an empty old_string to create a new file.",
         ));
     }
     if !content.contains(old_string) {
-        return Err(tool_execution_error(tool, "text not found"));
+        return Err(tool_model_retry(
+            tool,
+            "old_string was not found in the current file content. Re-read the file with view, include the exact whitespace and indentation, then retry with a matching old_string.",
+        ));
     }
     if replace_all {
         return Ok(content.replace(old_string, new_string));
     }
     let occurrences = content.matches(old_string).count();
     if occurrences > 1 {
-        return Err(tool_execution_error(
+        return Err(tool_model_retry(
             tool,
-            "text appears multiple times; add context or use replace_all=true",
+            "old_string appears multiple times. Add surrounding context so old_string is unique, or set replace_all=true if every occurrence should be replaced.",
         ));
     }
     Ok(content.replacen(old_string, new_string, 1))

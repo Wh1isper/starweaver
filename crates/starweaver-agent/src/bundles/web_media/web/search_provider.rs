@@ -9,15 +9,10 @@ use super::super::{http::first_env, http::http_client, json_result};
 
 pub(super) async fn brave_search(request: SearchRequest) -> Result<ToolResult, ToolError> {
     let Some(key) = first_env(["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"]) else {
-        return Ok(ToolResult::new(serde_json::json!({
-            "success": false,
-            "query": request.query,
-            "results": [],
-            "errors": ["No search API key configured"],
-            "missing_env": ["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"],
-            "truncated": false,
-            "provider": "brave",
-        })));
+        return Err(tool_execution_error(
+            "search",
+            "No search API key configured. Set BRAVE_SEARCH_API_KEY or BRAVE_API_KEY, or provide a HostSearchClientHandle search adapter.",
+        ));
     };
     let client = http_client("search")?;
     let response = client
@@ -37,15 +32,10 @@ pub(super) async fn brave_search(request: SearchRequest) -> Result<ToolResult, T
         .await
         .map_err(|error| tool_execution_error("search", error))?;
     if !status.is_success() {
-        return Ok(ToolResult::new(serde_json::json!({
-            "success": false,
-            "query": request.query,
-            "results": [],
-            "errors": [format!("Brave Search returned HTTP {status}")],
-            "provider": "brave",
-            "truncated": false,
-            "metadata": value,
-        })));
+        return Err(tool_execution_error(
+            "search",
+            format!("Brave Search returned HTTP {status}: {value}"),
+        ));
     }
     let mut results = Vec::new();
     if let Some(items) = value.pointer("/web/results").and_then(Value::as_array) {

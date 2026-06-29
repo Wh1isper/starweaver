@@ -83,6 +83,8 @@ fn parse_response_item(item: &Value, parts: &mut Vec<ModelResponsePart>) {
             | "mcp_list_tools"
             | "mcp_approval_request"
             | "tool_search_call"
+            | "custom_tool_call"
+            | "custom_tool_call_output"
             | "compaction",
         ) => {
             push_native_tool_call(item, parts);

@@ -11,7 +11,10 @@ use super::{
         looks_textual, MAX_DOWNLOAD_BYTES,
     },
 };
-use crate::bundles::{helpers::tool_execution_error, EnvironmentHandle};
+use crate::bundles::{
+    helpers::{tool_execution_error, tool_invalid_arguments, tool_model_retry},
+    EnvironmentHandle,
+};
 
 pub(super) async fn download(
     context: ToolContext,
@@ -46,19 +49,26 @@ async fn download_one(
         MAX_DOWNLOAD_BYTES,
     )
     .await?;
+    if !(200..400).contains(&resource.status) {
+        return Err(tool_execution_error(
+            "download",
+            format!(
+                "HTTP {} returned for {}. Verify the URL, authentication, and whether the resource exists before retrying.",
+                resource.status, resource.final_url
+            ),
+        ));
+    }
     let body = resource.body.unwrap_or_default();
     let text = match std::str::from_utf8(&body) {
         Ok(text) if is_text_like(resource.content_type.as_deref()) || looks_textual(text) => text,
         Ok(text) if resource.content_type.is_none() => text,
         _ => {
-            return Ok(serde_json::json!({
-                "success": false,
-                "url": url,
-                "final_url": resource.final_url,
-                "content_type": resource.content_type,
-                "byte_size": body.len(),
-                "error": "binary downloads require a binary resource EnvironmentProvider extension",
-            }));
+            return Err(tool_model_retry(
+                "download",
+                format!(
+                    "binary download is not supported by the current text-only EnvironmentProvider for {url}. Use fetch for inline media when possible, configure a binary resource EnvironmentProvider extension, or use a different tool/provider that can write binary files."
+                ),
+            ));
         }
     };
     let extension = filename_extension(url)
@@ -88,7 +98,10 @@ fn safe_download_path(save_dir: &str, filename: &str) -> Result<String, ToolErro
         .split('/')
         .any(|segment| matches!(segment, ".." | ".") || segment.is_empty() && !trimmed.is_empty())
     {
-        return Err(tool_execution_error("download", "invalid save_dir"));
+        return Err(tool_invalid_arguments(
+            "download",
+            "invalid save_dir. Use a simple relative directory path without '.', '..', empty path segments, or absolute path separators.",
+        ));
     }
     if trimmed.is_empty() {
         Ok(filename.to_string())
