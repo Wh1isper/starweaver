@@ -24,7 +24,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.96"
 authors = ["wh1isper"]
@@ -37,24 +37,24 @@ keywords = ["agent", "sdk", "ai", "runtime"]
 categories = ["development-tools"]
 
 [workspace.dependencies]
-starweaver-agent = { path = "crates/starweaver-agent", version = "0.1.0" }
-starweaver-context = { path = "crates/starweaver-context", version = "0.1.0" }
-starweaver-core = { path = "crates/starweaver-core", version = "0.1.0" }
-starweaver-model = { path = "crates/starweaver-model", version = "0.1.0" }
-starweaver-oauth = { path = "crates/starweaver-oauth", version = "0.1.0" }
-starweaver-oauth-provider = { path = "crates/starweaver-oauth-provider", version = "0.1.0" }
-starweaver-runtime = { path = "crates/starweaver-runtime", version = "0.1.0" }
-starweaver-tools = { path = "crates/starweaver-tools", version = "0.1.0" }
-starweaver-usage = { path = "crates/starweaver-usage", version = "0.1.0" }
-starweaver-environment = { path = "crates/starweaver-environment", version = "0.1.0" }
-starweaver-envd-core = { path = "crates/starweaver-envd-core", version = "0.1.0" }
-starweaver-envd = { path = "crates/starweaver-envd", version = "0.1.0" }
-starweaver-envd-client = { path = "crates/starweaver-envd-client", version = "0.1.0" }
-starweaver-session = { path = "crates/starweaver-session", version = "0.1.0" }
-starweaver-stream = { path = "crates/starweaver-stream", version = "0.1.0" }
-starweaver-storage = { path = "crates/starweaver-storage", version = "0.1.0" }
-starweaver-cli = { path = "crates/starweaver-cli", version = "0.1.0" }
-starweaver-rpc-core = { path = "crates/starweaver-rpc-core", version = "0.1.0" }
+starweaver-agent = { path = "crates/starweaver-agent", version = "0.1.1" }
+starweaver-context = { path = "crates/starweaver-context", version = "0.1.1" }
+starweaver-core = { path = "crates/starweaver-core", version = "0.1.1" }
+starweaver-model = { path = "crates/starweaver-model", version = "0.1.1" }
+starweaver-oauth = { path = "crates/starweaver-oauth", version = "0.1.1" }
+starweaver-oauth-provider = { path = "crates/starweaver-oauth-provider", version = "0.1.1" }
+starweaver-runtime = { path = "crates/starweaver-runtime", version = "0.1.1" }
+starweaver-tools = { path = "crates/starweaver-tools", version = "0.1.1" }
+starweaver-usage = { path = "crates/starweaver-usage", version = "0.1.1" }
+starweaver-environment = { path = "crates/starweaver-environment", version = "0.1.1" }
+starweaver-envd-core = { path = "crates/starweaver-envd-core", version = "0.1.1" }
+starweaver-envd = { path = "crates/starweaver-envd", version = "0.1.1" }
+starweaver-envd-client = { path = "crates/starweaver-envd-client", version = "0.1.1" }
+starweaver-session = { path = "crates/starweaver-session", version = "0.1.1" }
+starweaver-stream = { path = "crates/starweaver-stream", version = "0.1.1" }
+starweaver-storage = { path = "crates/starweaver-storage", version = "0.1.1" }
+starweaver-cli = { path = "crates/starweaver-cli", version = "0.1.1" }
+starweaver-rpc-core = { path = "crates/starweaver-rpc-core", version = "0.1.1" }
 async-trait = "0.1.89"
 chrono = { version = "0.4.42", default-features = false, features = ["clock", "serde", "std"] }
 reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls", "stream"] }
