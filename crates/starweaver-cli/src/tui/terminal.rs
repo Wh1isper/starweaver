@@ -12,7 +12,7 @@ use crossterm::{
         Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
     },
     execute, queue,
-    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
 #[cfg(unix)]
@@ -61,12 +61,43 @@ pub struct InteractiveTui {
     mouse_capture_enabled: bool,
     keyboard_enhancements_enabled: bool,
     rendered_body_cache: RenderedBodyCache,
+    frame_cache: FrameCache,
 }
 
 #[derive(Debug, Default)]
 struct RenderedBodyCache {
     signature: Option<BodyRenderSignature>,
     lines: Vec<StyledLine>,
+}
+
+#[derive(Debug, Default)]
+struct FrameCache {
+    width: usize,
+    height: usize,
+    lines: Vec<StyledLine>,
+}
+
+impl FrameCache {
+    fn reset_if_geometry_changed(&mut self, width: usize, height: usize) {
+        if self.width == width && self.height == height {
+            return;
+        }
+        self.width = width;
+        self.height = height;
+        self.lines.clear();
+    }
+
+    fn line_changed(&self, row: usize, line: &StyledLine) -> bool {
+        self.lines.get(row) != Some(line)
+    }
+
+    fn set_line(&mut self, row: usize, line: StyledLine) {
+        if self.lines.len() <= row {
+            self.lines
+                .resize_with(row.saturating_add(1), || StyledLine::plain(""));
+        }
+        self.lines[row] = line;
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,6 +132,7 @@ impl InteractiveTui {
             mouse_capture_enabled: true,
             keyboard_enhancements_enabled,
             rendered_body_cache: RenderedBodyCache::default(),
+            frame_cache: FrameCache::default(),
         })
     }
 
@@ -138,41 +170,51 @@ impl InteractiveTui {
                 visible_body_bounds(state, rendered_body_len, body_height);
             rendered_body[visible_start..visible_end].to_vec()
         };
-        for row in 0..body_height {
-            queue!(
-                self.stdout,
-                MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX)),
-                Clear(ClearType::CurrentLine)
-            )
-            .map_err(terminal_error)?;
+        let mut frame_lines = vec![StyledLine::plain(""); height];
+        for (row, slot) in frame_lines
+            .iter_mut()
+            .enumerate()
+            .take(body_height.min(height))
+        {
             if let Some(line) = visible_body.get(row) {
+                *slot = line.clone();
+            }
+        }
+
+        let status_start = height.saturating_sub(fixed_height);
+        for (offset, line) in status_lines.iter().enumerate() {
+            let row = status_start.saturating_add(offset);
+            if let Some(slot) = frame_lines.get_mut(row) {
+                *slot = line.clone();
+            }
+        }
+
+        let composer_start = status_start.saturating_add(status_lines.len());
+        for (offset, line) in composer_lines.iter().enumerate() {
+            let row = composer_start.saturating_add(offset);
+            if let Some(slot) = frame_lines.get_mut(row) {
+                *slot = line.clone();
+            }
+        }
+
+        self.frame_cache
+            .reset_if_geometry_changed(render_width, height);
+        let changed_rows = frame_lines
+            .iter()
+            .enumerate()
+            .filter(|(row, line)| self.frame_cache.line_changed(*row, line))
+            .collect::<Vec<_>>();
+        if !changed_rows.is_empty() {
+            queue!(self.stdout, Hide).map_err(terminal_error)?;
+            for (row, line) in changed_rows {
                 queue_styled_line_at(
                     &mut self.stdout,
                     u16::try_from(row).unwrap_or(u16::MAX),
                     line,
                     render_width,
                 )?;
+                self.frame_cache.set_line(row, line.clone());
             }
-        }
-
-        let status_start = height.saturating_sub(fixed_height);
-        for (offset, line) in status_lines.iter().enumerate() {
-            queue_styled_line_at(
-                &mut self.stdout,
-                u16::try_from(status_start.saturating_add(offset)).unwrap_or(u16::MAX),
-                line,
-                render_width,
-            )?;
-        }
-
-        let composer_start = status_start.saturating_add(status_lines.len());
-        for (offset, line) in composer_lines.iter().enumerate() {
-            queue_styled_line_at(
-                &mut self.stdout,
-                u16::try_from(composer_start.saturating_add(offset)).unwrap_or(u16::MAX),
-                line,
-                render_width,
-            )?;
         }
         let cursor_row = composer_start.saturating_add(1).saturating_add(
             composer_layout
