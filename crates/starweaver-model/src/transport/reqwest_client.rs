@@ -224,6 +224,10 @@ impl ModelHttpClient for ReqwestHttpClient {
     ) -> Result<ModelEventStream, ModelError> {
         Box::pin(websocket::send_websocket_event_stream_incremental(request)).await
     }
+
+    fn websocket_event_session(&self) -> Box<dyn super::ModelWebSocketEventSession + '_> {
+        Box::new(websocket::ReusableWebSocketEventSession::default())
+    }
 }
 
 fn response_headers(response: &reqwest::Response) -> BTreeMap<String, String> {

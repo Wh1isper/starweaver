@@ -1,7 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, future::Future, time::Duration};
+use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 use tokio_tungstenite::{
     connect_async,
     tungstenite::{
@@ -13,12 +13,30 @@ use tokio_tungstenite::{
 
 use crate::{allow_real_model_requests, transport::is_retryable_status, ModelError};
 
-use super::{HttpRequest, ModelEventStream};
+use super::{HttpRequest, ModelEventStream, ModelWebSocketEventSession};
 
 type ModelWebSocketStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE: &str = "websocket_connection_limit_reached";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WebSocketConnectionKey {
+    url: String,
+    headers: BTreeMap<String, String>,
+}
+
+#[derive(Default)]
+struct ReusableWebSocketInner {
+    stream: Option<ModelWebSocketStream>,
+    connection_key: Option<WebSocketConnectionKey>,
+}
+
+/// WebSocket event session that serializes multiple `response.create` requests on one connection.
+#[derive(Default)]
+pub(super) struct ReusableWebSocketEventSession {
+    inner: Arc<tokio::sync::Mutex<ReusableWebSocketInner>>,
+}
 
 /// Send a JSON request over WebSocket and return JSON text-frame events.
 pub async fn send_websocket_event_stream_incremental(
@@ -40,6 +58,82 @@ pub async fn send_websocket_event_stream_incremental(
         receiver,
         cancellation_token,
     ))
+}
+
+#[async_trait::async_trait]
+impl ModelWebSocketEventSession for ReusableWebSocketEventSession {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the owned guard is intentionally moved into the worker to serialize websocket use until response completion"
+    )]
+    async fn send_websocket_event_stream_incremental(
+        &mut self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        if !allow_real_model_requests() {
+            return Err(ModelError::RealModelRequestBlocked {
+                url: request.url.clone(),
+            });
+        }
+        ensure_websocket_not_cancelled(&request.cancellation_token)?;
+        let cancellation_token = request.cancellation_token.clone();
+        let mut inner = Arc::clone(&self.inner).lock_owned().await;
+        Box::pin(ensure_reusable_websocket_connection(&mut inner, &request)).await?;
+        let Some(stream) = inner.stream.as_mut() else {
+            return Err(ModelError::Transport(
+                "websocket connection is unavailable".to_string(),
+            ));
+        };
+        if let Err(error) = send_websocket_request_body(stream, &request).await {
+            inner.stream = None;
+            return Err(error);
+        }
+
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        spawn_reusable_websocket_event_worker(
+            inner,
+            sender,
+            cancellation_token.clone(),
+            request.timeout,
+        );
+        Ok(ModelEventStream::new_with_cancellation(
+            receiver,
+            cancellation_token,
+        ))
+    }
+
+    async fn reset(&mut self) {
+        let mut inner = self.inner.lock().await;
+        if let Some(mut stream) = inner.stream.take() {
+            let _ = stream.close(None).await;
+        }
+        inner.connection_key = None;
+    }
+}
+
+async fn ensure_reusable_websocket_connection(
+    inner: &mut ReusableWebSocketInner,
+    request: &HttpRequest,
+) -> Result<(), ModelError> {
+    let key = WebSocketConnectionKey {
+        url: request.url.clone(),
+        headers: request.headers.clone(),
+    };
+    if inner.stream.is_some() && inner.connection_key.as_ref() == Some(&key) {
+        return Ok(());
+    }
+    if let Some(mut stream) = inner.stream.take() {
+        let _ = with_optional_timeout(
+            request.timeout,
+            "websocket close timeout",
+            stream.close(None),
+        )
+        .await;
+    }
+    let stream = Box::pin(connect_websocket_stream(request)).await?;
+    inner.stream = Some(stream);
+    inner.connection_key = Some(key);
+    Ok(())
 }
 
 fn ensure_websocket_not_cancelled(
@@ -117,11 +211,56 @@ fn spawn_websocket_event_worker(
             let message =
                 next_websocket_message(&mut stream, &sender, &cancellation_token, timeout).await;
             let Some(message) = message else { return };
-            if handle_websocket_message(message, &mut stream, &sender, timeout).await {
-                return;
+            match handle_websocket_message(message, &mut stream, &sender, timeout, true).await {
+                WebSocketMessageOutcome::Continue => {}
+                WebSocketMessageOutcome::Completed | WebSocketMessageOutcome::Failed => return,
             }
         }
     });
+}
+
+fn spawn_reusable_websocket_event_worker(
+    mut inner: tokio::sync::OwnedMutexGuard<ReusableWebSocketInner>,
+    sender: tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
+    cancellation_token: starweaver_core::CancellationToken,
+    timeout: Option<Duration>,
+) {
+    tokio::spawn(async move {
+        loop {
+            let Some(stream) = inner.stream.as_mut() else {
+                let _ = sender
+                    .send(Err(ModelError::Transport(
+                        "websocket connection is unavailable".to_string(),
+                    )))
+                    .await;
+                inner.connection_key = None;
+                return;
+            };
+            let message =
+                next_websocket_message(stream, &sender, &cancellation_token, timeout).await;
+            let Some(message) = message else {
+                inner.stream = None;
+                inner.connection_key = None;
+                return;
+            };
+            match handle_websocket_message(message, stream, &sender, timeout, false).await {
+                WebSocketMessageOutcome::Continue => {}
+                WebSocketMessageOutcome::Completed => return,
+                WebSocketMessageOutcome::Failed => {
+                    inner.stream = None;
+                    inner.connection_key = None;
+                    return;
+                }
+            }
+        }
+    });
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WebSocketMessageOutcome {
+    Continue,
+    Completed,
+    Failed,
 }
 
 async fn next_websocket_message(
@@ -166,10 +305,11 @@ async fn handle_websocket_message(
     stream: &mut ModelWebSocketStream,
     sender: &tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
     timeout: Option<Duration>,
-) -> bool {
+    close_on_completed: bool,
+) -> WebSocketMessageOutcome {
     match message {
         Ok(Message::Text(text)) => {
-            handle_websocket_text_event(&text, stream, sender, timeout).await
+            handle_websocket_text_event(&text, stream, sender, timeout, close_on_completed).await
         }
         Ok(Message::Binary(_)) => {
             let _ = sender
@@ -177,7 +317,7 @@ async fn handle_websocket_message(
                     "unexpected binary websocket event".to_string(),
                 )))
                 .await;
-            true
+            WebSocketMessageOutcome::Failed
         }
         Ok(Message::Close(_)) => {
             let _ = sender
@@ -185,7 +325,7 @@ async fn handle_websocket_message(
                     "websocket closed by server before response.completed".to_string(),
                 )))
                 .await;
-            true
+            WebSocketMessageOutcome::Failed
         }
         Ok(Message::Ping(payload)) => {
             match with_optional_timeout(
@@ -195,21 +335,21 @@ async fn handle_websocket_message(
             )
             .await
             {
-                Ok(Ok(())) => false,
+                Ok(Ok(())) => WebSocketMessageOutcome::Continue,
                 Ok(Err(error)) => {
                     let _ = sender.send(Err(map_websocket_error(error))).await;
-                    true
+                    WebSocketMessageOutcome::Failed
                 }
                 Err(error) => {
                     let _ = sender.send(Err(error)).await;
-                    true
+                    WebSocketMessageOutcome::Failed
                 }
             }
         }
-        Ok(Message::Pong(_) | Message::Frame(_)) => false,
+        Ok(Message::Pong(_) | Message::Frame(_)) => WebSocketMessageOutcome::Continue,
         Err(error) => {
             let _ = sender.send(Err(map_websocket_error(error))).await;
-            true
+            WebSocketMessageOutcome::Failed
         }
     }
 }
@@ -219,23 +359,31 @@ async fn handle_websocket_text_event(
     stream: &mut ModelWebSocketStream,
     sender: &tokio::sync::mpsc::Sender<Result<Value, ModelError>>,
     timeout: Option<Duration>,
-) -> bool {
+    close_on_completed: bool,
+) -> WebSocketMessageOutcome {
     if let Some(error) = websocket_error_event(text) {
         let _ = sender.send(Err(error)).await;
-        return true;
+        return WebSocketMessageOutcome::Failed;
     }
     match serde_json::from_str::<Value>(text) {
         Ok(value) => {
             let completed = value.get("type").and_then(Value::as_str) == Some("response.completed");
             if sender.send(Ok(value)).await.is_err() {
-                return true;
+                return WebSocketMessageOutcome::Failed;
             }
             if completed {
-                let _ =
-                    with_optional_timeout(timeout, "websocket close timeout", stream.close(None))
-                        .await;
+                if close_on_completed {
+                    let _ = with_optional_timeout(
+                        timeout,
+                        "websocket close timeout",
+                        stream.close(None),
+                    )
+                    .await;
+                }
+                WebSocketMessageOutcome::Completed
+            } else {
+                WebSocketMessageOutcome::Continue
             }
-            completed
         }
         Err(error) => {
             let _ = sender
@@ -243,7 +391,7 @@ async fn handle_websocket_text_event(
                     "invalid websocket JSON event: {error}"
                 ))))
                 .await;
-            true
+            WebSocketMessageOutcome::Failed
         }
     }
 }
@@ -396,9 +544,10 @@ pub fn should_fallback_websocket_to_http(error: &ModelError) -> bool {
             body,
             retryable,
         } => {
-            *retryable
-                && (*status == 400 || *status == 429 || *status >= 500)
-                && is_websocket_connection_limit_error(body)
+            *status == 426
+                || (*retryable
+                    && (*status == 400 || *status == 429 || *status >= 500)
+                    && is_websocket_connection_limit_error(body))
         }
         ModelError::Transport(message) => {
             message.contains("websocket closed")
@@ -431,7 +580,35 @@ fn response_error_code(body: &Value) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    use futures_util::{SinkExt, StreamExt};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
     use super::*;
+    use crate::{allow_real_model_requests_guard, transport::HttpMethod};
+
+    fn result_or_panic<T, E: std::fmt::Debug>(result: Result<T, E>, message: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{message}: {error:?}"),
+        }
+    }
+
+    fn option_or_panic<T>(value: Option<T>, message: &str) -> T {
+        value.unwrap_or_else(|| panic!("{message}"))
+    }
+
+    fn lock_or_panic<'a, T>(
+        lock: std::sync::LockResult<std::sync::MutexGuard<'a, T>>,
+        message: &str,
+    ) -> std::sync::MutexGuard<'a, T> {
+        lock.unwrap_or_else(|error| panic!("{message}: {error}"))
+    }
 
     #[test]
     fn wrapped_connection_limit_error_is_retryable_and_fallback_safe() {
@@ -515,5 +692,209 @@ mod tests {
         assert!(!should_fallback_websocket_to_http(&ModelError::Transport(
             "invalid websocket JSON event".to_string()
         )));
+    }
+
+    #[tokio::test]
+    async fn reusable_session_uses_one_connection_for_sequential_requests() {
+        let _guard = allow_real_model_requests_guard();
+        let listener = result_or_panic(
+            TcpListener::bind("127.0.0.1:0").await,
+            "bind websocket test listener",
+        );
+        let address = result_or_panic(listener.local_addr(), "listener local addr");
+        let handshakes = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let server_handshakes = Arc::clone(&handshakes);
+        let server_requests = Arc::clone(&requests);
+        let server = tokio::spawn(async move {
+            let (stream, _) = result_or_panic(listener.accept().await, "accept websocket client");
+            server_handshakes.fetch_add(1, Ordering::SeqCst);
+            let mut websocket =
+                result_or_panic(accept_async(stream).await, "accept websocket upgrade");
+            for index in 1..=2 {
+                let message = result_or_panic(
+                    option_or_panic(websocket.next().await, "websocket message"),
+                    "valid websocket message",
+                );
+                let Message::Text(text) = message else {
+                    panic!("expected text websocket request");
+                };
+                let body: Value =
+                    result_or_panic(serde_json::from_str(&text), "valid request JSON");
+                lock_or_panic(
+                    server_requests.lock(),
+                    "requests lock should not be poisoned",
+                )
+                .push(body);
+                result_or_panic(
+                    websocket
+                    .send(Message::Text(
+                        json!({
+                            "type": "response.completed",
+                            "response": {
+                                "id": format!("resp_{index}"),
+                                "status": "completed",
+                                "output": [],
+                                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                            }
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                        .await,
+                    "send completed event",
+                );
+            }
+        });
+
+        let mut session = ReusableWebSocketEventSession::default();
+        let mut first_stream = result_or_panic(
+            session
+                .send_websocket_event_stream_incremental(test_ws_request(
+                    address,
+                    json!({"type": "response.create", "input": [{"role": "user", "content": "one"}]}),
+                ))
+                .await,
+            "first websocket stream",
+        );
+        drain_events(&mut first_stream).await;
+        let mut second_stream = result_or_panic(
+            session
+                .send_websocket_event_stream_incremental(test_ws_request(
+                    address,
+                    json!({"type": "response.create", "input": [{"role": "user", "content": "two"}]}),
+                ))
+                .await,
+            "second websocket stream",
+        );
+        drain_events(&mut second_stream).await;
+        result_or_panic(server.await, "websocket server task");
+
+        assert_eq!(handshakes.load(Ordering::SeqCst), 1);
+        let requests = lock_or_panic(requests.lock(), "requests lock should not be poisoned");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0]["input"][0]
+                .get("content")
+                .and_then(Value::as_str),
+            Some("one")
+        );
+        assert_eq!(
+            requests[1]["input"][0]
+                .get("content")
+                .and_then(Value::as_str),
+            Some("two")
+        );
+        drop(requests);
+    }
+
+    #[tokio::test]
+    async fn reusable_session_waits_for_response_completion_before_next_request() {
+        let _guard = allow_real_model_requests_guard();
+        let listener = result_or_panic(
+            TcpListener::bind("127.0.0.1:0").await,
+            "bind websocket test listener",
+        );
+        let address = result_or_panic(listener.local_addr(), "listener local addr");
+        let (release_first_response, wait_for_release) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = result_or_panic(listener.accept().await, "accept websocket client");
+            let mut websocket =
+                result_or_panic(accept_async(stream).await, "accept websocket upgrade");
+            expect_request_with_content(&mut websocket, "one").await;
+            result_or_panic(wait_for_release.await, "release signal should be sent");
+            send_completed_event(&mut websocket, "resp_1").await;
+            expect_request_with_content(&mut websocket, "two").await;
+            send_completed_event(&mut websocket, "resp_2").await;
+        });
+
+        let mut session = ReusableWebSocketEventSession::default();
+        let mut first_stream = result_or_panic(
+            session
+                .send_websocket_event_stream_incremental(test_ws_request(
+                    address,
+                    json!({"type": "response.create", "input": [{"role": "user", "content": "one"}]}),
+                ))
+                .await,
+            "first websocket stream",
+        );
+
+        let second_request = session.send_websocket_event_stream_incremental(test_ws_request(
+            address,
+            json!({"type": "response.create", "input": [{"role": "user", "content": "two"}]}),
+        ));
+        tokio::pin!(second_request);
+        let second_before_completion =
+            tokio::time::timeout(Duration::from_millis(50), &mut second_request).await;
+        assert!(second_before_completion.is_err());
+
+        result_or_panic(
+            release_first_response.send(()),
+            "release receiver should still be alive",
+        );
+        drain_events(&mut first_stream).await;
+        let mut second_stream = result_or_panic(second_request.await, "second websocket stream");
+        drain_events(&mut second_stream).await;
+        result_or_panic(server.await, "websocket server task");
+    }
+
+    fn test_ws_request(address: std::net::SocketAddr, body: Value) -> HttpRequest {
+        HttpRequest {
+            method: HttpMethod::Post,
+            url: format!("http://{address}/v1/responses"),
+            headers: BTreeMap::new(),
+            body,
+            timeout: Some(Duration::from_secs(5)),
+            metadata: serde_json::Map::new(),
+            cancellation_token: starweaver_core::CancellationToken::default(),
+        }
+    }
+
+    async fn expect_request_with_content(
+        websocket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        expected: &str,
+    ) {
+        let message = result_or_panic(
+            option_or_panic(websocket.next().await, "websocket message"),
+            "valid websocket message",
+        );
+        let Message::Text(text) = message else {
+            panic!("expected text websocket request");
+        };
+        let body: Value = result_or_panic(serde_json::from_str(&text), "valid request JSON");
+        assert_eq!(
+            body["input"][0].get("content").and_then(Value::as_str),
+            Some(expected)
+        );
+    }
+
+    async fn send_completed_event(
+        websocket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+        response_id: &str,
+    ) {
+        result_or_panic(
+            websocket
+                .send(Message::Text(
+                    json!({
+                        "type": "response.completed",
+                        "response": {
+                            "id": response_id,
+                            "status": "completed",
+                            "output": [],
+                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                        }
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await,
+            "send completed event",
+        );
+    }
+
+    async fn drain_events(events: &mut ModelEventStream) {
+        while let Some(event) = events.recv().await {
+            let _ = result_or_panic(event, "websocket event should be valid");
+        }
     }
 }

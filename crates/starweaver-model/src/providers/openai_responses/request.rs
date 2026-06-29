@@ -146,6 +146,14 @@ pub(super) fn build_request_with_options(
     Ok(Value::Object(request))
 }
 
+pub(super) fn response_replay_items(
+    response: &crate::message::ModelResponse,
+    settings: Option<&ModelSettings>,
+) -> Vec<Value> {
+    let replay = OpenAiReplayOptions::from_settings(settings);
+    replay_items::response_replay_items(response, &replay)
+}
+
 fn ensure_include(request: &mut Map<String, Value>, include: &str) {
     let entry = request
         .entry("include".to_string())

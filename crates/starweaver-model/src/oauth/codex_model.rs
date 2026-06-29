@@ -11,8 +11,8 @@ use crate::{
     providers::client::ProtocolModelClient,
     transport::{DynHttpClient, HttpModelConfig},
     ModelAdapter, ModelError, ModelProfile, ModelRequestContext, ModelRequestParameters,
-    ModelResponse, ModelResponseEventStream, ModelResponseStreamEvent, ModelSettings,
-    ProtocolFamily,
+    ModelResponse, ModelResponseEventStream, ModelResponseStreamEvent, ModelRunSession,
+    ModelSettings, ProtocolFamily,
 };
 
 /// `Codex` OAuth-backed `OpenAI` Responses model.
@@ -131,6 +131,10 @@ impl ModelAdapter for CodexOAuthResponsesModel {
 
     fn default_settings(&self) -> Option<&ModelSettings> {
         self.inner.default_settings()
+    }
+
+    fn start_run_session(&self) -> Box<dyn ModelRunSession + '_> {
+        self.inner.start_run_session()
     }
 
     async fn request(

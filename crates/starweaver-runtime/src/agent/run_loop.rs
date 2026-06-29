@@ -379,6 +379,7 @@ impl Agent {
         let mut output_retries_used = 0;
         let mut model_error_retries_used = 0usize;
         let mut tool_retries = BTreeMap::<String, usize>::new();
+        let mut model_session = self.model.start_run_session();
 
         'agent_loop: loop {
             let mut step_span = ActiveSpan::start(
@@ -593,8 +594,7 @@ impl Agent {
                     let mut stream_resume_retries_used = 0usize;
                     let response = 'model_stream_resume: loop {
                         let mut response = None;
-                        let mut model_stream = match self
-                            .model
+                        let mut model_stream = match model_session
                             .request_stream_incremental(
                                 messages.clone(),
                                 settings.clone(),
@@ -720,8 +720,7 @@ impl Agent {
                     model_span.close(SpanStatus::Ok);
                     response
                 } else {
-                    let response = match self
-                        .model
+                    let response = match model_session
                         .request_stream_final(messages, settings, params, request_context)
                         .await
                     {

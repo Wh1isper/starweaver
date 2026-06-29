@@ -83,6 +83,13 @@ impl OpenAiResponsesAdapter {
     ) -> Result<Vec<ModelResponseStreamEvent>, ModelError> {
         stream::parse_stream_events(events)
     }
+
+    pub(crate) fn response_replay_items(
+        response: &ModelResponse,
+        settings: Option<&ModelSettings>,
+    ) -> Vec<Value> {
+        request::response_replay_items(response, settings)
+    }
 }
 
 #[cfg(test)]

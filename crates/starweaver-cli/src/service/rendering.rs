@@ -8,6 +8,7 @@ use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 use super::{render_json_lines, PromptRunExecution};
 use crate::{
     args::OutputMode,
+    display_preview::run_output_preview,
     local_store::{RunSummary, SessionSummary, TrimReport},
     CliError, CliResult,
 };
@@ -109,19 +110,7 @@ pub(super) fn render_agui_jsonl(messages: &[DisplayMessage]) -> CliResult<String
 }
 
 pub(super) fn render_prompt_run_json(execution: &PromptRunExecution) -> CliResult<String> {
-    let output_preview = execution
-        .messages
-        .iter()
-        .rev()
-        .find_map(|message| {
-            message
-                .payload
-                .get("output")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
-                .or_else(|| message.preview.clone())
-        })
-        .unwrap_or_default();
+    let output_preview = run_output_preview(&execution.messages).unwrap_or_default();
     let latest_sequence = execution.messages.last().map(|message| message.sequence);
     Ok(format!(
         "{}\n",

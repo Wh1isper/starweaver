@@ -10,7 +10,7 @@ use super::DynModelAdapter;
 use crate::{
     adapter::{
         ModelAdapter, ModelError, ModelRequestContext, ModelRequestParameters,
-        ModelResponseEventStream,
+        ModelResponseEventStream, ModelRunSession,
     },
     message::{ModelMessage, ModelResponse},
     profile::ModelProfile,
@@ -23,6 +23,11 @@ pub struct ConcurrencyLimitedModel {
     inner: DynModelAdapter,
     semaphore: Arc<Semaphore>,
     max_concurrency: usize,
+}
+
+struct ConcurrencyLimitedRunSession<'a> {
+    model: &'a ConcurrencyLimitedModel,
+    inner: Box<dyn ModelRunSession + 'a>,
 }
 
 impl ConcurrencyLimitedModel {
@@ -80,6 +85,13 @@ impl ModelAdapter for ConcurrencyLimitedModel {
 
     fn default_settings(&self) -> Option<&ModelSettings> {
         self.inner.default_settings()
+    }
+
+    fn start_run_session(&self) -> Box<dyn ModelRunSession + '_> {
+        Box::new(ConcurrencyLimitedRunSession {
+            model: self,
+            inner: self.inner.start_run_session(),
+        })
     }
 
     async fn request(
@@ -142,6 +154,52 @@ impl ModelAdapter for ConcurrencyLimitedModel {
         params: &ModelRequestParameters,
     ) -> Result<starweaver_usage::Usage, ModelError> {
         self.inner.count_tokens(messages, settings, params).await
+    }
+}
+
+#[async_trait]
+impl ModelRunSession for ConcurrencyLimitedRunSession<'_> {
+    async fn request_stream_incremental(
+        &mut self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        mut context: ModelRequestContext,
+    ) -> Result<ModelResponseEventStream, ModelError> {
+        let cancellation_token = context.cancellation_token();
+        let permit = self.model.acquire().await?;
+        annotate_limiter(&mut context, self.model.max_concurrency);
+        let mut events = self
+            .inner
+            .request_stream_incremental(messages, settings, params, context)
+            .await?;
+        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        tokio::spawn(async move {
+            let _permit = permit;
+            while let Some(event) = events.recv().await {
+                if sender.send(event).await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(ModelResponseEventStream::new_with_cancellation(
+            receiver,
+            cancellation_token,
+        ))
+    }
+
+    async fn request_stream_final(
+        &mut self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        mut context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        let _permit = self.model.acquire().await?;
+        annotate_limiter(&mut context, self.model.max_concurrency);
+        self.inner
+            .request_stream_final(messages, settings, params, context)
+            .await
     }
 }
 

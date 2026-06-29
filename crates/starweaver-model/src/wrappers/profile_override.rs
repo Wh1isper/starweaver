@@ -6,7 +6,7 @@ use super::DynModelAdapter;
 use crate::{
     adapter::{
         ModelAdapter, ModelError, ModelRequestContext, ModelRequestParameters,
-        ModelResponseEventStream,
+        ModelResponseEventStream, ModelRunSession,
     },
     message::{ModelMessage, ModelResponse},
     profile::ModelProfile,
@@ -74,6 +74,10 @@ impl ModelAdapter for ProfileOverrideModel {
 
     fn default_settings(&self) -> Option<&ModelSettings> {
         self.default_settings.as_ref()
+    }
+
+    fn start_run_session(&self) -> Box<dyn ModelRunSession + '_> {
+        self.inner.start_run_session()
     }
 
     async fn request(

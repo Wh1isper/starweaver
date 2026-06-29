@@ -5,6 +5,7 @@ mod args;
 mod client_state;
 mod clipboard;
 mod config;
+mod display_preview;
 mod environment;
 mod error;
 pub mod launcher;

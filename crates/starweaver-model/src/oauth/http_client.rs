@@ -13,7 +13,7 @@ use crate::{
     },
     transport::{
         extend_headers_case_insensitive, DynHttpClient, HttpRequest, HttpResponse,
-        ModelEventStream, ModelHttpClient, ReqwestHttpClient,
+        ModelEventStream, ModelHttpClient, ModelWebSocketEventSession, ReqwestHttpClient,
     },
     ModelError,
 };
@@ -212,6 +212,63 @@ impl ModelHttpClient for OAuthBearerHttpClient {
             }
             result => result,
         }
+    }
+
+    fn websocket_event_session(&self) -> Box<dyn ModelWebSocketEventSession + '_> {
+        Box::new(OAuthWebSocketEventSession {
+            client: self,
+            inner: self.inner.websocket_event_session(),
+        })
+    }
+}
+
+struct OAuthWebSocketEventSession<'a> {
+    client: &'a OAuthBearerHttpClient,
+    inner: Box<dyn ModelWebSocketEventSession + 'a>,
+}
+
+#[async_trait]
+impl ModelWebSocketEventSession for OAuthWebSocketEventSession<'_> {
+    async fn send_websocket_event_stream_incremental(
+        &mut self,
+        mut request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        request
+            .metadata
+            .entry("starweaver.response_stream_transport".to_string())
+            .or_insert_with(|| Value::String("websocket".to_string()));
+        let snapshot = self
+            .client
+            .token_source
+            .get_token()
+            .await
+            .map_err(|error| ModelError::Transport(error.to_string()))?;
+        let request_with_auth = self.client.prepare_request(request.clone(), &snapshot)?;
+        match self
+            .inner
+            .send_websocket_event_stream_incremental(request_with_auth)
+            .await
+        {
+            Err(ModelError::ProviderStatus { status: 401, .. }) => {
+                self.inner.reset().await;
+                let refreshed = self
+                    .client
+                    .token_source
+                    .refresh_token()
+                    .await
+                    .map_err(|error| ModelError::Transport(error.to_string()))?;
+                self.inner
+                    .send_websocket_event_stream_incremental(
+                        self.client.prepare_request(request, &refreshed)?,
+                    )
+                    .await
+            }
+            result => result,
+        }
+    }
+
+    async fn reset(&mut self) {
+        self.inner.reset().await;
     }
 }
 

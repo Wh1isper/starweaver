@@ -27,6 +27,7 @@ use starweaver_stream::{
 use crate::{
     args::RunCommand,
     config::CliConfig,
+    display_preview::run_output_preview,
     environment::{resolve_environment_target_for_session_with_attachments, ResolvedEnvironment},
     local_store::{LocalStore, LocalStreamArchive},
     prompt_input::PromptInput,
@@ -1852,14 +1853,7 @@ fn display_replay_event(
 }
 
 fn output_preview(messages: &[DisplayMessage]) -> Option<String> {
-    messages.iter().rev().find_map(|message| {
-        message
-            .payload
-            .get("output")
-            .and_then(Value::as_str)
-            .map(ToString::to_string)
-            .or_else(|| message.preview.clone())
-    })
+    run_output_preview(messages)
 }
 
 const fn terminal_status(kind: DisplayMessageKind) -> Option<&'static str> {
@@ -2281,6 +2275,31 @@ mod tests {
             panic!("expected display message");
         };
         assert_eq!(message.payload["delta"], "hello");
+    }
+
+    #[test]
+    fn output_preview_skips_internal_compaction_messages() {
+        let session_id = starweaver_core::SessionId::from_string("session_1");
+        let run_id = starweaver_core::RunId::from_string("run_1");
+        let messages = vec![
+            DisplayMessage::new(
+                0,
+                session_id.clone(),
+                run_id.clone(),
+                DisplayMessageKind::RunCompleted,
+            )
+            .with_payload(json!({"output": "final answer"}))
+            .with_preview("final answer"),
+            DisplayMessage::new(
+                1,
+                session_id,
+                run_id,
+                DisplayMessageKind::CompactionCompleted,
+            )
+            .with_preview("display compaction completed"),
+        ];
+
+        assert_eq!(output_preview(&messages).as_deref(), Some("final answer"));
     }
 
     #[test]

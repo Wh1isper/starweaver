@@ -15,7 +15,7 @@ pub use audit::{
     ProviderRequestAuditPayloadPolicy, ProviderRequestAuditPolicy, ProviderRequestAuditRecorder,
     ProviderRequestAuditSnapshot,
 };
-pub use client::{DynHttpClient, ModelEventStream, ModelHttpClient};
+pub use client::{DynHttpClient, ModelEventStream, ModelHttpClient, ModelWebSocketEventSession};
 pub(crate) use config::extend_headers_case_insensitive;
 pub use config::{
     build_http_request, merge_extra_body, AuthConfig, HttpModelConfig, HttpRequestOptions,

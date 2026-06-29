@@ -44,6 +44,15 @@ pub(super) fn push_response_replay_items(
     }
 }
 
+pub(super) fn response_replay_items(
+    response: &ModelResponse,
+    replay: &OpenAiReplayOptions,
+) -> Vec<Value> {
+    let mut input = Vec::new();
+    push_response_replay_items(response, replay, &mut input);
+    input
+}
+
 fn push_assistant_text(text: &str, input: &mut Vec<Value>) {
     if text.is_empty() {
         return;

@@ -12,7 +12,7 @@ use super::DynModelAdapter;
 use crate::{
     adapter::{
         ModelAdapter, ModelError, ModelRequestContext, ModelRequestParameters,
-        ModelResponseEventStream,
+        ModelResponseEventStream, ModelRunSession,
     },
     message::{ModelMessage, ModelResponse},
     profile::ModelProfile,
@@ -127,6 +127,11 @@ pub struct HookedModel {
     hooks: Vec<DynModelExecutionHook>,
 }
 
+struct HookedModelRunSession<'a> {
+    model: &'a HookedModel,
+    inner: Box<dyn ModelRunSession + 'a>,
+}
+
 impl HookedModel {
     /// Create a hooked model wrapper.
     #[must_use]
@@ -199,6 +204,13 @@ impl ModelAdapter for HookedModel {
 
     fn default_settings(&self) -> Option<&ModelSettings> {
         self.inner.default_settings()
+    }
+
+    fn start_run_session(&self) -> Box<dyn ModelRunSession + '_> {
+        Box::new(HookedModelRunSession {
+            model: self,
+            inner: self.inner.start_run_session(),
+        })
     }
 
     async fn request(
@@ -327,5 +339,74 @@ impl ModelAdapter for HookedModel {
         params: &ModelRequestParameters,
     ) -> Result<Usage, ModelError> {
         self.inner.count_tokens(messages, settings, params).await
+    }
+}
+
+#[async_trait]
+impl ModelRunSession for HookedModelRunSession<'_> {
+    async fn request_stream_incremental(
+        &mut self,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<ModelResponseEventStream, ModelError> {
+        let cancellation_token = context.cancellation_token();
+        let metadata = ModelExecutionMetadata::new(self.model.inner.as_ref(), &context, true);
+        self.model
+            .call_before(&metadata, &messages, settings.as_ref(), &params, &context)
+            .await?;
+        match self
+            .inner
+            .request_stream_incremental(messages, settings, params, context)
+            .await
+        {
+            Ok(mut inner_stream) => {
+                let hooks = self.model.hooks.clone();
+                let (sender, receiver) = tokio::sync::mpsc::channel(32);
+                tokio::spawn(async move {
+                    while let Some(event) = inner_stream.recv().await {
+                        match event {
+                            Ok(ModelResponseStreamEvent::FinalResult(response)) => {
+                                if let Err(error) =
+                                    HookedModel::call_after(&hooks, &metadata, &response).await
+                                {
+                                    let _ = sender.send(Err(error)).await;
+                                    return;
+                                }
+                                if sender
+                                    .send(Ok(ModelResponseStreamEvent::FinalResult(response)))
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            Ok(event) => {
+                                if sender.send(Ok(event)).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Err(error) => {
+                                let replacement =
+                                    HookedModel::call_error(&hooks, &metadata, &error)
+                                        .await
+                                        .err();
+                                let _ = sender.send(Err(replacement.unwrap_or(error))).await;
+                                return;
+                            }
+                        }
+                    }
+                });
+                Ok(ModelResponseEventStream::new_with_cancellation(
+                    receiver,
+                    cancellation_token,
+                ))
+            }
+            Err(error) => {
+                HookedModel::call_error(&self.model.hooks, &metadata, &error).await?;
+                Err(error)
+            }
+        }
     }
 }
