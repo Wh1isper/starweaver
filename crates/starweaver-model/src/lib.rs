@@ -18,8 +18,8 @@ pub mod wrappers;
 pub use adapter::{
     allow_real_model_requests, allow_real_model_requests_guard, block_real_model_requests,
     set_allow_real_model_requests, ModelAdapter, ModelError, ModelRequestContext,
-    ModelRequestParameters, ModelResponseEventStream, NativeToolDefinition, RealModelRequestGuard,
-    ToolDefinition,
+    ModelRequestParameters, ModelResponseEventStream, ModelRunSession, NativeToolDefinition,
+    RealModelRequestGuard, ToolDefinition,
 };
 pub use media::{
     base64_encoded_len, detect_image_dimensions, detect_media_kind, is_document_media_type,

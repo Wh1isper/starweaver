@@ -61,6 +61,43 @@ pub trait ModelHttpClient: Send + Sync {
             request.url
         )))
     }
+
+    /// Create a session that may reuse WebSocket transport state across sequential requests.
+    fn websocket_event_session(&self) -> Box<dyn ModelWebSocketEventSession + '_> {
+        Box::new(PerRequestWebSocketEventSession { client: self })
+    }
+}
+
+/// Run-scoped WebSocket event transport session.
+#[async_trait]
+pub trait ModelWebSocketEventSession: Send {
+    /// Send a WebSocket model request and return JSON text-frame events as they arrive.
+    async fn send_websocket_event_stream_incremental(
+        &mut self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError>;
+
+    /// Reset any reusable transport state held by the session.
+    async fn reset(&mut self) {}
+}
+
+struct PerRequestWebSocketEventSession<'a, C: ModelHttpClient + ?Sized> {
+    client: &'a C,
+}
+
+#[async_trait]
+impl<C> ModelWebSocketEventSession for PerRequestWebSocketEventSession<'_, C>
+where
+    C: ModelHttpClient + ?Sized,
+{
+    async fn send_websocket_event_stream_incremental(
+        &mut self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        self.client
+            .send_websocket_event_stream_incremental(request)
+            .await
+    }
 }
 
 /// Receiver for incremental model JSON events.

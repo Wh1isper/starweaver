@@ -177,6 +177,37 @@ fn display_and_control_renderers_cover_edge_branches() {
 }
 
 #[test]
+fn prompt_run_json_preview_skips_internal_compaction_messages() {
+    let (session_id, run_id) = ids();
+    let completed_json = render_prompt_run_json(&PromptRunExecution {
+        session_id: session_id.as_str().to_string(),
+        run_id: run_id.as_str().to_string(),
+        status: "completed".to_string(),
+        output_mode: OutputMode::Json,
+        messages: vec![
+            DisplayMessage::new(
+                0,
+                session_id.clone(),
+                run_id.clone(),
+                DisplayMessageKind::RunCompleted,
+            )
+            .with_payload(json!({"output": "final answer"}))
+            .with_preview("final answer"),
+            DisplayMessage::new(
+                1,
+                session_id,
+                run_id,
+                DisplayMessageKind::CompactionCompleted,
+            )
+            .with_preview("display compaction completed"),
+        ],
+    })
+    .unwrap();
+    let completed_json: serde_json::Value = serde_json::from_str(&completed_json).unwrap();
+    assert_eq!(completed_json["outputPreview"], "final answer");
+}
+
+#[test]
 fn guidance_files_append_project_guidance_and_user_rules_as_transient_guidance() {
     let temp = tempfile::tempdir().unwrap();
     let global = temp.path().join("global");

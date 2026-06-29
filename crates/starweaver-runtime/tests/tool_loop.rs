@@ -1,12 +1,15 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, LazyLock, Mutex,
+};
 
 use async_trait::async_trait;
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
-    ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily,
-    ToolCallPart,
+    ModelRequestParameters, ModelResponse, ModelResponseEventStream, ModelResponsePart,
+    ModelRunSession, ModelSettings, ProtocolFamily, ToolCallPart,
 };
 use starweaver_runtime::Agent;
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
@@ -18,6 +21,26 @@ struct ScriptedModel {
     captured_settings: Arc<Mutex<Vec<Option<ModelSettings>>>>,
     captured_params: Arc<Mutex<Vec<ModelRequestParameters>>>,
     defaults: Option<ModelSettings>,
+}
+
+struct SessionCountingModel {
+    responses: Arc<Mutex<Vec<ModelResponse>>>,
+    sessions_started: Arc<AtomicUsize>,
+    session_requests: Arc<AtomicUsize>,
+}
+
+struct SessionCountingRunSession<'a> {
+    model: &'a SessionCountingModel,
+}
+
+impl SessionCountingModel {
+    fn new(responses: Vec<ModelResponse>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses.into_iter().rev().collect())),
+            sessions_started: Arc::new(AtomicUsize::new(0)),
+            session_requests: Arc::new(AtomicUsize::new(0)),
+        }
+    }
 }
 
 impl ScriptedModel {
@@ -75,6 +98,90 @@ impl ModelAdapter for ScriptedModel {
     }
 }
 
+#[async_trait]
+impl ModelAdapter for SessionCountingModel {
+    fn model_name(&self) -> &'static str {
+        "session-counting"
+    }
+
+    fn provider_name(&self) -> Option<&'static str> {
+        Some("test")
+    }
+
+    fn profile(&self) -> &ModelProfile {
+        static PROFILE: LazyLock<ModelProfile> =
+            LazyLock::new(|| ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions));
+        &PROFILE
+    }
+
+    fn default_settings(&self) -> Option<&ModelSettings> {
+        None
+    }
+
+    fn start_run_session(&self) -> Box<dyn ModelRunSession + '_> {
+        self.sessions_started.fetch_add(1, Ordering::SeqCst);
+        Box::new(SessionCountingRunSession { model: self })
+    }
+
+    async fn request(
+        &self,
+        _messages: Vec<ModelMessage>,
+        _settings: Option<ModelSettings>,
+        _params: ModelRequestParameters,
+        _context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        Err(ModelError::Transport(
+            "session-counting model must be called through a run session".to_string(),
+        ))
+    }
+}
+
+#[async_trait]
+impl ModelRunSession for SessionCountingRunSession<'_> {
+    async fn request_stream_incremental(
+        &mut self,
+        _messages: Vec<ModelMessage>,
+        _settings: Option<ModelSettings>,
+        _params: ModelRequestParameters,
+        context: ModelRequestContext,
+    ) -> Result<ModelResponseEventStream, ModelError> {
+        let response = self
+            .request_stream_final(
+                Vec::new(),
+                None,
+                ModelRequestParameters::default(),
+                context.clone(),
+            )
+            .await?;
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let _ = sender
+            .send(Ok(starweaver_model::ModelResponseStreamEvent::FinalResult(
+                Box::new(response),
+            )))
+            .await;
+        Ok(ModelResponseEventStream::new_with_cancellation(
+            receiver,
+            context.cancellation_token(),
+        ))
+    }
+
+    async fn request_stream_final(
+        &mut self,
+        _messages: Vec<ModelMessage>,
+        _settings: Option<ModelSettings>,
+        _params: ModelRequestParameters,
+        _context: ModelRequestContext,
+    ) -> Result<ModelResponse, ModelError> {
+        self.model.session_requests.fetch_add(1, Ordering::SeqCst);
+        self.model
+            .responses
+            .lock()
+            .unwrap()
+            .pop()
+            .ok_or_else(|| ModelError::Transport("script exhausted".to_string()))
+    }
+}
+
 fn lookup_registry() -> ToolRegistry {
     let tool = FunctionTool::new(
         "lookup",
@@ -120,6 +227,31 @@ async fn agent_executes_tool_calls_and_continues_model_loop() {
     let second_request = second_request_history.last().unwrap();
     assert!(format!("{second_request:?}").contains("ToolReturn"));
     assert!(format!("{second_request:?}").contains("Paris"));
+}
+
+#[tokio::test]
+async fn agent_loop_reuses_one_model_run_session_across_tool_continuation() {
+    let model = Arc::new(SessionCountingModel::new(vec![
+        ModelResponse {
+            parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                id: "call_1".to_string(),
+                name: "lookup".to_string(),
+                arguments: serde_json::json!({"query": "Paris"}).into(),
+            })],
+            ..ModelResponse::text("")
+        },
+        ModelResponse::text("Paris result"),
+    ]));
+
+    let result = Agent::new(model.clone())
+        .with_tools(lookup_registry())
+        .run("lookup Paris")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "Paris result");
+    assert_eq!(model.sessions_started.load(Ordering::SeqCst), 1);
+    assert_eq!(model.session_requests.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]

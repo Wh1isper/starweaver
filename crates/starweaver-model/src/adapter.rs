@@ -13,7 +13,7 @@ pub use guard::{
     set_allow_real_model_requests, RealModelRequestGuard,
 };
 pub use params::{ModelRequestParameters, NativeToolDefinition, ToolDefinition};
-pub use traits::ModelAdapter;
+pub use traits::{ModelAdapter, ModelRunSession};
 
 use crate::ModelResponseStreamEvent;
 use starweaver_core::CancellationToken;
