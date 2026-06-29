@@ -883,8 +883,9 @@ pub(super) fn queue_styled_line_at(
     line: &StyledLine,
     width: usize,
 ) -> CliResult<()> {
-    queue!(stdout, MoveTo(0, row), Clear(ClearType::CurrentLine)).map_err(terminal_error)?;
-    queue_styled_segments(stdout, line, width)
+    queue!(stdout, MoveTo(0, row)).map_err(terminal_error)?;
+    queue_styled_segments(stdout, line, width)?;
+    queue!(stdout, Clear(ClearType::UntilNewLine)).map_err(terminal_error)
 }
 
 fn queue_styled_segments(
