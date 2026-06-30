@@ -954,11 +954,13 @@ fn gemini_preserves_agent_loop_boundaries() {
     }));
     assert!(contents.iter().any(|content| {
         content["role"] == "model"
+            && content["parts"][0]["functionCall"]["id"] == "call_1"
             && content["parts"][0]["functionCall"]["name"] == "lookup"
             && content["parts"][0]["functionCall"]["args"]["query"] == "Paris"
     }));
     assert!(contents.iter().any(|content| {
         content["role"] == "user"
+            && content["parts"][0]["functionResponse"]["id"] == "call_1"
             && content["parts"][0]["functionResponse"]["name"] == "lookup"
             && content["parts"][0]["functionResponse"]["response"]["content"]["value"]
                 == "Paris is the capital of France"
@@ -993,6 +995,213 @@ fn gemini_parses_text_tool_call_usage_and_finish_reason() {
     let calls = tool_calls(&response);
     assert_eq!(calls[0].id, "call_1");
     assert_eq!(calls[0].arguments.execution_value()["query"], "Paris");
+}
+
+#[test]
+fn gemini_replays_function_call_ids_and_thought_signatures() {
+    let response = GeminiGenerateContentAdapter::parse_response(&json!({
+        "candidates": [{
+            "finishReason": "STOP",
+            "content": {
+                "role": "model",
+                "parts": [
+                    {
+                        "text": "Inspect the request.",
+                        "thought": true,
+                        "thoughtSignature": "thought_sig_1"
+                    },
+                    {
+                        "thoughtSignature": "call_sig_1",
+                        "functionCall": {
+                            "id": "call_1",
+                            "name": "lookup",
+                            "args": {"query": "Paris"}
+                        }
+                    }
+                ]
+            }
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 3,
+            "candidatesTokenCount": 5,
+            "thoughtsTokenCount": 2,
+            "totalTokens": 10
+        }
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        &response.parts[0],
+        ModelResponsePart::ProviderThinking { text, signature, provider }
+            if text == "Inspect the request."
+                && signature.as_deref() == Some("thought_sig_1")
+                && provider.provider_name.as_deref() == Some("gemini")
+                && provider.details.get("thoughtSignature").and_then(serde_json::Value::as_str)
+                    == Some("thought_sig_1")
+    ));
+    assert!(matches!(
+        &response.parts[1],
+        ModelResponsePart::ProviderToolCall { call, provider }
+            if call.id == "call_1"
+                && call.name == "lookup"
+                && call.arguments.execution_value()["query"] == "Paris"
+                && provider.id.as_deref() == Some("call_1")
+                && provider.details.get("thoughtSignature").and_then(serde_json::Value::as_str)
+                    == Some("call_sig_1")
+    ));
+
+    let request = GeminiGenerateContentAdapter::build_request(
+        &[
+            ModelMessage::Response(response),
+            ModelMessage::Request(ModelRequest {
+                parts: vec![ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                    "call_1",
+                    "lookup",
+                    json!({"value": "Paris is the capital of France"}),
+                ))],
+                timestamp: None,
+                instructions: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Map::new(),
+            }),
+        ],
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+
+    let contents = request["contents"].as_array().unwrap();
+    assert_eq!(contents[0]["role"], "user");
+    assert_eq!(contents[0]["parts"][0]["text"], "");
+    let model_parts = contents[1]["parts"].as_array().unwrap();
+    assert_eq!(model_parts[0]["thought"], true);
+    assert_eq!(model_parts[0]["thoughtSignature"], "thought_sig_1");
+    assert_eq!(model_parts[1]["functionCall"]["id"], "call_1");
+    assert_eq!(model_parts[1]["thoughtSignature"], "call_sig_1");
+    assert_eq!(contents[2]["parts"][0]["functionResponse"]["id"], "call_1");
+}
+
+#[test]
+fn gemini_replays_text_thought_signature_and_dummy_function_call_signature() {
+    let response = GeminiGenerateContentAdapter::parse_response(&json!({
+        "candidates": [{
+            "finishReason": "STOP",
+            "content": {
+                "role": "model",
+                "parts": [
+                    {
+                        "text": "Visible text.",
+                        "thoughtSignature": "text_sig_1"
+                    },
+                    {
+                        "functionCall": {
+                            "id": "call_1",
+                            "name": "lookup",
+                            "args": {"query": "Paris"}
+                        }
+                    }
+                ]
+            }
+        }],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 5, "totalTokens": 8}
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        &response.parts[0],
+        ModelResponsePart::ProviderText { text, provider }
+            if text == "Visible text."
+                && provider.provider_name.as_deref() == Some("gemini")
+                && provider.details.get("thoughtSignature").and_then(serde_json::Value::as_str)
+                    == Some("text_sig_1")
+    ));
+
+    let request =
+        GeminiGenerateContentAdapter::build_request(&[ModelMessage::Response(response)], None, &[])
+            .unwrap();
+
+    let contents = request["contents"].as_array().unwrap();
+    assert_eq!(contents[0]["role"], "user");
+    assert_eq!(contents[0]["parts"][0]["text"], "");
+    let parts = contents[1]["parts"].as_array().unwrap();
+    assert_eq!(parts[0]["thoughtSignature"], "text_sig_1");
+    assert_eq!(
+        parts[1]["thoughtSignature"],
+        "skip_thought_signature_validator"
+    );
+    assert_eq!(parts[1]["functionCall"]["id"], "call_1");
+}
+
+#[test]
+fn gemini_prefixes_model_only_replay_with_empty_user_turn() {
+    let request = GeminiGenerateContentAdapter::build_request(
+        &[ModelMessage::Response(ModelResponse {
+            parts: vec![ModelResponsePart::Text {
+                text: "Recovered assistant state.".to_string(),
+            }],
+            usage: Usage::default(),
+            model_name: None,
+            provider: None,
+            finish_reason: Some(FinishReason::Stop),
+            timestamp: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        })],
+        None,
+        &[],
+    )
+    .unwrap();
+
+    let contents = request["contents"].as_array().unwrap();
+    assert_eq!(contents[0]["role"], "user");
+    assert_eq!(contents[0]["parts"][0]["text"], "");
+    assert_eq!(contents[1]["role"], "model");
+    assert_eq!(
+        contents[1]["parts"][0]["text"],
+        "Recovered assistant state."
+    );
+}
+
+#[test]
+fn gemini_splits_function_response_from_following_non_function_response_parts() {
+    let request = GeminiGenerateContentAdapter::build_request(
+        &[ModelMessage::Request(ModelRequest {
+            parts: vec![
+                ModelRequestPart::ToolReturn(ToolReturnPart::new(
+                    "call_1",
+                    "render_image",
+                    json!({"status": "ok"}),
+                )),
+                ModelRequestPart::UserPrompt {
+                    content: vec![ContentPart::Text {
+                        text: "The image is attached for inspection.".to_string(),
+                    }],
+                    name: None,
+                    metadata: Map::new(),
+                },
+            ],
+            timestamp: None,
+            instructions: None,
+            run_id: None,
+            conversation_id: None,
+            metadata: Map::new(),
+        })],
+        None,
+        &[],
+    )
+    .unwrap();
+
+    let contents = request["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 2);
+    assert_eq!(contents[0]["role"], "user");
+    assert!(contents[0]["parts"][0].get("functionResponse").is_some());
+    assert_eq!(contents[1]["role"], "user");
+    assert_eq!(
+        contents[1]["parts"][0]["text"],
+        "The image is attached for inspection."
+    );
 }
 
 #[test]
@@ -1125,6 +1334,75 @@ fn bedrock_preserves_agent_loop_boundaries() {
         request["toolConfig"]["tools"][0]["toolSpec"]["name"],
         "lookup"
     );
+}
+
+#[test]
+fn bedrock_replays_reasoning_content_blocks() {
+    let response = BedrockConverseAdapter::parse_response(&json!({
+        "output": {
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "reasoningContent": {
+                            "reasoningText": {
+                                "text": "Inspect the request.",
+                                "signature": "bedrock_sig_1"
+                            }
+                        }
+                    },
+                    {
+                        "reasoningContent": {
+                            "redactedContent": "encrypted-redacted"
+                        }
+                    },
+                    {
+                        "toolUse": {
+                            "toolUseId": "call_1",
+                            "name": "lookup",
+                            "input": {"query": "Paris"}
+                        }
+                    }
+                ]
+            }
+        },
+        "stopReason": "tool_use",
+        "usage": {"inputTokens": 3, "outputTokens": 5, "totalTokens": 8}
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        &response.parts[0],
+        ModelResponsePart::ProviderThinking { text, signature, provider }
+            if text == "Inspect the request."
+                && signature.as_deref() == Some("bedrock_sig_1")
+                && provider.provider_name.as_deref() == Some("bedrock")
+    ));
+    assert!(matches!(
+        &response.parts[1],
+        ModelResponsePart::ProviderOpaque { item_type, payload, provider }
+            if item_type == "reasoningContent"
+                && payload["reasoningContent"]["redactedContent"] == "encrypted-redacted"
+                && provider.provider_name.as_deref() == Some("bedrock")
+    ));
+
+    let request = BedrockConverseAdapter::build_request(
+        "anthropic.claude-test",
+        &[ModelMessage::Response(response)],
+        None,
+        &[lookup_tool()],
+    )
+    .unwrap();
+    let content = request["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(
+        content[0]["reasoningContent"]["reasoningText"]["signature"],
+        "bedrock_sig_1"
+    );
+    assert_eq!(
+        content[1]["reasoningContent"]["redactedContent"],
+        "encrypted-redacted"
+    );
+    assert_eq!(content[2]["toolUse"]["toolUseId"], "call_1");
 }
 
 #[test]

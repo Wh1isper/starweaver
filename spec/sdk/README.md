@@ -61,7 +61,20 @@ flowchart TD
 | notes/tasks/bus      | context stores and first-party tool bundles               |
 | skills               | serializable skill specs and tool bundles                 |
 | tool proxy           | first-party proxy toolset features                        |
+| Python SDK           | `starweaver-py` in-process bindings and Python tools      |
 | observability        | OTel GenAI spans, Langfuse metadata, trace propagation    |
+
+## Python SDK Subspecs
+
+The Python SDK planning surface lives under `python/`:
+
+- `python/README.md` — Python SDK overview, ownership shape, and review order
+- `python/01-product-boundary.md` — product goals, non-goals, package layout, and binding boundary
+- `python/02-concept-mapping.md` — Python concept mapping to Starweaver Rust seams
+- `python/03-python-tool-injection.md` — in-process Python tools, schema/result conversion, and async bridge
+- `python/04-runtime-session-streaming.md` — agent construction, sessions, state, HITL, streaming, and errors
+- `python/05-ecosystem-and-claw.md` — toolsets, subagents, skills, resources, observability, and Claw integration
+- `python/06-roadmap-and-validation.md` — phases, acceptance gates, open decisions, and review checklist
 
 ## SDK Acceptance Gates
 

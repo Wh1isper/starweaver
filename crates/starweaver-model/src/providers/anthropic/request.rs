@@ -93,6 +93,15 @@ pub(super) fn build_request(
                                 }));
                             }
                         }
+                        ModelResponsePart::ProviderOpaque {
+                            item_type,
+                            payload,
+                            provider,
+                        } if provider.is_provider("anthropic")
+                            && anthropic_opaque_replay_item(item_type, payload) =>
+                        {
+                            content.push(payload.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -116,6 +125,11 @@ pub(super) fn build_request(
     apply_anthropic_settings(&mut request, settings);
     append_anthropic_tools(&mut request, tools, settings);
     Ok(Value::Object(request))
+}
+
+fn anthropic_opaque_replay_item(item_type: &str, payload: &Value) -> bool {
+    item_type == "redacted_thinking"
+        && payload.get("type").and_then(Value::as_str) == Some("redacted_thinking")
 }
 
 fn anthropic_system_value(
