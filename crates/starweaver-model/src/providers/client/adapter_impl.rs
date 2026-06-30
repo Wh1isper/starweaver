@@ -597,6 +597,7 @@ fn transport_fallback_diagnostic(
             "from": "websocket",
             "to": "http",
             "reason": transport_fallback_reason(error),
+            "detail": error.to_string(),
             "message": format!(
                 "model transport: websocket -> http fallback ({})",
                 transport_fallback_reason(error)
