@@ -8,7 +8,7 @@ use super::{
     CliConfig, ProviderConfig,
 };
 use crate::{
-    args::{HitlPolicy, OutputMode},
+    args::{HitlPolicy, OutputMode, TuiRenderMode},
     error::io_error,
     CliError, CliResult,
 };
@@ -274,6 +274,7 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "providers.google-cloud.ready" => {
             provider_ready(&config.providers.google_cloud).to_string()
         }
+        "tui.render_mode" => tui_render_mode_name(config.tui_render_mode).to_string(),
         "trim.auto_after_run" => config.auto_trim.to_string(),
         "trim.current_session_keep_recent_runs" => {
             config.current_session_keep_recent_runs.to_string()
@@ -386,6 +387,25 @@ const fn hitl_policy_name(hitl: HitlPolicy) -> &'static str {
     }
 }
 
+const fn tui_render_mode_name(mode: TuiRenderMode) -> &'static str {
+    match mode {
+        TuiRenderMode::Normal => "normal",
+        TuiRenderMode::Concise => "concise",
+        TuiRenderMode::Debug => "debug",
+    }
+}
+
+fn validated_tui_render_mode(value: &str) -> CliResult<&'static str> {
+    match value.trim() {
+        "normal" => Ok("normal"),
+        "concise" => Ok("concise"),
+        "debug" => Ok("debug"),
+        other => Err(CliError::Usage(format!(
+            "invalid tui.render_mode: {other}; expected normal, concise, or debug"
+        ))),
+    }
+}
+
 fn split_provider_config_key(key: &str) -> Option<(&str, &str)> {
     let mut parts = key.split('.');
     let section = parts.next()?;
@@ -442,6 +462,7 @@ fn split_config_key(key: &str) -> CliResult<(&str, &str)> {
                 | "shell_review.system_prompt",
             )
             | ("update", "channel")
+            | ("tui", "render_mode")
             | (
                 "oauth_refresh",
                 "enabled" | "interval_seconds" | "failure_retry_seconds" | "refresh_on_startup",
@@ -598,6 +619,7 @@ fn parse_config_value(key: &str, value: &str) -> CliResult<Value> {
                 .map(|name| Value::String(name.trim().to_string()))
                 .collect(),
         ),
+        "tui.render_mode" => Value::String(validated_tui_render_mode(value)?.to_string()),
         "trim.auto_after_run"
         | "trim.current_session_keep_recent_runs"
         | "trim.all_sessions_keep_recent_runs"

@@ -19,7 +19,9 @@ use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 use starweaver_usage::{PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot};
 
-use crate::{prompt_input::PromptAttachment, slash_commands::SlashCommandDefinition};
+use crate::{
+    args::TuiRenderMode, prompt_input::PromptAttachment, slash_commands::SlashCommandDefinition,
+};
 
 use super::{
     markdown::{render_markdown_lines, render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
@@ -640,6 +642,7 @@ fn interactive_state_covers_runtime_event_branches() {
         .body
         .iter()
         .any(|line| body_line_text(line).starts_with('>')));
+    assert!(!body_has_line(&state, "Thinking"));
 
     state.apply_stream_record(&AgentStreamRecord::new(
         3,
@@ -1914,6 +1917,329 @@ fn text_delta_after_unfinished_thinking_starts_visible_line() {
 }
 
 #[test]
+fn begin_run_does_not_precreate_empty_assistant_transcript_item() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+
+    assert!(body_has_line(&state, "User: respond"));
+    assert!(!body_has_line(&state, "Assistant:"));
+    assert!(!body_has_line(&state, ""));
+}
+
+#[test]
+fn text_after_thinking_preserves_event_order_in_normal_mode() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "first reasoning")),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(1, "later answer")),
+        },
+    ));
+
+    assert!(body_line_index(&state, "> first reasoning") < body_line_index(&state, "Assistant:"));
+    assert!(body_line_index(&state, "> first reasoning") < body_line_index(&state, "later answer"));
+}
+
+#[test]
+fn text_after_thinking_preserves_event_order_in_concise_mode() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "thinking".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "first reasoning")),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 1,
+                part_kind: "text".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(1, "later answer")),
+        },
+    ));
+
+    assert!(body_line_index(&state, "> first reasoning") < body_line_index(&state, "Assistant:"));
+    assert!(body_line_index(&state, "> first reasoning") < body_line_index(&state, "later answer"));
+}
+
+#[test]
+fn text_tool_text_preserves_event_order_without_merging_across_tool() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "before")),
+        },
+    ));
+    let call = ToolCallPart {
+        id: "call_between_text".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"query":"order"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(call.id, "lookup", json!("ok")),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "after")),
+        },
+    ));
+
+    assert!(
+        body_line_index(&state, "before")
+            < body_line_index(&state, "Called lookup {\"query\":\"order\"}")
+    );
+    assert!(
+        body_line_index(&state, "Called lookup {\"query\":\"order\"}")
+            < body_line_index(&state, "after")
+    );
+    assert!(!body_has_line(&state, "beforeafter"));
+}
+
+#[test]
+fn thinking_tool_thinking_preserves_event_order_without_merging_across_tool() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "before")),
+        },
+    ));
+    let call = ToolCallPart {
+        id: "call_between_thinking".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"query":"thinking"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(call.id, "lookup", json!("ok")),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "after")),
+        },
+    ));
+
+    assert!(
+        body_line_index(&state, "> before")
+            < body_line_index(&state, "Called lookup {\"query\":\"thinking\"}")
+    );
+    assert!(
+        body_line_index(&state, "Called lookup {\"query\":\"thinking\"}")
+            < body_line_index(&state, "> after")
+    );
+    assert!(!body_has_line(&state, "> beforeafter"));
+}
+
+#[test]
+fn text_context_text_preserves_event_order_without_merging_across_context_event() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "before")),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new("summary_completed", json!({"content": "handoff"})),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "after")),
+        },
+    ));
+
+    assert!(body_line_index(&state, "before") < body_line_index(&state, "Summary complete"));
+    assert!(body_line_index(&state, "Summary complete") < body_line_index(&state, "after"));
+    assert!(!body_has_line(&state, "beforeafter"));
+}
+
+#[test]
+fn final_result_appends_mixed_parts_in_response_order() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::FinalResult(Box::new(ModelResponse {
+                parts: vec![
+                    ModelResponsePart::Thinking {
+                        text: "think 1".to_string(),
+                        signature: None,
+                    },
+                    ModelResponsePart::Text {
+                        text: "answer 1".to_string(),
+                    },
+                    ModelResponsePart::Thinking {
+                        text: "think 2".to_string(),
+                        signature: None,
+                    },
+                    ModelResponsePart::Text {
+                        text: "answer 2".to_string(),
+                    },
+                ],
+                usage: Usage::default(),
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            })),
+        },
+    ));
+
+    assert!(body_line_index(&state, "> think 1") < body_line_index(&state, "answer 1"));
+    assert!(body_line_index(&state, "answer 1") < body_line_index(&state, "> think 2"));
+    assert!(body_line_index(&state, "> think 2") < body_line_index(&state, "answer 2"));
+}
+
+#[test]
+fn part_start_only_does_not_create_transcript_content() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("respond");
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "thinking".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 1,
+                part_kind: "text".to_string(),
+            }),
+        },
+    ));
+
+    assert!(body_has_line(&state, "User: respond"));
+    assert!(!body_has_line(&state, "Assistant:"));
+    assert!(!body_has_line(&state, "> "));
+}
+
+#[test]
+fn concise_exploration_groups_do_not_cross_thinking_segments() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+    let view_call = ToolCallPart {
+        id: "view_before_thinking".to_string(),
+        name: "view".to_string(),
+        arguments: json!({"file_path":"src/lib.rs"}).into(),
+    };
+    let grep_call = ToolCallPart {
+        id: "grep_after_thinking".to_string(),
+        name: "grep".to_string(),
+        arguments: json!({"pattern":"ActiveModelSegment"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: view_call,
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "reasoning")),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: grep_call,
+        },
+    ));
+
+    assert_eq!(body_line_count(&state, "Exploring"), 2);
+    assert!(body_line_index(&state, "  Read src/lib.rs") < body_line_index(&state, "> reasoning"));
+    assert!(
+        body_line_index(&state, "> reasoning")
+            < body_line_index(&state, "  Searched ActiveModelSegment")
+    );
+}
+
+#[test]
 fn rendered_text_after_thinking_is_not_blockquoted() {
     let lines = vec![
         format!("{ASSISTANT_CONTENT_PREFIX}> hidden chain"),
@@ -1925,6 +2251,529 @@ fn rendered_text_after_thinking_is_not_blockquoted() {
     assert!(rendered_texts.iter().any(|line| line == "│ hidden chain"));
     assert!(rendered_texts.iter().any(|line| line == "visible answer"));
     assert!(!rendered_texts.iter().any(|line| line == "│ visible answer"));
+}
+
+#[test]
+fn render_modes_reproject_tool_visibility_and_active_tool_status() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("use tool");
+    let call = ToolCallPart {
+        id: "call_concise".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"query":"mode"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: call.clone(),
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        "Tool call: lookup {\"query\":\"mode\"}"
+    ));
+    state.set_render_mode(TuiRenderMode::Concise);
+    assert!(body_has_line(&state, "Calling lookup {\"query\":\"mode\"}"));
+    assert!(!body_has_line(
+        &state,
+        "Tool call: lookup {\"query\":\"mode\"}"
+    ));
+    assert_eq!(
+        state.active_tool_label().as_deref(),
+        Some("Calling lookup {\"query\":\"mode\"}")
+    );
+    let footer = line_texts(&render_footer_lines(&state, 140)).join("\n");
+    assert!(footer.contains("Calling lookup"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(call.id, "lookup", json!("ok")),
+        },
+    ));
+    assert!(state.active_tool_label().is_none());
+    assert!(body_has_line(&state, "Called lookup {\"query\":\"mode\"}"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| line.contains("Tool result: lookup")));
+
+    state.set_render_mode(TuiRenderMode::Normal);
+    assert!(body_has_line(
+        &state,
+        "Tool call: lookup {\"query\":\"mode\"}"
+    ));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line.contains("Tool result: lookup")));
+}
+
+#[test]
+fn concise_keeps_context_events_and_summarizes_approval_required_tools() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new("summary_completed", json!({"content": "Important handoff"})),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                "compaction_completed",
+                json!({"summary": "Compact detail", "compacted_count": 3}),
+            ),
+        },
+    ));
+    assert!(body_has_line(&state, "Summary complete"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line.contains("Important handoff")));
+    assert!(body_has_line(&state, "Context compacted"));
+    assert!(state
+        .body
+        .iter()
+        .any(|line| line.contains("Compact detail")));
+
+    let mut approval_metadata = Metadata::default();
+    approval_metadata.insert("control_flow".to_string(), json!("approval_required"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new("approval_1", "shell_exec", json!("needs review"))
+                .with_metadata(approval_metadata),
+        },
+    ));
+    assert!(body_has_line(&state, "Ran shell_exec"));
+    assert!(body_has_line(&state, "  needs review"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with("Tool call: shell_exec")));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with("Tool result: shell_exec")));
+    assert_eq!(state.status, "WAITING");
+}
+
+#[test]
+fn concise_mode_summarizes_deferred_tools_without_full_payload() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+
+    let mut metadata = Metadata::default();
+    metadata.insert("control_flow".to_string(), json!("call_deferred"));
+    metadata.insert("deferred".to_string(), json!({"id": "deferred_1"}));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                "deferred_1",
+                "fetch",
+                json!({"message": "waiting for browser result", "url": "https://example.com"}),
+            )
+            .with_metadata(metadata),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Fetched URL"));
+    assert!(body_has_line(
+        &state,
+        "  {\"message\":\"waiting for browser result\",\"url\":\"https://example.com\"}"
+    ));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with("Tool call: fetch")));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with("Tool result: fetch")));
+}
+
+#[test]
+fn display_command_switches_mode_and_reprojects_existing_timeline() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("use display command");
+    let call = ToolCallPart {
+        id: "call_display".to_string(),
+        name: "lookup".to_string(),
+        arguments: json!({"query":"display"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ToolCall { step: 1, call },
+    ));
+    assert!(body_has_line(
+        &state,
+        "Tool call: lookup {\"query\":\"display\"}"
+    ));
+
+    state.input = "/display concise".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.render_mode(), TuiRenderMode::Concise);
+    assert!(body_has_line(
+        &state,
+        "Calling lookup {\"query\":\"display\"}"
+    ));
+    assert!(!body_has_line(
+        &state,
+        "Tool call: lookup {\"query\":\"display\"}"
+    ));
+    assert_eq!(state.input_status_text(), "display: concise");
+
+    state.input = "/display normal".to_string();
+    assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
+    assert_eq!(state.render_mode(), TuiRenderMode::Normal);
+    assert!(body_has_line(
+        &state,
+        "Tool call: lookup {\"query\":\"display\"}"
+    ));
+}
+
+#[test]
+fn concise_mode_streams_thinking_as_blockquote() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelResponse {
+            step: 0,
+            response: ModelResponse {
+                parts: vec![ModelResponsePart::Thinking {
+                    text: "checking the render projection before answering".to_string(),
+                    signature: None,
+                }],
+                usage: starweaver_usage::Usage::default(),
+                model_name: None,
+                provider: None,
+                finish_reason: None,
+                timestamp: None,
+                run_id: None,
+                conversation_id: None,
+                metadata: Metadata::default(),
+            },
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        "> checking the render projection before answering"
+    ));
+    assert!(!body_has_line(&state, "Thinking"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with("Reasoned")));
+}
+
+#[test]
+fn concise_mode_updates_thinking_during_streaming() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+    state.begin_run("respond");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "thinking".to_string(),
+            }),
+        },
+    ));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with('>')));
+    assert!(!body_has_line(&state, "Thinking"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, "checking")),
+        },
+    ));
+    assert!(body_has_line(&state, "> checking"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::thinking(0, " render")),
+        },
+    ));
+    assert!(body_has_line(&state, "> checking render"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with("Reasoned")));
+}
+
+#[test]
+fn concise_mode_keeps_assistant_text_streaming_normally() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+    state.begin_run("respond");
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartStart(PartStart {
+                index: 0,
+                part_kind: "text".to_string(),
+            }),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, "visible")),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ModelStream {
+            step: 0,
+            event: ModelResponseStreamEvent::PartDelta(PartDelta::text(0, " answer")),
+        },
+    ));
+
+    assert!(body_has_line(&state, "Assistant:"));
+    assert!(body_has_line(&state, "visible answer"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| body_line_text(line).starts_with("Called text")));
+}
+
+#[test]
+fn concise_mode_summarizes_shell_failure_with_bounded_output() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+    let shell_call = ToolCallPart {
+        id: "shell_fail".to_string(),
+        name: "shell_exec".to_string(),
+        arguments: json!({"command":"cargo check -p starweaver-cli"}).into(),
+    };
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        1,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: shell_call.clone(),
+        },
+    ));
+    assert!(body_has_line(
+        &state,
+        "Running cargo check -p starweaver-cli"
+    ));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        2,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                shell_call.id,
+                "shell_exec",
+                json!({
+                    "command":"cargo check -p starweaver-cli",
+                    "return_code": 101,
+                    "stderr":"error[E0425]: missing symbol\nextra line"
+                }),
+            )
+            .with_error(true),
+        },
+    ));
+
+    assert!(body_has_line(
+        &state,
+        "Ran cargo check -p starweaver-cli — failed exit 101"
+    ));
+    assert!(body_has_line(&state, "  error[E0425]: missing symbol"));
+}
+
+#[test]
+fn concise_mode_summarizes_mutations_and_task_tools() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+    let edit_call = ToolCallPart {
+        id: "edit_concise".to_string(),
+        name: "multi_edit".to_string(),
+        arguments: json!({
+            "file_path": "src/lib.rs",
+            "edits": [
+                {"old_string": "old", "new_string": "new"},
+                {"old_string": "left", "new_string": "right"}
+            ]
+        })
+        .into(),
+    };
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: edit_call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        4,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(edit_call.id, "multi_edit", json!({"edited": true})),
+        },
+    ));
+    assert!(body_has_line(&state, "Edited src/lib.rs — 2 edits"));
+    assert!(!body_has_line(&state, "  {\"edited\":true}"));
+
+    let task_call = ToolCallPart {
+        id: "task_concise".to_string(),
+        name: "task_create".to_string(),
+        arguments: json!({"subject":"Review concise UX"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        5,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: task_call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        6,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(task_call.id, "task_create", json!({"id":"1"})),
+        },
+    ));
+    assert!(body_has_line(&state, "Created task"));
+    assert!(!state
+        .body
+        .iter()
+        .any(|line| line.contains("Tool result: task_create")));
+}
+
+#[test]
+fn concise_mode_groups_adjacent_exploration_summaries() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
+
+    let view_call = ToolCallPart {
+        id: "view_1".to_string(),
+        name: "view".to_string(),
+        arguments: json!({"file_path":"src/lib.rs"}).into(),
+    };
+    let grep_call = ToolCallPart {
+        id: "grep_1".to_string(),
+        name: "grep".to_string(),
+        arguments: json!({"pattern":"TuiRenderMode", "root":"crates/starweaver-cli"}).into(),
+    };
+    for (sequence, call) in [(0, view_call.clone()), (2, grep_call.clone())] {
+        state.apply_stream_record(&AgentStreamRecord::new(
+            sequence,
+            AgentStreamEvent::ToolCall { step: 1, call },
+        ));
+    }
+    assert!(body_has_line(&state, "Exploring"));
+    assert!(body_has_line(&state, "  Read src/lib.rs"));
+    assert!(body_has_line(&state, "  Searched TuiRenderMode"));
+
+    state.apply_stream_record(&AgentStreamRecord::new(
+        3,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(
+                view_call.id,
+                "view",
+                json!({"file_path":"src/lib.rs", "content":"fn main() {}"}),
+            ),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        4,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(grep_call.id, "grep", json!({"matches":[]})),
+        },
+    ));
+    assert!(body_has_line(&state, "Explored"));
+    assert!(body_has_line(&state, "  Read src/lib.rs"));
+    assert!(body_has_line(&state, "  Searched TuiRenderMode"));
+
+    let edit_call = ToolCallPart {
+        id: "edit_boundary".to_string(),
+        name: "write".to_string(),
+        arguments: json!({"file_path":"src/lib.rs", "content":"updated"}).into(),
+    };
+    state.apply_stream_record(&AgentStreamRecord::new(
+        5,
+        AgentStreamEvent::ToolCall {
+            step: 1,
+            call: edit_call.clone(),
+        },
+    ));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        6,
+        AgentStreamEvent::ToolReturn {
+            step: 1,
+            tool_return: ToolReturnPart::new(edit_call.id, "write", json!({"written": true})),
+        },
+    ));
+    assert!(body_has_line(&state, "Wrote src/lib.rs"));
+}
+
+#[test]
+fn subagent_output_is_full_markdown_in_normal_and_concise() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let source = AgentStreamSource::subagent(
+        AgentId::from_string("writer-1"),
+        "writer",
+        TaskId::from_string("task-writer"),
+        Some(RunId::from_string("run-child")),
+        Some(RunId::from_string("run-parent")),
+        0,
+    );
+    state.apply_stream_record(
+        &AgentStreamRecord::new(
+            0,
+            AgentStreamEvent::RunComplete {
+                run_id: RunId::from_string("run-child"),
+                output: "- **done**\n```rust\nfn main() {}\n```".to_string(),
+            },
+        )
+        .with_source(source),
+    );
+
+    assert!(body_has_line(&state, "- **done**"));
+    assert!(body_has_line(&state, "```rust"));
+    assert!(body_has_line(&state, "fn main() {}"));
+    let rendered = render_transcript_lines(&state.body, 80);
+    assert!(has_segment(&rendered, "done", SegmentStyle::BOLD));
+    assert!(rendered.iter().any(|line| line
+        .segments
+        .first()
+        .is_some_and(|segment| segment.text == "│ fn main() {}"
+            && segment.style.contains(SegmentStyle::CYAN))));
+
+    state.set_render_mode(TuiRenderMode::Concise);
+    assert!(body_has_line(&state, "- **done**"));
+    assert!(body_has_line(&state, "fn main() {}"));
 }
 
 #[test]
@@ -2836,7 +3685,7 @@ fn subagent_lifecycle_events_render_as_folded_status_lines() {
         },
     );
     state.apply_stream_record(&started);
-    assert!(body_has_line(&state, "[explorer-abc] Running..."));
+    assert!(body_has_line(&state, "[explorer] running"));
     assert_eq!(
         display_lines_for_stream_record(&started),
         vec!["[explorer-abc] Running...".to_string()]
@@ -2859,11 +3708,9 @@ fn subagent_lifecycle_events_render_as_folded_status_lines() {
             ),
         },
     ));
-    assert!(!body_has_line(&state, "[explorer-abc] Running..."));
-    assert!(body_has_line(
-        &state,
-        "[explorer-abc] Done (12.3s) | 2 reqs | \"found the owner\""
-    ));
+    assert!(!body_has_line(&state, "[explorer] running"));
+    assert!(body_has_line(&state, "[explorer] done (12.3s) | 2 reqs"));
+    assert!(body_has_line(&state, "found the owner"));
 
     state.apply_stream_record(&AgentStreamRecord::new(
         2,
@@ -2881,10 +3728,8 @@ fn subagent_lifecycle_events_render_as_folded_status_lines() {
             ),
         },
     ));
-    assert!(body_has_line(
-        &state,
-        "[debugger-def] Failed (1.2s) | missing_subagent"
-    ));
+    assert!(body_has_line(&state, "[debugger] failed (1.2s)"));
+    assert!(body_has_line(&state, "missing_subagent"));
     assert!(!state.body.iter().any(|line| line.contains("inspect files")));
 }
 
@@ -2943,8 +3788,9 @@ fn source_attributed_subagent_records_update_one_collapsed_line() {
 
     assert!(body_has_line(
         &state,
-        "[researcher] done | 1 reqs | tools: search | \"found owner\""
+        "[researcher] done | 1 reqs | tools: search"
     ));
+    assert!(body_has_line(&state, "found owner"));
     assert_eq!(
         state
             .body
@@ -2957,10 +3803,7 @@ fn source_attributed_subagent_records_update_one_collapsed_line() {
         .body
         .iter()
         .any(|line| line.starts_with("Tool call: search")));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line) == "found owner"));
+    assert!(body_has_line(&state, "found owner"));
 }
 
 #[test]
@@ -4147,6 +4990,22 @@ fn body_has_line(state: &InteractiveTuiState, expected: &str) -> bool {
         .body
         .iter()
         .any(|line| body_line_text(line) == expected)
+}
+
+fn body_line_index(state: &InteractiveTuiState, expected: &str) -> usize {
+    state
+        .body
+        .iter()
+        .position(|line| body_line_text(line) == expected)
+        .unwrap_or_else(|| panic!("expected body line: {expected:?}; body={:?}", state.body))
+}
+
+fn body_line_count(state: &InteractiveTuiState, expected: &str) -> usize {
+    state
+        .body
+        .iter()
+        .filter(|line| body_line_text(line) == expected)
+        .count()
 }
 
 fn body_line_text(line: &str) -> &str {

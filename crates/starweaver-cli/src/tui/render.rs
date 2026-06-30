@@ -175,6 +175,7 @@ fn render_startup_help() -> Vec<StyledLine> {
         startup_help_line("Tab", " - toggle whether Enter sends or inserts a newline"),
         startup_help_line("Ctrl-O", " - insert a newline"),
         startup_help_line("/help", " - print available commands"),
+        startup_help_line("/display", " - switch display mode"),
         startup_help_line("/model", " - open the model profile selector"),
         startup_help_line("/session", " - open the session selector"),
         startup_help_line("!<command>", " - run a shell command inline"),
@@ -305,6 +306,10 @@ pub(super) fn render_help_panel(width: usize) -> Vec<StyledLine> {
         ("/help", "Print this help in the transcript"),
         ("/clear", "Clear output and start a fresh context"),
         ("/cost", "Show usage and cost summary"),
+        (
+            "/display [mode]",
+            "Show or set display mode: normal, concise, or debug",
+        ),
         ("/model [profile]", "Open selector or select model profile"),
         ("/session [id]", "Open selector or reload session"),
         (

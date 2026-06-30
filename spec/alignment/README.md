@@ -33,6 +33,7 @@ flowchart TD
 | `04-tools-toolsets-hitl.md`                 | tool metadata, HITL, MCP, and event taxonomy gaps                        |
 | `05-models-output-provider-alignment.md`    | provider replay evidence, output exactness, usage, and media-output gaps |
 | `06-subagents-environments-skills-media.md` | subagent, environment/resource, and media workflow gaps                  |
+| `07-cli-concise-mode-ux.md`                 | CLI/TUI concise mode semantic-compression UX plan                        |
 
 ## Remaining Theme
 

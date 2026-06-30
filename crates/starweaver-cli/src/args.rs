@@ -468,6 +468,9 @@ pub struct TuiCommand {
     /// Output mode for non-interactive TUI snapshots.
     #[arg(long, default_value = "text")]
     pub output: OutputMode,
+    /// Transcript rendering mode for interactive TUI.
+    #[arg(long = "render-mode")]
+    pub render_mode: Option<TuiRenderMode>,
 }
 
 /// Approval commands.
@@ -663,6 +666,19 @@ pub enum ConfigCommand {
         /// Config value.
         value: String,
     },
+}
+
+/// TUI transcript render mode.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum TuiRenderMode {
+    /// Show assistant text, reasoning, tool calls, and tool returns.
+    #[default]
+    Normal,
+    /// Hide ordinary tool calls from transcript while keeping high-level events.
+    Concise,
+    /// Show detailed diagnostic rendering.
+    Debug,
 }
 
 /// Output mode.

@@ -7,7 +7,8 @@ use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStrea
 use starweaver_usage::Usage;
 
 use super::{
-    ModelChoice, StreamingPartKind, StreamingToolCallState, TaskPanelItem, SHELL_OUTPUT_MAX_LINES,
+    ModelChoice, StreamingPartKind, StreamingToolCallState, TaskPanelItem, ToolConciseSummary,
+    ToolSummaryCategory, ToolSummaryImportance, ToolVisibility, SHELL_OUTPUT_MAX_LINES,
     SHELL_STREAM_PREVIEW_MAX_LINES, TOOL_PREVIEW_MAX_CHARS,
 };
 use crate::tui::{
@@ -18,6 +19,7 @@ use crate::tui::{
 mod context_events;
 mod tasks;
 mod tool_returns;
+mod tool_summaries;
 
 pub(super) use context_events::{
     format_custom_context_event_lines, format_subagent_finished_line, format_subagent_running_line,
@@ -27,16 +29,10 @@ pub(super) use context_events::{
 use context_events::{payload_string, payload_string_array, push_indented_preview};
 use tasks::format_task_tool_lines;
 pub(super) use tasks::{is_task_snapshot_event, is_task_tool_name, task_panel_items_from_value};
-
-pub(super) fn push_user_prompt_lines(body: &mut Vec<String>, prompt: &str) {
-    let mut lines = prompt.lines();
-    if let Some(first) = lines.next() {
-        body.push(format!("User: {first}"));
-        body.extend(lines.map(|line| format!("  {line}")));
-    } else {
-        body.push("User:".to_string());
-    }
-}
+pub(super) use tool_summaries::{
+    format_streaming_tool_summary, format_tool_call_summary, format_tool_call_summary_from_parts,
+    format_tool_return_summary,
+};
 
 pub(super) fn push_usage_entry_lines(lines: &mut Vec<String>, name: &str, usage: &Usage) {
     lines.push(format!("[SYS]   {name}:"));
@@ -95,36 +91,6 @@ pub(super) fn format_u64_with_commas(value: u64) -> String {
 
 pub(super) fn assistant_content_line(line: impl AsRef<str>) -> String {
     format!("{ASSISTANT_CONTENT_PREFIX}{}", line.as_ref())
-}
-
-pub(super) fn is_assistant_content_line(line: &str) -> bool {
-    line.starts_with(ASSISTANT_CONTENT_PREFIX)
-}
-
-pub(super) fn is_thinking_quote_line(line: &str) -> bool {
-    line.strip_prefix(ASSISTANT_CONTENT_PREFIX)
-        .unwrap_or(line)
-        .starts_with('>')
-}
-
-pub(super) fn append_delta_segments(
-    body: &mut Vec<String>,
-    delta: &str,
-    new_line: impl Fn(&str) -> String,
-) {
-    for segment in delta.split_inclusive('\n') {
-        if segment.ends_with('\n') {
-            let trimmed = segment.trim_end_matches('\n').trim_end_matches('\r');
-            if !trimmed.is_empty() {
-                if let Some(last) = body.last_mut() {
-                    last.push_str(trimmed);
-                }
-            }
-            body.push(new_line(""));
-        } else if let Some(last) = body.last_mut() {
-            last.push_str(segment);
-        }
-    }
 }
 
 pub(super) fn streaming_part_kind(part_kind: &str) -> StreamingPartKind {
@@ -359,7 +325,7 @@ fn full_value_text(value: &Value) -> String {
 }
 
 pub(super) fn streaming_tool_state_is_available(state: &StreamingToolCallState, key: &str) -> bool {
-    state.line_index.is_some()
+    state.item_id.is_some()
         && state
             .linked_call_key
             .as_deref()

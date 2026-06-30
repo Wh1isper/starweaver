@@ -18,11 +18,21 @@ const TOOL_PREVIEW_MAX_CHARS: usize = 240;
 pub(super) const COMPOSER_VISIBLE_LINES: usize = 5;
 
 use crate::{
+    args::TuiRenderMode,
     prompt_input::{format_size_bytes, PromptAttachment, PromptInput},
     slash_commands::SlashCommandDefinition,
 };
 
-use super::{render::snapshot_interactive_lines, snapshot::TuiSnapshot};
+use super::{
+    render::snapshot_interactive_lines,
+    snapshot::TuiSnapshot,
+    timeline::{
+        project_timeline, value_args_preview, ContextEventCategory, NoticeLevel, SubagentStatus,
+        SubagentTimelineItem, SubagentUpdate, ToolActivityStatus, ToolConciseSummary,
+        ToolSummaryCategory, ToolSummaryImportance, ToolTimelineItem, ToolVisibility, TuiItemId,
+        TuiProjection, TuiTimeline,
+    },
+};
 
 mod commands;
 mod composer;
@@ -33,14 +43,12 @@ mod streaming;
 
 pub(super) use formatting::display_lines_for_stream_record;
 use formatting::{
-    append_delta_segments, assistant_content_line, body_line_display_text, cache_hit_rate_label,
-    compact_status_text, format_custom_context_event_lines, format_streaming_tool_call_line,
-    format_subagent_finished_line, format_subagent_running_line, format_tool_call_line,
-    format_tool_return_lines, format_u64_with_commas, is_assistant_content_line,
-    is_subagent_lifecycle_event_kind, is_subagent_start_event_kind, is_task_snapshot_event,
-    is_task_tool_name, is_thinking_quote_line, merge_stream_fragment, model_choice_config_suffix,
-    model_choice_label, normalized_event_kind, pasted_image_paths, previous_char_boundary,
-    push_shell_output_lines, push_usage_entry_lines, push_user_prompt_lines, streaming_part_kind,
+    body_line_display_text, cache_hit_rate_label, compact_status_text,
+    format_custom_context_event_lines, format_streaming_tool_call_line, format_tool_call_line,
+    format_tool_return_lines, format_u64_with_commas, is_subagent_lifecycle_event_kind,
+    is_subagent_start_event_kind, is_task_snapshot_event, is_task_tool_name, merge_stream_fragment,
+    model_choice_config_suffix, model_choice_label, normalized_event_kind, pasted_image_paths,
+    previous_char_boundary, push_shell_output_lines, push_usage_entry_lines, streaming_part_kind,
     streaming_tool_arguments_match, streaming_tool_state_is_available, subagent_display_id,
     task_panel_items_from_value, tool_call_visibility_key,
 };
@@ -117,6 +125,19 @@ enum StreamingPartKind {
     Other,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ActiveModelSegmentKind {
+    Text,
+    Thinking,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActiveModelSegment {
+    item_id: TuiItemId,
+    kind: ActiveModelSegmentKind,
+    part_index: Option<usize>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ModelChoice {
     /// Profile id used by `--profile` and `/model`.
@@ -169,17 +190,18 @@ impl SessionChoice {
 struct StreamingToolCallState {
     name: Option<String>,
     arguments: String,
-    line_index: Option<usize>,
+    item_id: Option<TuiItemId>,
     linked_call_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SubagentDisplayState {
-    pub(super) line_index: usize,
+    pub(super) item_id: TuiItemId,
     pub(super) agent_name: String,
     pub(super) status: String,
     pub(super) tool_names: Vec<String>,
     pub(super) output_preview: String,
+    pub(super) output_markdown: String,
     pub(super) request_count: usize,
 }
 
@@ -256,11 +278,17 @@ pub struct InteractiveTuiState {
     pub(super) history_index: Option<usize>,
     pub(super) history_draft: String,
     streaming_parts: HashMap<usize, StreamingPartKind>,
+    active_model_segment: Option<ActiveModelSegment>,
+    timeline: TuiTimeline,
+    timeline_projection: TuiProjection,
+    render_mode: TuiRenderMode,
     streaming_text_seen: bool,
     streaming_reasoning_seen: bool,
     visible_text_seen: bool,
     streaming_tool_calls: HashMap<usize, StreamingToolCallState>,
     visible_tool_calls: HashSet<String>,
+    tool_items_by_call_id: HashMap<String, TuiItemId>,
+    tool_items_by_key: HashMap<String, TuiItemId>,
     tool_call_arguments: HashMap<String, Value>,
     pub(super) subagent_states: HashMap<String, SubagentDisplayState>,
     pending_hitl: Option<HitlPanelState>,
@@ -325,11 +353,17 @@ impl InteractiveTuiState {
             history_index: None,
             history_draft: String::new(),
             streaming_parts: HashMap::new(),
+            active_model_segment: None,
+            timeline: TuiTimeline::default(),
+            timeline_projection: TuiProjection::default(),
+            render_mode: TuiRenderMode::Normal,
             streaming_text_seen: false,
             streaming_reasoning_seen: false,
             visible_text_seen: false,
             streaming_tool_calls: HashMap::new(),
             visible_tool_calls: HashSet::new(),
+            tool_items_by_call_id: HashMap::new(),
+            tool_items_by_key: HashMap::new(),
             tool_call_arguments: HashMap::new(),
             subagent_states: HashMap::new(),
             pending_hitl: None,
@@ -361,6 +395,64 @@ impl InteractiveTuiState {
             usage_snapshots: BTreeMap::new(),
             next_steering_id: 0,
         }
+    }
+
+    pub(crate) fn set_render_mode(&mut self, render_mode: TuiRenderMode) {
+        if self.render_mode == render_mode {
+            self.input_status = Some(format!("display: {}", render_mode_label(render_mode)));
+            return;
+        }
+        self.render_mode = render_mode;
+        self.selection_mode = false;
+        self.selection_index = None;
+        self.input_status = Some(format!("display: {}", render_mode_label(render_mode)));
+        self.reproject_body();
+        self.scroll_to_bottom();
+    }
+
+    pub(crate) const fn render_mode(&self) -> TuiRenderMode {
+        self.render_mode
+    }
+
+    pub(super) const fn timeline_generation(&self) -> u64 {
+        self.timeline.generation()
+    }
+
+    pub(super) fn active_tool_label(&self) -> Option<String> {
+        self.timeline_projection.active_tool_label()
+    }
+
+    fn reproject_body(&mut self) {
+        self.timeline_projection = project_timeline(&self.timeline, self.render_mode);
+        self.body = self.timeline_projection.lines.clone();
+        if self
+            .selection_index
+            .is_some_and(|index| index >= self.body.len())
+        {
+            self.selection_index = self.last_selectable_body_index();
+        }
+    }
+
+    fn push_system_notice(&mut self, level: NoticeLevel, line: impl Into<String>) {
+        self.finish_current_model_item();
+        self.timeline.push_system_lines(level, vec![line.into()]);
+        self.reproject_body();
+    }
+
+    pub(crate) fn push_transcript_notice(&mut self, line: impl Into<String>) {
+        self.push_system_notice(NoticeLevel::Info, line);
+    }
+
+    pub(super) fn push_transcript_lines(&mut self, lines: Vec<String>) {
+        self.finish_current_model_item();
+        self.timeline.push_system_lines(NoticeLevel::Info, lines);
+        self.reproject_body();
+    }
+
+    pub(crate) fn push_run_status_line(&mut self, line: impl Into<String>) {
+        self.finish_current_model_item();
+        self.timeline.push_run_status(line);
+        self.reproject_body();
     }
 
     /// Set active profile and model labels.
@@ -412,7 +504,12 @@ impl InteractiveTuiState {
     /// Replace body with a persisted snapshot.
     pub fn set_snapshot(&mut self, snapshot: &TuiSnapshot) {
         self.session_id = Some(snapshot.session_id.clone());
-        self.body = snapshot_interactive_lines(snapshot);
+        let lines = snapshot_interactive_lines(snapshot);
+        self.finish_current_model_item();
+        self.active_model_segment = None;
+        self.timeline.clear();
+        self.timeline.push_system_lines(NoticeLevel::Info, lines);
+        self.reproject_body();
         self.footer_mode = FooterMode::Context;
         self.input_status = None;
         self.pending_attachments.clear();
@@ -445,6 +542,8 @@ impl InteractiveTuiState {
         self.visible_text_seen = false;
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_items_by_call_id.clear();
+        self.tool_items_by_key.clear();
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
@@ -461,11 +560,10 @@ impl InteractiveTuiState {
         self.current_run_usage = None;
         self.model_transport_status = None;
         self.scroll_to_bottom();
-        self.body.push(String::new());
-        push_user_prompt_lines(&mut self.body, prompt);
-        self.body.push(String::new());
-        self.body.push("Assistant:".to_string());
-        self.body.push(assistant_content_line(""));
+        self.finish_current_model_item();
+        self.active_model_segment = None;
+        self.timeline.push_user_prompt(prompt);
+        self.reproject_body();
     }
 
     /// Mark a run finished with durable ids.
@@ -480,12 +578,16 @@ impl InteractiveTuiState {
         self.streaming_parts.clear();
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_items_by_call_id.clear();
+        self.tool_items_by_key.clear();
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
         self.pending_submission_display_prompt = None;
         self.model_picker_open = false;
         self.session_picker_open = false;
+        self.finish_current_model_item();
+        self.reproject_body();
         self.finish_active_goal_without_runtime_event("unverified_stop");
     }
 
@@ -498,6 +600,8 @@ impl InteractiveTuiState {
         self.streaming_parts.clear();
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_items_by_call_id.clear();
+        self.tool_items_by_key.clear();
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
@@ -505,7 +609,7 @@ impl InteractiveTuiState {
         self.model_picker_open = false;
         self.session_picker_open = false;
         self.finish_active_goal_without_runtime_event("error");
-        self.body.push(format!("Error: {error}"));
+        self.push_system_notice(NoticeLevel::Error, format!("Error: {error}"));
     }
 
     /// Mark a run cancelled by the interactive user.
@@ -517,6 +621,8 @@ impl InteractiveTuiState {
         self.streaming_parts.clear();
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_items_by_call_id.clear();
+        self.tool_items_by_key.clear();
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
@@ -524,7 +630,7 @@ impl InteractiveTuiState {
         self.model_picker_open = false;
         self.session_picker_open = false;
         self.finish_active_goal_without_runtime_event("cancelled");
-        self.body.push(format!("Run cancelled: {reason}"));
+        self.push_run_status_line(format!("Run cancelled: {reason}"));
     }
 
     pub(super) fn take_pending_clear_context(&mut self) -> bool {
@@ -533,6 +639,8 @@ impl InteractiveTuiState {
 
     pub(crate) fn clear_context_view(&mut self) {
         self.session_id = None;
+        self.timeline.clear();
+        self.timeline_projection = TuiProjection::default();
         self.body.clear();
         self.context_tokens = None;
         self.latest_request_total_tokens = None;
@@ -546,6 +654,8 @@ impl InteractiveTuiState {
         self.visible_text_seen = false;
         self.streaming_tool_calls.clear();
         self.visible_tool_calls.clear();
+        self.tool_items_by_call_id.clear();
+        self.tool_items_by_key.clear();
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
@@ -701,7 +811,7 @@ impl InteractiveTuiState {
     fn record_steering_message(&mut self, text: String) -> SteeringSubmission {
         let id = format!("steer_{}", self.next_steering_id);
         self.next_steering_id = self.next_steering_id.saturating_add(1);
-        self.body.push(format!("Steering: {text}"));
+        self.push_system_notice(NoticeLevel::Info, format!("Steering: {text}"));
         SteeringSubmission { id, text }
     }
 
@@ -749,8 +859,10 @@ impl InteractiveTuiState {
         self.status = "INTERRUPT".to_string();
         self.phase = "cancel requested".to_string();
         if !already_requested {
-            self.body
-                .push("Interrupt requested. Cancelling active run.".to_string());
+            self.push_system_notice(
+                NoticeLevel::Warning,
+                "Interrupt requested. Cancelling active run.".to_string(),
+            );
         }
     }
 
@@ -797,23 +909,34 @@ impl InteractiveTuiState {
 
     pub(super) fn push_goal_total_tokens_report(&mut self) {
         let usage = self.current_run_usage.clone().unwrap_or_default();
-        self.body.push(format!(
-            "[Goal] Total tokens: {} (input: {}, cache read: {}, cache write: {}, output: {})",
-            format_u64_with_commas(usage.total_tokens),
-            format_u64_with_commas(usage.input_tokens),
-            format_u64_with_commas(usage.cache_read_tokens),
-            format_u64_with_commas(usage.cache_write_tokens),
-            format_u64_with_commas(usage.output_tokens)
-        ));
+        self.push_system_notice(
+            NoticeLevel::Info,
+            format!(
+                "[Goal] Total tokens: {} (input: {}, cache read: {}, cache write: {}, output: {})",
+                format_u64_with_commas(usage.total_tokens),
+                format_u64_with_commas(usage.input_tokens),
+                format_u64_with_commas(usage.cache_read_tokens),
+                format_u64_with_commas(usage.cache_write_tokens),
+                format_u64_with_commas(usage.output_tokens)
+            ),
+        );
     }
 
     fn finish_active_goal_without_runtime_event(&mut self, reason: &str) {
         if self.goal_active {
             self.goal_active = false;
-            self.body.push(format!("[Goal] Completed: {reason}"));
+            self.push_system_notice(NoticeLevel::Info, format!("[Goal] Completed: {reason}"));
             self.push_goal_total_tokens_report();
         }
         self.pending_goal_submission = None;
+    }
+}
+
+const fn render_mode_label(render_mode: TuiRenderMode) -> &'static str {
+    match render_mode {
+        TuiRenderMode::Normal => "normal",
+        TuiRenderMode::Concise => "concise",
+        TuiRenderMode::Debug => "debug",
     }
 }
 

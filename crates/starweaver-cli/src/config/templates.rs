@@ -636,6 +636,9 @@ interval_seconds = 1800
 failure_retry_seconds = 60
 refresh_on_startup = true
 
+[tui]
+render_mode = "concise"
+
 [providers.anthropic]
 enabled = true
 api_key_env = "ANTHROPIC_API_KEY"
@@ -673,6 +676,9 @@ provider = "local"
 files_policy = "read_write"
 shell_enabled = true
 workspace_root = ".."
+
+[tui]
+render_mode = "concise"
 
 [security.shell_review]
 enabled = false
