@@ -1,10 +1,13 @@
 use std::{env, fmt::Write as _, path::Path, process::Command};
 
 use super::{
-    model_choice_config_suffix, model_choice_label, push_shell_output_lines, FooterMode,
-    InteractiveTuiState, LocalCommandOutcome, ModelChoice,
+    model_choice_config_suffix, model_choice_label, push_shell_output_lines, render_mode_label,
+    FooterMode, InteractiveTuiState, LocalCommandOutcome, ModelChoice,
 };
-use crate::slash_commands::{expand_slash_command, SlashCommandDefinition};
+use crate::{
+    args::TuiRenderMode,
+    slash_commands::{expand_slash_command, SlashCommandDefinition},
+};
 
 impl InteractiveTuiState {
     #[allow(clippy::too_many_lines)]
@@ -32,6 +35,13 @@ impl InteractiveTuiState {
             self.footer_mode = FooterMode::Context;
             self.append_cost_summary();
             self.input_status = Some("cost".to_string());
+            return LocalCommandOutcome::Consumed;
+        }
+        if input == "/display" || input.starts_with("/display ") {
+            self.clear_composer_input();
+            self.pending_attachments.clear();
+            self.footer_mode = FooterMode::Context;
+            self.handle_display_command(input.strip_prefix("/display").unwrap_or_default().trim());
             return LocalCommandOutcome::Consumed;
         }
         if input == "/model" || input.starts_with("/model ") {
@@ -68,8 +78,7 @@ impl InteractiveTuiState {
             self.clear_composer_input();
             let task = input.strip_prefix("/goal").unwrap_or_default().trim();
             if task.is_empty() {
-                self.body
-                    .push("[SYS] Usage: /goal <task description>".to_string());
+                self.push_transcript_notice("[SYS] Usage: /goal <task description>");
                 self.input_status = Some("goal usage".to_string());
                 return LocalCommandOutcome::Consumed;
             }
@@ -78,7 +87,7 @@ impl InteractiveTuiState {
             self.goal_iteration = 0;
             self.goal_max_iterations = self.goal_max_iterations.max(1);
             self.pending_goal_submission = Some(task.to_string());
-            self.body.push(format!(
+            self.push_transcript_notice(format!(
                 "[SYS] [Goal] Starting goal mode ({} max iterations). Ctrl+C to stop.",
                 self.goal_max_iterations
             ));
@@ -100,7 +109,7 @@ impl InteractiveTuiState {
                 message.push_str(": ");
                 message.push_str(description.trim());
             }
-            self.body.push(message);
+            self.push_transcript_notice(message);
             self.input_status = Some(format!("command /{}", expanded.command_name));
             self.pending_submission_display_prompt = Some(expanded.prompt);
             return LocalCommandOutcome::Submit(input);
@@ -109,7 +118,7 @@ impl InteractiveTuiState {
             self.clear_composer_input();
             self.pending_attachments.clear();
             self.footer_mode = FooterMode::Context;
-            self.body.push(format!(
+            self.push_transcript_notice(format!(
                 "[SYS] Unknown command: {input}. Available commands: {}",
                 self.available_command_summary()
             ));
@@ -120,23 +129,24 @@ impl InteractiveTuiState {
     }
 
     fn append_help_to_body(&mut self) {
-        self.body.extend([
+        let mut lines = vec![
             "Starweaver TUI help".to_string(),
             String::new(),
             "Commands".to_string(),
             "  /help             Show this help".to_string(),
             "  /clear            Clear transcript and start a fresh context".to_string(),
             "  /cost             Show usage and context".to_string(),
+            "  /display [mode]   Set display mode: normal, concise, or debug".to_string(),
             "  /model [profile]  Open or select a model profile".to_string(),
             "  /session [id]     Open session selector or reload a session".to_string(),
             "  /goal <task>      Run toward a verified goal".to_string(),
             "  /paste-image      Attach image from system clipboard".to_string(),
             "  !<command>        Run a shell command inline".to_string(),
-        ]);
+        ];
         let custom_commands = self.custom_command_definitions();
         if !custom_commands.is_empty() {
-            self.body.push(String::new());
-            self.body.push("Custom commands".to_string());
+            lines.push(String::new());
+            lines.push("Custom commands".to_string());
             for command in custom_commands {
                 let description = command
                     .description
@@ -156,7 +166,7 @@ impl InteractiveTuiState {
                             .join(", ")
                     )
                 };
-                self.body.push(format!(
+                lines.push(format!(
                     "  /{:<16} {}{}",
                     format!("{} [instruction]", command.name),
                     description,
@@ -164,7 +174,7 @@ impl InteractiveTuiState {
                 ));
             }
         }
-        self.body.extend([
+        lines.extend([
             String::new(),
             "Shortcuts".to_string(),
             "  Up/Down           Browse prompt history".to_string(),
@@ -177,6 +187,7 @@ impl InteractiveTuiState {
             "  Tab               Queue a draft while running".to_string(),
             "  Ctrl+C            Interrupt or exit".to_string(),
         ]);
+        self.push_transcript_lines(lines);
     }
 
     fn available_command_summary(&self) -> String {
@@ -184,6 +195,7 @@ impl InteractiveTuiState {
             "/help".to_string(),
             "/clear".to_string(),
             "/cost".to_string(),
+            "/display".to_string(),
             "/model".to_string(),
             "/session".to_string(),
             "/goal".to_string(),
@@ -209,9 +221,32 @@ impl InteractiveTuiState {
         definitions
     }
 
+    fn handle_display_command(&mut self, requested: &str) {
+        if requested.is_empty() {
+            self.push_transcript_notice(format!(
+                "[SYS] Display mode: {}. Available: normal, concise, debug",
+                render_mode_label(self.render_mode())
+            ));
+            return;
+        }
+        let mode = match requested {
+            "normal" => TuiRenderMode::Normal,
+            "concise" => TuiRenderMode::Concise,
+            "debug" => TuiRenderMode::Debug,
+            other => {
+                self.push_transcript_notice(format!(
+                    "[SYS] Unknown display mode: {other}. Available: normal, concise, debug"
+                ));
+                self.input_status = Some("display mode".to_string());
+                return;
+            }
+        };
+        self.set_render_mode(mode);
+    }
+
     fn handle_model_command(&mut self, requested: &str) {
         if self.running {
-            self.body.push(
+            self.push_transcript_notice(
                 "[SYS] Model selection is available after the current run finishes.".to_string(),
             );
             return;
@@ -226,8 +261,7 @@ impl InteractiveTuiState {
             .find(|choice| choice.profile == requested || choice.display_name() == requested)
             .cloned()
         else {
-            self.body
-                .push(format!("[SYS] Unknown model profile: {requested}"));
+            self.push_transcript_notice(format!("[SYS] Unknown model profile: {requested}"));
             self.append_model_choices();
             return;
         };
@@ -236,7 +270,7 @@ impl InteractiveTuiState {
 
     fn handle_session_command(&mut self, requested: &str) {
         if self.running {
-            self.body.push(
+            self.push_transcript_notice(
                 "[SYS] Session selection is available after the current run finishes.".to_string(),
             );
             self.input_status = Some("session blocked".to_string());
@@ -257,7 +291,7 @@ impl InteractiveTuiState {
         self.model = model_choice_label(choice);
         self.set_context_window(choice.context_window);
         self.sync_model_picker_index_to_current();
-        self.body.push(format!(
+        self.push_transcript_notice(format!(
             "[SYS] Switched model to {} ({})",
             choice.display_name(),
             choice.model_id
@@ -265,12 +299,13 @@ impl InteractiveTuiState {
     }
 
     fn append_model_choices(&mut self) {
-        self.body.push("[SYS] Model profiles".to_string());
-        self.body
-            .push(format!("[SYS] Current: {} ({})", self.profile, self.model));
+        let mut lines = vec![
+            "[SYS] Model profiles".to_string(),
+            format!("[SYS] Current: {} ({})", self.profile, self.model),
+        ];
         if self.model_choices.is_empty() {
-            self.body
-                .push("[SYS] No model profiles are configured.".to_string());
+            lines.push("[SYS] No model profiles are configured.".to_string());
+            self.push_transcript_lines(lines);
             return;
         }
         for choice in &self.model_choices {
@@ -279,7 +314,7 @@ impl InteractiveTuiState {
             } else {
                 " "
             };
-            self.body.push(format!(
+            lines.push(format!(
                 "[SYS] {marker} /model {:<18} {} ({}){}",
                 choice.profile,
                 choice.display_name(),
@@ -287,38 +322,40 @@ impl InteractiveTuiState {
                 model_choice_config_suffix(choice)
             ));
         }
+        self.push_transcript_lines(lines);
     }
 
     fn append_cost_summary(&mut self) {
-        self.body.extend(self.format_cost_summary_lines());
+        self.push_transcript_lines(self.format_cost_summary_lines());
     }
 
     fn run_shell_command(&mut self, command: &str) {
         if command.is_empty() {
-            self.body.push(
+            self.push_transcript_notice(
                 "[SYS] Shell command usage: !<command> (example: !git status --short)".to_string(),
             );
             return;
         }
-        self.body.push(format!("Shell command: {command}"));
+        let mut lines = vec![format!("Shell command: {command}")];
         match tui_shell_command(command).output() {
             Ok(output) => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                push_shell_output_lines(&mut self.body, "stdout", &stdout);
-                push_shell_output_lines(&mut self.body, "stderr", &stderr);
+                push_shell_output_lines(&mut lines, "stdout", &stdout);
+                push_shell_output_lines(&mut lines, "stderr", &stderr);
                 let status = output
                     .status
                     .code()
                     .map_or_else(|| "signal".to_string(), |code| code.to_string());
                 if output.status.success() {
-                    self.body.push(format!("Shell completed: exit {status}"));
+                    lines.push(format!("Shell completed: exit {status}"));
                 } else {
-                    self.body.push(format!("Shell failed: exit {status}"));
+                    lines.push(format!("Shell failed: exit {status}"));
                 }
             }
-            Err(error) => self.body.push(format!("Shell error: {error}")),
+            Err(error) => lines.push(format!("Shell error: {error}")),
         }
+        self.push_transcript_lines(lines);
     }
 }
 

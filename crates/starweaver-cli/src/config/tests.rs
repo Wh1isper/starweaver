@@ -151,6 +151,44 @@ fn shell_review_validation_requires_model_when_enabled() {
 }
 
 #[test]
+fn tui_render_mode_parses_and_round_trips_through_config_values() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("project");
+    let project_config = workspace.join(".starweaver");
+    fs::create_dir_all(&project_config).unwrap();
+    fs::write(
+        project_config.join("config.toml"),
+        r#"
+[tui]
+render_mode = "concise"
+"#,
+    )
+    .unwrap();
+    let cli =
+        crate::args::parse(["starweaver-cli".to_string(), "diagnostics".to_string()]).unwrap();
+    let resolver = ConfigResolver {
+        global_dir: Some(temp.path().join("global")),
+        project_dir: Some(project_config.clone()),
+        shared_agents_dir: Some(temp.path().join("shared-agents")),
+        current_dir: Some(workspace),
+    };
+
+    let config = resolver.resolve(&cli).unwrap();
+
+    assert_eq!(config.tui_render_mode, TuiRenderMode::Concise);
+    assert_eq!(
+        get_config_value(&config, "tui.render_mode").unwrap(),
+        "concise\n"
+    );
+
+    set_config_value(&config, ConfigScope::Project, "tui.render_mode", "debug").unwrap();
+    let content = fs::read_to_string(project_config.join("config.toml")).unwrap();
+    let parsed = content.parse::<Value>().unwrap();
+    assert_eq!(parsed["tui"]["render_mode"].as_str(), Some("debug"));
+    assert!(set_config_value(&config, ConfigScope::Project, "tui.render_mode", "tiny").is_err());
+}
+
+#[test]
 fn set_config_value_writes_nested_shell_review_table() {
     let temp = tempfile::tempdir().unwrap();
     let cli =

@@ -446,6 +446,7 @@ Interactive slash commands:
 | `/help`            | Print command help into the transcript              |
 | `/clear`           | Clear output                                        |
 | `/cost`            | Show usage/context summary                          |
+| `/display [mode]`  | Switch transcript display mode                      |
 | `/model`           | Open the in-TUI model profile selector              |
 | `/model <profile>` | Select a model profile directly for future TUI runs |
 | `/session`         | Open the in-TUI session selector                    |
@@ -455,6 +456,20 @@ Interactive slash commands:
 | `!<command>`       | Run a shell command and show output inline          |
 
 `/goal <task>` submits one runtime goal run. Goal progress is managed by runtime output validation: incomplete output emits `goal_iteration` and retries the model inside the same run, while verified completion or the iteration ceiling emits `goal_complete`. Configure the ceiling with `general.max_goal_iterations` in `config.toml`; the default is `10`.
+
+`/display [mode]` switches the live transcript projection without dropping underlying stream evidence. Modes are `normal`, `concise`, and `debug`. `normal` shows assistant text, thinking, tool calls, and formatted tool returns. The live transcript is event-order preserving: text and thinking are appended only to the active tail segment, non-model events such as tools or context updates close that segment, and projection may only fold adjacent compatible activity. `concise` keeps assistant text and thinking streaming normally while semantically summarizing and folding tool activity: adjacent successful read/search/list calls are grouped as `Exploring` / `Explored`, shell commands render as `Running` / `Ran`, file mutations render as one-line edit/write summaries, task tools render as compact task activity, and generic tools render as `Calling` / `Called`. The footer's active tool label uses the same semantic summary line as the concise transcript instead of raw tool payloads. Ordinary successful tool result bodies are suppressed in `concise`; tool failures, approval-required calls, and deferred calls show bounded summary details instead of full result payloads. Only subagent output, summaries, and compactions keep their existing full display style in `concise`; goal events remain visible as important run-state events. Subagent returns are rendered as full Markdown in both `normal` and `concise`. `debug` keeps the full normal transcript plus diagnostic identifiers such as tool call ids, subagent ids, summary categories, and visibility states. Interactive TUI defaults to `concise`. A `/display <mode>` change is saved in the TUI client state and reused by later TUI sessions. Startup mode priority is `--render-mode`, saved TUI client state, then `[tui].render_mode`. Set an explicit startup mode with `sw tui --render-mode concise` or in config:
+
+```toml
+[tui]
+render_mode = "concise"
+```
+
+Use `config get/set tui.render_mode` for scripted changes:
+
+```bash
+starweaver-cli config get tui.render_mode
+starweaver-cli config set --global tui.render_mode concise
+```
 
 Use `Ctrl+V` or `/paste-image` to attach an image currently stored in the system clipboard. The TUI inserts a visible placeholder such as `[Attached image 1: image/png 24KB]` into the composer, but submission strips that generated placeholder and sends the image as inline binary `ContentPart::Binary` content with the first model request. Clipboard image paste currently supports Linux clipboard providers through `wl-paste` on Wayland or `xclip` on X11.
 
@@ -502,7 +517,7 @@ Interactive keys:
 | `Ctrl-D`                | Exit                                               |
 | `q`                     | Exit from an empty idle prompt                     |
 
-The retained snapshot renderer remains available for scripts, tests, and display-message replay. It uses the same replay source as headless JSONL and session replay:
+The retained snapshot renderer remains available for scripts, tests, and display-message replay. It uses the same replay source as headless JSONL and session replay. Interactive render-mode projection applies to live TUI sessions; snapshot output replays stored display messages directly.
 
 ```bash
 starweaver-cli tui --snapshot

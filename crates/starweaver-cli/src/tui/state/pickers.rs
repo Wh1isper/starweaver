@@ -3,7 +3,7 @@ use super::{FooterMode, InteractiveTuiState, PendingSessionCommand};
 impl InteractiveTuiState {
     pub(crate) fn open_session_picker(&mut self) {
         if self.running {
-            self.body.push(
+            self.push_transcript_notice(
                 "[SYS] Session selection is available after the current run finishes.".to_string(),
             );
             self.input_status = Some("session blocked".to_string());
@@ -15,7 +15,7 @@ impl InteractiveTuiState {
         self.footer_mode = FooterMode::Context;
         if self.session_choices.is_empty() {
             self.session_picker_open = false;
-            self.body.push("[SYS] No sessions found.".to_string());
+            self.push_transcript_notice("[SYS] No sessions found.");
             self.input_status = Some("no sessions".to_string());
             return;
         }
@@ -95,7 +95,7 @@ impl InteractiveTuiState {
 
     pub(in crate::tui) fn open_model_picker(&mut self) {
         if self.running {
-            self.body.push(
+            self.push_transcript_notice(
                 "[SYS] Model selection is available after the current run finishes.".to_string(),
             );
             self.input_status = Some("model blocked".to_string());

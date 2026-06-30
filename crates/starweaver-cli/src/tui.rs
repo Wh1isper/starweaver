@@ -5,6 +5,7 @@ mod render;
 mod snapshot;
 mod state;
 mod terminal;
+mod timeline;
 
 #[cfg(test)]
 mod tests;

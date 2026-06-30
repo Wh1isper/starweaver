@@ -15,7 +15,7 @@ use starweaver_rpc_core::{
 use toml::Value;
 
 use crate::{
-    args::{Cli, CliCommand, ConfigCommand, HitlPolicy, OutputMode, SetupCommand},
+    args::{Cli, CliCommand, ConfigCommand, HitlPolicy, OutputMode, SetupCommand, TuiRenderMode},
     error::io_error,
     oauth::CODEX_BASE_URL,
     slash_commands::{normalize_command_name, valid_command_name, SlashCommandDefinition},
@@ -81,6 +81,8 @@ pub struct CliConfig {
     pub default_hitl: HitlPolicy,
     /// Default maximum runtime goal retry iterations.
     pub max_goal_iterations: usize,
+    /// Default TUI transcript rendering mode.
+    pub tui_render_mode: TuiRenderMode,
     /// Update channel metadata.
     pub update_channel: String,
     /// OAuth token refresh supervisor configuration.
@@ -140,7 +142,13 @@ struct FileConfig {
     skills: Option<SkillsConfig>,
     subagents: Option<SubagentsConfig>,
     commands: Option<BTreeMap<String, FileCommandDefinition>>,
+    tui: Option<TuiConfig>,
     trim: Option<TrimConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct TuiConfig {
+    render_mode: Option<TuiRenderMode>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -507,6 +515,7 @@ impl ConfigResolver {
             default_output: OutputMode::AguiJsonl,
             default_hitl: HitlPolicy::Defer,
             max_goal_iterations: 10,
+            tui_render_mode: TuiRenderMode::Concise,
             update_channel: "stable".to_string(),
             oauth_refresh: OAuthRefreshConfig::default(),
             default_model: None,
@@ -810,6 +819,11 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
     }
     if let Some(commands) = parsed.commands {
         merge_slash_commands(config, commands);
+    }
+    if let Some(tui) = parsed.tui {
+        if let Some(render_mode) = tui.render_mode {
+            config.tui_render_mode = render_mode;
+        }
     }
     if let Some(trim) = parsed.trim {
         if let Some(auto_after_run) = trim.auto_after_run {

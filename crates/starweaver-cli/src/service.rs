@@ -219,6 +219,7 @@ impl CliService {
             interactive: false,
             snapshot: false,
             output: OutputMode::Text,
+            render_mode: None,
         });
         match cli.command.unwrap_or(default_command) {
             CliCommand::Version => Ok(format!("{}\n", sdk_name())),

@@ -286,6 +286,14 @@ fn render_status_bar_primary(state: &InteractiveTuiState, width: usize) -> Style
             SegmentStyle::status_warning().merge(SegmentStyle::bold()),
         );
     }
+    if let Some(activity) = state.active_tool_label() {
+        push_bounded_status_segment(
+            &mut line,
+            width,
+            activity,
+            SegmentStyle::status_warning().merge(SegmentStyle::bold()),
+        );
+    }
     if state.pasted_image_count() > 0 {
         push_bounded_status_segment(
             &mut line,

@@ -15,7 +15,7 @@ use starweaver_runtime::AgentStreamRecord;
 
 use super::CliService;
 use crate::{
-    args::{GoalCommandOptions, OutputMode, RunCommand, TuiCommand},
+    args::{GoalCommandOptions, OutputMode, RunCommand, TuiCommand, TuiRenderMode},
     client_state,
     config::{clear_current_session, write_current_session, CliConfig},
     local_store::SessionSummary,
@@ -121,7 +121,7 @@ impl CliService {
         apply_tui_session_profile(&self.config, state, session.profile.as_deref());
         write_current_session(&self.config, &session_id)?;
         state.set_session_choices(self.tui_session_choices(50)?);
-        state.body.push(format!(
+        state.push_transcript_notice(format!(
             "[SYS] Loaded session {session_id}. Next message will continue from loaded history."
         ));
         Ok(())
@@ -149,6 +149,11 @@ impl CliService {
     fn interactive_tui(&mut self, command: &TuiCommand) -> CliResult<()> {
         let mut state = crate::tui::InteractiveTuiState::welcome(&self.config.tui_state_dir);
         state.set_goal_max_iterations(self.config.max_goal_iterations);
+        let initial_render_mode = command
+            .render_mode
+            .or(read_tui_render_mode(&self.config)?)
+            .unwrap_or(self.config.tui_render_mode);
+        state.set_render_mode(initial_render_mode);
         state.set_custom_commands(self.config.slash_commands.clone());
         state.set_model_choices(model_choices(&self.config));
         state.set_session_choices(self.tui_session_choices(50)?);
@@ -181,6 +186,7 @@ impl CliService {
         let mut active_run: Option<ActiveTuiRun> = None;
         let mut queued_prompt: Option<(PromptInput, String, Option<GoalCommandOptions>)> = None;
         let mut persisted_profile = state.profile.clone();
+        let mut persisted_render_mode = initial_render_mode;
         let mut dirty = true;
         let now = Instant::now();
         let mut last_render = now.checked_sub(TUI_FRAME_INTERVAL).unwrap_or(now);
@@ -199,7 +205,7 @@ impl CliService {
                         } else {
                             state.finish_run(Some(completed.session_id.clone()));
                         }
-                        state.body.push(format!(
+                        state.push_run_status_line(format!(
                             "Run completed: {} status={}",
                             completed.run_id, completed.status
                         ));
@@ -291,26 +297,26 @@ impl CliService {
                 }
                 Some(crate::tui::InteractiveTuiEvent::Session(requested)) => {
                     if active_run.is_some() {
-                        state.body.push(
+                        state.push_transcript_notice(
                             "[SYS] Session selection is available after the current run finishes."
                                 .to_string(),
                         );
                     } else if let Some(session_id) = requested {
                         if let Err(error) = self.reload_tui_session(&mut state, &session_id) {
-                            state.body.push(format!("[SYS] {error}"));
+                            state.push_transcript_notice(format!("[SYS] {error}"));
                         }
                     } else if let Err(error) = self.open_tui_session_picker(&mut state) {
-                        state.body.push(format!("[SYS] {error}"));
+                        state.push_transcript_notice(format!("[SYS] {error}"));
                     }
                     dirty = true;
                 }
                 Some(crate::tui::InteractiveTuiEvent::Clear) => {
                     if active_run.is_some() {
-                        state.body.push(
+                        state.push_transcript_notice(
                             "[SYS] Clear is available after the current run finishes.".to_string(),
                         );
                     } else if let Err(error) = clear_current_session(&self.config) {
-                        state.body.push(format!("[SYS] {error}"));
+                        state.push_transcript_notice(format!("[SYS] {error}"));
                     } else {
                         queued_prompt = None;
                         state.set_session_choices(self.tui_session_choices(50)?);
@@ -323,11 +329,11 @@ impl CliService {
                             if let Some(image) = result.image {
                                 let description = image.description();
                                 state.attach_image(image);
-                                state
-                                    .body
-                                    .push(format!("[SYS] Attached {description} from clipboard"));
+                                state.push_transcript_notice(format!(
+                                    "[SYS] Attached {description} from clipboard"
+                                ));
                             } else {
-                                state.body.push(format!(
+                                state.push_transcript_notice(format!(
                                     "[SYS] {}",
                                     result.error.unwrap_or_else(|| {
                                         "No clipboard image available.".to_string()
@@ -335,7 +341,7 @@ impl CliService {
                                 ));
                             }
                         }
-                        Err(error) => state.body.push(format!("[SYS] {error}")),
+                        Err(error) => state.push_transcript_notice(format!("[SYS] {error}")),
                     }
                     dirty = true;
                 }
@@ -371,6 +377,10 @@ impl CliService {
             if state.profile != persisted_profile {
                 write_tui_selected_profile(&self.config, &state.profile)?;
                 persisted_profile.clone_from(&state.profile);
+            }
+            if state.render_mode() != persisted_render_mode {
+                write_tui_render_mode(&self.config, state.render_mode())?;
+                persisted_render_mode = state.render_mode();
             }
         }
     }
@@ -646,6 +656,14 @@ fn read_tui_selected_profile(config: &CliConfig) -> CliResult<Option<String>> {
 
 fn write_tui_selected_profile(config: &CliConfig, profile: &str) -> CliResult<()> {
     client_state::write_selected_profile(config, "tui", profile)
+}
+
+fn read_tui_render_mode(config: &CliConfig) -> CliResult<Option<TuiRenderMode>> {
+    client_state::read_render_mode(config, "tui")
+}
+
+fn write_tui_render_mode(config: &CliConfig, render_mode: TuiRenderMode) -> CliResult<()> {
+    client_state::write_render_mode(config, "tui", render_mode)
 }
 
 fn should_run_interactive_tui(command: &TuiCommand) -> bool {
