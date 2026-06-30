@@ -380,8 +380,8 @@ impl Agent {
         let mut model_error_retries_used = 0usize;
         let mut tool_retries = BTreeMap::<String, usize>::new();
         let mut model_session = self.model.start_run_session();
-
-        'agent_loop: loop {
+        let run_result = async {
+            'agent_loop: loop {
             let mut step_span = ActiveSpan::start(
                 &self.trace_recorder,
                 SpanSpec::new("starweaver.loop.step")
@@ -1398,5 +1398,9 @@ impl Agent {
                 }
             }
         }
+        }
+        .await;
+        model_session.close().await;
+        run_result
     }
 }

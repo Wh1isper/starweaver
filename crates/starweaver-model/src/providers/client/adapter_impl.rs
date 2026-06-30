@@ -419,6 +419,12 @@ impl ModelRunSession for ProtocolModelClientRunSession<'_> {
             }
         }
     }
+
+    async fn close(&mut self) {
+        self.websocket_session.reset().await;
+        self.last_websocket_request = None;
+        mark_last_response_failed(&self.last_response);
+    }
 }
 
 impl ProtocolModelClient {
@@ -591,6 +597,7 @@ fn transport_fallback_diagnostic(
             "from": "websocket",
             "to": "http",
             "reason": transport_fallback_reason(error),
+            "detail": error.to_string(),
             "message": format!(
                 "model transport: websocket -> http fallback ({})",
                 transport_fallback_reason(error)
@@ -631,6 +638,7 @@ fn canonical_openai_response_stream(
     cancellation_token: starweaver_core::CancellationToken,
     diagnostic: Option<StreamDiagnostic>,
 ) -> ModelResponseEventStream {
+    let drop_abort_token = events.drop_abort_token();
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
     tokio::spawn(async move {
         if let Some(diagnostic) = diagnostic {
@@ -649,7 +657,11 @@ fn canonical_openai_response_stream(
             let _ = sender.send(Err(error)).await;
         }
     });
-    ModelResponseEventStream::new_with_cancellation(receiver, cancellation_token)
+    ModelResponseEventStream::new_with_cancellation_and_drop_abort(
+        receiver,
+        cancellation_token,
+        drop_abort_token,
+    )
 }
 
 fn canonical_openai_response_stream_for_session(
@@ -660,6 +672,7 @@ fn canonical_openai_response_stream_for_session(
     request_settings: Option<ModelSettings>,
     fallback_plan: Option<SessionFallbackPlan>,
 ) -> ModelResponseEventStream {
+    let drop_abort_token = events.drop_abort_token();
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
     tokio::spawn(async move {
         if let Some(diagnostic) = diagnostic {
@@ -701,7 +714,11 @@ fn canonical_openai_response_stream_for_session(
             }
         }
     });
-    ModelResponseEventStream::new_with_cancellation(receiver, cancellation_token)
+    ModelResponseEventStream::new_with_cancellation_and_drop_abort(
+        receiver,
+        cancellation_token,
+        drop_abort_token,
+    )
 }
 
 fn openai_response_stream_from_websocket_setup_error(

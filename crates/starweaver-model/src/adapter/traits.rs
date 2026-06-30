@@ -20,6 +20,9 @@ pub trait ModelRunSession: Send {
         context: ModelRequestContext,
     ) -> Result<ModelResponseEventStream, ModelError>;
 
+    /// Close run-scoped transport resources held by this session.
+    async fn close(&mut self) {}
+
     /// Stream a model request and return the assembled final response.
     async fn request_stream_final(
         &mut self,

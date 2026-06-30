@@ -173,6 +173,7 @@ impl ModelRunSession for ConcurrencyLimitedRunSession<'_> {
             .inner
             .request_stream_incremental(messages, settings, params, context)
             .await?;
+        let drop_abort_token = events.drop_abort_token();
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
             let _permit = permit;
@@ -182,10 +183,13 @@ impl ModelRunSession for ConcurrencyLimitedRunSession<'_> {
                 }
             }
         });
-        Ok(ModelResponseEventStream::new_with_cancellation(
-            receiver,
-            cancellation_token,
-        ))
+        Ok(
+            ModelResponseEventStream::new_with_cancellation_and_drop_abort(
+                receiver,
+                cancellation_token,
+                drop_abort_token,
+            ),
+        )
     }
 
     async fn request_stream_final(
@@ -200,6 +204,10 @@ impl ModelRunSession for ConcurrencyLimitedRunSession<'_> {
         self.inner
             .request_stream_final(messages, settings, params, context)
             .await
+    }
+
+    async fn close(&mut self) {
+        self.inner.close().await;
     }
 }
 

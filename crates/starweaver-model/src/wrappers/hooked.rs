@@ -289,6 +289,7 @@ impl ModelAdapter for HookedModel {
             .await
         {
             Ok(mut inner_stream) => {
+                let drop_abort_token = inner_stream.drop_abort_token();
                 let hooks = self.hooks.clone();
                 let (sender, receiver) = tokio::sync::mpsc::channel(32);
                 tokio::spawn(async move {
@@ -323,7 +324,13 @@ impl ModelAdapter for HookedModel {
                         }
                     }
                 });
-                Ok(ModelResponseEventStream::new(receiver))
+                Ok(
+                    ModelResponseEventStream::new_with_cancellation_and_drop_abort(
+                        receiver,
+                        starweaver_core::CancellationToken::default(),
+                        drop_abort_token,
+                    ),
+                )
             }
             Err(error) => {
                 Self::call_error(&self.hooks, &metadata, &error).await?;
@@ -362,6 +369,7 @@ impl ModelRunSession for HookedModelRunSession<'_> {
             .await
         {
             Ok(mut inner_stream) => {
+                let drop_abort_token = inner_stream.drop_abort_token();
                 let hooks = self.model.hooks.clone();
                 let (sender, receiver) = tokio::sync::mpsc::channel(32);
                 tokio::spawn(async move {
@@ -398,15 +406,22 @@ impl ModelRunSession for HookedModelRunSession<'_> {
                         }
                     }
                 });
-                Ok(ModelResponseEventStream::new_with_cancellation(
-                    receiver,
-                    cancellation_token,
-                ))
+                Ok(
+                    ModelResponseEventStream::new_with_cancellation_and_drop_abort(
+                        receiver,
+                        cancellation_token,
+                        drop_abort_token,
+                    ),
+                )
             }
             Err(error) => {
                 HookedModel::call_error(&self.model.hooks, &metadata, &error).await?;
                 Err(error)
             }
         }
+    }
+
+    async fn close(&mut self) {
+        self.inner.close().await;
     }
 }
