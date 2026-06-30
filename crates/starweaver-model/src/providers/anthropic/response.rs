@@ -43,6 +43,14 @@ pub(super) fn parse_response(value: &Value) -> Result<ModelResponse, ModelError>
                     |id| ProviderPartInfo::new("anthropic").with_id(id),
                 ),
             }),
+            Some("redacted_thinking") => parts.push(ModelResponsePart::ProviderOpaque {
+                item_type: "redacted_thinking".to_string(),
+                payload: block.clone(),
+                provider: block.get("id").and_then(Value::as_str).map_or_else(
+                    || ProviderPartInfo::new("anthropic"),
+                    |id| ProviderPartInfo::new("anthropic").with_id(id),
+                ),
+            }),
             Some("tool_use") => parts.push(ModelResponsePart::ToolCall(ToolCallPart {
                 id: block
                     .get("id")

@@ -375,11 +375,13 @@ fn assert_gemini_wire(body: &Value) {
     }));
     assert!(contents.iter().any(|content| {
         content["role"] == "model"
+            && content["parts"][0]["functionCall"]["id"] == "call_1"
             && content["parts"][0]["functionCall"]["name"] == "lookup"
             && content["parts"][0]["functionCall"]["args"]["query"] == "Paris"
     }));
     assert!(contents.iter().any(|content| {
         content["role"] == "user"
+            && content["parts"][0]["functionResponse"]["id"] == "call_1"
             && content["parts"][0]["functionResponse"]["name"] == "lookup"
             && content["parts"][0]["functionResponse"]["response"]["content"]["value"]
                 == "Paris is the capital of France"

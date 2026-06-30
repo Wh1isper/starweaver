@@ -90,11 +90,13 @@
         "parts": [
           {
             "functionCall": {
+              "id": "call_1",
               "name": "lookup_weather",
               "args": {
                 "city": "Paris"
               }
-            }
+            },
+            "thoughtSignature": "skip_thought_signature_validator"
           }
         ]
       },
@@ -103,6 +105,7 @@
         "parts": [
           {
             "functionResponse": {
+              "id": "call_1",
               "name": "lookup_weather",
               "response": {
                 "content": {

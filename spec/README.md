@@ -23,6 +23,7 @@ SDK layer:
 - `sdk/03-first-party-tool-bundles.md` — filesystem, shell, search, media, task, skill, and tool-proxy bundles implemented through capabilities and context
 - `sdk/04-subagents-skills.md` — serializable subagent specs, delegation lifecycle, inherited tools, skills, and nested coordination
 - `sdk/05-sdk-integration-map.md` — SDK integration map for agents, context, filters, environment, toolsets, subagents, media, and presets
+- `sdk/python/README.md` — in-process Python SDK bindings, Python tool injection, concept mapping, and phased roadmap
 
 Agent SDK environment layer:
 

@@ -6,7 +6,7 @@ use crate::{
     adapter::ToolDefinition,
     message::{
         FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
-        ProviderInfo, ToolCallPart,
+        ProviderInfo, ProviderPartInfo, ToolCallPart,
     },
     providers::{
         bedrock_content_from_content, collect_system_parts_and_non_system,
@@ -73,13 +73,26 @@ impl BedrockConverseAdapter {
                             | ModelResponsePart::ProviderText { text, .. } => {
                                 content.push(json!({"text": text}));
                             }
-                            ModelResponsePart::Thinking { text, .. }
-                            | ModelResponsePart::ProviderThinking { text, .. }
-                                if !text.is_empty() =>
-                            {
+                            ModelResponsePart::Thinking { text, .. } if !text.is_empty() => {
                                 content.push(json!({
                                     "text": format!("<think>\n{text}\n</think>")
                                 }));
+                            }
+                            ModelResponsePart::ProviderThinking {
+                                text,
+                                signature,
+                                provider,
+                            } => {
+                                if provider.is_provider("bedrock") {
+                                    content.push(bedrock_reasoning_content(
+                                        text,
+                                        signature.as_deref(),
+                                    ));
+                                } else if !text.is_empty() {
+                                    content.push(json!({
+                                        "text": format!("<think>\n{text}\n</think>")
+                                    }));
+                                }
                             }
                             ModelResponsePart::ToolCall(call)
                             | ModelResponsePart::ProviderToolCall { call, .. } => {
@@ -90,6 +103,15 @@ impl BedrockConverseAdapter {
                                         "input": call.arguments,
                                     }
                                 }));
+                            }
+                            ModelResponsePart::ProviderOpaque {
+                                item_type,
+                                payload,
+                                provider,
+                            } if provider.is_provider("bedrock")
+                                && bedrock_opaque_replay_item(item_type, payload) =>
+                            {
+                                content.push(payload.clone());
                             }
                             _ => {}
                         }
@@ -202,6 +224,9 @@ impl BedrockConverseAdapter {
                     text: text.to_string(),
                 });
             }
+            if let Some(reasoning) = item.get("reasoningContent") {
+                parts.push(bedrock_reasoning_part(reasoning, item));
+            }
             if let Some(call) = item.get("toolUse") {
                 parts.push(ModelResponsePart::ToolCall(ToolCallPart {
                     id: call
@@ -248,6 +273,45 @@ impl BedrockConverseAdapter {
             metadata: bedrock_metadata(value),
         })
     }
+}
+
+fn bedrock_reasoning_content(text: &str, signature: Option<&str>) -> Value {
+    let mut reasoning_text = serde_json::Map::new();
+    reasoning_text.insert("text".to_string(), json!(text));
+    if let Some(signature) = signature {
+        reasoning_text.insert("signature".to_string(), json!(signature));
+    }
+    json!({"reasoningContent": {"reasoningText": reasoning_text}})
+}
+
+fn bedrock_reasoning_part(reasoning: &Value, content_block: &Value) -> ModelResponsePart {
+    if let Some(reasoning_text) = reasoning.get("reasoningText") {
+        let text = reasoning_text
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let signature = reasoning_text
+            .get("signature")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if !text.is_empty() || signature.is_some() {
+            return ModelResponsePart::ProviderThinking {
+                text,
+                signature,
+                provider: ProviderPartInfo::new("bedrock"),
+            };
+        }
+    }
+    ModelResponsePart::ProviderOpaque {
+        item_type: "reasoningContent".to_string(),
+        payload: content_block.clone(),
+        provider: ProviderPartInfo::new("bedrock"),
+    }
+}
+
+fn bedrock_opaque_replay_item(item_type: &str, payload: &Value) -> bool {
+    item_type == "reasoningContent" && payload.get("reasoningContent").is_some()
 }
 
 fn append_bedrock_typed_fields(

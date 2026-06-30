@@ -85,6 +85,35 @@ fn build_request_does_not_replay_ambiguous_thinking_signature() {
 }
 
 #[test]
+fn build_request_replays_anthropic_redacted_thinking_natively() {
+    let response = ModelMessage::Response(ModelResponse {
+        parts: vec![ModelResponsePart::ProviderOpaque {
+            item_type: "redacted_thinking".to_string(),
+            payload: json!({
+                "type": "redacted_thinking",
+                "data": "encrypted-redacted-thinking"
+            }),
+            provider: ProviderPartInfo::new("anthropic"),
+        }],
+        usage: starweaver_usage::Usage::default(),
+        model_name: None,
+        provider: None,
+        finish_reason: None,
+        timestamp: None,
+        run_id: None,
+        conversation_id: None,
+        metadata: serde_json::Map::new(),
+    });
+
+    let request =
+        AnthropicMessagesAdapter::build_request("claude-test", &[response], None, &[]).unwrap();
+
+    let content = request["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "redacted_thinking");
+    assert_eq!(content[0]["data"], "encrypted-redacted-thinking");
+}
+
+#[test]
 fn parse_response_preserves_anthropic_provider_thinking() {
     let response = AnthropicMessagesAdapter::parse_response(&json!({
         "id": "msg_1",
@@ -107,5 +136,28 @@ fn parse_response_preserves_anthropic_provider_thinking() {
                 && signature.as_deref() == Some("anthropic-signature")
                 && provider.provider_name.as_deref() == Some("anthropic")
                 && provider.id.as_deref() == Some("thinking_1")
+    ));
+}
+
+#[test]
+fn parse_response_preserves_anthropic_redacted_thinking() {
+    let response = AnthropicMessagesAdapter::parse_response(&json!({
+        "id": "msg_1",
+        "model": "claude-test",
+        "stop_reason": "end_turn",
+        "content": [{
+            "type": "redacted_thinking",
+            "data": "encrypted-redacted-thinking"
+        }],
+        "usage": {"input_tokens": 1, "output_tokens": 2}
+    }))
+    .unwrap();
+
+    assert!(matches!(
+        &response.parts[0],
+        ModelResponsePart::ProviderOpaque { item_type, payload, provider }
+            if item_type == "redacted_thinking"
+                && payload["data"] == "encrypted-redacted-thinking"
+                && provider.provider_name.as_deref() == Some("anthropic")
     ));
 }
