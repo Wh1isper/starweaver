@@ -61,6 +61,7 @@ pub fn check_install_script() -> Result<(), String> {
         "archive missing expected binary",
         "checksums.txt",
         "verify_checksum_if_available",
+        "mv -f \"$tmp\" \"$dst\"",
         "ln -s \"starweaver\" \"$INSTALL_DIR/sw\"",
     ] {
         if !install_script.contains(required) {
@@ -71,6 +72,9 @@ pub fn check_install_script() -> Result<(), String> {
     }
     if install_script.contains("need tar\n  tag=") {
         return Err("installer should require tar only for tar archives".to_string());
+    }
+    if install_script.contains("cp \"$src\" \"$INSTALL_DIR/$name\"") {
+        return Err("installer must stage binaries before replacing installed files".to_string());
     }
     println!("install script validated");
     Ok(())

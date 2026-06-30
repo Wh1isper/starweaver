@@ -129,9 +129,13 @@ install_required_file() {
   name="$1"
   src="$2"
   [ -f "$src" ] || fail "archive missing expected binary: $name"
-  cp "$src" "$INSTALL_DIR/$name"
-  chmod 0755 "$INSTALL_DIR/$name" 2>/dev/null || true
-  log "installed $INSTALL_DIR/$name"
+  dst="$INSTALL_DIR/$name"
+  tmp="$INSTALL_DIR/.$name.tmp.$$"
+  rm -f "$tmp"
+  cp "$src" "$tmp" || { rm -f "$tmp"; fail "failed to stage binary: $name"; }
+  chmod 0755 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$dst" || { rm -f "$tmp"; fail "failed to replace installed binary: $name"; }
+  log "installed $dst"
 }
 
 ensure_path_hint() {
