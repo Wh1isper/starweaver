@@ -484,6 +484,15 @@ impl ToolRegistry {
         self.timeout_ms
     }
 
+    /// Return whether the registered tool requests sequential runtime execution.
+    #[must_use]
+    pub fn sequential_for(&self, name: &str) -> bool {
+        self.tools
+            .get(name)
+            .and_then(|tool| tool.sequential())
+            .unwrap_or(false)
+    }
+
     /// Return whether a tool is registered by name.
     #[must_use]
     pub fn contains(&self, name: &str) -> bool {

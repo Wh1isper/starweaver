@@ -358,7 +358,7 @@ impl SubagentRegistry {
     ) -> DynTool {
         self.background_delegate_tool_named(
             "delegate",
-            "Delegate task to a registered SDK subagent asynchronously. Result delivered via message bus.",
+            "Delegate task to a registered SDK subagent asynchronously. Do not wait or poll; the result arrives via message bus.",
             monitor,
         )
     }
@@ -371,7 +371,7 @@ impl SubagentRegistry {
     ) -> DynTool {
         self.background_delegate_tool_named(
             SPAWN_DELEGATE_TOOL_NAME,
-            "Spawn a registered SDK subagent in the background. Result delivered via message bus.",
+            "Spawn a registered SDK subagent in the background. Do not wait or poll; the result arrives via message bus.",
             monitor,
         )
     }
@@ -562,7 +562,7 @@ impl SubagentRegistry {
                             "subagent_name": subagent_name,
                             "agent_id": agent_id,
                             "message": format!(
-                                "{action} delegate: {subagent_name} (id: {agent_id}). Result will be delivered via message bus when complete."
+                                "{action} delegate: {subagent_name} (id: {agent_id}). Do not wait, poll, or loop for the result. If you have no other immediate work, finish your current response now; the Starweaver host will automatically notify you when the result arrives via message bus."
                             ),
                         })))
                     }
@@ -606,6 +606,7 @@ Sequential delegate calls across turns run serially.\n\
         let roster = self.roster_instruction(parent_tools)?;
         let content = format!(
             "In this agent, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.\n\
+After calling delegate, do not wait, poll, or loop for the result. If no other immediate work remains, finish your current response; the Starweaver host will automatically notify you when the result arrives.\n\
 Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.\n\n\
 {roster}"
         );
@@ -619,7 +620,8 @@ Use subagent_name from the available subagents below. Pass agent_id to resume a 
             SPAWN_DELEGATE_TOOL_NAME,
             "Use this to run a subagent asynchronously when immediate results are not required.\n\
 Use the same subagent_name values listed for delegate.\n\
-The call returns right away with an agent ID; the final result is delivered via message bus.\n\
+The call returns right away with an agent ID; do not wait, poll, or loop for the result.\n\
+If no other immediate work remains after spawning, finish your current response; the Starweaver host will automatically notify you when the result arrives via message bus.\n\
 Pass agent_id to resume a previous background subagent.",
         )
     }

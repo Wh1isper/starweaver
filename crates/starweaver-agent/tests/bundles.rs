@@ -1972,7 +1972,27 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert!(
         task.get_instructions()[0]
             .content
-            .contains("Task management tools track multi-step work")
+            .contains("Task management tools track meaningful multi-step work")
+    );
+    assert!(
+        task.get_instructions()[0]
+            .content
+            .contains("single direct action")
+    );
+    assert!(
+        task.get_instructions()[0]
+            .content
+            .contains("user's language")
+    );
+    assert!(
+        task.get_instructions()[0]
+            .content
+            .contains("specific enough to execute and verify")
+    );
+    assert!(
+        task.get_instructions()[0]
+            .content
+            .contains("delegate tool's own execution model")
     );
     assert_eq!(context.get_instructions().len(), 4);
     assert_eq!(host_io.get_instructions().len(), 6);

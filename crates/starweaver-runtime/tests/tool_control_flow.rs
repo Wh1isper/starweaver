@@ -65,10 +65,24 @@ async fn runtime_records_approval_and_deferred_tool_returns() {
 
     assert_eq!(result.output, "");
     assert_eq!(result.state.status, RunStatus::Waiting);
+    assert!(result.has_pending_hitl());
+    assert!(result.state.has_pending_hitl());
     assert!(result.state.pending_tool_returns.is_empty());
     assert_eq!(model.captured_messages().len(), 1);
     assert_eq!(result.state.pending_approval_tool_returns.len(), 1);
     assert_eq!(result.state.deferred_tool_returns.len(), 1);
+    assert_eq!(result.pending_approvals().len(), 1);
+    assert_eq!(result.pending_deferred_tools().len(), 1);
+    assert_eq!(result.state.pending_approvals().len(), 1);
+    assert_eq!(result.state.pending_deferred_tools().len(), 1);
+    assert_eq!(
+        result
+            .state
+            .pending_hitl_tool_returns()
+            .map(|tool_return| tool_return.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["dangerous", "slow"]
+    );
     assert_eq!(
         result.state.pending_approval_tool_returns[0].metadata["control_flow"],
         "approval_required"

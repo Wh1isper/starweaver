@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use starweaver_tools::{DynToolset, StaticToolset, ToolInstruction};
 
-use super::helpers::{context_management_tool_metadata, static_tool_with_metadata, tool_metadata};
+use super::helpers::{
+    context_management_tool_metadata, static_sequential_tool_with_metadata,
+    static_tool_with_metadata, tool_metadata,
+};
 
 mod args;
 mod context;
@@ -136,7 +139,7 @@ fn context_tool_instructions() -> Vec<ToolInstruction> {
 
 fn context_tool_definitions() -> Vec<starweaver_tools::DynTool> {
     vec![
-        static_tool_with_metadata(
+        static_sequential_tool_with_metadata(
             "summarize",
             "Summarize current work and clear context to start fresh.",
             context_management_tool_metadata("context", true, false),

@@ -12,7 +12,9 @@ use std::sync::Arc;
 
 use starweaver_tools::{DynToolset, StaticToolset};
 
-use super::helpers::{static_tool_with_metadata, tool_metadata};
+use super::helpers::{
+    static_sequential_tool_with_metadata, static_tool_with_metadata, tool_metadata,
+};
 use instructions::task_manager_instructions;
 use operations::{task_create, task_get, task_list, task_update};
 
@@ -24,7 +26,7 @@ pub fn task_tools() -> DynToolset {
             .with_id("task")
             .with_instruction(task_manager_instructions())
             .with_tools([
-                static_tool_with_metadata(
+                static_sequential_tool_with_metadata(
                     "task_create",
                     "Create a new task. Task status defaults to pending.",
                     tool_metadata("task", true, false),
@@ -36,7 +38,7 @@ pub fn task_tools() -> DynToolset {
                     tool_metadata("task", true, false),
                     task_get,
                 ),
-                static_tool_with_metadata(
+                static_sequential_tool_with_metadata(
                     "task_update",
                     "Update task status, content, or dependencies.",
                     tool_metadata("task", true, false),

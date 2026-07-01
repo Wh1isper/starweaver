@@ -1,14 +1,18 @@
 //! Agent run loop entrypoints.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
-use starweaver_core::TraceContext;
+use starweaver_core::{ConversationId, RunId, TraceContext};
 use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
+    ToolCallPart, ToolReturnPart,
     transport::{RetryPolicy, should_retry_error},
 };
-use starweaver_tools::ToolContext;
+use starweaver_tools::{ToolContext, ToolRegistry};
 use starweaver_usage::pricing::estimate_pricing_for_model;
 
 const DEFAULT_MODEL_ERROR_RETRIES: usize = 2;
@@ -17,7 +21,7 @@ mod entrypoints;
 
 use crate::{
     agent::{
-        Agent, AgentEndStrategy, AgentError, AgentInput, AgentResult,
+        Agent, AgentEndStrategy, AgentError, AgentInput, AgentResult, AgentToolExecutionMode,
         helpers::{
             has_pending_tool_control_flow, is_tool_retry_return, mark_tool_retry_return,
             record_tool_control_flow, tool_return_control_flow,
@@ -97,6 +101,16 @@ impl Drop for ActiveSpan {
     }
 }
 
+struct PreparedToolExecution {
+    index: usize,
+    call: ToolCallPart,
+    tool_context: ToolContext,
+    context_handle: AgentContextHandle,
+    stream_sink: Option<AgentStreamSink>,
+    tool_span: ActiveSpan,
+    started_at: std::time::Instant,
+}
+
 #[inline(never)]
 fn shared_context_dependency(context: &AgentContext) -> Arc<AgentContext> {
     Arc::new(context.clone())
@@ -117,6 +131,107 @@ fn should_resume_provider_stream(error: &starweaver_model::ModelError) -> bool {
 }
 
 impl Agent {
+    fn should_execute_tool_calls_sequentially(
+        &self,
+        run_tools: &ToolRegistry,
+        tool_calls: &[ToolCallPart],
+    ) -> bool {
+        if self.policy.tool_execution == AgentToolExecutionMode::Sequential {
+            return true;
+        }
+        let mut seen_tool_names = BTreeSet::new();
+        tool_calls.iter().any(|call| {
+            run_tools.sequential_for(&call.name) || !seen_tool_names.insert(call.name.as_str())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_tool_execution(
+        &self,
+        index: usize,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        run_tools: &ToolRegistry,
+        call: &ToolCallPart,
+        step_trace_context: &TraceContext,
+        run_id: &RunId,
+        conversation_id: &ConversationId,
+        tool_retries: &BTreeMap<String, usize>,
+        stream_enabled: bool,
+    ) -> Result<PreparedToolExecution, AgentError> {
+        let tool_retry = *tool_retries.get(&call.name).unwrap_or(&0);
+        let tool_max_retries = run_tools.max_retries_for(&call.name);
+        let tool_span = ActiveSpan::start(
+            &self.trace_recorder,
+            SpanSpec::new("gen_ai.execute_tool")
+                .with_attribute(
+                    "gen_ai.agent.id",
+                    serde_json::json!(context.agent_id.as_str()),
+                )
+                .with_attribute(
+                    "gen_ai.conversation.id",
+                    serde_json::json!(conversation_id.as_str()),
+                )
+                .with_attribute("starweaver.run.id", serde_json::json!(run_id.as_str()))
+                .with_attribute("gen_ai.tool.name", serde_json::json!(call.name.clone()))
+                .with_attribute("gen_ai.tool.call.id", serde_json::json!(call.id.clone())),
+            step_trace_context,
+            "tool_execution_dropped",
+        );
+        let context_handle = context_handle_snapshot(context);
+        let mut tool_dependencies = context.dependencies.clone();
+        tool_dependencies.insert_arc(shared_context_dependency(context));
+        tool_dependencies.insert(context_handle.clone());
+        tool_dependencies.insert(TraceRecorderHandle::new(self.trace_recorder.clone()));
+        let stream_sink = stream_enabled.then(AgentStreamSink::default);
+        if let Some(stream_sink) = &stream_sink {
+            tool_dependencies.insert(stream_sink.clone());
+        }
+        let mut tool_context = ToolContext::new(
+            state.run_id.clone(),
+            state.conversation_id.clone(),
+            state.run_step,
+        )
+        .with_dependencies(tool_dependencies)
+        .with_trace_context(tool_span.context().clone())
+        .with_retry_budget(tool_retry, tool_max_retries);
+        if let Some(token) = self.cancellation_token.as_ref() {
+            tool_context = tool_context.with_cancellation_token(token.clone());
+        }
+        self.call_before_tool_execution(state, context, &mut tool_context, call)
+            .await?;
+        replace_context_handle_snapshot(&context_handle, context);
+        tool_context
+            .dependencies
+            .insert_arc(shared_context_dependency(context));
+        self.trace_recorder.record_event(
+            &tool_span,
+            SpanEvent::new("starweaver.tool.call").with_attribute(
+                "gen_ai.tool.call.arguments",
+                serde_json::json!({"redacted": true}),
+            ),
+        );
+
+        Ok(PreparedToolExecution {
+            index,
+            call: call.clone(),
+            tool_context,
+            context_handle,
+            stream_sink,
+            tool_span,
+            started_at: std::time::Instant::now(),
+        })
+    }
+
+    async fn execute_prepared_tool_call(
+        run_tools: ToolRegistry,
+        index: usize,
+        call: ToolCallPart,
+        tool_context: ToolContext,
+    ) -> (usize, ToolReturnPart) {
+        (index, run_tools.execute_call(tool_context, &call).await)
+    }
+
     #[allow(clippy::large_stack_frames, clippy::too_many_lines)]
     async fn run_with_context_inner(
         &self,
@@ -275,6 +390,117 @@ impl Agent {
                         status: $state.status,
                     }
                 );
+            }};
+        }
+
+        macro_rules! apply_tool_return {
+            ($state:ident, $context:ident, $tool_retries:ident, $run_tools:expr, $step_span:ident, $run_span:ident, $run_id:expr, $context_event_cursor:ident, $previous_trace_context:expr, $call:expr, $tool_return:expr, $tool_span:expr, $context_handle:expr, $tool_duration:expr) => {{
+                let call = $call;
+                let mut tool_return = $tool_return;
+                let mut tool_span = $tool_span;
+                let tool_duration = $tool_duration;
+                let duration_ms =
+                    u64::try_from(tool_duration.as_millis()).unwrap_or(u64::MAX);
+                tool_return
+                    .metadata
+                    .entry("duration_ms".to_string())
+                    .or_insert_with(|| serde_json::json!(duration_ms));
+                tool_return
+                    .metadata
+                    .entry("duration_seconds".to_string())
+                    .or_insert_with(|| serde_json::json!(tool_duration.as_secs_f64()));
+                self.trace_recorder.record_event(
+                    &tool_span,
+                    SpanEvent::new("starweaver.tool.return")
+                        .with_attribute(
+                            "gen_ai.tool.call.result",
+                            serde_json::json!({
+                                "redacted": true,
+                                "is_error": tool_return.is_error,
+                            }),
+                        )
+                        .with_attribute(
+                            "starweaver.tool.duration_ms",
+                            serde_json::json!(duration_ms),
+                        )
+                        .with_attribute(
+                            "starweaver.tool.is_error",
+                            serde_json::json!(tool_return.is_error),
+                        ),
+                );
+                if tool_return.is_error && tool_return_control_flow(&tool_return).is_none() {
+                    tool_span.close(SpanStatus::Error {
+                        error_type: tool_return
+                            .metadata
+                            .get("error_kind")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("tool_error")
+                            .to_string(),
+                    });
+                } else {
+                    tool_span.close(SpanStatus::Ok);
+                }
+                self.absorb_tool_context_handle(&mut $state, $context, $context_handle)?;
+                self.call_after_tool_result(&mut $state, $context, call, &mut tool_return)
+                    .await?;
+                tool_return
+                    .metadata
+                    .insert("duration_ms".to_string(), serde_json::json!(duration_ms));
+                tool_return.metadata.insert(
+                    "duration_seconds".to_string(),
+                    serde_json::json!(tool_duration.as_secs_f64()),
+                );
+                if tool_return.is_error && is_tool_retry_return(&tool_return) {
+                    let tool_retry = *$tool_retries.get(&call.name).unwrap_or(&0);
+                    let tool_max_retries = $run_tools.max_retries_for(&call.name);
+                    if tool_retry >= tool_max_retries {
+                        tool_span.close(SpanStatus::Error {
+                            error_type: "tool_retry_limit_exceeded".to_string(),
+                        });
+                        $step_span.close(SpanStatus::Error {
+                            error_type: "tool_retry_limit_exceeded".to_string(),
+                        });
+                        $run_span.close(SpanStatus::Error {
+                            error_type: "tool_retry_limit_exceeded".to_string(),
+                        });
+                        fail_run!(
+                            &mut $state,
+                            $run_id,
+                            $context_event_cursor,
+                            $previous_trace_context.clone(),
+                            AgentError::ToolRetryLimitExceeded {
+                                tool: call.name.clone(),
+                                max_retries: tool_max_retries,
+                            }
+                        );
+                    }
+                    let next_retry = tool_retry.saturating_add(1);
+                    $tool_retries.insert(call.name.clone(), next_retry);
+                    self.call_retry(
+                        &mut $state,
+                        $context,
+                        RetryEventKind::Tool,
+                        next_retry,
+                        &call.name,
+                    )
+                    .await?;
+                    mark_tool_retry_return(&mut tool_return, next_retry, tool_max_retries);
+                }
+                stream_event!(
+                    &$state,
+                    AgentStreamEvent::ToolReturn {
+                        step: $state.run_step,
+                        tool_return: tool_return.clone(),
+                    }
+                );
+                record_tool_control_flow(&mut $state, &tool_return);
+                if !tool_return.is_error {
+                    $state.usage.tool_calls = $state.usage.tool_calls.saturating_add(1);
+                    $context.usage.tool_calls = $context.usage.tool_calls.saturating_add(1);
+                }
+                $state.pending_tool_returns.push(tool_return);
+                stream_context_events!(&$state, $context_event_cursor);
+                checkpoint!(AgentExecutionNode::ToolReturn, &$state, $context_event_cursor);
             }};
         }
 
@@ -963,199 +1189,228 @@ impl Agent {
                         error
                     );
                 }
-                for call in &tool_calls {
-                    checkpoint!(AgentExecutionNode::ToolCall, &state, context_event_cursor);
-                    stream_event!(
-                        &state,
-                        AgentStreamEvent::ToolCall {
-                            step: state.run_step,
-                            call: call.clone(),
-                        }
-                    );
-                    let tool_retry = *tool_retries.get(&call.name).unwrap_or(&0);
-                    let tool_max_retries = run_tools.max_retries_for(&call.name);
-                    let mut tool_span = ActiveSpan::start(
-                        &self.trace_recorder,
-                        SpanSpec::new("gen_ai.execute_tool")
-                            .with_attribute(
-                                "gen_ai.agent.id",
-                                serde_json::json!(context.agent_id.as_str()),
+                if self.should_execute_tool_calls_sequentially(&run_tools, &tool_calls) {
+                    for call in &tool_calls {
+                        checkpoint!(AgentExecutionNode::ToolCall, &state, context_event_cursor);
+                        stream_event!(
+                            &state,
+                            AgentStreamEvent::ToolCall {
+                                step: state.run_step,
+                                call: call.clone(),
+                            }
+                        );
+                        let PreparedToolExecution {
+                            index: _,
+                            call,
+                            tool_context,
+                            context_handle,
+                            stream_sink,
+                            tool_span,
+                            started_at,
+                        } = self
+                            .prepare_tool_execution(
+                                0,
+                                &mut state,
+                                context,
+                                &run_tools,
+                                call,
+                                step_span.context(),
+                                &run_id,
+                                &conversation_id,
+                                &tool_retries,
+                                stream_events.is_some(),
                             )
-                            .with_attribute(
-                                "gen_ai.conversation.id",
-                                serde_json::json!(conversation_id.as_str()),
-                            )
-                            .with_attribute("starweaver.run.id", serde_json::json!(run_id.as_str()))
-                            .with_attribute(
-                                "gen_ai.tool.name",
-                                serde_json::json!(call.name.clone()),
-                            )
-                            .with_attribute(
-                                "gen_ai.tool.call.id",
-                                serde_json::json!(call.id.clone()),
-                            ),
-                        step_span.context(),
-                        "tool_execution_dropped",
-                    );
-                    let context_handle = context_handle_snapshot(context);
-                    let mut tool_dependencies = context.dependencies.clone();
-                    tool_dependencies.insert_arc(shared_context_dependency(context));
-                    tool_dependencies.insert(context_handle.clone());
-                    tool_dependencies.insert(TraceRecorderHandle::new(self.trace_recorder.clone()));
-                    let stream_sink = stream_events.as_ref().map(|_| AgentStreamSink::default());
-                    if let Some(stream_sink) = &stream_sink {
-                        tool_dependencies.insert(stream_sink.clone());
+                            .await?;
+                        let mut tool_return_future =
+                            Box::pin(run_tools.execute_call(tool_context, &call));
+                        let mut child_stream_tick =
+                            tokio::time::interval(std::time::Duration::from_millis(50));
+                        child_stream_tick
+                            .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        let tool_return = loop {
+                            tokio::select! {
+                                tool_return = &mut tool_return_future => {
+                                    if let Some(stream_sink) = &stream_sink {
+                                        for child_record in stream_sink.drain() {
+                                            stream_record!(&state, child_record);
+                                        }
+                                    }
+                                    break tool_return;
+                                }
+                                _ = child_stream_tick.tick(), if stream_sink.is_some() => {
+                                    if let Some(stream_sink) = &stream_sink {
+                                        for child_record in stream_sink.drain() {
+                                            stream_record!(&state, child_record);
+                                        }
+                                    }
+                                }
+                            }
+                        };
+                        let tool_duration = started_at.elapsed();
+                        apply_tool_return!(
+                            state,
+                            context,
+                            tool_retries,
+                            &run_tools,
+                            step_span,
+                            run_span,
+                            &run_id,
+                            context_event_cursor,
+                            previous_trace_context,
+                            &call,
+                            tool_return,
+                            tool_span,
+                            &context_handle,
+                            tool_duration
+                        );
                     }
-                    let mut tool_context = ToolContext::new(
-                        state.run_id.clone(),
-                        state.conversation_id.clone(),
-                        state.run_step,
-                    )
-                    .with_dependencies(tool_dependencies)
-                    .with_trace_context(tool_span.context().clone())
-                    .with_retry_budget(tool_retry, tool_max_retries);
-                    if let Some(token) = self.cancellation_token.as_ref() {
-                        tool_context = tool_context.with_cancellation_token(token.clone());
+                } else {
+                    let mut prepared_calls = Vec::with_capacity(tool_calls.len());
+                    for (index, call) in tool_calls.iter().enumerate() {
+                        checkpoint!(AgentExecutionNode::ToolCall, &state, context_event_cursor);
+                        stream_event!(
+                            &state,
+                            AgentStreamEvent::ToolCall {
+                                step: state.run_step,
+                                call: call.clone(),
+                            }
+                        );
+                        prepared_calls.push(
+                            self.prepare_tool_execution(
+                                index,
+                                &mut state,
+                                context,
+                                &run_tools,
+                                call,
+                                step_span.context(),
+                                &run_id,
+                                &conversation_id,
+                                &tool_retries,
+                                stream_events.is_some(),
+                            )
+                            .await?,
+                        );
                     }
-                    self.call_before_tool_execution(&mut state, context, &mut tool_context, call)
-                        .await?;
-                    replace_context_handle_snapshot(&context_handle, context);
-                    tool_context
-                        .dependencies
-                        .insert_arc(shared_context_dependency(context));
-                    self.trace_recorder.record_event(
-                        &tool_span,
-                        SpanEvent::new("starweaver.tool.call").with_attribute(
-                            "gen_ai.tool.call.arguments",
-                            serde_json::json!({"redacted": true}),
-                        ),
-                    );
-                    let tool_started_at = std::time::Instant::now();
-                    let mut tool_return_future =
-                        Box::pin(run_tools.execute_call(tool_context, call));
+
+                    let mut join_set = tokio::task::JoinSet::new();
+                    for prepared_call in &prepared_calls {
+                        let run_tools = run_tools.clone();
+                        let index = prepared_call.index;
+                        let call = prepared_call.call.clone();
+                        let tool_context = prepared_call.tool_context.clone();
+                        join_set.spawn(Self::execute_prepared_tool_call(
+                            run_tools,
+                            index,
+                            call,
+                            tool_context,
+                        ));
+                    }
+                    let mut tool_returns: Vec<Option<ToolReturnPart>> =
+                        vec![None; prepared_calls.len()];
                     let mut child_stream_tick =
                         tokio::time::interval(std::time::Duration::from_millis(50));
                     child_stream_tick
                         .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                    let mut tool_return = loop {
+                    let mut remaining_tool_calls = prepared_calls.len();
+                    while remaining_tool_calls > 0 {
                         tokio::select! {
-                            tool_return = &mut tool_return_future => {
-                                if let Some(stream_sink) = &stream_sink {
-                                    for child_record in stream_sink.drain() {
-                                        stream_record!(&state, child_record);
+                            joined = join_set.join_next() => {
+                                let Some(joined) = joined else {
+                                    break;
+                                };
+                                let (index, tool_return) = match joined {
+                                    Ok(result) => result,
+                                    Err(error) => {
+                                        step_span.close(SpanStatus::Error {
+                                            error_type: "tool_execution_task_failed".to_string(),
+                                        });
+                                        run_span.close(SpanStatus::Error {
+                                            error_type: "tool_execution_task_failed".to_string(),
+                                        });
+                                        fail_run!(
+                                            &mut state,
+                                            &run_id,
+                                            context_event_cursor,
+                                            previous_trace_context.clone(),
+                                            AgentError::Capability(format!(
+                                                "tool execution task failed: {error}"
+                                            ))
+                                        );
+                                    }
+                                };
+                                tool_returns[index] = Some(tool_return);
+                                remaining_tool_calls = remaining_tool_calls.saturating_sub(1);
+                                for prepared_call in &prepared_calls {
+                                    if let Some(stream_sink) = &prepared_call.stream_sink {
+                                        for child_record in stream_sink.drain() {
+                                            stream_record!(&state, child_record);
+                                        }
                                     }
                                 }
-                                break tool_return;
                             }
-                            _ = child_stream_tick.tick(), if stream_sink.is_some() => {
-                                if let Some(stream_sink) = &stream_sink {
-                                    for child_record in stream_sink.drain() {
-                                        stream_record!(&state, child_record);
+                            _ = child_stream_tick.tick(), if stream_events.is_some() => {
+                                for prepared_call in &prepared_calls {
+                                    if let Some(stream_sink) = &prepared_call.stream_sink {
+                                        for child_record in stream_sink.drain() {
+                                            stream_record!(&state, child_record);
+                                        }
                                     }
                                 }
                             }
                         }
-                    };
-                    let tool_duration = tool_started_at.elapsed();
-                    let duration_ms = u64::try_from(tool_duration.as_millis()).unwrap_or(u64::MAX);
-                    tool_return
-                        .metadata
-                        .entry("duration_ms".to_string())
-                        .or_insert_with(|| serde_json::json!(duration_ms));
-                    tool_return
-                        .metadata
-                        .entry("duration_seconds".to_string())
-                        .or_insert_with(|| serde_json::json!(tool_duration.as_secs_f64()));
-                    self.trace_recorder.record_event(
-                        &tool_span,
-                        SpanEvent::new("starweaver.tool.return")
-                            .with_attribute(
-                                "gen_ai.tool.call.result",
-                                serde_json::json!({
-                                    "redacted": true,
-                                    "is_error": tool_return.is_error,
-                                }),
-                            )
-                            .with_attribute(
-                                "starweaver.tool.duration_ms",
-                                serde_json::json!(duration_ms),
-                            )
-                            .with_attribute(
-                                "starweaver.tool.is_error",
-                                serde_json::json!(tool_return.is_error),
-                            ),
-                    );
-                    if tool_return.is_error && tool_return_control_flow(&tool_return).is_none() {
-                        tool_span.close(SpanStatus::Error {
-                            error_type: tool_return
-                                .metadata
-                                .get("error_kind")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("tool_error")
-                                .to_string(),
-                        });
-                    } else {
-                        tool_span.close(SpanStatus::Ok);
                     }
-                    self.absorb_tool_context_handle(&mut state, context, &context_handle)?;
-                    self.call_after_tool_result(&mut state, context, call, &mut tool_return)
-                        .await?;
-                    tool_return
-                        .metadata
-                        .insert("duration_ms".to_string(), serde_json::json!(duration_ms));
-                    tool_return.metadata.insert(
-                        "duration_seconds".to_string(),
-                        serde_json::json!(tool_duration.as_secs_f64()),
-                    );
-                    if tool_return.is_error && is_tool_retry_return(&tool_return) {
-                        if tool_retry >= tool_max_retries {
-                            tool_span.close(SpanStatus::Error {
-                                error_type: "tool_retry_limit_exceeded".to_string(),
-                            });
+                    for prepared_call in &prepared_calls {
+                        if let Some(stream_sink) = &prepared_call.stream_sink {
+                            for child_record in stream_sink.drain() {
+                                stream_record!(&state, child_record);
+                            }
+                        }
+                    }
+                    for prepared_call in prepared_calls {
+                        let PreparedToolExecution {
+                            index,
+                            call,
+                            tool_context: _,
+                            context_handle,
+                            stream_sink: _,
+                            tool_span,
+                            started_at,
+                        } = prepared_call;
+                        let Some(tool_return) = tool_returns[index].take() else {
                             step_span.close(SpanStatus::Error {
-                                error_type: "tool_retry_limit_exceeded".to_string(),
+                                error_type: "tool_execution_missing_return".to_string(),
                             });
                             run_span.close(SpanStatus::Error {
-                                error_type: "tool_retry_limit_exceeded".to_string(),
+                                error_type: "tool_execution_missing_return".to_string(),
                             });
                             fail_run!(
                                 &mut state,
                                 &run_id,
                                 context_event_cursor,
                                 previous_trace_context.clone(),
-                                AgentError::ToolRetryLimitExceeded {
-                                    tool: call.name.clone(),
-                                    max_retries: tool_max_retries,
-                                }
+                                AgentError::Capability(
+                                    "tool execution task ended without a return".to_string()
+                                )
                             );
-                        }
-                        let next_retry = tool_retry.saturating_add(1);
-                        tool_retries.insert(call.name.clone(), next_retry);
-                        self.call_retry(
-                            &mut state,
+                        };
+                        let tool_duration = started_at.elapsed();
+                        apply_tool_return!(
+                            state,
                             context,
-                            RetryEventKind::Tool,
-                            next_retry,
-                            &call.name,
-                        )
-                        .await?;
-                        mark_tool_retry_return(&mut tool_return, next_retry, tool_max_retries);
+                            tool_retries,
+                            &run_tools,
+                            step_span,
+                            run_span,
+                            &run_id,
+                            context_event_cursor,
+                            previous_trace_context,
+                            &call,
+                            tool_return,
+                            tool_span,
+                            &context_handle,
+                            tool_duration
+                        );
                     }
-                    stream_event!(
-                        &state,
-                        AgentStreamEvent::ToolReturn {
-                            step: state.run_step,
-                            tool_return: tool_return.clone(),
-                        }
-                    );
-                    record_tool_control_flow(&mut state, &tool_return);
-                    if !tool_return.is_error {
-                        state.usage.tool_calls = state.usage.tool_calls.saturating_add(1);
-                        context.usage.tool_calls = context.usage.tool_calls.saturating_add(1);
-                    }
-                    state.pending_tool_returns.push(tool_return);
-                    stream_context_events!(&state, context_event_cursor);
-                    checkpoint!(AgentExecutionNode::ToolReturn, &state, context_event_cursor);
                 }
                 if has_pending_tool_control_flow(&state) {
                     let non_control_flow_tool_returns = state

@@ -112,6 +112,31 @@ impl AgentRunState {
         }
         self.latest_response = Some(response);
     }
+
+    /// Return true when the run is waiting for approval or deferred tool results.
+    #[must_use]
+    pub const fn has_pending_hitl(&self) -> bool {
+        !self.pending_approval_tool_returns.is_empty() || !self.deferred_tool_returns.is_empty()
+    }
+
+    /// Return pending approval-required tool returns.
+    #[must_use]
+    pub fn pending_approvals(&self) -> &[ToolReturnPart] {
+        &self.pending_approval_tool_returns
+    }
+
+    /// Return pending deferred tool returns.
+    #[must_use]
+    pub fn pending_deferred_tools(&self) -> &[ToolReturnPart] {
+        &self.deferred_tool_returns
+    }
+
+    /// Iterate all pending HITL tool returns in approval-then-deferred order.
+    pub fn pending_hitl_tool_returns(&self) -> impl Iterator<Item = &ToolReturnPart> {
+        self.pending_approval_tool_returns
+            .iter()
+            .chain(self.deferred_tool_returns.iter())
+    }
 }
 
 /// Result returned when an agent run completes.
@@ -121,4 +146,24 @@ pub struct AgentRunResult {
     pub output: String,
     /// Final checkpointable state.
     pub state: AgentRunState,
+}
+
+impl AgentRunResult {
+    /// Return true when the final state is waiting for HITL input.
+    #[must_use]
+    pub const fn has_pending_hitl(&self) -> bool {
+        self.state.has_pending_hitl()
+    }
+
+    /// Return pending approval-required tool returns.
+    #[must_use]
+    pub fn pending_approvals(&self) -> &[ToolReturnPart] {
+        self.state.pending_approvals()
+    }
+
+    /// Return pending deferred tool returns.
+    #[must_use]
+    pub fn pending_deferred_tools(&self) -> &[ToolReturnPart] {
+        self.state.pending_deferred_tools()
+    }
 }

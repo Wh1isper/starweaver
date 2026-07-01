@@ -239,6 +239,11 @@ assert_eq!(restored.files["README.md"], "hello");
 
 When a run returns `RunStatus::Waiting` because tools require approval or deferred worker results, keep the `AgentSession` and resume through `AgentHitlResults`. The session stores the latest waiting `AgentRunState`, accepts original or normalized tool call ids, repairs pending tool returns, and continues the next model request without adding a new user prompt.
 
+Use `AgentResult::has_pending_hitl()`, `pending_approvals()`, and
+`pending_deferred_tools()` to drive approval UI without inspecting state field
+names directly. The same helpers are available on `AgentRunState` for durable
+restore paths.
+
 Use `AgentBuilder::approval_required_tools([...])` when a whole app should require HITL approval for matching tool names, toolset names/ids, metadata bundles, or `"*"`. For lower-level composition, wrap a specific toolset with `ApprovalRequiredToolset`.
 
 ```rust

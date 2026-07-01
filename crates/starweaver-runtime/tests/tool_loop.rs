@@ -8,10 +8,10 @@ use std::sync::{
 use async_trait::async_trait;
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
-    ModelRequestParameters, ModelResponse, ModelResponseEventStream, ModelResponsePart,
-    ModelRunSession, ModelSettings, ProtocolFamily, ToolCallPart,
+    ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponseEventStream,
+    ModelResponsePart, ModelRunSession, ModelSettings, ProtocolFamily, ToolCallPart,
 };
-use starweaver_runtime::Agent;
+use starweaver_runtime::{Agent, AgentRuntimePolicy, AgentToolExecutionMode};
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 
 #[derive(Clone)]
@@ -200,6 +200,29 @@ fn lookup_registry() -> ToolRegistry {
     ToolRegistry::new().with_tool(Arc::new(tool))
 }
 
+fn request_tool_return_names(messages: &[ModelMessage]) -> Vec<String> {
+    let Some(ModelMessage::Request(request)) = messages.last() else {
+        return Vec::new();
+    };
+    request
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            ModelRequestPart::ToolReturn(tool_return) => Some(tool_return.name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn record_tool_start(current: &AtomicUsize, max_seen: &AtomicUsize) {
+    let active = current.fetch_add(1, Ordering::SeqCst) + 1;
+    max_seen.fetch_max(active, Ordering::SeqCst);
+}
+
+fn record_tool_finish(current: &AtomicUsize) {
+    current.fetch_sub(1, Ordering::SeqCst);
+}
+
 #[tokio::test]
 async fn agent_executes_tool_calls_and_continues_model_loop() {
     let model = Arc::new(ScriptedModel::new(vec![
@@ -227,6 +250,159 @@ async fn agent_executes_tool_calls_and_continues_model_loop() {
     let second_request = second_request_history.last().unwrap();
     assert!(format!("{second_request:?}").contains("ToolReturn"));
     assert!(format!("{second_request:?}").contains("Paris"));
+}
+
+#[tokio::test]
+async fn agent_executes_distinct_tool_calls_in_parallel_by_default_and_preserves_order() {
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse {
+            parts: vec![
+                ModelResponsePart::ToolCall(ToolCallPart {
+                    id: "call_alpha".to_string(),
+                    name: "alpha".to_string(),
+                    arguments: serde_json::json!({}).into(),
+                }),
+                ModelResponsePart::ToolCall(ToolCallPart {
+                    id: "call_beta".to_string(),
+                    name: "beta".to_string(),
+                    arguments: serde_json::json!({}).into(),
+                }),
+            ],
+            ..ModelResponse::text("")
+        },
+        ModelResponse::text("done"),
+    ]));
+    let current = Arc::new(AtomicUsize::new(0));
+    let max_seen = Arc::new(AtomicUsize::new(0));
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+    let alpha = {
+        let current = Arc::clone(&current);
+        let max_seen = Arc::clone(&max_seen);
+        let barrier = Arc::clone(&barrier);
+        FunctionTool::new(
+            "alpha",
+            Some("Alpha".to_string()),
+            serde_json::json!({"type": "object"}),
+            move |_ctx: ToolContext, _args| {
+                let current = Arc::clone(&current);
+                let max_seen = Arc::clone(&max_seen);
+                let barrier = Arc::clone(&barrier);
+                async move {
+                    record_tool_start(&current, &max_seen);
+                    barrier.wait().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                    record_tool_finish(&current);
+                    Ok(ToolResult::new(serde_json::json!({"tool": "alpha"})))
+                }
+            },
+        )
+    };
+    let beta = {
+        let current = Arc::clone(&current);
+        let max_seen = Arc::clone(&max_seen);
+        let barrier = Arc::clone(&barrier);
+        FunctionTool::new(
+            "beta",
+            Some("Beta".to_string()),
+            serde_json::json!({"type": "object"}),
+            move |_ctx: ToolContext, _args| {
+                let current = Arc::clone(&current);
+                let max_seen = Arc::clone(&max_seen);
+                let barrier = Arc::clone(&barrier);
+                async move {
+                    record_tool_start(&current, &max_seen);
+                    barrier.wait().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    record_tool_finish(&current);
+                    Ok(ToolResult::new(serde_json::json!({"tool": "beta"})))
+                }
+            },
+        )
+    };
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        Agent::new(model.clone())
+            .with_tools(
+                ToolRegistry::new()
+                    .with_tool(Arc::new(alpha))
+                    .with_tool(Arc::new(beta)),
+            )
+            .run("run tools"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(max_seen.load(Ordering::SeqCst), 2);
+    let return_names = {
+        let captured = model.captured.lock().unwrap();
+        request_tool_return_names(&captured[1])
+    };
+    assert_eq!(return_names, vec!["alpha".to_string(), "beta".to_string()]);
+}
+
+#[tokio::test]
+async fn agent_respects_sequential_tool_execution_policy() {
+    let model = Arc::new(ScriptedModel::new(vec![
+        ModelResponse {
+            parts: vec![
+                ModelResponsePart::ToolCall(ToolCallPart {
+                    id: "call_alpha".to_string(),
+                    name: "alpha".to_string(),
+                    arguments: serde_json::json!({}).into(),
+                }),
+                ModelResponsePart::ToolCall(ToolCallPart {
+                    id: "call_beta".to_string(),
+                    name: "beta".to_string(),
+                    arguments: serde_json::json!({}).into(),
+                }),
+            ],
+            ..ModelResponse::text("")
+        },
+        ModelResponse::text("done"),
+    ]));
+    let current = Arc::new(AtomicUsize::new(0));
+    let max_seen = Arc::new(AtomicUsize::new(0));
+
+    let tool = |name: &'static str| {
+        let current = Arc::clone(&current);
+        let max_seen = Arc::clone(&max_seen);
+        FunctionTool::new(
+            name,
+            Some(format!("{name} tool")),
+            serde_json::json!({"type": "object"}),
+            move |_ctx: ToolContext, _args| {
+                let current = Arc::clone(&current);
+                let max_seen = Arc::clone(&max_seen);
+                async move {
+                    record_tool_start(&current, &max_seen);
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    record_tool_finish(&current);
+                    Ok(ToolResult::new(serde_json::json!({"tool": name})))
+                }
+            },
+        )
+    };
+
+    let result = Agent::new(model)
+        .with_tools(
+            ToolRegistry::new()
+                .with_tool(Arc::new(tool("alpha")))
+                .with_tool(Arc::new(tool("beta"))),
+        )
+        .with_policy(AgentRuntimePolicy {
+            tool_execution: AgentToolExecutionMode::Sequential,
+            ..AgentRuntimePolicy::default()
+        })
+        .run("run tools")
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(max_seen.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

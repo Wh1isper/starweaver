@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use starweaver_tools::{DynToolset, StaticToolset, ToolInstruction};
 
-use crate::bundles::helpers::static_tool;
+use crate::bundles::helpers::{static_sequential_tool, static_tool};
 
 use super::{
     copy_paths, delete_paths, edit_text, glob_files, grep_files, list_files, mkdir_paths,
@@ -245,15 +245,15 @@ Create a stable provider-scoped resource reference for a path without reading th
             .with_tools([
                 static_tool("view", "Read a provider-scoped file. Text reads support pagination and truncation metadata; image, video, and audio files are loaded through the active environment and either attached for native model media support or analyzed by the configured fallback client.", read_text),
                 static_tool("ls", "List provider-scoped file entries.", list_files),
-                static_tool("write", "Write a provider-scoped UTF-8 text file.", write_text),
-                static_tool("edit", "Perform exact string replacement in files.", edit_text),
-                static_tool("multi_edit", "Perform multiple exact replacements in one file.", multi_edit_text),
+                static_sequential_tool("write", "Write a provider-scoped UTF-8 text file.", write_text),
+                static_sequential_tool("edit", "Perform exact string replacement in files.", edit_text),
+                static_sequential_tool("multi_edit", "Perform multiple exact replacements in one file.", multi_edit_text),
                 static_tool("glob", "Find provider-scoped paths with ripgrep-style glob semantics.", glob_files),
                 static_tool("grep", "Search provider-scoped text files with ripgrep regex semantics.", grep_files),
-                static_tool("mkdir", "Create directories through a host/provider operation envelope.", mkdir_paths),
-                static_tool("delete", "Delete files or directories through a host/provider operation envelope.", delete_paths),
-                static_tool("move", "Move files or directories through a host/provider operation envelope.", move_paths),
-                static_tool("copy", "Copy files through a host/provider operation envelope.", copy_paths),
+                static_sequential_tool("mkdir", "Create directories through a host/provider operation envelope.", mkdir_paths),
+                static_sequential_tool("delete", "Delete files or directories through a host/provider operation envelope.", delete_paths),
+                static_sequential_tool("move", "Move files or directories through a host/provider operation envelope.", move_paths),
+                static_sequential_tool("copy", "Copy files through a host/provider operation envelope.", copy_paths),
                 static_tool("resource_ref", "Create a stable provider-scoped resource reference for a path.", resource_ref),
             ]),
     )

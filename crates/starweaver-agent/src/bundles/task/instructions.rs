@@ -9,7 +9,7 @@ pub(super) fn task_manager_instructions() -> ToolInstruction {
         r#"<task-manager-guidelines>
 
 <overview>
-Task management tools track multi-step work with dependencies. Use them for complex projects, breaking down work, and tracking progress.
+Task management tools track meaningful multi-step work, dependencies, and progress across turns. They are optional: use them when they make the work easier to coordinate or resume, not as a ritual for every request.
 </overview>
 
 <tools>
@@ -19,28 +19,46 @@ Task management tools track multi-step work with dependencies. Use them for comp
 - `task_update`: Update task status, content, or dependencies.
 </tools>
 
+<when-to-use-tasks>
+Use task tools when:
+- The request has multiple meaningful steps, files, modules, phases, or validation gates.
+- Work can be split across dependencies or parallel tracks.
+- Progress needs to survive context changes, long runs, interruptions, or delegated subagent work.
+
+Do not create tasks for a single direct action, quick lookup, tiny edit, or answer that can be completed immediately. If there is only one real task, it is usually better to do it directly without `task_create`.
+</when-to-use-tasks>
+
+<task-granularity>
+When you do create tasks:
+- Write task content in the user's language.
+- Make each task specific enough to execute and verify.
+- Prefer concrete outcomes over process labels.
+- Avoid vague umbrella tasks such as "finish the request", "handle the project", or "do the work".
+- If a broad task is necessary, immediately decompose it into concrete tasks before starting.
+- Do not split into busywork; each task should represent meaningful progress.
+</task-granularity>
+
 <workflow>
 Status: pending -> in_progress -> completed.
-- Set in_progress when starting work.
-- Set completed immediately after finishing.
+- Set in_progress only when actively working on that task.
+- Set completed immediately after finishing and verifying the task.
 - Completed tasks automatically unblock dependents.
+- Do not update status for every tiny internal action; use task updates for meaningful state changes.
 </workflow>
 
 <dependencies>
 - add_blocked_by: tasks that must complete before this one.
 - add_blocks: tasks this one will block.
 - Set up dependencies early when planning.
+- Add dependencies only for true blockers, not every sequential preference.
 </dependencies>
 
-<delegate-with-subagents>
-Delegate calls are blocking -- the agent waits until the subagent finishes. Multiple delegate calls in the same response run concurrently.
-
-1. Create tasks and identify which can run in parallel.
-2. Call multiple delegates in a single response to run them concurrently.
-3. When subagents return, update task status accordingly.
-
-Sequential delegate calls across turns run serially.
-</delegate-with-subagents>
+<delegation-coordination>
+Task planning can help identify independent work for subagents.
+- Create tasks for parallel tracks before delegating when it improves coordination.
+- Follow the delegate tool's own execution model; task instructions do not define whether delegate is blocking or asynchronous.
+- When subagent results arrive, update the relevant task with outcome, changed files, tests, and risks.
+</delegation-coordination>
 
 </task-manager-guidelines>"#,
     )

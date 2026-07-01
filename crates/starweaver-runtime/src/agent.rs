@@ -29,7 +29,10 @@ mod runtime_helpers;
 mod types;
 
 pub use overrides::AgentOverride;
-pub use types::{AgentEndStrategy, AgentError, AgentInput, AgentResult, AgentRuntimePolicy};
+pub use types::{
+    AgentEndStrategy, AgentError, AgentInput, AgentResult, AgentRuntimePolicy,
+    AgentToolExecutionMode,
+};
 
 /// Minimal agent builder/runtime.
 #[derive(Clone)]

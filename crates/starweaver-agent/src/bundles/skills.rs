@@ -937,7 +937,31 @@ pub fn skill_tools(packages: impl IntoIterator<Item = SkillPackage>) -> DynTools
     let content = if lines.is_empty() {
         "No fileops-loaded skills are currently available.".to_string()
     } else {
-        format!("Available fileops-loaded skills:\n{}", lines.join("\n"))
+        format!(
+            "<skill-routing-policy>\n\
+Skill use is mandatory when applicable.\n\
+At the start of every new user task, compare the request against <available-skills>.\n\
+If one or more skills match, you MUST read the matching skill's SKILL.md before planning or executing the task.\n\
+Prefer reading a possibly relevant skill over guessing from memory or improvising.\n\
+After reading a skill, follow its workflow unless it conflicts with higher-priority instructions or the user's explicit request.\n\
+If multiple skills match, chain them deliberately: read the most specific skill first, then read supporting skills before their workflow steps are needed.\n\
+For multi-phase tasks, re-check <available-skills> at phase boundaries and activate additional skills when the next phase matches them.\n\
+If you intentionally skip an apparently relevant skill, briefly state why.\n\
+</skill-routing-policy>\n\n\
+<available-skills>\n\
+Available fileops-loaded skills:\n\
+{}\n\
+</available-skills>\n\n\
+<skill-activation-procedure>\n\
+1. Identify matching skills from the descriptions in <available-skills>.\n\
+2. Read each matching skill by opening the SKILL.md file at the shown path.\n\
+3. If the task has multiple phases or adjacent domains, identify and read additional skills for those phases before executing them.\n\
+4. Read any additional reference files, scripts, or examples named by the activated skills.\n\
+5. Use available file, shell, web, or other tools to execute the activated skills' workflows.\n\
+6. Treat <available-skills> as an index only; the authoritative instructions live in SKILL.md.\n\
+</skill-activation-procedure>",
+            lines.join("\n")
+        )
     };
     Arc::new(
         StaticToolset::new("skills")
