@@ -10,17 +10,16 @@ use std::{
 use starweaver_core::Metadata;
 
 use crate::{
-    copy_local_dir, create_local_tmp_dir, display_local_path, file_tree_directory_depth_increment,
-    file_tree_directory_is_visible, list_ignore_match, local_grep_file_match_limit,
-    local_search_walk_builder, local_shell_metadata, map_io_error, normalize_local_config_path,
-    normalize_match_path, normalize_path, normalize_tmp_namespace, path_match_candidates,
-    prepare_local_destination, push_unique_candidate, push_unique_path,
+    DEFAULT_FILE_TREE_MAX_DEPTH, DynProcessShellProvider, EnvironmentError, EnvironmentPolicy,
+    EnvironmentProvider, EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions,
+    FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FilePolicy, FileStat,
+    FileTreeBlock, LocalGrepSink, PathGlob, ShellCommand, ShellOutput, ShellPolicy,
+    ShellReviewEnvironmentContext, copy_local_dir, create_local_tmp_dir, display_local_path,
+    file_tree_directory_depth_increment, file_tree_directory_is_visible, list_ignore_match,
+    local_grep_file_match_limit, local_search_walk_builder, local_shell_metadata, map_io_error,
+    normalize_local_config_path, normalize_match_path, normalize_path, normalize_tmp_namespace,
+    path_match_candidates, prepare_local_destination, push_unique_candidate, push_unique_path,
     render_environment_context_xml, render_local_file_tree_listing, run_local_shell_command,
-    DynProcessShellProvider, EnvironmentError, EnvironmentPolicy, EnvironmentProvider,
-    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
-    FileGrepOptions, FileListOptions, FileListResult, FilePolicy, FileStat, FileTreeBlock,
-    LocalGrepSink, PathGlob, ShellCommand, ShellOutput, ShellPolicy, ShellReviewEnvironmentContext,
-    DEFAULT_FILE_TREE_MAX_DEPTH,
 };
 use async_trait::async_trait;
 use grep_regex::RegexMatcher;

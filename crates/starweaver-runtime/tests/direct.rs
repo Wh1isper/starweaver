@@ -7,7 +7,7 @@ use starweaver_model::{
     ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponseStreamEvent,
     PartDelta, PartEnd, PartStart, TestModel, ToolCallPart,
 };
-use starweaver_runtime::{model_request, model_request_stream, tool_call, DirectModelRequest};
+use starweaver_runtime::{DirectModelRequest, model_request, model_request_stream, tool_call};
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 
 fn user_message(text: &str) -> ModelMessage {

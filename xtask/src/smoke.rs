@@ -1,6 +1,6 @@
 use std::{env, fs, process::Command};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     common::{read_json, run_capture, run_command, write_json},

@@ -1,13 +1,13 @@
 //! Media splitting filter.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_context::AgentContext;
 use starweaver_model::{ContentPart, ModelMessage, ModelRequestPart};
 use starweaver_runtime::AgentRunState;
 
 use crate::{
     filters::message::request_metadata_mut,
-    media_compression::{split_image_data, ImageSegment},
+    media_compression::{ImageSegment, split_image_data},
 };
 
 pub(in crate::filters) fn media_split_filter(

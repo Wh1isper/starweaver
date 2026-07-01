@@ -26,8 +26,8 @@ mod sqlite;
 mod stream_archive;
 
 pub use migrations::{
-    migrate_sqlite_database, sqlite_migration_status, SqliteAppliedMigration,
-    SqliteMigrationStatus, SqlitePendingMigration,
+    SqliteAppliedMigration, SqliteMigrationStatus, SqlitePendingMigration, migrate_sqlite_database,
+    sqlite_migration_status,
 };
 pub use replay_log::SqliteReplayEventLog;
 pub use session_store::SqliteSessionStore;
@@ -35,7 +35,7 @@ pub use stream_archive::SqliteStreamArchive;
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::{params, Connection};
+    use rusqlite::{Connection, params};
     use starweaver_core::{ConversationId, SessionId};
     use starweaver_session::{RunRecord, SessionRecord, SessionStore};
     use starweaver_stream::{ReplayEventKind, ReplayEventLog, ReplayScope};
@@ -352,23 +352,29 @@ mod agent_runtime_tests {
         assert_eq!(session.head_success_run_id.as_ref(), Some(&run_id));
         assert_eq!(run.status, RunStatus::Completed);
         assert_eq!(run.input.len(), 1);
-        assert!(!store
-            .load_checkpoints(&session_id, &run_id)
-            .await
-            .expect("load checkpoints")
-            .is_empty());
-        assert!(!archive
-            .replay_raw_after(&session_id, &run_id, None)
-            .await
-            .expect("replay raw")
-            .is_empty());
+        assert!(
+            !store
+                .load_checkpoints(&session_id, &run_id)
+                .await
+                .expect("load checkpoints")
+                .is_empty()
+        );
+        assert!(
+            !archive
+                .replay_raw_after(&session_id, &run_id, None)
+                .await
+                .expect("replay raw")
+                .is_empty()
+        );
         let replay_events = replay
             .replay_after(&ReplayScope::run(run_id.as_str()), None, None)
             .await
             .expect("replay events");
-        assert!(replay_events
-            .iter()
-            .any(|event| matches!(event.event, ReplayEventKind::Terminal { .. })));
+        assert!(
+            replay_events
+                .iter()
+                .any(|event| matches!(event.event, ReplayEventKind::Terminal { .. }))
+        );
         let snapshot = runtime
             .resume_snapshot(&session_id, &run_id)
             .await

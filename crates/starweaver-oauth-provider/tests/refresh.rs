@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use async_trait::async_trait;
 use starweaver_oauth::{OAuthAccount, OAuthError, OAuthResult, OAuthTokenSource, TokenSnapshot};
 use starweaver_oauth_provider::{
-    oauth_provider_name_from_model, oauth_provider_names_from_models, OAuthRefreshSupervisor,
+    OAuthRefreshSupervisor, oauth_provider_name_from_model, oauth_provider_names_from_models,
 };
 use tokio::sync::Mutex;
 

@@ -2,7 +2,7 @@ use pulldown_cmark::{CodeBlockKind, Event as MarkdownEvent, Options, Parser, Tag
 use unicode_width::UnicodeWidthChar;
 
 use super::render::{
-    truncate_line_center, visible_width, wrap_text_width, SegmentStyle, StyledLine,
+    SegmentStyle, StyledLine, truncate_line_center, visible_width, wrap_text_width,
 };
 
 pub(super) const ASSISTANT_CONTENT_PREFIX: &str = "\u{200b}";
@@ -358,17 +358,17 @@ fn render_file_content_lines(line: &str, width: usize) -> Option<Vec<StyledLine>
         ));
     }
     if let Some(rest) = line.strip_prefix("    ") {
-        if let Some((line_number, content)) = rest.split_once(" │ ") {
-            if line_number.trim().chars().all(|ch| ch.is_ascii_digit()) {
-                let prefix = format!("    {line_number} │ ");
-                return Some(render_prefixed_content_lines(
-                    &prefix,
-                    SegmentStyle::dim(),
-                    content,
-                    SegmentStyle::code_block(),
-                    width,
-                ));
-            }
+        if let Some((line_number, content)) = rest.split_once(" │ ")
+            && line_number.trim().chars().all(|ch| ch.is_ascii_digit())
+        {
+            let prefix = format!("    {line_number} │ ");
+            return Some(render_prefixed_content_lines(
+                &prefix,
+                SegmentStyle::dim(),
+                content,
+                SegmentStyle::code_block(),
+                width,
+            ));
         }
         if let Some(content) = rest.strip_prefix("│ ") {
             return Some(render_prefixed_content_lines(
@@ -707,10 +707,10 @@ impl MarkdownRenderer {
             }
             TagEnd::Link => {
                 self.style_stack.pop();
-                if let Some(destination) = self.link_destination.take() {
-                    if !destination.is_empty() {
-                        self.push_text(&format!(" <{destination}>"), SegmentStyle::dim());
-                    }
+                if let Some(destination) = self.link_destination.take()
+                    && !destination.is_empty()
+                {
+                    self.push_text(&format!(" <{destination}>"), SegmentStyle::dim());
                 }
             }
             TagEnd::TableHead | TagEnd::TableRow => self.flush_current(),

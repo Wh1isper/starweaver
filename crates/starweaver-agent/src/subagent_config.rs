@@ -308,10 +308,10 @@ pub fn load_subagents_from_dir(
     for entry in fs::read_dir(dir_path)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|extension| extension == "md") {
-            if let Ok(spec) = load_subagent_from_file(&path) {
-                specs.push(spec);
-            }
+        if path.extension().is_some_and(|extension| extension == "md")
+            && let Ok(spec) = load_subagent_from_file(&path)
+        {
+            specs.push(spec);
         }
     }
     specs.sort_by(|left, right| left.name.cmp(&right.name));

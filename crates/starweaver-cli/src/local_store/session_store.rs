@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use starweaver_context::ResumableState;
 use starweaver_core::{CheckpointId, RunId, SessionId};
 use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
@@ -13,14 +13,14 @@ use starweaver_session::{
 };
 
 use super::{
+    LocalStore,
     db::{
         insert_approval_records_tx, insert_deferred_tool_records_tx, insert_raw_stream_records_tx,
         insert_stream_cursor_tx, load_session_tx, next_sequence_tx, upsert_run_tx,
         upsert_session_tx,
     },
-    LocalStore,
 };
-use crate::{config::CliConfig, CliError};
+use crate::{CliError, config::CliConfig};
 
 /// Shared session store adapter backed by the CLI local `SQLite` store.
 #[derive(Clone, Debug)]

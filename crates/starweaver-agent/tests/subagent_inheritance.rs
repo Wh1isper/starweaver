@@ -11,7 +11,7 @@ use starweaver_agent::{
 };
 use starweaver_core::Metadata;
 use starweaver_model::{
-    tool_call_response, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
+    ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, tool_call_response,
 };
 
 type ReadyToolResult = std::future::Ready<Result<ToolResult, ToolError>>;
@@ -112,11 +112,13 @@ async fn subagent_delegation_inherits_parent_tools_into_child_run() {
     let result = agent.run_with_context("start", &mut context).await.unwrap();
 
     assert_eq!(result.output, "parent done");
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "subagent_completed"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "subagent_completed")
+    );
 }
 
 #[tokio::test]
@@ -149,11 +151,13 @@ async fn subagent_delegation_inherits_parent_capability_bundles_when_declared() 
     let result = agent.run_with_context("start", &mut context).await.unwrap();
 
     assert_eq!(result.output, "parent done");
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "subagent_completed"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "subagent_completed")
+    );
 }
 
 #[tokio::test]

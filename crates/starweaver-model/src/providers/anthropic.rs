@@ -11,7 +11,7 @@ mod tests;
 use serde_json::Value;
 
 use crate::{
-    adapter::ToolDefinition, message::ModelMessage, ModelError, ModelResponse, ModelSettings,
+    ModelError, ModelResponse, ModelSettings, adapter::ToolDefinition, message::ModelMessage,
 };
 
 /// Anthropic Messages wire mapper.

@@ -1,14 +1,14 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_usage::Usage;
 
 use crate::{
-    message::Metadata, ModelError, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderInfo, ProviderPartInfo,
-    ProviderReplaySettings, StreamDelta, ThinkingSettings, CONTEXT_ORIGIN_METADATA,
-    CONTEXT_ORIGIN_RUNTIME_CONTEXT,
+    CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT, ModelError, ModelMessage,
+    ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ModelResponseStreamEvent,
+    ModelSettings, ProviderInfo, ProviderPartInfo, ProviderReplaySettings, StreamDelta,
+    ThinkingSettings, message::Metadata,
 };
 
 fn final_response(events: &[ModelResponseStreamEvent]) -> &ModelResponse {
@@ -453,26 +453,34 @@ fn responses_full_history_keeps_durable_input_prefix_with_runtime_context_blocks
     let second_input = second_request["input"].as_array().unwrap();
     assert_eq!(first_input.len(), 2);
     assert_eq!(second_input.len(), 4);
-    assert!(first_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(first_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("first"));
+    assert!(
+        first_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        first_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
     assert_eq!(first_input[1]["content"][0]["text"], "first user");
     assert_eq!(first_input[1], second_input[0]);
     assert_eq!(second_input[1]["role"], "assistant");
     assert_eq!(second_input[1]["content"][0]["text"], "first assistant");
-    assert!(second_input[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(second_input[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("second"));
+    assert!(
+        second_input[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        second_input[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("second")
+    );
     assert_eq!(second_input[3]["content"][0]["text"], "second user");
 }
 
@@ -537,10 +545,12 @@ fn responses_previous_response_auto_keeps_current_runtime_context_input_after_tr
     let input = request["input"].as_array().unwrap();
     assert_eq!(input.len(), 2);
     assert_eq!(input[0]["role"], "user");
-    assert!(input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
+    assert!(
+        input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
     assert_eq!(input[1]["role"], "user");
     assert_eq!(input[1]["content"][0]["text"], "new");
 }

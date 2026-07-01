@@ -18,14 +18,12 @@ use starweaver_model::{ModelAdapter, ModelProfile, ToolDefinition};
 use starweaver_runtime::Agent as RuntimeAgent;
 
 pub use bundles::{
-    attach_environment, attach_process_shell, attach_shell_review, attach_shell_review_handle,
-    context_tools, core_toolsets, dynamic_tool_proxy, environment_toolsets, filesystem_tools,
-    host_io_tools, namespaced_toolset, parse_skill_markdown, process_shell_toolsets, shell_tools,
-    skill_tools, task_tools, EnvironmentContextCapability, EnvironmentHandle,
+    DEFAULT_SHELL_REVIEW_PROMPT, EnvironmentContextCapability, EnvironmentHandle,
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
     MediaUnderstandingRequest, MediaUnderstandingResponse, ProcessShellHandle,
-    RuntimeContextCapability, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
+    RuntimeContextCapability, SKILL_ACTIVATION_EVENT_KIND, SKILL_RELOAD_EVENT_KIND,
+    SKILL_SCAN_EVENT_KIND, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
     SearchResultItem, ShellReviewAction, ShellReviewConfig, ShellReviewContextSnapshot,
     ShellReviewDecision, ShellReviewHandle, ShellReviewPreviousDecision, ShellReviewRecord,
     ShellReviewRequest, ShellReviewRiskLevel, SkillDiscoveryCapability, SkillError, SkillPackage,
@@ -33,30 +31,33 @@ pub use bundles::{
     SkillReloadDecision, SkillReloadReason, SkillReloadReport, SkillReloadSchedule,
     SkillReloadScheduleState, SkillScanDiagnostic, SkillScanDiagnosticKind, SkillScanReport,
     SkillScheduledReloadResult, SkillSourceKind, SkillSourceScope, ToolProxyNamePrefixError,
-    ToolProxyToolset, DEFAULT_SHELL_REVIEW_PROMPT, SKILL_ACTIVATION_EVENT_KIND,
-    SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND,
+    ToolProxyToolset, attach_environment, attach_process_shell, attach_shell_review,
+    attach_shell_review_handle, context_tools, core_toolsets, dynamic_tool_proxy,
+    environment_toolsets, filesystem_tools, host_io_tools, namespaced_toolset,
+    parse_skill_markdown, process_shell_toolsets, shell_tools, skill_tools, task_tools,
 };
 pub use filters::{
-    default_filter_bundle, default_filter_capabilities, default_filter_capabilities_with_config,
-    CacheFriendlyCompactCapability, MediaUploadRequest, MediaUploader, NamedFilterCapability,
-    DEFAULT_FILTER_ORDER,
+    CacheFriendlyCompactCapability, DEFAULT_FILTER_ORDER, MediaUploadRequest, MediaUploader,
+    NamedFilterCapability, default_filter_bundle, default_filter_capabilities,
+    default_filter_capabilities_with_config,
 };
 pub use mcp_live::{
-    live_mcp_toolset, DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot,
-    LiveMcpToolset,
+    DynLiveMcpClient, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, LiveMcpToolset,
+    live_mcp_toolset,
 };
 pub use mcp_rmcp::RmcpLiveMcpClient;
 pub use presets::{
-    text_output_preset, AgentSpec, AgentSpecError, AgentSpecHostPolicies, AgentSpecRegistry,
+    AgentSpec, AgentSpecError, AgentSpecHostPolicies, AgentSpecRegistry,
     AgentSpecToolsetWrapperFactory, ApprovalPolicyPreset, DurabilityPolicyPreset,
     EnvironmentPolicyPreset, HostAdapterSpec, HostPolicySpec, McpServerSpec, ModelPreset,
     ObservabilityPolicyPreset, OutputSpec, RetryPolicyPreset, SdkPreset, SkillBundleSpec,
     StreamingPolicyPreset, TemplateStringSpec, ToolsetWrapperSpec, WorkspacePolicySpec,
+    text_output_preset,
 };
-pub use runtime::{agent_runtime, AgentDurabilityError, AgentRuntime, AgentRuntimeBuilder};
+pub use runtime::{AgentDurabilityError, AgentRuntime, AgentRuntimeBuilder, agent_runtime};
 pub use session::{
     AgentHitlError, AgentHitlResults, AgentHitlUserInteraction, AgentRunOptions, AgentSession,
-    ResolvedHitlToolReturns, HITL_DECISION_DIAGNOSTIC_EVENT_KIND,
+    HITL_DECISION_DIAGNOSTIC_EVENT_KIND, ResolvedHitlToolReturns,
 };
 pub use starweaver_context::{
     AgentContext, AgentContextHandle, ModelCapability, ModelConfig, PerThousandRatio,
@@ -67,42 +68,43 @@ pub use starweaver_core::{
     SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext,
 };
 pub use starweaver_environment::{
-    environment_provider_kind, resource_ref_kind, DynEnvironmentProviderFactory,
-    DynProcessShellProvider, DynResourceRestoreFactory, EnvironmentProviderFactory,
-    EnvironmentProviderFactoryRegistry, ProcessShellProvider, ResourceRestoreFactory,
+    DynEnvironmentProviderFactory, DynProcessShellProvider, DynResourceRestoreFactory,
+    ENVIRONMENT_PROVIDER_KIND_KEY, EnvironmentProviderFactory, EnvironmentProviderFactoryRegistry,
+    ProcessShellProvider, RESOURCE_REF_KIND_KEY, ResourceRestoreFactory,
     ResourceRestoreFactoryRegistry, ShellProcessSnapshot, ShellProcessStatus,
     TrustedLocalEnvironmentProviderFactory, VirtualEnvironmentProviderFactory,
-    ENVIRONMENT_PROVIDER_KIND_KEY, RESOURCE_REF_KIND_KEY,
-};
-pub use starweaver_model::{
-    anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
-    list_model_config_presets, list_model_settings_presets, model_runtime_preset,
-    openai_chat_http_config, openai_responses_http_config, ModelConfigPreset,
-    ModelConfigPresetData, ModelPresetError, ModelRuntimePreset, ModelSettingsPreset,
+    environment_provider_kind, resource_ref_kind,
 };
 pub use starweaver_model::{
     ConcurrencyLimitedModel, ContentPart, DynModelAdapter, DynModelExecutionHook, FallbackModel,
     FunctionModel, FunctionModelInfo, HookedModel, ModelExecutionHook, ModelExecutionMetadata,
     ModelRequestParameters, ModelSettings, ProfileOverrideModel, ProtocolFamily, TestModel,
 };
+pub use starweaver_model::{
+    ModelConfigPreset, ModelConfigPresetData, ModelPresetError, ModelRuntimePreset,
+    ModelSettingsPreset, anthropic_http_config, gemini_http_config, get_model_config,
+    get_model_settings, list_model_config_presets, list_model_settings_presets,
+    model_runtime_preset, openai_chat_http_config, openai_responses_http_config,
+};
 pub use starweaver_runtime::{
-    model_request, model_request_stream, resolve_capability_order, tool_call, AdapterTraceRecorder,
-    AgentCapability, AgentCheckpoint, AgentEndStrategy, AgentError, AgentExecutionDecision,
-    AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentGraphStep, AgentGraphTrace,
-    AgentInput, AgentIterResult, AgentIterationKind, AgentIterationStep, AgentIterationTrace,
-    AgentNode, AgentOverride, AgentResult, AgentResumeCursor, AgentResumeEvidence, AgentRunState,
-    AgentRuntimePolicy, AgentSidebandEvent, AgentSidebandEventCategory, AgentStreamEvent,
-    AgentStreamRecord, AgentStreamResult, AgentStreamSink, AgentStreamSource,
-    AgentStreamSourceKind, CapabilityBundle, CapabilityError, CapabilityId, CapabilityOrderError,
-    CapabilityOrdering, CapabilityResult, CapabilitySpec, DirectModelRequest, DynamicInstruction,
-    DynamicInstructionError, DynamicInstructionResult, FunctionDynamicInstruction,
-    FunctionOutputFunction, FunctionOutputValidator, GoalCapability, GoalCompleteReason,
-    GoalRunOptions, GraphError, OutputFunction, OutputFunctionContext, OutputFunctionDefinition,
-    OutputMedia, OutputPolicy, OutputSchema, OutputValidationError, OutputValidationResult,
-    OutputValidator, OutputValue, RecordedSpan, RetryEventKind, RunStatus, SchemaOutputFunction,
+    AdapterTraceRecorder, AgentCapability, AgentCheckpoint, AgentEndStrategy, AgentError,
+    AgentExecutionDecision, AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentGraphStep,
+    AgentGraphTrace, AgentInput, AgentIterResult, AgentIterationKind, AgentIterationStep,
+    AgentIterationTrace, AgentNode, AgentOverride, AgentResult, AgentResumeCursor,
+    AgentResumeEvidence, AgentRunState, AgentRuntimePolicy, AgentSidebandEvent,
+    AgentSidebandEventCategory, AgentStreamEvent, AgentStreamRecord, AgentStreamResult,
+    AgentStreamSink, AgentStreamSource, AgentStreamSourceKind, CapabilityBundle, CapabilityError,
+    CapabilityId, CapabilityOrderError, CapabilityOrdering, CapabilityResult, CapabilitySpec,
+    DirectModelRequest, DynamicInstruction, DynamicInstructionError, DynamicInstructionResult,
+    FunctionDynamicInstruction, FunctionOutputFunction, FunctionOutputValidator,
+    GOAL_CAPABILITY_ID, GOAL_COMPLETE_EVENT_KIND, GOAL_COMPLETE_MARKER, GOAL_ITERATION_EVENT_KIND,
+    GoalCapability, GoalCompleteReason, GoalRunOptions, GraphError, OutputFunction,
+    OutputFunctionContext, OutputFunctionDefinition, OutputMedia, OutputPolicy, OutputSchema,
+    OutputValidationError, OutputValidationResult, OutputValidator, OutputValue,
+    RUNTIME_CONTEXT_CAPABILITY_ID, RecordedSpan, RetryEventKind, RunStatus, SchemaOutputFunction,
     SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus, StaticCapabilityBundle, TraceLevel,
-    TraceRecorder, TraceRecorderHandle, GOAL_CAPABILITY_ID, GOAL_COMPLETE_EVENT_KIND,
-    GOAL_COMPLETE_MARKER, GOAL_ITERATION_EVENT_KIND, RUNTIME_CONTEXT_CAPABILITY_ID,
+    TraceRecorder, TraceRecorderHandle, model_request, model_request_stream,
+    resolve_capability_order, tool_call,
 };
 pub use starweaver_session::{
     ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, DeferredToolRequest,
@@ -119,32 +121,32 @@ pub use starweaver_stream::{
     StreamArchive, StreamTerminalMarker,
 };
 pub use starweaver_tools::{
-    dynamic_tool_proxy as tool_proxy_toolset, dynamic_tool_search as tool_search_toolset,
-    extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, json_tool,
-    json_tool as string_tool, set_tool_metadata_kind, tool_definition_from_mcp_spec,
-    tool_metadata_hidden_by_tags, tool_metadata_kind, tool_metadata_tags, typed_json_tool,
-    typed_json_tool as typed_tool, ApprovalRequiredToolset, DeferredToolset, DynTool,
-    DynToolExecutionHook, DynToolset, DynamicToolset, EmptyToolArgs, FilteredToolset, FunctionTool,
-    LazyToolset, McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec,
-    McpToolset, McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset,
-    PreparedToolset, RenamedToolset, StaticToolset, Tool, ToolApprovalState, ToolContext,
-    ToolError, ToolExecutionHook, ToolExecutionHooks, ToolExecutionOutcome, ToolInstruction,
-    ToolKind, ToolRegistry, ToolResult, ToolSearchInitializationReport,
-    ToolSearchInvalidationResult, ToolSearchLoadResult, ToolSearchNamespaceReport,
-    ToolSearchNamespaceStatus, ToolSearchRefreshBinding, ToolSearchRefreshDecision,
-    ToolSearchRefreshReason, ToolSearchRefreshResult, ToolSearchRefreshSchedule,
-    ToolSearchRefreshScheduleState, ToolSearchScheduledRefreshResult, ToolSearchToolset,
-    ToolUserInputPreprocessResult, Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy,
-    ToolsetLifecycleReport, ToolsetLifecycleState, ToolsetPreparation, TypedFunctionTool,
-    TOOLSET_CLOSED_EVENT_KIND, TOOLSET_FAILED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND,
-    TOOLSET_REFRESHED_EVENT_KIND, TOOLSET_UNAVAILABLE_EVENT_KIND,
-    TOOL_METADATA_CONTEXT_MANAGEMENT_KEY, TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY,
-    TOOL_METADATA_TAGS_KEY, TOOL_SEARCH_FAILED_EVENT_KIND, TOOL_SEARCH_INVALIDATED_EVENT_KIND,
-    TOOL_SEARCH_NO_MATCH_EVENT_KIND, TOOL_SEARCH_REFRESHED_EVENT_KIND,
+    ApprovalRequiredToolset, DeferredToolset, DynTool, DynToolExecutionHook, DynToolset,
+    DynamicToolset, EmptyToolArgs, FilteredToolset, FunctionTool, LazyToolset, McpPromptSpec,
+    McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec, McpToolset,
+    McpToolsetConfig, McpTransport, NativeMcpServer, PrefixedTool, PrefixedToolset,
+    PreparedToolset, RenamedToolset, StaticToolset, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY,
+    TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY, TOOL_METADATA_TAGS_KEY,
+    TOOL_SEARCH_FAILED_EVENT_KIND, TOOL_SEARCH_INVALIDATED_EVENT_KIND,
+    TOOL_SEARCH_NO_MATCH_EVENT_KIND, TOOL_SEARCH_REFRESHED_EVENT_KIND, TOOLSET_CLOSED_EVENT_KIND,
+    TOOLSET_FAILED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND, TOOLSET_REFRESHED_EVENT_KIND,
+    TOOLSET_UNAVAILABLE_EVENT_KIND, Tool, ToolApprovalState, ToolContext, ToolError,
+    ToolExecutionHook, ToolExecutionHooks, ToolExecutionOutcome, ToolInstruction, ToolKind,
+    ToolRegistry, ToolResult, ToolSearchInitializationReport, ToolSearchInvalidationResult,
+    ToolSearchLoadResult, ToolSearchNamespaceReport, ToolSearchNamespaceStatus,
+    ToolSearchRefreshBinding, ToolSearchRefreshDecision, ToolSearchRefreshReason,
+    ToolSearchRefreshResult, ToolSearchRefreshSchedule, ToolSearchRefreshScheduleState,
+    ToolSearchScheduledRefreshResult, ToolSearchToolset, ToolUserInputPreprocessResult, Toolset,
+    ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetLifecycleReport, ToolsetLifecycleState,
+    ToolsetPreparation, TypedFunctionTool, dynamic_tool_proxy as tool_proxy_toolset,
+    dynamic_tool_search as tool_search_toolset, extend_tool_metadata_hidden_by_tags,
+    extend_tool_metadata_tags, json_tool, json_tool as string_tool, set_tool_metadata_kind,
+    tool_definition_from_mcp_spec, tool_metadata_hidden_by_tags, tool_metadata_kind,
+    tool_metadata_tags, typed_json_tool, typed_json_tool as typed_tool,
 };
 pub use starweaver_usage::{
-    pricing::CostBudget, PricingEstimate, Usage, UsageAgentTotal, UsageLimitError, UsageLimits,
-    UsageSnapshot, UsageSnapshotEntry, UsageTokenKind,
+    PricingEstimate, Usage, UsageAgentTotal, UsageLimitError, UsageLimits, UsageSnapshot,
+    UsageSnapshotEntry, UsageTokenKind, pricing::CostBudget,
 };
 pub use streaming::{
     AgentLiveStreamResult, AgentStreamCompletion, AgentStreamCurrentError, AgentStreamDropPolicy,
@@ -153,15 +155,15 @@ pub use streaming::{
 };
 pub use subagent::{
     AgentApp, BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,
-    DynSubagentExecutionHook, SubagentCapabilityInheritancePolicy, SubagentConfig,
-    SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
-    SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
-    SubagentToolInheritanceError, SubagentToolInheritancePolicy, DELEGATE_BACKEND_TOOL_NAME,
-    SPAWN_DELEGATE_TOOL_NAME,
+    DELEGATE_BACKEND_TOOL_NAME, DynSubagentExecutionHook, SPAWN_DELEGATE_TOOL_NAME,
+    SubagentCapabilityInheritancePolicy, SubagentConfig, SubagentDelegationMode,
+    SubagentExecutionHook, SubagentExecutionMetadata, SubagentExecutionOutcome,
+    SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
+    SubagentToolInheritanceError, SubagentToolInheritancePolicy,
 };
 pub use subagent_config::{
-    load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown,
-    project_subagent_spec, SubagentConfigError, SubagentSpecProjection,
+    SubagentConfigError, SubagentSpecProjection, load_subagent_from_file, load_subagents_from_dir,
+    parse_subagent_markdown, project_subagent_spec,
 };
 
 /// Error returned while rendering a static instruction template.
@@ -704,10 +706,10 @@ impl AgentBuilder {
                     tools.insert(subagents.async_delegate_tool(monitor.clone()));
                 }
             }
-            if subagent_delegation_mode.exposes_spawn_delegate() {
-                if let Some(monitor) = &background_subagents {
-                    tools.insert(subagents.spawn_delegate_tool(monitor.clone()));
-                }
+            if subagent_delegation_mode.exposes_spawn_delegate()
+                && let Some(monitor) = &background_subagents
+            {
+                tools.insert(subagents.spawn_delegate_tool(monitor.clone()));
             }
             tools.insert(subagents.subagent_info_tool());
         }

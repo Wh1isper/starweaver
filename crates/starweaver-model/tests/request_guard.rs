@@ -3,14 +3,13 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 use starweaver_core::{CancellationToken, ConversationId, RunId};
 use starweaver_model::{
-    block_real_model_requests,
+    ModelAdapter, ModelError, ModelHttpClient, ModelRequestContext, ModelRequestParameters,
+    ProtocolModelClient, ReqwestHttpClient, block_real_model_requests,
     profile::{ModelProfile, ProtocolFamily},
     transport::{HttpModelConfig, HttpRequest, HttpResponse},
-    ModelAdapter, ModelError, ModelHttpClient, ModelRequestContext, ModelRequestParameters,
-    ProtocolModelClient, ReqwestHttpClient,
 };
 
 #[derive(Clone, Default)]

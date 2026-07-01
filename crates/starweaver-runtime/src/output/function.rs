@@ -5,7 +5,7 @@ use starweaver_model::ToolDefinition;
 
 use crate::run::AgentRunState;
 
-use super::{validation::parse_output, OutputSchema, OutputValidationResult, OutputValue};
+use super::{OutputSchema, OutputValidationResult, OutputValue, validation::parse_output};
 
 /// Function-style final output call definition.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

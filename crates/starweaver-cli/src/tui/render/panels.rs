@@ -1,7 +1,7 @@
 use super::{
+    HitlPanelState, InteractiveTuiState, SegmentStyle, StyledLine, StyledSegment, TaskPanelItem,
     pad_styled_line_with_style, push_detail_row, take_prefix_width, truncate_line, visible_width,
-    with_codex_border, HitlPanelState, InteractiveTuiState, SegmentStyle, StyledLine,
-    StyledSegment, TaskPanelItem,
+    with_codex_border,
 };
 
 pub(super) fn render_selection_panel(state: &InteractiveTuiState, width: usize) -> Vec<StyledLine> {

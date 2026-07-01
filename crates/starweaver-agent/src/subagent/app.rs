@@ -8,9 +8,9 @@ use starweaver_runtime::{
 use crate::{
     session::AgentSession,
     streaming::{
-        start_session_stream, start_session_stream_with_options, try_start_session_stream,
-        try_start_session_stream_with_options, AgentStreamError, AgentStreamHandle,
-        AgentStreamOptions,
+        AgentStreamError, AgentStreamHandle, AgentStreamOptions, start_session_stream,
+        start_session_stream_with_options, try_start_session_stream,
+        try_start_session_stream_with_options,
     },
 };
 

@@ -1,16 +1,16 @@
 use std::fmt::Write as _;
 
 use clap_complete::Shell;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_session::{ApprovalRecord, ApprovalStatus, DeferredToolRecord};
 use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
-use super::{render_json_lines, PromptRunExecution};
+use super::{PromptRunExecution, render_json_lines};
 use crate::{
+    CliError, CliResult,
     args::OutputMode,
     display_preview::run_output_preview,
     local_store::{RunSummary, SessionSummary, TrimReport},
-    CliError, CliResult,
 };
 
 pub(super) fn render_sessions(
@@ -469,23 +469,22 @@ pub(super) fn render_display_text(messages: &[DisplayMessage]) -> String {
     if last_was_text && !output.ends_with('\n') {
         output.push('\n');
     }
-    if output.is_empty() {
-        if let Some(message) = messages
+    if output.is_empty()
+        && let Some(message) = messages
             .iter()
             .rev()
             .find(|message| message.kind.is_terminal())
-        {
-            let _ = writeln!(
-                output,
-                "status={}",
-                match message.kind {
-                    DisplayMessageKind::RunCompleted => "completed",
-                    DisplayMessageKind::RunFailed => "failed",
-                    DisplayMessageKind::RunCancelled => "cancelled",
-                    _ => "unknown",
-                }
-            );
-        }
+    {
+        let _ = writeln!(
+            output,
+            "status={}",
+            match message.kind {
+                DisplayMessageKind::RunCompleted => "completed",
+                DisplayMessageKind::RunFailed => "failed",
+                DisplayMessageKind::RunCancelled => "cancelled",
+                _ => "unknown",
+            }
+        );
     }
     output
 }

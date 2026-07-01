@@ -24,21 +24,20 @@ use crate::{
 };
 
 use super::{
-    markdown::{render_markdown_lines, render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
+    markdown::{ASSISTANT_CONTENT_PREFIX, render_markdown_lines, render_transcript_lines},
     render::{
-        composer_cursor_column, composer_cursor_position_wrapped, composer_input_width,
-        input_tail_lines, input_viewport_lines, input_viewport_lines_wrapped,
+        SegmentStyle, StyledLine, composer_cursor_column, composer_cursor_position_wrapped,
+        composer_input_width, input_tail_lines, input_viewport_lines, input_viewport_lines_wrapped,
         input_visual_line_count, render_composer_lines, render_footer_lines,
-        render_live_history_lines, render_shortcut_overlay, visible_width, SegmentStyle,
-        StyledLine,
+        render_live_history_lines, render_shortcut_overlay, visible_width,
     },
     state::{
-        display_lines_for_stream_record, FooterMode, InteractiveTuiState, ModelChoice, RunMode,
-        SessionChoice,
+        FooterMode, InteractiveTuiState, ModelChoice, RunMode, SessionChoice,
+        display_lines_for_stream_record,
     },
     terminal::{
-        handle_key_event, handle_mouse_event, should_capture_mouse, visible_body_bounds,
-        InteractiveTuiEvent,
+        InteractiveTuiEvent, handle_key_event, handle_mouse_event, should_capture_mouse,
+        visible_body_bounds,
     },
 };
 
@@ -124,22 +123,32 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.workspace_dir = "/tmp/starweaver".to_string();
     let history = render_live_history_lines(&state, 80);
-    assert!(line_texts(&history)
-        .iter()
-        .any(|line| line.starts_with("╭")));
+    assert!(
+        line_texts(&history)
+            .iter()
+            .any(|line| line.starts_with("╭"))
+    );
     assert!(has_segment(&history, "Starweaver", SegmentStyle::BOLD));
-    assert!(line_texts(&history)
-        .iter()
-        .any(|line| line.contains("model:")));
-    assert!(line_texts(&history)
-        .iter()
-        .any(|line| line.contains("/model")));
-    assert!(line_texts(&history)
-        .iter()
-        .any(|line| line.contains("directory:")));
-    assert!(line_texts(&history)
-        .iter()
-        .any(|line| line.contains("To get started")));
+    assert!(
+        line_texts(&history)
+            .iter()
+            .any(|line| line.contains("model:"))
+    );
+    assert!(
+        line_texts(&history)
+            .iter()
+            .any(|line| line.contains("/model"))
+    );
+    assert!(
+        line_texts(&history)
+            .iter()
+            .any(|line| line.contains("directory:"))
+    );
+    assert!(
+        line_texts(&history)
+            .iter()
+            .any(|line| line.contains("To get started"))
+    );
 
     let composer = render_composer_lines(&state, 80);
     let composer_text = line_texts(&composer).join("\n");
@@ -155,10 +164,11 @@ fn codex_style_opening_renders_header_composer_and_footer() {
     assert!(footer_text.contains("History"));
     assert!(footer_text.contains("Scroll"));
     assert!(has_segment(&footer_lines, " ACT ", SegmentStyle::MODE_BG));
-    assert!(footer_lines.iter().any(|line| line
-        .segments
-        .iter()
-        .any(|segment| segment.style.contains(SegmentStyle::STATUS_BG))));
+    assert!(footer_lines.iter().any(|line| {
+        line.segments
+            .iter()
+            .any(|segment| segment.style.contains(SegmentStyle::STATUS_BG))
+    }));
 }
 
 #[test]
@@ -230,19 +240,23 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
 
     state.input = "/goal".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "[SYS] Usage: /goal <task description>"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "[SYS] Usage: /goal <task description>")
+    );
 
     state.set_custom_commands(BTreeMap::new());
     state.input = "/COMMIT staged files".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
     assert!(state.input.is_empty());
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("Unknown command: /COMMIT staged files")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Unknown command: /COMMIT staged files"))
+    );
 
     let mut custom_commands = BTreeMap::new();
     let command = SlashCommandDefinition {
@@ -259,10 +273,12 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         submit_text(handle_key_event(&mut state, key_code(KeyCode::Enter))),
         Some("/CI staged files".to_string())
     );
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("Expanded /commit custom command (alias /ci)")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Expanded /commit custom command (alias /ci)"))
+    );
     assert_eq!(
         state.take_pending_submission_display_prompt(),
         Some("Write a clear git commit.\n\nUser instruction: staged files".to_string())
@@ -270,10 +286,12 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
 
     state.input = "/help".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("Custom commands")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Custom commands"))
+    );
     assert!(state.body.iter().any(|line| {
         line.contains("/commit [instruction]") && line.contains("Create a commit")
     }));
@@ -304,10 +322,12 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
         Some("migrate tui".to_string())
     );
     assert!(state.goal_active);
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("[Goal] Starting goal mode")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("[Goal] Starting goal mode"))
+    );
     let goal_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(goal_footer.contains("Goal: 0/10"));
     state.context_tokens = Some(10_000);
@@ -380,9 +400,11 @@ fn key_handler_covers_input_modes_history_scroll_and_interrupt() {
     assert_eq!(steering.text, "steer now");
     assert!(state.input.is_empty());
     assert!(state.body.iter().any(|line| line == "Steering: steer now"));
-    assert!(!line_texts(&render_footer_lines(&state, 120))
-        .join("\n")
-        .contains("steer now"));
+    assert!(
+        !line_texts(&render_footer_lines(&state, 120))
+            .join("\n")
+            .contains("steer now")
+    );
 
     state.input = "/paste-image".to_string();
     assert_eq!(
@@ -638,10 +660,12 @@ fn interactive_state_covers_runtime_event_branches() {
         },
     ));
     assert_eq!(state.phase, "thinking");
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with('>')));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with('>'))
+    );
     assert!(!body_has_line(&state, "Thinking"));
 
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -687,10 +711,12 @@ fn interactive_state_covers_runtime_event_branches() {
             call: call.clone(),
         },
     ));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}")
+    );
 
     state.apply_stream_record(&AgentStreamRecord::new(
         7,
@@ -703,10 +729,12 @@ fn interactive_state_covers_runtime_event_branches() {
             ),
         },
     ));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("Tool result: lookup")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Tool result: lookup"))
+    );
 
     state.apply_stream_record(&AgentStreamRecord::new(
         8,
@@ -716,10 +744,12 @@ fn interactive_state_covers_runtime_event_branches() {
                 .with_error(true),
         },
     ));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Tool error: lookup permission denied"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Tool error: lookup permission denied")
+    );
 
     state.apply_stream_record(&AgentStreamRecord::new(
         9,
@@ -739,10 +769,12 @@ fn interactive_state_covers_runtime_event_branches() {
         },
     ));
     assert_eq!(state.status, "WAITING");
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Suspended: approval required"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Suspended: approval required")
+    );
 
     state.apply_stream_record(&AgentStreamRecord::new(
         11,
@@ -1531,14 +1563,18 @@ fn special_tool_rendering_truncates_lines_and_releases_arguments() {
     assert!(body_has_line(&state, "Tool result: edit"));
     assert!(body_has_line(&state, "  Editing file: long.txt"));
     assert!(body_has_line(&state, "    -old"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.starts_with("    +") && line.contains('…')));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| line.starts_with("    +") && line.len() > 280));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.starts_with("    +") && line.contains('…'))
+    );
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| line.starts_with("    +") && line.len() > 280)
+    );
 
     state.apply_stream_record(&AgentStreamRecord::new(
         3,
@@ -1859,10 +1895,12 @@ fn interleaved_thinking_part_does_not_mark_text_seen() {
         },
     ));
 
-    assert!(state
-        .body
-        .iter()
-        .any(|line| body_line_text(line) == "> hidden chain"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| body_line_text(line) == "> hidden chain")
+    );
     assert!(body_has_line(&state, "visible answer"));
 }
 
@@ -1905,15 +1943,19 @@ fn text_delta_after_unfinished_thinking_starts_visible_line() {
         },
     ));
 
-    assert!(state
-        .body
-        .iter()
-        .any(|line| body_line_text(line) == "> hidden chain"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| body_line_text(line) == "> hidden chain")
+    );
     assert!(body_has_line(&state, "visible answer"));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line) == "> hidden chainvisible answer"));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line) == "> hidden chainvisible answer")
+    );
 }
 
 #[test]
@@ -2296,20 +2338,24 @@ fn render_modes_reproject_tool_visibility_and_active_tool_status() {
     ));
     assert!(state.active_tool_label().is_none());
     assert!(body_has_line(&state, "Called lookup {\"query\":\"mode\"}"));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| line.contains("Tool result: lookup")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| line.contains("Tool result: lookup"))
+    );
 
     state.set_render_mode(TuiRenderMode::Normal);
     assert!(body_has_line(
         &state,
         "Tool call: lookup {\"query\":\"mode\"}"
     ));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("Tool result: lookup")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Tool result: lookup"))
+    );
 }
 
 #[test]
@@ -2333,15 +2379,19 @@ fn concise_keeps_context_events_and_summarizes_approval_required_tools() {
         },
     ));
     assert!(body_has_line(&state, "Summary complete"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("Important handoff")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Important handoff"))
+    );
     assert!(body_has_line(&state, "Context compacted"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("Compact detail")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Compact detail"))
+    );
 
     let mut approval_metadata = Metadata::default();
     approval_metadata.insert("control_flow".to_string(), json!("approval_required"));
@@ -2355,14 +2405,18 @@ fn concise_keeps_context_events_and_summarizes_approval_required_tools() {
     ));
     assert!(body_has_line(&state, "Ran shell_exec"));
     assert!(body_has_line(&state, "  needs review"));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with("Tool call: shell_exec")));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with("Tool result: shell_exec")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with("Tool call: shell_exec"))
+    );
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with("Tool result: shell_exec"))
+    );
     assert_eq!(state.status, "WAITING");
 }
 
@@ -2392,14 +2446,18 @@ fn concise_mode_summarizes_deferred_tools_without_full_payload() {
         &state,
         "  {\"message\":\"waiting for browser result\",\"url\":\"https://example.com\"}"
     ));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with("Tool call: fetch")));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with("Tool result: fetch")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with("Tool call: fetch"))
+    );
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with("Tool result: fetch"))
+    );
 }
 
 #[test]
@@ -2473,10 +2531,12 @@ fn concise_mode_streams_thinking_as_blockquote() {
         "> checking the render projection before answering"
     ));
     assert!(!body_has_line(&state, "Thinking"));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with("Reasoned")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with("Reasoned"))
+    );
 }
 
 #[test]
@@ -2495,10 +2555,12 @@ fn concise_mode_updates_thinking_during_streaming() {
             }),
         },
     ));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with('>')));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with('>'))
+    );
     assert!(!body_has_line(&state, "Thinking"));
 
     state.apply_stream_record(&AgentStreamRecord::new(
@@ -2518,10 +2580,12 @@ fn concise_mode_updates_thinking_during_streaming() {
         },
     ));
     assert!(body_has_line(&state, "> checking render"));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with("Reasoned")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with("Reasoned"))
+    );
 }
 
 #[test]
@@ -2557,10 +2621,12 @@ fn concise_mode_keeps_assistant_text_streaming_normally() {
 
     assert!(body_has_line(&state, "Assistant:"));
     assert!(body_has_line(&state, "visible answer"));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line).starts_with("Called text")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line).starts_with("Called text"))
+    );
 }
 
 #[test]
@@ -2663,10 +2729,12 @@ fn concise_mode_summarizes_mutations_and_task_tools() {
         },
     ));
     assert!(body_has_line(&state, "Created task"));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| line.contains("Tool result: task_create")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| line.contains("Tool result: task_create"))
+    );
 }
 
 #[test]
@@ -2765,11 +2833,11 @@ fn subagent_output_is_full_markdown_in_normal_and_concise() {
     assert!(body_has_line(&state, "fn main() {}"));
     let rendered = render_transcript_lines(&state.body, 80);
     assert!(has_segment(&rendered, "done", SegmentStyle::BOLD));
-    assert!(rendered.iter().any(|line| line
-        .segments
-        .first()
-        .is_some_and(|segment| segment.text == "│ fn main() {}"
-            && segment.style.contains(SegmentStyle::CYAN))));
+    assert!(rendered.iter().any(|line| {
+        line.segments.first().is_some_and(|segment| {
+            segment.text == "│ fn main() {}" && segment.style.contains(SegmentStyle::CYAN)
+        })
+    }));
 
     state.set_render_mode(TuiRenderMode::Concise);
     assert!(body_has_line(&state, "- **done**"));
@@ -2869,10 +2937,12 @@ fn streaming_tool_call_delta_is_visible_and_deduped_by_final_call() {
     ));
 
     assert_eq!(state.phase, "tools");
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}")
+    );
 
     let final_call = ToolCallPart {
         id: "call_streamed".to_string(),
@@ -3007,12 +3077,16 @@ fn consecutive_streamed_tool_calls_with_same_name_do_not_reuse_first_line() {
         .cloned()
         .collect::<Vec<_>>();
     assert_eq!(tool_call_lines.len(), 2);
-    assert!(tool_call_lines
-        .iter()
-        .any(|line| line == "Tool call: lookup {\"query\":\"first\"}"));
-    assert!(tool_call_lines
-        .iter()
-        .any(|line| line == "Tool call: lookup {\"query\":\"second\"}"));
+    assert!(
+        tool_call_lines
+            .iter()
+            .any(|line| line == "Tool call: lookup {\"query\":\"first\"}")
+    );
+    assert!(
+        tool_call_lines
+            .iter()
+            .any(|line| line == "Tool call: lookup {\"query\":\"second\"}")
+    );
 }
 
 #[test]
@@ -3059,10 +3133,12 @@ fn streamed_text_after_tool_return_starts_new_assistant_line() {
         panic!("streamed text should be visible");
     };
     assert!(text_index > tool_index);
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| line.contains("Tool result: lookup") && line.contains("final answer")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| line.contains("Tool result: lookup") && line.contains("final answer"))
+    );
 }
 
 #[test]
@@ -3121,10 +3197,12 @@ fn model_command_opens_picker_selects_directly_and_blocks_while_running() {
     assert!(!state.model_picker_visible());
     assert_eq!(state.profile, "coding");
     assert_eq!(state.model, "Coding (openai-responses:gpt-5)");
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "[SYS] Switched model to Coding (openai-responses:gpt-5)"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "[SYS] Switched model to Coding (openai-responses:gpt-5)")
+    );
 
     state.input = "/model".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
@@ -3142,10 +3220,12 @@ fn model_command_opens_picker_selects_directly_and_blocks_while_running() {
     state.input = "/model missing".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
     assert_eq!(state.profile, "general");
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "[SYS] Unknown model profile: missing"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "[SYS] Unknown model profile: missing")
+    );
     assert!(state.body.iter().any(|line| line.contains("/model coding")));
 
     state.running = true;
@@ -3652,10 +3732,12 @@ fn interactive_state_covers_model_response_finish_and_failure() {
         },
     ));
     assert_eq!(state.phase, "completed");
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| body_line_text(line) == "unused because streamed"));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| body_line_text(line) == "unused because streamed")
+    );
 
     state.finish_run(Some("session_complete".to_string()));
     assert_eq!(state.session_id.as_deref(), Some("session_complete"));
@@ -3799,10 +3881,12 @@ fn source_attributed_subagent_records_update_one_collapsed_line() {
             .count(),
         1
     );
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| line.starts_with("Tool call: search")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| line.starts_with("Tool call: search"))
+    );
     assert!(body_has_line(&state, "found owner"));
 }
 
@@ -3861,27 +3945,31 @@ fn markdown_renderer_styles_common_blocks_and_inline_spans() {
     let rendered = render_markdown_lines(&lines, 12);
     assert_eq!(rendered[0].segments[0].text, "Title");
     assert!(rendered[0].segments[0].style.contains(SegmentStyle::BOLD));
-    assert!(rendered[0].segments[0]
-        .style
-        .contains(SegmentStyle::UNDERLINED));
-    assert!(rendered.iter().any(|line| line
-        .segments
-        .first()
-        .is_some_and(|segment| segment.text == "• ")));
+    assert!(
+        rendered[0].segments[0]
+            .style
+            .contains(SegmentStyle::UNDERLINED)
+    );
+    assert!(rendered.iter().any(|line| {
+        line.segments
+            .first()
+            .is_some_and(|segment| segment.text == "• ")
+    }));
     assert!(has_segment(&rendered, "bold", SegmentStyle::BOLD));
     assert!(has_segment(&rendered, "em", SegmentStyle::ITALIC));
     assert!(has_segment(&rendered, "code", SegmentStyle::CYAN));
     assert!(has_segment(&rendered, "│ ", SegmentStyle::GREEN));
     assert!(has_segment(&rendered, "docs", SegmentStyle::UNDERLINED));
-    assert!(rendered.iter().any(|line| line
-        .segments
-        .first()
-        .is_some_and(|segment| segment.text == "│ fn main() {}"
-            && segment.style.contains(SegmentStyle::CYAN))));
-    assert!(rendered.iter().any(|line| line
-        .segments
-        .first()
-        .is_some_and(|segment| segment.text == "────────────")));
+    assert!(rendered.iter().any(|line| {
+        line.segments.first().is_some_and(|segment| {
+            segment.text == "│ fn main() {}" && segment.style.contains(SegmentStyle::CYAN)
+        })
+    }));
+    assert!(rendered.iter().any(|line| {
+        line.segments
+            .first()
+            .is_some_and(|segment| segment.text == "────────────")
+    }));
 }
 
 #[test]
@@ -3922,9 +4010,11 @@ fn markdown_renderer_covers_extended_codex_blocks() {
     assert!(text.contains("Small"));
     assert!(has_segment(&rendered, "gone", SegmentStyle::DIM));
     assert!(has_segment(&rendered, "Small", SegmentStyle::ITALIC));
-    assert!(rendered
-        .iter()
-        .any(|line| line.segments.iter().any(|segment| segment.text == "   ")));
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.segments.iter().any(|segment| segment.text == "   "))
+    );
 
     let empty = render_markdown_lines(&[], 0);
     assert_eq!(line_texts(&empty), vec![String::new()]);
@@ -3936,13 +4026,17 @@ fn transcript_renderer_batches_live_assistant_markdown_fences() {
         format!("{ASSISTANT_CONTENT_PREFIX}Created commit:"),
         format!("{ASSISTANT_CONTENT_PREFIX}"),
         format!("{ASSISTANT_CONTENT_PREFIX}```text"),
-        format!("{ASSISTANT_CONTENT_PREFIX}b238274 feat: add OAuth refresh and interactive CLI flows"),
+        format!(
+            "{ASSISTANT_CONTENT_PREFIX}b238274 feat: add OAuth refresh and interactive CLI flows"
+        ),
         format!("{ASSISTANT_CONTENT_PREFIX}```"),
         format!("{ASSISTANT_CONTENT_PREFIX}"),
         format!("{ASSISTANT_CONTENT_PREFIX}Commit body:"),
         format!("{ASSISTANT_CONTENT_PREFIX}"),
         format!("{ASSISTANT_CONTENT_PREFIX}```markdown"),
-        format!("{ASSISTANT_CONTENT_PREFIX}• Add OAuth token stores, refresh supervisors, and provider hooks."),
+        format!(
+            "{ASSISTANT_CONTENT_PREFIX}• Add OAuth token stores, refresh supervisors, and provider hooks."
+        ),
         format!("{ASSISTANT_CONTENT_PREFIX}```"),
         "Run completed: run_test status=completed".to_string(),
     ];
@@ -4021,26 +4115,37 @@ fn transcript_renderer_renders_only_assistant_markdown() {
         "Run completed: run_test status=completed".to_string(),
     ];
     let rendered = render_transcript_lines(&lines, 40);
-    assert!(rendered
-        .iter()
-        .any(|line| line_text(line) == "› # raw prompt"));
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text(line) == "› # raw prompt")
+    );
     assert!(has_segment(&rendered, "Title", SegmentStyle::BOLD));
-    assert!(rendered.iter().any(|line| line
-        .segments
-        .first()
-        .is_some_and(|segment| segment.text == "• ")));
-    assert!(rendered
-        .iter()
-        .any(|line| line_text(line).contains("User: literal assistant content")));
-    assert!(rendered
-        .iter()
-        .any(|line| line_text(line).contains("Assistant:")));
-    assert!(rendered
-        .iter()
-        .any(|line| line_text(line).contains("Tool call: literal text")));
-    assert!(rendered
-        .iter()
-        .any(|line| line_text(line) == "  ✓ completed run_test status=completed"));
+    assert!(rendered.iter().any(|line| {
+        line.segments
+            .first()
+            .is_some_and(|segment| segment.text == "• ")
+    }));
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text(line).contains("User: literal assistant content"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text(line).contains("Assistant:"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text(line).contains("Tool call: literal text"))
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line_text(line) == "  ✓ completed run_test status=completed")
+    );
 }
 
 #[test]
@@ -4059,10 +4164,11 @@ fn transcript_renderer_wraps_long_user_prompt_lines() {
         ]
     );
     assert!(rendered.iter().all(|line| line.visible_width() <= 12));
-    assert!(rendered.iter().all(|line| line
-        .segments
-        .iter()
-        .all(|segment| segment.style.contains(SegmentStyle::BOLD))));
+    assert!(rendered.iter().all(|line| {
+        line.segments
+            .iter()
+            .all(|segment| segment.style.contains(SegmentStyle::BOLD))
+    }));
 }
 
 #[test]
@@ -4123,23 +4229,31 @@ fn help_command_prints_help_to_body_without_submitting() {
     assert!(state.input_status_text().contains("help"));
     assert!(state.body.iter().any(|line| line == "Starweaver TUI help"));
     assert!(state.body.iter().any(|line| line == "Commands"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "  /help             Show this help"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "  !<command>        Run a shell command inline"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| { line == "  /paste-image      Attach image from system clipboard" }));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "  /help             Show this help")
+    );
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "  !<command>        Run a shell command inline")
+    );
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| { line == "  /paste-image      Attach image from system clipboard" })
+    );
     assert!(state.body.iter().any(|line| line == "Shortcuts"));
-    assert!(!state
-        .body
-        .iter()
-        .any(|line| line.starts_with("[SYS] /help")));
+    assert!(
+        !state
+            .body
+            .iter()
+            .any(|line| line.starts_with("[SYS] /help"))
+    );
 }
 
 #[test]
@@ -4157,16 +4271,20 @@ fn bang_command_prints_natural_shell_transcript() {
     state.input = "!echo hello".to_string();
     assert_eq!(handle_key_event(&mut state, key_code(KeyCode::Enter)), None);
     assert!(state.input.is_empty());
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Shell command: echo hello"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Shell command: echo hello")
+    );
     assert!(state.body.iter().any(|line| line == "Shell stdout:"));
     assert!(state.body.iter().any(|line| line == "  hello"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Shell completed: exit 0"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Shell completed: exit 0")
+    );
 }
 
 #[test]
@@ -4221,10 +4339,12 @@ fn goal_mode_reports_total_tokens_on_goal_complete() {
     ));
     assert_eq!(state.goal_iteration, 1);
     assert!(state.goal_active);
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "[Goal] Iteration 1/10"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "[Goal] Iteration 1/10")
+    );
 
     state.apply_stream_record(&AgentStreamRecord::new(
         4,
@@ -4236,10 +4356,12 @@ fn goal_mode_reports_total_tokens_on_goal_complete() {
         },
     ));
     assert!(!state.goal_active);
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "[Goal] Completed: verified after 1 iteration(s)"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "[Goal] Completed: verified after 1 iteration(s)")
+    );
     assert!(state
         .body
         .iter()
@@ -4286,10 +4408,12 @@ fn goal_mode_reports_total_tokens_at_max_iterations() {
         },
     ));
     assert!(!state.goal_active);
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("max iterations reached")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("max iterations reached"))
+    );
     assert!(state
         .body
         .iter()
@@ -4330,10 +4454,12 @@ fn goal_mode_reports_total_tokens_when_run_finishes_without_goal_event() {
     state.finish_run(Some("session_goal".to_string()));
 
     assert!(!state.goal_active);
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "[Goal] Completed: unverified_stop"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "[Goal] Completed: unverified_stop")
+    );
     assert!(state
         .body
         .iter()
@@ -4397,14 +4523,18 @@ fn fullscreen_composer_tracks_paste_images_and_steering_status() {
     ));
     let acked_steer_footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(!acked_steer_footer.contains("tighten this section"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Steering: tighten this section"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Steering received: tighten this section"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Steering: tighten this section")
+    );
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Steering received: tighten this section")
+    );
 }
 
 #[test]
@@ -4541,14 +4671,18 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
     assert_eq!(snapshot.pending_approvals, 1);
     assert_eq!(snapshot.pending_deferred, 1);
     assert_eq!(snapshot.assistant_text, "hello world");
-    assert!(snapshot
-        .transcript_lines
-        .iter()
-        .any(|line| line == &format!("{ASSISTANT_CONTENT_PREFIX}hello world")));
-    assert!(!snapshot
-        .transcript_lines
-        .iter()
-        .any(|line| line == &format!("{ASSISTANT_CONTENT_PREFIX} world")));
+    assert!(
+        snapshot
+            .transcript_lines
+            .iter()
+            .any(|line| line == &format!("{ASSISTANT_CONTENT_PREFIX}hello world"))
+    );
+    assert!(
+        !snapshot
+            .transcript_lines
+            .iter()
+            .any(|line| line == &format!("{ASSISTANT_CONTENT_PREFIX} world"))
+    );
     assert_eq!(
         snapshot.tool_calls,
         vec![
@@ -4598,22 +4732,30 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         "restore should preserve display-message sequence order"
     );
     assert!(state.body.iter().any(|line| line == "Tool result: lookup"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Tool error: lookup permission denied"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Steering: try another path"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Steering received: try another path"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Run completed: session_snapshot status=cancelled"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Tool error: lookup permission denied")
+    );
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Steering: try another path")
+    );
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Steering received: try another path")
+    );
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Run completed: session_snapshot status=cancelled")
+    );
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(footer.contains("Tasks"));
     assert!(footer.contains("Replay task"));
@@ -4626,9 +4768,11 @@ fn render_helpers_cover_footer_and_truncation_branches() {
     state.set_profile("coding", "gpt-test");
     state.workspace_dir = "/a/very/long/path/with/中文/segments/and/file".to_string();
     let tiny_history = render_live_history_lines(&state, 3);
-    assert!(line_texts(&tiny_history)
-        .iter()
-        .any(|line| line.contains("To get started")));
+    assert!(
+        line_texts(&tiny_history)
+            .iter()
+            .any(|line| line.contains("To get started"))
+    );
 
     let normal_history = render_live_history_lines(&state, 44);
     let normal_text = line_texts(&normal_history).join("\n");
@@ -5099,10 +5243,12 @@ fn steering_guard_displays_as_steering_not_retry() {
     ));
 
     assert_eq!(state.phase, "steering");
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Steering update pending; continuing run."));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Steering update pending; continuing run.")
+    );
     assert!(!state.body.iter().any(|line| line.contains("Output retry")));
 }
 
@@ -5141,13 +5287,17 @@ fn model_response_thinking_and_tool_call_are_visible() {
         },
     ));
 
-    assert!(state
-        .body
-        .iter()
-        .any(|line| body_line_text(line) == "> inspect tools"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}"));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| body_line_text(line) == "> inspect tools")
+    );
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line == "Tool call: lookup {\"query\":\"starweaver\"}")
+    );
     assert!(body_has_line(&state, "done"));
 }

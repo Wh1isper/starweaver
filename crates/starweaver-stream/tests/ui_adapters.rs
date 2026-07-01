@@ -7,8 +7,8 @@ use starweaver_model::{
     ToolArguments, ToolCallPart, ToolReturnPart,
 };
 use starweaver_stream::{
-    display_to_agui_event, display_to_agui_jsonl, display_to_vercel_data_stream,
-    sanitize_client_history, ClientHistorySanitizerConfig, DisplayMessage, DisplayMessageKind,
+    ClientHistorySanitizerConfig, DisplayMessage, DisplayMessageKind, display_to_agui_event,
+    display_to_agui_jsonl, display_to_vercel_data_stream, sanitize_client_history,
 };
 
 fn display_message(
@@ -111,18 +111,24 @@ fn sanitizer_demotes_system_prompts_and_drops_dangling_tool_returns_and_file_url
 
     assert_eq!(sanitized.messages.len(), 1);
     assert_eq!(sanitized.decisions.len(), 3);
-    assert!(sanitized
-        .decisions
-        .iter()
-        .any(|decision| decision.kind == "demoted_system_prompt"));
-    assert!(sanitized
-        .decisions
-        .iter()
-        .any(|decision| decision.kind == "dropped_disallowed_url"));
-    assert!(sanitized
-        .decisions
-        .iter()
-        .any(|decision| decision.kind == "dropped_dangling_tool_return"));
+    assert!(
+        sanitized
+            .decisions
+            .iter()
+            .any(|decision| decision.kind == "demoted_system_prompt")
+    );
+    assert!(
+        sanitized
+            .decisions
+            .iter()
+            .any(|decision| decision.kind == "dropped_disallowed_url")
+    );
+    assert!(
+        sanitized
+            .decisions
+            .iter()
+            .any(|decision| decision.kind == "dropped_dangling_tool_return")
+    );
 
     let ModelMessage::Request(request) = &sanitized.messages[0] else {
         panic!("request expected");

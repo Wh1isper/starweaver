@@ -1,4 +1,4 @@
-use super::{sanitize_control_chars, value_text, TaskPanelItem, Value, TASK_SNAPSHOT_EVENT_KIND};
+use super::{TASK_SNAPSHOT_EVENT_KIND, TaskPanelItem, Value, sanitize_control_chars, value_text};
 
 pub(in crate::tui::state) fn is_task_tool_name(name: &str) -> bool {
     matches!(
@@ -216,15 +216,15 @@ pub(in crate::tui::state) fn task_panel_items_from_value(
         }
     }
     for candidate in [payload, value] {
-        if let Some(task) = candidate.get("task").filter(|task| task.is_object()) {
-            if let Some(item) = task_panel_item_from_value(task) {
-                return Some(vec![item]);
-            }
+        if let Some(task) = candidate.get("task").filter(|task| task.is_object())
+            && let Some(item) = task_panel_item_from_value(task)
+        {
+            return Some(vec![item]);
         }
-        if candidate.is_object() {
-            if let Some(item) = task_panel_item_from_value(candidate) {
-                return Some(vec![item]);
-            }
+        if candidate.is_object()
+            && let Some(item) = task_panel_item_from_value(candidate)
+        {
+            return Some(vec![item]);
         }
     }
     None

@@ -1,6 +1,6 @@
 //! Data URL parsing and base64 budget helpers.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 use super::ParsedDataUrl;
 

@@ -156,10 +156,10 @@ impl Sink for LocalGrepSink<'_> {
                     .push((Self::line_number(context.line_number()), line));
             }
             grep_searcher::SinkContextKind::After | grep_searcher::SinkContextKind::Other => {
-                if let Some(index) = self.active_match_index {
-                    if let Some(grep_match) = self.grep_matches.get_mut(index) {
-                        grep_match.context.push_str(&line);
-                    }
+                if let Some(index) = self.active_match_index
+                    && let Some(grep_match) = self.grep_matches.get_mut(index)
+                {
+                    grep_match.context.push_str(&line);
                 }
             }
         }

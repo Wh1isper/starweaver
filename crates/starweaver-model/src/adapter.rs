@@ -9,8 +9,8 @@ mod traits;
 pub use context::ModelRequestContext;
 pub use error::ModelError;
 pub use guard::{
-    allow_real_model_requests, allow_real_model_requests_guard, block_real_model_requests,
-    set_allow_real_model_requests, RealModelRequestGuard,
+    RealModelRequestGuard, allow_real_model_requests, allow_real_model_requests_guard,
+    block_real_model_requests, set_allow_real_model_requests,
 };
 pub use params::{ModelRequestParameters, NativeToolDefinition, ToolDefinition};
 pub use traits::{ModelAdapter, ModelRunSession};

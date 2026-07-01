@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, process, thread};
 
 use chrono::{DateTime, Utc};
 
-use crate::{config::CliConfig, error::io_error, CliResult};
+use crate::{CliResult, config::CliConfig, error::io_error};
 
 const LAST_RETENTION_MAINTENANCE_KEY: &str = "last_retention_maintenance_at";
 

@@ -15,7 +15,7 @@ pub use cancellation::CancellationToken;
 pub use ids::{AgentId, CheckpointId, ConversationId, RunId, SessionId, TaskId};
 pub use subagent::{SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec};
 pub use trace::TraceContext;
-pub use xml::{escape_xml_attribute, escape_xml_text, XmlWriter};
+pub use xml::{XmlWriter, escape_xml_attribute, escape_xml_text};
 
 /// Workspace-wide SDK identity.
 pub const SDK_NAME: &str = "starweaver-agent-sdk";

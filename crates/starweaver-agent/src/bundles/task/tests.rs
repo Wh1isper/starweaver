@@ -47,11 +47,13 @@ async fn task_tools_mutate_context_and_emit_snapshots() {
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].subject, "ship");
     assert_eq!(tasks[0].status_str(), "in_progress");
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == TASK_SNAPSHOT_EVENT_KIND));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == TASK_SNAPSHOT_EVENT_KIND)
+    );
 }
 
 #[tokio::test]
@@ -84,12 +86,14 @@ async fn failed_task_update_still_emits_current_snapshot() {
         .await
         .unwrap();
 
-    assert!(result
-        .user_content
-        .as_ref()
-        .and_then(serde_json::Value::as_str)
-        .unwrap()
-        .contains("not found"));
+    assert!(
+        result
+            .user_content
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+            .contains("not found")
+    );
     let context = handle.snapshot();
     assert_eq!(context.tasks().len(), 1);
     assert!(context.events.len() > before_events);

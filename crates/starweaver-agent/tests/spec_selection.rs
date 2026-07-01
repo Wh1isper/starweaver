@@ -4,11 +4,11 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    attach_environment, filesystem_tools, AgentBuilder, AgentContext, AgentSpec, AgentSpecError,
-    AgentSpecRegistry, AgentStreamEvent, DynToolset, FunctionModel, FunctionTool, PrefixedToolset,
-    RunStatus, SkillPackage, SkillRegistry, StaticCapabilityBundle, StaticToolset, SubagentConfig,
+    AgentBuilder, AgentContext, AgentSpec, AgentSpecError, AgentSpecRegistry, AgentStreamEvent,
+    DynToolset, FunctionModel, FunctionTool, PrefixedToolset, RunStatus, SKILL_SCAN_EVENT_KIND,
+    SkillPackage, SkillRegistry, StaticCapabilityBundle, StaticToolset, SubagentConfig,
     SubagentRegistry, SubagentToolInheritancePolicy, TestModel, ToolContext, ToolError, ToolResult,
-    SKILL_SCAN_EVENT_KIND,
+    attach_environment, filesystem_tools,
 };
 use starweaver_environment::VirtualEnvironmentProvider;
 use starweaver_model::{

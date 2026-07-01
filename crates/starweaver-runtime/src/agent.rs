@@ -11,9 +11,9 @@ use starweaver_usage::UsageLimits;
 
 use crate::{
     agent::helpers::merge_request_params,
-    capability::{resolve_capability_order, AgentCapability, CapabilityBundle},
+    capability::{AgentCapability, CapabilityBundle, resolve_capability_order},
     executor::{DirectAgentExecutor, DynAgentExecutor},
-    graph::{inspect_graph, AgentGraphTrace, AgentNode, GraphError},
+    graph::{AgentGraphTrace, AgentNode, GraphError, inspect_graph},
     instructions::DynDynamicInstruction,
     output::{
         DynOutputFunction, OutputPolicy, OutputSchema, OutputValidator, SchemaOutputFunction,

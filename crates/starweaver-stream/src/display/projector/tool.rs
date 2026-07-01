@@ -1,6 +1,6 @@
 //! Tool and handoff display projection.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_core::RunId;
 use starweaver_model::{ToolCallPart, ToolReturnPart};
 

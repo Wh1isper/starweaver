@@ -79,9 +79,11 @@ fn build_request_does_not_replay_ambiguous_thinking_signature() {
     assert_eq!(content[0]["type"], "text");
     assert_eq!(content[0]["text"], "<think>\ninspect context\n</think>");
     assert!(content[0].get("signature").is_none());
-    assert!(!serde_json::to_string(&request)
-        .unwrap()
-        .contains("ambiguous-signature"));
+    assert!(
+        !serde_json::to_string(&request)
+            .unwrap()
+            .contains("ambiguous-signature")
+    );
 }
 
 #[test]

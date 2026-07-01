@@ -1,8 +1,8 @@
 //! Tool return media request helpers.
 
 use starweaver_model::{
-    ContentPart, ModelRequestPart, ToolReturnPart, CONTEXT_ORIGIN_METADATA,
-    CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, ContentPart, ModelRequestPart,
+    ToolReturnPart,
 };
 
 pub(in crate::agent) fn tool_return_media_prompt(

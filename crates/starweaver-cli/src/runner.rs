@@ -2,25 +2,25 @@
 
 use std::{
     collections::{HashSet, VecDeque},
-    sync::{mpsc, Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread,
 };
 
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_agent::{
-    attach_process_shell, attach_shell_review_handle, AgentSession, AgentStreamRecord,
-    ResumableState,
+    AgentSession, AgentStreamRecord, ResumableState, attach_process_shell,
+    attach_shell_review_handle,
 };
 use starweaver_context::{AgentContext, BusMessage};
 use starweaver_core::SessionId;
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
 use starweaver_model::{
-    ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ModelSettings, StreamDelta, INSTRUCTION_DYNAMIC_METADATA,
-    INSTRUCTION_ORIGIN_METADATA,
+    ContentPart, FinishReason, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_METADATA,
+    ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
+    StreamDelta,
 };
 use starweaver_runtime::{
     AgentCapability, AgentRunState, AgentStreamEvent, CapabilityResult, GoalCapability,
@@ -36,8 +36,8 @@ use starweaver_stream::{
 };
 
 use crate::{
-    args::HitlPolicy, local_store::RunArtifacts, profiles::ResolvedProfile,
-    prompt_input::PromptInput, CliError, CliResult,
+    CliError, CliResult, args::HitlPolicy, local_store::RunArtifacts, profiles::ResolvedProfile,
+    prompt_input::PromptInput,
 };
 
 mod projection;
@@ -424,10 +424,12 @@ impl AgentCapability for CliPromptContentAdapter {
             content.clone_from(&self.content_parts);
             metadata.insert(
                 "starweaver.cli.attachments".to_string(),
-                json!(content
-                    .iter()
-                    .filter(|part| matches!(part, ContentPart::Binary { .. }))
-                    .count()),
+                json!(
+                    content
+                        .iter()
+                        .filter(|part| matches!(part, ContentPart::Binary { .. }))
+                        .count()
+                ),
             );
         }
         Ok(())
@@ -689,7 +691,7 @@ fn drain_pending_steering(pending: &PendingSteering, context: &mut AgentContext)
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
     use std::{
-        sync::{mpsc, Arc, Mutex},
+        sync::{Arc, Mutex, mpsc},
         thread,
         time::Duration,
     };
@@ -698,20 +700,21 @@ mod tests {
     use starweaver_context::AgentContext;
     use starweaver_core::{ConversationId, RunId, SessionId};
     use starweaver_model::{
-        providers::openai_responses::OpenAiResponsesAdapter, ContentPart, ModelMessage,
-        ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart, ModelResponseStreamEvent,
-        ModelSettings, PartDelta, PartEnd, PartStart, CONTEXT_ORIGIN_METADATA,
-        CONTEXT_ORIGIN_RUNTIME_CONTEXT, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_METADATA,
+        CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT, ContentPart,
+        INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_METADATA, ModelMessage, ModelRequest,
+        ModelRequestPart, ModelResponse, ModelResponsePart, ModelResponseStreamEvent,
+        ModelSettings, PartDelta, PartEnd, PartStart,
+        providers::openai_responses::OpenAiResponsesAdapter,
     };
     use starweaver_runtime::{AgentCapability, AgentRunState, AgentStreamEvent, AgentStreamRecord};
     use starweaver_session::{RunRecord, RunStatus};
     use starweaver_stream::DisplayMessageKind;
 
     use super::{
-        cancelled_display_projection, cli_guidance_key, interrupted_partial_response,
-        start_steering_collector, sync_run_request_metadata, sync_run_session_affinity,
-        CliGuidanceAdapter, CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage,
-        CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN,
+        CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN, CliGuidanceAdapter,
+        CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage, cancelled_display_projection,
+        cli_guidance_key, interrupted_partial_response, start_steering_collector,
+        sync_run_request_metadata, sync_run_session_affinity,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
 
@@ -1291,10 +1294,12 @@ mod tests {
         let ModelMessage::Request(first_request) = &messages[0] else {
             panic!("expected first request");
         };
-        assert!(!first_request
-            .parts
-            .iter()
-            .any(|part| cli_guidance_key(part).is_some()));
+        assert!(
+            !first_request
+                .parts
+                .iter()
+                .any(|part| cli_guidance_key(part).is_some())
+        );
     }
 
     fn assert_latest_request_has_stable_agent_then_guidance(
@@ -1408,12 +1413,14 @@ mod tests {
         let (steer_sender, steer_receiver) = mpsc::channel::<CliSteeringMessage>();
         let pending = start_steering_collector(steer_receiver);
 
-        assert!(steer_sender
-            .send(CliSteeringMessage {
-                id: "steer_test".to_string(),
-                text: "tighten scroll".to_string(),
-            })
-            .is_ok());
+        assert!(
+            steer_sender
+                .send(CliSteeringMessage {
+                    id: "steer_test".to_string(),
+                    text: "tighten scroll".to_string(),
+                })
+                .is_ok()
+        );
 
         let mut buffered = None;
         for _ in 0..20 {
@@ -1516,9 +1523,11 @@ mod tests {
             &partial.parts[1],
             ModelResponsePart::Thinking { text, .. } if text == "done reasoning"
         ));
-        assert!(!serde_json::to_string(&partial)
-            .unwrap()
-            .contains("unfinished reasoning"));
+        assert!(
+            !serde_json::to_string(&partial)
+                .unwrap()
+                .contains("unfinished reasoning")
+        );
     }
 
     #[test]
@@ -1547,14 +1556,18 @@ mod tests {
         );
 
         assert_eq!(projection.status, RunStatus::Cancelled);
-        assert!(projection
-            .messages
-            .iter()
-            .any(|message| message.kind == DisplayMessageKind::RunStarted));
-        assert!(projection
-            .messages
-            .iter()
-            .any(|message| message.kind == DisplayMessageKind::RunCancelled));
+        assert!(
+            projection
+                .messages
+                .iter()
+                .any(|message| message.kind == DisplayMessageKind::RunStarted)
+        );
+        assert!(
+            projection
+                .messages
+                .iter()
+                .any(|message| message.kind == DisplayMessageKind::RunCancelled)
+        );
         assert_eq!(
             projection
                 .messages

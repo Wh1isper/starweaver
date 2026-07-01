@@ -14,16 +14,18 @@ async fn run_iter_returns_compact_iteration_trace() {
 
     assert_eq!(iter.result.output, "ok");
     assert!(iter.iterations.is_complete());
-    assert!(iter
-        .iterations
-        .steps()
-        .iter()
-        .any(|step| step.kind == AgentIterationKind::ModelRequest));
-    assert!(iter
-        .iterations
-        .steps()
-        .iter()
-        .any(|step| step.kind == AgentIterationKind::Checkpoint));
+    assert!(
+        iter.iterations
+            .steps()
+            .iter()
+            .any(|step| step.kind == AgentIterationKind::ModelRequest)
+    );
+    assert!(
+        iter.iterations
+            .steps()
+            .iter()
+            .any(|step| step.kind == AgentIterationKind::Checkpoint)
+    );
     assert_eq!(iter.iterations.steps()[0].stream_sequence, 0);
 }
 

@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ContentPart, HttpModelConfig, HttpRequest, HttpResponse, ModelAdapter, ModelError,

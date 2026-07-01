@@ -1,6 +1,6 @@
 //! JWT metadata extraction helpers.
 
-use base64::{engine::general_purpose::URL_SAFE, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE};
 use serde_json::Value;
 
 use crate::{

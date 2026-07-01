@@ -9,25 +9,25 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    attach_environment, context_tools, AgentBuilder, AgentCapability, AgentContext, AgentRunState,
-    AgentSession, CapabilityOrdering, CapabilityResult, CapabilitySpec, DynToolset,
-    FunctionDynamicInstruction, FunctionModel, FunctionModelInfo, FunctionOutputFunction,
-    FunctionOutputValidator, FunctionTool, MediaUploadRequest, MediaUploader, ModelCapability,
-    ModelConfig, OutputFunctionDefinition, OutputSchema, OutputValue, PerThousandRatio,
-    StaticCapabilityBundle, StaticToolset, TestModel, ToolContext, ToolExecutionHook,
-    ToolInstruction, ToolRegistry, ToolResult, Toolset, ToolsetLifecycleError,
-    ToolsetLifecyclePolicy, ToolsetPreparation, Usage, UsageLimits, DEFAULT_FILTER_ORDER,
-    TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND,
+    AgentBuilder, AgentCapability, AgentContext, AgentRunState, AgentSession, CapabilityOrdering,
+    CapabilityResult, CapabilitySpec, DEFAULT_FILTER_ORDER, DynToolset, FunctionDynamicInstruction,
+    FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
+    FunctionTool, MediaUploadRequest, MediaUploader, ModelCapability, ModelConfig,
+    OutputFunctionDefinition, OutputSchema, OutputValue, PerThousandRatio, StaticCapabilityBundle,
+    StaticToolset, TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND, TestModel,
+    ToolContext, ToolExecutionHook, ToolInstruction, ToolRegistry, ToolResult, Toolset,
+    ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetPreparation, Usage, UsageLimits,
+    attach_environment, context_tools,
 };
 use starweaver_environment::{
     EnvironmentPolicy, FilePolicy, ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
-    providers::openai_responses::OpenAiResponsesAdapter, tool_call_response, ContentPart,
-    ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
-    ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponsePart, ModelSettings,
-    ProtocolFamily, ToolCallPart, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA,
-    CONTEXT_ORIGIN_RUNTIME_CONTEXT,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
+    ContentPart, ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequest,
+    ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelResponse,
+    ModelResponsePart, ModelSettings, ProtocolFamily, ToolCallPart,
+    providers::openai_responses::OpenAiResponsesAdapter, tool_call_response,
 };
 
 #[derive(Clone)]
@@ -621,8 +621,8 @@ async fn builder_default_media_upload_filter_keeps_original_media_on_upload_fail
 }
 
 #[tokio::test]
-async fn builder_derives_model_context_capabilities_from_profile_without_overriding_explicit_config(
-) {
+async fn builder_derives_model_context_capabilities_from_profile_without_overriding_explicit_config()
+ {
     let captured_configs = Arc::new(Mutex::new(Vec::new()));
     let derived_model = FunctionModel::new(
         |_messages: Vec<ModelMessage>,
@@ -644,17 +644,23 @@ async fn builder_derives_model_context_capabilities_from_profile_without_overrid
     assert_eq!(result.output, "ok");
     let derived = captured_configs.lock().unwrap()[0].clone();
     assert!(derived.capabilities.contains(&ModelCapability::Vision));
-    assert!(derived
-        .capabilities
-        .contains(&ModelCapability::VideoUnderstanding));
+    assert!(
+        derived
+            .capabilities
+            .contains(&ModelCapability::VideoUnderstanding)
+    );
     assert!(!derived.capabilities.contains(&ModelCapability::ImageUrl));
     assert!(!derived.capabilities.contains(&ModelCapability::VideoUrl));
-    assert!(derived
-        .capabilities
-        .contains(&ModelCapability::AudioUnderstanding));
-    assert!(derived
-        .capabilities
-        .contains(&ModelCapability::DocumentUnderstanding));
+    assert!(
+        derived
+            .capabilities
+            .contains(&ModelCapability::AudioUnderstanding)
+    );
+    assert!(
+        derived
+            .capabilities
+            .contains(&ModelCapability::DocumentUnderstanding)
+    );
 
     let captured_configs = Arc::new(Mutex::new(Vec::new()));
     let explicit_model = FunctionModel::new(
@@ -829,9 +835,11 @@ async fn summarized_session_preserves_next_request_stable_prefix_before_runtime_
         &handoff_input[..stable_prefix_len],
         &next_input[..stable_prefix_len]
     );
-    assert!(!handoff_input[..stable_prefix_len]
-        .iter()
-        .any(|input| input_contains_text(input, "<runtime-context>")));
+    assert!(
+        !handoff_input[..stable_prefix_len]
+            .iter()
+            .any(|input| input_contains_text(input, "<runtime-context>"))
+    );
 }
 
 #[tokio::test]
@@ -889,9 +897,11 @@ async fn compacted_session_preserves_next_request_stable_prefix_before_runtime_c
         &compact_input[..stable_prefix_len],
         &next_input[..stable_prefix_len]
     );
-    assert!(!compact_input[..stable_prefix_len]
-        .iter()
-        .any(|input| input_contains_text(input, "<runtime-context>")));
+    assert!(
+        !compact_input[..stable_prefix_len]
+            .iter()
+            .any(|input| input_contains_text(input, "<runtime-context>"))
+    );
 }
 
 fn tiny_png_bytes(width: u32, height: u32) -> Vec<u8> {
@@ -1095,10 +1105,12 @@ async fn builder_prepares_toolsets_with_run_context() {
     assert_eq!(result.output, r#"{"answer":"ok"}"#);
     let params = model.captured_params.lock().unwrap()[0].clone();
     assert!(params.tools.iter().any(|tool| tool.name == "tenant_echo"));
-    assert!(params
-        .instructions
-        .iter()
-        .any(|instruction| instruction.text.contains("Use tenant tools.")));
+    assert!(
+        params
+            .instructions
+            .iter()
+            .any(|instruction| instruction.text.contains("Use tenant tools."))
+    );
     let event = context
         .events
         .events()
@@ -1170,16 +1182,20 @@ async fn builder_closes_lifecycle_toolsets_after_model_failure() {
             "exit".to_string()
         ]
     );
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == TOOLSET_CLOSED_EVENT_KIND));
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "run_failed"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == TOOLSET_CLOSED_EVENT_KIND)
+    );
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "run_failed")
+    );
 }
 
 #[test]

@@ -32,9 +32,11 @@ fn render_helpers_cover_text_silent_and_json_modes() {
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     }];
-    assert!(render_sessions(&sessions, OutputMode::Text)
-        .unwrap()
-        .contains("profile=general"));
+    assert!(
+        render_sessions(&sessions, OutputMode::Text)
+            .unwrap()
+            .contains("profile=general")
+    );
     assert_eq!(
         render_sessions(&sessions, OutputMode::Silent).unwrap(),
         "sessions=1\nstatus=list\n"
@@ -50,17 +52,21 @@ fn render_helpers_cover_text_silent_and_json_modes() {
         created_at: Utc::now().to_rfc3339(),
         updated_at: Utc::now().to_rfc3339(),
     }];
-    assert!(render_session_show(&session, &runs, OutputMode::Text)
-        .unwrap()
-        .contains("preview=hello"));
+    assert!(
+        render_session_show(&session, &runs, OutputMode::Text)
+            .unwrap()
+            .contains("preview=hello")
+    );
     assert!(
         render_session_show(&session, &runs, OutputMode::DisplayJsonl)
             .unwrap()
             .contains("run_test")
     );
-    assert!(render_session_show(&session, &runs, OutputMode::Silent)
-        .unwrap()
-        .contains("status=shown"));
+    assert!(
+        render_session_show(&session, &runs, OutputMode::Silent)
+            .unwrap()
+            .contains("status=shown")
+    );
 
     let report = TrimReport {
         sessions_scanned: 1,
@@ -69,15 +75,20 @@ fn render_helpers_cover_text_silent_and_json_modes() {
         bytes_reclaimed: 3,
         dry_run: false,
     };
-    assert!(render_trim_report(&report, OutputMode::Text)
-        .unwrap()
-        .contains("bytes_reclaimed=3"));
-    assert!(render_trim_report(&report, OutputMode::Silent)
-        .unwrap()
-        .contains("status=trimmed"));
+    assert!(
+        render_trim_report(&report, OutputMode::Text)
+            .unwrap()
+            .contains("bytes_reclaimed=3")
+    );
+    assert!(
+        render_trim_report(&report, OutputMode::Silent)
+            .unwrap()
+            .contains("status=trimmed")
+    );
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn display_and_control_renderers_cover_edge_branches() {
     let (session_id, run_id) = ids();
     let messages = vec![
@@ -129,9 +140,11 @@ fn display_and_control_renderers_cover_edge_branches() {
         DisplayMessageKind::RunCompleted,
     )];
     assert_eq!(render_display_text(&terminal_only), "status=completed\n");
-    assert!(render_display_jsonl(&terminal_only)
-        .unwrap()
-        .contains("RUN_FINISHED"));
+    assert!(
+        render_display_jsonl(&terminal_only)
+            .unwrap()
+            .contains("RUN_FINISHED")
+    );
 
     let mut approval = ApprovalRecord::new(
         "approval_test",
@@ -141,13 +154,17 @@ fn display_and_control_renderers_cover_edge_branches() {
         "write",
     );
     approval.status = ApprovalStatus::Expired;
-    assert!(render_approvals(&[approval.clone()], OutputMode::Text)
-        .unwrap()
-        .contains("status=expired"));
+    assert!(
+        render_approvals(&[approval.clone()], OutputMode::Text)
+            .unwrap()
+            .contains("status=expired")
+    );
     approval.status = ApprovalStatus::Cancelled;
-    assert!(render_approvals(&[approval], OutputMode::Silent)
-        .unwrap()
-        .contains("approvals=1"));
+    assert!(
+        render_approvals(&[approval], OutputMode::Silent)
+            .unwrap()
+            .contains("approvals=1")
+    );
 
     let mut deferred = DeferredToolRecord::new(
         "deferred_test",
@@ -165,9 +182,11 @@ fn display_and_control_renderers_cover_edge_branches() {
         ExecutionStatus::Cancelled,
     ] {
         deferred.status = status;
-        assert!(render_deferred(&[deferred.clone()], OutputMode::Text)
-            .unwrap()
-            .contains("deferred_id=deferred_test"));
+        assert!(
+            render_deferred(&[deferred.clone()], OutputMode::Text)
+                .unwrap()
+                .contains("deferred_id=deferred_test")
+        );
         assert!(
             render_deferred_decision(&deferred, OutputMode::DisplayJsonl)
                 .unwrap()
@@ -484,14 +503,18 @@ fn tui_session_reload_resolves_prefix_restores_snapshot_and_current_pointer() {
     assert_eq!(state.session_id.as_deref(), Some(session_id.as_str()));
     assert_eq!(state.profile, "coding");
     assert!(state.model.contains("openai:gpt-5"));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("hello from reload")));
-    assert!(state
-        .body
-        .iter()
-        .any(|line| line.contains("Loaded session")));
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("hello from reload"))
+    );
+    assert!(
+        state
+            .body
+            .iter()
+            .any(|line| line.contains("Loaded session"))
+    );
     assert_eq!(
         read_current_session(&config).unwrap().as_deref(),
         Some(session_id.as_str())

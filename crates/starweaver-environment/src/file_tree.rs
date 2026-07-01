@@ -5,8 +5,8 @@ use std::{
 };
 
 use crate::{
-    join_logical_path, normalize_path, normalize_str_path, parent_path, path_contains,
-    strip_path_prefix, EnvironmentError, EnvironmentPolicy, EnvironmentResult,
+    EnvironmentError, EnvironmentPolicy, EnvironmentResult, join_logical_path, normalize_path,
+    normalize_str_path, parent_path, path_contains, strip_path_prefix,
 };
 
 const DEFAULT_FILE_TREE_SKIPPED_DIR_NAMES: &[&str] =

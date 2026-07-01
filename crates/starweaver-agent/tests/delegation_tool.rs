@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use starweaver_agent::{
     AgentBuilder, AgentCapability, AgentContext, AgentContextHandle, AgentRunState,
     AgentRuntimePolicy, AgentStreamEvent, AgentStreamSourceKind, BackgroundSubagentCapability,
-    BackgroundSubagentMonitor, FunctionTool, SubagentConfig, SubagentDelegationMode,
-    SubagentExecutionHook, SubagentExecutionMetadata, SubagentExecutionOutcome,
-    SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy, TestModel, ToolContext,
-    ToolRegistry, ToolResult, DELEGATE_BACKEND_TOOL_NAME, SPAWN_DELEGATE_TOOL_NAME,
+    BackgroundSubagentMonitor, DELEGATE_BACKEND_TOOL_NAME, FunctionTool, SPAWN_DELEGATE_TOOL_NAME,
+    SubagentConfig, SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
+    SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy,
+    TestModel, ToolContext, ToolRegistry, ToolResult,
 };
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
@@ -163,9 +163,11 @@ async fn subagent_delegate_tool_reports_missing_agent_context() {
         .unwrap_err();
 
     assert_eq!(delegate.name(), "ask_subagent");
-    assert!(error
-        .to_string()
-        .contains("missing AgentContextHandle dependency"));
+    assert!(
+        error
+            .to_string()
+            .contains("missing AgentContextHandle dependency")
+    );
 }
 
 #[test]
@@ -266,12 +268,14 @@ async fn hidden_delegate_backend_is_executable_but_not_model_visible() {
     assert_eq!(result.content["name"], "child");
     assert_eq!(result.content["output"], "child output");
     assert_eq!(result.metadata["context_mutated"], true);
-    assert!(context_handle
-        .snapshot()
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "subagent_completed"));
+    assert!(
+        context_handle
+            .snapshot()
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "subagent_completed")
+    );
 }
 
 #[tokio::test]
@@ -528,6 +532,7 @@ async fn subagent_execution_hook_wraps_delegated_child_run() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn runtime_delegate_tool_merges_child_stream_records_with_source() {
     let child = Arc::new(
         AgentBuilder::new(Arc::new(TestModel::with_responses(vec![ModelResponse {
@@ -614,21 +619,27 @@ async fn runtime_delegate_tool_merges_child_stream_records_with_source() {
     assert_eq!(&source.kind, &AgentStreamSourceKind::Subagent);
     assert!(source.agent_id.as_str().starts_with("child-task_"));
     assert_eq!(source.source_sequence, 0);
-    assert!(source
-        .task_id
-        .as_ref()
-        .unwrap()
-        .as_str()
-        .starts_with("task_"));
+    assert!(
+        source
+            .task_id
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .starts_with("task_")
+    );
     assert!(source.run_id.is_some());
     assert_eq!(
         source.parent_run_id.as_ref().map(RunId::as_str),
         Some(result.state.run_id.as_str())
     );
-    assert!(child_records
-        .iter()
-        .any(|record| matches!(record.event, AgentStreamEvent::RunStart { .. })));
-    assert!(child_records
-        .iter()
-        .any(|record| matches!(record.event, AgentStreamEvent::RunComplete { .. })));
+    assert!(
+        child_records
+            .iter()
+            .any(|record| matches!(record.event, AgentStreamEvent::RunStart { .. }))
+    );
+    assert!(
+        child_records
+            .iter()
+            .any(|record| matches!(record.event, AgentStreamEvent::RunComplete { .. }))
+    );
 }

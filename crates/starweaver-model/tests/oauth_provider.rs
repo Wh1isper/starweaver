@@ -11,10 +11,10 @@ use async_trait::async_trait;
 use serde_json::json;
 use starweaver_core::CancellationToken;
 use starweaver_model::{
-    build_codex_headers, build_session_headers, patch_codex_responses_body, transport::HttpMethod,
     CodexOAuthResponsesModel, CodexSettings, HttpModelConfig, HttpRequest, HttpResponse,
     ModelAdapter, ModelError, ModelEventStream, ModelHttpClient, ModelRequestContext,
     ModelRequestParameters, ModelSettings, OAuthBearerHttpClient, ProviderSettings,
+    build_codex_headers, build_session_headers, patch_codex_responses_body, transport::HttpMethod,
 };
 use starweaver_oauth::{OAuthAccount, OAuthResult, OAuthTokenSource, TokenSnapshot};
 use tokio::sync::Mutex;
@@ -347,11 +347,11 @@ async fn codex_oauth_streaming_model_builds_subscription_request_shape() {
     assert_eq!(request.body["stream"], true);
     assert_eq!(request.body["instructions"], "");
     assert_eq!(request.body["store"], false);
-    let stream_request_start_ms = request.body["client_metadata"]
-        ["x-codex-ws-stream-request-start-ms"]
-        .as_str()
-        .and_then(|value| value.parse::<u128>().ok())
-        .unwrap();
+    let stream_request_start_ms =
+        request.body["client_metadata"]["x-codex-ws-stream-request-start-ms"]
+            .as_str()
+            .and_then(|value| value.parse::<u128>().ok())
+            .unwrap();
     assert!(stream_request_start_ms > 0);
     assert_eq!(request.body["input"][0]["content"][0]["text"], "hello");
     assert_eq!(

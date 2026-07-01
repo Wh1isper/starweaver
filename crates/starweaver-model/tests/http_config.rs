@@ -1,9 +1,8 @@
 #![allow(missing_docs)]
 
 use starweaver_model::{
-    anthropic_http_config, gemini_http_config, google_cloud_http_config,
+    HttpModelConfig, anthropic_http_config, gemini_http_config, google_cloud_http_config,
     google_cloud_project_http_config, openai_chat_http_config, openai_responses_http_config,
-    HttpModelConfig,
 };
 
 #[test]

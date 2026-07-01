@@ -1,19 +1,19 @@
 //! AWS Bedrock Converse wire mapper.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
+    ModelError, ModelSettings,
     adapter::ToolDefinition,
     message::{
         FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
         ProviderInfo, ProviderPartInfo, ToolCallPart,
     },
     providers::{
-        bedrock_content_from_content, collect_system_parts_and_non_system,
+        SystemInstructionPart, bedrock_content_from_content, collect_system_parts_and_non_system,
         insert_nonempty_description, provider_tool_schema_without_meta,
-        usage_from_named_including_cache_input, SystemInstructionPart,
+        usage_from_named_including_cache_input,
     },
-    ModelError, ModelSettings,
 };
 
 /// Bedrock Converse wire mapper.
@@ -332,29 +332,29 @@ fn append_bedrock_typed_fields(
         })
         .unwrap_or_default();
 
-    if let Some(top_k) = settings.top_k {
-        if bedrock_uses_anthropic_passthrough(model) {
-            additional_model_request_fields.insert("top_k".to_string(), json!(top_k));
-        }
+    if let Some(top_k) = settings.top_k
+        && bedrock_uses_anthropic_passthrough(model)
+    {
+        additional_model_request_fields.insert("top_k".to_string(), json!(top_k));
     }
-    if let Some(thinking) = &settings.thinking {
-        if bedrock_uses_anthropic_passthrough(model) {
-            let mut payload = serde_json::Map::new();
-            payload.insert(
-                "type".to_string(),
-                json!(thinking.mode.as_deref().unwrap_or("enabled")),
-            );
-            if let Some(budget_tokens) = thinking.budget_tokens {
-                payload.insert("budget_tokens".to_string(), json!(budget_tokens));
-            }
-            additional_model_request_fields.insert("thinking".to_string(), Value::Object(payload));
+    if let Some(thinking) = &settings.thinking
+        && bedrock_uses_anthropic_passthrough(model)
+    {
+        let mut payload = serde_json::Map::new();
+        payload.insert(
+            "type".to_string(),
+            json!(thinking.mode.as_deref().unwrap_or("enabled")),
+        );
+        if let Some(budget_tokens) = thinking.budget_tokens {
+            payload.insert("budget_tokens".to_string(), json!(budget_tokens));
         }
+        additional_model_request_fields.insert("thinking".to_string(), Value::Object(payload));
     }
     if let Some(bedrock) = &settings.provider_settings.bedrock {
-        if let Some(fields) = &bedrock.additional_model_request_fields {
-            if let Some(fields) = fields.as_object() {
-                additional_model_request_fields.extend(fields.clone());
-            }
+        if let Some(fields) = &bedrock.additional_model_request_fields
+            && let Some(fields) = fields.as_object()
+        {
+            additional_model_request_fields.extend(fields.clone());
         }
         if let Some(guardrail_config) = &bedrock.guardrail_config {
             request.insert("guardrailConfig".to_string(), guardrail_config.clone());
@@ -494,10 +494,10 @@ fn bedrock_metadata(value: &Value) -> serde_json::Map<String, Value> {
     if let Some(metrics) = value.get("metrics") {
         metadata.insert("metrics".to_string(), metrics.clone());
     }
-    if value.get("metrics").is_some() {
-        if let Some(response_metadata) = value.get("ResponseMetadata") {
-            metadata.insert("response_metadata".to_string(), response_metadata.clone());
-        }
+    if value.get("metrics").is_some()
+        && let Some(response_metadata) = value.get("ResponseMetadata")
+    {
+        metadata.insert("response_metadata".to_string(), response_metadata.clone());
     }
     metadata
 }

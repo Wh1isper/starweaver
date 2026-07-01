@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use starweaver_agent::{
-    tool_metadata_kind, AgentBuilder, FunctionModel, OutputPolicy, OutputSchema, TestModel,
-    ToolKind,
+    AgentBuilder, FunctionModel, OutputPolicy, OutputSchema, TestModel, ToolKind,
+    tool_metadata_kind,
 };
-use starweaver_model::{tool_call_response, ModelResponse, OutputMode};
+use starweaver_model::{ModelResponse, OutputMode, tool_call_response};
 
 #[tokio::test]
 async fn builder_accepts_complete_output_policy() {

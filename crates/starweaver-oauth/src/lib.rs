@@ -15,11 +15,11 @@ mod token_source;
 mod types;
 
 pub use codex::{
-    create_codex_token_source, CodexOAuthClient, CodexOAuthProfile, DeviceCode, DeviceTokenResponse,
+    CodexOAuthClient, CodexOAuthProfile, DeviceCode, DeviceTokenResponse, create_codex_token_source,
 };
 pub use error::{OAuthError, OAuthResult};
 pub use jwt::{account_from_id_token, decode_jwt_payload};
-pub use store::{default_auth_dir, default_auth_path, OAuthStore};
+pub use store::{OAuthStore, default_auth_dir, default_auth_path};
 pub use token_source::StoreBackedTokenSource;
 pub use types::{
     AuthFile, OAuthAccount, OAuthProviderRecord, OAuthProviderRefresher, OAuthTokenSource,

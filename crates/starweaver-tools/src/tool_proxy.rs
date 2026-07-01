@@ -16,8 +16,8 @@ use starweaver_model::ToolDefinition;
 use thiserror::Error;
 
 use crate::{
-    typed_json_tool, DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction,
-    ToolResult, ToolUserInputPreprocessResult, Toolset,
+    DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolResult,
+    ToolUserInputPreprocessResult, Toolset, typed_json_tool,
 };
 
 use inner::ToolProxyInner;

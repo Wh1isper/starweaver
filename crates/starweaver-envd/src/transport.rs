@@ -3,12 +3,12 @@
 use std::{
     io,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_envd_core::EnvdService;
 use tokio::{
     io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},

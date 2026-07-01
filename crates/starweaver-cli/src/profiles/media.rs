@@ -15,7 +15,7 @@ use starweaver_model::{
 };
 
 use super::{local_echo_model, provider_model};
-use crate::{config::CliConfig, CliError, CliResult};
+use crate::{CliError, CliResult, config::CliConfig};
 
 #[derive(Clone)]
 pub(super) struct CliMediaUnderstandingCapability {

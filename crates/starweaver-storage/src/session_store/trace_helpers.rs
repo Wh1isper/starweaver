@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use starweaver_core::{CheckpointId, RunId, SessionId};
 use starweaver_runtime::AgentCheckpoint;
 use starweaver_session::{ApprovalRecord, ApprovalStatus, SessionStoreResult};

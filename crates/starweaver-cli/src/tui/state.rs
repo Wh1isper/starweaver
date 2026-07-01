@@ -19,7 +19,7 @@ pub(super) const COMPOSER_VISIBLE_LINES: usize = 5;
 
 use crate::{
     args::TuiRenderMode,
-    prompt_input::{format_size_bytes, PromptAttachment, PromptInput},
+    prompt_input::{PromptAttachment, PromptInput, format_size_bytes},
     slash_commands::SlashCommandDefinition,
 };
 
@@ -27,10 +27,10 @@ use super::{
     render::snapshot_interactive_lines,
     snapshot::TuiSnapshot,
     timeline::{
-        project_timeline, value_args_preview, ContextEventCategory, NoticeLevel, SubagentStatus,
-        SubagentTimelineItem, SubagentUpdate, ToolActivityStatus, ToolConciseSummary,
-        ToolSummaryCategory, ToolSummaryImportance, ToolTimelineItem, ToolVisibility, TuiItemId,
-        TuiProjection, TuiTimeline,
+        ContextEventCategory, NoticeLevel, SubagentStatus, SubagentTimelineItem, SubagentUpdate,
+        ToolActivityStatus, ToolConciseSummary, ToolSummaryCategory, ToolSummaryImportance,
+        ToolTimelineItem, ToolVisibility, TuiItemId, TuiProjection, TuiTimeline, project_timeline,
+        value_args_preview,
     },
 };
 

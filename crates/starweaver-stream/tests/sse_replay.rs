@@ -2,13 +2,13 @@
 
 use serde_json::json;
 use starweaver_stream::{
-    replay_sse_event_name, replay_sse_frames, ReplayEvent, ReplayEventKind, ReplayScope,
-    ReplaySseFrame, StreamTerminalMarker,
+    ReplayEvent, ReplayEventKind, ReplayScope, ReplaySseFrame, StreamTerminalMarker,
+    replay_sse_event_name, replay_sse_frames,
 };
 
 #[test]
-fn replay_sse_frames_serialize_full_events_with_canonical_names(
-) -> starweaver_stream::ReplayResult<()> {
+fn replay_sse_frames_serialize_full_events_with_canonical_names()
+-> starweaver_stream::ReplayResult<()> {
     let scope = ReplayScope::run("run_sse");
     let events = vec![
         ReplayEvent::new(scope.clone(), 1, ReplayEventKind::Heartbeat),

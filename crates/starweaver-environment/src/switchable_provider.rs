@@ -5,11 +5,11 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 
 use crate::{
-    path_match_candidates as default_path_match_candidates, DynEnvironmentProvider,
-    DynProcessShellProvider, EnvironmentError, EnvironmentProvider, EnvironmentResult,
-    EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions,
-    FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand, ShellOutput,
-    ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
+    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
+    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand,
+    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    path_match_candidates as default_path_match_candidates,
 };
 
 /// Current provider target behind a [`SwitchableEnvironmentProvider`].

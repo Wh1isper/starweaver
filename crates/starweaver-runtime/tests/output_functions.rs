@@ -1,12 +1,12 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use starweaver_model::{
-    tool_call_response, ModelMessage, ModelResponse, ModelResponsePart, TestModel, ToolCallPart,
+    ModelMessage, ModelResponse, ModelResponsePart, TestModel, ToolCallPart, tool_call_response,
 };
 use starweaver_runtime::{
     Agent, AgentEndStrategy, AgentRuntimePolicy, FunctionOutputFunction, OutputFunctionContext,
@@ -15,11 +15,11 @@ use starweaver_runtime::{
 
 fn final_answer_function() -> FunctionOutputFunction<
     impl Send
-        + Sync
-        + Fn(
-            OutputFunctionContext,
-            serde_json::Value,
-        ) -> std::future::Ready<Result<OutputValue, OutputValidationError>>,
+    + Sync
+    + Fn(
+        OutputFunctionContext,
+        serde_json::Value,
+    ) -> std::future::Ready<Result<OutputValue, OutputValidationError>>,
 > {
     FunctionOutputFunction::new(
         OutputFunctionDefinition::new(

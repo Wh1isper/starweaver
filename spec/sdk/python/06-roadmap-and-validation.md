@@ -25,7 +25,7 @@ Validation:
 
 Deliverables:
 
-- `crates/starweaver-py` workspace member
+- `packages/starweaver-py` Python package with a PyO3/maturin native extension
 - maturin project setup
 - `starweaver` Python package
 - `TestModel` and `FunctionModel` bindings
@@ -40,9 +40,11 @@ Deliverables:
 
 Validation:
 
-- `cargo check -p starweaver-py --locked`
-- `cargo test -p starweaver-py --locked`
-- `uv run pytest crates/starweaver-py/tests`
+- `cargo fmt --manifest-path packages/starweaver-py/Cargo.toml -- --check`
+- `cargo check --manifest-path packages/starweaver-py/Cargo.toml --all-targets --locked`
+- `cargo clippy --manifest-path packages/starweaver-py/Cargo.toml --all-targets --locked -- -D warnings`
+- `uv run pytest packages/starweaver-py/tests`
+- `make py-check`
 
 Exit criteria:
 
@@ -146,7 +148,7 @@ Before `starweaver-py` is considered ready for application use:
 10. The package has deterministic tests that do not require live provider
     credentials.
 11. Any required FFI or `unsafe` lint exception is scoped to
-    `crates/starweaver-py` and documented in that crate.
+    `packages/starweaver-py` and documented in that package.
 12. Public docs are added only after the reviewed API shape is stable enough
     for users.
 
@@ -156,7 +158,7 @@ Before `starweaver-py` is considered ready for application use:
 | ------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Python import name              | `starweaver`, `starweaver_py`, `starweaver_sdk`                       | Use `starweaver` for the import and reserve `starweaver-py` for crate/project naming         |
 | PyPI name                       | `starweaver`, `starweaver-py`                                         | Prefer `starweaver` if available; otherwise publish `starweaver-py` with `import starweaver` |
-| Python floor                    | 3.10, 3.11, 3.12                                                      | Choose after Claw runtime constraints are confirmed                                          |
+| Python version range            | 3.11, 3.12, 3.13                                                      | Support CPython 3.11 through 3.13; use 3.13 as the local and single-version CI default       |
 | Async bridge                    | `pyo3-async-runtimes`, custom dispatcher, hybrid                      | Hybrid: use official bridge where suitable and keep a Starweaver dispatcher abstraction      |
 | P0 model support                | test models only, registry models, direct provider helpers            | Start with test models plus registry-resolved models if the factory boundary is clean        |
 | Python model adapters           | P0, P1, never                                                         | Not P0; tool injection is the priority                                                       |

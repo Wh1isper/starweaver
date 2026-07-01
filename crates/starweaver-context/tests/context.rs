@@ -93,9 +93,11 @@ fn context_exports_and_restores_session_affinity_id() {
             .map(SessionId::as_str),
         Some("session_affinity_context")
     );
-    assert!(AgentContext::from_state(ResumableState::default())
-        .session_id()
-        .is_none());
+    assert!(
+        AgentContext::from_state(ResumableState::default())
+            .session_id()
+            .is_none()
+    );
 }
 
 #[test]

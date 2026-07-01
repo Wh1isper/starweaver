@@ -7,9 +7,9 @@ use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, ModelResponseStrea
 use starweaver_usage::Usage;
 
 use super::{
-    ModelChoice, StreamingPartKind, StreamingToolCallState, TaskPanelItem, ToolConciseSummary,
-    ToolSummaryCategory, ToolSummaryImportance, ToolVisibility, SHELL_OUTPUT_MAX_LINES,
-    SHELL_STREAM_PREVIEW_MAX_LINES, TOOL_PREVIEW_MAX_CHARS,
+    ModelChoice, SHELL_OUTPUT_MAX_LINES, SHELL_STREAM_PREVIEW_MAX_LINES, StreamingPartKind,
+    StreamingToolCallState, TOOL_PREVIEW_MAX_CHARS, TaskPanelItem, ToolConciseSummary,
+    ToolSummaryCategory, ToolSummaryImportance, ToolVisibility,
 };
 use crate::tui::{
     markdown::ASSISTANT_CONTENT_PREFIX,
@@ -298,11 +298,7 @@ fn sanitize_control_chars(text: &str) -> String {
 }
 
 const fn plural_suffix(count: usize) -> &'static str {
-    if count == 1 {
-        ""
-    } else {
-        "s"
-    }
+    if count == 1 { "" } else { "s" }
 }
 
 fn is_empty_result(value: &Value) -> bool {

@@ -16,6 +16,14 @@ repos:
         args: [--number]
         additional_dependencies:
           [mdformat-gfm, mdformat-front-matters, mdformat-footnote]
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: "v0.15.18"
+    hooks:
+      - id: ruff
+        args: [--exit-non-zero-on-fix]
+        files: ^packages/starweaver-py/
+      - id: ruff-format
+        files: ^packages/starweaver-py/
   - repo: local
     hooks:
       - id: cargo-fmt

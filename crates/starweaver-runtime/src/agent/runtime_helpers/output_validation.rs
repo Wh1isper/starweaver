@@ -5,7 +5,7 @@ use starweaver_context::AgentContext;
 use crate::{
     agent::Agent,
     capability::CapabilityError,
-    output::{parse_output, OutputFunctionContext, OutputValue},
+    output::{OutputFunctionContext, OutputValue, parse_output},
     run::AgentRunState,
 };
 

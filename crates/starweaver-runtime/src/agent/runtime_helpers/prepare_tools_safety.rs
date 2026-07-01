@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use starweaver_model::ToolDefinition;
-use starweaver_tools::{tool_metadata_kind, ToolKind};
+use starweaver_tools::{ToolKind, tool_metadata_kind};
 
 use crate::agent::AgentError;
 

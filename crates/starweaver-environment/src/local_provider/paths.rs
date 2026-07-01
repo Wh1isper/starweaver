@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::{
-    display_local_path, is_absolute_request_path, is_tmp_path, normalize_absolute_request_path,
+    DEFAULT_TMP_DIR, EnvironmentError, EnvironmentResult, display_local_path,
+    is_absolute_request_path, is_tmp_path, normalize_absolute_request_path,
     normalize_local_config_path, normalize_path, normalize_requested_path, normalize_str_path,
-    push_unique_path, EnvironmentError, EnvironmentResult, DEFAULT_TMP_DIR,
+    push_unique_path,
 };
 
 use super::LocalEnvironmentProvider;

@@ -16,9 +16,9 @@ use crate::bundles::helpers::tool_execution_error;
 
 use super::parsing::parse_shell_review_decision;
 use super::{
-    ShellReviewConfig, ShellReviewContextSnapshot, ShellReviewDecision, ShellReviewHandle,
-    ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
-    DEFAULT_SHELL_REVIEW_PROMPT,
+    DEFAULT_SHELL_REVIEW_PROMPT, ShellReviewConfig, ShellReviewContextSnapshot,
+    ShellReviewDecision, ShellReviewHandle, ShellReviewPreviousDecision, ShellReviewRecord,
+    ShellReviewRequest, ShellReviewRiskLevel,
 };
 
 /// Review a shell command and return a blocked result when policy denies execution.

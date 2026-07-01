@@ -6,11 +6,11 @@ use std::env;
 use std::{process::Command, time::Duration};
 
 #[cfg(target_os = "linux")]
-use starweaver_model::{detect_media_kind, MediaKind};
+use starweaver_model::{MediaKind, detect_media_kind};
 
 #[cfg(target_os = "linux")]
 use crate::CliError;
-use crate::{prompt_input::PromptAttachment, CliResult};
+use crate::{CliResult, prompt_input::PromptAttachment};
 
 #[cfg(target_os = "linux")]
 const SUPPORTED_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];

@@ -5,11 +5,11 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    ModelError,
     profile::{ModelProfile, ProtocolFamily},
     providers::client::ProtocolModelClient,
     settings::ModelSettings,
     transport::{DynHttpClient, HttpModelConfig, ReqwestHttpClient},
-    ModelError,
 };
 
 /// Provider alias definition resolved into a protocol client.

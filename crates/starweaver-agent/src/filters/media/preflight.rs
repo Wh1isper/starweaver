@@ -1,9 +1,9 @@
 //! Media preflight filtering.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_context::AgentContext;
 use starweaver_model::{
-    parse_data_url, ContentPart, MediaPolicy, MediaPreflight, ModelMessage, ModelRequestPart,
+    ContentPart, MediaPolicy, MediaPreflight, ModelMessage, ModelRequestPart, parse_data_url,
 };
 use starweaver_runtime::AgentRunState;
 
@@ -188,23 +188,23 @@ fn enforce_media_count_limits(messages: &mut [ModelMessage], policy: &MediaPolic
                     for item in content.iter_mut().rev() {
                         if is_image_content(item) {
                             image_count += 1;
-                            if let Some(limit) = policy.max_images {
-                                if image_count > limit {
-                                    *item = ContentPart::Text {
-                                        text: image_count_limit_message(limit),
-                                    };
-                                    replaced += 1;
-                                }
+                            if let Some(limit) = policy.max_images
+                                && image_count > limit
+                            {
+                                *item = ContentPart::Text {
+                                    text: image_count_limit_message(limit),
+                                };
+                                replaced += 1;
                             }
                         } else if is_video_content(item) {
                             video_count += 1;
-                            if let Some(limit) = policy.max_videos {
-                                if video_count > limit {
-                                    *item = ContentPart::Text {
-                                        text: video_count_limit_message(limit),
-                                    };
-                                    replaced += 1;
-                                }
+                            if let Some(limit) = policy.max_videos
+                                && video_count > limit
+                            {
+                                *item = ContentPart::Text {
+                                    text: video_count_limit_message(limit),
+                                };
+                                replaced += 1;
                             }
                         }
                     }

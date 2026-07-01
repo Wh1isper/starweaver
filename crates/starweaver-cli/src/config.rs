@@ -9,17 +9,17 @@ use std::{
 use serde::{Deserialize, Serialize};
 use starweaver_model::MaxTokensParameter;
 use starweaver_rpc_core::{
-    is_valid_environment_attachment_id, EnvironmentAttachmentAccessMode,
-    LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+    EnvironmentAttachmentAccessMode, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+    is_valid_environment_attachment_id,
 };
 use toml::Value;
 
 use crate::{
+    CliError, CliResult,
     args::{Cli, CliCommand, ConfigCommand, HitlPolicy, OutputMode, SetupCommand, TuiRenderMode},
     error::io_error,
     oauth::CODEX_BASE_URL,
-    slash_commands::{normalize_command_name, valid_command_name, SlashCommandDefinition},
-    CliError, CliResult,
+    slash_commands::{SlashCommandDefinition, normalize_command_name, valid_command_name},
 };
 
 mod env_overrides;
@@ -37,10 +37,10 @@ pub use state::{
 };
 use templates::default_config_template;
 pub use templates::{
-    init_config_file, write_default_subagent_presets, DEFAULT_GLOBAL_GITIGNORE_TEMPLATE,
-    DEFAULT_MCP_TEMPLATE, DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
+    DEFAULT_GLOBAL_GITIGNORE_TEMPLATE, DEFAULT_MCP_TEMPLATE, DEFAULT_PROJECT_GITIGNORE_TEMPLATE,
+    DEFAULT_TOOLS_TEMPLATE, init_config_file, write_default_subagent_presets,
 };
-pub use values::{get_config_value, set_config_value, ConfigScope};
+pub use values::{ConfigScope, get_config_value, set_config_value};
 
 /// Resolved CLI configuration.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -115,6 +115,32 @@ pub struct CliConfig {
     pub all_sessions_keep_days: u64,
     /// Minimum interval between all-session retention maintenance runs.
     pub all_sessions_interval_hours: u64,
+}
+
+impl CliConfig {
+    /// Reads a process environment variable with `[env]` config as a fallback.
+    #[must_use]
+    pub fn env_value(&self, name: &str) -> Option<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                self.env_vars
+                    .get(name)
+                    .cloned()
+                    .filter(|value| !value.trim().is_empty())
+            })
+    }
+
+    /// Returns whether a process or configured environment value is present.
+    #[must_use]
+    pub fn env_value_present(&self, name: Option<&str>) -> bool {
+        name.and_then(|name| self.env_value(name)).is_some()
+    }
 }
 
 /// Config resolver.
@@ -771,15 +797,15 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
             config.shell_enabled = shell_enabled;
         }
     }
-    if let Some(security) = parsed.security {
-        if let Some(shell_review) = security.shell_review {
-            merge_shell_review_config(&mut config.shell_review, shell_review)?;
-        }
+    if let Some(security) = parsed.security
+        && let Some(shell_review) = security.shell_review
+    {
+        merge_shell_review_config(&mut config.shell_review, shell_review)?;
     }
-    if let Some(update) = parsed.update {
-        if let Some(channel) = update.channel {
-            config.update_channel = channel;
-        }
+    if let Some(update) = parsed.update
+        && let Some(channel) = update.channel
+    {
+        config.update_channel = channel;
     }
     if let Some(providers) = parsed.providers {
         merge_provider_configs(&mut config.providers, providers);
@@ -820,10 +846,10 @@ fn apply_file_config(config: &mut CliConfig, path: &PathBuf) -> CliResult<()> {
     if let Some(commands) = parsed.commands {
         merge_slash_commands(config, commands);
     }
-    if let Some(tui) = parsed.tui {
-        if let Some(render_mode) = tui.render_mode {
-            config.tui_render_mode = render_mode;
-        }
+    if let Some(tui) = parsed.tui
+        && let Some(render_mode) = tui.render_mode
+    {
+        config.tui_render_mode = render_mode;
     }
     if let Some(trim) = parsed.trim {
         if let Some(auto_after_run) = trim.auto_after_run {
@@ -1068,10 +1094,10 @@ fn merge_unmapped_metadata(config: &mut CliConfig, raw: &Value) {
     };
     let mut metadata = serde_json::Map::new();
     for key in ["display", "subagents", "security"] {
-        if let Some(value) = root.get(key).cloned() {
-            if let Ok(json) = serde_json::to_value(value) {
-                metadata.insert(key.to_string(), json);
-            }
+        if let Some(value) = root.get(key).cloned()
+            && let Ok(json) = serde_json::to_value(value)
+        {
+            metadata.insert(key.to_string(), json);
         }
     }
     if !metadata.is_empty() {

@@ -33,22 +33,22 @@ fn heal_openai_response(
         .provider
         .as_ref()
         .is_some_and(|provider| provider.name == "openai");
-    if let Some(provider) = &mut response.provider {
-        if provider.name == "openai" {
-            if provider.response_id.take().is_some() {
-                changed = true;
-            }
-            changed |= drop_metadata_keys(
-                &mut provider.details,
-                &[
-                    "conversation_id",
-                    "encrypted_content",
-                    "previous_response_id",
-                    "response_id",
-                    "usage",
-                ],
-            );
+    if let Some(provider) = &mut response.provider
+        && provider.name == "openai"
+    {
+        if provider.response_id.take().is_some() {
+            changed = true;
         }
+        changed |= drop_metadata_keys(
+            &mut provider.details,
+            &[
+                "conversation_id",
+                "encrypted_content",
+                "previous_response_id",
+                "response_id",
+                "usage",
+            ],
+        );
     }
     if response_is_openai {
         changed |= drop_metadata_keys(

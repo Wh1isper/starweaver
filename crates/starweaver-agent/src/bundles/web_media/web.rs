@@ -9,14 +9,14 @@ use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use super::{
     args::{FetchArgs, SearchArgs, UrlArgs},
-    http::{fetch_http_resource, first_env, is_text_like, MAX_FETCH_BYTES},
+    http::{MAX_FETCH_BYTES, fetch_http_resource, first_env, is_text_like},
     json_result,
 };
 use crate::bundles::helpers::{tool_execution_error, tool_invalid_arguments};
 use crate::bundles::output::{
-    append_guidance, dump_tool_output, environment_provider_from_context, fit_text_fields_to_limit,
-    output_too_large_message, tool_output_size, write_tmp_output,
-    DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT,
+    DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
+    environment_provider_from_context, fit_text_fields_to_limit, output_too_large_message,
+    tool_output_size, write_tmp_output,
 };
 
 mod fetch_image;
@@ -300,21 +300,21 @@ pub(super) async fn scrape(
             guard_scrape_result(&context, result.content).await,
         ));
     }
-    if let Some(key) = first_env(["FIRECRAWL_API_KEY"]) {
-        if let Ok(response) = firecrawl_scrape(&context, &arguments.url, &key).await {
-            let result = json_result(response, "scrape")?;
-            return Ok(ToolResult::new(
-                guard_scrape_result(&context, result.content).await,
-            ));
-        }
+    if let Some(key) = first_env(["FIRECRAWL_API_KEY"])
+        && let Ok(response) = firecrawl_scrape(&context, &arguments.url, &key).await
+    {
+        let result = json_result(response, "scrape")?;
+        return Ok(ToolResult::new(
+            guard_scrape_result(&context, result.content).await,
+        ));
     }
-    if let Some(token) = first_env(["CLOUDFLARE_API_TOKEN"]) {
-        if let Ok(response) = cloudflare_scrape(&context, &arguments.url, &token) {
-            let result = json_result(response, "scrape")?;
-            return Ok(ToolResult::new(
-                guard_scrape_result(&context, result.content).await,
-            ));
-        }
+    if let Some(token) = first_env(["CLOUDFLARE_API_TOKEN"])
+        && let Ok(response) = cloudflare_scrape(&context, &arguments.url, &token)
+    {
+        let result = json_result(response, "scrape")?;
+        return Ok(ToolResult::new(
+            guard_scrape_result(&context, result.content).await,
+        ));
     }
     let result = local_scrape(&context, &arguments.url).await?;
     Ok(ToolResult::new(

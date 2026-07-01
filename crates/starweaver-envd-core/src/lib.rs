@@ -19,8 +19,8 @@ pub use request::{
     ShellReviewContextRequest, ShellReviewContextResult,
 };
 pub use rpc::{
-    error_response, parse_json_rpc_text, success_response, EnvdRpcError, JsonRpcRequest,
-    INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR, SERVER_ERROR,
+    EnvdRpcError, INVALID_PARAMS, INVALID_REQUEST, JsonRpcRequest, METHOD_NOT_FOUND, PARSE_ERROR,
+    SERVER_ERROR, error_response, parse_json_rpc_text, success_response,
 };
 pub use service::EnvdService;
 pub use types::{

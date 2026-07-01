@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value};
 use starweaver_context::AgentContext;
-use starweaver_model::{context_origin_metadata, ContentPart, ModelRequest, ModelRequestPart};
+use starweaver_model::{ContentPart, ModelRequest, ModelRequestPart, context_origin_metadata};
 
 use crate::run::AgentRunState;
 
@@ -29,19 +29,19 @@ impl crate::agent::Agent {
         context: &AgentContext,
         state: &mut AgentRunState,
     ) {
-        if let Some(user_prompts) = &context.user_prompts {
-            if !user_prompts.is_empty() {
-                if let Ok(value) = serde_json::to_value(user_prompts) {
-                    state
-                        .metadata
-                        .insert(ORIGINAL_REQUEST_CONTENT_METADATA.to_string(), value);
-                }
-                if let Some(text) = user_prompt_text(user_prompts) {
-                    state.metadata.insert(
-                        ORIGINAL_REQUEST_METADATA.to_string(),
-                        serde_json::json!(text),
-                    );
-                }
+        if let Some(user_prompts) = &context.user_prompts
+            && !user_prompts.is_empty()
+        {
+            if let Ok(value) = serde_json::to_value(user_prompts) {
+                state
+                    .metadata
+                    .insert(ORIGINAL_REQUEST_CONTENT_METADATA.to_string(), value);
+            }
+            if let Some(text) = user_prompt_text(user_prompts) {
+                state.metadata.insert(
+                    ORIGINAL_REQUEST_METADATA.to_string(),
+                    serde_json::json!(text),
+                );
             }
         }
         if let Some(reference) = &context.previous_assistant_response_reference {

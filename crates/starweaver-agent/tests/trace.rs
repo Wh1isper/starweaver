@@ -7,8 +7,8 @@ use std::{
 };
 
 use starweaver_agent::{
-    attach_environment, attach_shell_review, shell_tools, AgentBuilder, AgentRuntimePolicy,
-    ModelConfig, PerThousandRatio, ShellReviewConfig, SubagentConfig, SubagentRegistry,
+    AgentBuilder, AgentRuntimePolicy, ModelConfig, PerThousandRatio, ShellReviewConfig,
+    SubagentConfig, SubagentRegistry, attach_environment, attach_shell_review, shell_tools,
 };
 use starweaver_core::Metadata;
 use starweaver_environment::{ShellOutput, VirtualEnvironmentProvider};
@@ -93,14 +93,18 @@ async fn compact_model_records_compact_agent_subtree() {
         compact_model_span.attributes["gen_ai.agent.id"],
         serde_json::json!("starweaver.compact")
     );
-    assert!(compact_model_span
-        .events
-        .iter()
-        .any(|event| event.name == "starweaver.model.request"));
-    assert!(compact_model_span
-        .events
-        .iter()
-        .any(|event| event.name == "starweaver.model.response"));
+    assert!(
+        compact_model_span
+            .events
+            .iter()
+            .any(|event| event.name == "starweaver.model.request")
+    );
+    assert!(
+        compact_model_span
+            .events
+            .iter()
+            .any(|event| event.name == "starweaver.model.response")
+    );
 }
 
 #[tokio::test]
@@ -258,14 +262,18 @@ async fn shell_review_records_nested_model_request_under_tool_span() {
         review_model.parent_span_id.as_deref(),
         Some(shell_tool.span_id.as_str())
     );
-    assert!(review_model
-        .events
-        .iter()
-        .any(|event| event.name == "starweaver.model.request"));
-    assert!(review_model
-        .events
-        .iter()
-        .any(|event| event.name == "starweaver.model.response"));
+    assert!(
+        review_model
+            .events
+            .iter()
+            .any(|event| event.name == "starweaver.model.request")
+    );
+    assert!(
+        review_model
+            .events
+            .iter()
+            .any(|event| event.name == "starweaver.model.response")
+    );
 }
 
 fn span_with_name<'a>(spans: &'a [RecordedSpan], name: &str) -> &'a RecordedSpan {

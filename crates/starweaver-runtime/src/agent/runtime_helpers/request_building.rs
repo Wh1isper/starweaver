@@ -6,24 +6,23 @@ use chrono::Utc;
 use starweaver_context::{AgentContext, AgentEvent, ToolAvailabilityPolicy};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
-    attach_prepared_instructions, format_openai_prompt_cache_key,
-    supports_automatic_openai_prompt_cache_key, CodexSettings, ContentPart, GatewaySettings,
-    ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings,
-    OpenAiChatSettings, OpenAiResponsesSettings, PreparedInstruction, ProtocolFamily,
-    ProviderSettings, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT,
-    INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
-    INSTRUCTION_ORIGIN_TOOLSET,
+    CodexSettings, ContentPart, GatewaySettings, INSTRUCTION_DYNAMIC_METADATA,
+    INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
+    INSTRUCTION_ORIGIN_TOOLSET, ModelMessage, ModelRequest, ModelRequestParameters,
+    ModelRequestPart, ModelSettings, OpenAiChatSettings, OpenAiResponsesSettings,
+    PreparedInstruction, ProtocolFamily, ProviderSettings, attach_prepared_instructions,
+    format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key,
 };
-use starweaver_tools::{set_tool_metadata_kind, ToolKind, ToolRegistry};
+use starweaver_tools::{ToolKind, ToolRegistry, set_tool_metadata_kind};
 
 use crate::{
     agent::{
+        Agent, AgentError,
         runtime_helpers::{
             history_sanitize::sanitize_incomplete_tool_call_history,
             request_parts::request_instruction_insert_index, steering::is_steering_guard_prompt,
             tool_media::tool_return_media_prompt,
         },
-        Agent, AgentError,
     },
     output::OutputSchema,
     run::AgentRunState,

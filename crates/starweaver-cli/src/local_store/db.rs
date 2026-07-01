@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use starweaver_agent::ResumableState;
 use starweaver_core::{CheckpointId, RunId};
@@ -15,7 +15,7 @@ use starweaver_stream::DisplayMessage;
 use uuid::Uuid;
 
 use super::FileRefRecord;
-use crate::{error::io_error, CliError, CliResult};
+use crate::{CliError, CliResult, error::io_error};
 
 pub(super) fn add_column_if_missing(
     conn: &Connection,

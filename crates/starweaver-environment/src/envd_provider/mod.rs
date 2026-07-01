@@ -16,11 +16,11 @@ use starweaver_envd_core::{
 };
 
 use crate::{
-    path_match_candidates as default_path_match_candidates,
-    push_shell_review_context_path_candidates, EnvironmentError, EnvironmentProvider,
-    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
-    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand,
-    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    EnvironmentError, EnvironmentProvider, EnvironmentResult, EnvironmentState, FileGlobMatch,
+    FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FileStat,
+    ProcessShellProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
+    ShellReviewEnvironmentContext, path_match_candidates as default_path_match_candidates,
+    push_shell_review_context_path_candidates,
 };
 
 use convert::{
@@ -389,19 +389,23 @@ impl EnvironmentProvider for EnvdEnvironmentProvider {
         );
         state.metadata.insert(
             "envd_operation_ids".to_string(),
-            json!(snapshot
-                .operations
-                .iter()
-                .map(|operation| operation.operation_id.as_str())
-                .collect::<Vec<_>>()),
+            json!(
+                snapshot
+                    .operations
+                    .iter()
+                    .map(|operation| operation.operation_id.as_str())
+                    .collect::<Vec<_>>()
+            ),
         );
         state.metadata.insert(
             "envd_effect_ids".to_string(),
-            json!(snapshot
-                .effects
-                .iter()
-                .map(|effect| effect.effect_id.as_str())
-                .collect::<Vec<_>>()),
+            json!(
+                snapshot
+                    .effects
+                    .iter()
+                    .map(|effect| effect.effect_id.as_str())
+                    .collect::<Vec<_>>()
+            ),
         );
         Ok(state)
     }

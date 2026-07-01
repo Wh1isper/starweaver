@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    base64_encoded_len, detect_image_dimensions, detect_media_kind, policy::media_policy_reason,
-    raw_budget_from_base64_limit, ImageDimensions, MediaKind, MediaPolicy,
+    ImageDimensions, MediaKind, MediaPolicy, base64_encoded_len, detect_image_dimensions,
+    detect_media_kind, policy::media_policy_reason, raw_budget_from_base64_limit,
 };
 
 /// Media preflight result for a binary payload.

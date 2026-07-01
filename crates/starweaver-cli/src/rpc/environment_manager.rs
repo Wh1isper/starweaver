@@ -4,21 +4,21 @@ use std::{
     time::Duration,
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_envd_core::{
-    EnvdService, EnvironmentRequest, InitializeEnvdRequest, OpenEnvironmentRequest,
-    DEFAULT_ENVIRONMENT_ID,
+    DEFAULT_ENVIRONMENT_ID, EnvdService, EnvironmentRequest, InitializeEnvdRequest,
+    OpenEnvironmentRequest,
 };
 use starweaver_rpc_core::{
-    environment_attachment_lease_result, environment_attachment_list_result,
-    environment_health_result, is_valid_environment_attachment_id, EnvironmentAttachParams,
+    ALREADY_EXISTS, ENVIRONMENT_UNAVAILABLE, EnvironmentAttachParams,
     EnvironmentAttachmentAccessMode, EnvironmentAttachmentLease, EnvironmentAttachmentRef,
     EnvironmentAttachmentScope, EnvironmentAttachmentScopeKind, EnvironmentAttachmentStatus,
     EnvironmentDetachParams, EnvironmentHealthParams, EnvironmentListParams, EnvironmentReadiness,
     EnvironmentReadinessCapabilities, EnvironmentReadinessPhase, EnvironmentReadinessPolicy,
-    EnvironmentReadinessRequest, RpcError, ALREADY_EXISTS, ENVIRONMENT_UNAVAILABLE, INVALID_PARAMS,
-    LOCAL_ENVIRONMENT_ATTACHMENT_ID, LOCAL_ENVIRONMENT_ATTACHMENT_KIND, RUN_CONFLICT, SERVER_ERROR,
-    UNSUPPORTED_FEATURE,
+    EnvironmentReadinessRequest, INVALID_PARAMS, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
+    LOCAL_ENVIRONMENT_ATTACHMENT_KIND, RUN_CONFLICT, RpcError, SERVER_ERROR, UNSUPPORTED_FEATURE,
+    environment_attachment_lease_result, environment_attachment_list_result,
+    environment_health_result, is_valid_environment_attachment_id,
 };
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -58,10 +58,10 @@ impl EnvironmentAttachmentManager {
             })?;
         validate_scope(&params.scope)?;
         let source = validate_attachment_source(params.attachment, false)?;
-        if let Some(key) = params.idempotency_key.as_deref() {
-            if let Some(lease) = self.idempotent_attach_result(&params.scope, key)? {
-                return Ok(environment_attachment_lease_result(&lease));
-            }
+        if let Some(key) = params.idempotency_key.as_deref()
+            && let Some(lease) = self.idempotent_attach_result(&params.scope, key)?
+        {
+            return Ok(environment_attachment_lease_result(&lease));
         }
         if let Some(existing) = self.find_active_by_scope_and_id(&params.scope, &source.id)? {
             if same_source(&existing.source, &source) {
@@ -152,26 +152,27 @@ impl EnvironmentAttachmentManager {
             serde_json::from_value::<EnvironmentHealthParams>(params.clone()).map_err(|error| {
                 RpcError::new(INVALID_PARAMS, format!("invalid health params: {error}"))
             })?;
-        let source =
-            match (params.attachment_lease_id.as_deref(), params.attachment) {
-                (Some(_), Some(_)) => return Err(RpcError::new(
+        let source = match (params.attachment_lease_id.as_deref(), params.attachment) {
+            (Some(_), Some(_)) => {
+                return Err(RpcError::new(
                     INVALID_PARAMS,
                     "environment.health accepts either attachmentLeaseId or attachment, not both",
-                )),
-                (Some(lease_id), None) => self.lease_source(lease_id)?.ok_or_else(|| {
-                    RpcError::new(
-                        INVALID_PARAMS,
-                        format!("unknown environment attachment lease: {lease_id}"),
-                    )
-                })?,
-                (None, Some(attachment)) => validate_attachment_source(attachment, false)?,
-                (None, None) => {
-                    return Err(RpcError::new(
-                        INVALID_PARAMS,
-                        "environment.health requires attachmentLeaseId or attachment",
-                    ))
-                }
-            };
+                ));
+            }
+            (Some(lease_id), None) => self.lease_source(lease_id)?.ok_or_else(|| {
+                RpcError::new(
+                    INVALID_PARAMS,
+                    format!("unknown environment attachment lease: {lease_id}"),
+                )
+            })?,
+            (None, Some(attachment)) => validate_attachment_source(attachment, false)?,
+            (None, None) => {
+                return Err(RpcError::new(
+                    INVALID_PARAMS,
+                    "environment.health requires attachmentLeaseId or attachment",
+                ));
+            }
+        };
         let request = EnvironmentReadinessRequest {
             policy: EnvironmentReadinessPolicy::BestEffort,
             timeout_ms: params.timeout_ms,
@@ -359,12 +360,12 @@ impl EnvironmentAttachmentManager {
         let Some(lease_id) = attachment.requested_attachment_lease_id() else {
             return Ok(());
         };
-        if let Some(lease_counts) = self.active_runs.lock().map_err(lock_error)?.get_mut(run_id) {
-            if let Some(count) = lease_counts.get_mut(lease_id) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    lease_counts.remove(lease_id);
-                }
+        if let Some(lease_counts) = self.active_runs.lock().map_err(lock_error)?.get_mut(run_id)
+            && let Some(count) = lease_counts.get_mut(lease_id)
+        {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                lease_counts.remove(lease_id);
             }
         }
         Ok(())

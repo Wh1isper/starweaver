@@ -14,9 +14,9 @@ use async_trait::async_trait;
 use starweaver_core::Metadata;
 
 use crate::{
-    local_shell_command, read_child_pipe, refresh_local_shell_process, shell_process_metadata,
     EnvironmentError, EnvironmentResult, ProcessShellProvider, ShellCommand, ShellProcessSnapshot,
-    ShellProcessStatus,
+    ShellProcessStatus, local_shell_command, read_child_pipe, refresh_local_shell_process,
+    shell_process_metadata,
 };
 
 use super::LocalEnvironmentProvider;

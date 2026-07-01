@@ -1,17 +1,17 @@
 use starweaver_core::sdk_name;
 
-use super::{auth::oauth_cli_error, render_json_lines, CliService};
+use super::{CliService, auth::oauth_cli_error, render_json_lines};
 use crate::{
+    CliError, CliResult,
     args::{CatalogCommand, ConfigCommand, ProfileCommand, ToolsCommand, UpdateCommand},
     config::{
-        get_config_value, init_config_file, mcp_servers, tool_need_approval, ConfigScope,
-        ProviderConfig,
+        CliConfig, ConfigScope, ProviderConfig, get_config_value, init_config_file, mcp_servers,
+        tool_need_approval,
     },
     profiles::{
         doctor_mcp_servers, list_default_tools, list_mcp_servers, list_profiles, list_skills,
         list_subagents, show_mcp_server, show_profile, show_skill, show_subagent,
     },
-    CliError, CliResult,
 };
 
 impl CliService {
@@ -134,6 +134,7 @@ impl CliService {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) fn diagnostics(&self) -> CliResult<String> {
         Ok(format!(
             "sdk={}\nworkspace_version={}\ndatabase_path={}\nfile_store_path={}\nprofile={}\ndefault_model={}\nmodel_profiles={}\nenvd_profiles={}\noauth_refresh.enabled={}\noauth_refresh.interval_seconds={}\noauth_refresh.failure_retry_seconds={}\noauth_refresh.refresh_on_startup={}\nworkspace_root={}\nenvironment_provider={}\nfiles_policy={}\nshell_enabled={}\nskills={}\nsubagents={}\nmcp_servers={}\ntools={}\ntools.need_approval={}\nprovider.openai.ready={}\nprovider.openai.api_key_env={}\nprovider.openai.base_url={}\nprovider.codex.logged_in={}\nprovider.codex.base_url={}\nprovider.anthropic.ready={}\nprovider.anthropic.api_key_env={}\nprovider.anthropic.base_url={}\nprovider.gemini.ready={}\nprovider.gemini.api_key_env={}\nprovider.gemini.base_url={}\nprovider.google-cloud.ready={}\nprovider.google-cloud.api_key_env={}\nprovider.google-cloud.auth_token_env={}\nprovider.google-cloud.project={}\nprovider.google-cloud.location={}\nprovider.google-cloud.base_url={}\nwal=true\n",
@@ -162,39 +163,92 @@ impl CliService {
             mcp_servers(&self.config).len(),
             list_default_tools(&self.config).len(),
             tool_need_approval(&self.config).join(","),
-            provider_ready(&self.config.providers.openai),
-            self.config.providers.openai.api_key_env.as_deref().unwrap_or_default(),
-            self.config.providers.openai.base_url.as_deref().unwrap_or_default(),
+            provider_ready(&self.config, &self.config.providers.openai),
+            self.config
+                .providers
+                .openai
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default(),
+            self.config
+                .providers
+                .openai
+                .base_url
+                .as_deref()
+                .unwrap_or_default(),
             crate::oauth::OAuthStore::new(crate::oauth::OAuthStore::default_path())
                 .get_provider("codex")
                 .map_err(oauth_cli_error)?
                 .is_some(),
-            self.config.providers.codex.base_url.as_deref().unwrap_or_default(),
-            provider_ready(&self.config.providers.anthropic),
-            self.config.providers.anthropic.api_key_env.as_deref().unwrap_or_default(),
-            self.config.providers.anthropic.base_url.as_deref().unwrap_or_default(),
-            provider_ready(&self.config.providers.gemini),
-            self.config.providers.gemini.api_key_env.as_deref().unwrap_or_default(),
-            self.config.providers.gemini.base_url.as_deref().unwrap_or_default(),
-            provider_ready(&self.config.providers.google_cloud),
-            self.config.providers.google_cloud.api_key_env.as_deref().unwrap_or_default(),
-            self.config.providers.google_cloud.auth_token_env.as_deref().unwrap_or_default(),
-            self.config.providers.google_cloud.project.as_deref().unwrap_or_default(),
-            self.config.providers.google_cloud.location.as_deref().unwrap_or_default(),
-            self.config.providers.google_cloud.base_url.as_deref().unwrap_or_default()
+            self.config
+                .providers
+                .codex
+                .base_url
+                .as_deref()
+                .unwrap_or_default(),
+            provider_ready(&self.config, &self.config.providers.anthropic),
+            self.config
+                .providers
+                .anthropic
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default(),
+            self.config
+                .providers
+                .anthropic
+                .base_url
+                .as_deref()
+                .unwrap_or_default(),
+            provider_ready(&self.config, &self.config.providers.gemini),
+            self.config
+                .providers
+                .gemini
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default(),
+            self.config
+                .providers
+                .gemini
+                .base_url
+                .as_deref()
+                .unwrap_or_default(),
+            provider_ready(&self.config, &self.config.providers.google_cloud),
+            self.config
+                .providers
+                .google_cloud
+                .api_key_env
+                .as_deref()
+                .unwrap_or_default(),
+            self.config
+                .providers
+                .google_cloud
+                .auth_token_env
+                .as_deref()
+                .unwrap_or_default(),
+            self.config
+                .providers
+                .google_cloud
+                .project
+                .as_deref()
+                .unwrap_or_default(),
+            self.config
+                .providers
+                .google_cloud
+                .location
+                .as_deref()
+                .unwrap_or_default(),
+            self.config
+                .providers
+                .google_cloud
+                .base_url
+                .as_deref()
+                .unwrap_or_default()
         ))
     }
 }
 
-fn provider_ready(provider: &ProviderConfig) -> bool {
+fn provider_ready(config: &CliConfig, provider: &ProviderConfig) -> bool {
     provider.enabled
-        && (env_value_present(provider.api_key_env.as_deref())
-            || env_value_present(provider.auth_token_env.as_deref()))
-}
-
-fn env_value_present(name: Option<&str>) -> bool {
-    name.is_some_and(|name| {
-        let name = name.trim();
-        !name.is_empty() && std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
-    })
+        && (config.env_value_present(provider.api_key_env.as_deref())
+            || config.env_value_present(provider.auth_token_env.as_deref()))
 }

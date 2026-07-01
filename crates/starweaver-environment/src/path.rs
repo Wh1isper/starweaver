@@ -6,7 +6,7 @@ use globset::{GlobBuilder, GlobMatcher};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
 
-use crate::{types::ShellReviewEnvironmentContext, EnvironmentError, EnvironmentResult};
+use crate::{EnvironmentError, EnvironmentResult, types::ShellReviewEnvironmentContext};
 
 pub const DEFAULT_TMP_DIR: &str = ".starweaver/tmp";
 pub const LOCAL_TMP_DIR_PREFIX: &str = "starweaver-";
@@ -64,11 +64,7 @@ impl PathGlob {
         let anchored = normalized.starts_with('/');
         let glob_pattern = if anchored {
             let stripped = normalized.trim_start_matches('/');
-            if stripped.is_empty() {
-                "*"
-            } else {
-                stripped
-            }
+            if stripped.is_empty() { "*" } else { stripped }
         } else {
             normalized.as_str()
         };
@@ -96,15 +92,16 @@ impl PathGlob {
         if self.matcher.is_match(&normalized) {
             return true;
         }
-        if let Some(matcher) = &self.recursive_prefix_matcher {
-            if matcher.is_match(&normalized) {
-                return true;
-            }
+        if let Some(matcher) = &self.recursive_prefix_matcher
+            && matcher.is_match(&normalized)
+        {
+            return true;
         }
-        if !self.anchored && !self.pattern.contains('/') {
-            if let Some(name) = normalized.rsplit('/').next() {
-                return self.matcher.is_match(name);
-            }
+        if !self.anchored
+            && !self.pattern.contains('/')
+            && let Some(name) = normalized.rsplit('/').next()
+        {
+            return self.matcher.is_match(name);
         }
         false
     }

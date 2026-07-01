@@ -3,24 +3,24 @@
 use std::future::Future;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_stream::{
-    display_to_agui_event, DisplayMessage, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayScope,
+    DisplayMessage, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayScope, display_to_agui_event,
 };
 
 mod environment;
 
 pub use environment::{
+    EnvironmentActiveListParams, EnvironmentActiveMountParams, EnvironmentActiveUnmountParams,
+    EnvironmentAttachParams, EnvironmentAttachmentAccessMode, EnvironmentAttachmentLease,
+    EnvironmentAttachmentRef, EnvironmentAttachmentScope, EnvironmentAttachmentScopeKind,
+    EnvironmentAttachmentStatus, EnvironmentDetachParams, EnvironmentHealthParams,
+    EnvironmentListParams, EnvironmentReadiness, EnvironmentReadinessCapabilities,
+    EnvironmentReadinessPhase, EnvironmentReadinessPolicy, EnvironmentReadinessRequest,
+    LOCAL_ENVIRONMENT_ATTACHMENT_ID, LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
     environment_attachment_lease_result, environment_attachment_list_result,
     environment_attachment_refs, environment_attachment_result, environment_health_result,
-    is_valid_environment_attachment_id, EnvironmentActiveListParams, EnvironmentActiveMountParams,
-    EnvironmentActiveUnmountParams, EnvironmentAttachParams, EnvironmentAttachmentAccessMode,
-    EnvironmentAttachmentLease, EnvironmentAttachmentRef, EnvironmentAttachmentScope,
-    EnvironmentAttachmentScopeKind, EnvironmentAttachmentStatus, EnvironmentDetachParams,
-    EnvironmentHealthParams, EnvironmentListParams, EnvironmentReadiness,
-    EnvironmentReadinessCapabilities, EnvironmentReadinessPhase, EnvironmentReadinessPolicy,
-    EnvironmentReadinessRequest, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
-    LOCAL_ENVIRONMENT_ATTACHMENT_KIND,
+    is_valid_environment_attachment_id,
 };
 
 /// JSON-RPC parse error code.

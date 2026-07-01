@@ -112,9 +112,11 @@ async fn subagent_required_tool_failure_publishes_diagnostic_event() {
         .await
         .unwrap_err();
 
-    assert!(error
-        .to_string()
-        .contains("required inherited tool is missing: required_tool"));
+    assert!(
+        error
+            .to_string()
+            .contains("required inherited tool is missing: required_tool")
+    );
     assert_eq!(context.events.events()[0].kind, "subagent_started");
     assert_eq!(context.events.events()[1].kind, "subagent_failed");
     assert_eq!(
@@ -171,9 +173,11 @@ async fn failing_subagent_absorbs_usage_into_parent_context() {
     assert_eq!(context.usage.total_tokens, 26);
     assert_eq!(context.usage.tool_calls, 1);
     assert_eq!(context.events.events()[0].kind, "subagent_started");
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "subagent_failed"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "subagent_failed")
+    );
 }

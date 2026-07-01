@@ -1,16 +1,16 @@
-use std::{env, fs};
+use std::fs;
 
 use starweaver_model::MaxTokensParameter;
 use toml::Value;
 
 use super::{
-    parse_hitl_policy, parse_output_mode, validate_shell_review_action, validate_shell_review_risk,
-    CliConfig, ProviderConfig,
+    CliConfig, ProviderConfig, parse_hitl_policy, parse_output_mode, validate_shell_review_action,
+    validate_shell_review_risk,
 };
 use crate::{
+    CliError, CliResult,
     args::{HitlPolicy, OutputMode, TuiRenderMode},
     error::io_error,
-    CliError, CliResult,
 };
 
 /// Config write scope.
@@ -177,7 +177,7 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "providers.openai.max_tokens_parameter" => {
             max_tokens_parameter_name(config.providers.openai.max_tokens_parameter).to_string()
         }
-        "providers.openai.ready" => provider_ready(&config.providers.openai).to_string(),
+        "providers.openai.ready" => provider_ready(config, &config.providers.openai).to_string(),
         "providers.codex.enabled" => config.providers.codex.enabled.to_string(),
         "providers.codex.base_url" => config.providers.codex.base_url.clone().unwrap_or_default(),
         "providers.codex.endpoint_path" => config
@@ -211,7 +211,9 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "providers.anthropic.max_tokens_parameter" => {
             max_tokens_parameter_name(config.providers.anthropic.max_tokens_parameter).to_string()
         }
-        "providers.anthropic.ready" => provider_ready(&config.providers.anthropic).to_string(),
+        "providers.anthropic.ready" => {
+            provider_ready(config, &config.providers.anthropic).to_string()
+        }
         "providers.gemini.enabled" => config.providers.gemini.enabled.to_string(),
         "providers.gemini.api_key_env" => config
             .providers
@@ -229,7 +231,7 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         "providers.gemini.max_tokens_parameter" => {
             max_tokens_parameter_name(config.providers.gemini.max_tokens_parameter).to_string()
         }
-        "providers.gemini.ready" => provider_ready(&config.providers.gemini).to_string(),
+        "providers.gemini.ready" => provider_ready(config, &config.providers.gemini).to_string(),
         "providers.google-cloud.enabled" => config.providers.google_cloud.enabled.to_string(),
         "providers.google-cloud.api_key_env" => config
             .providers
@@ -272,7 +274,7 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
                 .to_string()
         }
         "providers.google-cloud.ready" => {
-            provider_ready(&config.providers.google_cloud).to_string()
+            provider_ready(config, &config.providers.google_cloud).to_string()
         }
         "tui.render_mode" => tui_render_mode_name(config.tui_render_mode).to_string(),
         "trim.auto_after_run" => config.auto_trim.to_string(),
@@ -288,7 +290,7 @@ pub fn get_config_value(config: &CliConfig, key: &str) -> CliResult<String> {
         other => {
             if let Some((provider, field)) = split_provider_config_key(other) {
                 if let Some(provider_config) = provider_config_by_name(config, provider) {
-                    provider_config_value(provider_config, field)?
+                    provider_config_value(config, provider_config, field)?
                 } else {
                     return Err(CliError::NotFound(other.to_string()));
                 }
@@ -314,7 +316,11 @@ fn provider_config_by_name<'a>(
     }
 }
 
-fn provider_config_value(provider: &ProviderConfig, field: &str) -> CliResult<String> {
+fn provider_config_value(
+    config: &CliConfig,
+    provider: &ProviderConfig,
+    field: &str,
+) -> CliResult<String> {
     let value = match field {
         "enabled" => provider.enabled.to_string(),
         "api_key_env" => provider.api_key_env.clone().unwrap_or_default(),
@@ -326,23 +332,16 @@ fn provider_config_value(provider: &ProviderConfig, field: &str) -> CliResult<St
         "max_tokens_parameter" => {
             max_tokens_parameter_name(provider.max_tokens_parameter).to_string()
         }
-        "ready" => provider_ready(provider).to_string(),
+        "ready" => provider_ready(config, provider).to_string(),
         other => return Err(CliError::NotFound(other.to_string())),
     };
     Ok(value)
 }
 
-fn provider_ready(provider: &ProviderConfig) -> bool {
+fn provider_ready(config: &CliConfig, provider: &ProviderConfig) -> bool {
     provider.enabled
-        && (env_value_present(provider.api_key_env.as_deref())
-            || env_value_present(provider.auth_token_env.as_deref()))
-}
-
-fn env_value_present(name: Option<&str>) -> bool {
-    name.is_some_and(|name| {
-        let name = name.trim();
-        !name.is_empty() && env::var(name).is_ok_and(|value| !value.trim().is_empty())
-    })
+        && (config.env_value_present(provider.api_key_env.as_deref())
+            || config.env_value_present(provider.auth_token_env.as_deref()))
 }
 
 const fn output_mode_name(output: OutputMode) -> &'static str {
@@ -686,7 +685,7 @@ fn parse_provider_config_value(key: &str, field: &str, value: &str) -> CliResult
         "ready" => {
             return Err(CliError::Usage(format!(
                 "{key} is read-only; set api_key_env and export the API key"
-            )))
+            )));
         }
         other => return Err(CliError::NotFound(other.to_string())),
     };

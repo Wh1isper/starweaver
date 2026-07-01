@@ -1,13 +1,13 @@
 //! `OpenAI` Responses request construction and replay mapping.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::{
+    ModelError, ModelSettings,
     adapter::{NativeToolDefinition, ToolDefinition},
     message::{ModelMessage, ModelRequestPart},
     providers::{apply_common_settings_without_seed, openai_responses_content},
     transport::MaxTokensParameter,
-    ModelError, ModelSettings,
 };
 
 mod instructions;
@@ -158,9 +158,9 @@ fn ensure_include(request: &mut Map<String, Value>, include: &str) {
     let entry = request
         .entry("include".to_string())
         .or_insert_with(|| Value::Array(Vec::new()));
-    if let Some(items) = entry.as_array_mut() {
-        if !items.iter().any(|item| item.as_str() == Some(include)) {
-            items.push(Value::String(include.to_string()));
-        }
+    if let Some(items) = entry.as_array_mut()
+        && !items.iter().any(|item| item.as_str() == Some(include))
+    {
+        items.push(Value::String(include.to_string()));
     }
 }

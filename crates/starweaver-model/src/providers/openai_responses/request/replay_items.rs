@@ -1,4 +1,4 @@
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::message::{ModelResponse, ModelResponsePart, ProviderPartInfo, ToolCallPart};
 
@@ -242,10 +242,10 @@ fn push_function_call(
         json!(call.arguments.wire_json_string()),
     );
     if let Some(provider) = provider.filter(|provider| provider.is_provider("openai")) {
-        if replay.send_item_ids {
-            if let Some(id) = &provider.id {
-                item.insert("id".to_string(), json!(id));
-            }
+        if replay.send_item_ids
+            && let Some(id) = &provider.id
+        {
+            item.insert("id".to_string(), json!(id));
         }
         if let Some(namespace) = provider.details.get("namespace") {
             item.insert("namespace".to_string(), namespace.clone());

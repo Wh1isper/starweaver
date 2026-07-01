@@ -9,17 +9,17 @@ use starweaver_runtime::{
 
 use crate::filters::{
     media::{
-        capability_filter, media_compress_filter, media_preflight_filter, media_split_filter,
-        media_upload_filter, MediaUploader,
+        MediaUploader, capability_filter, media_compress_filter, media_preflight_filter,
+        media_split_filter, media_upload_filter,
     },
     message::record_filter_order,
 };
 
 use super::{
     context_injection::{
-        auto_load_files_filter, background_shell_filter, bus_message_filter, cold_start_filter,
-        handoff_filter, inject_instruction_from_metadata, system_prompt_filter,
-        ENVIRONMENT_CONTEXT_METADATA, RUNTIME_CONTEXT_METADATA,
+        ENVIRONMENT_CONTEXT_METADATA, RUNTIME_CONTEXT_METADATA, auto_load_files_filter,
+        background_shell_filter, bus_message_filter, cold_start_filter, handoff_filter,
+        inject_instruction_from_metadata, system_prompt_filter,
     },
     ordering::{filter_capability_id, filter_capability_ordering},
     reasoning::reasoning_normalize_filter,

@@ -3,6 +3,7 @@
 use std::future::Future;
 
 use rmcp::{
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
     model::{
         AnnotateAble, CallToolRequestParams, CallToolResult, Implementation, ListPromptsResult,
         ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument,
@@ -10,7 +11,6 @@ use rmcp::{
     },
     service::{MaybeSendFuture, RequestContext},
     transport::stdio,
-    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
 
 struct FixtureMcpServer;
@@ -70,9 +70,11 @@ impl ServerHandler for FixtureMcpServer {
         std::future::ready(Ok(ListPromptsResult::with_all_items(vec![Prompt::new(
             "summarize",
             Some("Summarize fixture docs."),
-            Some(vec![PromptArgument::new("topic")
-                .with_description("Topic to summarize.")
-                .with_required(false)]),
+            Some(vec![
+                PromptArgument::new("topic")
+                    .with_description("Topic to summarize.")
+                    .with_required(false),
+            ]),
         )])))
     }
 

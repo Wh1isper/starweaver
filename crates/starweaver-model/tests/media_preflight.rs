@@ -2,9 +2,8 @@
 
 use serde_json::json;
 use starweaver_model::{
-    base64_encoded_len, detect_image_dimensions, detect_media_kind, parse_data_url,
-    raw_budget_from_base64_limit, ContentPart, ImageDimensions, MediaKind, MediaPolicy,
-    MediaPreflight,
+    ContentPart, ImageDimensions, MediaKind, MediaPolicy, MediaPreflight, base64_encoded_len,
+    detect_image_dimensions, detect_media_kind, parse_data_url, raw_budget_from_base64_limit,
 };
 
 #[test]
@@ -42,10 +41,12 @@ fn corrects_declared_media_type_from_detected_bytes() {
 fn flags_corrupt_and_policy_rejected_media() {
     let corrupt = MediaPreflight::inspect(b"GIF89a", Some("image/gif"));
     assert!(corrupt.corrupt);
-    assert!(corrupt
-        .corruption_reason
-        .as_deref()
-        .is_some_and(|reason| reason.contains("logical screen")));
+    assert!(
+        corrupt
+            .corruption_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("logical screen"))
+    );
 
     let policy = MediaPolicy {
         allow_gif: false,

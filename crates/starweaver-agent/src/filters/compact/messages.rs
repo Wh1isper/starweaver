@@ -1,9 +1,9 @@
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_context::AgentContext;
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ToolReturnPart,
 };
-use starweaver_runtime::{heal_openai_item_reference_history, AgentRunState};
+use starweaver_runtime::{AgentRunState, heal_openai_item_reference_history};
 
 use super::super::message::{
     build_restored_request_parts, metadata_content_parts, metadata_string_array, metadata_text,
@@ -306,10 +306,10 @@ fn trim_tool_return_for_compact(tool_return: &mut ToolReturnPart) {
             .metadata
             .insert("starweaver_compact_trimmed".to_string(), json!(true));
     }
-    if let Some(user_content) = &mut tool_return.user_content {
-        if let Some(text) = truncate_compact_text(&user_content.to_string()) {
-            *user_content = json!(text);
-        }
+    if let Some(user_content) = &mut tool_return.user_content
+        && let Some(text) = truncate_compact_text(&user_content.to_string())
+    {
+        *user_content = json!(text);
     }
 }
 

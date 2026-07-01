@@ -17,9 +17,11 @@ fn facade_reexports_mcp_toolset_types() {
     );
 
     assert_eq!(toolset.config().id, "docs");
-    assert!(toolset
-        .tool_name_conflict_hint()
-        .contains("PrefixedToolset"));
+    assert!(
+        toolset
+            .tool_name_conflict_hint()
+            .contains("PrefixedToolset")
+    );
 }
 
 #[tokio::test]

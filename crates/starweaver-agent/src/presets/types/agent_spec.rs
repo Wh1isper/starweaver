@@ -4,10 +4,9 @@ use starweaver_runtime::{AgentRuntimePolicy, CapabilitySpec};
 use starweaver_usage::UsageLimits;
 
 use super::{
-    is_false, ApprovalPolicyPreset, DurabilityPolicyPreset, EnvironmentPolicyPreset,
-    HostPolicySpec, ModelPreset, ObservabilityPolicyPreset, OutputSpec, RetryPolicyPreset,
-    SkillBundleSpec, StreamingPolicyPreset, TemplateStringSpec, ToolsetWrapperSpec,
-    WorkspacePolicySpec,
+    ApprovalPolicyPreset, DurabilityPolicyPreset, EnvironmentPolicyPreset, HostPolicySpec,
+    ModelPreset, ObservabilityPolicyPreset, OutputSpec, RetryPolicyPreset, SkillBundleSpec,
+    StreamingPolicyPreset, TemplateStringSpec, ToolsetWrapperSpec, WorkspacePolicySpec, is_false,
 };
 
 /// Host-materialized `AgentSpec` policies after registry validation.

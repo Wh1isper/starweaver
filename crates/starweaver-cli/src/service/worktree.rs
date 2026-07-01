@@ -11,7 +11,7 @@ use serde_json::json;
 use starweaver_session::RunRecord;
 
 use super::CliService;
-use crate::{args::RunCommand, slash_commands::ExpandedSlashCommand, CliError, CliResult};
+use crate::{CliError, CliResult, args::RunCommand, slash_commands::ExpandedSlashCommand};
 
 #[derive(Clone, Debug)]
 pub(super) struct WorktreeResolution {

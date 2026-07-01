@@ -2,9 +2,9 @@
 
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{args::TuiRenderMode, config::CliConfig, CliError, CliResult};
+use crate::{CliError, CliResult, args::TuiRenderMode, config::CliConfig};
 
 /// Read the selected model/profile name for a frontend client.
 pub fn read_selected_profile(config: &CliConfig, client: &str) -> CliResult<Option<String>> {

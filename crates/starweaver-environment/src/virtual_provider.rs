@@ -6,8 +6,8 @@ use std::{
 };
 
 use crate::{
-    normalize_tmp_namespace, EnvironmentError, EnvironmentPolicy, EnvironmentResult,
-    EnvironmentState, FilePolicy, ResourceRef, ShellOutput, ShellPolicy, ShellProcessSnapshot,
+    EnvironmentError, EnvironmentPolicy, EnvironmentResult, EnvironmentState, FilePolicy,
+    ResourceRef, ShellOutput, ShellPolicy, ShellProcessSnapshot, normalize_tmp_namespace,
 };
 
 mod impls;

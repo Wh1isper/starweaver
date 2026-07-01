@@ -7,8 +7,8 @@ use starweaver_core::Metadata;
 use starweaver_model::ToolDefinition;
 
 use crate::{
-    set_tool_metadata_kind, DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction,
-    ToolKind, ToolResult, ToolUserInputPreprocessResult, Toolset,
+    DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolKind, ToolResult,
+    ToolUserInputPreprocessResult, Toolset, set_tool_metadata_kind,
 };
 
 /// Toolset wrapper that marks matching tools as deferred external work.

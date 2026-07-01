@@ -123,10 +123,12 @@ mod tests {
         let ModelRequestPart::ToolReturn(tool_return) = &request.parts[0] else {
             panic!("tool return")
         };
-        assert!(tool_return
-            .content
-            .as_str()
-            .is_some_and(|content| content.contains("truncated")));
+        assert!(
+            tool_return
+                .content
+                .as_str()
+                .is_some_and(|content| content.contains("truncated"))
+        );
         let ModelMessage::Request(media_request) = &history[2] else {
             panic!("request")
         };
@@ -165,10 +167,12 @@ mod tests {
         let ModelRequestPart::ToolReturn(tool_return) = &request.parts[0] else {
             panic!("tool return")
         };
-        assert!(tool_return
-            .content
-            .as_str()
-            .is_some_and(|content| content.contains("truncated")));
+        assert!(
+            tool_return
+                .content
+                .as_str()
+                .is_some_and(|content| content.contains("truncated"))
+        );
         assert_eq!(
             tool_return
                 .metadata

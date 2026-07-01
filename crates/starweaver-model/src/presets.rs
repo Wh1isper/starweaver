@@ -22,8 +22,8 @@ use crate::ModelSettings;
 
 use config::model_config_by_name;
 use registry::{
-    model_config_alias, model_settings_alias, MODEL_CONFIG_ALIASES, MODEL_CONFIG_PRESETS,
-    MODEL_SETTINGS_ALIASES, MODEL_SETTINGS_PRESETS,
+    MODEL_CONFIG_ALIASES, MODEL_CONFIG_PRESETS, MODEL_SETTINGS_ALIASES, MODEL_SETTINGS_PRESETS,
+    model_config_alias, model_settings_alias,
 };
 use settings::model_settings_by_name;
 

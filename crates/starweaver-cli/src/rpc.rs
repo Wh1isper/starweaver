@@ -6,36 +6,37 @@ mod transport;
 use std::{
     collections::HashMap,
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc,
     },
     thread,
     time::Duration,
 };
 
 use self::environment_manager::EnvironmentAttachmentManager;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_rpc_core::{
-    attachment_result, environment_attachment_refs, environment_attachment_result,
-    handle_json_rpc_text_async, notification, output_item, replay_cursor_from_params,
-    replay_result, stream_payload_format, EnvironmentActiveListParams,
-    EnvironmentActiveMountParams, EnvironmentActiveUnmountParams, RpcError, StreamPayloadFormat,
-    INVALID_PARAMS, METHOD_NOT_FOUND, RUN_CONFLICT, SERVER_ERROR, UNSUPPORTED_FEATURE,
+    EnvironmentActiveListParams, EnvironmentActiveMountParams, EnvironmentActiveUnmountParams,
+    INVALID_PARAMS, METHOD_NOT_FOUND, RUN_CONFLICT, RpcError, SERVER_ERROR, StreamPayloadFormat,
+    UNSUPPORTED_FEATURE, attachment_result, environment_attachment_refs,
+    environment_attachment_result, handle_json_rpc_text_async, notification, output_item,
+    replay_cursor_from_params, replay_result, stream_payload_format,
 };
 use starweaver_stream::ReplayScope;
 use tokio::runtime::Runtime;
 use uuid::Uuid;
 
 use crate::{
+    CliError, CliResult, CliService,
     args::{HitlPolicy, OutputMode, RpcCommand, RpcTransport, RunCommand},
     client_state,
-    config::{get_config_value, read_current_session, write_current_session, CliConfig},
+    config::{CliConfig, get_config_value, read_current_session, write_current_session},
     environment::validate_envd_attachment_transport,
     local_store::{LocalStore, LocalStreamArchive},
     profiles::{list_config_model_profiles, list_profiles, show_profile},
     runner::CliSteeringMessage,
     runtime_coordinator::{CliRuntimeCoordinator, RunAttachment, RunStreamEvent, StartedRun},
-    CliError, CliResult, CliService,
 };
 
 const PROTOCOL_VERSION: &str = "2026-06-08";
@@ -257,7 +258,7 @@ impl RpcService {
                         return Err(RpcError::new(
                             INVALID_PARAMS,
                             format!("unknown approval status: {other}"),
-                        ))
+                        ));
                     }
                 };
                 let reason = params
@@ -692,10 +693,10 @@ impl RpcService {
                     .recv()
                     .map_err(|error| RpcError::new(SERVER_ERROR, error.to_string()))?,
             };
-            if let RunStreamEvent::Status(status) = event {
-                if status_is_terminal(&status.status) {
-                    return Ok(json!({"status": status}));
-                }
+            if let RunStreamEvent::Status(status) = event
+                && status_is_terminal(&status.status)
+            {
+                return Ok(json!({"status": status}));
             }
         }
     }
@@ -976,10 +977,8 @@ fn forward_started_run_events(
             &event,
             RunStreamEvent::Status(status) if status_is_terminal(&status.status)
         );
-        if send_notifications {
-            if let Some(frame) = run_event_notification(event, format) {
-                let _ = output_sender.send(frame);
-            }
+        if send_notifications && let Some(frame) = run_event_notification(event, format) {
+            let _ = output_sender.send(frame);
         }
         if terminal {
             let _ = environment_manager.mark_run_finished(run_id);
@@ -1275,8 +1274,8 @@ mod tests {
         io::{Read as _, Write as _},
         net::{TcpListener, TcpStream},
         sync::{
-            atomic::{AtomicBool, Ordering},
             Arc,
+            atomic::{AtomicBool, Ordering},
         },
     };
 
@@ -1284,7 +1283,7 @@ mod tests {
     use starweaver_stream::{EnvironmentLifecycleEvent, ReplayEvent, ReplayEventKind, ReplayScope};
 
     use super::*;
-    use crate::{args, ConfigResolver};
+    use crate::{ConfigResolver, args};
 
     fn test_config(root: &std::path::Path) -> CliConfig {
         let cli = args::parse(["starweaver-cli".to_string(), "rpc".to_string()]).unwrap();
@@ -1503,9 +1502,12 @@ model = "test:coding"
         assert_eq!(listed_profiles[0]["model_id"], "test:default");
         assert_eq!(listed_profiles[1]["name"], "coding");
         assert_eq!(listed_profiles[1]["model_id"], "test:coding");
-        assert!(!listed_profiles
-            .iter()
-            .any(|profile| profile["source"] == "built-in" || profile["model_id"] == "local_echo"));
+        assert!(
+            !listed_profiles
+                .iter()
+                .any(|profile| profile["source"] == "built-in"
+                    || profile["model_id"] == "local_echo")
+        );
         assert_eq!(listed["current"]["selectedProfile"], config.default_profile);
 
         let selected = request(
@@ -1551,10 +1553,12 @@ model = "test:coding"
         let response = response.unwrap();
         assert_eq!(response["id"], 2);
         assert_eq!(response["error"]["code"], -32_602);
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("unknown model profile: general"));
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("unknown model profile: general")
+        );
     }
 
     #[test]
@@ -1578,9 +1582,11 @@ model = "test:coding"
         assert_eq!(listed_profiles[0]["name"], "coding");
         assert_eq!(listed_profiles[0]["source"], "config");
         assert_eq!(listed_profiles[0]["model_id"], "test:coding");
-        assert!(!listed_profiles
-            .iter()
-            .any(|profile| profile["model_id"] == "local_echo"));
+        assert!(
+            !listed_profiles
+                .iter()
+                .any(|profile| profile["model_id"] == "local_echo")
+        );
 
         let selected = request(
             &config,
@@ -1712,10 +1718,12 @@ model = "test:coding"
         let response = response.unwrap();
         assert_eq!(response["id"], 1);
         assert_eq!(response["error"]["code"], UNSUPPORTED_FEATURE);
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("live notification transport"));
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("live notification transport")
+        );
     }
 
     #[test]
@@ -1769,10 +1777,12 @@ model = "test:coding"
             }),
         );
         assert_eq!(connection_error["code"], UNSUPPORTED_FEATURE);
-        assert!(connection_error["message"]
-            .as_str()
-            .unwrap()
-            .contains("session scope"));
+        assert!(
+            connection_error["message"]
+                .as_str()
+                .unwrap()
+                .contains("session scope")
+        );
 
         let attached = request_with_server(
             &server,
@@ -2096,10 +2106,12 @@ model = "test:coding"
             }),
         );
         assert_eq!(error["code"], INVALID_PARAMS);
-        assert!(error["message"]
-            .as_str()
-            .unwrap()
-            .contains("mutually exclusive"));
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("mutually exclusive")
+        );
     }
 
     #[test]
@@ -2219,10 +2231,12 @@ model = "test:coding"
             }),
         );
         assert_eq!(error["code"], INVALID_PARAMS);
-        assert!(error["message"]
-            .as_str()
-            .unwrap()
-            .contains("cannot be empty"));
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("cannot be empty")
+        );
     }
 
     #[test]
@@ -2254,11 +2268,13 @@ model = "test:coding"
             }),
         );
         assert_eq!(error["code"], starweaver_rpc_core::ENVIRONMENT_UNAVAILABLE);
-        assert!(error["message"]
-            .as_str()
-            .unwrap()
-            .to_ascii_lowercase()
-            .contains("connection"));
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("connection")
+        );
     }
 
     #[test]
@@ -2355,9 +2371,11 @@ model = "test:coding"
         assert_eq!(output["payloadFormat"], "agui");
         let events = output["events"].as_array().unwrap();
         assert!(!events.is_empty());
-        assert!(events
-            .iter()
-            .any(|event| event["payload"]["type"] == "RUN_FINISHED"));
+        assert!(
+            events
+                .iter()
+                .any(|event| event["payload"]["type"] == "RUN_FINISHED")
+        );
     }
 
     #[test]

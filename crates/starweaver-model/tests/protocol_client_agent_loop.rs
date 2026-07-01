@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ContentPart, FinishReason, HttpModelConfig, HttpRequest, HttpResponse, ModelAdapter,
@@ -301,9 +301,11 @@ fn assert_openai_chat_wire(body: &Value) {
                 .unwrap()
                 .contains("request-level instruction")
     }));
-    assert!(messages
-        .iter()
-        .any(|message| { message["role"] == "user" && message["content"] == "lookup Paris" }));
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message["role"] == "user" && message["content"] == "lookup Paris" })
+    );
     assert!(messages.iter().any(|message| {
         message["role"] == "assistant"
             && message["tool_calls"][0]["id"] == "call_1"
@@ -318,14 +320,18 @@ fn assert_openai_chat_wire(body: &Value) {
 }
 
 fn assert_openai_responses_wire(body: &Value) {
-    assert!(body["instructions"]
-        .as_str()
-        .unwrap()
-        .contains("request-level instruction"));
+    assert!(
+        body["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("request-level instruction")
+    );
     let input = body["input"].as_array().unwrap();
-    assert!(input
-        .iter()
-        .any(|item| { item["role"] == "user" && item["content"][0]["text"] == "lookup Paris" }));
+    assert!(
+        input
+            .iter()
+            .any(|item| { item["role"] == "user" && item["content"][0]["text"] == "lookup Paris" })
+    );
     assert!(input.iter().any(|item| {
         item["type"] == "function_call" && item["call_id"] == "call_1" && item["name"] == "lookup"
     }));
@@ -338,10 +344,12 @@ fn assert_openai_responses_wire(body: &Value) {
 }
 
 fn assert_anthropic_wire(body: &Value) {
-    assert!(body["system"]
-        .as_str()
-        .unwrap()
-        .contains("request-level instruction"));
+    assert!(
+        body["system"]
+            .as_str()
+            .unwrap()
+            .contains("request-level instruction")
+    );
     let messages = body["messages"].as_array().unwrap();
     assert!(messages.iter().any(|message| {
         message["role"] == "user" && message["content"][0]["text"] == "lookup Paris"
@@ -365,10 +373,12 @@ fn assert_anthropic_wire(body: &Value) {
 }
 
 fn assert_gemini_wire(body: &Value) {
-    assert!(body["systemInstruction"]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("request-level instruction"));
+    assert!(
+        body["systemInstruction"]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("request-level instruction")
+    );
     let contents = body["contents"].as_array().unwrap();
     assert!(contents.iter().any(|content| {
         content["role"] == "user" && content["parts"][0]["text"] == "lookup Paris"
@@ -581,10 +591,12 @@ fn assert_hitl_resume_wire(protocol: ProtocolFamily, body: &Value) {
 }
 
 fn assert_bedrock_wire(body: &Value) {
-    assert!(body["system"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("request-level instruction"));
+    assert!(
+        body["system"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("request-level instruction")
+    );
     let messages = body["messages"].as_array().unwrap();
     assert!(messages.iter().any(|message| {
         message["role"] == "user" && message["content"][0]["text"] == "lookup Paris"

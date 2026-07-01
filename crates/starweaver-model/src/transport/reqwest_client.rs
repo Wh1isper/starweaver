@@ -5,9 +5,9 @@ use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 
-use crate::{allow_real_model_requests, ModelError};
+use crate::{ModelError, allow_real_model_requests};
 
-use super::sse::{push_sse_utf8_buffer, send_sse_parser_events, SseJsonParser, StreamSendError};
+use super::sse::{SseJsonParser, StreamSendError, push_sse_utf8_buffer, send_sse_parser_events};
 use super::{HttpMethod, HttpRequest, HttpResponse, ModelEventStream, ModelHttpClient};
 use crate::transport::{is_retryable_status, websocket};
 

@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use crate::{config::CliConfig, error::io_error, CliResult};
+use crate::{CliResult, config::CliConfig, error::io_error};
 
 const DEFAULT_REPO: &str = "Wh1isper/starweaver";
 const RELEASE_TAG_PREFIX: &str = "/releases/tag/";
@@ -238,7 +238,7 @@ mod tests {
 
     use chrono::TimeDelta;
 
-    use crate::{args, ConfigResolver};
+    use crate::{ConfigResolver, args};
 
     use super::*;
 

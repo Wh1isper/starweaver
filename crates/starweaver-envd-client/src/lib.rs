@@ -4,14 +4,14 @@ use std::{
     path::Path,
     process::Stdio,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
 use async_trait::async_trait;
-use serde::{de::DeserializeOwned, Serialize};
-use serde_json::{json, Value};
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use starweaver_envd_core::{
     CommandRunRequest, CommandRunResult, EnvdError, EnvdErrorCode, EnvdResult, EnvdService,
     EnvironmentContextRequest, EnvironmentContextResult, EnvironmentDescriptor, EnvironmentRequest,

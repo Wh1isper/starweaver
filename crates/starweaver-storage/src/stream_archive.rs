@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use starweaver_core::{RunId, SessionId};
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_stream::{

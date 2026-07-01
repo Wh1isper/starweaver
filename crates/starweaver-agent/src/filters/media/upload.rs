@@ -3,10 +3,10 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_context::{AgentContext, ModelCapability};
 use starweaver_model::{
-    parse_data_url, ContentPart, MediaPolicy, MediaPreflight, ModelMessage, ModelRequestPart,
+    ContentPart, MediaPolicy, MediaPreflight, ModelMessage, ModelRequestPart, parse_data_url,
 };
 use starweaver_runtime::AgentRunState;
 

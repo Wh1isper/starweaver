@@ -8,8 +8,8 @@ mod named;
 pub use compact::CacheFriendlyCompactCapability;
 pub use media::{MediaUploadRequest, MediaUploader};
 pub use named::{
-    default_filter_bundle, default_filter_capabilities, default_filter_capabilities_with_config,
-    NamedFilterCapability, DEFAULT_FILTER_ORDER,
+    DEFAULT_FILTER_ORDER, NamedFilterCapability, default_filter_bundle,
+    default_filter_capabilities, default_filter_capabilities_with_config,
 };
 
 pub(crate) fn default_filter_capabilities_with_media_uploader(

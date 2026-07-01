@@ -1,7 +1,7 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use serde_json::json;
-use starweaver_model::{providers::openai_responses::OpenAiResponsesAdapter, NativeToolDefinition};
+use starweaver_model::{NativeToolDefinition, providers::openai_responses::OpenAiResponsesAdapter};
 
 #[test]
 fn maps_provider_native_mcp_tool_to_openai_responses_request() {

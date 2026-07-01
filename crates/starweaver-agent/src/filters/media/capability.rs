@@ -1,6 +1,6 @@
 //! Model capability media filtering.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_context::{AgentContext, ModelCapability};
 use starweaver_model::{ContentPart, ModelMessage, ModelRequestPart};
 use starweaver_runtime::AgentRunState;

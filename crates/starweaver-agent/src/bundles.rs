@@ -15,27 +15,28 @@ use starweaver_tools::{DynToolset, PrefixedToolset};
 
 pub use context_tools::context_tools;
 pub use environment::{
-    attach_environment, attach_process_shell, attach_shell_review, attach_shell_review_handle,
-    environment_toolsets, filesystem_tools, process_shell_toolsets, shell_tools,
-    EnvironmentContextCapability, EnvironmentHandle, ProcessShellHandle, ShellReviewAction,
-    ShellReviewConfig, ShellReviewContextSnapshot, ShellReviewDecision, ShellReviewHandle,
-    ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
-    DEFAULT_SHELL_REVIEW_PROMPT,
+    DEFAULT_SHELL_REVIEW_PROMPT, EnvironmentContextCapability, EnvironmentHandle,
+    ProcessShellHandle, ShellReviewAction, ShellReviewConfig, ShellReviewContextSnapshot,
+    ShellReviewDecision, ShellReviewHandle, ShellReviewPreviousDecision, ShellReviewRecord,
+    ShellReviewRequest, ShellReviewRiskLevel, attach_environment, attach_process_shell,
+    attach_shell_review, attach_shell_review_handle, environment_toolsets, filesystem_tools,
+    process_shell_toolsets, shell_tools,
 };
 pub use runtime_context::RuntimeContextCapability;
 pub use skills::{
-    parse_skill_markdown, skill_discovery, skill_discovery_from_report, skill_tools,
+    SKILL_ACTIVATION_EVENT_KIND, SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND,
     SkillDiscoveryCapability, SkillError, SkillPackage, SkillRegistry, SkillReloadBinding,
     SkillReloadChange, SkillReloadChangeKind, SkillReloadDecision, SkillReloadReason,
     SkillReloadReport, SkillReloadSchedule, SkillReloadScheduleState, SkillScanDiagnostic,
     SkillScanDiagnosticKind, SkillScanReport, SkillScheduledReloadResult, SkillSourceKind,
-    SkillSourceScope, SKILL_ACTIVATION_EVENT_KIND, SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND,
+    SkillSourceScope, parse_skill_markdown, skill_discovery, skill_discovery_from_report,
+    skill_tools,
 };
-pub use starweaver_tools::{dynamic_tool_proxy, ToolProxyNamePrefixError, ToolProxyToolset};
+pub use starweaver_tools::{ToolProxyNamePrefixError, ToolProxyToolset, dynamic_tool_proxy};
 pub use task::task_tools;
 pub use web_media::{
-    host_io_tools, HostMediaCapabilities, HostMediaUnderstandingClient,
-    HostMediaUnderstandingClientHandle, MediaUnderstandingRequest, MediaUnderstandingResponse,
+    HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
+    MediaUnderstandingRequest, MediaUnderstandingResponse, host_io_tools,
 };
 pub use web_media::{
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,

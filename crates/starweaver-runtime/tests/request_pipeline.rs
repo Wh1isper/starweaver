@@ -3,22 +3,22 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 use starweaver_context::{AgentContext, ToolAvailabilityPolicy, ToolConfig};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
-    ContentPart, FunctionModel, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    TestModel, ToolDefinition, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, ContentPart, FunctionModel,
     INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_METADATA,
-    INSTRUCTION_ORIGIN_TOOLSET,
+    INSTRUCTION_ORIGIN_TOOLSET, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
+    TestModel, ToolDefinition,
 };
 use starweaver_runtime::{
     Agent, AgentCapability, AgentError, AgentRunState, FunctionDynamicInstruction,
     FunctionOutputFunction, OutputFunctionContext, OutputFunctionDefinition, OutputValue,
 };
 use starweaver_tools::{
-    set_tool_metadata_kind, DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext,
-    ToolInstruction, ToolKind, ToolRegistry, ToolResult,
+    DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext, ToolInstruction, ToolKind,
+    ToolRegistry, ToolResult, set_tool_metadata_kind,
 };
 
 struct ReorderToolsCapability;
@@ -134,12 +134,11 @@ fn media_tool(name: &'static str) -> DynTool {
 
 fn final_answer_function() -> FunctionOutputFunction<
     impl Send
-        + Sync
-        + Fn(
-            OutputFunctionContext,
-            serde_json::Value,
-        )
-            -> std::future::Ready<Result<OutputValue, starweaver_runtime::OutputValidationError>>,
+    + Sync
+    + Fn(
+        OutputFunctionContext,
+        serde_json::Value,
+    ) -> std::future::Ready<Result<OutputValue, starweaver_runtime::OutputValidationError>>,
 > {
     FunctionOutputFunction::new(
         OutputFunctionDefinition::new("final_answer", json!({"type": "object"})),

@@ -6,16 +6,16 @@ use super::formatting::{
 };
 
 use super::{
-    compact_status_text, format_custom_context_event_lines, format_streaming_tool_call_line,
+    ActiveModelSegment, ActiveModelSegmentKind, AgentStreamEvent, AgentStreamRecord,
+    ContextEventCategory, HitlPanelState, InteractiveTuiState, ModelResponseStreamEvent,
+    NoticeLevel, PartDelta, StreamDelta, StreamingPartKind, StreamingToolCallState, SubagentStatus,
+    SubagentTimelineItem, SubagentUpdate, ToolActivityStatus, ToolTimelineItem, ToolVisibility,
+    Value, compact_status_text, format_custom_context_event_lines, format_streaming_tool_call_line,
     format_tool_call_line, format_tool_return_lines, is_subagent_lifecycle_event_kind,
     is_subagent_start_event_kind, is_task_snapshot_event, is_task_tool_name, merge_stream_fragment,
     normalized_event_kind, streaming_part_kind, streaming_tool_arguments_match,
     streaming_tool_state_is_available, subagent_display_id, task_panel_items_from_value,
-    tool_call_visibility_key, value_args_preview, ActiveModelSegment, ActiveModelSegmentKind,
-    AgentStreamEvent, AgentStreamRecord, ContextEventCategory, HitlPanelState, InteractiveTuiState,
-    ModelResponseStreamEvent, NoticeLevel, PartDelta, StreamDelta, StreamingPartKind,
-    StreamingToolCallState, SubagentStatus, SubagentTimelineItem, SubagentUpdate,
-    ToolActivityStatus, ToolTimelineItem, ToolVisibility, Value,
+    tool_call_visibility_key, value_args_preview,
 };
 
 impl InteractiveTuiState {
@@ -182,10 +182,10 @@ impl InteractiveTuiState {
                 }
             }
             AgentStreamEvent::ToolCall { call, .. } => {
-                if let Some(state) = self.subagent_states.get_mut(&agent_id) {
-                    if !state.tool_names.iter().any(|name| name == &call.name) {
-                        state.tool_names.push(call.name.clone());
-                    }
+                if let Some(state) = self.subagent_states.get_mut(&agent_id)
+                    && !state.tool_names.iter().any(|name| name == &call.name)
+                {
+                    state.tool_names.push(call.name.clone());
                 }
             }
             AgentStreamEvent::ModelStream {
@@ -366,10 +366,10 @@ impl InteractiveTuiState {
                 || "Transport: websocket -> http".to_string(),
                 |reason| format!("Transport: websocket -> http ({reason})"),
             ));
-        } else if normalized.ends_with("model_transport_selected") {
-            if let Some(transport) = payload.get("transport").and_then(Value::as_str) {
-                self.model_transport_status = Some(format!("Transport: {transport}"));
-            }
+        } else if normalized.ends_with("model_transport_selected")
+            && let Some(transport) = payload.get("transport").and_then(Value::as_str)
+        {
+            self.model_transport_status = Some(format!("Transport: {transport}"));
         }
     }
 
@@ -521,15 +521,16 @@ impl InteractiveTuiState {
         part_index: Option<usize>,
         streaming: bool,
     ) -> super::TuiItemId {
-        if let Some(segment) = self.active_model_segment.as_ref() {
-            if segment.kind == kind && segment.part_index == part_index {
-                debug_assert!(
-                    self.timeline.is_tail_item(segment.item_id),
-                    "active model segment must be the timeline tail"
-                );
-                if self.timeline.is_tail_item(segment.item_id) {
-                    return segment.item_id;
-                }
+        if let Some(segment) = self.active_model_segment.as_ref()
+            && segment.kind == kind
+            && segment.part_index == part_index
+        {
+            debug_assert!(
+                self.timeline.is_tail_item(segment.item_id),
+                "active model segment must be the timeline tail"
+            );
+            if self.timeline.is_tail_item(segment.item_id) {
+                return segment.item_id;
             }
         }
         self.finish_current_model_item();

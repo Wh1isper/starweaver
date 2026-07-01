@@ -4,12 +4,12 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_model::{
-    adapter::ToolDefinition, ModelAdapter, ModelError, ModelMessage, ModelProfile,
-    ModelRequestContext, ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings,
-    ProtocolFamily, ToolCallPart,
+    ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
+    ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily,
+    ToolCallPart, adapter::ToolDefinition,
 };
 use starweaver_runtime::{Agent, AgentCapability, AgentError, CapabilityError, CapabilityResult};
-use starweaver_tools::{set_tool_metadata_kind, ToolKind};
+use starweaver_tools::{ToolKind, set_tool_metadata_kind};
 
 #[derive(Clone)]
 struct InspectingModel {

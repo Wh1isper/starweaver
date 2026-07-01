@@ -3,7 +3,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use starweaver_cli::{run_rpc_server, RpcCommand, RpcTransport};
+use starweaver_cli::{RpcCommand, RpcTransport, run_rpc_server};
 
 fn main() -> ExitCode {
     let cli = StandaloneRpcCli::parse();

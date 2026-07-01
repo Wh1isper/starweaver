@@ -1,8 +1,8 @@
 //! Provider request settings helpers.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{transport::MaxTokensParameter, ModelSettings};
+use crate::{ModelSettings, transport::MaxTokensParameter};
 
 #[cfg(test)]
 pub fn apply_common_settings(

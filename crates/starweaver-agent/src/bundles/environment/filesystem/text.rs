@@ -6,8 +6,8 @@ use starweaver_environment::{EnvironmentError, EnvironmentProvider, FileStat};
 use starweaver_tools::{ToolError, ToolResult};
 
 use super::{
-    context::uses_relaxed_text_limits, default_view_line_limit, default_view_max_line_length,
-    tool_execution_error, ViewArgs,
+    ViewArgs, context::uses_relaxed_text_limits, default_view_line_limit,
+    default_view_max_line_length, tool_execution_error,
 };
 use crate::bundles::helpers::tool_model_retry;
 

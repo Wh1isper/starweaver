@@ -4,16 +4,15 @@ use std::{
 };
 
 use super::{
-    builtin::builtin_profile_specs, default_toolsets, load_profile_spec,
+    McpDoctorFinding, McpSummary, ProfileSource, ProfileSummary, SkillSummary, SubagentSummary,
+    ToolSummary, builtin::builtin_profile_specs, default_toolsets, load_profile_spec,
     load_skill_packages_from_dir, mcp_transport_error, model_context_window,
     profile_context_window, profile_model_cfg, profile_model_id, profile_model_settings,
-    McpDoctorFinding, McpSummary, ProfileSource, ProfileSummary, SkillSummary, SubagentSummary,
-    ToolSummary,
 };
 use crate::{
-    config::{mcp_servers, tool_need_approval, CliConfig, CliModelProfile},
-    error::io_error,
     CliError, CliResult,
+    config::{CliConfig, CliModelProfile, mcp_servers, tool_need_approval},
+    error::io_error,
 };
 
 /// List built-in and configured profiles.

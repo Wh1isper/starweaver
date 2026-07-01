@@ -13,8 +13,8 @@ mod text;
 use starweaver_tools::DynToolset;
 
 use super::args::{
-    default_view_line_limit, default_view_max_line_length, DeleteArgs, EditArgs, FilePathArgs,
-    GlobArgs, GrepArgs, ListArgs, MkdirArgs, MultiEditArgs, PathPairsArgs, ViewArgs, WriteArgs,
+    DeleteArgs, EditArgs, FilePathArgs, GlobArgs, GrepArgs, ListArgs, MkdirArgs, MultiEditArgs,
+    PathPairsArgs, ViewArgs, WriteArgs, default_view_line_limit, default_view_max_line_length,
 };
 use crate::bundles::helpers::tool_execution_error;
 

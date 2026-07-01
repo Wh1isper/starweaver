@@ -6,17 +6,18 @@ use async_trait::async_trait;
 use starweaver_context::AgentContext;
 use starweaver_core::{AgentId, TraceContext};
 use starweaver_model::{
-    tool_call_response, FinishReason, ModelResponse, ModelResponsePart, ToolCallPart,
+    FinishReason, ModelResponse, ModelResponsePart, ToolCallPart, tool_call_response,
 };
 use starweaver_runtime::{
-    export_otel_gen_ai_spans, AdapterTraceRecorder, Agent, AgentCapability, AgentRunState,
-    CapabilityError, CapabilityResult, InMemoryTraceRecorder, OtelGenAiSpan, SpanKind, SpanStatus,
-    TraceLevel,
+    AdapterTraceRecorder, Agent, AgentCapability, AgentRunState, CapabilityError, CapabilityResult,
+    InMemoryTraceRecorder, OtelGenAiSpan, SpanKind, SpanStatus, TraceLevel,
+    export_otel_gen_ai_spans,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 use starweaver_usage::Usage;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn runtime_records_nested_agent_step_model_and_tool_spans() {
     let recorder = Arc::new(InMemoryTraceRecorder::new());
     let tool = FunctionTool::new(
@@ -69,14 +70,18 @@ async fn runtime_records_nested_agent_step_model_and_tool_spans() {
                 .iter()
                 .any(|event| event.name == "starweaver.model.response")
     }));
-    assert!(tool_span
-        .events
-        .iter()
-        .any(|event| event.name == "starweaver.tool.call"));
-    assert!(tool_span
-        .events
-        .iter()
-        .any(|event| event.name == "starweaver.tool.return"));
+    assert!(
+        tool_span
+            .events
+            .iter()
+            .any(|event| event.name == "starweaver.tool.call")
+    );
+    assert!(
+        tool_span
+            .events
+            .iter()
+            .any(|event| event.name == "starweaver.tool.return")
+    );
     let tool_call_event = tool_span
         .events
         .iter()
@@ -95,17 +100,21 @@ async fn runtime_records_nested_agent_step_model_and_tool_spans() {
         tool_return_event.attributes["gen_ai.tool.call.result"]["redacted"],
         serde_json::json!(true)
     );
-    assert!(step_spans
-        .iter()
-        .all(|span| span.parent_span_id.as_deref() == Some(agent_span.span_id.as_str())));
+    assert!(
+        step_spans
+            .iter()
+            .all(|span| span.parent_span_id.as_deref() == Some(agent_span.span_id.as_str()))
+    );
     assert!(model_spans.iter().all(|span| {
         step_spans
             .iter()
             .any(|step| span.parent_span_id.as_deref() == Some(step.span_id.as_str()))
     }));
-    assert!(step_spans
-        .iter()
-        .any(|step| tool_span.parent_span_id.as_deref() == Some(step.span_id.as_str())));
+    assert!(
+        step_spans
+            .iter()
+            .any(|step| tool_span.parent_span_id.as_deref() == Some(step.span_id.as_str()))
+    );
     assert!(
         spans
             .iter()
@@ -175,11 +184,13 @@ fn assert_agent_otel_export(export: &[OtelGenAiSpan]) {
         agent_span.attributes["gen_ai.agent.name"],
         serde_json::json!("Main Agent")
     );
-    assert!(agent_span
-        .attributes
-        .get("gen_ai.conversation.id")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|value| !value.is_empty()));
+    assert!(
+        agent_span
+            .attributes
+            .get("gen_ai.conversation.id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    );
 }
 
 fn assert_model_otel_export(export: &[OtelGenAiSpan]) {
@@ -247,9 +258,11 @@ fn assert_tool_otel_export(export: &[OtelGenAiSpan]) {
         tool_span.attributes["gen_ai.tool.name"],
         serde_json::json!("echo")
     );
-    assert!(tool_span.attributes["gen_ai.tool.call.id"]
-        .as_str()
-        .is_some_and(|value| value.starts_with("sw-tool-")));
+    assert!(
+        tool_span.attributes["gen_ai.tool.call.id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sw-tool-"))
+    );
     assert_eq!(
         tool_span.attributes["gen_ai.agent.id"],
         serde_json::json!("agent-main")
@@ -336,9 +349,11 @@ async fn run_start_error_closes_agent_span_and_restores_trace_context() {
     assert!(error.to_string().contains("run start failed"));
     assert_eq!(context.trace_context, root);
     let spans = recorder.spans();
-    assert!(spans
-        .iter()
-        .all(|span| !matches!(span.status, SpanStatus::Open)));
+    assert!(
+        spans
+            .iter()
+            .all(|span| !matches!(span.status, SpanStatus::Open))
+    );
     let agent_span = spans
         .iter()
         .find(|span| span.name == "gen_ai.invoke_agent")
@@ -396,9 +411,11 @@ async fn before_tool_error_closes_active_tool_step_and_agent_spans() {
     assert!(error.to_string().contains("before tool failed"));
     assert_eq!(context.trace_context, root);
     let spans = recorder.spans();
-    assert!(spans
-        .iter()
-        .all(|span| !matches!(span.status, SpanStatus::Open)));
+    assert!(
+        spans
+            .iter()
+            .all(|span| !matches!(span.status, SpanStatus::Open))
+    );
     let tool_span = spans
         .iter()
         .find(|span| span.name == "gen_ai.execute_tool")

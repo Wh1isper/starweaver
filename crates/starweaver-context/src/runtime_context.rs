@@ -143,10 +143,10 @@ fn append_active_tasks(xml: &mut XmlWriter, context: &AgentContext, detailed: bo
                     .map(|(key, value)| (key.as_str(), value.as_str())),
             )
             .text_element("subject", &task.subject);
-            if task.status == TaskStatus::InProgress {
-                if let Some(active_form) = &task.active_form {
-                    xml.text_element("active-form", active_form);
-                }
+            if task.status == TaskStatus::InProgress
+                && let Some(active_form) = &task.active_form
+            {
+                xml.text_element("active-form", active_form);
             }
             xml.close("task");
         } else {

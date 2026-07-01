@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn standalone_http_process_serves_initialize_and_shutdown() {

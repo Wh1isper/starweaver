@@ -13,15 +13,15 @@ use uuid::Uuid;
 use super::{
     args::{ProcessIdArgs, ShellExecArgs, ShellInputArgs, ShellSignalArgs, ShellWaitArgs},
     handle::{environment_provider, maybe_environment_provider},
-    shell_review::{review_shell_command_or_block, ShellReviewContextSnapshot},
+    shell_review::{ShellReviewContextSnapshot, review_shell_command_or_block},
 };
 use crate::bundles::helpers::{
     static_tool, static_tool_with_metadata, tool_execution_error, tool_invalid_arguments,
     tool_metadata,
 };
 use crate::bundles::output::{
-    append_guidance, dump_tool_output, fit_text_fields_to_limit, output_too_large_message,
-    tool_output_size, write_tmp_output, DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT,
+    DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
+    fit_text_fields_to_limit, output_too_large_message, tool_output_size, write_tmp_output,
 };
 
 /// `AgentContext` dependency for process-capable shell providers.

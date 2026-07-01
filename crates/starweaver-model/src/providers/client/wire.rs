@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::{
+    ModelError,
     adapter::ModelRequestParameters,
     message::{ModelMessage, ModelResponse},
     profile::{ModelProfile, ProtocolFamily},
@@ -11,10 +12,9 @@ use crate::{
     },
     settings::{ModelSettings, ThinkingSettings},
     transport::MaxTokensParameter,
-    ModelError,
 };
 
-use super::{output_schema::apply_output_schema, ProtocolModelClient};
+use super::{ProtocolModelClient, output_schema::apply_output_schema};
 
 impl ProtocolModelClient {
     pub(super) fn build_wire_body(

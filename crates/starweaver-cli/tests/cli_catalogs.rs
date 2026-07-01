@@ -136,30 +136,38 @@ need_approval = ["shell", "write"]
 
     let skills = cli(&temp).args(["skill", "list"]).output().unwrap();
     assert!(skills.status.success());
-    assert!(String::from_utf8(skills.stdout)
-        .unwrap()
-        .contains("\"name\":\"example\""));
+    assert!(
+        String::from_utf8(skills.stdout)
+            .unwrap()
+            .contains("\"name\":\"example\"")
+    );
 
     let skill = cli(&temp)
         .args(["skill", "show", "example"])
         .output()
         .unwrap();
     assert!(skill.status.success());
-    assert!(String::from_utf8(skill.stdout)
-        .unwrap()
-        .contains("Use this skill for catalog tests."));
+    assert!(
+        String::from_utf8(skill.stdout)
+            .unwrap()
+            .contains("Use this skill for catalog tests.")
+    );
 
     let subagents = cli(&temp).args(["subagent", "list"]).output().unwrap();
     assert!(subagents.status.success());
-    assert!(String::from_utf8(subagents.stdout)
-        .unwrap()
-        .contains("\"name\":\"helper\""));
+    assert!(
+        String::from_utf8(subagents.stdout)
+            .unwrap()
+            .contains("\"name\":\"helper\"")
+    );
 
     let mcp = cli(&temp).args(["mcp", "list"]).output().unwrap();
     assert!(mcp.status.success());
-    assert!(String::from_utf8(mcp.stdout)
-        .unwrap()
-        .contains("\"name\":\"docs\""));
+    assert!(
+        String::from_utf8(mcp.stdout)
+            .unwrap()
+            .contains("\"name\":\"docs\"")
+    );
 
     let tools = cli(&temp).args(["tools", "list"]).output().unwrap();
     assert!(tools.status.success());
@@ -191,9 +199,11 @@ need_approval = ["shell", "write"]
             "stderr={}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(String::from_utf8(output.stdout)
-            .unwrap()
-            .contains("status=ok"));
+        assert!(
+            String::from_utf8(output.stdout)
+                .unwrap()
+                .contains("status=ok")
+        );
     }
     let mcp_doctor = cli(&temp).args(["mcp", "doctor"]).output().unwrap();
     assert!(mcp_doctor.status.success());
@@ -265,9 +275,11 @@ fn auth_status_and_logout_use_local_oauth_store() {
         .output()
         .unwrap();
     assert!(logout.status.success());
-    assert!(String::from_utf8(logout.stdout)
-        .unwrap()
-        .contains("removed=true"));
+    assert!(
+        String::from_utf8(logout.stdout)
+            .unwrap()
+            .contains("removed=true")
+    );
 
     let status = cli(&temp)
         .env("STARWEAVER_OAUTH_AUTH_FILE", &auth_path)

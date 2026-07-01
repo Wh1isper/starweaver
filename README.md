@@ -175,7 +175,7 @@ Prepare a release:
 gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
-The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release; the published Release event builds CLI archives, uploads checksums, and publishes crates through the `Release` environment.
+The workflow pushes `release/vX.Y.Z` for review. After that release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release; the published Release event builds CLI archives and Python distributions, uploads checksums, and publishes crates plus the Python package through the `Release` environment.
 
 ## Acknowledgements
 

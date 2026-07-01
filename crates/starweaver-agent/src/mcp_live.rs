@@ -179,10 +179,12 @@ impl LiveMcpToolset {
         );
         metadata.insert(
             "mcp_sampling".to_string(),
-            serde_json::json!(config
-                .sampling
-                .as_ref()
-                .is_some_and(|sampling| sampling.enabled)),
+            serde_json::json!(
+                config
+                    .sampling
+                    .as_ref()
+                    .is_some_and(|sampling| sampling.enabled)
+            ),
         );
         metadata.insert(
             "mcp_subscription_count".to_string(),

@@ -4,10 +4,10 @@ mod response_parts;
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
-    message::Metadata, transport::is_retryable_status, ModelError, ModelResponseStreamEvent,
+    ModelError, ModelResponseStreamEvent, message::Metadata, transport::is_retryable_status,
 };
 
 use super::response::{parse_response, raw_reasoning_content, reasoning_summary_text};
@@ -304,14 +304,14 @@ impl OpenAiResponsesStreamParser {
                 let key = function_call_item_key(event, item);
                 self.ensure_function_call_started(&key, item, stream);
                 self.update_function_call_from_item(&key, item, stream, true);
-                if let Some(call) = self.function_calls.get_mut(&key) {
-                    if !call.ended {
-                        stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
-                            index: call.index,
-                            part_kind: Some("tool_call".to_string()),
-                        }));
-                        call.ended = true;
-                    }
+                if let Some(call) = self.function_calls.get_mut(&key)
+                    && !call.ended
+                {
+                    stream.push(ModelResponseStreamEvent::PartEnd(crate::PartEnd {
+                        index: call.index,
+                        part_kind: Some("tool_call".to_string()),
+                    }));
+                    call.ended = true;
                 }
             }
             Some("reasoning") => self.update_reasoning_from_item(item),
@@ -425,16 +425,17 @@ impl OpenAiResponsesStreamParser {
         if let Some(status) = item.get("status").and_then(Value::as_str) {
             call.status = Some(status.to_string());
         }
-        if let Some(name) = item.get("name").and_then(Value::as_str) {
-            if !name.is_empty() && call.name != name {
-                call.name = name.to_string();
-                stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
-                    index: call.index,
-                    delta: crate::StreamDelta::ToolCallName {
-                        name: name.to_string(),
-                    },
-                }));
-            }
+        if let Some(name) = item.get("name").and_then(Value::as_str)
+            && !name.is_empty()
+            && call.name != name
+        {
+            call.name = name.to_string();
+            stream.push(ModelResponseStreamEvent::PartDelta(crate::PartDelta {
+                index: call.index,
+                delta: crate::StreamDelta::ToolCallName {
+                    name: name.to_string(),
+                },
+            }));
         }
         let arguments = item.get("arguments").and_then(Value::as_str);
         if let Some(arguments) = arguments {

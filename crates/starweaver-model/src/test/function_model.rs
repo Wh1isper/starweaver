@@ -3,12 +3,12 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 
 use crate::{
+    ModelAdapter, ModelError,
     adapter::{ModelRequestContext, ModelRequestParameters, ModelResponseEventStream},
     message::{ModelMessage, ModelResponse},
     profile::{ModelProfile, ProtocolFamily},
     settings::ModelSettings,
     stream::ModelResponseStreamEvent,
-    ModelAdapter, ModelError,
 };
 
 /// Information passed to a function-backed deterministic model.

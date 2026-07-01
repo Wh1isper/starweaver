@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    fs,
     path::PathBuf,
     sync::Arc,
 };
@@ -10,25 +10,25 @@ use std::{
 use serde::Serialize;
 use serde_json::json;
 use starweaver_agent::{
-    core_toolsets, load_subagents_from_dir, parse_skill_markdown, AgentBuilder, AgentSpec,
-    AgentSpecRegistry, ApprovalRequiredToolset, DynToolset, HostMediaUnderstandingClient,
-    ShellReviewAction, ShellReviewConfig, ShellReviewHandle, ShellReviewRiskLevel, SkillPackage,
-    SkillRegistry, StaticToolset, SubagentConfig, SubagentToolInheritancePolicy,
+    AgentBuilder, AgentSpec, AgentSpecRegistry, ApprovalRequiredToolset, DynToolset,
+    HostMediaUnderstandingClient, ShellReviewAction, ShellReviewConfig, ShellReviewHandle,
+    ShellReviewRiskLevel, SkillPackage, SkillRegistry, StaticToolset, SubagentConfig,
+    SubagentToolInheritancePolicy, core_toolsets, load_subagents_from_dir, parse_skill_markdown,
 };
 use starweaver_model::{
-    anthropic_http_config, build_codex_model_with_profile, codex_model_profile, gemini_http_config,
-    get_model_config, get_model_settings, google_cloud_http_config,
-    google_cloud_project_http_config, openai_chat_http_config, openai_responses_http_config,
     HttpModelConfig, ModelAdapter, ModelProfile, ModelSettings, OpenAiResponsesSettings,
     ProtocolFamily, ProtocolModelClient, ProviderSettings, ReqwestHttpClient,
-    ResponseStreamTransport,
+    ResponseStreamTransport, anthropic_http_config, build_codex_model_with_profile,
+    codex_model_profile, gemini_http_config, get_model_config, get_model_settings,
+    google_cloud_http_config, google_cloud_project_http_config, openai_chat_http_config,
+    openai_responses_http_config,
 };
 
 use crate::{
-    config::{tool_need_approval, CliConfig, ProviderConfig},
-    error::io_error,
-    oauth::{create_codex_token_source, OAuthStore, CODEX_BASE_URL},
     CliError, CliResult,
+    config::{CliConfig, ProviderConfig, tool_need_approval},
+    error::io_error,
+    oauth::{CODEX_BASE_URL, OAuthStore, create_codex_token_source},
 };
 use starweaver_context::{AgentContext, ModelCapability, ModelConfig};
 
@@ -48,7 +48,7 @@ pub use catalog::{
 use local_runtime::capture_subagent_inheritance_model;
 use local_runtime::{control_flow_toolset, local_echo_model, scripted_tool_model};
 use mcp::{configured_mcp_proxy_toolset, configured_mcp_server_specs, mcp_transport_error};
-use media::{configured_media_client, CliMediaUnderstandingCapability};
+use media::{CliMediaUnderstandingCapability, configured_media_client};
 
 /// Resolved CLI profile ready to build an agent session.
 pub struct ResolvedProfile {
@@ -248,13 +248,13 @@ pub fn resolve_profile(config: &CliConfig, requested: Option<&str>) -> CliResult
 }
 
 fn load_profile_spec(config: &CliConfig, requested: &str) -> CliResult<(AgentSpec, ProfileSource)> {
-    if requested == "default_model" {
-        if let Some(profile) = config.default_model.as_ref() {
-            return Ok((
-                config_model_spec("default_model", profile),
-                ProfileSource::Config,
-            ));
-        }
+    if requested == "default_model"
+        && let Some(profile) = config.default_model.as_ref()
+    {
+        return Ok((
+            config_model_spec("default_model", profile),
+            ProfileSource::Config,
+        ));
     }
     if let Some(profile) = config.model_profiles.get(requested) {
         return Ok((config_model_spec(requested, profile), ProfileSource::Config));
@@ -642,9 +642,7 @@ fn resolve_subagent_model_settings(
             value.cloned().unwrap_or(serde_json::Value::Null),
         )
         .map(Some)
-        .map_err(|error| {
-            CliError::Config(format!("invalid subagent model_settings: {error}"))
-        }),
+        .map_err(|error| CliError::Config(format!("invalid subagent model_settings: {error}"))),
         Some(other) => Err(CliError::Config(format!(
             "invalid subagent model_settings: expected 'inherit', preset name, or object, got {other}"
         ))),
@@ -775,17 +773,26 @@ fn provider_model(
         )));
     }
     let mut http_config = match parsed.protocol {
-        ProtocolFamily::OpenAiResponses => {
-            openai_responses_http_config(provider_api_key(&provider_config, &parsed, model_id)?)
-        }
-        ProtocolFamily::OpenAiChatCompletions => {
-            openai_chat_http_config(provider_api_key(&provider_config, &parsed, model_id)?)
-        }
-        ProtocolFamily::AnthropicMessages => {
-            anthropic_http_config(provider_api_key(&provider_config, &parsed, model_id)?)
-        }
+        ProtocolFamily::OpenAiResponses => openai_responses_http_config(provider_api_key(
+            config,
+            &provider_config,
+            &parsed,
+            model_id,
+        )?),
+        ProtocolFamily::OpenAiChatCompletions => openai_chat_http_config(provider_api_key(
+            config,
+            &provider_config,
+            &parsed,
+            model_id,
+        )?),
+        ProtocolFamily::AnthropicMessages => anthropic_http_config(provider_api_key(
+            config,
+            &provider_config,
+            &parsed,
+            model_id,
+        )?),
         ProtocolFamily::GeminiGenerateContent => {
-            google_http_config(&provider_config, &parsed, model_id)?
+            google_http_config(config, &provider_config, &parsed, model_id)?
         }
         ProtocolFamily::BedrockConverse => return Ok(None),
     };
@@ -806,6 +813,7 @@ fn provider_model(
 }
 
 fn provider_api_key(
+    config: &CliConfig,
     provider_config: &ProviderConfig,
     parsed: &ProviderModelId,
     model_id: &str,
@@ -822,8 +830,9 @@ fn provider_api_key(
             parsed.provider
         )));
     }
-    let api_key =
-        env::var(&api_key_env).map_err(|_| missing_provider_key(&api_key_env, model_id))?;
+    let api_key = config
+        .env_value(&api_key_env)
+        .ok_or_else(|| missing_provider_key(&api_key_env, model_id))?;
     if api_key.trim().is_empty() {
         return Err(missing_provider_key(&api_key_env, model_id));
     }
@@ -831,6 +840,7 @@ fn provider_api_key(
 }
 
 fn provider_auth_token(
+    config: &CliConfig,
     provider_config: &ProviderConfig,
     parsed: &ProviderModelId,
     model_id: &str,
@@ -847,7 +857,9 @@ fn provider_auth_token(
             parsed.provider
         )));
     }
-    let token = env::var(&token_env).map_err(|_| missing_provider_token(&token_env, model_id))?;
+    let token = config
+        .env_value(&token_env)
+        .ok_or_else(|| missing_provider_token(&token_env, model_id))?;
     if token.trim().is_empty() {
         return Err(missing_provider_token(&token_env, model_id));
     }
@@ -855,6 +867,7 @@ fn provider_auth_token(
 }
 
 fn google_http_config(
+    config: &CliConfig,
     provider_config: &ProviderConfig,
     parsed: &ProviderModelId,
     model_id: &str,
@@ -873,19 +886,19 @@ fn google_http_config(
                 .filter(|location| !location.is_empty())
                 .unwrap_or("us-central1");
             return Ok(google_cloud_project_http_config(
-                provider_auth_token(provider_config, parsed, model_id)?,
+                provider_auth_token(config, provider_config, parsed, model_id)?,
                 parsed.model_name.clone(),
                 project,
                 location,
             ));
         }
         return Ok(google_cloud_http_config(
-            provider_api_key(provider_config, parsed, model_id)?,
+            provider_api_key(config, provider_config, parsed, model_id)?,
             parsed.model_name.clone(),
         ));
     }
     Ok(gemini_http_config(
-        provider_api_key(provider_config, parsed, model_id)?,
+        provider_api_key(config, provider_config, parsed, model_id)?,
         parsed.model_name.clone(),
     ))
 }
@@ -986,7 +999,7 @@ impl ProviderModelId {
                 provider.api_key_env = Some(format!("{env_prefix}_API_KEY"));
             }
             if provider.base_url.is_none() {
-                provider.base_url = env::var(&base_url_env).ok();
+                provider.base_url = config.env_value(&base_url_env);
             }
             return provider;
         }

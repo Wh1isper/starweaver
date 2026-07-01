@@ -5,8 +5,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 use starweaver_core::TraceContext;
 use starweaver_model::{
-    transport::{should_retry_error, RetryPolicy},
     ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
+    transport::{RetryPolicy, should_retry_error},
 };
 use starweaver_tools::ToolContext;
 use starweaver_usage::pricing::estimate_pricing_for_model;
@@ -17,20 +17,20 @@ mod entrypoints;
 
 use crate::{
     agent::{
+        Agent, AgentEndStrategy, AgentError, AgentInput, AgentResult,
         helpers::{
             has_pending_tool_control_flow, is_tool_retry_return, mark_tool_retry_return,
             record_tool_control_flow, tool_return_control_flow,
         },
         run_loop_helpers::{agent_error_kind, preserve_pending_tool_returns_for_resume},
         runtime_helpers::{request_instruction_insert_index, tool_return_media_prompt},
-        Agent, AgentEndStrategy, AgentError, AgentInput, AgentResult,
     },
     capability::{CapabilityError, RetryEventKind},
     executor::{AgentExecutionDecision, AgentExecutionNode},
-    retry_recovery::{recover_retry_message_history, DEFAULT_MODEL_ERROR_RESUME_PROMPT},
+    retry_recovery::{DEFAULT_MODEL_ERROR_RESUME_PROMPT, recover_retry_message_history},
     run::{AgentRunState, RunStatus},
     stream::{
-        push_stream_event, push_stream_record, AgentStreamEvent, AgentStreamRecord, AgentStreamSink,
+        AgentStreamEvent, AgentStreamRecord, AgentStreamSink, push_stream_event, push_stream_record,
     },
     trace::{
         DynTraceRecorder, SpanEvent, SpanHandle, SpanKind, SpanSpec, SpanStatus,
@@ -470,8 +470,8 @@ impl Agent {
                 for message in &mut messages {
                     Self::fill_message_metadata(message, &run_id, &conversation_id);
                 }
-                if Self::has_pending_steering_messages(context) {
-                    if let Some(ModelMessage::Request(request)) = messages
+                if Self::has_pending_steering_messages(context)
+                    && let Some(ModelMessage::Request(request)) = messages
                         .iter_mut()
                         .rev()
                         .find(|message| matches!(message, ModelMessage::Request(_)))
@@ -480,7 +480,6 @@ impl Agent {
                         Self::sync_compact_context_metadata(context, &mut state);
                         stream_context_events!(&state, context_event_cursor);
                     }
-                }
                 Self::validate_model_request_messages(&messages)?;
                 state.message_history.clone_from(&messages);
                 context.message_history.clone_from(&state.message_history);

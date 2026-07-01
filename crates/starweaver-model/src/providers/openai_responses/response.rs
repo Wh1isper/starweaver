@@ -1,13 +1,13 @@
 //! `OpenAI` Responses completed response parsing.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
+    ModelError,
     message::{
         Metadata, ModelResponse, ModelResponsePart, ProviderInfo, ProviderPartInfo, ToolCallPart,
     },
     providers::{finish_reason_openai, parse_tool_call_arguments, usage_from_openai},
-    ModelError,
 };
 
 #[allow(clippy::unnecessary_wraps)]
@@ -118,13 +118,13 @@ fn push_message_content_parts(item: &Value, parts: &mut Vec<ModelResponsePart>) 
                     provider,
                 });
             }
-        } else if matches!(content.get("type").and_then(Value::as_str), Some("refusal")) {
-            if let Some(text) = content.get("refusal").and_then(Value::as_str) {
-                parts.push(ModelResponsePart::ProviderText {
-                    text: text.to_string(),
-                    provider: provider.clone(),
-                });
-            }
+        } else if matches!(content.get("type").and_then(Value::as_str), Some("refusal"))
+            && let Some(text) = content.get("refusal").and_then(Value::as_str)
+        {
+            parts.push(ModelResponsePart::ProviderText {
+                text: text.to_string(),
+                provider: provider.clone(),
+            });
         }
     }
 }

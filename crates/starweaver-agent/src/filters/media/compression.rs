@@ -1,8 +1,8 @@
 //! Media compression filtering.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_context::AgentContext;
-use starweaver_model::{parse_data_url, ContentPart, ModelMessage, ModelRequestPart};
+use starweaver_model::{ContentPart, ModelMessage, ModelRequestPart, parse_data_url};
 use starweaver_runtime::AgentRunState;
 
 use crate::{

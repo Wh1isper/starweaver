@@ -2,16 +2,17 @@ use std::{
     io::{self, BufRead as _, Read as _, Write as _},
     net::{TcpListener, TcpStream},
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc,
     },
     thread,
     time::Duration,
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{config::CliConfig, rpc::RpcService, CliError, CliResult};
+use crate::{CliError, CliResult, config::CliConfig, rpc::RpcService};
 
 const DEFAULT_HTTP_PATH: &str = "/rpc";
 const MAX_HTTP_REQUEST_BYTES: usize = 8 * 1024 * 1024;

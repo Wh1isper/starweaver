@@ -10,8 +10,8 @@ use std::{
 
 use starweaver_envd_client::EnvdRpcClient;
 use starweaver_envd_core::{
-    EnvdService, FileReadMode, FileReadRequest, FileWriteRequest, OpenEnvironmentRequest,
-    DEFAULT_ENVIRONMENT_ID,
+    DEFAULT_ENVIRONMENT_ID, EnvdService, FileReadMode, FileReadRequest, FileWriteRequest,
+    OpenEnvironmentRequest,
 };
 
 const TEST_TOKEN: &str = "envd-test-token";
@@ -122,13 +122,12 @@ impl ChildGuard {
         let mut line = String::new();
         while Instant::now() < deadline {
             line.clear();
-            if reader.read_line(&mut line).expect("read stderr") > 0 {
-                if let Some(endpoint) = line
+            if reader.read_line(&mut line).expect("read stderr") > 0
+                && let Some(endpoint) = line
                     .trim()
                     .strip_prefix("starweaver envd http listening on ")
-                {
-                    return endpoint.to_string();
-                }
+            {
+                return endpoint.to_string();
             }
             thread::sleep(Duration::from_millis(25));
         }

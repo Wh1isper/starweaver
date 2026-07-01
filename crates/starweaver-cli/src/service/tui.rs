@@ -15,15 +15,15 @@ use starweaver_runtime::AgentStreamRecord;
 
 use super::CliService;
 use crate::{
+    CliError, CliResult,
     args::{GoalCommandOptions, OutputMode, RunCommand, TuiCommand, TuiRenderMode},
     client_state,
-    config::{clear_current_session, write_current_session, CliConfig},
+    config::{CliConfig, clear_current_session, write_current_session},
     local_store::SessionSummary,
-    profiles::{list_config_model_profiles, list_profiles, ProfileSummary},
+    profiles::{ProfileSummary, list_config_model_profiles, list_profiles},
     prompt_input::PromptInput,
     runner::CliSteeringMessage,
     runtime_coordinator::{CliRuntimeCoordinator, RunStreamEvent},
-    CliError, CliResult,
 };
 
 struct CompletedPromptRun {
@@ -177,10 +177,10 @@ impl CliService {
             selected_choice.map_or_else(|| selected_profile.clone(), model_choice_label),
         );
         state.set_context_window(selected_choice.and_then(|choice| choice.context_window));
-        if command.session.is_some() {
-            if let Some(snapshot) = self.tui_snapshot_state(command)? {
-                state.set_snapshot(&snapshot);
-            }
+        if command.session.is_some()
+            && let Some(snapshot) = self.tui_snapshot_state(command)?
+        {
+            state.set_snapshot(&snapshot);
         }
         let mut tui = crate::tui::InteractiveTui::enter()?;
         let mut active_run: Option<ActiveTuiRun> = None;
@@ -211,19 +211,19 @@ impl CliService {
                         ));
                         active_run = None;
                         dirty = true;
-                        if !was_cancelled {
-                            if let Some((prompt, display_prompt, goal)) = queued_prompt.take() {
-                                state.begin_run(&display_prompt);
-                                active_run = Some(spawn_tui_run(
-                                    &self.config,
-                                    command,
-                                    state.session_id.clone(),
-                                    Some(state.session_affinity_id.clone()),
-                                    prompt,
-                                    Some(state.profile.clone()),
-                                    goal,
-                                ));
-                            }
+                        if !was_cancelled
+                            && let Some((prompt, display_prompt, goal)) = queued_prompt.take()
+                        {
+                            state.begin_run(&display_prompt);
+                            active_run = Some(spawn_tui_run(
+                                &self.config,
+                                command,
+                                state.session_id.clone(),
+                                Some(state.session_affinity_id.clone()),
+                                prompt,
+                                Some(state.profile.clone()),
+                                goal,
+                            ));
                         }
                         break;
                     }
@@ -258,14 +258,14 @@ impl CliService {
             let event = crate::tui::InteractiveTui::poll_event(&mut state, poll_timeout)?;
             match event {
                 Some(crate::tui::InteractiveTuiEvent::Quit) if active_run.is_none() => {
-                    return Ok(())
+                    return Ok(());
                 }
                 Some(crate::tui::InteractiveTuiEvent::Cancel) => {
-                    if let Some(run) = active_run.as_mut() {
-                        if !run.cancelling {
-                            let _ = run.coordinator.cancel_run(&run.run_id);
-                            run.cancelling = true;
-                        }
+                    if let Some(run) = active_run.as_mut()
+                        && !run.cancelling
+                    {
+                        let _ = run.coordinator.cancel_run(&run.run_id);
+                        run.cancelling = true;
                     }
                     dirty = true;
                 }
@@ -276,22 +276,21 @@ impl CliService {
                 }
                 None => {}
                 Some(crate::tui::InteractiveTuiEvent::Steer(steering)) => {
-                    if let Some(run) = active_run.as_ref() {
-                        if !run.cancelling
-                            && run
-                                .coordinator
-                                .steer_run(
-                                    &run.run_id,
-                                    CliSteeringMessage {
-                                        id: steering.id,
-                                        text: steering.text,
-                                    },
-                                )
-                                .is_err()
-                        {
-                            state.fail_run("background steering channel closed");
-                            active_run = None;
-                        }
+                    if let Some(run) = active_run.as_ref()
+                        && !run.cancelling
+                        && run
+                            .coordinator
+                            .steer_run(
+                                &run.run_id,
+                                CliSteeringMessage {
+                                    id: steering.id,
+                                    text: steering.text,
+                                },
+                            )
+                            .is_err()
+                    {
+                        state.fail_run("background steering channel closed");
+                        active_run = None;
                     }
                     dirty = true;
                 }
@@ -685,7 +684,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use crate::{args, ConfigResolver};
+    use crate::{ConfigResolver, args};
     use starweaver_rpc_core::EnvironmentAttachmentAccessMode;
 
     fn config_with_envd_profiles(content: &str) -> CliConfig {
@@ -774,8 +773,10 @@ auth_token_env = "STARWEAVER_TEST_MISSING_ENVD_TOKEN_DO_NOT_SET"
         );
 
         let error = tui_environment_attachments(&config).unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("STARWEAVER_TEST_MISSING_ENVD_TOKEN_DO_NOT_SET"));
+        assert!(
+            error
+                .to_string()
+                .contains("STARWEAVER_TEST_MISSING_ENVD_TOKEN_DO_NOT_SET")
+        );
     }
 }

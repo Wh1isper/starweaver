@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_model::{ModelMessage, ModelResponsePart, ToolArguments};
 
 use crate::filters::message::request_metadata_mut;

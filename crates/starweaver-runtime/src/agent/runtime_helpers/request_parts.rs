@@ -1,8 +1,8 @@
 //! Request part ordering helpers.
 
 use starweaver_model::{
-    context_origin_metadata, ModelRequest, ModelRequestPart, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
-    INSTRUCTION_DYNAMIC_METADATA,
+    CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, INSTRUCTION_DYNAMIC_METADATA, ModelRequest, ModelRequestPart,
+    context_origin_metadata,
 };
 
 pub(in crate::agent) fn request_control_prefix_len(request: &ModelRequest) -> usize {

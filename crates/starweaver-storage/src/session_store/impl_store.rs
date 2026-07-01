@@ -16,6 +16,7 @@ use crate::sqlite::{
 };
 
 use super::{
+    SqliteSessionStore,
     records::{
         apply_run_to_session, list_run_records, load_run_record, load_session_record,
         save_run_record, save_session_record,
@@ -23,7 +24,6 @@ use super::{
     trace_helpers::{
         count_deferred_tools, count_pending_approvals, latest_stream_sequence, load_checkpoint_ids,
     },
-    SqliteSessionStore,
 };
 
 #[async_trait]

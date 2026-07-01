@@ -76,11 +76,7 @@ async fn toolset_instructions_are_injected_on_first_request() {
     let captured = model.captured.lock().unwrap()[0].clone();
     assert!(format!("{captured:?}").contains("Base instruction"));
     let captured_params = model.captured_params.lock().unwrap()[0].clone();
-    assert!(captured_params
-        .instructions
-        .iter()
-        .any(
-            |instruction| instruction.text.contains("Use echo for mirroring")
-                && !instruction.dynamic
-        ));
+    assert!(captured_params.instructions.iter().any(|instruction| {
+        instruction.text.contains("Use echo for mirroring") && !instruction.dynamic
+    }));
 }

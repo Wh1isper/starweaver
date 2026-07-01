@@ -3,9 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    AgentResult,
     executor::AgentExecutionNode,
     stream::{AgentStreamEvent, AgentStreamRecord},
-    AgentResult,
 };
 
 /// Coarse iteration event kind for run inspection.

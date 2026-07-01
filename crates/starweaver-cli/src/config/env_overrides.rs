@@ -1,15 +1,10 @@
 use std::{env, path::PathBuf};
 
-use super::{expand_path, validate_shell_review_action, validate_shell_review_risk, CliConfig};
+use super::{CliConfig, expand_path, validate_shell_review_action, validate_shell_review_risk};
 use crate::args::{Cli, CliCommand, HitlPolicy, OutputMode};
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn apply_env(config: &mut CliConfig) {
-    for (key, value) in &config.env_vars {
-        if env::var_os(key).is_none() {
-            env::set_var(key, value);
-        }
-    }
     if let Some(value) = env::var_os("STARWEAVER_PROFILE") {
         config.default_profile = value.to_string_lossy().to_string();
     }
@@ -67,22 +62,21 @@ pub(super) fn apply_env(config: &mut CliConfig) {
             config.shell_review.risk_threshold = risk.to_string();
         }
     }
-    if let Some(value) = env::var_os("STARWEAVER_OUTPUT") {
-        if let Some(output) = parse_output_mode(&value.to_string_lossy()) {
-            config.default_output = output;
-        }
+    if let Some(value) = env::var_os("STARWEAVER_OUTPUT")
+        && let Some(output) = parse_output_mode(&value.to_string_lossy())
+    {
+        config.default_output = output;
     }
-    if let Some(value) = env::var_os("STARWEAVER_HITL") {
-        if let Some(hitl) = parse_hitl_policy(&value.to_string_lossy()) {
-            config.default_hitl = hitl;
-        }
+    if let Some(value) = env::var_os("STARWEAVER_HITL")
+        && let Some(hitl) = parse_hitl_policy(&value.to_string_lossy())
+    {
+        config.default_hitl = hitl;
     }
-    if let Some(value) = env::var_os("STARWEAVER_MAX_GOAL_ITERATIONS") {
-        if let Ok(max_goal_iterations) = value.to_string_lossy().parse::<usize>() {
-            if max_goal_iterations > 0 {
-                config.max_goal_iterations = max_goal_iterations;
-            }
-        }
+    if let Some(value) = env::var_os("STARWEAVER_MAX_GOAL_ITERATIONS")
+        && let Ok(max_goal_iterations) = value.to_string_lossy().parse::<usize>()
+        && max_goal_iterations > 0
+    {
+        config.max_goal_iterations = max_goal_iterations;
     }
     if let Some(value) = env::var_os("STARWEAVER_UPDATE_CHANNEL") {
         config.update_channel = value.to_string_lossy().to_string();
@@ -90,19 +84,17 @@ pub(super) fn apply_env(config: &mut CliConfig) {
     if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_ENABLED") {
         config.oauth_refresh.enabled = env_bool(&value.to_string_lossy());
     }
-    if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_INTERVAL_SECONDS") {
-        if let Ok(seconds) = value.to_string_lossy().parse::<u64>() {
-            if seconds > 0 {
-                config.oauth_refresh.interval_seconds = seconds;
-            }
-        }
+    if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_INTERVAL_SECONDS")
+        && let Ok(seconds) = value.to_string_lossy().parse::<u64>()
+        && seconds > 0
+    {
+        config.oauth_refresh.interval_seconds = seconds;
     }
-    if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_FAILURE_RETRY_SECONDS") {
-        if let Ok(seconds) = value.to_string_lossy().parse::<u64>() {
-            if seconds > 0 {
-                config.oauth_refresh.failure_retry_seconds = seconds;
-            }
-        }
+    if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_FAILURE_RETRY_SECONDS")
+        && let Ok(seconds) = value.to_string_lossy().parse::<u64>()
+        && seconds > 0
+    {
+        config.oauth_refresh.failure_retry_seconds = seconds;
     }
     if let Some(value) = env::var_os("STARWEAVER_OAUTH_REFRESH_ON_STARTUP") {
         config.oauth_refresh.refresh_on_startup = env_bool(&value.to_string_lossy());

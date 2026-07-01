@@ -7,15 +7,15 @@ use serde_json::Value;
 use starweaver_oauth::OAuthTokenSource;
 
 use crate::{
+    ModelError,
     oauth::headers::{
-        build_codex_headers, patch_codex_responses_body, patch_codex_websocket_request,
-        trace_session_headers, validate_safe_extra_headers, CODEX_USER_AGENT_HEADER,
+        CODEX_USER_AGENT_HEADER, build_codex_headers, patch_codex_responses_body,
+        patch_codex_websocket_request, trace_session_headers, validate_safe_extra_headers,
     },
     transport::{
-        extend_headers_case_insensitive, DynHttpClient, HttpRequest, HttpResponse,
-        ModelEventStream, ModelHttpClient, ModelWebSocketEventSession, ReqwestHttpClient,
+        DynHttpClient, HttpRequest, HttpResponse, ModelEventStream, ModelHttpClient,
+        ModelWebSocketEventSession, ReqwestHttpClient, extend_headers_case_insensitive,
     },
-    ModelError,
 };
 
 /// HTTP client wrapper that attaches OAuth bearer headers and refreshes once on 401.

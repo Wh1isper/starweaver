@@ -6,9 +6,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
+    ModelAdapter, ModelError, ModelSettings, ProtocolModelClient, ProviderAlias,
+    ProviderAliasRegistry,
     adapter::{ModelRequestContext, ModelRequestParameters},
     message::{ContentPart, ModelMessage, ModelRequest, ModelRequestPart},
     profile::{ModelProfile, ProtocolFamily},
@@ -16,8 +18,6 @@ use starweaver_model::{
         AuthConfig, HttpModelConfig, HttpRequest, HttpResponse, MaxTokensParameter,
         ModelEventStream, ModelHttpClient, NoopSleeper, RetryPolicy,
     },
-    ModelAdapter, ModelError, ModelSettings, ProtocolModelClient, ProviderAlias,
-    ProviderAliasRegistry,
 };
 
 #[derive(Clone, Default)]

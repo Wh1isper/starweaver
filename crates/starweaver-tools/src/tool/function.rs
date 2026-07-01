@@ -8,8 +8,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use crate::{ToolContext, ToolError};
 
 use super::{
-    extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, set_tool_metadata_kind, Tool,
-    ToolKind, ToolResult, ToolUserInputPreprocessResult,
+    Tool, ToolKind, ToolResult, ToolUserInputPreprocessResult, extend_tool_metadata_hidden_by_tags,
+    extend_tool_metadata_tags, set_tool_metadata_kind,
 };
 
 type ArgumentValidator =
@@ -173,9 +173,9 @@ impl<F> FunctionTool<F> {
     pub fn with_prepare_definition(
         mut self,
         prepare_definition: impl Fn(&AgentContext, ToolDefinition) -> Option<ToolDefinition>
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.prepare_definition = Arc::new(prepare_definition);
         self

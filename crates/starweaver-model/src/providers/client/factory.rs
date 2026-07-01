@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use crate::{
+    ModelError,
     presets::{
         anthropic_http_config, gemini_http_config, openai_chat_http_config,
         openai_responses_http_config,
     },
     profile::{ModelProfile, ProtocolFamily},
     transport::{DynHttpClient, HttpModelConfig, ReqwestHttpClient},
-    ModelError,
 };
 
 use super::ProtocolModelClient;

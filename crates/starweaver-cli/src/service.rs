@@ -3,7 +3,7 @@
 
 use std::{fs, path::Path, sync::mpsc, thread, time::Duration};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_agent::ResumableState;
 use starweaver_core::sdk_name;
 use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
@@ -12,28 +12,28 @@ use starweaver_session::{ApprovalStatus, RunRecord, RunStatus};
 use starweaver_stream::{DisplayMessage, RealtimeCompactionBuffer, ReplayScope};
 
 use crate::{
+    CliError, CliResult,
     args::{
         ApprovalCommand, ApprovalDecisionCommand, ApprovalListCommand, Cli, CliCommand,
         DeferredCommand, DeferredCompleteCommand, DeferredFailCommand, DeferredListCommand,
         OutputMode, ResumeCommand, RunCommand, SessionCommand, TuiCommand,
     },
     config::{
-        read_current_session, read_last_retention_maintenance, write_current_session,
-        write_last_retention_maintenance, CliConfig,
+        CliConfig, read_current_session, read_last_retention_maintenance, write_current_session,
+        write_last_retention_maintenance,
     },
     environment::{
-        resolve_environment_for_session_with_attachments, validate_environment_config,
-        ResolvedEnvironment,
+        ResolvedEnvironment, resolve_environment_for_session_with_attachments,
+        validate_environment_config,
     },
     local_store::LocalStore,
-    profiles::{list_profiles, resolve_profile, ResolvedProfile},
+    profiles::{ResolvedProfile, list_profiles, resolve_profile},
     prompt_input::PromptInput,
     runner::{
-        execute_agent_session, execute_agent_session_with_channels, failed_display_message,
-        CliRunPolicy, CliSteeringMessage,
+        CliRunPolicy, CliSteeringMessage, execute_agent_session,
+        execute_agent_session_with_channels, failed_display_message,
     },
     slash_commands::expand_slash_command,
-    CliError, CliResult,
 };
 
 mod auth;
@@ -373,11 +373,13 @@ impl CliService {
             );
             run.metadata.insert(
                 "starweaver.environment_attachment_ids".to_string(),
-                json!(command
-                    .environment_attachments
-                    .iter()
-                    .map(|attachment| attachment.id.as_str())
-                    .collect::<Vec<_>>()),
+                json!(
+                    command
+                        .environment_attachments
+                        .iter()
+                        .map(|attachment| attachment.id.as_str())
+                        .collect::<Vec<_>>()
+                ),
             );
         }
         write_current_session(&self.config, &session_id)?;
@@ -548,10 +550,10 @@ impl CliService {
             return Ok((session_id.clone(), false));
         }
         if command.continue_session {
-            if let Some(session_id) = read_current_session(&self.config)? {
-                if self.store()?.load_session(&session_id).is_ok() {
-                    return Ok((session_id, false));
-                }
+            if let Some(session_id) = read_current_session(&self.config)?
+                && self.store()?.load_session(&session_id).is_ok()
+            {
+                return Ok((session_id, false));
             }
             if let Some(session) = self.store()?.latest_session()? {
                 return Ok((session.session_id.as_str().to_string(), false));
@@ -758,10 +760,10 @@ impl CliService {
             self.store()?.load_session(session_id)?;
             return Ok(session_id.to_string());
         }
-        if let Some(session_id) = read_current_session(&self.config)? {
-            if self.store()?.load_session(&session_id).is_ok() {
-                return Ok(session_id);
-            }
+        if let Some(session_id) = read_current_session(&self.config)?
+            && self.store()?.load_session(&session_id).is_ok()
+        {
+            return Ok(session_id);
         }
         self.store()?
             .latest_session()?

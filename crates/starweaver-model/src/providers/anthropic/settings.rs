@@ -1,11 +1,11 @@
 //! Anthropic settings and cache-control mapping.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
+    ModelSettings,
     adapter::ToolDefinition,
     providers::{insert_nonempty_description, provider_tool_schema_without_meta},
-    ModelSettings,
 };
 
 pub(super) fn apply_anthropic_settings(
@@ -68,10 +68,9 @@ pub(super) fn apply_anthropic_settings(
         let mut choice = anthropic_tool_choice(tool_choice);
         if settings.parallel_tool_calls == Some(false)
             && !matches!(tool_choice, crate::settings::ToolChoice::None)
+            && let Some(choice) = choice.as_object_mut()
         {
-            if let Some(choice) = choice.as_object_mut() {
-                choice.insert("disable_parallel_tool_use".to_string(), json!(true));
-            }
+            choice.insert("disable_parallel_tool_use".to_string(), json!(true));
         }
         request.insert("tool_choice".to_string(), choice);
     } else if settings.parallel_tool_calls == Some(false) {
@@ -115,10 +114,10 @@ pub(super) fn append_anthropic_tools(
             Value::Object(definition)
         })
         .collect::<Vec<_>>();
-    if let Some(ttl) = anthropic_cache_ttl(settings, "anthropic_cache_tool_definitions") {
-        if let Some(last) = definitions.last_mut() {
-            last["cache_control"] = anthropic_cache_control(ttl);
-        }
+    if let Some(ttl) = anthropic_cache_ttl(settings, "anthropic_cache_tool_definitions")
+        && let Some(last) = definitions.last_mut()
+    {
+        last["cache_control"] = anthropic_cache_control(ttl);
     }
     request.insert("tools".to_string(), Value::Array(definitions));
 }

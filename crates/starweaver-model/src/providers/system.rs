@@ -52,14 +52,13 @@ pub fn collect_system_parts_and_non_system(
             ModelMessage::Request(request) => {
                 let collect_instruction_material =
                     current_instruction_index == Some(index) || is_lifted_system_request(request);
-                if collect_instruction_material {
-                    if let Some(request_instructions) = request.instructions.as_ref() {
-                        if !request_instructions.trim().is_empty() {
-                            system.push(SystemInstructionPart::request_level(
-                                request_instructions.clone(),
-                            ));
-                        }
-                    }
+                if collect_instruction_material
+                    && let Some(request_instructions) = request.instructions.as_ref()
+                    && !request_instructions.trim().is_empty()
+                {
+                    system.push(SystemInstructionPart::request_level(
+                        request_instructions.clone(),
+                    ));
                 }
                 let mut has_non_system = false;
                 for part in &request.parts {

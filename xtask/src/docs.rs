@@ -40,7 +40,7 @@ pub fn check_docs_examples(args: &[String]) -> Result<(), String> {
             r#"[package]
 name = "starweaver-docs-examples"
 version = "0.0.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"

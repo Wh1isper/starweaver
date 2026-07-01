@@ -1,4 +1,4 @@
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 
 use super::*;
 use crate::message::{
@@ -65,14 +65,18 @@ fn content_mappers_cover_text_binary_resource_and_data_url_variants() {
     assert_eq!(chat[0]["type"], "text");
     assert_eq!(chat[1]["type"], "image_url");
     assert_eq!(chat[2]["type"], "file");
-    assert!(chat[3]["image_url"]["url"]
-        .as_str()
-        .unwrap()
-        .starts_with("data:image/png;base64,"));
-    assert!(chat[4]["file"]["file_data"]
-        .as_str()
-        .unwrap()
-        .starts_with("data:application/json;base64,"));
+    assert!(
+        chat[3]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
+    assert!(
+        chat[4]["file"]["file_data"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:application/json;base64,")
+    );
     assert_eq!(chat[5]["image_url"]["url"], "resource://image/1");
     assert_eq!(chat[6]["file"]["file_data"], "resource://doc/1");
     assert_eq!(chat[7]["image_url"]["url"], "data:image/png;base64,abc=");
@@ -85,14 +89,18 @@ fn content_mappers_cover_text_binary_resource_and_data_url_variants() {
     assert_eq!(responses[0]["type"], "input_text");
     assert_eq!(responses[1]["type"], "input_image");
     assert_eq!(responses[2]["type"], "input_file");
-    assert!(responses[3]["image_url"]
-        .as_str()
-        .unwrap()
-        .starts_with("data:image/png;base64,"));
-    assert!(responses[4]["file_url"]
-        .as_str()
-        .unwrap()
-        .starts_with("data:application/json;base64,"));
+    assert!(
+        responses[3]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
+    assert!(
+        responses[4]["file_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:application/json;base64,")
+    );
 
     let gemini = gemini_parts_from_content(&mixed_content());
     assert_eq!(gemini[0]["text"], "hello");
@@ -290,9 +298,11 @@ fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
         parse_tool_call_arguments(&json!("not-json")).execution_value(),
         json!("not-json")
     );
-    assert!(parse_tool_call_arguments(&json!("not-json"))
-        .invalid_error()
-        .is_some());
+    assert!(
+        parse_tool_call_arguments(&json!("not-json"))
+            .invalid_error()
+            .is_some()
+    );
     assert_eq!(
         parse_tool_call_arguments(&json!({"already": true})).execution_value()["already"],
         true

@@ -6,26 +6,26 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use starweaver_agent::{
-    live_mcp_toolset, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, McpToolSpec,
-    McpTransport, RmcpLiveMcpClient,
-};
-use starweaver_agent::{
     AgentBuilder, AgentContext, AgentHitlError, AgentHitlResults, AgentHitlUserInteraction,
     AgentRunOptions, AgentRuntimeBuilder, AgentSession, AgentStreamDropPolicy, AgentStreamError,
     AgentStreamEvent, AgentStreamOptions, ApprovalRequiredToolset, DeferredToolResult,
     DeferredToolResults, DynToolset, FunctionModel, FunctionModelInfo, FunctionTool,
-    InMemoryReplayEventLog, InMemorySessionStore, InMemoryStreamArchive, ModelConfig,
-    ModelRequestParameters, ModelSettings, OutputPolicy, PerThousandRatio, ReplayEventKind,
-    ReplayEventLog, ReplayScope, RunStatus, SessionRunStatus, SessionStore, StaticToolset,
-    StreamArchive, ToolApprovalDecision, ToolContext, ToolError, ToolResult,
-    ToolUserInputPreprocessResult, TraceContext, HITL_DECISION_DIAGNOSTIC_EVENT_KIND,
+    HITL_DECISION_DIAGNOSTIC_EVENT_KIND, InMemoryReplayEventLog, InMemorySessionStore,
+    InMemoryStreamArchive, ModelConfig, ModelRequestParameters, ModelSettings, OutputPolicy,
+    PerThousandRatio, ReplayEventKind, ReplayEventLog, ReplayScope, RunStatus, SessionRunStatus,
+    SessionStore, StaticToolset, StreamArchive, ToolApprovalDecision, ToolContext, ToolError,
+    ToolResult, ToolUserInputPreprocessResult, TraceContext,
+};
+use starweaver_agent::{
+    LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, McpToolSpec, McpTransport,
+    RmcpLiveMcpClient, live_mcp_toolset,
 };
 use starweaver_core::{AgentId, CancellationToken, Metadata};
 use starweaver_model::{
-    tool_call_response, ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequest,
-    ModelRequestContext, ModelRequestPart, ModelResponse, ModelResponseEventStream,
-    ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart, ProtocolFamily,
-    ToolCallPart,
+    ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
+    ModelRequestPart, ModelResponse, ModelResponseEventStream, ModelResponsePart,
+    ModelResponseStreamEvent, PartDelta, PartEnd, PartStart, ProtocolFamily, ToolCallPart,
+    tool_call_response,
 };
 use starweaver_stream::{InMemoryReplayTransport, ReplayCursor, ReplayEnvelope, ReplayTransport};
 use starweaver_usage::Usage;
@@ -405,11 +405,13 @@ async fn session_preprocesses_hitl_user_input_before_approved_execution() {
         },
     )
     .with_user_input_preprocessor(|context, user_input| async move {
-        assert!(context
-            .metadata
-            .get("tool_call_id")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|tool_call_id| tool_call_id.starts_with("sw-tool-")));
+        assert!(
+            context
+                .metadata
+                .get("tool_call_id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|tool_call_id| tool_call_id.starts_with("sw-tool-"))
+        );
         assert_eq!(context.metadata["tool_name"], "dangerous");
         let mut metadata = Metadata::default();
         metadata.insert(
@@ -728,28 +730,36 @@ async fn runtime_durable_store_resumes_hitl_and_replays_streams_by_id() {
         deferred[0].status,
         starweaver_agent::ExecutionStatus::Waiting
     );
-    assert!(!store
-        .load_checkpoints(&session_id, &waiting_run_id)
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(!store
-        .replay_stream_records(&session_id, &waiting_run_id)
-        .await
-        .unwrap()
-        .is_empty());
-    assert!(!archive
-        .replay_raw_after(&session_id, &waiting_run_id, None)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        !store
+            .load_checkpoints(&session_id, &waiting_run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !store
+            .replay_stream_records(&session_id, &waiting_run_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !archive
+            .replay_raw_after(&session_id, &waiting_run_id, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let waiting_replay_events = replay
         .replay_after(&ReplayScope::run(waiting_run_id.as_str()), None, None)
         .await
         .unwrap();
-    assert!(waiting_replay_events
-        .iter()
-        .any(|event| matches!(event.event, ReplayEventKind::DisplayMessage(_))));
+    assert!(
+        waiting_replay_events
+            .iter()
+            .any(|event| matches!(event.event, ReplayEventKind::DisplayMessage(_)))
+    );
 
     let deferred_id = format!(
         "deferred_{}_{}",
@@ -1363,10 +1373,12 @@ async fn runtime_durable_store_persists_provider_stream_resume_replay() {
     let snapshot = runtime.resume_snapshot(&session_id, &run_id).await.unwrap();
     assert_eq!(snapshot.run.status, SessionRunStatus::Completed);
     assert!(snapshot.stream_records.len() < stored_records.len());
-    assert!(snapshot
-        .stream_records
-        .iter()
-        .any(|record| { matches!(record.event, AgentStreamEvent::RunComplete { .. }) }));
+    assert!(
+        snapshot
+            .stream_records
+            .iter()
+            .any(|record| { matches!(record.event, AgentStreamEvent::RunComplete { .. }) })
+    );
 }
 
 #[tokio::test]
@@ -1753,10 +1765,12 @@ async fn session_live_stream_yields_events_and_writes_context_back() {
 
     assert_eq!(result.result.output, "live");
     assert_eq!(session.context().usage.requests, 1);
-    assert!(result
-        .events
-        .iter()
-        .any(|record| matches!(record.event, AgentStreamEvent::RunComplete { .. })));
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|record| matches!(record.event, AgentStreamEvent::RunComplete { .. }))
+    );
 }
 
 #[tokio::test]

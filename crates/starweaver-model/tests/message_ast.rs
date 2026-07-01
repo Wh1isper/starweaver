@@ -1,6 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_model::{ModelResponse, ModelResponsePart, ToolArguments, ToolCallPart};
 
 #[test]

@@ -2,9 +2,11 @@
 
 mod support;
 
-use serde::{de::DeserializeOwned, Serialize};
-use serde_json::{json, Value};
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use starweaver_model::{
+    ModelError, ModelProfile, ModelRequestParameters, ModelResponsePart, OutputMode,
+    ProtocolFamily,
     adapter::{NativeToolDefinition, ToolDefinition},
     message::{ModelMessage, ModelRequest, ModelRequestPart, ModelResponse},
     prepare_model_request,
@@ -13,8 +15,6 @@ use starweaver_model::{
         gemini::GeminiGenerateContentAdapter, openai_chat::OpenAiChatAdapter,
         openai_responses::OpenAiResponsesAdapter,
     },
-    ModelError, ModelProfile, ModelRequestParameters, ModelResponsePart, OutputMode,
-    ProtocolFamily,
 };
 
 fn assert_json_eq(actual: &serde_json::Value, expected: &serde_json::Value) {
@@ -634,10 +634,12 @@ fn provider_requests_preserve_representative_compacted_history_shape() {
     assert_eq!(chat_messages[0]["role"], "system");
     assert_eq!(chat_messages[1]["role"], "user");
     assert_eq!(chat_messages[2]["role"], "assistant");
-    assert!(chat_messages[2]["content"]
-        .as_str()
-        .unwrap()
-        .contains("Condensed conversation summary"));
+    assert!(
+        chat_messages[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Condensed conversation summary")
+    );
     assert_eq!(chat_messages[3]["role"], "user");
 
     let openai_responses =
@@ -646,40 +648,48 @@ fn provider_requests_preserve_representative_compacted_history_shape() {
     let responses_input = openai_responses["input"].as_array().unwrap();
     assert_eq!(responses_input[0]["role"], "user");
     assert_eq!(responses_input[1]["role"], "assistant");
-    assert!(responses_input[1]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Condensed conversation summary"));
+    assert!(
+        responses_input[1]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Condensed conversation summary")
+    );
     assert_eq!(responses_input[2]["role"], "user");
 
     let anthropic = build_provider_request("anthropic", "model", &history, None, &[], &[]);
     let anthropic_messages = anthropic["messages"].as_array().unwrap();
     assert_eq!(anthropic_messages[0]["role"], "user");
     assert_eq!(anthropic_messages[1]["role"], "assistant");
-    assert!(anthropic_messages[1]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Condensed conversation summary"));
+    assert!(
+        anthropic_messages[1]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Condensed conversation summary")
+    );
     assert_eq!(anthropic_messages[2]["role"], "user");
 
     let gemini = build_provider_request("gemini", "model", &history, None, &[], &[]);
     let gemini_contents = gemini["contents"].as_array().unwrap();
     assert_eq!(gemini_contents[0]["role"], "user");
     assert_eq!(gemini_contents[1]["role"], "model");
-    assert!(gemini_contents[1]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Condensed conversation summary"));
+    assert!(
+        gemini_contents[1]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Condensed conversation summary")
+    );
     assert_eq!(gemini_contents[2]["role"], "user");
 
     let bedrock = build_provider_request("bedrock", "model", &history, None, &[], &[]);
     let bedrock_messages = bedrock["messages"].as_array().unwrap();
     assert_eq!(bedrock_messages[0]["role"], "user");
     assert_eq!(bedrock_messages[1]["role"], "assistant");
-    assert!(bedrock_messages[1]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("Condensed conversation summary"));
+    assert!(
+        bedrock_messages[1]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Condensed conversation summary")
+    );
     assert_eq!(bedrock_messages[2]["role"], "user");
 }
 

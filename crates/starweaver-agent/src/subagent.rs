@@ -17,7 +17,7 @@ pub use inheritance::{
 };
 pub use registry::{
     BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,
-    SubagentDelegationMode, SubagentParentTools, SubagentRegistry, DELEGATE_BACKEND_TOOL_NAME,
-    SPAWN_DELEGATE_TOOL_NAME,
+    DELEGATE_BACKEND_TOOL_NAME, SPAWN_DELEGATE_TOOL_NAME, SubagentDelegationMode,
+    SubagentParentTools, SubagentRegistry,
 };
 pub use task::{SubagentResult, SubagentTask};

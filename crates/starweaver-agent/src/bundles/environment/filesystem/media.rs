@@ -1,6 +1,6 @@
 //! Media detection and view handling for filesystem tools.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::Map;
 use starweaver_context::{AgentContext, ToolConfig};
 use starweaver_environment::{EnvironmentProvider, FileStat};
@@ -13,7 +13,7 @@ use crate::{
     media_compression::{compress_image_to_model_limit, raw_budget_for_encoded_limit},
 };
 
-use super::{format_size, tool_execution_error, ViewArgs};
+use super::{ViewArgs, format_size, tool_execution_error};
 use crate::bundles::helpers::tool_model_retry;
 
 #[allow(clippy::too_many_lines)]
@@ -65,32 +65,32 @@ pub(super) async fn read_media_file(
 
     let original_bytes = data.len();
     let mut compressed_for_model = false;
-    if media_kind == MediaKind::Image {
-        if let Some(agent_context) = context.dependency::<AgentContext>() {
-            let max_image_bytes = agent_context.model_config.max_image_bytes;
-            if max_image_bytes > 0 {
-                match compress_image_to_model_limit(&data, max_image_bytes, &media_type) {
-                    Ok(compressed) => {
-                        if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
-                            return Err(tool_model_retry(
-                                "view",
-                                format!(
-                                    "Image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Resize or convert it to a smaller supported format before retrying."
-                                ),
-                            ));
-                        }
-                        data = compressed.data;
-                        media_type = compressed.media_type;
-                        compressed_for_model = compressed.compressed;
-                    }
-                    Err(error) => {
+    if media_kind == MediaKind::Image
+        && let Some(agent_context) = context.dependency::<AgentContext>()
+    {
+        let max_image_bytes = agent_context.model_config.max_image_bytes;
+        if max_image_bytes > 0 {
+            match compress_image_to_model_limit(&data, max_image_bytes, &media_type) {
+                Ok(compressed) => {
+                    if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
                         return Err(tool_model_retry(
                             "view",
                             format!(
-                                "Image could not be compressed for inline model input: {error}. Resize or convert it to a smaller supported format before retrying."
+                                "Image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Resize or convert it to a smaller supported format before retrying."
                             ),
                         ));
                     }
+                    data = compressed.data;
+                    media_type = compressed.media_type;
+                    compressed_for_model = compressed.compressed;
+                }
+                Err(error) => {
+                    return Err(tool_model_retry(
+                        "view",
+                        format!(
+                            "Image could not be compressed for inline model input: {error}. Resize or convert it to a smaller supported format before retrying."
+                        ),
+                    ));
                 }
             }
         }
