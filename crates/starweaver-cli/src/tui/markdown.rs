@@ -6,6 +6,7 @@ use super::render::{
 };
 
 pub(super) const ASSISTANT_CONTENT_PREFIX: &str = "\u{200b}";
+pub(super) const CONCISE_TOOL_SUMMARY_PREFIX: &str = "\u{2063}tool:";
 
 pub(super) fn render_transcript_lines(lines: &[String], width: usize) -> Vec<StyledLine> {
     let mut rendered = Vec::new();
@@ -79,6 +80,7 @@ fn is_markdown_plain_line(line: &str) -> bool {
 fn is_transcript_boundary(line: &str) -> bool {
     line.is_empty()
         || line.starts_with("User:")
+        || line.starts_with(CONCISE_TOOL_SUMMARY_PREFIX)
         || line.starts_with("Tool call:")
         || line.starts_with("Tool result:")
         || line.starts_with("Tool error:")
@@ -103,6 +105,9 @@ fn is_transcript_boundary(line: &str) -> bool {
 fn render_transcript_status_lines(line: &str, width: usize) -> Vec<StyledLine> {
     if let Some(prompt) = line.strip_prefix("User:") {
         return render_user_prompt_lines(prompt.trim_start(), width);
+    }
+    if let Some(tool) = line.strip_prefix(CONCISE_TOOL_SUMMARY_PREFIX) {
+        return render_concise_tool_summary_lines(tool.trim_start(), width);
     }
     if let Some(tool) = line.strip_prefix("Tool call:") {
         return render_tool_lines(tool.trim_start(), ToolLineKind::Call, width);
@@ -263,6 +268,13 @@ fn render_task_tool_header_line(label: &str, name: &str, name_style: SegmentStyl
     rendered.push(label, SegmentStyle::dim());
     rendered.push(name, name_style);
     rendered
+}
+
+fn render_concise_tool_summary_lines(summary: &str, width: usize) -> Vec<StyledLine> {
+    wrap_text_width(summary, width.max(1))
+        .into_iter()
+        .map(|line| StyledLine::styled(line, SegmentStyle::dim()))
+        .collect()
 }
 
 fn render_file_tool_detail_line(line: &str, width: usize) -> Option<Vec<StyledLine>> {

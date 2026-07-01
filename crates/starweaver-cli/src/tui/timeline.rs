@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::args::TuiRenderMode;
 
-use super::markdown::ASSISTANT_CONTENT_PREFIX;
+use super::markdown::{ASSISTANT_CONTENT_PREFIX, CONCISE_TOOL_SUMMARY_PREFIX};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct TuiItemId(u64);
@@ -514,7 +514,10 @@ fn project_tool_concise(tool: &ToolTimelineItem, projection: &mut TuiProjection)
         return;
     }
     push_section_gap(&mut projection.lines);
-    projection.lines.push(tool.concise.line.clone());
+    projection.lines.push(format_concise_tool_summary_line(
+        &tool.concise.line,
+        tool.concise.importance,
+    ));
     if matches!(tool.concise.importance, ToolSummaryImportance::Important)
         || matches!(tool.visibility, ToolVisibility::ErrorImportant)
     {
@@ -553,13 +556,29 @@ fn flush_concise_exploration_group(group: &mut ConciseExplorationGroup, lines: &
     }
     push_section_gap(lines);
     if group.running {
-        lines.push("Exploring".to_string());
+        lines.push(format_concise_tool_summary_line(
+            "Exploring",
+            ToolSummaryImportance::Normal,
+        ));
     } else {
-        lines.push("Explored".to_string());
+        lines.push(format_concise_tool_summary_line(
+            "Explored",
+            ToolSummaryImportance::Normal,
+        ));
     }
-    lines.extend(group.lines.iter().map(|line| format!("  {line}")));
+    lines.extend(group.lines.iter().map(|line| {
+        format_concise_tool_summary_line(&format!("  {line}"), ToolSummaryImportance::Normal)
+    }));
     group.lines.clear();
     group.running = false;
+}
+
+fn format_concise_tool_summary_line(line: &str, importance: ToolSummaryImportance) -> String {
+    if matches!(importance, ToolSummaryImportance::Important) {
+        line.to_string()
+    } else {
+        format!("{CONCISE_TOOL_SUMMARY_PREFIX}{line}")
+    }
 }
 
 fn project_subagent(subagent: &SubagentTimelineItem, mode: TuiRenderMode, lines: &mut Vec<String>) {
