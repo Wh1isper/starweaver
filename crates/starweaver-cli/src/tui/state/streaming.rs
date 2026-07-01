@@ -362,10 +362,19 @@ impl InteractiveTuiState {
                 .get("reason")
                 .and_then(Value::as_str)
                 .filter(|reason| !reason.trim().is_empty());
-            self.model_transport_status = Some(reason.map_or_else(
+            let status = reason.map_or_else(
                 || "Transport: websocket -> http".to_string(),
                 |reason| format!("Transport: websocket -> http ({reason})"),
-            ));
+            );
+            self.model_transport_status = Some(status.clone());
+            let detail = payload
+                .get("detail")
+                .and_then(Value::as_str)
+                .filter(|detail| !detail.trim().is_empty());
+            self.push_system_notice(
+                NoticeLevel::Warning,
+                detail.map_or_else(|| status.clone(), |detail| format!("{status}: {detail}")),
+            );
         } else if normalized.ends_with("model_transport_selected")
             && let Some(transport) = payload.get("transport").and_then(Value::as_str)
         {

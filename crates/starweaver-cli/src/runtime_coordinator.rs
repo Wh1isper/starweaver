@@ -974,12 +974,15 @@ impl CliRuntimeCoordinator {
         }
         let store = LocalStore::open(&self.config)?;
         let run = store.load_run(session_id, run_id)?;
+        let error = (run.status == RunStatus::Failed)
+            .then(|| run.output_preview.clone())
+            .flatten();
         Ok(RunStatusItem {
             session_id: session_id.to_string(),
             run_id: run_id.to_string(),
             status: run_status_name(run.status).to_string(),
             output_preview: run.output_preview,
-            error: None,
+            error,
         })
     }
 
@@ -2457,6 +2460,47 @@ mod tests {
             panic!("expected display message");
         };
         assert_eq!(message.payload["delta"], "second");
+    }
+
+    #[test]
+    fn persisted_failed_run_status_preserves_error_detail() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_config(temp.path());
+        let mut store = crate::LocalStore::open(&config).unwrap();
+        let session = store
+            .create_session(&config.default_profile, Some("failed session".to_string()))
+            .unwrap();
+        let session_id = session.session_id.as_str().to_string();
+        let mut run = store
+            .append_run(
+                &session_id,
+                "hello".to_string(),
+                None,
+                &config.default_profile,
+            )
+            .unwrap();
+        let run_id = run.run_id.as_str().to_string();
+        store
+            .fail_run(
+                &mut run,
+                "websocket closed before response.completed".to_string(),
+            )
+            .unwrap();
+        drop(store);
+
+        let status = CliRuntimeCoordinator::new(config)
+            .run_status(&session_id, &run_id)
+            .unwrap();
+
+        assert_eq!(status.status, "failed");
+        assert_eq!(
+            status.output_preview.as_deref(),
+            Some("websocket closed before response.completed")
+        );
+        assert_eq!(
+            status.error.as_deref(),
+            Some("websocket closed before response.completed")
+        );
     }
 
     #[test]
