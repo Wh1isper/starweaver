@@ -15,7 +15,9 @@ use crate::{
     settings::{ModelSettings, ResponseStreamTransport},
     transport::{
         HttpRequest, ModelEventStream, ModelWebSocketEventSession, build_http_request,
-        send_with_retries, should_fallback_websocket_to_http,
+        send_event_stream_with_retries, send_websocket_event_stream_with_retries,
+        send_websocket_session_event_stream_with_retries, send_with_retries,
+        should_fallback_websocket_to_http,
     },
 };
 
@@ -152,6 +154,8 @@ struct SessionFallbackPlan {
     provider_name: String,
     model_name: String,
     http_request: HttpRequest,
+    sleeper: crate::transport::DynSleeper,
+    retry_policy: crate::transport::RetryPolicy,
     fallback_to_http: Arc<AtomicBool>,
     last_response: Arc<Mutex<LastResponseSlot>>,
 }
@@ -174,6 +178,8 @@ impl<'a> ProtocolModelClientRunSession<'a> {
             provider_name: self.client.provider_name.clone(),
             model_name: self.client.model_name.clone(),
             http_request,
+            sleeper: self.client.sleeper.clone(),
+            retry_policy: self.client.http_config.retry_policy.clone(),
             fallback_to_http: Arc::clone(&self.fallback_to_http),
             last_response: Arc::clone(&self.last_response),
         }
@@ -270,10 +276,13 @@ impl<'a> ProtocolModelClientRunSession<'a> {
                 &websocket_request,
             );
         }
-        match self
-            .websocket_session
-            .send_websocket_event_stream_incremental(websocket_request)
-            .await
+        match send_websocket_session_event_stream_with_retries(
+            self.websocket_session.as_mut(),
+            self.client.sleeper.as_ref(),
+            websocket_request,
+            &self.client.http_config.retry_policy,
+        )
+        .await
         {
             Ok(events) => {
                 let fallback_plan = if fallback {
@@ -522,14 +531,22 @@ impl ProtocolModelClient {
         self.record_stream_request_audit(&request);
         let events = match kind {
             ResponseStreamRequestKind::HttpSse => {
-                self.http_client
-                    .send_event_stream_incremental(request)
-                    .await?
+                send_event_stream_with_retries(
+                    self.http_client.as_ref(),
+                    self.sleeper.as_ref(),
+                    request,
+                    &self.http_config.retry_policy,
+                )
+                .await?
             }
             ResponseStreamRequestKind::WebSocket => {
-                self.http_client
-                    .send_websocket_event_stream_incremental(request)
-                    .await?
+                send_websocket_event_stream_with_retries(
+                    self.http_client.as_ref(),
+                    self.sleeper.as_ref(),
+                    request,
+                    &self.http_config.retry_policy,
+                )
+                .await?
             }
         };
         Ok(canonical_openai_response_stream(
@@ -612,12 +629,12 @@ fn transport_fallback_reason(error: &ModelError) -> &'static str {
             "websocket_connection_limit_reached"
         }
         ModelError::ProviderStatus { .. } => "provider_status",
+        ModelError::RetryExhausted { source, .. } => transport_fallback_reason(source),
         ModelError::Transport(_) => "websocket_transport_error",
         ModelError::Cancelled { .. } => "cancelled",
         ModelError::MessageMapping(_)
         | ModelError::ResponseParsing(_)
         | ModelError::RealModelRequestBlocked { .. }
-        | ModelError::RetryExhausted { .. }
         | ModelError::UnsupportedResponse(_) => "model_error",
     }
 }
@@ -766,10 +783,13 @@ async fn forward_http_fallback(
             &plan.http_request,
         );
     }
-    match plan
-        .http_client
-        .send_event_stream_incremental(plan.http_request)
-        .await
+    match send_event_stream_with_retries(
+        plan.http_client.as_ref(),
+        plan.sleeper.as_ref(),
+        plan.http_request,
+        &plan.retry_policy,
+    )
+    .await
     {
         Ok(events) => {
             if let Err(error) =
@@ -920,7 +940,9 @@ mod tests {
         message::{ModelRequest, ModelResponse},
         profile::ProtocolFamily,
         settings::{OpenAiResponsesSettings, ProviderReplaySettings, ProviderSettings},
-        transport::{HttpModelConfig, HttpResponse, ModelHttpClient, ModelWebSocketEventSession},
+        transport::{
+            HttpModelConfig, HttpResponse, ModelHttpClient, ModelWebSocketEventSession, NoopSleeper,
+        },
     };
 
     #[test]
@@ -1018,7 +1040,14 @@ mod tests {
         assert_eq!(final_text.as_deref(), Some("from http"));
         assert_eq!(
             fake.calls(),
-            vec![FakeCallKind::WebSocket, FakeCallKind::Http]
+            vec![
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::Http
+            ]
         );
         let bodies = fake.bodies();
         assert_eq!(
@@ -1048,13 +1077,28 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(ModelError::ProviderStatus {
-                status: 400,
-                retryable: true,
-                ..
-            })
+            Err(ModelError::RetryExhausted {
+                attempts: 5,
+                source
+            }) if matches!(
+                source.as_ref(),
+                ModelError::ProviderStatus {
+                    status: 400,
+                    retryable: true,
+                    ..
+                }
+            )
         ));
-        assert_eq!(fake.calls(), vec![FakeCallKind::WebSocket]);
+        assert_eq!(
+            fake.calls(),
+            vec![
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1235,7 +1279,13 @@ mod tests {
     #[tokio::test]
     async fn run_session_auto_fallback_uses_http_for_remaining_requests() {
         let fake = Arc::new(SessionFakeClient::new(
-            vec![Err(connection_limit_error())],
+            vec![
+                Err(connection_limit_error()),
+                Err(connection_limit_error()),
+                Err(connection_limit_error()),
+                Err(connection_limit_error()),
+                Err(connection_limit_error()),
+            ],
             vec![
                 vec![Ok(completed_text_event_with_ids(
                     "resp_http_1",
@@ -1283,6 +1333,10 @@ mod tests {
         assert_eq!(
             fake.calls(),
             vec![
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
+                FakeCallKind::WebSocket,
                 FakeCallKind::WebSocket,
                 FakeCallKind::Http,
                 FakeCallKind::Http
@@ -1442,6 +1496,7 @@ mod tests {
             config,
             http_client,
         )
+        .with_sleeper(Arc::new(NoopSleeper))
     }
 
     fn test_client_with_session_fake(
@@ -1455,6 +1510,7 @@ mod tests {
             HttpModelConfig::new("https://api.openai.com/v1", "responses"),
             http_client,
         )
+        .with_sleeper(Arc::new(NoopSleeper))
     }
 
     fn settings_with_transport(transport: ResponseStreamTransport) -> ModelSettings {
