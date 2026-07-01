@@ -76,6 +76,11 @@ sequenceDiagram
 
 Tool execution rules:
 
+- Independent tool calls in one model response execute in parallel by default.
+- Runtime policy can force sequential execution for the whole batch.
+- A tool definition can request sequential execution for stateful or non-reentrant work.
+- Duplicate calls to the same tool name in one batch execute sequentially to avoid implicit shared-state races.
+- Tool returns are applied to model history in the original model tool-call order even when execution completes out of order.
 - Tool calls are counted after successful execution.
 - Per-tool retry budgets are independent.
 - Approval and deferred tool returns are represented as structured control-flow metadata.

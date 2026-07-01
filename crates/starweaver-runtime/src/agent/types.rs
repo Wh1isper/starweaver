@@ -1,7 +1,7 @@
 //! Agent runtime public types.
 
 use serde::{Deserialize, Serialize};
-use starweaver_model::{ContentPart, ModelError, ModelMessage};
+use starweaver_model::{ContentPart, ModelError, ModelMessage, ToolReturnPart};
 use thiserror::Error;
 
 use starweaver_usage::UsageLimitError;
@@ -100,6 +100,17 @@ pub enum AgentEndStrategy {
     Exhaustive,
 }
 
+/// Runtime scheduling mode for a batch of model-returned tool calls.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentToolExecutionMode {
+    /// Execute independent tool calls concurrently when no tool requests sequential execution.
+    #[default]
+    Parallel,
+    /// Execute tool calls one at a time in model-returned order.
+    Sequential,
+}
+
 /// Runtime policy for bare agent runs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentRuntimePolicy {
@@ -110,6 +121,9 @@ pub struct AgentRuntimePolicy {
     /// How to handle ordinary tool calls returned alongside a final output function.
     #[serde(default)]
     pub end_strategy: AgentEndStrategy,
+    /// How to schedule batches of model-returned tool calls.
+    #[serde(default)]
+    pub tool_execution: AgentToolExecutionMode,
 }
 
 impl Default for AgentRuntimePolicy {
@@ -118,6 +132,7 @@ impl Default for AgentRuntimePolicy {
             max_steps: 10_000,
             output_retries: 1,
             end_strategy: AgentEndStrategy::Early,
+            tool_execution: AgentToolExecutionMode::Parallel,
         }
     }
 }
@@ -253,6 +268,24 @@ impl AgentResult {
         } else {
             OutputValue::Text(self.output.clone())
         }
+    }
+
+    /// Return true when the run result is waiting for approval or deferred tool results.
+    #[must_use]
+    pub const fn has_pending_hitl(&self) -> bool {
+        self.state.has_pending_hitl()
+    }
+
+    /// Return pending approval-required tool returns.
+    #[must_use]
+    pub fn pending_approvals(&self) -> &[ToolReturnPart] {
+        self.state.pending_approvals()
+    }
+
+    /// Return pending deferred tool returns.
+    #[must_use]
+    pub fn pending_deferred_tools(&self) -> &[ToolReturnPart] {
+        self.state.pending_deferred_tools()
     }
 
     /// Parse structured output into a Rust type.

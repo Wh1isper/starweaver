@@ -378,6 +378,14 @@ async fn builder_skills_installs_instructions_and_context_discovery() {
     let model = FunctionModel::new(|messages, _settings, _info| {
         let debug = format!("{messages:?}");
         assert!(debug.contains("Available fileops-loaded skills"));
+        assert!(debug.contains("skill-routing-policy"));
+        assert!(debug.contains("Skill use is mandatory when applicable"));
+        assert!(debug.contains("skill-activation-procedure"));
+        assert!(debug.contains("MUST read the matching skill's SKILL.md"));
+        assert!(debug.contains("chain them deliberately"));
+        assert!(debug.contains("re-check"));
+        assert!(debug.contains("available-skills"));
+        assert!(debug.contains("phase boundaries"));
         assert!(debug.contains("research"));
         Ok(ModelResponse::text("ok"))
     });

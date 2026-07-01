@@ -16,8 +16,8 @@ use super::{
     shell_review::{ShellReviewContextSnapshot, review_shell_command_or_block},
 };
 use crate::bundles::helpers::{
-    static_tool, static_tool_with_metadata, tool_execution_error, tool_invalid_arguments,
-    tool_metadata,
+    static_sequential_tool, static_sequential_tool_with_metadata, static_tool,
+    tool_execution_error, tool_invalid_arguments, tool_metadata,
 };
 use crate::bundles::output::{
     DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
@@ -92,17 +92,17 @@ Avoid:
 </shell-tool>"#,
             ))
             .with_tools([
-                static_tool_with_metadata(
+                static_sequential_tool_with_metadata(
                     "shell_exec",
                     "Run a provider-scoped shell command. Set background=true for a durable background handle.",
                     approval_metadata,
                     shell_exec,
                 ),
-                static_tool("shell_wait", "Wait for or poll a background shell process.", shell_wait),
+                static_sequential_tool("shell_wait", "Wait for or poll a background shell process.", shell_wait),
                 static_tool("shell_status", "List background shell process status.", shell_status),
-                static_tool("shell_input", "Write text to a background process stdin.", shell_input),
-                static_tool("shell_signal", "Send a Unix signal to a background process.", shell_signal),
-                static_tool("shell_kill", "Terminate and clean up a background shell process.", shell_kill),
+                static_sequential_tool("shell_input", "Write text to a background process stdin.", shell_input),
+                static_sequential_tool("shell_signal", "Send a Unix signal to a background process.", shell_signal),
+                static_sequential_tool("shell_kill", "Terminate and clean up a background shell process.", shell_kill),
             ]),
     )
 }

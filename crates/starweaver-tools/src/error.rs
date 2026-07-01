@@ -67,6 +67,15 @@ pub enum ToolError {
         /// Deferred-call metadata.
         metadata: Value,
     },
+    /// Tool error carrying host-private metadata.
+    #[error("{source}")]
+    WithPrivateMetadata {
+        /// Wrapped tool error.
+        #[source]
+        source: Box<Self>,
+        /// Private metadata kept away from model-visible content.
+        private_metadata: Metadata,
+    },
 }
 
 /// Convert a tool error into a model-visible tool return.
@@ -102,7 +111,7 @@ pub fn error_return(call: &ToolCallPart, error: &ToolError) -> ToolReturnPart {
         metadata,
         app_value: None,
         user_content: None,
-        private_metadata: Metadata::default(),
+        private_metadata: report.private_metadata,
     }
 }
 
@@ -114,6 +123,7 @@ struct ToolErrorReport {
     retryable: bool,
     retry_requires_corrected_input: bool,
     metadata: Metadata,
+    private_metadata: Metadata,
 }
 
 impl ToolErrorReport {
@@ -130,11 +140,47 @@ impl ToolErrorReport {
             retryable,
             retry_requires_corrected_input,
             metadata,
+            private_metadata: error.private_metadata(),
         }
     }
 }
 
 impl ToolError {
+    /// Attach host-private metadata to this error.
+    #[must_use]
+    pub fn with_private_metadata(self, private_metadata: Metadata) -> Self {
+        if private_metadata.is_empty() {
+            return self;
+        }
+        Self::WithPrivateMetadata {
+            source: Box::new(self),
+            private_metadata,
+        }
+    }
+
+    /// Return host-private metadata attached to this error.
+    #[must_use]
+    pub fn private_metadata(&self) -> Metadata {
+        match self {
+            Self::WithPrivateMetadata {
+                source,
+                private_metadata,
+            } => {
+                let mut metadata = source.private_metadata();
+                metadata.extend(private_metadata.clone());
+                metadata
+            }
+            Self::NotFound(_)
+            | Self::InvalidArguments { .. }
+            | Self::Execution { .. }
+            | Self::Timeout { .. }
+            | Self::Cancelled { .. }
+            | Self::ModelRetry { .. }
+            | Self::ApprovalRequired { .. }
+            | Self::CallDeferred { .. } => Metadata::default(),
+        }
+    }
+
     fn tool_name(&self) -> &str {
         match self {
             Self::NotFound(tool)
@@ -145,6 +191,7 @@ impl ToolError {
             | Self::ModelRetry { tool, .. }
             | Self::ApprovalRequired { tool, .. }
             | Self::CallDeferred { tool, .. } => tool,
+            Self::WithPrivateMetadata { source, .. } => source.tool_name(),
         }
     }
 
@@ -164,6 +211,7 @@ impl ToolError {
             Self::CallDeferred { .. } => {
                 "tool call was deferred to an external worker or later run".to_string()
             }
+            Self::WithPrivateMetadata { source, .. } => source.user_message(),
         }
     }
 
@@ -216,6 +264,7 @@ impl ToolError {
                 false,
                 false,
             ),
+            Self::WithPrivateMetadata { source, .. } => source.recovery_guidance(),
         }
     }
 }
@@ -252,5 +301,6 @@ fn tool_error_metadata(error: &ToolError) -> (&'static str, Metadata) {
             metadata.insert("deferred".to_string(), value.clone());
             ("call_deferred", metadata)
         }
+        ToolError::WithPrivateMetadata { source, .. } => tool_error_metadata(source),
     }
 }

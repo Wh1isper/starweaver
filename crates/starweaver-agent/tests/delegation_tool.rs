@@ -204,6 +204,9 @@ fn async_delegation_mode_makes_delegate_async_and_hides_backend() {
     );
     let instructions = tools.get_instructions().join("\n");
     assert!(instructions.contains("delegate is asynchronous"));
+    assert!(instructions.contains("do not wait, poll, or loop"));
+    assert!(instructions.contains("finish your current response"));
+    assert!(instructions.contains("automatically notify you"));
     assert!(instructions.contains("Child helper"));
     assert!(!instructions.contains("Delegate calls are blocking"));
 }
@@ -236,6 +239,8 @@ fn dual_delegation_mode_keeps_blocking_delegate_and_adds_spawn_delegate() {
     let instructions = tools.get_instructions().join("\n");
     assert!(instructions.contains("Delegate calls are blocking"));
     assert!(instructions.contains("Use this to run a subagent asynchronously"));
+    assert!(instructions.contains("do not wait, poll, or loop"));
+    assert!(instructions.contains("automatically notify you"));
 }
 
 #[tokio::test]
@@ -302,6 +307,10 @@ async fn async_delegate_delivers_result_to_subscribed_parent_bus() {
 
     assert_eq!(result.content["status"], "spawned");
     assert_eq!(result.content["agent_id"], "child-bg-test");
+    let message = result.content["message"].as_str().unwrap();
+    assert!(message.contains("Do not wait, poll, or loop"));
+    assert!(message.contains("finish your current response now"));
+    assert!(message.contains("automatically notify you"));
 
     let mut delivered = None;
     for _ in 0..50 {

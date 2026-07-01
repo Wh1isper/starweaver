@@ -15,7 +15,7 @@ impl Agent {
     ///
     /// Returns an error when the model, capabilities, validation, tools, or runtime policy fails.
     pub async fn run(&self, prompt: impl Into<AgentInput>) -> Result<AgentResult, AgentError> {
-        self.run_with_history(prompt, Vec::new()).await
+        Box::pin(self.run_with_history(prompt, Vec::new())).await
     }
 
     /// Run the agent and collect a compact iteration trace.
@@ -28,7 +28,7 @@ impl Agent {
         prompt: impl Into<AgentInput>,
     ) -> Result<AgentIterResult, AgentError> {
         let mut events = Vec::new();
-        let result = self.run_with_stream_events(prompt, &mut events).await?;
+        let result = Box::pin(self.run_with_stream_events(prompt, &mut events)).await?;
         let iterations = AgentIterationTrace::from_stream_records(&events);
         Ok(AgentIterResult {
             result,
@@ -47,7 +47,7 @@ impl Agent {
         prompt: impl Into<AgentInput>,
     ) -> Result<AgentStreamResult, AgentError> {
         let mut events = Vec::new();
-        let result = self.run_with_stream_events(prompt, &mut events).await?;
+        let result = Box::pin(self.run_with_stream_events(prompt, &mut events)).await?;
         Ok(AgentStreamResult { result, events })
     }
 
@@ -62,9 +62,9 @@ impl Agent {
         message_history: Vec<ModelMessage>,
     ) -> Result<AgentIterResult, AgentError> {
         let mut events = Vec::new();
-        let result = self
-            .run_with_history_and_stream_events(prompt, message_history, &mut events)
-            .await?;
+        let result =
+            Box::pin(self.run_with_history_and_stream_events(prompt, message_history, &mut events))
+                .await?;
         let iterations = AgentIterationTrace::from_stream_records(&events);
         Ok(AgentIterResult {
             result,
@@ -83,8 +83,7 @@ impl Agent {
         prompt: impl Into<AgentInput>,
         events: &mut Vec<AgentStreamRecord>,
     ) -> Result<AgentResult, AgentError> {
-        self.run_with_history_and_stream_events(prompt, Vec::new(), events)
-            .await
+        Box::pin(self.run_with_history_and_stream_events(prompt, Vec::new(), events)).await
     }
 
     /// Run the agent with prior history and collect typed stream events.
@@ -99,8 +98,7 @@ impl Agent {
         events: &mut Vec<AgentStreamRecord>,
     ) -> Result<AgentResult, AgentError> {
         let mut context = self.context_from_history(message_history);
-        self.run_with_context_and_stream_events(prompt, &mut context, events)
-            .await
+        Box::pin(self.run_with_context_and_stream_events(prompt, &mut context, events)).await
     }
 
     /// Run the agent with prior canonical message history.
@@ -114,7 +112,7 @@ impl Agent {
         message_history: Vec<ModelMessage>,
     ) -> Result<AgentResult, AgentError> {
         let mut context = self.context_from_history(message_history);
-        self.run_with_context(prompt, &mut context).await
+        Box::pin(self.run_with_context(prompt, &mut context)).await
     }
 
     /// Run the agent using a lifecycle-wide context and collect a compact iteration trace.
@@ -128,9 +126,8 @@ impl Agent {
         context: &mut AgentContext,
     ) -> Result<AgentIterResult, AgentError> {
         let mut events = Vec::new();
-        let result = self
-            .run_with_context_and_stream_events(prompt, context, &mut events)
-            .await?;
+        let result =
+            Box::pin(self.run_with_context_and_stream_events(prompt, context, &mut events)).await?;
         let iterations = AgentIterationTrace::from_stream_records(&events);
         Ok(AgentIterResult {
             result,
@@ -150,8 +147,7 @@ impl Agent {
         context: &mut AgentContext,
         events: &mut Vec<AgentStreamRecord>,
     ) -> Result<AgentResult, AgentError> {
-        self.run_with_context_inner(prompt, context, Some(events))
-            .await
+        Box::pin(self.run_with_context_inner(prompt, context, Some(events))).await
     }
 
     /// Run the agent using a lifecycle-wide context.
@@ -165,7 +161,7 @@ impl Agent {
         prompt: impl Into<AgentInput>,
         context: &mut AgentContext,
     ) -> Result<AgentResult, AgentError> {
-        self.run_with_context_inner(prompt, context, None).await
+        Box::pin(self.run_with_context_inner(prompt, context, None)).await
     }
     fn context_from_history(&self, message_history: Vec<ModelMessage>) -> AgentContext {
         let conversation_id = latest_conversation_id(&message_history).unwrap_or_default();

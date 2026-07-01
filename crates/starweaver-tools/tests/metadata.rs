@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use serde_json::json;
+use starweaver_model::ToolCallPart;
 use starweaver_tools::{
     EmptyToolArgs, FunctionTool, TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY,
-    TOOL_METADATA_TAGS_KEY, Tool, ToolContext, ToolKind, ToolRegistry, ToolResult,
-    TypedFunctionTool, set_tool_metadata_kind, tool_metadata_hidden_by_tags, tool_metadata_kind,
-    tool_metadata_tags,
+    TOOL_METADATA_TAGS_KEY, Tool, ToolContext, ToolError, ToolKind, ToolRegistry, ToolResult,
+    TypedFunctionTool, error_return, set_tool_metadata_kind, tool_metadata_hidden_by_tags,
+    tool_metadata_kind, tool_metadata_tags,
 };
 
 #[test]
@@ -253,4 +254,28 @@ async fn structured_tool_result_keeps_private_metadata_out_of_model_content() {
     assert_eq!(result.private_metadata["secret_token"], json!("host-only"));
     assert!(!result.content.to_string().contains("host-only"));
     assert!(!result.metadata.contains_key("secret_token"));
+}
+
+#[test]
+fn tool_error_private_metadata_stays_out_of_model_visible_surfaces() {
+    let mut private_metadata = serde_json::Map::new();
+    private_metadata.insert("secret_token".to_string(), json!("host-only"));
+    let error = ToolError::Execution {
+        tool: "private_error".to_string(),
+        message: "operation failed".to_string(),
+    }
+    .with_private_metadata(private_metadata);
+    let call = ToolCallPart {
+        id: "call_private_error".to_string(),
+        name: "private_error".to_string(),
+        arguments: json!({}).into(),
+    };
+
+    let result = error_return(&call, &error);
+
+    assert!(result.is_error);
+    assert_eq!(result.private_metadata["secret_token"], json!("host-only"));
+    assert_eq!(result.metadata["error_kind"], json!("execution"));
+    assert!(!result.metadata.contains_key("secret_token"));
+    assert!(!result.content.to_string().contains("host-only"));
 }

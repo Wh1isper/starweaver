@@ -25,6 +25,22 @@ where
     ))
 }
 
+pub fn static_sequential_tool<Args, F, Fut>(
+    name: &'static str,
+    description: &'static str,
+    function: F,
+) -> DynTool
+where
+    Args: DeserializeOwned + JsonSchema + Send + 'static,
+    F: Send + Sync + 'static + Fn(ToolContext, Args) -> Fut,
+    Fut: Send + Future<Output = Result<ToolResult, ToolError>> + 'static,
+{
+    Arc::new(
+        typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function)
+            .with_sequential(true),
+    )
+}
+
 pub fn static_tool_with_metadata<Args, F, Fut>(
     name: &'static str,
     description: &'static str,
@@ -39,6 +55,24 @@ where
     Arc::new(
         typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function)
             .with_metadata(metadata),
+    )
+}
+
+pub fn static_sequential_tool_with_metadata<Args, F, Fut>(
+    name: &'static str,
+    description: &'static str,
+    metadata: Metadata,
+    function: F,
+) -> DynTool
+where
+    Args: DeserializeOwned + JsonSchema + Send + 'static,
+    F: Send + Sync + 'static + Fn(ToolContext, Args) -> Fut,
+    Fut: Send + Future<Output = Result<ToolResult, ToolError>> + 'static,
+{
+    Arc::new(
+        typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function)
+            .with_metadata(metadata)
+            .with_sequential(true),
     )
 }
 

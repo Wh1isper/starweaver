@@ -89,6 +89,17 @@ fn stream_record_source_defaults_to_none_and_skips_serialization() {
 }
 
 #[test]
+fn stream_record_raw_json_projection_matches_serialized_record() {
+    let record = AgentStreamRecord::new(7, AgentStreamEvent::ModelRequest { step: 1 });
+
+    let raw = record.to_raw_json().unwrap();
+
+    assert_eq!(raw, serde_json::to_value(&record).unwrap());
+    assert_eq!(raw["sequence"], 7);
+    assert_eq!(raw["event"]["kind"], "model_request");
+}
+
+#[test]
 fn stream_record_source_attribution_round_trips() {
     let source = AgentStreamSource::subagent(
         AgentId::from_string("child-agent"),
@@ -174,6 +185,10 @@ async fn run_stream_collects_text_run_events() {
             .windows(2)
             .all(|window| window[0].sequence + 1 == window[1].sequence)
     );
+    let raw = stream.raw_json_records().unwrap();
+    assert_eq!(raw.len(), stream.events.len());
+    assert_eq!(raw[0]["sequence"], 0);
+    assert_eq!(raw[0]["event"]["kind"], "run_start");
 }
 
 #[tokio::test]

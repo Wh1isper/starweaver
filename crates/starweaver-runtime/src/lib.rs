@@ -15,7 +15,8 @@ pub mod stream;
 pub mod trace;
 
 pub use agent::{
-    Agent, AgentEndStrategy, AgentError, AgentInput, AgentOverride, AgentResult, AgentRuntimePolicy,
+    Agent, AgentEndStrategy, AgentError, AgentInput, AgentOverride, AgentResult,
+    AgentRuntimePolicy, AgentToolExecutionMode,
 };
 pub use capability::{
     AgentCapability, CapabilityBundle, CapabilityError, CapabilityId, CapabilityOrderError,

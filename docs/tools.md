@@ -460,6 +460,8 @@ assert_eq!(tool_metadata_kind(&definition.metadata), Some(ToolKind::External));
 
 `FunctionTool` and `TypedFunctionTool` also support provider strict-schema preference and sequential execution preference. OpenAI tool requests receive `strict` when it is set; sequential preference remains provider-neutral metadata for runtime, hooks, and UI policy.
 
+Runtime tool scheduling is parallel by default for independent tool calls returned in the same model response. The runtime falls back to model-order sequential execution when `AgentRuntimePolicy.tool_execution` is `Sequential`, when any requested tool definition has `sequential = true`, or when a response repeats the same tool name in one batch. Tool returns are still applied to model history in the original model tool-call order.
+
 ```rust
 use starweaver_agent::{string_tool, ToolContext, Tool};
 
@@ -478,6 +480,11 @@ let definition = tool.definition();
 assert_eq!(definition.strict, Some(true));
 assert_eq!(definition.sequential, Some(true));
 ```
+
+`ToolError::with_private_metadata(...)` attaches host-only error details to
+`ToolReturnPart.private_metadata`. These values are kept out of model-visible
+tool content and public tool-return metadata, matching `ToolResult` private
+metadata behavior for successful tool calls.
 
 ## Availability
 

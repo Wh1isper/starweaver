@@ -406,6 +406,15 @@ impl AgentStreamRecord {
         self.sequence = sequence;
         self
     }
+
+    /// Project this raw runtime stream record into its JSON representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if a nested event payload cannot be encoded.
+    pub fn to_raw_json(&self) -> serde_json::Result<serde_json::Value> {
+        serde_json::to_value(self)
+    }
 }
 
 /// Result returned by collection-based stream runs.
@@ -428,6 +437,18 @@ impl AgentStreamResult {
     #[must_use]
     pub const fn result(&self) -> &AgentResult {
         &self.result
+    }
+
+    /// Project captured raw runtime stream records into JSON values.
+    ///
+    /// # Errors
+    ///
+    /// Returns a serialization error if a nested event payload cannot be encoded.
+    pub fn raw_json_records(&self) -> serde_json::Result<Vec<serde_json::Value>> {
+        self.events
+            .iter()
+            .map(AgentStreamRecord::to_raw_json)
+            .collect()
     }
 }
 

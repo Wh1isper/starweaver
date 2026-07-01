@@ -447,8 +447,7 @@ mod tests {
             ))));
 
         let mut events = Vec::new();
-        let result = agent
-            .run_with_stream_events("start", &mut events)
+        let result = Box::pin(agent.run_with_stream_events("start", &mut events))
             .await
             .unwrap_or_else(|error| panic!("goal run should succeed: {error}"));
 

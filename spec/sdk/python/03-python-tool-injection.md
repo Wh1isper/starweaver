@@ -188,9 +188,14 @@ and is interrupted by the Starweaver stream/session handle.
 
 Default policy:
 
-- P0 Python tools default to `sequential=True`.
-- Async Python tools may opt into parallel execution only after dispatcher tests
-  prove no GIL, event-loop, or state-sharing hazards.
+- The Starweaver runtime executes independent tool calls in parallel by default.
+- Python tools should register with `sequential=False` by default once the
+  dispatcher tests prove Python callbacks do not hold the GIL across awaited
+  Rust runtime work.
+- Sync, stateful, or explicitly non-reentrant Python tools can set
+  `sequential=True`.
+- Duplicate calls to the same Python tool name in one model response still run
+  sequentially through the runtime fallback.
 
 The `sequential` flag should map to the existing Starweaver tool contract so the
 runtime can schedule mixed Rust and Python tools consistently.

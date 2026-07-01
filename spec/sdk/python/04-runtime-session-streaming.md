@@ -89,6 +89,10 @@ Restore rules:
 | `DeferredCall` dataclass     | deferred records exposed from session/run result          |
 | `resume_after_hitl(...)`     | `AgentHitlResults` into `AgentSession::resume_after_hitl` |
 
+Python run result helpers should map to Rust `AgentResult::has_pending_hitl()`,
+`pending_approvals()`, and `pending_deferred_tools()` instead of parsing raw
+state fields.
+
 HITL should preserve Starweaver control flow:
 
 ```python
@@ -114,7 +118,8 @@ P0:
 - `StreamEvent.kind`
 - event dataclasses for message deltas, tool calls, tool results, approvals,
   deferred calls, usage snapshots, lifecycle markers, and final result
-- `event.raw` for unrecognized Starweaver records
+- `event.raw` backed by `AgentStreamRecord::to_raw_json()` for unrecognized
+  Starweaver records and forward-compatible extensions
 - `stream.interrupt()` or async context-managed stream handles
 
 Later:
