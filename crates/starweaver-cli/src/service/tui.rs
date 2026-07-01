@@ -30,6 +30,7 @@ struct CompletedPromptRun {
     session_id: String,
     run_id: String,
     status: String,
+    error: Option<String>,
 }
 
 struct ActiveTuiRun {
@@ -199,19 +200,21 @@ impl CliService {
                     }
                     Ok(TuiRunMessage::Completed(completed)) => {
                         let was_cancelled = completed.status == "cancelled";
+                        let failed = completed.status == "failed";
                         if was_cancelled {
                             state.session_id = Some(completed.session_id.clone());
                             state.cancel_run("cancelled by user");
+                        } else if failed {
+                            state.session_id = Some(completed.session_id.clone());
+                            state.fail_run(&terminal_run_error_message(&completed));
                         } else {
                             state.finish_run(Some(completed.session_id.clone()));
                         }
-                        state.push_run_status_line(format!(
-                            "Run completed: {} status={}",
-                            completed.run_id, completed.status
-                        ));
+                        state.push_run_status_line(terminal_run_status_line(&completed));
                         active_run = None;
                         dirty = true;
                         if !was_cancelled
+                            && !failed
                             && let Some((prompt, display_prompt, goal)) = queued_prompt.take()
                         {
                             state.begin_run(&display_prompt);
@@ -458,6 +461,7 @@ fn spawn_tui_run(
                         session_id: status.session_id,
                         run_id: status.run_id,
                         status: status.status,
+                        error: status.error,
                     }));
                     break;
                 }
@@ -578,6 +582,31 @@ fn status_is_terminal(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "cancelled")
 }
 
+fn terminal_run_error_message(completed: &CompletedPromptRun) -> String {
+    completed
+        .error
+        .as_deref()
+        .map(str::trim)
+        .filter(|error| !error.is_empty())
+        .unwrap_or("run failed")
+        .to_string()
+}
+
+fn terminal_run_status_line(completed: &CompletedPromptRun) -> String {
+    match completed.status.as_str() {
+        "failed" => format!(
+            "Run failed: {} error={}",
+            completed.run_id,
+            terminal_run_error_message(completed)
+        ),
+        "cancelled" => format!("Run cancelled: {}", completed.run_id),
+        _ => format!(
+            "Run completed: {} status={}",
+            completed.run_id, completed.status
+        ),
+    }
+}
+
 pub(super) fn model_choices(config: &CliConfig) -> Vec<crate::tui::ModelChoice> {
     list_config_model_profiles(config)
         .into_iter()
@@ -696,6 +725,25 @@ mod tests {
         ConfigResolver::for_tests(temp.path())
             .resolve(&cli)
             .unwrap()
+    }
+
+    #[test]
+    fn terminal_run_status_line_includes_failed_error_detail() {
+        let completed = CompletedPromptRun {
+            session_id: "session_test".to_string(),
+            run_id: "run_test".to_string(),
+            status: "failed".to_string(),
+            error: Some("websocket closed before response.completed".to_string()),
+        };
+
+        assert_eq!(
+            terminal_run_error_message(&completed),
+            "websocket closed before response.completed"
+        );
+        assert_eq!(
+            terminal_run_status_line(&completed),
+            "Run failed: run_test error=websocket closed before response.completed"
+        );
     }
 
     #[test]

@@ -24,7 +24,10 @@ use crate::{
 };
 
 use super::{
-    markdown::{ASSISTANT_CONTENT_PREFIX, render_markdown_lines, render_transcript_lines},
+    markdown::{
+        ASSISTANT_CONTENT_PREFIX, CONCISE_TOOL_SUMMARY_PREFIX, render_markdown_lines,
+        render_transcript_lines,
+    },
     render::{
         SegmentStyle, StyledLine, composer_cursor_column, composer_cursor_position_wrapped,
         composer_input_width, input_tail_lines, input_viewport_lines, input_viewport_lines_wrapped,
@@ -75,7 +78,7 @@ fn interactive_state_applies_streaming_text() {
 }
 
 #[test]
-fn model_transport_diagnostic_updates_status_bar_only() {
+fn model_transport_selected_updates_status_bar_only() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.begin_run("hello");
     let initial_body_len = state.body.len();
@@ -96,26 +99,36 @@ fn model_transport_diagnostic_updates_status_bar_only() {
     assert_eq!(state.body.len(), initial_body_len);
     let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
     assert!(footer.contains("Transport: websocket"));
+}
+
+#[test]
+fn model_transport_fallback_updates_status_bar_and_transcript() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.begin_run("hello");
 
     state.apply_stream_record(&AgentStreamRecord::new(
-        1,
+        0,
         AgentStreamEvent::Custom {
             event: AgentEvent::new(
                 "model_transport_fallback",
                 json!({
                     "from": "websocket",
                     "to": "http",
-                    "reason": "websocket_connection_limit_reached",
-                    "message": "model transport: websocket -> http fallback (websocket_connection_limit_reached)"
+                    "reason": "websocket_transport_error",
+                    "detail": "websocket closed before response.completed",
+                    "message": "model transport: websocket -> http fallback (websocket_transport_error)"
                 }),
             ),
         },
     ));
 
-    assert_eq!(state.body.len(), initial_body_len);
     let footer = line_texts(&render_footer_lines(&state, 160)).join("\n");
     assert!(footer.contains("Transport: websocket -> http"));
-    assert!(footer.contains("websocket_connection_limit_reached"));
+    assert!(footer.contains("websocket_transport_error"));
+    assert!(state.body.iter().any(|line| {
+        line.contains("Transport: websocket -> http (websocket_transport_error)")
+            && line.contains("websocket closed before response.completed")
+    }));
 }
 
 #[test]
@@ -2318,6 +2331,12 @@ fn render_modes_reproject_tool_visibility_and_active_tool_status() {
     ));
     state.set_render_mode(TuiRenderMode::Concise);
     assert!(body_has_line(&state, "Calling lookup {\"query\":\"mode\"}"));
+    let rendered_concise = render_transcript_lines(&state.body, 120);
+    assert!(has_segment(
+        &rendered_concise,
+        "Calling lookup {\"query\":\"mode\"}",
+        SegmentStyle::DIM
+    ));
     assert!(!body_has_line(
         &state,
         "Tool call: lookup {\"query\":\"mode\"}"
@@ -5153,7 +5172,9 @@ fn body_line_count(state: &InteractiveTuiState, expected: &str) -> usize {
 }
 
 fn body_line_text(line: &str) -> &str {
-    line.strip_prefix(ASSISTANT_CONTENT_PREFIX).unwrap_or(line)
+    line.strip_prefix(ASSISTANT_CONTENT_PREFIX)
+        .or_else(|| line.strip_prefix(CONCISE_TOOL_SUMMARY_PREFIX))
+        .unwrap_or(line)
 }
 
 fn has_segment(lines: &[StyledLine], text: &str, style: u16) -> bool {
