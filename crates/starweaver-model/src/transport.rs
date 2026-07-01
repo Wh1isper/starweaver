@@ -23,7 +23,8 @@ pub use config::{
 pub use reqwest_client::ReqwestHttpClient;
 pub use retry::{
     DynSleeper, ModelSleeper, NoopSleeper, RetryPolicy, TokioSleeper, is_retryable_status,
-    send_with_retries, should_retry_error,
+    retry_with_policy, send_event_stream_with_retries, send_websocket_event_stream_with_retries,
+    send_websocket_session_event_stream_with_retries, send_with_retries, should_retry_error,
 };
 pub use types::{HttpMethod, HttpRequest, HttpResponse, MaxTokensParameter};
 pub use websocket::should_fallback_websocket_to_http;

@@ -710,6 +710,7 @@ pub fn should_fallback_websocket_to_http(error: &ModelError) -> bool {
                 || message.contains("Connection reset")
                 || message.contains("connection reset")
         }
+        ModelError::RetryExhausted { source, .. } => should_fallback_websocket_to_http(source),
         _ => false,
     }
 }
