@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use starweaver_model::{
+    ModelSettings,
     adapter::{ModelRequestParameters, NativeToolDefinition, ToolDefinition},
     message::{ModelMessage, ModelResponse},
-    ModelSettings,
 };
 
 #[derive(Debug, serde::Deserialize)]

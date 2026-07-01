@@ -1,10 +1,10 @@
 use super::{
-    json, AgentContext, AgentStreamEvent, AgentStreamRecord, ApprovalDecision, ApprovalRecord,
+    AgentContext, AgentStreamEvent, AgentStreamRecord, ApprovalDecision, ApprovalRecord,
     ApprovalStatus, CliRunPolicy, DefaultDisplayMessageProjector, DeferredToolRecord,
     DisplayMessage, DisplayMessageKind, DisplayMessageProjector, DisplayProjectionContext,
     FinishReason, HitlPolicy, ModelResponse, ModelResponsePart, ModelResponseStreamEvent,
     RealtimeCompactionBuffer, ReplayScope, ReplaySnapshot, RunRecord, RunStatus, StreamDelta,
-    ToolReturnRecordInput, Utc, Value,
+    ToolReturnRecordInput, Utc, Value, json,
 };
 
 pub(super) struct DisplayProjection {
@@ -25,14 +25,16 @@ pub(super) fn project_display_messages(
     let policy_metadata = serde_json::to_value(policy).unwrap_or(Value::Null);
     let context = DisplayProjectionContext::new(run.session_id.clone(), run.run_id.clone());
     let projector = DefaultDisplayMessageProjector;
-    let mut display_messages = vec![DisplayMessage::new(
-        0,
-        run.session_id.clone(),
-        run.run_id.clone(),
-        DisplayMessageKind::RunQueued,
-    )
-    .with_payload(json!({"sequence_no": run.sequence_no}))
-    .with_preview("run queued")];
+    let mut display_messages = vec![
+        DisplayMessage::new(
+            0,
+            run.session_id.clone(),
+            run.run_id.clone(),
+            DisplayMessageKind::RunQueued,
+        )
+        .with_payload(json!({"sequence_no": run.sequence_no}))
+        .with_preview("run queued"),
+    ];
     let mut streamed_text_projected = false;
     let mut streamed_reasoning_projected = false;
     let mut final_result_projected_text = false;

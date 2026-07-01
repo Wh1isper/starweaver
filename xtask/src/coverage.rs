@@ -143,13 +143,13 @@ pub fn coverage_gate(args: &[String]) -> Result<(), String> {
     let output = run_capture(&mut command)?;
     print!("{output}");
     let (files, total) = parse_coverage(&output)?;
-    if let Some(floor) = group.measured_floor {
-        if total.percent < floor {
-            return Err(format!(
-                "{group_name} measured coverage {:.2}% is below the {:.2}% floor",
-                total.percent, floor
-            ));
-        }
+    if let Some(floor) = group.measured_floor
+        && total.percent < floor
+    {
+        return Err(format!(
+            "{group_name} measured coverage {:.2}% is below the {:.2}% floor",
+            total.percent, floor
+        ));
     }
     let (acceptance, selected) = aggregate_coverage(group.acceptance_paths, &files)?;
     println!("{group_name} acceptance coverage files:");

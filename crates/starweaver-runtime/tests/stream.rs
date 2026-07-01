@@ -155,10 +155,12 @@ async fn run_stream_collects_text_run_events() {
             ..
         }
     )));
-    assert!(stream
-        .events
-        .iter()
-        .any(|record| matches!(record.event, AgentStreamEvent::ModelRequest { step: 0 })));
+    assert!(
+        stream
+            .events
+            .iter()
+            .any(|record| matches!(record.event, AgentStreamEvent::ModelRequest { step: 0 }))
+    );
     assert!(stream.events.iter().any(|record| matches!(
         record.event,
         AgentStreamEvent::ModelResponse { step: 1, .. }
@@ -166,10 +168,12 @@ async fn run_stream_collects_text_run_events() {
     assert!(
         matches!(stream.events.last().unwrap().event, AgentStreamEvent::RunComplete { ref output, .. } if output == "hello")
     );
-    assert!(stream
-        .events
-        .windows(2)
-        .all(|window| window[0].sequence + 1 == window[1].sequence));
+    assert!(
+        stream
+            .events
+            .windows(2)
+            .all(|window| window[0].sequence + 1 == window[1].sequence)
+    );
 }
 
 #[tokio::test]

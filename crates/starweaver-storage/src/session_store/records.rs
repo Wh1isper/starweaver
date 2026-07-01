@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use starweaver_core::{RunId, SessionId};
 use starweaver_session::{
     RunRecord, RunStatus, SessionRecord, SessionStoreError, SessionStoreResult,

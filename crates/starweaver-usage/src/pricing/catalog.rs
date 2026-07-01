@@ -2,8 +2,8 @@
 
 use super::normalize_model_id;
 use super::profile::{
-    cny_millis_to_usd_micros, scale_rate, ModelPricingDetails, ModelPricingProfile,
-    ModelPricingTier,
+    ModelPricingDetails, ModelPricingProfile, ModelPricingTier, cny_millis_to_usd_micros,
+    scale_rate,
 };
 
 #[derive(Clone, Copy, Debug)]

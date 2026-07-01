@@ -3,8 +3,8 @@
 
 use starweaver_envd_client::EnvdRpcClient;
 use starweaver_envd_core::{
-    EnvdService, FileReadMode, FileReadRequest, FileWriteRequest, OpenEnvironmentRequest,
-    DEFAULT_ENVIRONMENT_ID,
+    DEFAULT_ENVIRONMENT_ID, EnvdService, FileReadMode, FileReadRequest, FileWriteRequest,
+    OpenEnvironmentRequest,
 };
 
 #[tokio::test]

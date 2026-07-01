@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use crate::{
-    is_tmp_path, join_logical_path, logical_ancestors, normalize_tmp_filename, EnvironmentError,
-    EnvironmentResult, DEFAULT_TMP_DIR,
+    DEFAULT_TMP_DIR, EnvironmentError, EnvironmentResult, is_tmp_path, join_logical_path,
+    logical_ancestors, normalize_tmp_filename,
 };
 
 use super::VirtualEnvironmentProvider;

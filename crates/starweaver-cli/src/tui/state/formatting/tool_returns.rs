@@ -30,10 +30,10 @@ pub(super) fn format_tool_return_display_lines(
             _ => format_generic_tool_lines(&tool_return.name, display_value),
         }
     };
-    if !is_task_tool_name(&tool_return.name) {
-        if let Some(duration) = tool_duration_label(&tool_return.metadata) {
-            lines.push(format!("  Duration: {duration}"));
-        }
+    if !is_task_tool_name(&tool_return.name)
+        && let Some(duration) = tool_duration_label(&tool_return.metadata)
+    {
+        lines.push(format!("  Duration: {duration}"));
     }
     lines
 }
@@ -513,10 +513,10 @@ fn format_view_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec<Stri
     } else {
         lines.push(format!("  {}", value_preview(result)));
     }
-    if let Some(metadata) = result.get("metadata") {
-        if let Some(truncation) = metadata.get("truncation_info") {
-            lines.push(format!("  Truncation: {}", value_preview(truncation)));
-        }
+    if let Some(metadata) = result.get("metadata")
+        && let Some(truncation) = metadata.get("truncation_info")
+    {
+        lines.push(format!("  Truncation: {}", value_preview(truncation)));
     }
     lines
 }

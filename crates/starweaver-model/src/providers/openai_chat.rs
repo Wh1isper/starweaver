@@ -1,8 +1,9 @@
 //! `OpenAI` Chat Completions wire mapper.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
+    ModelError, ModelSettings,
     adapter::ToolDefinition,
     message::{
         ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ProviderInfo,
@@ -14,7 +15,6 @@ use crate::{
         parse_tool_call_arguments, provider_tool_schema_without_meta, usage_from_openai,
     },
     transport::MaxTokensParameter,
-    ModelError, ModelSettings,
 };
 
 /// `OpenAI` Chat Completions wire mapper.
@@ -172,25 +172,27 @@ impl OpenAiChatAdapter {
         if !tools.is_empty() {
             request.insert(
                 "tools".to_string(),
-                json!(tools
-                    .iter()
-                    .map(|tool| {
-                        let mut function = serde_json::Map::new();
-                        function.insert("name".to_string(), json!(tool.name));
-                        insert_nonempty_description(&mut function, tool.description.as_ref());
-                        function.insert(
-                            "parameters".to_string(),
-                            provider_tool_schema_without_meta(&tool.parameters),
-                        );
-                        if let Some(strict) = tool.strict {
-                            function.insert("strict".to_string(), json!(strict));
-                        }
-                        json!({
-                            "type": "function",
-                            "function": function,
+                json!(
+                    tools
+                        .iter()
+                        .map(|tool| {
+                            let mut function = serde_json::Map::new();
+                            function.insert("name".to_string(), json!(tool.name));
+                            insert_nonempty_description(&mut function, tool.description.as_ref());
+                            function.insert(
+                                "parameters".to_string(),
+                                provider_tool_schema_without_meta(&tool.parameters),
+                            );
+                            if let Some(strict) = tool.strict {
+                                function.insert("strict".to_string(), json!(strict));
+                            }
+                            json!({
+                                "type": "function",
+                                "function": function,
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>()),
+                        .collect::<Vec<_>>()
+                ),
             );
         }
         Ok(Value::Object(request))
@@ -212,19 +214,19 @@ impl OpenAiChatAdapter {
             .ok_or_else(|| ModelError::ResponseParsing("missing message".to_string()))?;
 
         let mut parts = Vec::new();
-        if let Some(content) = message.get("content").and_then(Value::as_str) {
-            if !content.is_empty() {
-                parts.push(ModelResponsePart::Text {
-                    text: content.to_string(),
-                });
-            }
+        if let Some(content) = message.get("content").and_then(Value::as_str)
+            && !content.is_empty()
+        {
+            parts.push(ModelResponsePart::Text {
+                text: content.to_string(),
+            });
         }
-        if let Some(refusal) = message.get("refusal").and_then(Value::as_str) {
-            if !refusal.is_empty() {
-                parts.push(ModelResponsePart::Text {
-                    text: refusal.to_string(),
-                });
-            }
+        if let Some(refusal) = message.get("refusal").and_then(Value::as_str)
+            && !refusal.is_empty()
+        {
+            parts.push(ModelResponsePart::Text {
+                text: refusal.to_string(),
+            });
         }
         for call in message
             .get("tool_calls")

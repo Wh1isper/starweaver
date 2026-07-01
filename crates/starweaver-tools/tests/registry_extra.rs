@@ -7,10 +7,10 @@ use starweaver_context::AgentContext;
 use starweaver_core::{CancellationToken, ConversationId, RunId};
 use starweaver_model::ToolCallPart;
 use starweaver_tools::{
-    json_tool, DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext, ToolError,
-    ToolExecutionHook, ToolExecutionOutcome, ToolInstruction, ToolRegistry, ToolResult, Toolset,
+    DynTool, DynToolset, FunctionTool, StaticToolset, ToolContext, ToolError, ToolExecutionHook,
+    ToolExecutionOutcome, ToolInstruction, ToolRegistry, ToolResult, Toolset, json_tool,
 };
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 fn context() -> ToolContext {
     ToolContext::new(RunId::from_string("run_registry"), ConversationId::new(), 0)
@@ -110,14 +110,18 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     assert_eq!(error.content["kind"], "model_retry");
     assert_eq!(error.content["tool"], "failing");
     assert_eq!(error.content["message"], "retry please");
-    assert!(error.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("adjusted arguments"));
+    assert!(
+        error.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("adjusted arguments")
+    );
     assert!(error.content["retryable"].as_bool().unwrap());
-    assert!(error.content["retry_requires_corrected_input"]
-        .as_bool()
-        .unwrap());
+    assert!(
+        error.content["retry_requires_corrected_input"]
+            .as_bool()
+            .unwrap()
+    );
 
     let missing_call = ToolCallPart {
         id: "call_3".to_string(),
@@ -128,10 +132,12 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
     assert!(missing.is_error);
     assert_eq!(missing.content["kind"], "not_found");
     assert_eq!(missing.content["tool"], "missing");
-    assert!(missing.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("advertised in the current tool list"));
+    assert!(
+        missing.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("advertised in the current tool list")
+    );
 
     let inherited_only = registry.auto_inherited();
     assert!(inherited_only.contains("inherited"));
@@ -356,10 +362,12 @@ async fn function_tool_argument_validators_run_in_order() {
     assert_eq!(rejected.metadata["error_kind"], "invalid_arguments");
     assert_eq!(rejected.content["kind"], "invalid_arguments");
     assert_eq!(rejected.content["message"], "allow must be true");
-    assert!(rejected.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("JSON schema"));
+    assert!(
+        rejected.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("JSON schema")
+    );
 }
 
 #[tokio::test]
@@ -394,13 +402,17 @@ async fn registry_rejects_invalid_provider_json_before_tool_execution() {
     assert!(!*observed.lock().unwrap());
     assert!(rejected.is_error);
     assert_eq!(rejected.content["kind"], "invalid_arguments");
-    assert!(rejected.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("valid JSON before execution"));
-    assert!(rejected.content["retry_requires_corrected_input"]
-        .as_bool()
-        .unwrap());
+    assert!(
+        rejected.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("valid JSON before execution")
+    );
+    assert!(
+        rejected.content["retry_requires_corrected_input"]
+            .as_bool()
+            .unwrap()
+    );
 }
 
 struct ArgumentAndResultHook {
@@ -600,10 +612,12 @@ async fn registry_enforces_tool_timeouts() {
     assert_eq!(returned.metadata["error_kind"], "timeout");
     assert_eq!(returned.metadata["timeout_ms"], json!(1));
     assert_eq!(returned.content["kind"], "timeout");
-    assert!(returned.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("larger timeout"));
+    assert!(
+        returned.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("larger timeout")
+    );
 }
 
 #[tokio::test]
@@ -650,8 +664,10 @@ async fn registry_cancels_running_tool_when_context_token_is_cancelled() {
     assert_eq!(returned.metadata["error_kind"], "cancelled");
     assert_eq!(returned.content["kind"], "cancelled");
     assert!(!returned.content["retryable"].as_bool().unwrap());
-    assert!(returned.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("new run"));
+    assert!(
+        returned.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("new run")
+    );
 }

@@ -305,15 +305,13 @@ impl UsageLimits {
     ///
     /// Returns an error when executing the next successful tool calls would exceed the configured limit.
     pub const fn check_tool_calls(&self, projected: &Usage) -> Result<(), UsageLimitError> {
-        if let Some(limit) = self.tool_calls_limit {
-            if projected.tool_calls > limit {
-                return Err(UsageLimitError::ToolCalls {
-                    limit,
-                    tool_calls: projected.tool_calls,
-                });
-            }
+        match self.tool_calls_limit {
+            Some(limit) if projected.tool_calls > limit => Err(UsageLimitError::ToolCalls {
+                limit,
+                tool_calls: projected.tool_calls,
+            }),
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     /// Check whether accumulated usage exceeds configured token or pricing limits.
@@ -372,7 +370,9 @@ impl std::fmt::Display for UsageTokenKind {
 #[derive(Clone, Debug, Error, Deserialize, Eq, PartialEq, Serialize)]
 pub enum UsageLimitError {
     /// The next request would exceed request budget.
-    #[error("the next request would exceed the request_limit of {limit} (next_requests={next_requests})")]
+    #[error(
+        "the next request would exceed the request_limit of {limit} (next_requests={next_requests})"
+    )]
     NextRequest {
         /// Configured limit.
         limit: u64,
@@ -391,9 +391,7 @@ pub enum UsageLimitError {
     },
     /// Accumulated usage exceeded a USD pricing budget.
     #[cfg(feature = "pricing")]
-    #[error(
-        "exceeded the total_cost_limit_micros of {limit_micros} (cost_micros={actual_micros})"
-    )]
+    #[error("exceeded the total_cost_limit_micros of {limit_micros} (cost_micros={actual_micros})")]
     Cost {
         /// Configured cost limit in micro USD units.
         limit_micros: u64,
@@ -401,7 +399,9 @@ pub enum UsageLimitError {
         actual_micros: u64,
     },
     /// Projected successful function tool calls would exceed the configured budget.
-    #[error("the next tool call(s) would exceed the tool_calls_limit of {limit} (tool_calls={tool_calls})")]
+    #[error(
+        "the next tool call(s) would exceed the tool_calls_limit of {limit} (tool_calls={tool_calls})"
+    )]
     ToolCalls {
         /// Configured tool-call limit.
         limit: u64,
@@ -415,16 +415,14 @@ const fn check_limit(
     limit: Option<u64>,
     actual: u64,
 ) -> Result<(), UsageLimitError> {
-    if let Some(limit) = limit {
-        if actual > limit {
-            return Err(UsageLimitError::Token {
-                kind,
-                limit,
-                actual,
-            });
-        }
+    match limit {
+        Some(limit) if actual > limit => Err(UsageLimitError::Token {
+            kind,
+            limit,
+            actual,
+        }),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Aggregate an optional pricing estimate into a running total.

@@ -5,9 +5,9 @@ use std::sync::Arc;
 use starweaver_context::AgentContext;
 use starweaver_core::AgentId;
 use starweaver_tools::{
-    DynToolset, FunctionTool, StaticToolset, ToolContext, ToolInstruction, ToolRegistry,
-    ToolResult, Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetPreparation,
-    TOOLSET_INITIALIZED_EVENT_KIND, TOOLSET_UNAVAILABLE_EVENT_KIND,
+    DynToolset, FunctionTool, StaticToolset, TOOLSET_INITIALIZED_EVENT_KIND,
+    TOOLSET_UNAVAILABLE_EVENT_KIND, ToolContext, ToolInstruction, ToolRegistry, ToolResult,
+    Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetPreparation,
 };
 
 #[test]

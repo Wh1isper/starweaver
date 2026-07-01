@@ -212,10 +212,12 @@ async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     assert_eq!(snapshot.stream_records[0].sequence, 1);
     assert_eq!(snapshot.approvals.len(), 1);
     assert_eq!(snapshot.deferred_tools.len(), 1);
-    assert!(snapshot
-        .stream_cursors
-        .iter()
-        .any(|cursor| cursor.family == "display"));
+    assert!(
+        snapshot
+            .stream_cursors
+            .iter()
+            .any(|cursor| cursor.family == "display")
+    );
     assert_eq!(trace.checkpoints, vec![checkpoint_id]);
     assert_eq!(trace.approvals, 1);
     assert_eq!(trace.deferred_tools, 1);

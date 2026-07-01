@@ -1,4 +1,4 @@
-use super::{full_content_lines, preview_line, preview_lines, Value};
+use super::{Value, full_content_lines, preview_line, preview_lines};
 
 pub(in crate::tui::state) fn format_custom_context_event_lines(
     kind: &str,

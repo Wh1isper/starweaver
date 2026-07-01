@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use starweaver_core::Metadata;
 use starweaver_stream::{
     InMemoryReplayEventLog, ReplayCursor, ReplayError, ReplayEvent, ReplayEventKind,

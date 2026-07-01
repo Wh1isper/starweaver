@@ -61,10 +61,12 @@ async fn model_trace_events_capture_canonical_request_stream_and_response() {
     );
     assert!(request_event.attributes["gen_ai.request"]["messages"].is_null());
 
-    assert!(model_span
-        .events
-        .iter()
-        .any(|event| event.name == "starweaver.model.stream_event"));
+    assert!(
+        model_span
+            .events
+            .iter()
+            .any(|event| event.name == "starweaver.model.stream_event")
+    );
     let response_event = model_span
         .events
         .iter()

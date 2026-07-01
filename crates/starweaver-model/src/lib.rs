@@ -16,31 +16,31 @@ pub mod transport;
 pub mod wrappers;
 
 pub use adapter::{
-    allow_real_model_requests, allow_real_model_requests_guard, block_real_model_requests,
-    set_allow_real_model_requests, ModelAdapter, ModelError, ModelRequestContext,
-    ModelRequestParameters, ModelResponseEventStream, ModelRunSession, NativeToolDefinition,
-    RealModelRequestGuard, ToolDefinition,
+    ModelAdapter, ModelError, ModelRequestContext, ModelRequestParameters,
+    ModelResponseEventStream, ModelRunSession, NativeToolDefinition, RealModelRequestGuard,
+    ToolDefinition, allow_real_model_requests, allow_real_model_requests_guard,
+    block_real_model_requests, set_allow_real_model_requests,
 };
 pub use media::{
-    base64_encoded_len, detect_image_dimensions, detect_media_kind, is_document_media_type,
-    is_image_media_type, is_video_media_type, parse_data_url, raw_budget_from_base64_limit,
-    ImageDimensions, MediaKind, MediaPolicy, MediaPreflight, ParsedDataUrl,
+    ImageDimensions, MediaKind, MediaPolicy, MediaPreflight, ParsedDataUrl, base64_encoded_len,
+    detect_image_dimensions, detect_media_kind, is_document_media_type, is_image_media_type,
+    is_video_media_type, parse_data_url, raw_budget_from_base64_limit,
 };
 pub use message::{
     ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
     ModelResponsePart, ProviderInfo, ProviderPartInfo, ToolArguments, ToolCallPart, ToolReturnPart,
 };
 pub use oauth::{
-    build_codex_headers, build_codex_model, build_codex_model_with_profile, build_session_headers,
-    codex_model_profile, patch_codex_responses_body, CodexOAuthResponsesModel,
-    OAuthBearerHttpClient, CODEX_ORIGINATOR,
+    CODEX_ORIGINATOR, CodexOAuthResponsesModel, OAuthBearerHttpClient, build_codex_headers,
+    build_codex_model, build_codex_model_with_profile, build_session_headers, codex_model_profile,
+    patch_codex_responses_body,
 };
 pub use presets::{
-    anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
-    google_cloud_http_config, google_cloud_project_http_config, list_model_config_presets,
-    list_model_settings_presets, model_runtime_preset, openai_chat_http_config,
-    openai_responses_http_config, ModelConfigPreset, ModelConfigPresetData, ModelPresetError,
-    ModelRuntimePreset, ModelSettingsPreset,
+    ModelConfigPreset, ModelConfigPresetData, ModelPresetError, ModelRuntimePreset,
+    ModelSettingsPreset, anthropic_http_config, gemini_http_config, get_model_config,
+    get_model_settings, google_cloud_http_config, google_cloud_project_http_config,
+    list_model_config_presets, list_model_settings_presets, model_runtime_preset,
+    openai_chat_http_config, openai_responses_http_config,
 };
 pub use profile::{
     JsonSchemaTransformer, MessageNormalization, ModelProfile, NativeToolKind, ProtocolFamily,
@@ -49,24 +49,25 @@ pub use profile::{
 pub use providers::client::ProtocolModelClient;
 pub use registry::{ProviderAlias, ProviderAliasRegistry};
 pub use request::{
-    attach_prepared_instructions, context_origin_metadata, prepare_messages, prepare_model_request,
-    InstructionPart, OutputMode, PreparedInstruction, PreparedModelRequest,
     CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
     CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, CONTEXT_TYPE_METADATA,
     INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_AGENT, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
-    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_TOOLSET,
+    INSTRUCTION_ORIGIN_METADATA, INSTRUCTION_ORIGIN_TOOLSET, InstructionPart, OutputMode,
+    PreparedInstruction, PreparedModelRequest, attach_prepared_instructions,
+    context_origin_metadata, prepare_messages, prepare_model_request,
 };
 pub use settings::{
-    format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key, AnthropicSettings,
-    BedrockSettings, CodexSettings, GatewaySettings, GoogleCloudServiceTier, GoogleSettings,
-    ModelSettings, OpenAiChatSettings, OpenAiResponsesSettings, ProviderReplaySettings,
-    ProviderSettings, ResponseStreamTransport, ServiceTier, ThinkingSettings, ToolChoice,
+    AnthropicSettings, BedrockSettings, CodexSettings, GatewaySettings, GoogleCloudServiceTier,
+    GoogleSettings, ModelSettings, OpenAiChatSettings, OpenAiResponsesSettings,
+    ProviderReplaySettings, ProviderSettings, ResponseStreamTransport, ServiceTier,
+    ThinkingSettings, ToolChoice, format_openai_prompt_cache_key,
+    supports_automatic_openai_prompt_cache_key,
 };
 pub use stream::{
     ModelResponseStreamEvent, ModelStreamState, PartDelta, PartEnd, PartStart, StreamDelta,
     StreamDiagnostic, StreamLifecycle,
 };
-pub use test::{latest_user_text, tool_call_response, FunctionModel, FunctionModelInfo, TestModel};
+pub use test::{FunctionModel, FunctionModelInfo, TestModel, latest_user_text, tool_call_response};
 pub use transport::{
     AuthConfig, DynHttpClient, DynProviderRequestAuditRecorder, DynSleeper, HttpModelConfig,
     HttpRequest, HttpRequestOptions, HttpResponse, InMemoryProviderRequestAuditRecorder,

@@ -392,7 +392,9 @@ async fn default_projector_maps_hitl_sideband_custom_events() {
     assert_eq!(hitl_messages[0].kind, DisplayMessageKind::HitlResolved);
     assert_eq!(
         hitl_messages[0].preview.as_deref(),
-        Some("hitl resolved: 3 return(s), 1 approved, 1 denied, 1 deferred completed, 0 deferred failed, 0 deferred cancelled")
+        Some(
+            "hitl resolved: 3 return(s), 1 approved, 1 denied, 1 deferred completed, 0 deferred failed, 0 deferred cancelled"
+        )
     );
     assert_eq!(
         hitl_diagnostic_messages[0].kind,
@@ -1091,15 +1093,21 @@ async fn default_projector_maps_thinking_and_tool_calls_from_model_response() {
         message.kind == DisplayMessageKind::AssistantTextDelta
             && message.payload["delta"] == "inspect context"
     }));
-    assert!(thinking_messages
-        .iter()
-        .any(|message| message.payload["has_signature"] == true));
-    assert!(thinking_messages
-        .iter()
-        .all(|message| message.payload.get("signature").is_none()));
-    assert!(!serde_json::to_string(&thinking_messages)
-        .unwrap()
-        .contains("\"sig\""));
+    assert!(
+        thinking_messages
+            .iter()
+            .any(|message| message.payload["has_signature"] == true)
+    );
+    assert!(
+        thinking_messages
+            .iter()
+            .all(|message| message.payload.get("signature").is_none())
+    );
+    assert!(
+        !serde_json::to_string(&thinking_messages)
+            .unwrap()
+            .contains("\"sig\"")
+    );
     assert!(messages.iter().any(|message| {
         message.kind == DisplayMessageKind::ToolCallStart
             && message.payload["tool_name"] == "lookup"

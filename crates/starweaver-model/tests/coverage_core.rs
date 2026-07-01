@@ -3,27 +3,27 @@
 use std::{collections::BTreeMap, sync::Arc, sync::Mutex};
 
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_core::{
-    sdk_name, AgentId, CancellationToken, CheckpointId, ConversationId, Metadata, RunId, SessionId,
-    SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext,
+    AgentId, CancellationToken, CheckpointId, ConversationId, Metadata, RunId, SessionId,
+    SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext, sdk_name,
 };
 use starweaver_model::transport::{
     build_http_request, is_retryable_status, merge_extra_body, send_with_retries,
     should_retry_error,
 };
 use starweaver_model::{
-    allow_real_model_requests, allow_real_model_requests_guard, block_real_model_requests,
-    detect_image_dimensions, gemini_http_config, get_model_config, get_model_settings,
-    is_document_media_type, is_image_media_type, is_video_media_type, list_model_config_presets,
-    list_model_settings_presets, model_runtime_preset, openai_chat_http_config,
-    openai_responses_http_config, parse_data_url, set_allow_real_model_requests, AuthConfig,
-    ContentPart, FinishReason, HttpModelConfig, HttpRequest, HttpRequestOptions, HttpResponse,
-    MediaKind, MediaPolicy, MediaPreflight, ModelAdapter, ModelError, ModelEventStream,
-    ModelHttpClient, ModelProfile, ModelRequestContext, ModelRequestParameters, ModelResponse,
-    ModelResponseEventStream, ModelResponsePart, ModelResponseStreamEvent, ModelSettings,
-    ModelSleeper, NoopSleeper, PartDelta, ProtocolFamily, ProtocolModelClient, RetryPolicy,
-    ServiceTier,
+    AuthConfig, ContentPart, FinishReason, HttpModelConfig, HttpRequest, HttpRequestOptions,
+    HttpResponse, MediaKind, MediaPolicy, MediaPreflight, ModelAdapter, ModelError,
+    ModelEventStream, ModelHttpClient, ModelProfile, ModelRequestContext, ModelRequestParameters,
+    ModelResponse, ModelResponseEventStream, ModelResponsePart, ModelResponseStreamEvent,
+    ModelSettings, ModelSleeper, NoopSleeper, PartDelta, ProtocolFamily, ProtocolModelClient,
+    RetryPolicy, ServiceTier, allow_real_model_requests, allow_real_model_requests_guard,
+    block_real_model_requests, detect_image_dimensions, gemini_http_config, get_model_config,
+    get_model_settings, is_document_media_type, is_image_media_type, is_video_media_type,
+    list_model_config_presets, list_model_settings_presets, model_runtime_preset,
+    openai_chat_http_config, openai_responses_http_config, parse_data_url,
+    set_allow_real_model_requests,
 };
 use starweaver_usage::Usage;
 

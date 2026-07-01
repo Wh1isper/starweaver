@@ -7,13 +7,13 @@ use uuid::Uuid;
 use super::{
     args::DownloadArgs,
     http::{
-        extension_for_content_type, fetch_http_resource, filename_extension, is_text_like,
-        looks_textual, MAX_DOWNLOAD_BYTES,
+        MAX_DOWNLOAD_BYTES, extension_for_content_type, fetch_http_resource, filename_extension,
+        is_text_like, looks_textual,
     },
 };
 use crate::bundles::{
-    helpers::{tool_execution_error, tool_invalid_arguments, tool_model_retry},
     EnvironmentHandle,
+    helpers::{tool_execution_error, tool_invalid_arguments, tool_model_retry},
 };
 
 pub(super) async fn download(

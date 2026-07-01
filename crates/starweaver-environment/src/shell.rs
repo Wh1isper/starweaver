@@ -13,8 +13,8 @@ use std::{
 use starweaver_core::Metadata;
 
 use crate::{
-    local_provider::LocalShellProcess, EnvironmentError, EnvironmentResult, ShellCommand,
-    ShellOutput, ShellProcessSnapshot, ShellProcessStatus,
+    EnvironmentError, EnvironmentResult, ShellCommand, ShellOutput, ShellProcessSnapshot,
+    ShellProcessStatus, local_provider::LocalShellProcess,
 };
 
 pub fn shell_process_metadata(command: &ShellCommand) -> Metadata {

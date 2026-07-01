@@ -4,19 +4,19 @@ use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::Utc;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 
 use crate::{
+    CODEX_BASE_URL, CODEX_CLIENT_ID, CODEX_ISSUER, CODEX_REVOKE_ENDPOINT, CODEX_SCOPES,
+    CODEX_TOKEN_ENDPOINT,
     error::{OAuthError, OAuthResult},
     jwt::{account_from_id_token, validate_same_account},
     store::OAuthStore,
     token_source::StoreBackedTokenSource,
     types::{
-        default_oauth_type, OAuthAccount, OAuthProviderRecord, OAuthProviderRefresher, OAuthTokens,
+        OAuthAccount, OAuthProviderRecord, OAuthProviderRefresher, OAuthTokens, default_oauth_type,
     },
-    CODEX_BASE_URL, CODEX_CLIENT_ID, CODEX_ISSUER, CODEX_REVOKE_ENDPOINT, CODEX_SCOPES,
-    CODEX_TOKEN_ENDPOINT,
 };
 
 /// Codex OAuth profile.

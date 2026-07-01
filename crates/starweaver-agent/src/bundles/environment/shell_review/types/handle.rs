@@ -59,15 +59,14 @@ impl ShellReviewHandle {
         let Ok(mut records) = self.records.lock() else {
             return;
         };
-        if let Some(tool_call_id) = tool_call_id {
-            if let Some(record) = records
+        if let Some(tool_call_id) = tool_call_id
+            && let Some(record) = records
                 .iter_mut()
                 .rev()
                 .find(|record| record.tool_call_id.as_deref() == Some(tool_call_id))
-            {
-                record.approved = true;
-                return;
-            }
+        {
+            record.approved = true;
+            return;
         }
         if let Some(record) = records
             .iter_mut()

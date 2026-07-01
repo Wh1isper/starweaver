@@ -1,15 +1,15 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 use starweaver_model::{
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
+    ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
+    ModelResponsePart, ModelSettings, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
     providers::{
         anthropic::AnthropicMessagesAdapter, bedrock::BedrockConverseAdapter,
         gemini::GeminiGenerateContentAdapter, openai_chat::OpenAiChatAdapter,
         openai_responses::OpenAiResponsesAdapter,
     },
-    ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ModelSettings, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
-    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT,
 };
 use starweaver_usage::Usage;
 
@@ -253,10 +253,12 @@ fn openai_chat_cache_shape_keeps_durable_body_append_only_with_runtime_context()
     let second_body = &second_messages[1..];
     assert_eq!(first_body.len(), 2);
     assert_eq!(first_body[0]["role"], "user");
-    assert!(first_body[0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
+    assert!(
+        first_body[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
     assert!(first_body[0]["content"].as_str().unwrap().contains("first"));
     assert_eq!(first_body[1]["role"], "user");
     assert_eq!(first_body[1]["content"], "first user");
@@ -267,18 +269,24 @@ fn openai_chat_cache_shape_keeps_durable_body_append_only_with_runtime_context()
     assert_eq!(second_body[1]["role"], "assistant");
     assert_eq!(second_body[1]["content"], "first assistant");
     assert_eq!(second_body[2]["role"], "user");
-    assert!(second_body[2]["content"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(second_body[2]["content"]
-        .as_str()
-        .unwrap()
-        .contains("second"));
-    assert!(!second_body[2]["content"]
-        .as_str()
-        .unwrap()
-        .contains("first"));
+    assert!(
+        second_body[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        second_body[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("second")
+    );
+    assert!(
+        !second_body[2]["content"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
     assert_eq!(second_body[3]["role"], "user");
     assert_eq!(second_body[3]["content"], "second user");
     assert_eq!(first_body[1], second_body[0]);
@@ -298,10 +306,12 @@ fn openai_chat_environment_context_only_request_maps_context_to_user_content() {
     let messages = request["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"], "user");
-    assert!(messages[0]["content"]
-        .as_str()
-        .unwrap()
-        .contains("environment-context"));
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("environment-context")
+    );
 }
 
 #[test]
@@ -317,9 +327,11 @@ fn openai_chat_preserves_agent_loop_boundaries() {
     assert!(messages.iter().any(|message| {
         message["role"] == "system" && message["content"] == "Answer with tool evidence."
     }));
-    assert!(messages
-        .iter()
-        .any(|message| { message["role"] == "user" && message["content"] == "lookup Paris" }));
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message["role"] == "user" && message["content"] == "lookup Paris" })
+    );
     let assistant = messages
         .iter()
         .find(|message| message["role"] == "assistant")
@@ -402,32 +414,42 @@ fn openai_responses_cache_shape_keeps_durable_input_append_only_with_runtime_con
     let first_input = first["input"].as_array().unwrap();
     let second_input = second["input"].as_array().unwrap();
     assert_eq!(first_input.len(), 2);
-    assert!(first_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(first_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("first"));
+    assert!(
+        first_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        first_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
     assert_eq!(first_input[1]["content"][0]["text"], "first user");
 
     assert_eq!(second_input.len(), 4);
     assert_eq!(second_input[0]["content"][0]["text"], "first user");
     assert_eq!(second_input[1]["role"], "assistant");
     assert_eq!(second_input[1]["content"][0]["text"], "first assistant");
-    assert!(second_input[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(second_input[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("second"));
-    assert!(!second_input[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("first"));
+    assert!(
+        second_input[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        second_input[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("second")
+    );
+    assert!(
+        !second_input[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
     assert_eq!(second_input[3]["content"][0]["text"], "second user");
     assert_eq!(first_input[1], second_input[0]);
     assert_eq!(first["tools"], second["tools"]);
@@ -444,18 +466,24 @@ fn openai_responses_preserves_agent_loop_boundaries() {
     )
     .unwrap();
 
-    assert!(request["instructions"]
-        .as_str()
-        .unwrap()
-        .contains("You are a city assistant."));
-    assert!(request["instructions"]
-        .as_str()
-        .unwrap()
-        .contains("Answer with tool evidence."));
+    assert!(
+        request["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("You are a city assistant.")
+    );
+    assert!(
+        request["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Answer with tool evidence.")
+    );
     let input = request["input"].as_array().unwrap();
-    assert!(input
-        .iter()
-        .any(|item| { item["role"] == "user" && item["content"][0]["text"] == "lookup Paris" }));
+    assert!(
+        input
+            .iter()
+            .any(|item| { item["role"] == "user" && item["content"][0]["text"] == "lookup Paris" })
+    );
     assert!(input.iter().any(|item| {
         item["type"] == "function_call"
             && item["call_id"] == "call_1"
@@ -512,18 +540,24 @@ fn openai_responses_maps_runtime_context_to_input_user_prompt() {
     let second_input = second["input"].as_array().unwrap();
     assert_eq!(first_input.len(), 2);
     assert_eq!(second_input.len(), 2);
-    assert!(first_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(first_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("first"));
-    assert!(second_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("second"));
+    assert!(
+        first_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        first_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
+    assert!(
+        second_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("second")
+    );
     assert_eq!(first_input[1]["content"][0]["text"], "latest user");
     assert_eq!(second_input[1]["content"][0]["text"], "latest user");
 }
@@ -569,18 +603,24 @@ fn openai_responses_maps_environment_context_to_input_user_prompt() {
     let second_input = second["input"].as_array().unwrap();
     assert_eq!(first_input.len(), 2);
     assert_eq!(second_input.len(), 2);
-    assert!(first_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("environment-context"));
-    assert!(first_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("/first"));
-    assert!(second_input[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("/second"));
+    assert!(
+        first_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("environment-context")
+    );
+    assert!(
+        first_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("/first")
+    );
+    assert!(
+        second_input[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("/second")
+    );
     assert_eq!(first_input[1]["content"][0]["text"], "latest user");
     assert_eq!(second_input[1]["content"][0]["text"], "latest user");
 }
@@ -644,14 +684,18 @@ fn anthropic_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
     let second_messages = second["messages"].as_array().unwrap();
     assert_eq!(first_messages.len(), 1);
     assert_eq!(first_messages[0]["role"], "user");
-    assert!(first_messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(first_messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("first"));
+    assert!(
+        first_messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        first_messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
     assert_eq!(first_messages[0]["content"][1]["text"], "first user");
 
     assert_eq!(second_messages.len(), 3);
@@ -660,14 +704,18 @@ fn anthropic_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
     assert_eq!(second_messages[1]["role"], "assistant");
     assert_eq!(second_messages[1]["content"][0]["text"], "first assistant");
     assert_eq!(second_messages[2]["role"], "user");
-    assert!(second_messages[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(second_messages[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("second"));
+    assert!(
+        second_messages[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        second_messages[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("second")
+    );
     assert_eq!(second_messages[2]["content"][1]["text"], "second user");
     assert_eq!(
         first_messages[0]["content"][1],
@@ -690,10 +738,12 @@ fn anthropic_runtime_context_only_request_maps_context_to_user_content() {
     let messages = request["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"], "user");
-    assert!(messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
+    assert!(
+        messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
 }
 
 #[test]
@@ -710,10 +760,12 @@ fn anthropic_environment_context_only_request_maps_context_to_user_content() {
     let messages = request["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"], "user");
-    assert!(messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("environment-context"));
+    assert!(
+        messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("environment-context")
+    );
 }
 
 #[test]
@@ -726,14 +778,18 @@ fn anthropic_preserves_agent_loop_boundaries() {
     )
     .unwrap();
 
-    assert!(request["system"]
-        .as_str()
-        .unwrap()
-        .contains("You are a city assistant."));
-    assert!(request["system"]
-        .as_str()
-        .unwrap()
-        .contains("Answer with tool evidence."));
+    assert!(
+        request["system"]
+            .as_str()
+            .unwrap()
+            .contains("You are a city assistant.")
+    );
+    assert!(
+        request["system"]
+            .as_str()
+            .unwrap()
+            .contains("Answer with tool evidence.")
+    );
     let messages = request["messages"].as_array().unwrap();
     assert!(messages.iter().any(|message| {
         message["role"] == "user" && message["content"][0]["text"] == "lookup Paris"
@@ -871,14 +927,18 @@ fn gemini_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
     let second_contents = second["contents"].as_array().unwrap();
     assert_eq!(first_contents.len(), 1);
     assert_eq!(first_contents[0]["role"], "user");
-    assert!(first_contents[0]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(first_contents[0]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("first"));
+    assert!(
+        first_contents[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        first_contents[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
     assert_eq!(first_contents[0]["parts"][1]["text"], "first user");
 
     assert_eq!(second_contents.len(), 3);
@@ -887,14 +947,18 @@ fn gemini_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
     assert_eq!(second_contents[1]["role"], "model");
     assert_eq!(second_contents[1]["parts"][0]["text"], "first assistant");
     assert_eq!(second_contents[2]["role"], "user");
-    assert!(second_contents[2]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(second_contents[2]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("second"));
+    assert!(
+        second_contents[2]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        second_contents[2]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("second")
+    );
     assert_eq!(second_contents[2]["parts"][1]["text"], "second user");
     assert_eq!(
         first_contents[0]["parts"][1],
@@ -913,10 +977,12 @@ fn gemini_runtime_context_only_request_maps_context_to_user_content() {
     let contents = request["contents"].as_array().unwrap();
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0]["role"], "user");
-    assert!(contents[0]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
+    assert!(
+        contents[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
 }
 
 #[test]
@@ -932,10 +998,12 @@ fn gemini_environment_context_only_request_maps_context_to_user_content() {
     let contents = request["contents"].as_array().unwrap();
     assert_eq!(contents.len(), 1);
     assert_eq!(contents[0]["role"], "user");
-    assert!(contents[0]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("environment-context"));
+    assert!(
+        contents[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("environment-context")
+    );
 }
 
 #[test]
@@ -944,10 +1012,12 @@ fn gemini_preserves_agent_loop_boundaries() {
         GeminiGenerateContentAdapter::build_request(&agent_loop_history(), None, &[lookup_tool()])
             .unwrap();
 
-    assert!(request["systemInstruction"]["parts"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("You are a city assistant."));
+    assert!(
+        request["systemInstruction"]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("You are a city assistant.")
+    );
     let contents = request["contents"].as_array().unwrap();
     assert!(contents.iter().any(|content| {
         content["role"] == "user" && content["parts"][0]["text"] == "lookup Paris"
@@ -1227,14 +1297,18 @@ fn bedrock_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
     let second_messages = second["messages"].as_array().unwrap();
     assert_eq!(first_messages.len(), 1);
     assert_eq!(first_messages[0]["role"], "user");
-    assert!(first_messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(first_messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("first"));
+    assert!(
+        first_messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        first_messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
     assert_eq!(first_messages[0]["content"][1]["text"], "first user");
 
     assert_eq!(second_messages.len(), 3);
@@ -1243,14 +1317,18 @@ fn bedrock_cache_shape_keeps_durable_body_append_only_with_runtime_context() {
     assert_eq!(second_messages[1]["role"], "assistant");
     assert_eq!(second_messages[1]["content"][0]["text"], "first assistant");
     assert_eq!(second_messages[2]["role"], "user");
-    assert!(second_messages[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
-    assert!(second_messages[2]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("second"));
+    assert!(
+        second_messages[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
+    assert!(
+        second_messages[2]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("second")
+    );
     assert_eq!(second_messages[2]["content"][1]["text"], "second user");
     assert_eq!(
         first_messages[0]["content"][1],
@@ -1273,10 +1351,12 @@ fn bedrock_runtime_context_only_request_maps_context_to_user_content() {
     let messages = request["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"], "user");
-    assert!(messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("runtime-context"));
+    assert!(
+        messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("runtime-context")
+    );
 }
 
 #[test]
@@ -1293,10 +1373,12 @@ fn bedrock_environment_context_only_request_maps_context_to_user_content() {
     let messages = request["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["role"], "user");
-    assert!(messages[0]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("environment-context"));
+    assert!(
+        messages[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("environment-context")
+    );
 }
 
 #[test]
@@ -1309,10 +1391,12 @@ fn bedrock_preserves_agent_loop_boundaries() {
     )
     .unwrap();
 
-    assert!(request["system"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("You are a city assistant."));
+    assert!(
+        request["system"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("You are a city assistant.")
+    );
     let messages = request["messages"].as_array().unwrap();
     assert!(messages.iter().any(|message| {
         message["role"] == "user" && message["content"][0]["text"] == "lookup Paris"
@@ -1464,12 +1548,16 @@ fn bedrock_caches_static_instruction_boundary_and_tool_definitions() {
         request["additionalModelRequestFields"]["anthropic_version"],
         "bedrock-2023-05-31"
     );
-    assert!(request["additionalModelRequestFields"]
-        .get("bedrock_cache_instructions")
-        .is_none());
-    assert!(request["additionalModelRequestFields"]
-        .get("bedrock_cache_tool_definitions")
-        .is_none());
+    assert!(
+        request["additionalModelRequestFields"]
+            .get("bedrock_cache_instructions")
+            .is_none()
+    );
+    assert!(
+        request["additionalModelRequestFields"]
+            .get("bedrock_cache_tool_definitions")
+            .is_none()
+    );
 }
 
 #[test]

@@ -3,10 +3,10 @@
 use std::sync::Arc;
 
 use starweaver_model::{
-    latest_user_text, tool_call_response, FunctionModel, ModelAdapter, ModelError, ModelMessage,
-    ModelProfile, ModelRequestContext, ModelRequestParameters, ModelResponse, ModelResponsePart,
-    ModelResponseStreamEvent, ModelSettings, PartDelta, PartEnd, PartStart, ProtocolFamily,
-    TestModel,
+    FunctionModel, ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
+    ModelRequestParameters, ModelResponse, ModelResponsePart, ModelResponseStreamEvent,
+    ModelSettings, PartDelta, PartEnd, PartStart, ProtocolFamily, TestModel, latest_user_text,
+    tool_call_response,
 };
 
 fn context() -> ModelRequestContext {

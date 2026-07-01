@@ -6,7 +6,7 @@ use crate::{
     records::{RunRecord, RunStatus},
 };
 
-use super::{run_key, run_key_label, store_failed, InMemorySessionStore};
+use super::{InMemorySessionStore, run_key, run_key_label, store_failed};
 
 impl InMemorySessionStore {
     pub(super) fn append_run_record(&self, mut run: RunRecord) -> SessionStoreResult<()> {

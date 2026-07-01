@@ -7,9 +7,9 @@ use starweaver_context::AgentContext;
 use starweaver_model::{ToolCallPart, ToolDefinition, ToolReturnPart};
 
 use crate::{
-    error_return, DynTool, DynToolExecutionHook, DynToolset, ToolContext, ToolError,
-    ToolExecutionHooks, ToolExecutionOutcome, ToolInstruction, ToolResult, ToolsetLifecycleError,
-    ToolsetLifecycleReport, ToolsetPreparation,
+    DynTool, DynToolExecutionHook, DynToolset, ToolContext, ToolError, ToolExecutionHooks,
+    ToolExecutionOutcome, ToolInstruction, ToolResult, ToolsetLifecycleError,
+    ToolsetLifecycleReport, ToolsetPreparation, error_return,
 };
 
 fn success_return(call: &ToolCallPart, result: ToolResult) -> ToolReturnPart {
@@ -250,17 +250,17 @@ impl ToolRegistry {
         let max_retries = toolset.max_retries();
         let timeout_ms = toolset.timeout_ms();
         for tool in tools {
-            if let Some(max_retries) = max_retries {
-                if tool.max_retries().is_none() {
-                    self.toolset_max_retries
-                        .insert(tool.name().to_string(), max_retries);
-                }
+            if let Some(max_retries) = max_retries
+                && tool.max_retries().is_none()
+            {
+                self.toolset_max_retries
+                    .insert(tool.name().to_string(), max_retries);
             }
-            if let Some(timeout_ms) = timeout_ms {
-                if tool.timeout_ms().is_none() {
-                    self.toolset_timeouts_ms
-                        .insert(tool.name().to_string(), timeout_ms);
-                }
+            if let Some(timeout_ms) = timeout_ms
+                && tool.timeout_ms().is_none()
+            {
+                self.toolset_timeouts_ms
+                    .insert(tool.name().to_string(), timeout_ms);
             }
             self.insert(tool);
         }

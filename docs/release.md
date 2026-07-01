@@ -1,8 +1,8 @@
 # Release
 
-Starweaver uses one workspace version for crates and CLI artifacts. The repository development
-version should stay on a pre-release version such as `X.Y.Z-dev.0`. A release commit promotes that
-version to the public release version `X.Y.Z`.
+Starweaver uses one workspace version for crates, CLI artifacts, and Python distributions. The
+repository development version should stay on a pre-release version such as `X.Y.Z-dev.0`. A release
+commit promotes that version to the public release version `X.Y.Z`.
 
 Publishing a GitHub Release for a `vX.Y.Z` tag is the publishing trigger. The tag must point at a
 commit whose workspace version is exactly `X.Y.Z`.
@@ -36,7 +36,7 @@ make upversion VERSION=X.Y.Z
 make ci
 make cli-smoke
 make publish-dry-run
-git add Cargo.toml Cargo.lock
+git add Cargo.toml Cargo.lock pyproject.toml uv.lock packages/starweaver-py
 git commit -m "Prepare release vX.Y.Z"
 git push
 gh release create vX.Y.Z --target main --title "Starweaver vX.Y.Z" --generate-notes
@@ -47,8 +47,10 @@ gh release create vX.Y.Z --target main --title "Starweaver vX.Y.Z" --generate-no
 Publishing the GitHub Release triggers `.github/workflows/release.yml`:
 
 1. build CLI launcher binaries from the release tag,
-2. upload binary archives and `checksums.txt` to the GitHub Release,
-3. publish all workspace crates in dependency order through the `Release` environment.
+2. build Python source and wheel distributions for `packages/starweaver-py`,
+3. upload binary archives, Python distributions, and `checksums.txt` to the GitHub Release,
+4. publish all workspace crates in dependency order through the `Release` environment,
+5. publish the Python package to PyPI through the `Release` environment.
 
 Release-event publishing is packaging-only. Run validation before merging the release pull request,
 not inside `.github/workflows/release.yml`.
@@ -78,7 +80,11 @@ sw.exe
 starweaver-rpc.exe
 ```
 
-The release also includes `checksums.txt` with SHA-256 checksums for all archives.
+The release also includes `checksums.txt` with SHA-256 checksums for all archives and Python
+distributions.
+
+Python distributions include an sdist plus wheels for CPython 3.11, 3.12, and 3.13 on the configured
+Linux, macOS, and Windows targets.
 
 ## Publish crates
 
@@ -102,9 +108,12 @@ make publish
 ## Required repository settings
 
 - `CARGO_REGISTRY_TOKEN` secret is configured.
+- `PYPI_API_TOKEN` secret is configured with a PyPI API token for the `starweaver` package.
 - The `Release` environment exists and requires the intended approval policy.
 - The target tag, such as `vX.Y.Z`, does not already exist.
 - GitHub Actions has `contents: write` permission so release assets can be uploaded.
+
+The release workflow maps `PYPI_API_TOKEN` to `UV_PUBLISH_TOKEN` for `uv publish`.
 
 ## After publishing
 

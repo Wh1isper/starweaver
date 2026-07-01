@@ -1,8 +1,8 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use starweaver_core::{ConversationId, Metadata, RunId};

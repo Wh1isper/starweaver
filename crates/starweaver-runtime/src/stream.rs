@@ -7,7 +7,7 @@ use starweaver_context::AgentEvent;
 use starweaver_core::{AgentId, ConversationId, Metadata, RunId, TaskId};
 use starweaver_model::{ModelResponse, ModelResponseStreamEvent, ToolCallPart, ToolReturnPart};
 
-use crate::{executor::AgentExecutionNode, run::RunStatus, AgentResult};
+use crate::{AgentResult, executor::AgentExecutionNode, run::RunStatus};
 
 /// Stable category for context sideband events that are bridged into the runtime stream.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

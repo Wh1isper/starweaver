@@ -14,12 +14,12 @@ use std::{
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use starweaver_model::{
-    build_codex_model as build_model_codex_model, CodexOAuthResponsesModel, HttpModelConfig,
-    MaxTokensParameter, ModelError,
+    CodexOAuthResponsesModel, HttpModelConfig, MaxTokensParameter, ModelError,
+    build_codex_model as build_model_codex_model,
 };
 use starweaver_oauth::{
-    create_codex_token_source, OAuthError, OAuthStore, OAuthTokenSource, TokenSnapshot,
-    CODEX_BASE_URL,
+    CODEX_BASE_URL, OAuthError, OAuthStore, OAuthTokenSource, TokenSnapshot,
+    create_codex_token_source,
 };
 use tokio::task::JoinHandle;
 
@@ -395,7 +395,7 @@ pub fn create_oauth_refresh_supervisor_for_models_with_options<'a>(
 /// Codex helper namespace.
 pub mod codex {
     pub use starweaver_model::{
-        build_session_headers, codex_model_profile, CodexOAuthResponsesModel,
+        CodexOAuthResponsesModel, build_session_headers, codex_model_profile,
     };
 
     pub use crate::{build_codex_model, build_codex_model_with_store, infer_oauth_model};
@@ -404,21 +404,21 @@ pub mod codex {
 /// HTTP helper namespace.
 pub mod http {
     pub use starweaver_model::{
-        build_codex_headers, patch_codex_responses_body, OAuthBearerHttpClient, CODEX_ORIGINATOR,
+        CODEX_ORIGINATOR, OAuthBearerHttpClient, build_codex_headers, patch_codex_responses_body,
     };
 }
 
 /// Refresh helper namespace.
 pub mod refresh {
     pub use crate::{
+        OAuthRefreshProviderStatus, OAuthRefreshSupervisor, OAuthRefreshSupervisorStatus,
         create_oauth_refresh_supervisor_for_models,
         create_oauth_refresh_supervisor_for_models_with_options, oauth_provider_name_from_model,
-        oauth_provider_names_from_models, OAuthRefreshProviderStatus, OAuthRefreshSupervisor,
-        OAuthRefreshSupervisorStatus,
+        oauth_provider_names_from_models,
     };
 }
 
 pub use starweaver_model::{
-    build_codex_headers, build_session_headers, codex_model_profile, patch_codex_responses_body,
-    OAuthBearerHttpClient, CODEX_ORIGINATOR,
+    CODEX_ORIGINATOR, OAuthBearerHttpClient, build_codex_headers, build_session_headers,
+    codex_model_profile, patch_codex_responses_body,
 };

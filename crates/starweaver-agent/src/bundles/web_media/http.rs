@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use reqwest::{header, redirect::Policy, Method, Url};
+use reqwest::{Method, Url, header, redirect::Policy};
 use starweaver_tools::{ToolContext, ToolError};
 
 use crate::bundles::helpers::tool_execution_error;

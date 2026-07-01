@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use starweaver_usage::{
-    add_optional_pricing, PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot,
+    PricingEstimate, Usage, UsageAgentTotal, UsageSnapshot, add_optional_pricing,
 };
 
 use super::{
-    cache_hit_rate_label, format_u64_with_commas, push_usage_entry_lines, InteractiveTuiState,
+    InteractiveTuiState, cache_hit_rate_label, format_u64_with_commas, push_usage_entry_lines,
 };
 
 impl InteractiveTuiState {

@@ -3,7 +3,7 @@
 use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
 
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::Serialize;
 use serde_json::Value;
 use starweaver_agent::ResumableState;
@@ -18,7 +18,7 @@ use starweaver_session::{
 use starweaver_stream::{DisplayMessage, ReplaySnapshot};
 use uuid::Uuid;
 
-use crate::{config::CliConfig, error::io_error, CliError, CliResult};
+use crate::{CliError, CliResult, config::CliConfig, error::io_error};
 
 mod archive;
 mod db;

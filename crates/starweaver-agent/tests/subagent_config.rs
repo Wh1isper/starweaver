@@ -3,9 +3,9 @@
 use std::{fs, sync::Arc};
 
 use starweaver_agent::{
-    load_subagent_from_file, load_subagents_from_dir, parse_subagent_markdown,
-    project_subagent_spec, AgentBuilder, AgentContext, AgentSpecRegistry, SubagentConfig,
-    SubagentConfigError, SubagentRegistry, SubagentSpec, TestModel,
+    AgentBuilder, AgentContext, AgentSpecRegistry, SubagentConfig, SubagentConfigError,
+    SubagentRegistry, SubagentSpec, TestModel, load_subagent_from_file, load_subagents_from_dir,
+    parse_subagent_markdown, project_subagent_spec,
 };
 
 #[test]

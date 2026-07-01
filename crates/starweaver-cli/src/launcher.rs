@@ -10,7 +10,7 @@ use std::{
 
 use starweaver_core::sdk_name;
 
-use crate::{update_check, CliError, CliResult};
+use crate::{CliError, CliResult, update_check};
 
 const INSTALL_SCRIPT_URL: &str =
     "https://raw.githubusercontent.com/Wh1isper/starweaver/main/scripts/install.sh";
@@ -323,18 +323,17 @@ pub(crate) fn update_component_with_options(
         return Ok(output);
     }
     let target_version = resolve_update_target_version();
-    if !options.force {
-        if let Some(target_version) = &target_version {
-            if update_should_skip(current_version, target_version) {
-                return Ok(update_output_prefix(
-                    normalized,
-                    current_version,
-                    Some(target_version),
-                    options,
-                    "up-to-date",
-                ));
-            }
-        }
+    if !options.force
+        && let Some(target_version) = &target_version
+        && update_should_skip(current_version, target_version)
+    {
+        return Ok(update_output_prefix(
+            normalized,
+            current_version,
+            Some(target_version),
+            options,
+            "up-to-date",
+        ));
     }
     let script = fetch_install_script()?;
     let mut child = Command::new("sh")
@@ -792,15 +791,21 @@ mod tests {
             ]),
             Err(CliError::Usage(message)) if message.contains("unknown command external")
         ));
-        assert!(command_output(["sw".to_string()])
-            .unwrap()
-            .contains("Usage:"));
-        assert!(command_output(["sw".to_string(), "--version".to_string()])
-            .unwrap()
-            .contains("starweaver-agent-sdk"));
-        assert!(command_output(["sw".to_string(), "-V".to_string()])
-            .unwrap()
-            .contains("starweaver-agent-sdk"));
+        assert!(
+            command_output(["sw".to_string()])
+                .unwrap()
+                .contains("Usage:")
+        );
+        assert!(
+            command_output(["sw".to_string(), "--version".to_string()])
+                .unwrap()
+                .contains("starweaver-agent-sdk")
+        );
+        assert!(
+            command_output(["sw".to_string(), "-V".to_string()])
+                .unwrap()
+                .contains("starweaver-agent-sdk")
+        );
     }
 
     const fn dry_run_options() -> UpdateOptions {

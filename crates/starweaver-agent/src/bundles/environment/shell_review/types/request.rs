@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::policy::{risk_level_name, ShellReviewDecision, ShellReviewRiskLevel};
+use super::policy::{ShellReviewDecision, ShellReviewRiskLevel, risk_level_name};
 
 /// Previous review decision rendered into the reviewer prompt.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -210,11 +210,7 @@ impl ShellReviewRequest {
 }
 
 const fn py_bool(value: bool) -> &'static str {
-    if value {
-        "True"
-    } else {
-        "False"
-    }
+    if value { "True" } else { "False" }
 }
 
 fn py_option_u64(value: Option<u64>) -> String {

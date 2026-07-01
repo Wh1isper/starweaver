@@ -1,6 +1,6 @@
 use super::{
-    compact_timestamp, take_prefix_width, visible_width, with_codex_border, wrap_text_width,
-    InteractiveTuiState, SegmentStyle, StyledLine, StyledSegment,
+    InteractiveTuiState, SegmentStyle, StyledLine, StyledSegment, compact_timestamp,
+    take_prefix_width, visible_width, with_codex_border, wrap_text_width,
 };
 use crate::tui::{ModelChoice, SessionChoice};
 

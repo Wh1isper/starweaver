@@ -3,7 +3,7 @@
 use std::{path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{Parser, ValueEnum};
-use starweaver_envd::{run_http, run_stdio, LocalEnvd};
+use starweaver_envd::{LocalEnvd, run_http, run_stdio};
 use starweaver_environment::{
     EnvironmentPolicy, FilePolicy, LocalEnvironmentProvider, ShellPolicy,
 };

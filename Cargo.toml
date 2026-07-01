@@ -21,11 +21,12 @@ members = [
     "crates/starweaver-usage",
     "xtask",
 ]
+exclude = ["packages/starweaver-py"]
 resolver = "2"
 
 [workspace.package]
 version = "0.2.1"
-edition = "2021"
+edition = "2024"
 rust-version = "1.96"
 authors = ["wh1isper"]
 license = "BSD-3-Clause"

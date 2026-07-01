@@ -7,10 +7,10 @@ use starweaver_model::{
 };
 
 use starweaver_context::AgentContext;
-use starweaver_tools::{ToolRegistry, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY};
+use starweaver_tools::{TOOL_METADATA_CONTEXT_MANAGEMENT_KEY, ToolRegistry};
 
 use crate::{
-    agent::{runtime_helpers::tool_return_media_prompt, Agent, AgentError},
+    agent::{Agent, AgentError, runtime_helpers::tool_return_media_prompt},
     run::AgentRunState,
 };
 

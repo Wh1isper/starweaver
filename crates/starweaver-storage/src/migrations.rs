@@ -3,7 +3,7 @@
 use std::{collections::BTreeSet, path::Path};
 
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use starweaver_session::SessionStoreResult;
 
 use crate::{

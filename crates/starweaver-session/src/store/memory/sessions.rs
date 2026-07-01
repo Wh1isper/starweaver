@@ -8,7 +8,7 @@ use crate::{
     store::SessionFilter,
 };
 
-use super::{store_failed, InMemorySessionStore};
+use super::{InMemorySessionStore, store_failed};
 
 impl InMemorySessionStore {
     pub(super) fn save_session_record(&self, mut session: SessionRecord) -> SessionStoreResult<()> {

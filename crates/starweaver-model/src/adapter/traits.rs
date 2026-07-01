@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use starweaver_usage::Usage;
 
 use crate::{
-    message::ModelMessage, profile::ModelProfile, settings::ModelSettings,
-    stream::ModelResponseStreamEvent, ModelResponse,
+    ModelResponse, message::ModelMessage, profile::ModelProfile, settings::ModelSettings,
+    stream::ModelResponseStreamEvent,
 };
 
 use super::{ModelError, ModelRequestContext, ModelRequestParameters, ModelResponseEventStream};

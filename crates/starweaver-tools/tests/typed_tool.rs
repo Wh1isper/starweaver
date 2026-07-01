@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use starweaver_core::{ConversationId, RunId};
-use starweaver_tools::{typed_json_tool, Tool, ToolContext, ToolResult};
+use starweaver_tools::{Tool, ToolContext, ToolResult, typed_json_tool};
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 struct AddArgs {
@@ -53,10 +53,12 @@ async fn typed_tool_derives_schema_and_validates_arguments() {
         schema["properties"]["right"]["description"],
         "Right integer to add."
     );
-    assert!(schema["required"]
-        .as_array()
-        .unwrap()
-        .contains(&serde_json::json!("left")));
+    assert!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("left"))
+    );
 
     let result = tool
         .call(
@@ -90,10 +92,12 @@ async fn typed_tool_preserves_nested_schema_descriptions_and_required_fields() {
     let schema = tool.parameters_schema();
     assert_eq!(schema.get("$schema"), None);
     assert_eq!(schema["type"], "object");
-    assert!(schema["required"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("entries")));
+    assert!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("entries"))
+    );
     assert_eq!(
         schema["properties"]["entries"]["description"],
         "Batch entries to process."
@@ -107,10 +111,12 @@ async fn typed_tool_preserves_nested_schema_descriptions_and_required_fields() {
         schema["$defs"]["BatchEntry"]["properties"]["value"]["description"],
         "Entry value."
     );
-    assert!(schema["$defs"]["BatchEntry"]["required"]
-        .as_array()
-        .unwrap()
-        .contains(&json!("key")));
+    assert!(
+        schema["$defs"]["BatchEntry"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("key"))
+    );
 
     let result = tool
         .call(

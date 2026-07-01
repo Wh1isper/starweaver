@@ -12,6 +12,6 @@ pub use function::{
 pub use policy::{DynOutputFunction, OutputPolicy};
 pub use types::{OutputMedia, OutputSchema, OutputValue};
 pub use validation::{
-    parse_output, FunctionOutputValidator, OutputValidationError, OutputValidationResult,
-    OutputValidator,
+    FunctionOutputValidator, OutputValidationError, OutputValidationResult, OutputValidator,
+    parse_output,
 };

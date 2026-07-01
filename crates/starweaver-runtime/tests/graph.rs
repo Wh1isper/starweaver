@@ -1,9 +1,9 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use starweaver_core::{ConversationId, RunId};
-use starweaver_model::{message::ToolCallPart, ModelResponse, ModelResponsePart, ToolReturnPart};
+use starweaver_model::{ModelResponse, ModelResponsePart, ToolReturnPart, message::ToolCallPart};
 use starweaver_runtime::{
-    inspect_graph, inspect_next_node, next_node, AgentNode, AgentRunState, RunStatus,
+    AgentNode, AgentRunState, RunStatus, inspect_graph, inspect_next_node, next_node,
 };
 
 fn state() -> AgentRunState {

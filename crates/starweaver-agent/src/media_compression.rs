@@ -2,10 +2,10 @@
 
 use std::io::Cursor;
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, DynamicImage, ImageFormat, RgbImage};
-use serde_json::{json, Value};
-use starweaver_model::{detect_media_kind, raw_budget_from_base64_limit, MediaKind};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use image::{DynamicImage, ImageFormat, RgbImage, codecs::jpeg::JpegEncoder, imageops::FilterType};
+use serde_json::{Value, json};
+use starweaver_model::{MediaKind, detect_media_kind, raw_budget_from_base64_limit};
 
 const JPEG_QUALITIES: &[u8] = &[95, 85, 75, 60, 45, 30, 20];
 const RESIZE_PASSES: usize = 5;

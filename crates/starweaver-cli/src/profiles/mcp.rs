@@ -6,7 +6,7 @@ use starweaver_agent::{
     ToolProxyToolset,
 };
 
-use crate::config::{mcp_servers, CliConfig};
+use crate::config::{CliConfig, mcp_servers};
 
 pub(super) fn configured_mcp_server_specs(config: &CliConfig) -> Vec<McpServerSpec> {
     mcp_servers(config)

@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn standalone_stdio_process_handles_initialize_and_shutdown() {

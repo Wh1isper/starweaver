@@ -2,16 +2,16 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_context::{ModelCapability, ModelConfig};
 use starweaver_model::{
-    get_model_config, get_model_settings, ModelConfigPresetData, ModelSettings,
-    ProfileOverrideModel,
+    ModelConfigPresetData, ModelSettings, ProfileOverrideModel, get_model_config,
+    get_model_settings,
 };
 use starweaver_runtime::OutputPolicy;
 use starweaver_tools::{
-    dynamic_tool_search, ApprovalRequiredToolset, DeferredToolset, DynToolset, FilteredToolset,
-    RenamedToolset, ToolProxyToolset,
+    ApprovalRequiredToolset, DeferredToolset, DynToolset, FilteredToolset, RenamedToolset,
+    ToolProxyToolset, dynamic_tool_search,
 };
 
 use crate::{AgentBuilder, AgentRuntimeBuilder, SkillRegistry};
@@ -647,13 +647,13 @@ fn validate_named<T>(
     kind: &'static str,
     map: &BTreeMap<String, T>,
 ) -> Result<(), AgentSpecError> {
-    if let Some(name) = name {
-        if !map.contains_key(name) {
-            return Err(AgentSpecError::UnknownPolicyPreset {
-                kind,
-                name: name.to_string(),
-            });
-        }
+    if let Some(name) = name
+        && !map.contains_key(name)
+    {
+        return Err(AgentSpecError::UnknownPolicyPreset {
+            kind,
+            name: name.to_string(),
+        });
     }
     Ok(())
 }

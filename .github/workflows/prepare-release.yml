@@ -36,6 +36,14 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
       - name: Install mdBook
         uses: taiki-e/install-action@v2
         with:
@@ -58,6 +66,7 @@ jobs:
       - name: Run fast release preparation checks
         run: |
           make fmt-check
+          make py-check
           make docs-build
           make publish-dry-run
 

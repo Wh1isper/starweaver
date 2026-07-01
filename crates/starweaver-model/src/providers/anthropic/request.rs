@@ -1,12 +1,12 @@
 //! Anthropic request mapping.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
+    ModelError, ModelSettings,
     adapter::ToolDefinition,
     message::{ModelMessage, ModelRequestPart, ModelResponsePart},
-    providers::{collect_system_parts_and_non_system, SystemInstructionPart},
-    ModelError, ModelSettings,
+    providers::{SystemInstructionPart, collect_system_parts_and_non_system},
 };
 
 use super::{
@@ -140,11 +140,13 @@ fn anthropic_system_value(
         return None;
     }
     let Some(ttl) = anthropic_cache_ttl(settings, "anthropic_cache_instructions") else {
-        return Some(json!(system
-            .iter()
-            .map(|part| part.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n")));
+        return Some(json!(
+            system
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        ));
     };
 
     let mut blocks = system

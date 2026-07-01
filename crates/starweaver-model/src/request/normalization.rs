@@ -87,20 +87,19 @@ fn lift_system_parts(messages: &[ModelMessage]) -> Vec<ModelMessage> {
         match message {
             ModelMessage::Request(request) => {
                 let collect_instruction_material = current_instruction_index == Some(index);
-                if collect_instruction_material {
-                    if let Some(instructions) = request.instructions.as_ref() {
-                        if !instructions.trim().is_empty() {
-                            let mut metadata = Map::new();
-                            metadata.insert(
-                                "starweaver_instruction_origin".to_string(),
-                                serde_json::json!("request_instructions"),
-                            );
-                            lifted.push(ModelRequestPart::SystemPrompt {
-                                text: instructions.clone(),
-                                metadata,
-                            });
-                        }
-                    }
+                if collect_instruction_material
+                    && let Some(instructions) = request.instructions.as_ref()
+                    && !instructions.trim().is_empty()
+                {
+                    let mut metadata = Map::new();
+                    metadata.insert(
+                        "starweaver_instruction_origin".to_string(),
+                        serde_json::json!("request_instructions"),
+                    );
+                    lifted.push(ModelRequestPart::SystemPrompt {
+                        text: instructions.clone(),
+                        metadata,
+                    });
                 }
                 let mut remaining = Vec::new();
                 for part in &request.parts {

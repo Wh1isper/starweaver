@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use starweaver_context::AgentContext;
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
 use starweaver_model::{
-    context_origin_metadata, ContentPart, ModelMessage, ModelRequest, ModelRequestPart,
     CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
-    CONTEXT_TYPE_METADATA,
+    CONTEXT_TYPE_METADATA, ContentPart, ModelMessage, ModelRequest, ModelRequestPart,
+    context_origin_metadata,
 };
 use starweaver_runtime::{
     AgentCapability, AgentRunState, CapabilityError, CapabilityOrdering, CapabilityResult,

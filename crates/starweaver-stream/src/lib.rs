@@ -13,8 +13,8 @@ mod sanitizer;
 mod transport;
 
 pub use adapters::{
-    display_to_agui_event, display_to_agui_jsonl, display_to_vercel_data_stream,
-    display_to_vercel_data_stream_jsonl, AguiEvent, VercelDataStreamPart,
+    AguiEvent, VercelDataStreamPart, display_to_agui_event, display_to_agui_jsonl,
+    display_to_vercel_data_stream, display_to_vercel_data_stream_jsonl,
 };
 pub use archive::{InMemoryStreamArchive, StreamArchive, StreamArchiveRecord};
 pub use compaction::RealtimeCompactionBuffer;
@@ -29,13 +29,13 @@ pub use replay::{
     ReplayEventLog, ReplayScope, ReplaySnapshot, ReplaySubscription, StreamTerminalMarker,
 };
 pub use sanitizer::{
-    sanitize_client_history, ClientHistorySanitizerConfig, ClientHistoryTrust,
-    SanitizedClientHistory, SanitizerDecision,
+    ClientHistorySanitizerConfig, ClientHistoryTrust, SanitizedClientHistory, SanitizerDecision,
+    sanitize_client_history,
 };
 pub use starweaver_core::SessionId;
 pub use transport::{
-    replay_sse_event_name, replay_sse_frames, InMemoryReplayTransport, ReplaySseFrame,
-    ReplayTransport,
+    InMemoryReplayTransport, ReplaySseFrame, ReplayTransport, replay_sse_event_name,
+    replay_sse_frames,
 };
 
 #[cfg(test)]

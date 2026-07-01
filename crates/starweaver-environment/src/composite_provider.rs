@@ -7,12 +7,12 @@ use std::{
 };
 
 use crate::{
+    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
+    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
+    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand,
+    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
     is_provider_visible_absolute_path, path_match_candidates as default_path_match_candidates,
-    provider_visible_path_allowed_by_context, push_unique_candidate, DynEnvironmentProvider,
-    DynProcessShellProvider, EnvironmentError, EnvironmentProvider, EnvironmentResult,
-    EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions,
-    FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand, ShellOutput,
-    ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    provider_visible_path_allowed_by_context, push_unique_candidate,
 };
 use async_trait::async_trait;
 
@@ -632,19 +632,20 @@ impl EnvironmentProvider for CompositeEnvironmentProvider {
         );
         state.metadata.insert(
             "mounts".to_string(),
-            serde_json::json!(self
-                .mounts
-                .iter()
-                .map(|mount| {
-                    serde_json::json!({
-                        "id": mount.id,
-                        "root": mount.agent_root,
-                        "mode": mount.mode.as_str(),
-                        "default": mount.is_default,
-                        "default_for_shell": mount.default_for_shell,
+            serde_json::json!(
+                self.mounts
+                    .iter()
+                    .map(|mount| {
+                        serde_json::json!({
+                            "id": mount.id,
+                            "root": mount.agent_root,
+                            "mode": mount.mode.as_str(),
+                            "default": mount.is_default,
+                            "default_for_shell": mount.default_for_shell,
+                        })
                     })
-                })
-                .collect::<Vec<_>>()),
+                    .collect::<Vec<_>>()
+            ),
         );
         state.processes = self.list_processes().await.unwrap_or_default();
         Ok(state)
@@ -901,13 +902,12 @@ fn rebase_process_snapshot(
         .metadata
         .get("cwd")
         .and_then(serde_json::Value::as_str)
+        && route.explicit_root
     {
-        if route.explicit_root {
-            snapshot.metadata.insert(
-                "cwd".to_string(),
-                serde_json::json!(rebase_child_path(route, cwd)),
-            );
-        }
+        snapshot.metadata.insert(
+            "cwd".to_string(),
+            serde_json::json!(rebase_child_path(route, cwd)),
+        );
     }
     snapshot
 }

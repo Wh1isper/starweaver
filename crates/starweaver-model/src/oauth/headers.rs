@@ -9,8 +9,8 @@ use serde_json::{Map, Value};
 use starweaver_oauth::OAuthAccount;
 
 use crate::{
-    transport::{HttpMethod, HttpRequest},
     ModelError,
+    transport::{HttpMethod, HttpRequest},
 };
 
 /// Codex request header originator used by Starweaver OAuth-backed requests.

@@ -3,7 +3,7 @@
 use starweaver_environment::EnvironmentError;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
-use super::{text::ensure_file_missing, tool_execution_error, EditArgs, MultiEditArgs, WriteArgs};
+use super::{EditArgs, MultiEditArgs, WriteArgs, text::ensure_file_missing, tool_execution_error};
 use crate::bundles::{
     environment::handle::environment_provider,
     helpers::{tool_invalid_arguments, tool_model_retry},
@@ -24,7 +24,9 @@ pub(super) async fn write_text(
         Some(mode) => {
             return Err(tool_invalid_arguments(
                 "write",
-                format!("unsupported write mode {mode:?}. Use mode \"w\" to overwrite or \"a\" to append."),
+                format!(
+                    "unsupported write mode {mode:?}. Use mode \"w\" to overwrite or \"a\" to append."
+                ),
             ));
         }
     };

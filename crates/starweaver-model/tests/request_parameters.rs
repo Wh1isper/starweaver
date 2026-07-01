@@ -6,17 +6,17 @@ use std::{
 };
 
 use async_trait::async_trait;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
-    get_model_settings, AnthropicSettings, AuthConfig, BedrockSettings, CodexSettings, ContentPart,
-    GatewaySettings, GoogleCloudServiceTier, GoogleSettings, HttpModelConfig, HttpRequest,
-    HttpRequestOptions, HttpResponse, InMemoryProviderRequestAuditRecorder, MessageNormalization,
-    ModelAdapter, ModelError, ModelEventStream, ModelHttpClient, ModelMessage, ModelProfile,
-    ModelRequest, ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelSettings,
+    AnthropicSettings, AuthConfig, BedrockSettings, CodexSettings, ContentPart, GatewaySettings,
+    GoogleCloudServiceTier, GoogleSettings, HttpModelConfig, HttpRequest, HttpRequestOptions,
+    HttpResponse, InMemoryProviderRequestAuditRecorder, MessageNormalization, ModelAdapter,
+    ModelError, ModelEventStream, ModelHttpClient, ModelMessage, ModelProfile, ModelRequest,
+    ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelSettings,
     NativeToolDefinition, OpenAiChatSettings, OpenAiResponsesSettings, OutputMode, ProtocolFamily,
     ProtocolModelClient, ProviderRequestAuditPolicy, ProviderSettings, ServiceTier,
-    StructuredOutputMode, ThinkingSettings, ToolChoice, ToolDefinition,
+    StructuredOutputMode, ThinkingSettings, ToolChoice, ToolDefinition, get_model_settings,
 };
 
 #[derive(Clone, Default)]
@@ -133,9 +133,11 @@ fn model_request_parameters_serialize_round_trip() {
             sequential: None,
             metadata: Map::from_iter([("tier".to_string(), json!("required"))]),
         }],
-        native_tools: vec![NativeToolDefinition::new("web_search_preview")
-            .with_config(native_config)
-            .with_metadata(native_metadata)],
+        native_tools: vec![
+            NativeToolDefinition::new("web_search_preview")
+                .with_config(native_config)
+                .with_metadata(native_metadata),
+        ],
         output_schema: Some(json!({
             "name": "answer",
             "schema": {"type": "object", "required": ["answer"]},
@@ -754,11 +756,13 @@ async fn protocol_client_keeps_prompted_output_schema_out_of_native_response_for
 
     let request = http.last_request();
     assert!(request.body.get("text").is_none());
-    assert!(request
-        .body
-        .get("instructions")
-        .and_then(Value::as_str)
-        .is_some_and(|instructions| instructions.contains("Always respond with a JSON object")));
+    assert!(
+        request
+            .body
+            .get("instructions")
+            .and_then(Value::as_str)
+            .is_some_and(|instructions| instructions.contains("Always respond with a JSON object"))
+    );
 }
 
 #[tokio::test]
@@ -797,16 +801,18 @@ async fn protocol_client_keeps_prompted_output_schema_out_of_openai_chat_respons
 
     let request = http.last_request();
     assert!(request.body.get("response_format").is_none());
-    assert!(request.body["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(
-            |message| message["content"].as_str().is_some_and(|content| {
-                content.contains("Always respond with a JSON object")
-                    && content.contains("Don't include any text or Markdown fencing")
-            })
-        ));
+    assert!(
+        request.body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |message| message["content"].as_str().is_some_and(|content| {
+                    content.contains("Always respond with a JSON object")
+                        && content.contains("Don't include any text or Markdown fencing")
+                })
+            )
+    );
 }
 
 #[tokio::test]
@@ -937,11 +943,13 @@ async fn protocol_client_keeps_prompted_output_schema_out_of_gemini_generation_c
         .unwrap();
 
     let request = http.last_request();
-    assert!(request
-        .body
-        .get("generationConfig")
-        .and_then(Value::as_object)
-        .is_none_or(|config| !config.contains_key("responseSchema")));
+    assert!(
+        request
+            .body
+            .get("generationConfig")
+            .and_then(Value::as_object)
+            .is_none_or(|config| !config.contains_key("responseSchema"))
+    );
     let system_instruction = request.body["systemInstruction"]["parts"][0]["text"]
         .as_str()
         .unwrap();

@@ -3,8 +3,8 @@ use serde_json::Value;
 use crate::tui::timeline::value_args_preview;
 
 use super::{
-    compact_status_text, is_empty_result, is_task_tool_name, plural_suffix, value_text,
     ToolConciseSummary, ToolSummaryCategory, ToolSummaryImportance, ToolVisibility,
+    compact_status_text, is_empty_result, is_task_tool_name, plural_suffix, value_text,
 };
 
 const CONCISE_ARG_MAX_CHARS: usize = 96;

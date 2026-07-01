@@ -30,4 +30,4 @@ pub use notes::NoteStore;
 pub use resumable_state::{ResumableExportOptions, ResumableState};
 pub use starweaver_core::AgentId;
 pub use state::StateStore;
-pub use task::{Task, TaskManager, TaskSnapshot, TaskStatus, TASK_SNAPSHOT_EVENT_KIND};
+pub use task::{TASK_SNAPSHOT_EVENT_KIND, Task, TaskManager, TaskSnapshot, TaskStatus};

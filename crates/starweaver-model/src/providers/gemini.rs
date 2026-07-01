@@ -1,8 +1,9 @@
 //! Gemini generateContent wire mapper.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::{
+    ModelError, ModelSettings,
     adapter::{NativeToolDefinition, ToolDefinition},
     message::{
         FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
@@ -12,7 +13,6 @@ use crate::{
         collect_system_and_non_system, gemini_parts_from_content, insert_nonempty_description,
         provider_tool_schema_without_meta, usage_from_named_with_output_extras,
     },
-    ModelError, ModelSettings,
 };
 
 /// Gemini generateContent wire mapper.
@@ -355,10 +355,10 @@ fn gemini_function_call_part(
     if let Some(provider) = provider.filter(|provider| provider.is_provider("gemini")) {
         append_gemini_part_details(&mut part, provider);
     }
-    if !part.contains_key("thoughtSignature") {
-        if let Some(signature) = carried_signature {
-            part.insert("thoughtSignature".to_string(), json!(signature));
-        }
+    if !part.contains_key("thoughtSignature")
+        && let Some(signature) = carried_signature
+    {
+        part.insert("thoughtSignature".to_string(), json!(signature));
     }
     if *first_function_call_needs_signature {
         if !part.contains_key("thoughtSignature") {
@@ -382,10 +382,10 @@ fn gemini_text_part(
     if let Some(provider) = provider {
         append_gemini_part_details(&mut part, provider);
     }
-    if !part.contains_key("thoughtSignature") {
-        if let Some(signature) = carried_signature {
-            part.insert("thoughtSignature".to_string(), json!(signature));
-        }
+    if !part.contains_key("thoughtSignature")
+        && let Some(signature) = carried_signature
+    {
+        part.insert("thoughtSignature".to_string(), json!(signature));
     }
     Value::Object(part)
 }
@@ -400,10 +400,10 @@ fn gemini_thought_part(
     part.insert("text".to_string(), json!(text));
     part.insert("thought".to_string(), json!(true));
     append_gemini_part_details(&mut part, provider);
-    if !part.contains_key("thoughtSignature") {
-        if let Some(signature) = carried_signature.or(inline_signature) {
-            part.insert("thoughtSignature".to_string(), json!(signature));
-        }
+    if !part.contains_key("thoughtSignature")
+        && let Some(signature) = carried_signature.or(inline_signature)
+    {
+        part.insert("thoughtSignature".to_string(), json!(signature));
     }
     Value::Object(part)
 }

@@ -179,25 +179,24 @@ impl<'de> Deserialize<'de> for ToolArguments {
         D: serde::Deserializer<'de>,
     {
         let value = Value::deserialize(deserializer)?;
-        if let Value::Object(object) = &value {
-            if object
+        if let Value::Object(object) = &value
+            && object
                 .get("kind")
                 .and_then(Value::as_str)
                 .is_some_and(|kind| kind == Self::INVALID_KIND)
-            {
-                return Ok(Self::Invalid {
-                    raw: object
-                        .get("raw")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    error: object
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                });
-            }
+        {
+            return Ok(Self::Invalid {
+                raw: object
+                    .get("raw")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                error: object
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            });
         }
         Ok(Self::Parsed(value))
     }

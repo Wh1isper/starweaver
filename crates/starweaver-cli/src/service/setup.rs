@@ -1,16 +1,16 @@
 use std::{fs, path::Path};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::{render_json_lines, CliService};
+use super::{CliService, render_json_lines};
 use crate::{
+    CliError, CliResult,
     args::{OutputMode, ResetCommand, SetupCommand},
     config::{
-        init_config_file, write_default_subagent_presets, CliConfig, ConfigScope,
-        DEFAULT_GLOBAL_GITIGNORE_TEMPLATE, DEFAULT_MCP_TEMPLATE,
-        DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE,
+        CliConfig, ConfigScope, DEFAULT_GLOBAL_GITIGNORE_TEMPLATE, DEFAULT_MCP_TEMPLATE,
+        DEFAULT_PROJECT_GITIGNORE_TEMPLATE, DEFAULT_TOOLS_TEMPLATE, init_config_file,
+        write_default_subagent_presets,
     },
-    CliError, CliResult,
 };
 
 impl CliService {

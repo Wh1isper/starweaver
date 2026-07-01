@@ -1,4 +1,11 @@
 /target/
+/dist/
+/packages/*/target/
+/packages/*/dist/
+/packages/*/python/**/*.so
+/packages/*/python/**/*.pyd
+/packages/*/python/**/*.dll
+/packages/*/python/**/*.dylib
 /book/
 .starweaver/
 /.idea/
@@ -6,9 +13,11 @@
 *.swp
 *.swo
 __pycache__/
+.pytest_cache/
 scripts/__pycache__*/
 *.py[cod]
 scripts/.venv/
+/.venv/
 .DS_Store
 .env
 .env.*

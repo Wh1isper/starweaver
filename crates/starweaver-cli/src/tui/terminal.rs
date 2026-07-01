@@ -20,17 +20,17 @@ use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 
-use crate::{prompt_input::PromptInput, CliResult};
+use crate::{CliResult, prompt_input::PromptInput};
 
 use super::{
     render::{
-        composer_input_width, composer_layout, queue_styled_line_at,
+        StyledLine, composer_input_width, composer_layout, queue_styled_line_at,
         render_composer_lines_from_layout, render_footer_lines, render_live_history_lines,
-        terminal_error, StyledLine,
+        terminal_error,
     },
     state::{
-        BodyScrollDirection, InteractiveTuiState, PendingSessionCommand, RunMode,
-        SteeringSubmission, COMPOSER_VISIBLE_LINES,
+        BodyScrollDirection, COMPOSER_VISIBLE_LINES, InteractiveTuiState, PendingSessionCommand,
+        RunMode, SteeringSubmission,
     },
 };
 

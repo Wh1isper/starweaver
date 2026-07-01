@@ -9,13 +9,13 @@ use std::{
     time::Duration,
 };
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use serde_json::json;
 use starweaver_oauth::{
-    account_from_id_token, AuthFile, CodexOAuthClient, CodexOAuthProfile, OAuthAccount,
-    OAuthProviderRecord, OAuthStore, OAuthTokens, CODEX_BASE_URL, CODEX_CLIENT_ID, CODEX_ISSUER,
-    CODEX_TOKEN_ENDPOINT,
+    AuthFile, CODEX_BASE_URL, CODEX_CLIENT_ID, CODEX_ISSUER, CODEX_TOKEN_ENDPOINT,
+    CodexOAuthClient, CodexOAuthProfile, OAuthAccount, OAuthProviderRecord, OAuthStore,
+    OAuthTokens, account_from_id_token,
 };
 
 fn fixture_record() -> OAuthProviderRecord {

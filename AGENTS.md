@@ -31,6 +31,7 @@ Current workspace members:
 - `crates/starweaver-cli` — CLI-first product surface for headless stdio runs, display-message rendering, session restore, launcher dispatch, and install/update workflows
 - `crates/starweaver-rpc-core` — shared JSON-RPC host protocol helpers, envelopes, errors, stream payload projection, and replay result helpers
 - `crates/starweaver-rpc` — standalone JSON-RPC host process for Desktop and local host integrations
+- `packages/starweaver-py` — Python distribution package and PyO3/maturin extension scaffold for future in-process Python SDK bindings
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
 
@@ -180,6 +181,28 @@ For full local validation, run:
 make ci
 ```
 
+For Python package validation, run:
+
+```bash
+make py-check
+```
+
+Python packages use `uv` from the repository root. Local development defaults to
+Python 3.13 through `.python-version`; Makefile Python targets should keep using
+`uv` so they inherit that default. The supported package range is CPython 3.11
+through 3.13, and CI must keep 3.11, 3.12, and 3.13 coverage.
+
+Python Makefile targets:
+
+- `make py-sync` — sync the uv workspace dependencies.
+- `make py-version` — show the Python interpreter selected by uv.
+- `make py-fmt` — format Python files with ruff.
+- `make py-lint` — check the uv lock file, run ruff, and run pyright.
+- `make py-rust-check` — run fmt, check, and clippy for the PyO3 extension crate.
+- `make py-test` — build the native extension in place and run pytest.
+- `make py-build` — build Python sdist and wheel artifacts with uv.
+- `make py-check` — run the full Python package gate.
+
 For coverage validation, run:
 
 ```bash
@@ -201,7 +224,7 @@ To ask the assistant to prepare a unified-version release, use GitHub CLI from t
 gh workflow run prepare-release.yml -f version=X.Y.Z
 ```
 
-This pushes `release/vX.Y.Z` for review. After the release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The `release.yml` workflow runs from the published Release event, builds `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`, uploads `checksums.txt`, and publishes crates through the `Release` environment.
+This pushes `release/vX.Y.Z` for review. After the release commit reaches `main`, publish `vX.Y.Z` as a GitHub Release. The `release.yml` workflow runs from the published Release event, builds `starweaver-cli` archives containing `starweaver`, `starweaver-cli`, `sw`, and `starweaver-rpc`, builds Python distributions for `packages/starweaver-py`, uploads `checksums.txt`, and publishes crates plus the Python package through the `Release` environment.
 
 Use squash merge only for GitHub pull requests. Do not merge pull requests with merge commits into `main`.
 
@@ -216,7 +239,9 @@ make lint
 ## Coding Conventions
 
 - Use English for code, documentation, commit messages, and file names.
-- Keep workspace metadata consistent across `Cargo.toml`, crate manifests, `Makefile`, `.pre-commit-config.yaml`, and `.github/workflows/ci.yml`.
+- Keep workspace metadata consistent across `Cargo.toml`, crate manifests, `pyproject.toml`, package manifests under `packages/*`, `Makefile`, `.pre-commit-config.yaml`, and `.github/workflows/ci.yml`.
+- Use `uv` for Python dependency sync, lock validation, test execution, and package builds. Do not add pip/poetry/hatch workflows unless the Python packaging boundary is explicitly redesigned.
+- Keep Python package support constrained to CPython 3.11 through 3.13, with local and single-version CI defaults on Python 3.13.
 - Keep early abstractions minimal and add SDK concepts as concrete needs emerge.
 - Treat runtime primitives as first-class: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, executor checkpoints, trace context, `SessionStore` contracts, stream contracts, and environment resources.
 - Add crates from specs when the boundary has clear responsibilities, call sites, and validation commands.

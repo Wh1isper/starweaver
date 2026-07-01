@@ -413,12 +413,16 @@ async fn pending_steering_guard_streams_control_event_without_output_retry() {
         .unwrap();
 
     assert_eq!(result.output, "second answer");
-    assert!(events
-        .iter()
-        .any(|record| matches!(record.event, AgentStreamEvent::SteeringGuard { .. })));
-    assert!(!events
-        .iter()
-        .any(|record| matches!(record.event, AgentStreamEvent::OutputRetry { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|record| matches!(record.event, AgentStreamEvent::SteeringGuard { .. }))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|record| matches!(record.event, AgentStreamEvent::OutputRetry { .. }))
+    );
 }
 
 #[tokio::test]
@@ -505,11 +509,13 @@ async fn skipped_model_request_retains_steering_without_ack() {
     assert_eq!(result.output, "skipped");
     assert!(model.captured_messages().is_empty());
     assert_eq!(context.messages.len(), 1);
-    assert!(!context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "steering_received"));
+    assert!(
+        !context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "steering_received")
+    );
     assert!(!events.iter().any(|record| matches!(
         &record.event,
         AgentStreamEvent::Custom { event } if event.kind == "steering_received"

@@ -389,21 +389,27 @@ all_sessions_interval_hours = 1
             matches!(parse_error, Err(CliError::Usage(message)) if message.contains("unexpected argument"))
         );
 
-        assert!(format!(
-            "{}",
-            CliError::from(serde_json::from_str::<serde_json::Value>("{").unwrap_err())
-        )
-        .contains("serialization error"));
-        assert!(format!(
-            "{}",
-            CliError::from(toml::from_str::<toml::Value>("=").unwrap_err())
-        )
-        .contains("configuration error"));
-        assert!(format!(
-            "{}",
-            CliError::from(toml::to_string(&f64::NAN).unwrap_err())
-        )
-        .contains("configuration error"));
+        assert!(
+            format!(
+                "{}",
+                CliError::from(serde_json::from_str::<serde_json::Value>("{").unwrap_err())
+            )
+            .contains("serialization error")
+        );
+        assert!(
+            format!(
+                "{}",
+                CliError::from(toml::from_str::<toml::Value>("=").unwrap_err())
+            )
+            .contains("configuration error")
+        );
+        assert!(
+            format!(
+                "{}",
+                CliError::from(toml::to_string(&f64::NAN).unwrap_err())
+            )
+            .contains("configuration error")
+        );
         let io_error = error::io_error(
             "/tmp/missing",
             io::Error::new(io::ErrorKind::NotFound, "gone"),
@@ -688,15 +694,21 @@ prompt = "Review carefully."
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
-        assert!(agui_events
-            .iter()
-            .any(|event| event["type"] == "RUN_STARTED"));
-        assert!(agui_events
-            .iter()
-            .any(|event| event["type"] == "TEXT_MESSAGE_CHUNK"));
-        assert!(agui_events
-            .iter()
-            .any(|event| event["type"] == "RUN_FINISHED"));
+        assert!(
+            agui_events
+                .iter()
+                .any(|event| event["type"] == "RUN_STARTED")
+        );
+        assert!(
+            agui_events
+                .iter()
+                .any(|event| event["type"] == "TEXT_MESSAGE_CHUNK")
+        );
+        assert!(
+            agui_events
+                .iter()
+                .any(|event| event["type"] == "RUN_FINISHED")
+        );
         let sessions = output(temp.path(), &["session", "list"]).unwrap();
         assert!(sessions.contains("session_"));
         let value: serde_json::Value =
@@ -769,10 +781,12 @@ prompt = "Review carefully."
             starweaver_stream::ReplayScope::run(&first_run.run_id)
         );
         assert!(run_window.next_sequence > 0);
-        assert!(run_window
-            .events
-            .iter()
-            .all(|event| event.scope == starweaver_stream::ReplayScope::run(&first_run.run_id)));
+        assert!(
+            run_window
+                .events
+                .iter()
+                .all(|event| event.scope == starweaver_stream::ReplayScope::run(&first_run.run_id))
+        );
     }
 
     #[test]

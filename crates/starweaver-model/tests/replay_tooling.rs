@@ -2,7 +2,7 @@
 
 use std::{env, path::Path, process::Command};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn cassette_tools_import_scrub_and_summarize_replay_fixtures() {
@@ -63,9 +63,11 @@ fn cassette_tools_import_scrub_and_summarize_replay_fixtures() {
         .output()
         .unwrap();
     assert!(import_output.status.success());
-    assert!(String::from_utf8(import_output.stdout)
-        .unwrap()
-        .contains("tooling_import_check.json"));
+    assert!(
+        String::from_utf8(import_output.stdout)
+            .unwrap()
+            .contains("tooling_import_check.json")
+    );
 
     let scrub_output = Command::new(&xtask)
         .arg("scrub-model-cassette")

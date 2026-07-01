@@ -12,7 +12,7 @@ use starweaver_stream::{DisplayMessage, DisplayMessageKind};
 
 use super::{
     markdown::ASSISTANT_CONTENT_PREFIX,
-    state::{display_lines_for_stream_record, TaskPanelItem},
+    state::{TaskPanelItem, display_lines_for_stream_record},
 };
 
 /// Non-interactive TUI snapshot used by the renderer and tests.
@@ -171,10 +171,10 @@ impl TuiSnapshot {
             .payload
             .get("user_content")
             .or_else(|| message.payload.get("content"));
-        if tool_name.is_some_and(is_task_tool_name) {
-            if let Some(tasks) = content.and_then(task_panel_items_from_value) {
-                self.tasks = tasks;
-            }
+        if tool_name.is_some_and(is_task_tool_name)
+            && let Some(tasks) = content.and_then(task_panel_items_from_value)
+        {
+            self.tasks = tasks;
         }
         let preview = content
             .map(|value| value_preview_for_status(value, is_error))
@@ -308,10 +308,10 @@ fn append_replayed_delta_segments(
     for segment in delta.split_inclusive('\n') {
         if segment.ends_with('\n') {
             let trimmed = segment.trim_end_matches('\n').trim_end_matches('\r');
-            if !trimmed.is_empty() {
-                if let Some(last) = lines.last_mut() {
-                    last.push_str(trimmed);
-                }
+            if !trimmed.is_empty()
+                && let Some(last) = lines.last_mut()
+            {
+                last.push_str(trimmed);
             }
             lines.push(new_line(""));
         } else if let Some(last) = lines.last_mut() {
@@ -658,15 +658,15 @@ fn task_panel_items_from_value(value: &Value) -> Option<Vec<TaskPanelItem>> {
     }
     let payload = value.get("payload").unwrap_or(value);
     for candidate in [payload, value] {
-        if let Some(task) = candidate.get("task").filter(|task| task.is_object()) {
-            if let Some(item) = task_panel_item_from_value(task) {
-                return Some(vec![item]);
-            }
+        if let Some(task) = candidate.get("task").filter(|task| task.is_object())
+            && let Some(item) = task_panel_item_from_value(task)
+        {
+            return Some(vec![item]);
         }
-        if candidate.is_object() {
-            if let Some(item) = task_panel_item_from_value(candidate) {
-                return Some(vec![item]);
-            }
+        if candidate.is_object()
+            && let Some(item) = task_panel_item_from_value(candidate)
+        {
+            return Some(vec![item]);
         }
     }
     None

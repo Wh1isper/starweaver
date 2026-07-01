@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use starweaver_agent::{json_tool, FunctionModel, StaticToolset, ToolError, ToolResult};
+use starweaver_agent::{FunctionModel, StaticToolset, ToolError, ToolResult, json_tool};
 use starweaver_model::{
-    context_origin_metadata, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart,
-    ToolCallPart,
+    ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
+    context_origin_metadata,
 };
 
 pub(super) fn local_echo_model() -> FunctionModel {

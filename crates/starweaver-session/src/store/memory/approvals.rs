@@ -5,7 +5,7 @@ use crate::{
     error::{SessionStoreError, SessionStoreResult},
 };
 
-use super::{run_key, run_key_label, store_failed, InMemorySessionStore};
+use super::{InMemorySessionStore, run_key, run_key_label, store_failed};
 
 impl InMemorySessionStore {
     pub(super) fn append_approval_record(

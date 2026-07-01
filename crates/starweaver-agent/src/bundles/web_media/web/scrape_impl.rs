@@ -2,14 +2,14 @@ use reqwest::Method;
 use serde_json::Value;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
-use super::html::{extract_title, html_to_markdown, is_html};
 use super::ScrapeResponse;
+use super::html::{extract_title, html_to_markdown, is_html};
 use crate::bundles::helpers::tool_execution_error;
 
 use super::super::{
-    http::{fetch_http_resource, http_client, validate_http_url, MAX_FETCH_BYTES},
+    http::{MAX_FETCH_BYTES, fetch_http_resource, http_client, validate_http_url},
     json_result,
-    media::{classify_media, document_handoff, MediaKind},
+    media::{MediaKind, classify_media, document_handoff},
 };
 
 pub(super) async fn firecrawl_scrape(

@@ -342,8 +342,8 @@ fn escape_xml_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
 
     use starweaver_core::{AgentId, ConversationId, RunId};
@@ -352,7 +352,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::{stream::AgentStreamEvent, Agent, OutputPolicy};
+    use crate::{Agent, OutputPolicy, stream::AgentStreamEvent};
 
     #[test]
     fn marker_must_be_on_its_own_line() {

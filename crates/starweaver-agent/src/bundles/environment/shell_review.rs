@@ -8,9 +8,9 @@ mod types;
 
 pub use execution::review_shell_command_or_block;
 pub use types::{
-    attach_shell_review, attach_shell_review_handle, ShellReviewAction, ShellReviewConfig,
-    ShellReviewContextSnapshot, ShellReviewDecision, ShellReviewHandle,
-    ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest, ShellReviewRiskLevel,
+    ShellReviewAction, ShellReviewConfig, ShellReviewContextSnapshot, ShellReviewDecision,
+    ShellReviewHandle, ShellReviewPreviousDecision, ShellReviewRecord, ShellReviewRequest,
+    ShellReviewRiskLevel, attach_shell_review, attach_shell_review_handle,
 };
 
 /// Default shell-command review prompt.

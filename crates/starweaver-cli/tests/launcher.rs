@@ -66,9 +66,11 @@ fn sw_root_prints_help_and_direct_cli_prompt_works() {
         .output()
         .unwrap();
     assert!(flag_help.status.success());
-    assert!(String::from_utf8(flag_help.stdout)
-        .unwrap()
-        .contains("Use `sw cli --help`"));
+    assert!(
+        String::from_utf8(flag_help.stdout)
+            .unwrap()
+            .contains("Use `sw cli --help`")
+    );
 
     let run = env_command(env!("CARGO_BIN_EXE_sw"), &temp)
         .args(["-p", "hello", "--output", "silent"])

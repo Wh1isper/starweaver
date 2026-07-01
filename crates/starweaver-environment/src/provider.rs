@@ -6,10 +6,10 @@ use async_trait::async_trait;
 use grep_regex::RegexMatcher;
 
 use crate::{
-    include_path, list_ignore_match, path_match_candidates, search_text, EnvironmentError,
-    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
-    FileGrepOptions, FileListOptions, FileListResult, FileStat, PathGlob, ShellCommand,
-    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    EnvironmentError, EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions,
+    FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FileStat, PathGlob,
+    ShellCommand, ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext, include_path,
+    list_ignore_match, path_match_candidates, search_text,
 };
 
 /// Shared environment provider reference.
@@ -20,7 +20,7 @@ pub type DynEnvironmentProvider = Arc<dyn EnvironmentProvider>;
 pub trait ProcessShellProvider: EnvironmentProvider {
     /// Start a background process and return its first snapshot.
     async fn start_process(&self, command: ShellCommand)
-        -> EnvironmentResult<ShellProcessSnapshot>;
+    -> EnvironmentResult<ShellProcessSnapshot>;
 
     /// Wait for or poll a process by id.
     async fn wait_process(

@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use starweaver_agent::{
-    parse_skill_markdown, skill_tools, SkillRegistry, SkillReloadBinding, SkillReloadChangeKind,
-    SkillReloadReason, SkillReloadSchedule, SkillScanDiagnosticKind, SkillSourceScope,
-    SKILL_ACTIVATION_EVENT_KIND, SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND,
-};
 use starweaver_agent::{AgentBuilder, AgentContext, AgentStreamEvent, FunctionModel, SkillPackage};
+use starweaver_agent::{
+    SKILL_ACTIVATION_EVENT_KIND, SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND, SkillRegistry,
+    SkillReloadBinding, SkillReloadChangeKind, SkillReloadReason, SkillReloadSchedule,
+    SkillScanDiagnosticKind, SkillSourceScope, parse_skill_markdown, skill_tools,
+};
 use starweaver_environment::{EnvironmentProvider, VirtualEnvironmentProvider};
 use starweaver_model::ModelResponse;
 
@@ -356,11 +356,13 @@ Use search and cite sources.
     assert_eq!(event.payload["reload_reason"], "inventory_changed");
     assert_eq!(event.payload["inventory_version"], "skills-v2");
     assert_eq!(event.payload["reload_ms"], 150);
-    assert!(event.payload["changes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|change| { change["kind"] == "modified" && change["name"] == "research" }));
+    assert!(
+        event.payload["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|change| { change["kind"] == "modified" && change["name"] == "research" })
+    );
 }
 
 #[tokio::test]
@@ -396,9 +398,11 @@ async fn builder_skills_installs_instructions_and_context_discovery() {
         .flatten()
         .cloned()
         .collect::<Vec<_>>();
-    assert!(relaxed_patterns
-        .iter()
-        .any(|pattern| pattern.contains("skills/research")));
+    assert!(
+        relaxed_patterns
+            .iter()
+            .any(|pattern| pattern.contains("skills/research"))
+    );
 }
 
 #[tokio::test]

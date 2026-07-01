@@ -1,13 +1,13 @@
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::{
     adapter::{ModelRequestContext, ModelRequestParameters},
     profile::ProtocolFamily,
     settings::{
-        format_openai_prompt_cache_key, supports_automatic_openai_prompt_cache_key,
-        GoogleCloudServiceTier, ModelSettings, ServiceTier,
+        GoogleCloudServiceTier, ModelSettings, ServiceTier, format_openai_prompt_cache_key,
+        supports_automatic_openai_prompt_cache_key,
     },
-    transport::{extend_headers_case_insensitive, HttpRequest, HttpRequestOptions},
+    transport::{HttpRequest, HttpRequestOptions, extend_headers_case_insensitive},
 };
 
 use super::ProtocolModelClient;
@@ -21,14 +21,13 @@ impl ProtocolModelClient {
     ) -> HttpRequestOptions {
         let mut options = HttpRequestOptions::default();
         if let Some(settings) = settings {
-            if matches!(self.profile.protocol, ProtocolFamily::AnthropicMessages) {
-                if let Some(anthropic) = &settings.provider_settings.anthropic {
-                    if !anthropic.betas.is_empty() {
-                        options
-                            .headers
-                            .insert("anthropic-beta".to_string(), anthropic.betas.join(","));
-                    }
-                }
+            if matches!(self.profile.protocol, ProtocolFamily::AnthropicMessages)
+                && let Some(anthropic) = &settings.provider_settings.anthropic
+                && !anthropic.betas.is_empty()
+            {
+                options
+                    .headers
+                    .insert("anthropic-beta".to_string(), anthropic.betas.join(","));
             }
             if self.provider_name == "google-cloud"
                 && matches!(self.profile.protocol, ProtocolFamily::GeminiGenerateContent)
@@ -181,19 +180,18 @@ fn apply_openai_prompt_cache_metadata(
     if !extra_body.contains_key("prompt_cache_key") {
         if let Some(key) = metadata_string(metadata, &["starweaver.prompt_cache_key"]) {
             extra_body.insert("prompt_cache_key".to_string(), json!(key));
-        } else if auto_affinity_key {
-            if let Some(affinity_id) =
+        } else if auto_affinity_key
+            && let Some(affinity_id) =
                 metadata_string(metadata, &["starweaver.prompt_cache_affinity_id"])
                     .and_then(format_openai_prompt_cache_key)
-            {
-                extra_body.insert("prompt_cache_key".to_string(), json!(affinity_id));
-            }
+        {
+            extra_body.insert("prompt_cache_key".to_string(), json!(affinity_id));
         }
     }
-    if !extra_body.contains_key("prompt_cache_retention") {
-        if let Some(retention) = metadata_string(metadata, &["starweaver.prompt_cache_retention"]) {
-            extra_body.insert("prompt_cache_retention".to_string(), json!(retention));
-        }
+    if !extra_body.contains_key("prompt_cache_retention")
+        && let Some(retention) = metadata_string(metadata, &["starweaver.prompt_cache_retention"])
+    {
+        extra_body.insert("prompt_cache_retention".to_string(), json!(retention));
     }
 }
 

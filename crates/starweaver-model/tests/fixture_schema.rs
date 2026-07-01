@@ -81,13 +81,17 @@ fn validate_request_fields(provider: &str, path: &Path, object: &serde_json::Map
         require_value_array(native_tools, "native_tools", path);
     }
     match provider {
-        "openai_chat" | "anthropic" | "bedrock" => assert!(object["expected_provider_request"]
-            .get("messages")
-            .is_some()),
+        "openai_chat" | "anthropic" | "bedrock" => assert!(
+            object["expected_provider_request"]
+                .get("messages")
+                .is_some()
+        ),
         "openai_responses" => assert!(object["expected_provider_request"].get("input").is_some()),
-        "gemini" => assert!(object["expected_provider_request"]
-            .get("contents")
-            .is_some()),
+        "gemini" => assert!(
+            object["expected_provider_request"]
+                .get("contents")
+                .is_some()
+        ),
         _ => panic!("unknown provider for {}", path.display()),
     }
 }

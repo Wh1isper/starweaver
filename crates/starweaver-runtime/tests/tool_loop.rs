@@ -1,8 +1,8 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, LazyLock, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use async_trait::async_trait;

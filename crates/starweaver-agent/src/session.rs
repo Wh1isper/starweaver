@@ -19,10 +19,11 @@ use starweaver_tools::{
 use thiserror::Error;
 
 use crate::streaming::{
-    start_session_stream, start_session_stream_with_options, try_start_session_stream,
-    try_start_session_stream_with_options, AgentStreamError, AgentStreamHandle, AgentStreamOptions,
+    AgentStreamError, AgentStreamHandle, AgentStreamOptions, start_session_stream,
+    start_session_stream_with_options, try_start_session_stream,
+    try_start_session_stream_with_options,
 };
-use crate::{attach_environment, EnvironmentHandle};
+use crate::{EnvironmentHandle, attach_environment};
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentError, AgentInput, AgentIterResult, AgentResult, AgentRunState,
     AgentStreamRecord, AgentStreamResult, OutputPolicy, RunStatus,

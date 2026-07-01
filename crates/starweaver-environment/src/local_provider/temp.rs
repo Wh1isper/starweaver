@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::{
-    display_local_path, join_logical_path, map_io_error, normalize_tmp_filename, EnvironmentResult,
+    EnvironmentResult, display_local_path, join_logical_path, map_io_error, normalize_tmp_filename,
 };
 
 use super::LocalEnvironmentProvider;

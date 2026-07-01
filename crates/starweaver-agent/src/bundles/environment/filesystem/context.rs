@@ -1,7 +1,7 @@
 //! Filesystem tool context helpers.
 
 use starweaver_context::{AgentContext, ToolConfig};
-use starweaver_environment::{matches_path_pattern, EnvironmentProvider};
+use starweaver_environment::{EnvironmentProvider, matches_path_pattern};
 use starweaver_tools::{ToolContext, ToolError};
 
 use super::tool_execution_error;

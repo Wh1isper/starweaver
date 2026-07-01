@@ -29,7 +29,7 @@ pub(crate) use settings::{
     apply_common_settings_with_max_tokens, apply_common_settings_without_seed,
 };
 pub(crate) use system::{
-    collect_system_and_non_system, collect_system_parts_and_non_system, SystemInstructionPart,
+    SystemInstructionPart, collect_system_and_non_system, collect_system_parts_and_non_system,
 };
 #[cfg(test)]
 pub(crate) use usage::usage_from_named;
@@ -41,7 +41,7 @@ pub(crate) use usage::{
 #[allow(clippy::unwrap_used)]
 mod tests;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 pub(crate) fn provider_tool_schema_without_meta(parameters: &Value) -> Value {
     let mut schema = parameters.clone();

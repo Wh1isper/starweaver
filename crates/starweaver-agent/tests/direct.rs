@@ -1,6 +1,6 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use starweaver_agent::{model_request, model_request_stream, DirectModelRequest, TestModel};
+use starweaver_agent::{DirectModelRequest, TestModel, model_request, model_request_stream};
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponseStreamEvent,
 };

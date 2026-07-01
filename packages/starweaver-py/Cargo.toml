@@ -1,0 +1,23 @@
+[package]
+name = "starweaver-py"
+version = "0.2.1"
+edition = "2024"
+rust-version = "1.96"
+authors = ["wh1isper"]
+license = "BSD-3-Clause"
+repository = "https://github.com/Wh1isper/starweaver"
+homepage = "https://github.com/Wh1isper/starweaver"
+description = "Python bindings for Starweaver"
+
+[lib]
+name = "starweaver_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29.0", features = ["extension-module"] }
+
+[lints.rust]
+missing_docs = "warn"
+# PyO3 generates FFI glue for the extension module. Keep the exception local to
+# this binding crate; core Starweaver crates inherit the workspace forbid rule.
+unsafe_code = "allow"

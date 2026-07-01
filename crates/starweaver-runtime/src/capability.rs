@@ -12,5 +12,5 @@ pub const RUNTIME_CONTEXT_CAPABILITY_ID: &str = "starweaver.runtime.context";
 pub use bundle::{CapabilityBundle, StaticCapabilityBundle};
 pub use error::{CapabilityError, CapabilityResult};
 pub use hooks::AgentCapability;
-pub use ordering::{resolve_capability_order, CapabilityOrderError};
+pub use ordering::{CapabilityOrderError, resolve_capability_order};
 pub use spec::{CapabilityId, CapabilityOrdering, CapabilitySpec, RetryEventKind};

@@ -2,12 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 use starweaver_model::{
-    prepare_messages, prepare_model_request, ContentPart, MessageNormalization, ModelMessage,
-    ModelProfile, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelSettings,
-    NativeToolDefinition, OutputMode, PreparedInstruction, ProtocolFamily, StructuredOutputMode,
-    ThinkingSettings, ToolReturnPart, CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, ContentPart, MessageNormalization,
+    ModelMessage, ModelProfile, ModelRequest, ModelRequestParameters, ModelRequestPart,
+    ModelSettings, NativeToolDefinition, OutputMode, PreparedInstruction, ProtocolFamily,
+    StructuredOutputMode, ThinkingSettings, ToolReturnPart, prepare_messages,
+    prepare_model_request,
 };
 
 fn request(parts: Vec<ModelRequestPart>) -> ModelMessage {
@@ -155,11 +156,13 @@ fn supported_openai_responses_image_output_adds_native_generation_tool() {
     assert_eq!(prepared.params.allow_image_output, Some(true));
     assert_eq!(prepared.params.allow_text_output, Some(false));
     assert_eq!(prepared.metadata["image_generation_tool_added"], true);
-    assert!(prepared
-        .params
-        .native_tools
-        .iter()
-        .any(|tool| tool.tool_type == "image_generation"));
+    assert!(
+        prepared
+            .params
+            .native_tools
+            .iter()
+            .any(|tool| tool.tool_type == "image_generation")
+    );
 }
 
 #[test]

@@ -22,7 +22,7 @@ use panels::{
 use pickers::{push_detail_row, render_model_picker_panel, render_session_picker_panel};
 
 use super::{
-    markdown::{render_transcript_lines, ASSISTANT_CONTENT_PREFIX},
+    markdown::{ASSISTANT_CONTENT_PREFIX, render_transcript_lines},
     snapshot::TuiSnapshot,
     state::{HitlPanelState, InteractiveTuiState, TaskPanelItem},
 };
@@ -258,11 +258,7 @@ pub(super) fn render_composer_lines_from_layout(
 }
 
 const fn composer_prompt(state: &InteractiveTuiState) -> &'static str {
-    if state.running {
-        "*"
-    } else {
-        ">"
-    }
+    if state.running { "*" } else { ">" }
 }
 
 const fn composer_placeholder(state: &InteractiveTuiState) -> &'static str {

@@ -3,12 +3,12 @@
 use serde_json::Value;
 
 use crate::{
+    ModelError,
     message::{
         FinishReason, ModelResponse, ModelResponsePart, ProviderInfo, ProviderPartInfo,
         ToolCallPart,
     },
     providers::usage_from_named_including_cache_input,
-    ModelError,
 };
 
 #[allow(clippy::unnecessary_wraps)]

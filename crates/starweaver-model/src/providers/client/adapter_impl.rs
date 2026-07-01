@@ -1,22 +1,22 @@
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 use crate::{
-    adapter::{allow_real_model_requests, ModelRequestContext, ModelRequestParameters},
+    ModelAdapter, ModelError, ModelResponseEventStream, ModelResponseStreamEvent, ModelRunSession,
+    StreamDiagnostic,
+    adapter::{ModelRequestContext, ModelRequestParameters, allow_real_model_requests},
     message::{ModelMessage, ModelResponse},
     profile::{ModelProfile, ProtocolFamily},
     request::prepare_model_request,
     settings::{ModelSettings, ResponseStreamTransport},
     transport::{
-        build_http_request, send_with_retries, should_fallback_websocket_to_http, HttpRequest,
-        ModelEventStream, ModelWebSocketEventSession,
+        HttpRequest, ModelEventStream, ModelWebSocketEventSession, build_http_request,
+        send_with_retries, should_fallback_websocket_to_http,
     },
-    ModelAdapter, ModelError, ModelResponseEventStream, ModelResponseStreamEvent, ModelRunSession,
-    StreamDiagnostic,
 };
 
 use super::ProtocolModelClient;
@@ -641,14 +641,13 @@ fn canonical_openai_response_stream(
     let drop_abort_token = events.drop_abort_token();
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
     tokio::spawn(async move {
-        if let Some(diagnostic) = diagnostic {
-            if sender
+        if let Some(diagnostic) = diagnostic
+            && sender
                 .send(Ok(ModelResponseStreamEvent::Diagnostic(diagnostic)))
                 .await
                 .is_err()
-            {
-                return;
-            }
+        {
+            return;
         }
         let mut emitted_any_event = false;
         if let Err(error) =
@@ -675,14 +674,13 @@ fn canonical_openai_response_stream_for_session(
     let drop_abort_token = events.drop_abort_token();
     let (sender, receiver) = tokio::sync::mpsc::channel(32);
     tokio::spawn(async move {
-        if let Some(diagnostic) = diagnostic {
-            if sender
+        if let Some(diagnostic) = diagnostic
+            && sender
                 .send(Ok(ModelResponseStreamEvent::Diagnostic(diagnostic)))
                 .await
                 .is_err()
-            {
-                return;
-            }
+        {
+            return;
         }
         let mut emitted_any_event = false;
         let result = forward_openai_response_events_tracked(
@@ -913,7 +911,7 @@ mod tests {
     };
 
     use async_trait::async_trait;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use starweaver_core::{ConversationId, RunId};
 
     use super::*;

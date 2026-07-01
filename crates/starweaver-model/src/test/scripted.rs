@@ -4,12 +4,12 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
+    ModelAdapter, ModelError,
     adapter::{ModelRequestContext, ModelRequestParameters, ModelResponseEventStream},
     message::{ModelMessage, ModelResponse},
     profile::{ModelProfile, ProtocolFamily},
     settings::ModelSettings,
     stream::ModelResponseStreamEvent,
-    ModelAdapter, ModelError,
 };
 
 /// Deterministic model that returns scripted responses.

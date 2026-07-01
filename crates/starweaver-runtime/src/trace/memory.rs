@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use starweaver_core::{Metadata, TraceContext};
 use uuid::Uuid;
 
-use super::{export_otel_gen_ai_spans, OtelGenAiSpan};
+use super::{OtelGenAiSpan, export_otel_gen_ai_spans};
 use super::{RecordedSpan, SpanEvent, SpanHandle, SpanSpec, SpanStatus, TraceRecorder};
 
 /// Deterministic in-memory trace recorder for tests and CLI inspection.
@@ -28,10 +28,10 @@ impl InMemoryTraceRecorder {
     }
 
     fn update_span(&self, span_id: &str, f: impl FnOnce(&mut RecordedSpan)) {
-        if let Ok(mut spans) = self.spans.lock() {
-            if let Some(span) = spans.iter_mut().find(|span| span.span_id == span_id) {
-                f(span);
-            }
+        if let Ok(mut spans) = self.spans.lock()
+            && let Some(span) = spans.iter_mut().find(|span| span.span_id == span_id)
+        {
+            f(span);
         }
     }
 }

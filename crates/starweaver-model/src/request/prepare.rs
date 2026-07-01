@@ -5,14 +5,14 @@ use crate::{
     message::{ModelMessage, ModelRequest, ModelRequestPart},
     profile::{ModelProfile, NativeToolKind},
     request::{
-        context_origin_metadata, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, INSTRUCTION_DYNAMIC_METADATA,
-        INSTRUCTION_ORIGIN_METADATA,
+        CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, INSTRUCTION_DYNAMIC_METADATA,
+        INSTRUCTION_ORIGIN_METADATA, context_origin_metadata,
     },
     settings::ModelSettings,
 };
 
 use super::{
-    normalization::prepare_messages, OutputMode, PreparedInstruction, PreparedModelRequest,
+    OutputMode, PreparedInstruction, PreparedModelRequest, normalization::prepare_messages,
 };
 
 /// Merge defaults, prepare parameters, and normalize messages for a model request.

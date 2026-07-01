@@ -1,7 +1,7 @@
 use std::{future::Future, marker::PhantomData, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
-use schemars::{schema_for, JsonSchema};
+use schemars::{JsonSchema, schema_for};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use starweaver_context::AgentContext;
@@ -11,8 +11,8 @@ use starweaver_model::ToolDefinition;
 use crate::{ToolContext, ToolError};
 
 use super::{
-    extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, set_tool_metadata_kind, Tool,
-    ToolKind, ToolResult, ToolUserInputPreprocessResult,
+    Tool, ToolKind, ToolResult, ToolUserInputPreprocessResult, extend_tool_metadata_hidden_by_tags,
+    extend_tool_metadata_tags, set_tool_metadata_kind,
 };
 
 type ArgumentValidator =
@@ -213,9 +213,9 @@ where
     pub fn with_prepare_definition(
         mut self,
         prepare_definition: impl Fn(&AgentContext, ToolDefinition) -> Option<ToolDefinition>
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.prepare_definition = Arc::new(prepare_definition);
         self

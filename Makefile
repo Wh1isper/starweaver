@@ -1,4 +1,7 @@
 XTASK = cargo run -p xtask --locked --
+PY_PACKAGE = packages/starweaver-py
+PY_SOURCES = $(PY_PACKAGE)/python $(PY_PACKAGE)/tests
+PY_DIST_DIR ?= dist/python
 CORE_COVERAGE_MIN_LINES ?= 95
 AGENT_COVERAGE_MIN_LINES ?= 90
 SERVICE_COVERAGE_MIN_LINES ?= 80
@@ -79,6 +82,58 @@ build: ## Build the workspace
 	@echo "Building Rust workspace"
 	@cargo build --workspace --all-targets --all-features --locked
 
+.PHONY: py-sync
+py-sync: ## Sync Python workspace dependencies with uv
+	@echo "Syncing Python workspace"
+	@uv sync --all-packages
+
+.PHONY: py-version
+py-version: py-sync ## Show the Python interpreter selected by uv
+	@uv run python --version
+
+.PHONY: py-fmt
+py-fmt: py-sync ## Format Python package files with ruff
+	@echo "Formatting Python package"
+	@uv run ruff format $(PY_SOURCES)
+	@uv run ruff check --fix $(PY_SOURCES)
+
+.PHONY: py-lint
+py-lint: ## Lint and type-check Python package files with uv, ruff, and pyright
+	@echo "Checking Python lock file"
+	@uv lock --locked
+	@echo "Syncing Python workspace"
+	@uv sync --all-packages
+	@echo "Running ruff"
+	@uv run ruff check $(PY_SOURCES)
+	@uv run ruff format --check $(PY_SOURCES)
+	@echo "Running pyright"
+	@uv run pyright
+
+.PHONY: py-rust-check
+py-rust-check: ## Check the Rust extension crate for the Python package
+	@echo "Checking Python Rust extension formatting"
+	@cargo fmt --manifest-path $(PY_PACKAGE)/Cargo.toml -- --check
+	@echo "Checking Python Rust extension"
+	@cargo check --manifest-path $(PY_PACKAGE)/Cargo.toml --all-targets --locked
+	@echo "Running clippy for Python Rust extension"
+	@cargo clippy --manifest-path $(PY_PACKAGE)/Cargo.toml --all-targets --locked -- -D warnings
+
+.PHONY: py-test
+py-test: py-sync ## Run Python package tests through uv
+	@echo "Building Python package in editable mode"
+	@env -u CONDA_PREFIX -u CONDA_DEFAULT_ENV uv run maturin develop --skip-install --manifest-path $(PY_PACKAGE)/Cargo.toml --locked
+	@echo "Running Python package tests"
+	@uv run pytest $(PY_PACKAGE)/tests -vv
+
+.PHONY: py-build
+py-build: py-sync ## Build Python package distributions with uv
+	@echo "Building Python package distributions"
+	@rm -rf $(PY_DIST_DIR)
+	@uv build --package starweaver -o $(PY_DIST_DIR)
+
+.PHONY: py-check
+py-check: py-lint py-rust-check py-test py-build ## Run all Python package checks; defaults to Python 3.13
+
 .PHONY: replay-check
 replay-check: ## Run model replay and request-parameter contract tests
 	@echo "Checking model replay fixtures"
@@ -148,6 +203,7 @@ docs-build: ## Build the static documentation site
 upversion: ## Update workspace version; pass VERSION=x.y.z
 	@if [ -z "$(VERSION)" ]; then echo "VERSION is required, for example: make upversion VERSION=0.0.1"; exit 1; fi
 	@$(XTASK) upversion $(VERSION)
+	@uv lock
 	@cargo check --workspace --all-targets --all-features --locked
 
 .PHONY: publish-dry-run
@@ -159,12 +215,12 @@ publish: ## Publish crates in dependency order
 	@PUBLISH_RETRIES=$(PUBLISH_RETRIES) PUBLISH_RETRY_DELAY_SECONDS=$(PUBLISH_RETRY_DELAY_SECONDS) $(XTASK) publish
 
 .PHONY: lint
-lint: docs-check ## Run pre-commit hooks and docs example checks across the repository
+lint: docs-check py-lint ## Run pre-commit hooks, Python lint, and docs example checks across the repository
 	@echo "Running pre-commit"
 	@pre-commit run -a
 
 .PHONY: ci
-ci: fmt-check check replay-check test scripts-check docs-check docs-build ## Run the same core checks as CI
+ci: fmt-check check replay-check test py-check scripts-check docs-check docs-build ## Run the same core checks as CI
 
 .PHONY: ci-all
 ci-all: ci coverage-ci ## Run core CI plus coverage gates

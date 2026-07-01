@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{RpcError, INVALID_PARAMS};
+use crate::{INVALID_PARAMS, RpcError};
 
 /// Reserved agent-facing mount id for the host's configured local environment.
 pub const LOCAL_ENVIRONMENT_ATTACHMENT_ID: &str = "local";

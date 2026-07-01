@@ -177,19 +177,23 @@ async fn session_environment_helpers_attach_provider_dependency() {
         AgentSession::new(AgentBuilder::new(Arc::new(TestModel::with_text("ok"))).build())
             .with_environment(provider.clone());
 
-    assert!(session
-        .context()
-        .dependency::<EnvironmentHandle>()
-        .is_some());
+    assert!(
+        session
+            .context()
+            .dependency::<EnvironmentHandle>()
+            .is_some()
+    );
 
     session.set_environment(provider);
     let result = session.run("hello").await.unwrap();
 
     assert_eq!(result.output, "ok");
-    assert!(session
-        .context()
-        .dependency::<EnvironmentHandle>()
-        .is_some());
+    assert!(
+        session
+            .context()
+            .dependency::<EnvironmentHandle>()
+            .is_some()
+    );
 }
 
 #[test]
@@ -296,14 +300,18 @@ async fn subagent_registry_insert_names_availability_missing_and_recursion_paths
         )
         .await
         .unwrap_err();
-    assert!(recursive
-        .to_string()
-        .contains("recursive subagent delegation for child"));
-    assert!(recursive_context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "subagent_failed"));
+    assert!(
+        recursive
+            .to_string()
+            .contains("recursive subagent delegation for child")
+    );
+    assert!(
+        recursive_context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "subagent_failed")
+    );
 }
 
 #[tokio::test]
@@ -361,10 +369,12 @@ async fn delegate_tool_carries_metadata_agent_id_and_parent_tools() {
     assert_eq!(result.content["output"], "child done");
     assert_eq!(result.metadata["context_mutated"], true);
     let snapshot = handle.snapshot();
-    assert!(snapshot
-        .events
-        .events()
-        .iter()
-        .any(|event| event.payload["metadata"]["agent_id"] == "agent-child"));
+    assert!(
+        snapshot
+            .events
+            .events()
+            .iter()
+            .any(|event| event.payload["metadata"]["agent_id"] == "agent-child")
+    );
     assert!(snapshot.usage.requests >= 1);
 }

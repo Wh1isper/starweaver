@@ -8,8 +8,8 @@ use starweaver_environment::{
 };
 
 #[tokio::test]
-async fn envd_provider_preserves_shell_context_path_candidates(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn envd_provider_preserves_shell_context_path_candidates()
+-> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     std::fs::create_dir_all(temp.path().join("src"))?;
     std::fs::write(temp.path().join("src/lib.rs"), "lib")?;

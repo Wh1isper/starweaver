@@ -4,7 +4,7 @@ use starweaver_context::AgentContext;
 use starweaver_model::{ModelRequest, ModelResponse, ModelSettings, ToolDefinition};
 
 use crate::{
-    agent::{runtime_helpers::validate_prepared_tools, Agent, AgentError, AgentInput},
+    agent::{Agent, AgentError, AgentInput, runtime_helpers::validate_prepared_tools},
     capability::{CapabilityError, RetryEventKind},
     run::AgentRunState,
 };

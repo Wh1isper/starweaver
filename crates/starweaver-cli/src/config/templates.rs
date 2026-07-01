@@ -4,7 +4,7 @@ use std::{
 };
 
 use super::{CliConfig, ConfigScope};
-use crate::{error::io_error, CliError, CliResult};
+use crate::{CliError, CliResult, error::io_error};
 
 /// Write built-in Starweaver subagent presets into a config root.
 pub fn write_default_subagent_presets(root: &Path, force: bool) -> CliResult<Vec<PathBuf>> {

@@ -1,12 +1,12 @@
 //! Anthropic content block mapping.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde_json::{json, Value};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde_json::{Value, json};
 
 use crate::{
+    ModelError,
     media::parse_data_url,
     message::{ContentPart, ToolReturnPart},
-    ModelError,
 };
 
 pub(super) fn anthropic_content_from_content(

@@ -87,9 +87,11 @@ fn cli_run_prints_display_messages() {
 
     let session_id = messages[0]["session_id"].as_str().unwrap();
     let run_id = messages[0]["run_id"].as_str().unwrap();
-    assert!(messages
-        .iter()
-        .all(|message| message["run_id"].as_str() == Some(run_id)));
+    assert!(
+        messages
+            .iter()
+            .all(|message| message["run_id"].as_str() == Some(run_id))
+    );
     let raw_stream = temp
         .path()
         .join(".starweaver/store/sessions")
@@ -100,9 +102,11 @@ fn cli_run_prints_display_messages() {
     let raw_records = fs::read_to_string(raw_stream).unwrap();
     let raw_records: serde_json::Value = serde_json::from_str(&raw_records).unwrap();
     let raw_records_array = raw_records.as_array().unwrap();
-    assert!(raw_records_array
-        .iter()
-        .any(|record| record["event"]["kind"] == "model_response"));
+    assert!(
+        raw_records_array
+            .iter()
+            .any(|record| record["event"]["kind"] == "model_response")
+    );
     assert!(raw_records_array.iter().any(|record| {
         record["event"]["kind"] == "model_request" && record["event"].get("step").is_some()
     }));
@@ -151,17 +155,21 @@ fn cli_session_list_and_delete_accept_unique_prefix() {
         "stderr={}",
         String::from_utf8_lossy(&delete.stderr)
     );
-    assert!(String::from_utf8(delete.stdout)
-        .unwrap()
-        .contains("status=deleted"));
+    assert!(
+        String::from_utf8(delete.stdout)
+            .unwrap()
+            .contains("status=deleted")
+    );
     let empty = cli(&temp).args(["session", "list"]).output().unwrap();
     assert!(empty.status.success());
     assert!(String::from_utf8(empty.stdout).unwrap().trim().is_empty());
-    assert!(!temp
-        .path()
-        .join(".starweaver/store/sessions")
-        .join(session_id)
-        .exists());
+    assert!(
+        !temp
+            .path()
+            .join(".starweaver/store/sessions")
+            .join(session_id)
+            .exists()
+    );
 }
 
 #[test]
@@ -602,9 +610,11 @@ fn cli_global_config_set_and_env_hitl_override_work() {
         .collect::<Vec<_>>();
     assert!(types.contains(&"APPROVAL_REQUESTED"));
     assert!(types.contains(&"APPROVAL_RESOLVED"));
-    assert!(messages
-        .iter()
-        .all(|message| { message["metadata"]["cli_run_policy"]["hitl"].as_str() == Some("fail") }));
+    assert!(
+        messages.iter().all(|message| {
+            message["metadata"]["cli_run_policy"]["hitl"].as_str() == Some("fail")
+        })
+    );
 
     let prompt_run = cli(&temp)
         .args([
@@ -749,9 +759,11 @@ fn cli_persists_restore_environment_control_flow_and_storage_artifacts() {
         "stderr={}",
         String::from_utf8_lossy(&deferred.stderr)
     );
-    assert!(String::from_utf8(deferred.stdout)
-        .unwrap()
-        .contains("status=waiting"));
+    assert!(
+        String::from_utf8(deferred.stdout)
+            .unwrap()
+            .contains("status=waiting")
+    );
 
     let db = temp.path().join(".starweaver/starweaver.sqlite");
     let conn = rusqlite::Connection::open(db).unwrap();

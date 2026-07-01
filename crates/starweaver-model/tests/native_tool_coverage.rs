@@ -1,13 +1,13 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_model::{
+    NativeToolDefinition, ToolDefinition,
     providers::{
         anthropic::AnthropicMessagesAdapter, bedrock::BedrockConverseAdapter,
         gemini::GeminiGenerateContentAdapter, openai_chat::OpenAiChatAdapter,
         openai_responses::OpenAiResponsesAdapter,
     },
-    NativeToolDefinition, ToolDefinition,
 };
 
 #[test]
@@ -107,14 +107,18 @@ fn gemini_maps_native_google_search_code_execution_and_generic_tools() {
     )
     .unwrap();
 
-    assert!(request["tools"].as_array().unwrap()[0]
-        .as_object()
-        .unwrap()
-        .contains_key("googleSearch"));
-    assert!(request["tools"].as_array().unwrap()[1]
-        .as_object()
-        .unwrap()
-        .contains_key("codeExecution"));
+    assert!(
+        request["tools"].as_array().unwrap()[0]
+            .as_object()
+            .unwrap()
+            .contains_key("googleSearch")
+    );
+    assert!(
+        request["tools"].as_array().unwrap()[1]
+            .as_object()
+            .unwrap()
+            .contains_key("codeExecution")
+    );
     assert_eq!(request["tools"][2]["url_context"]["maxUses"], 1);
 }
 

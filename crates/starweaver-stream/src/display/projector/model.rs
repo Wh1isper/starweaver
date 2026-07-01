@@ -107,18 +107,20 @@ fn project_stream_part_start(
     if is_tool_stream_part_kind(part_kind) {
         return Vec::new();
     }
-    vec![DisplayMessage::new(
-        sequence,
-        context.session_id.clone(),
-        run_id,
-        DisplayMessageKind::AssistantTextStart,
-    )
-    .with_payload(json!({
-        "message_id": format!("message-{part_index}"),
-        "role": "assistant",
-        "part_index": part_index,
-        "part_kind": part_kind,
-    }))]
+    vec![
+        DisplayMessage::new(
+            sequence,
+            context.session_id.clone(),
+            run_id,
+            DisplayMessageKind::AssistantTextStart,
+        )
+        .with_payload(json!({
+            "message_id": format!("message-{part_index}"),
+            "role": "assistant",
+            "part_index": part_index,
+            "part_kind": part_kind,
+        })),
+    ]
 }
 
 fn project_stream_part_end(
@@ -131,17 +133,19 @@ fn project_stream_part_end(
     if part_kind.is_some_and(is_tool_stream_part_kind) {
         return Vec::new();
     }
-    vec![DisplayMessage::new(
-        sequence,
-        context.session_id.clone(),
-        run_id,
-        DisplayMessageKind::AssistantTextEnd,
-    )
-    .with_payload(json!({
-        "message_id": format!("message-{part_index}"),
-        "part_index": part_index,
-        "part_kind": part_kind,
-    }))]
+    vec![
+        DisplayMessage::new(
+            sequence,
+            context.session_id.clone(),
+            run_id,
+            DisplayMessageKind::AssistantTextEnd,
+        )
+        .with_payload(json!({
+            "message_id": format!("message-{part_index}"),
+            "part_index": part_index,
+            "part_kind": part_kind,
+        })),
+    ]
 }
 
 fn stream_delta_message_payload(

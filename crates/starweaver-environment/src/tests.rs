@@ -563,10 +563,12 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     let tmp_path_buf = normalize_local_config_path(PathBuf::from(&tmp_path));
     assert!(tmp_path_buf.is_absolute());
     assert!(provider.path_is_managed_tmp(&tmp_path_buf));
-    assert!(provider
-        .allowed_paths()
-        .iter()
-        .any(|path| tmp_path_buf.starts_with(path)));
+    assert!(
+        provider
+            .allowed_paths()
+            .iter()
+            .any(|path| tmp_path_buf.starts_with(path))
+    );
     assert_eq!(
         provider.read_text(&tmp_path).await.unwrap(),
         "full shell output"
@@ -733,9 +735,11 @@ async fn local_provider_tmp_namespace_isolates_managed_tmp_files() {
             .unwrap(),
         "[]"
     );
-    assert!(tmp_path_buf
-        .parent()
-        .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "session_123")));
+    assert!(
+        tmp_path_buf
+            .parent()
+            .is_some_and(|parent| parent.file_name().is_some_and(|name| name == "session_123"))
+    );
 
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -767,11 +771,13 @@ async fn local_provider_tmp_base_dir_places_managed_tmp_under_base() {
     let normalized_tmp_base = normalize_local_config_path(tmp_base.clone());
     let tmp_dir = normalize_local_config_path(provider.tmp_dir_path().unwrap().to_path_buf());
     assert!(tmp_dir.starts_with(&normalized_tmp_base));
-    assert!(tmp_dir
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .starts_with(LOCAL_TMP_DIR_PREFIX));
+    assert!(
+        tmp_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(LOCAL_TMP_DIR_PREFIX)
+    );
     let tmp_path = provider.write_tmp_file("grep.json", b"[]").await.unwrap();
     assert!(normalize_local_config_path(PathBuf::from(&tmp_path)).starts_with(&tmp_dir));
     assert_eq!(provider.read_text(&tmp_path).await.unwrap(), "[]");
@@ -1524,9 +1530,11 @@ async fn switchable_provider_preserves_search_and_path_candidate_semantics() {
     assert_eq!(grep_matches[0].path, "crates/example/src/lib.rs");
 
     let absolute_file = display_local_path(&root.join("crates/example/src/lib.rs"));
-    assert!(provider
-        .path_match_candidates("crates/example/src/lib.rs")
-        .contains(&absolute_file));
+    assert!(
+        provider
+            .path_match_candidates("crates/example/src/lib.rs")
+            .contains(&absolute_file)
+    );
 
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -1652,19 +1660,21 @@ async fn composite_provider_routes_provider_visible_absolute_file_paths() {
     std::fs::create_dir_all(external_root.join("nested")).unwrap();
     std::fs::write(workspace_root.join("src/lib.rs"), "workspace").unwrap();
     std::fs::write(external_root.join("nested/data.rs"), "external needle").unwrap();
-    let provider = CompositeEnvironmentProvider::new(vec![EnvironmentMount::new(
-        "workspace",
-        Arc::new(
-            LocalEnvironmentProvider::new(&workspace_root)
-                .with_allowed_paths([external_root.clone()])
-                .with_policy(EnvironmentPolicy {
-                    files: FilePolicy::read_only(),
-                    shell: ShellPolicy::default(),
-                }),
-        ),
-    )
-    .unwrap()
-    .with_default(true)])
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new(
+            "workspace",
+            Arc::new(
+                LocalEnvironmentProvider::new(&workspace_root)
+                    .with_allowed_paths([external_root.clone()])
+                    .with_policy(EnvironmentPolicy {
+                        files: FilePolicy::read_only(),
+                        shell: ShellPolicy::default(),
+                    }),
+            ),
+        )
+        .unwrap()
+        .with_default(true),
+    ])
     .unwrap();
     let absolute_file = display_local_path(&external_root.join("nested/data.rs"));
     let absolute_dir = display_local_path(&external_root.join("nested"));
@@ -1717,12 +1727,13 @@ async fn composite_provider_routes_provider_visible_absolute_shell_cwd() {
             shell: ShellPolicy::allow_all(),
         },
     ));
-    let provider =
-        CompositeEnvironmentProvider::new(vec![EnvironmentMount::new("workspace", workspace)
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("workspace", workspace)
             .unwrap()
             .with_default(true)
-            .with_default_for_shell(true)])
-        .unwrap();
+            .with_default_for_shell(true),
+    ])
+    .unwrap();
     let absolute_cwd = display_local_path(&workspace_root.join("nested"));
 
     let output = provider
@@ -1873,18 +1884,22 @@ async fn composite_provider_routes_shell_by_cwd_and_process_id() {
         .unwrap();
     assert_eq!(waited.process_id, "data:process_1");
     let listed = process_provider.list_processes().await.unwrap();
-    assert!(listed
-        .iter()
-        .any(|process| process.process_id == "data:process_1"));
+    assert!(
+        listed
+            .iter()
+            .any(|process| process.process_id == "data:process_1")
+    );
 }
 
 #[tokio::test]
 async fn composite_provider_allows_no_default_shell_mount() {
     let data = Arc::new(VirtualEnvironmentProvider::new("data"));
-    let provider = CompositeEnvironmentProvider::new(vec![EnvironmentMount::new("data", data)
-        .unwrap()
-        .with_mode(EnvironmentMountMode::ReadOnly)
-        .with_default(true)])
+    let provider = CompositeEnvironmentProvider::new(vec![
+        EnvironmentMount::new("data", data)
+            .unwrap()
+            .with_mode(EnvironmentMountMode::ReadOnly)
+            .with_default(true),
+    ])
     .unwrap();
 
     assert!(matches!(

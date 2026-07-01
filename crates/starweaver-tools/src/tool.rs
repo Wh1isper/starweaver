@@ -6,7 +6,7 @@ mod typed;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use starweaver_context::AgentContext;
 use starweaver_core::Metadata;

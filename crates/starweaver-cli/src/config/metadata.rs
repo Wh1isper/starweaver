@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use toml::Value;
 
-use crate::{config::CliConfig, error::io_error, CliError, CliResult};
+use crate::{CliError, CliResult, config::CliConfig, error::io_error};
 
 /// Return tool policy entries requiring approval.
 #[must_use]

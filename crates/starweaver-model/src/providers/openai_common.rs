@@ -1,6 +1,6 @@
 //! `OpenAI` provider shared helpers.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     message::{FinishReason, ToolArguments},

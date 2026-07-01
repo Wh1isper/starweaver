@@ -1,8 +1,8 @@
 use serde_json::json;
-use starweaver_oauth::{redact_record, CodexOAuthClient, OAuthStore};
+use starweaver_oauth::{CodexOAuthClient, OAuthStore, redact_record};
 
-use super::{render_json_lines, CliService};
-use crate::{args::AuthCommand, CliError, CliResult};
+use super::{CliService, render_json_lines};
+use crate::{CliError, CliResult, args::AuthCommand};
 
 impl CliService {
     pub(super) fn auth(command: AuthCommand) -> CliResult<String> {

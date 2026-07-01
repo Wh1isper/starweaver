@@ -7,12 +7,12 @@ use serde_json::json;
 use starweaver_oauth::OAuthTokenSource;
 
 use crate::{
-    oauth::OAuthBearerHttpClient,
-    providers::client::ProtocolModelClient,
-    transport::{DynHttpClient, HttpModelConfig},
     ModelAdapter, ModelError, ModelProfile, ModelRequestContext, ModelRequestParameters,
     ModelResponse, ModelResponseEventStream, ModelResponseStreamEvent, ModelRunSession,
     ModelSettings, ProtocolFamily,
+    oauth::OAuthBearerHttpClient,
+    providers::client::ProtocolModelClient,
+    transport::{DynHttpClient, HttpModelConfig},
 };
 
 /// `Codex` OAuth-backed `OpenAI` Responses model.

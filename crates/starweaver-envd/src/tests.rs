@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use starweaver_core::Metadata;
 use starweaver_envd_core::{
-    EnvdService, EnvironmentRequest, FileReadMode, FileReadRequest, FileWriteRequest,
-    OpenEnvironmentRequest, DEFAULT_ENVIRONMENT_ID,
+    DEFAULT_ENVIRONMENT_ID, EnvdService, EnvironmentRequest, FileReadMode, FileReadRequest,
+    FileWriteRequest, OpenEnvironmentRequest,
 };
 use starweaver_environment::{ShellOutput, VirtualEnvironmentProvider};
 

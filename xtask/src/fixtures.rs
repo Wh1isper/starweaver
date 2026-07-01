@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::common::{read_json, read_json_object, sort_value, sorted_files, write_json};
 
@@ -56,7 +56,7 @@ pub fn summarize_model_fixtures(args: &[String]) -> Result<(), String> {
                 return Err(
                     "usage: summarize-model-fixtures [--fixtures-root PATH] [--output PATH]"
                         .to_string(),
-                )
+                );
             }
         }
     }
@@ -262,7 +262,7 @@ pub fn import_model_cassettes(args: &[String]) -> Result<(), String> {
                 return Err(
                     "usage: import-model-cassettes CASSETTE [--fixtures-root PATH] [--dry-run]"
                         .to_string(),
-                )
+                );
             }
         }
     }

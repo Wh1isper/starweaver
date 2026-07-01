@@ -184,16 +184,16 @@ fn sanitize_content_parts(
                 | ContentPart::Binary { .. }
                 | ContentPart::DataUrl { .. } => None,
             };
-            if let Some(url) = url {
-                if !url_scheme_allowed(url, &config.allowed_url_schemes) {
-                    decisions.push(decision(
-                        "dropped_disallowed_url",
-                        "attachment URL scheme is outside the trust-boundary allowlist",
-                        message_index,
-                        Some(part_index),
-                    ));
-                    return None;
-                }
+            if let Some(url) = url
+                && !url_scheme_allowed(url, &config.allowed_url_schemes)
+            {
+                decisions.push(decision(
+                    "dropped_disallowed_url",
+                    "attachment URL scheme is outside the trust-boundary allowlist",
+                    message_index,
+                    Some(part_index),
+                ));
+                return None;
             }
             Some(part)
         })

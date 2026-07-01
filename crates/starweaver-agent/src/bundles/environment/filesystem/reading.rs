@@ -4,8 +4,9 @@ use starweaver_environment::EnvironmentError;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use super::{
-    media::{classify_view_path, read_media_file, ViewFileKind},
-    read_text_file, tool_config_from_context, tool_execution_error, ViewArgs,
+    ViewArgs,
+    media::{ViewFileKind, classify_view_path, read_media_file},
+    read_text_file, tool_config_from_context, tool_execution_error,
 };
 use crate::bundles::{environment::handle::environment_provider, helpers::tool_model_retry};
 

@@ -1,12 +1,12 @@
 use std::{env, fmt::Write as _, path::Path, process::Command};
 
 use super::{
-    model_choice_config_suffix, model_choice_label, push_shell_output_lines, render_mode_label,
-    FooterMode, InteractiveTuiState, LocalCommandOutcome, ModelChoice,
+    FooterMode, InteractiveTuiState, LocalCommandOutcome, ModelChoice, model_choice_config_suffix,
+    model_choice_label, push_shell_output_lines, render_mode_label,
 };
 use crate::{
     args::TuiRenderMode,
-    slash_commands::{expand_slash_command, SlashCommandDefinition},
+    slash_commands::{SlashCommandDefinition, expand_slash_command},
 };
 
 impl InteractiveTuiState {

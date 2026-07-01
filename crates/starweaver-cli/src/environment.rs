@@ -510,7 +510,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::{args, profiles::list_skills, ConfigResolver};
+    use crate::{ConfigResolver, args, profiles::list_skills};
 
     #[tokio::test]
     async fn cli_local_environment_can_read_configured_skill_package_paths() {
@@ -555,10 +555,12 @@ additional_dirs = ["../custom-skills"]
 
         let packages = list_skills(&config);
         assert_eq!(packages.len(), 4);
-        assert!(config
-            .skill_dirs
-            .iter()
-            .any(|path| path.ends_with("shared-agents/skills")));
+        assert!(
+            config
+                .skill_dirs
+                .iter()
+                .any(|path| path.ends_with("shared-agents/skills"))
+        );
 
         let environment = resolve_environment(&config).unwrap();
         assert_eq!(environment.provider.id(), "cli-local");
@@ -651,24 +653,30 @@ additional_dirs = ["../custom-skills"]
             .unwrap_or_else(|_| std::env::temp_dir());
 
         assert_eq!(allowed_paths.first(), Some(&system_tmp_dir));
-        assert!(allowed_paths.contains(
-            &config
-                .global_dir
-                .canonicalize()
-                .unwrap_or_else(|_| config.global_dir.clone())
-        ));
-        assert!(allowed_paths.contains(
-            &config
-                .workspace_root
-                .canonicalize()
-                .unwrap_or_else(|_| config.workspace_root.clone())
-        ));
-        assert!(allowed_paths.contains(
-            &config
-                .project_dir
-                .canonicalize()
-                .unwrap_or_else(|_| config.project_dir.clone())
-        ));
+        assert!(
+            allowed_paths.contains(
+                &config
+                    .global_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| config.global_dir.clone())
+            )
+        );
+        assert!(
+            allowed_paths.contains(
+                &config
+                    .workspace_root
+                    .canonicalize()
+                    .unwrap_or_else(|_| config.workspace_root.clone())
+            )
+        );
+        assert!(
+            allowed_paths.contains(
+                &config
+                    .project_dir
+                    .canonicalize()
+                    .unwrap_or_else(|_| config.project_dir.clone())
+            )
+        );
     }
 
     #[tokio::test]

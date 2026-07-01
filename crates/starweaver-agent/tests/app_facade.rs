@@ -3,11 +3,10 @@
 use std::sync::{Arc, Mutex};
 
 use starweaver_agent::{
-    agent_runtime, render_instruction_template, AgentBuilder, AgentContext, AgentInput,
-    AgentSession, AgentStreamEvent, ContentPart, EnvironmentHandle,
-    EnvironmentProviderFactoryRegistry, FunctionModel, InstructionTemplateError, ModelCapability,
-    ModelConfig, ResourceRestoreFactory, ResourceRestoreFactoryRegistry, TraceContext,
-    RESOURCE_REF_KIND_KEY,
+    AgentBuilder, AgentContext, AgentInput, AgentSession, AgentStreamEvent, ContentPart,
+    EnvironmentHandle, EnvironmentProviderFactoryRegistry, FunctionModel, InstructionTemplateError,
+    ModelCapability, ModelConfig, RESOURCE_REF_KIND_KEY, ResourceRestoreFactory,
+    ResourceRestoreFactoryRegistry, TraceContext, agent_runtime, render_instruction_template,
 };
 use starweaver_environment::{EnvironmentResult, ResourceRef, VirtualEnvironmentProvider};
 use starweaver_model::{ModelMessage, ModelRequestPart, ModelResponse};
@@ -265,11 +264,13 @@ async fn runtime_builder_owns_session_state_environment_and_streaming() {
         .environment(provider)
         .build();
 
-    assert!(runtime
-        .session()
-        .context()
-        .dependency::<EnvironmentHandle>()
-        .is_some());
+    assert!(
+        runtime
+            .session()
+            .context()
+            .dependency::<EnvironmentHandle>()
+            .is_some()
+    );
     let environment_state = runtime.export_environment_state().await.unwrap().unwrap();
     assert_eq!(environment_state.provider_id, "runtime-env");
     assert_eq!(environment_state.files["README.md"], "hello");

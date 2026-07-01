@@ -1,4 +1,4 @@
-use super::{db::add_column_if_missing, LocalStore};
+use super::{LocalStore, db::add_column_if_missing};
 use crate::CliResult;
 
 impl LocalStore {

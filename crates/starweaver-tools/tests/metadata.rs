@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use serde_json::json;
 use starweaver_tools::{
-    set_tool_metadata_kind, tool_metadata_hidden_by_tags, tool_metadata_kind, tool_metadata_tags,
-    EmptyToolArgs, FunctionTool, Tool, ToolContext, ToolKind, ToolRegistry, ToolResult,
-    TypedFunctionTool, TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY,
-    TOOL_METADATA_TAGS_KEY,
+    EmptyToolArgs, FunctionTool, TOOL_METADATA_HIDDEN_BY_TAGS_KEY, TOOL_METADATA_KIND_KEY,
+    TOOL_METADATA_TAGS_KEY, Tool, ToolContext, ToolKind, ToolRegistry, ToolResult,
+    TypedFunctionTool, set_tool_metadata_kind, tool_metadata_hidden_by_tags, tool_metadata_kind,
+    tool_metadata_tags,
 };
 
 #[test]

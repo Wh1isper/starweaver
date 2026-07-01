@@ -62,10 +62,12 @@ fn dynamic_relaxed_view_patterns_are_runtime_only() {
 
     let restored =
         AgentContext::from_state(serde_json::from_str::<ResumableState>(&encoded).unwrap());
-    assert!(restored
-        .tool_config
-        .effective_view_relaxed_text_patterns()
-        .is_empty());
+    assert!(
+        restored
+            .tool_config
+            .effective_view_relaxed_text_patterns()
+            .is_empty()
+    );
 }
 
 #[test]

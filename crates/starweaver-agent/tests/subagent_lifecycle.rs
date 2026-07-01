@@ -128,9 +128,11 @@ async fn failing_subagent_emits_failed_lifecycle_event() {
     assert_eq!(failed.name, "child");
     assert_eq!(failed.task_id.as_str(), "task-fail");
     assert!(failed.run_id.is_some());
-    assert!(failed.metadata["error"]
-        .as_str()
-        .unwrap()
-        .contains("step limit exceeded"));
+    assert!(
+        failed.metadata["error"]
+            .as_str()
+            .unwrap()
+            .contains("step limit exceeded")
+    );
     assert!(error.to_string().contains("step limit exceeded"));
 }

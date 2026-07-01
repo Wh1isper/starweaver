@@ -2,8 +2,8 @@ use serde_json::Value;
 use starweaver_core::ConversationId;
 
 use crate::{
-    message::{ModelMessage, ModelResponse, ModelResponsePart},
     ModelError,
+    message::{ModelMessage, ModelResponse, ModelResponsePart},
 };
 
 use super::options::OpenAiReplayOptions;
@@ -36,23 +36,22 @@ fn resolve_previous_response_id<'a>(
 ) -> (Option<String>, Vec<&'a ModelMessage>) {
     let mut trimmed = Vec::new();
     for message in messages.iter().rev() {
-        if let ModelMessage::Response(response) = message {
-            if is_openai_response(response) {
-                if is_compaction_boundary(response) {
-                    return (None, messages.iter().collect());
-                }
-                if let Some(response_id) = response
-                    .provider
-                    .as_ref()
-                    .and_then(|p| p.response_id.clone())
-                {
-                    if !trimmed.is_empty() {
-                        trimmed.reverse();
-                        return (Some(response_id), trimmed);
-                    }
-                }
-                break;
+        if let ModelMessage::Response(response) = message
+            && is_openai_response(response)
+        {
+            if is_compaction_boundary(response) {
+                return (None, messages.iter().collect());
             }
+            if let Some(response_id) = response
+                .provider
+                .as_ref()
+                .and_then(|p| p.response_id.clone())
+                && !trimmed.is_empty()
+            {
+                trimmed.reverse();
+                return (Some(response_id), trimmed);
+            }
+            break;
         }
         trimmed.push(message);
     }
@@ -88,31 +87,31 @@ fn get_conversation_id_and_new_messages<'a>(
 ) -> (Option<String>, Vec<&'a ModelMessage>) {
     let mut trimmed = Vec::new();
     for message in messages.iter().rev() {
-        if let ModelMessage::Response(response) = message {
-            if is_openai_response(response) {
-                if active_conversation_id.is_some()
-                    && response.conversation_id.is_some()
-                    && response
-                        .conversation_id
-                        .as_ref()
-                        .map(ConversationId::as_str)
-                        != active_conversation_id
-                {
-                    trimmed.push(message);
-                    continue;
-                }
-                if let Some(conversation_id) = response
-                    .provider
+        if let ModelMessage::Response(response) = message
+            && is_openai_response(response)
+        {
+            if active_conversation_id.is_some()
+                && response.conversation_id.is_some()
+                && response
+                    .conversation_id
                     .as_ref()
-                    .and_then(|provider| provider.details.get("conversation_id"))
-                    .and_then(Value::as_str)
-                    .filter(|candidate| {
-                        expected_conversation_id.is_none_or(|expected| expected == *candidate)
-                    })
-                {
-                    trimmed.reverse();
-                    return (Some(conversation_id.to_string()), trimmed);
-                }
+                    .map(ConversationId::as_str)
+                    != active_conversation_id
+            {
+                trimmed.push(message);
+                continue;
+            }
+            if let Some(conversation_id) = response
+                .provider
+                .as_ref()
+                .and_then(|provider| provider.details.get("conversation_id"))
+                .and_then(Value::as_str)
+                .filter(|candidate| {
+                    expected_conversation_id.is_none_or(|expected| expected == *candidate)
+                })
+            {
+                trimmed.reverse();
+                return (Some(conversation_id.to_string()), trimmed);
             }
         }
         trimmed.push(message);

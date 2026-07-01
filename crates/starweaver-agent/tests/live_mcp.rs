@@ -4,13 +4,14 @@ use std::{
     future::Future,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
 use async_trait::async_trait;
 use rmcp::{
+    ErrorData as McpError, RoleServer, ServerHandler,
     model::{
         AnnotateAble, CallToolRequestParams, CallToolResult, Implementation, ListPromptsResult,
         ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument,
@@ -18,16 +19,15 @@ use rmcp::{
     },
     service::{MaybeSendFuture, RequestContext},
     transport::{
-        streamable_http_server::session::local::LocalSessionManager, StreamableHttpServerConfig,
-        StreamableHttpService,
+        StreamableHttpServerConfig, StreamableHttpService,
+        streamable_http_server::session::local::LocalSessionManager,
     },
-    ErrorData as McpError, RoleServer, ServerHandler,
 };
 use starweaver_agent::{
-    live_mcp_toolset, AgentBuilder, AgentContext, LiveMcpClient, LiveMcpError,
-    LiveMcpServerSnapshot, McpPromptSpec, McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec,
-    McpToolSpec, McpTransport, RmcpLiveMcpClient, TestModel, ToolContext, ToolRegistry, ToolResult,
-    TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND,
+    AgentBuilder, AgentContext, LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, McpPromptSpec,
+    McpResourceSpec, McpSamplingSpec, McpSubscriptionSpec, McpToolSpec, McpTransport,
+    RmcpLiveMcpClient, TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND, TestModel,
+    ToolContext, ToolRegistry, ToolResult, live_mcp_toolset,
 };
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::ToolCallPart;
@@ -350,9 +350,11 @@ impl ServerHandler for FixtureMcpServer {
         std::future::ready(Ok(ListPromptsResult::with_all_items(vec![Prompt::new(
             "summarize",
             Some("Summarize HTTP fixture docs."),
-            Some(vec![PromptArgument::new("topic")
-                .with_description("Topic to summarize.")
-                .with_required(false)]),
+            Some(vec![
+                PromptArgument::new("topic")
+                    .with_description("Topic to summarize.")
+                    .with_required(false),
+            ]),
         )])))
     }
 
@@ -566,11 +568,13 @@ async fn live_mcp_toolset_closes_host_client_on_run_exit() {
             && event.payload["metadata"]["mcp_subscription_count"] == serde_json::json!(1)
     }));
     assert_eq!(*closed.lock().unwrap(), vec!["local".to_string()]);
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == TOOLSET_CLOSED_EVENT_KIND
-            && event.payload["name"] == serde_json::json!("local")
-            && event.payload["state"] == serde_json::json!("closed")));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == TOOLSET_CLOSED_EVENT_KIND
+                && event.payload["name"] == serde_json::json!("local")
+                && event.payload["state"] == serde_json::json!("closed"))
+    );
 }

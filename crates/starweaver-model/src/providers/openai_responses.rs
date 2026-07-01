@@ -3,10 +3,10 @@
 use serde_json::Value;
 
 use crate::{
+    ModelError, ModelResponseStreamEvent, ModelSettings,
     adapter::{NativeToolDefinition, ToolDefinition},
     message::{ModelMessage, ModelResponse},
     transport::MaxTokensParameter,
-    ModelError, ModelResponseStreamEvent, ModelSettings,
 };
 
 mod request;

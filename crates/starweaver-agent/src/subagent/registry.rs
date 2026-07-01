@@ -7,16 +7,16 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent, BusMessage};
 use starweaver_core::{
-    escape_xml_attribute, escape_xml_text, AgentId, Metadata, SubagentLifecycleEvent,
-    SubagentLifecycleKind, TaskId,
+    AgentId, Metadata, SubagentLifecycleEvent, SubagentLifecycleKind, TaskId, escape_xml_attribute,
+    escape_xml_text,
 };
 use starweaver_runtime::{
     AgentCapability, AgentError, AgentResult, AgentRunState, AgentStreamRecord, AgentStreamSink,
     AgentStreamSource, CapabilityBundle, CapabilityResult, CapabilitySpec, TraceRecorderHandle,
 };
 use starweaver_tools::{
-    typed_json_tool, DynTool, EmptyToolArgs, ToolContext, ToolError, ToolInstruction, ToolRegistry,
-    ToolResult,
+    DynTool, EmptyToolArgs, ToolContext, ToolError, ToolInstruction, ToolRegistry, ToolResult,
+    typed_json_tool,
 };
 use uuid::Uuid;
 

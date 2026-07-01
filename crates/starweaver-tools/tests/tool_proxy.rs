@@ -6,12 +6,12 @@ use serde_json::json;
 use starweaver_context::{AgentContext, AgentContextHandle, DependencyStore};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_tools::{
-    dynamic_tool_proxy, dynamic_tool_search, json_tool, FunctionTool, StaticToolset, ToolContext,
-    ToolError, ToolInstruction, ToolProxyToolset, ToolRegistry, ToolResult,
-    ToolSearchNamespaceStatus, ToolSearchRefreshBinding, ToolSearchRefreshReason,
-    ToolSearchRefreshSchedule, ToolSearchRefreshScheduleState, ToolSearchToolset, Toolset,
-    TOOL_SEARCH_FAILED_EVENT_KIND, TOOL_SEARCH_INVALIDATED_EVENT_KIND,
-    TOOL_SEARCH_NO_MATCH_EVENT_KIND, TOOL_SEARCH_REFRESHED_EVENT_KIND,
+    FunctionTool, StaticToolset, TOOL_SEARCH_FAILED_EVENT_KIND, TOOL_SEARCH_INVALIDATED_EVENT_KIND,
+    TOOL_SEARCH_NO_MATCH_EVENT_KIND, TOOL_SEARCH_REFRESHED_EVENT_KIND, ToolContext, ToolError,
+    ToolInstruction, ToolProxyToolset, ToolRegistry, ToolResult, ToolSearchNamespaceStatus,
+    ToolSearchRefreshBinding, ToolSearchRefreshReason, ToolSearchRefreshSchedule,
+    ToolSearchRefreshScheduleState, ToolSearchToolset, Toolset, dynamic_tool_proxy,
+    dynamic_tool_search, json_tool,
 };
 
 fn context() -> ToolContext {
@@ -166,10 +166,12 @@ async fn proxy_searches_namespaces_and_calls_tools() {
     let handle = AgentContextHandle::new(AgentContext::default());
     assert_eq!(tools.len(), 2);
     assert_eq!(proxy.max_retries(), Some(3));
-    assert!(proxy
-        .get_instructions()
-        .into_iter()
-        .any(|instruction| instruction.content.contains("docs_ns")));
+    assert!(
+        proxy
+            .get_instructions()
+            .into_iter()
+            .any(|instruction| instruction.content.contains("docs_ns"))
+    );
 
     let search = tools
         .iter()
@@ -317,10 +319,12 @@ async fn direct_tool_search_publishes_query_error_events() {
         .call(context_with_handle(&handle), json!({"query":"missing"}))
         .await
         .unwrap();
-    assert!(no_match.content["loaded_tools"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        no_match.content["loaded_tools"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 
     let snapshot = handle.snapshot();
     assert!(snapshot.events.events().iter().any(|event| {
@@ -333,14 +337,12 @@ async fn direct_tool_search_publishes_query_error_events() {
             && event.payload["query"] == "missing"
             && event.payload["error_kind"] == "no_match"
     }));
-    assert!(!snapshot
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "tool_search_loaded"
+    assert!(!snapshot.events.events().iter().any(|event| {
+        event.kind == "tool_search_loaded"
             && event.payload["loaded_tools"]
                 .as_array()
-                .is_some_and(Vec::is_empty)));
+                .is_some_and(Vec::is_empty)
+    }));
 }
 
 #[test]
@@ -689,13 +691,15 @@ async fn proxy_returns_xml_for_empty_unknown_and_execution_errors() {
         result_content(&search.call(context(), json!({"query":""})).await.unwrap())
             .contains("Parameter 'query' is required")
     );
-    assert!(result_content(
-        &search
-            .call(context(), json!({"query":"missing"}))
-            .await
-            .unwrap()
-    )
-    .contains("No tools found"));
+    assert!(
+        result_content(
+            &search
+                .call(context(), json!({"query":"missing"}))
+                .await
+                .unwrap()
+        )
+        .contains("No tools found")
+    );
 
     let call = tools
         .iter()
@@ -705,13 +709,15 @@ async fn proxy_returns_xml_for_empty_unknown_and_execution_errors() {
         result_content(&call.call(context(), json!({"name":""})).await.unwrap())
             .contains("Parameter 'name' is required")
     );
-    assert!(result_content(
-        &call
-            .call(context(), json!({"name":"unknown","arguments":{}}))
-            .await
-            .unwrap()
-    )
-    .contains("not found"));
+    assert!(
+        result_content(
+            &call
+                .call(context(), json!({"name":"unknown","arguments":{}}))
+                .await
+                .unwrap()
+        )
+        .contains("not found")
+    );
     let error = result_content(
         &call
             .call(

@@ -1,7 +1,7 @@
 //! Provider content part mapping helpers.
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde_json::{json, Value};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde_json::{Value, json};
 
 use crate::message::ContentPart;
 
@@ -22,10 +22,10 @@ pub fn text_from_content(content: &[ContentPart]) -> String {
 }
 
 pub fn openai_chat_content(content: &[ContentPart]) -> Value {
-    if content.len() == 1 {
-        if let ContentPart::Text { text } = &content[0] {
-            return json!(text);
-        }
+    if content.len() == 1
+        && let ContentPart::Text { text } = &content[0]
+    {
+        return json!(text);
     }
     Value::Array(
         content

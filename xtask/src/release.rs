@@ -66,6 +66,7 @@ pub fn upversion(args: &[String]) -> Result<(), String> {
         text = replace_workspace_dependency_version(&text, krate, version)?;
     }
     fs::write(&manifest, text).map_err(|error| error.to_string())?;
+    update_python_package_versions(&root, version)?;
     run_command(
         Command::new("cargo")
             .arg("metadata")
@@ -75,6 +76,60 @@ pub fn upversion(args: &[String]) -> Result<(), String> {
     )?;
     println!("Updated workspace version to {version}");
     Ok(())
+}
+
+fn update_python_package_versions(root: &std::path::Path, version: &str) -> Result<(), String> {
+    let pyproject = root.join("packages/starweaver-py/pyproject.toml");
+    let cargo_manifest = root.join("packages/starweaver-py/Cargo.toml");
+    if !pyproject.exists() && !cargo_manifest.exists() {
+        return Ok(());
+    }
+    update_toml_table_version(&pyproject, "[project]\n", version)?;
+    update_toml_table_version(&cargo_manifest, "[package]\n", version)?;
+    run_command(
+        Command::new("cargo")
+            .arg("metadata")
+            .arg("--manifest-path")
+            .arg(&cargo_manifest)
+            .arg("--format-version")
+            .arg("1")
+            .current_dir(root),
+    )?;
+    Ok(())
+}
+
+fn update_toml_table_version(
+    manifest: &std::path::Path,
+    marker: &str,
+    version: &str,
+) -> Result<(), String> {
+    let text = fs::read_to_string(manifest).map_err(|error| error.to_string())?;
+    let updated = replace_toml_table_version(&text, marker, version)
+        .map_err(|error| format!("{}: {error}", manifest.display()))?;
+    fs::write(manifest, updated).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn replace_toml_table_version(text: &str, marker: &str, version: &str) -> Result<String, String> {
+    let start = text
+        .find(marker)
+        .ok_or_else(|| format!("missing {marker:?}"))?
+        + marker.len();
+    let after = &text[start..];
+    let line_start = after
+        .find("version = \"")
+        .ok_or_else(|| "missing package version".to_string())?
+        + start;
+    let value_start = line_start + "version = \"".len();
+    let value_end = text[value_start..]
+        .find('"')
+        .ok_or_else(|| "unterminated version".to_string())?
+        + value_start;
+    let mut output = String::new();
+    output.push_str(&text[..value_start]);
+    output.push_str(version);
+    output.push_str(&text[value_end..]);
+    Ok(output)
 }
 
 fn valid_version(version: &str) -> bool {
@@ -457,7 +512,7 @@ mod tests {
 members = ["crates/example"]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 version = "1.2.3"
 "#;
         let parsed = match workspace_version_from_manifest_text(text) {
@@ -465,6 +520,24 @@ version = "1.2.3"
             Err(error) => panic!("workspace version should parse: {error}"),
         };
         assert_eq!(parsed, "1.2.3");
+    }
+
+    #[test]
+    fn toml_table_version_replacer_updates_selected_table_version() {
+        let text = r#"
+[project]
+name = "example"
+version = "1.2.3"
+
+[tool.example]
+version = "9.9.9"
+"#;
+        let updated = match replace_toml_table_version(text, "[project]\n", "2.0.0") {
+            Ok(updated) => updated,
+            Err(error) => panic!("project version should update: {error}"),
+        };
+        assert!(updated.contains("version = \"2.0.0\""));
+        assert!(updated.contains("version = \"9.9.9\""));
     }
 
     #[test]

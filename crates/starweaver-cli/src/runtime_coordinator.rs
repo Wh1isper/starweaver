@@ -3,18 +3,18 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{mpsc, Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     thread,
 };
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use starweaver_environment::{
     ShellProcessStatus, SwitchableEnvironmentProvider, SwitchableEnvironmentTarget,
 };
 use starweaver_rpc_core::{
-    EnvironmentActiveMountParams, EnvironmentActiveUnmountParams, EnvironmentAttachmentRef,
-    ALREADY_EXISTS, IDEMPOTENCY_CONFLICT, INVALID_PARAMS, RUN_CONFLICT,
+    ALREADY_EXISTS, EnvironmentActiveMountParams, EnvironmentActiveUnmountParams,
+    EnvironmentAttachmentRef, IDEMPOTENCY_CONFLICT, INVALID_PARAMS, RUN_CONFLICT,
 };
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{RunRecord, RunStatus};
@@ -25,14 +25,14 @@ use starweaver_stream::{
 };
 
 use crate::{
+    CliError, CliResult, CliService,
     args::RunCommand,
     config::CliConfig,
     display_preview::run_output_preview,
-    environment::{resolve_environment_target_for_session_with_attachments, ResolvedEnvironment},
+    environment::{ResolvedEnvironment, resolve_environment_target_for_session_with_attachments},
     local_store::{LocalStore, LocalStreamArchive},
     prompt_input::PromptInput,
     runner::CliSteeringMessage,
-    CliError, CliResult, CliService,
 };
 
 #[derive(Clone, Debug, Serialize)]
@@ -583,14 +583,14 @@ impl CliRuntimeCoordinator {
                     "active run has no mutable environment binding",
                 ));
             };
-            if let Some(key) = params.idempotency_key.as_deref() {
-                if let Some(record) = environment.idempotency.get(&mutation_key("mount", key)) {
-                    ensure_idempotency_digest(record, params_digest)?;
-                    return Ok(ActiveMountOutcome {
-                        result: record.result.clone(),
-                        applied: false,
-                    });
-                }
+            if let Some(key) = params.idempotency_key.as_deref()
+                && let Some(record) = environment.idempotency.get(&mutation_key("mount", key))
+            {
+                ensure_idempotency_digest(record, params_digest)?;
+                return Ok(ActiveMountOutcome {
+                    result: record.result.clone(),
+                    applied: false,
+                });
             }
             ensure_expected_binding(environment, params.expected_binding_version)?;
             let previous_binding_version = environment.binding_version;
@@ -705,16 +705,16 @@ impl CliRuntimeCoordinator {
             steering_cursor,
             warnings,
         );
-        if let Some(key) = params.idempotency_key.as_deref() {
-            if let Some(environment) = state.environment.as_mut() {
-                environment.idempotency.insert(
-                    mutation_key("mount", key),
-                    ActiveMutationIdempotencyRecord {
-                        params_digest: params_digest.to_string(),
-                        result: result.clone(),
-                    },
-                );
-            }
+        if let Some(key) = params.idempotency_key.as_deref()
+            && let Some(environment) = state.environment.as_mut()
+        {
+            environment.idempotency.insert(
+                mutation_key("mount", key),
+                ActiveMutationIdempotencyRecord {
+                    params_digest: params_digest.to_string(),
+                    result: result.clone(),
+                },
+            );
         }
         drop(runs);
         Ok(ActiveMountOutcome {
@@ -765,21 +765,21 @@ impl CliRuntimeCoordinator {
                     "active run has no mutable environment binding",
                 ));
             };
-            if let Some(key) = params.idempotency_key.as_deref() {
-                if let Some(record) = environment.idempotency.get(&mutation_key("unmount", key)) {
-                    ensure_idempotency_digest(record, params_digest)?;
-                    let removed = environment
-                        .attachments
-                        .iter()
-                        .find(|attachment| attachment.id == params.mount_id)
-                        .cloned()
-                        .unwrap_or_else(|| tombstone_attachment(&params.mount_id));
-                    return Ok(ActiveUnmountOutcome {
-                        result: record.result.clone(),
-                        removed,
-                        applied: false,
-                    });
-                }
+            if let Some(key) = params.idempotency_key.as_deref()
+                && let Some(record) = environment.idempotency.get(&mutation_key("unmount", key))
+            {
+                ensure_idempotency_digest(record, params_digest)?;
+                let removed = environment
+                    .attachments
+                    .iter()
+                    .find(|attachment| attachment.id == params.mount_id)
+                    .cloned()
+                    .unwrap_or_else(|| tombstone_attachment(&params.mount_id));
+                return Ok(ActiveUnmountOutcome {
+                    result: record.result.clone(),
+                    removed,
+                    applied: false,
+                });
             }
             if environment.binding_version != prepared.previous_binding_version {
                 return Err(starweaver_rpc_core::RpcError::new(
@@ -868,16 +868,16 @@ impl CliRuntimeCoordinator {
             steering_cursor,
             warnings,
         );
-        if let Some(key) = params.idempotency_key.as_deref() {
-            if let Some(environment) = state.environment.as_mut() {
-                environment.idempotency.insert(
-                    mutation_key("unmount", key),
-                    ActiveMutationIdempotencyRecord {
-                        params_digest: params_digest.to_string(),
-                        result: result.clone(),
-                    },
-                );
-            }
+        if let Some(key) = params.idempotency_key.as_deref()
+            && let Some(environment) = state.environment.as_mut()
+        {
+            environment.idempotency.insert(
+                mutation_key("unmount", key),
+                ActiveMutationIdempotencyRecord {
+                    params_digest: params_digest.to_string(),
+                    result: result.clone(),
+                },
+            );
         }
         drop(runs);
         Ok(ActiveUnmountOutcome {
@@ -908,19 +908,19 @@ impl CliRuntimeCoordinator {
                 "active run has no mutable environment binding",
             ));
         };
-        if let Some(key) = params.idempotency_key.as_deref() {
-            if let Some(record) = environment.idempotency.get(&mutation_key("unmount", key)) {
-                ensure_idempotency_digest(record, params_digest)?;
-                let result = record.result.clone();
-                let removed = environment
-                    .attachments
-                    .iter()
-                    .find(|attachment| attachment.id == params.mount_id)
-                    .cloned()
-                    .unwrap_or_else(|| tombstone_attachment(&params.mount_id));
-                drop(runs);
-                return Ok(ActiveUnmountPreparation::Idempotent { result, removed });
-            }
+        if let Some(key) = params.idempotency_key.as_deref()
+            && let Some(record) = environment.idempotency.get(&mutation_key("unmount", key))
+        {
+            ensure_idempotency_digest(record, params_digest)?;
+            let result = record.result.clone();
+            let removed = environment
+                .attachments
+                .iter()
+                .find(|attachment| attachment.id == params.mount_id)
+                .cloned()
+                .unwrap_or_else(|| tombstone_attachment(&params.mount_id));
+            drop(runs);
+            return Ok(ActiveUnmountPreparation::Idempotent { result, removed });
         }
         ensure_expected_binding(environment, params.expected_binding_version)?;
         let previous_binding_version = environment.binding_version;
@@ -961,16 +961,16 @@ impl CliRuntimeCoordinator {
     }
 
     pub(super) fn run_status(&self, session_id: &str, run_id: &str) -> CliResult<RunStatusItem> {
-        if let Ok(runs) = self.active_runs.lock() {
-            if let Some(state) = runs.get(run_id) {
-                return Ok(RunStatusItem {
-                    session_id: state.session_id.clone(),
-                    run_id: run_id.to_string(),
-                    status: state.status.clone(),
-                    output_preview: state.output_preview.clone(),
-                    error: state.error.clone(),
-                });
-            }
+        if let Ok(runs) = self.active_runs.lock()
+            && let Some(state) = runs.get(run_id)
+        {
+            return Ok(RunStatusItem {
+                session_id: state.session_id.clone(),
+                run_id: run_id.to_string(),
+                status: state.status.clone(),
+                output_preview: state.output_preview.clone(),
+                error: state.error.clone(),
+            });
         }
         let store = LocalStore::open(&self.config)?;
         let run = store.load_run(session_id, run_id)?;
@@ -1893,7 +1893,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        args, environment::resolve_environment_for_session_with_attachments, ConfigResolver,
+        ConfigResolver, args, environment::resolve_environment_for_session_with_attachments,
     };
 
     fn test_config(root: &std::path::Path) -> CliConfig {
@@ -2040,11 +2040,13 @@ mod tests {
         };
         assert_eq!(lifecycle.operation_kind, "environment_mounted");
         assert_eq!(lifecycle.extra["mount"]["id"], "scratch");
-        assert!(steering_receiver
-            .recv()
-            .unwrap()
-            .text
-            .contains("mount=\"scratch\""));
+        assert!(
+            steering_receiver
+                .recv()
+                .unwrap()
+                .text
+                .contains("mount=\"scratch\"")
+        );
 
         let replayed = coordinator
             .active_environment_mount(
@@ -2327,13 +2329,15 @@ mod tests {
         publish_display_messages(
             &coordinator.active_runs,
             "run_1",
-            vec![DisplayMessage::new(
-                1,
-                starweaver_core::SessionId::from_string("session_1"),
-                starweaver_core::RunId::from_string("run_1"),
-                DisplayMessageKind::RunCompleted,
-            )
-            .with_payload(json!({"output": "done"}))],
+            vec![
+                DisplayMessage::new(
+                    1,
+                    starweaver_core::SessionId::from_string("session_1"),
+                    starweaver_core::RunId::from_string("run_1"),
+                    DisplayMessageKind::RunCompleted,
+                )
+                .with_payload(json!({"output": "done"})),
+            ],
         );
 
         let attachment = coordinator
@@ -2402,13 +2406,15 @@ mod tests {
         publish_display_messages(
             &coordinator.active_runs,
             "run_1",
-            vec![DisplayMessage::new(
-                1,
-                starweaver_core::SessionId::from_string(session_id.clone()),
-                starweaver_core::RunId::from_string("run_1"),
-                DisplayMessageKind::AssistantTextDelta,
-            )
-            .with_payload(json!({"delta": "first"}))],
+            vec![
+                DisplayMessage::new(
+                    1,
+                    starweaver_core::SessionId::from_string(session_id.clone()),
+                    starweaver_core::RunId::from_string("run_1"),
+                    DisplayMessageKind::AssistantTextDelta,
+                )
+                .with_payload(json!({"delta": "first"})),
+            ],
         );
 
         let mut attachment = coordinator.session_output(&session_id, None, None).unwrap();
@@ -2428,13 +2434,15 @@ mod tests {
         publish_display_messages(
             &coordinator.active_runs,
             "run_1",
-            vec![DisplayMessage::new(
-                2,
-                starweaver_core::SessionId::from_string(session_id.clone()),
-                starweaver_core::RunId::from_string("run_1"),
-                DisplayMessageKind::AssistantTextDelta,
-            )
-            .with_payload(json!({"delta": "second"}))],
+            vec![
+                DisplayMessage::new(
+                    2,
+                    starweaver_core::SessionId::from_string(session_id.clone()),
+                    starweaver_core::RunId::from_string("run_1"),
+                    DisplayMessageKind::AssistantTextDelta,
+                )
+                .with_payload(json!({"delta": "second"})),
+            ],
         );
 
         let event = receiver

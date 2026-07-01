@@ -62,10 +62,11 @@ and Starweaver-native type names.
 
 ## Candidate Package Layout
 
-The repository should add a dedicated binding crate when implementation begins:
+The repository owns the Python distribution under `packages/` so future
+language packages can share the same package domain:
 
 ```text
-crates/starweaver-py/
+packages/starweaver-py/
   Cargo.toml
   pyproject.toml
   src/lib.rs
@@ -107,6 +108,9 @@ Native extension module: `starweaver._native`.
   ownership and conversion code in `src/*`.
 - Treat any FFI or `unsafe` lint exception as binding-crate local. Core
   Starweaver crates should keep the workspace `unsafe_code = "forbid"` rule.
+- Keep `packages/starweaver-py` excluded from the Rust workspace until the
+  PyO3/FFI and wheel CI boundary is stable; validate it through `uv`, maturin,
+  and Python package CI.
 
 External implementation references:
 
@@ -137,7 +141,7 @@ contract that is useful without Python.
 
 - Should the PyPI distribution be named `starweaver` or `starweaver-py`?
 - Which Python version floor should Claw require?
-- Should the binding crate live in the main workspace from day one, or start
-  as an excluded crate until wheel CI is ready?
+- Should the binding crate join the Rust workspace after the PyO3/FFI and wheel
+  CI boundary is stable?
 - Does PyO3 require a binding-local lint exception for generated FFI glue?
 - Which provider/model factory should be exposed to Python first?

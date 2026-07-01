@@ -11,20 +11,20 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use image::{ImageBuffer, ImageFormat, Rgba};
 use starweaver_agent::{
-    attach_environment, default_filter_capabilities, default_filter_capabilities_with_config,
     AgentCapability, AgentContext, AgentRunState, CacheFriendlyCompactCapability, ConversationId,
-    FunctionModel, FunctionModelInfo, MediaUploadRequest, MediaUploader, ModelCapability,
-    ModelConfig, NamedFilterCapability, PerThousandRatio, RunId, ShellProcessSnapshot,
-    ShellProcessStatus, Usage, DEFAULT_FILTER_ORDER,
+    DEFAULT_FILTER_ORDER, FunctionModel, FunctionModelInfo, MediaUploadRequest, MediaUploader,
+    ModelCapability, ModelConfig, NamedFilterCapability, PerThousandRatio, RunId,
+    ShellProcessSnapshot, ShellProcessStatus, Usage, attach_environment,
+    default_filter_capabilities, default_filter_capabilities_with_config,
 };
 use starweaver_core::Metadata;
 use starweaver_environment::VirtualEnvironmentProvider;
 use starweaver_model::{
-    ContentPart, MediaPolicy, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
-    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderInfo,
-    ProviderPartInfo, ProviderReplaySettings, ToolArguments, ToolCallPart, ToolDefinition,
-    ToolReturnPart, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF,
-    CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, ContentPart, MediaPolicy,
+    ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelResponse,
+    ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderInfo, ProviderPartInfo,
+    ProviderReplaySettings, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
 };
 
 #[tokio::test]
@@ -60,8 +60,8 @@ async fn default_filter_capabilities_record_order() -> starweaver_agent::Capabil
 }
 
 #[tokio::test]
-async fn default_filter_capabilities_do_not_duplicate_metadata_auto_loaded_files(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn default_filter_capabilities_do_not_duplicate_metadata_auto_loaded_files()
+-> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
     }]);
@@ -97,8 +97,8 @@ async fn default_filter_capabilities_do_not_duplicate_metadata_auto_loaded_files
 }
 
 #[tokio::test]
-async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts()
+-> starweaver_agent::CapabilityResult<()> {
     let request = ModelRequest {
         parts: vec![
             ModelRequestPart::ToolReturn(ToolReturnPart::new(
@@ -160,8 +160,8 @@ async fn metadata_dynamic_instructions_are_inserted_after_tool_control_parts(
 }
 
 #[tokio::test]
-async fn handoff_filter_uses_shared_restored_request_builder(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn handoff_filter_uses_shared_restored_request_builder()
+-> starweaver_agent::CapabilityResult<()> {
     let request = ModelRequest {
         parts: vec![
             ModelRequestPart::SystemPrompt {
@@ -225,8 +225,8 @@ async fn handoff_filter_uses_shared_restored_request_builder(
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn system_prompt_filter_removes_stale_prompts_and_reinjects_canonical_first_prompt(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn system_prompt_filter_removes_stale_prompts_and_reinjects_canonical_first_prompt()
+-> starweaver_agent::CapabilityResult<()> {
     let canonical_request = ModelRequest {
         parts: vec![
             ModelRequestPart::SystemPrompt {
@@ -334,8 +334,8 @@ async fn system_prompt_filter_removes_stale_prompts_and_reinjects_canonical_firs
 }
 
 #[tokio::test]
-async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix()
+-> starweaver_agent::CapabilityResult<()> {
     let request = ModelRequest {
         parts: vec![
             ModelRequestPart::SystemPrompt {
@@ -397,8 +397,8 @@ async fn metadata_dynamic_instructions_preserve_static_system_prompt_prefix(
 }
 
 #[tokio::test]
-async fn media_preflight_corrects_binary_media_and_replaces_corruption(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn media_preflight_corrects_binary_media_and_replaces_corruption()
+-> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![
         ContentPart::Binary {
             data: png_bytes(2, 1),
@@ -588,8 +588,8 @@ async fn media_preflight_corrects_data_url_prefixes() -> starweaver_agent::Capab
 }
 
 #[tokio::test]
-async fn media_split_segments_tall_binary_images_before_compression(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn media_split_segments_tall_binary_images_before_compression()
+-> starweaver_agent::CapabilityResult<()> {
     let image = valid_noisy_png(16, 32);
     let request = user_request(vec![ContentPart::Binary {
         data: image,
@@ -776,15 +776,17 @@ async fn media_preflight_traverses_nested_tool_returns() -> starweaver_agent::Ca
         tool_content["items"][0]["media"]["type"],
         serde_json::json!("system_reminder")
     );
-    assert!(tool_content["items"][0]["media"]["text"]
-        .as_str()
-        .is_some_and(|text| text.contains("media policy")));
+    assert!(
+        tool_content["items"][0]["media"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("media policy"))
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn compact_filter_trims_history_like_compactor_builder(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn compact_filter_trims_history_like_compactor_builder()
+-> starweaver_agent::CapabilityResult<()> {
     let mut state = AgentRunState::new(RunId::from_string("run_compact"), ConversationId::new());
     state.metadata.insert(
         "starweaver_compact_keep_messages".to_string(),
@@ -889,8 +891,9 @@ async fn compact_filter_trims_history_like_compactor_builder(
 }
 
 #[tokio::test]
-async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_history(
-) -> starweaver_agent::CapabilityResult<()> {
+#[allow(clippy::too_many_lines)]
+async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_history()
+-> starweaver_agent::CapabilityResult<()> {
     let compact_model = FunctionModel::streaming(
         |messages: Vec<ModelMessage>,
          _settings: Option<starweaver_agent::ModelSettings>,
@@ -979,24 +982,28 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
             if response.text_output().contains("Auto compacted")
                 && response.metadata.get("keep") == Some(&serde_json::json!("compact"))
     ));
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "compact_start"));
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "compact_complete"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "compact_start")
+    );
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "compact_complete")
+    );
     assert_eq!(context.usage.total_tokens, 15);
     Ok(())
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_shape(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_shape()
+-> starweaver_agent::CapabilityResult<()> {
     let compact_model = FunctionModel::streaming(
         |_messages: Vec<ModelMessage>, settings: Option<ModelSettings>, info: FunctionModelInfo| {
             let settings = settings.expect("compact settings");
@@ -1007,10 +1014,12 @@ async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_s
             );
             assert!(!settings.extra_body.contains_key("anthropic_cache"));
             assert!(!settings.extra_body.contains_key("thinking"));
-            assert!(!settings
-                .extra_headers
-                .get("anthropic-beta")
-                .is_some_and(|value| value.contains("interleaved-thinking")));
+            assert!(
+                !settings
+                    .extra_headers
+                    .get("anthropic-beta")
+                    .is_some_and(|value| value.contains("interleaved-thinking"))
+            );
 
             assert_eq!(info.params.tools.len(), 1);
             assert_eq!(info.params.tools[0].name, "view");
@@ -1112,18 +1121,20 @@ async fn cache_friendly_compactor_inherits_tools_params_and_settings_for_cache_s
         .prepare_model_messages_with_context(&mut state, &mut context, input_messages)
         .await?;
     assert_eq!(output.len(), 3);
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "compact_complete"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "compact_complete")
+    );
     Ok(())
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn compact_model_heals_openai_reasoning_references_before_summary_request(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn compact_model_heals_openai_reasoning_references_before_summary_request()
+-> starweaver_agent::CapabilityResult<()> {
     let captured_messages = Arc::new(Mutex::new(None::<Vec<ModelMessage>>));
     let captured_messages_model = Arc::clone(&captured_messages);
     let compact_model = FunctionModel::streaming(
@@ -1295,8 +1306,8 @@ async fn compact_model_heals_openai_reasoning_references_before_summary_request(
 }
 
 #[tokio::test]
-async fn manual_compact_keep_heals_openai_references_even_without_trimming(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn manual_compact_keep_heals_openai_references_even_without_trimming()
+-> starweaver_agent::CapabilityResult<()> {
     let mut reasoning_details = Metadata::default();
     reasoning_details.insert(
         "encrypted_content".to_string(),
@@ -1388,8 +1399,8 @@ async fn manual_compact_keep_heals_openai_references_even_without_trimming(
 }
 
 #[tokio::test]
-async fn compact_trim_preserves_response_thinking_parts_like_summary_trim(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn compact_trim_preserves_response_thinking_parts_like_summary_trim()
+-> starweaver_agent::CapabilityResult<()> {
     let mut state = AgentRunState::new(
         RunId::from_string("run_compact_preserve_thinking"),
         ConversationId::new(),
@@ -1453,8 +1464,8 @@ async fn compact_trim_preserves_response_thinking_parts_like_summary_trim(
 }
 
 #[tokio::test]
-async fn capability_filter_uses_model_capabilities_for_user_and_tool_media(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn capability_filter_uses_model_capabilities_for_user_and_tool_media()
+-> starweaver_agent::CapabilityResult<()> {
     let request = ModelRequest {
         parts: vec![
             ModelRequestPart::UserPrompt {
@@ -1543,12 +1554,16 @@ async fn capability_filter_uses_model_capabilities_for_user_and_tool_media(
         .expect("tool return array");
     assert_eq!(tool_content.len(), 3);
     assert_eq!(tool_content[0]["kind"], "image_url");
-    assert!(tool_content[1]
-        .as_str()
-        .is_some_and(|text| text.contains("type='video'")));
-    assert!(tool_content[2]
-        .as_str()
-        .is_some_and(|text| text.contains("type='document'")));
+    assert!(
+        tool_content[1]
+            .as_str()
+            .is_some_and(|text| text.contains("type='video'"))
+    );
+    assert!(
+        tool_content[2]
+            .as_str()
+            .is_some_and(|text| text.contains("type='document'"))
+    );
     assert_eq!(
         latest_request_metadata(&messages)["starweaver_capability_replacements"],
         serde_json::json!(4)
@@ -1557,8 +1572,8 @@ async fn capability_filter_uses_model_capabilities_for_user_and_tool_media(
 }
 
 #[tokio::test]
-async fn media_upload_respects_url_capabilities_and_uploads_inline_media(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn media_upload_respects_url_capabilities_and_uploads_inline_media()
+-> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Binary {
         data: png_bytes(1, 1),
         media_type: "image/png".to_string(),
@@ -1606,8 +1621,8 @@ async fn media_upload_respects_url_capabilities_and_uploads_inline_media(
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn concrete_filters_inject_runtime_context_and_repair_tool_args()
+-> starweaver_agent::CapabilityResult<()> {
     let mut state = AgentRunState::new(RunId::from_string("run_context"), ConversationId::new());
     state.metadata.insert(
         "starweaver_runtime_context".to_string(),
@@ -1737,8 +1752,8 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args(
 }
 
 #[tokio::test]
-async fn cold_start_filter_trims_only_after_idle_threshold_and_preserves_pending_tool_results(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn cold_start_filter_trims_only_after_idle_threshold_and_preserves_pending_tool_results()
+-> starweaver_agent::CapabilityResult<()> {
     let old_tool_content = "abcdefghijklmnopqrstuvwxyz";
     let current_tool_content = "zyxwvutsrqponmlkjihgfedcba";
     let cold_messages = vec![
@@ -1813,16 +1828,18 @@ async fn cold_start_filter_trims_only_after_idle_threshold_and_preserves_pending
             current_tool_content.to_string()
         ]
     );
-    assert!(latest_request_metadata(&warm_output)
-        .get("starweaver_cold_start_truncated_tool_returns")
-        .is_none());
+    assert!(
+        latest_request_metadata(&warm_output)
+            .get("starweaver_cold_start_truncated_tool_returns")
+            .is_none()
+    );
     Ok(())
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn tool_args_filter_uses_retry_placeholder_for_invalid_non_empty_json(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn tool_args_filter_uses_retry_placeholder_for_invalid_non_empty_json()
+-> starweaver_agent::CapabilityResult<()> {
     let messages = vec![ModelMessage::Response(ModelResponse {
         parts: vec![
             ModelResponsePart::ToolCall(ToolCallPart {
@@ -1947,8 +1964,8 @@ async fn tool_args_filter_uses_retry_placeholder_for_invalid_non_empty_json(
 }
 
 #[tokio::test]
-async fn filters_repair_and_normalize_provider_aware_response_parts(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn filters_repair_and_normalize_provider_aware_response_parts()
+-> starweaver_agent::CapabilityResult<()> {
     let mut provider_details = serde_json::Map::new();
     provider_details.insert(
         "encrypted_content".to_string(),
@@ -2031,8 +2048,8 @@ async fn filters_repair_and_normalize_provider_aware_response_parts(
 }
 
 #[tokio::test]
-async fn background_shell_filter_injects_completed_results_once_and_status_summary(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn background_shell_filter_injects_completed_results_once_and_status_summary()
+-> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
     }]);
@@ -2065,11 +2082,13 @@ async fn background_shell_filter_injects_completed_results_once_and_status_summa
     assert!(text.contains("<background-result process-id=\"process_1\""));
     assert!(text.contains("<stdout>ready &amp; done</stdout>"));
     assert!(text.contains("<background-status>"));
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "background_shell_complete"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "background_shell_complete")
+    );
 
     let messages = NamedFilterCapability::new("background_shell")
         .prepare_model_messages_with_context(
@@ -2085,8 +2104,8 @@ async fn background_shell_filter_injects_completed_results_once_and_status_summa
 }
 
 #[tokio::test]
-async fn bus_message_filter_leaves_user_steering_for_runtime_and_consumes_subagent_messages(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn bus_message_filter_leaves_user_steering_for_runtime_and_consumes_subagent_messages()
+-> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
     }]);
@@ -2141,17 +2160,19 @@ async fn bus_message_filter_leaves_user_steering_for_runtime_and_consumes_subage
             .len(),
         1
     );
-    assert!(!context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "steering_received"));
+    assert!(
+        !context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "steering_received")
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn handoff_filter_consumes_prebuilt_context_restored_message(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn handoff_filter_consumes_prebuilt_context_restored_message()
+-> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
     }]);
@@ -2180,8 +2201,8 @@ async fn handoff_filter_consumes_prebuilt_context_restored_message(
 }
 
 #[tokio::test]
-async fn compact_filter_strips_context_configured_injected_tags(
-) -> starweaver_agent::CapabilityResult<()> {
+async fn compact_filter_strips_context_configured_injected_tags()
+-> starweaver_agent::CapabilityResult<()> {
     let messages = vec![
         ModelMessage::Response(ModelResponse::text("old")),
         ModelMessage::Request(ModelRequest {

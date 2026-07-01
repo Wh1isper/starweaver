@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use starweaver_context::AgentContext;
-use starweaver_model::{tool_call_response, ModelResponse, TestModel};
+use starweaver_model::{ModelResponse, TestModel, tool_call_response};
 use starweaver_runtime::Agent;
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 

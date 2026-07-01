@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use starweaver_core::{RunId, SessionId};
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_stream::{
@@ -11,10 +11,10 @@ use starweaver_stream::{
 };
 
 use super::{
-    db::insert_display_messages_tx, db::insert_raw_stream_records_tx, DisplayReplayWindow,
-    LocalStore,
+    DisplayReplayWindow, LocalStore, db::insert_display_messages_tx,
+    db::insert_raw_stream_records_tx,
 };
-use crate::{config::CliConfig, CliResult};
+use crate::{CliResult, config::CliConfig};
 
 /// Shared stream archive adapter backed by the CLI local `SQLite` store.
 #[derive(Clone, Debug)]

@@ -1,10 +1,11 @@
 use chrono::Utc;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_model::{
-    ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ToolReturnPart,
     CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
-    CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_TYPE_METADATA, INSTRUCTION_DYNAMIC_METADATA,
-    INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION, INSTRUCTION_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_TYPE_METADATA, ContentPart,
+    INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_DYNAMIC_INSTRUCTION,
+    INSTRUCTION_ORIGIN_METADATA, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
+    ToolReturnPart,
 };
 use starweaver_runtime::AgentRunState;
 
@@ -50,10 +51,10 @@ pub(super) fn cold_start_filter(
     for message in messages.iter_mut().take(trim_end) {
         if let ModelMessage::Request(request) = message {
             for part in &mut request.parts {
-                if let ModelRequestPart::ToolReturn(tool_return) = part {
-                    if truncate_tool_return(tool_return, limit) {
-                        truncated += 1;
-                    }
+                if let ModelRequestPart::ToolReturn(tool_return) = part
+                    && truncate_tool_return(tool_return, limit)
+                {
+                    truncated += 1;
                 }
             }
         }
@@ -242,12 +243,12 @@ pub(super) async fn auto_load_files_filter(
         return messages;
     }
     let mut loaded = Vec::new();
-    let mut loaded_state_metadata = false;
-    if !latest_request_metadata_bool(&messages, AUTO_LOAD_STATE_METADATA_INJECTED) {
-        if let Some(files) = state
-            .metadata
-            .get(AUTO_LOAD_METADATA)
-            .and_then(Value::as_array)
+    let loaded_state_metadata =
+        if !latest_request_metadata_bool(&messages, AUTO_LOAD_STATE_METADATA_INJECTED)
+            && let Some(files) = state
+                .metadata
+                .get(AUTO_LOAD_METADATA)
+                .and_then(Value::as_array)
         {
             for file in files {
                 let path = file
@@ -260,24 +261,24 @@ pub(super) async fn auto_load_files_filter(
                     .unwrap_or_default();
                 loaded.push(format!("### `{path}`\n\n```\n{file_text}\n```"));
             }
-            loaded_state_metadata = true;
-        }
-    }
+            true
+        } else {
+            false
+        };
 
-    if !context.auto_load_files.is_empty() {
-        if let Some(environment) = context
+    if !context.auto_load_files.is_empty()
+        && let Some(environment) = context
             .dependencies
             .get::<crate::bundles::EnvironmentHandle>()
-        {
-            let files_to_load = context.auto_load_files.clone();
-            for path in &files_to_load {
-                match environment.provider().read_text(path).await {
-                    Ok(file_text) => loaded.push(format!("### `{path}`\n\n```\n{file_text}\n```")),
-                    Err(error) => loaded.push(format!("### `{path}`\n\n[Failed to load: {error}]")),
-                }
+    {
+        let files_to_load = context.auto_load_files.clone();
+        for path in &files_to_load {
+            match environment.provider().read_text(path).await {
+                Ok(file_text) => loaded.push(format!("### `{path}`\n\n```\n{file_text}\n```")),
+                Err(error) => loaded.push(format!("### `{path}`\n\n[Failed to load: {error}]")),
             }
-            context.auto_load_files.clear();
         }
+        context.auto_load_files.clear();
     }
 
     if loaded.is_empty() {
@@ -321,35 +322,34 @@ pub(super) async fn background_shell_filter(
     if let Some(handle) = context
         .dependencies
         .get::<crate::bundles::ProcessShellHandle>()
+        && let Ok(processes) = handle.provider().list_processes().await
     {
-        if let Ok(processes) = handle.provider().list_processes().await {
-            let mut injected_ids = background_injected_ids(context);
-            let mut summary = Vec::new();
-            for process in processes {
-                summary.push(background_status_line(&process));
-                if process.status != starweaver_environment::ShellProcessStatus::Running
-                    && !injected_ids.contains(&process.process_id)
-                {
-                    injection_parts.push(format_completed_background_result(&process));
-                    context.publish_event(starweaver_context::AgentEvent::new(
-                        "background_shell_complete",
-                        json!({
-                            "process_id": process.process_id,
-                            "command": process.command,
-                            "exit_code": process.return_code,
-                        }),
-                    ));
-                    injected_ids.push(process.process_id.clone());
-                }
-            }
-            if !summary.is_empty() {
-                injection_parts.push(format!(
-                    "<background-status>\n{}\n</background-status>",
-                    summary.join("\n")
+        let mut injected_ids = background_injected_ids(context);
+        let mut summary = Vec::new();
+        for process in processes {
+            summary.push(background_status_line(&process));
+            if process.status != starweaver_environment::ShellProcessStatus::Running
+                && !injected_ids.contains(&process.process_id)
+            {
+                injection_parts.push(format_completed_background_result(&process));
+                context.publish_event(starweaver_context::AgentEvent::new(
+                    "background_shell_complete",
+                    json!({
+                        "process_id": process.process_id,
+                        "command": process.command,
+                        "exit_code": process.return_code,
+                    }),
                 ));
+                injected_ids.push(process.process_id.clone());
             }
-            set_background_injected_ids(context, injected_ids);
         }
+        if !summary.is_empty() {
+            injection_parts.push(format!(
+                "<background-status>\n{}\n</background-status>",
+                summary.join("\n")
+            ));
+        }
+        set_background_injected_ids(context, injected_ids);
     }
 
     if injection_parts.is_empty() {

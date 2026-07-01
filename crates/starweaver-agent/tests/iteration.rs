@@ -13,9 +13,11 @@ async fn sdk_session_exposes_run_iter() {
 
     assert_eq!(result.result.output, "ok");
     assert!(result.iterations.is_complete());
-    assert!(result
-        .iterations
-        .steps()
-        .iter()
-        .any(|step| step.kind == AgentIterationKind::RunComplete));
+    assert!(
+        result
+            .iterations
+            .steps()
+            .iter()
+            .any(|step| step.kind == AgentIterationKind::RunComplete)
+    );
 }

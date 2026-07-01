@@ -1,17 +1,17 @@
 //! Local envd service backed by an in-process environment provider.
 
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
 };
 
 use serde_json::json;
 use starweaver_core::Metadata;
 use starweaver_envd_core::{
-    EffectRecord, EnvdError, EnvdResult, EnvironmentCapabilities, EnvironmentCapability,
-    EnvironmentDescriptor, EnvironmentStateSnapshot, EnvironmentStatus, MountBackendDescriptor,
-    MountDescriptor, MountMode, MountStatus, MutationResult, OperationRecord,
-    DEFAULT_ENVIRONMENT_ID,
+    DEFAULT_ENVIRONMENT_ID, EffectRecord, EnvdError, EnvdResult, EnvironmentCapabilities,
+    EnvironmentCapability, EnvironmentDescriptor, EnvironmentStateSnapshot, EnvironmentStatus,
+    MountBackendDescriptor, MountDescriptor, MountMode, MountStatus, MutationResult,
+    OperationRecord,
 };
 use starweaver_environment::DynEnvironmentProvider;
 

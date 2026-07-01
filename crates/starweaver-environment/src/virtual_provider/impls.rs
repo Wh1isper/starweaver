@@ -9,12 +9,12 @@ use async_trait::async_trait;
 use starweaver_core::Metadata;
 
 use crate::{
-    include_path, list_ignore_match, normalize_requested_path, parent_path, path_contains,
-    render_environment_context_xml, render_virtual_file_tree_listing, replace_logical_prefix,
-    strip_path_prefix, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
+    DEFAULT_FILE_TREE_MAX_DEPTH, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
     EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileListOptions,
     FileListResult, FileStat, FileTreeBlock, PathGlob, ShellCommand, ShellOutput,
-    ShellReviewEnvironmentContext, DEFAULT_FILE_TREE_MAX_DEPTH,
+    ShellReviewEnvironmentContext, include_path, list_ignore_match, normalize_requested_path,
+    parent_path, path_contains, render_environment_context_xml, render_virtual_file_tree_listing,
+    replace_logical_prefix, strip_path_prefix,
 };
 
 use super::VirtualEnvironmentProvider;
@@ -127,10 +127,11 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
         }
         if parents {
             self.insert_directory_ancestors(&normalized)?;
-        } else if let Some(parent) = parent_path(&normalized) {
-            if !parent.is_empty() && !self.path_exists_unchecked(&parent)? {
-                return Err(EnvironmentError::NotFound(parent));
-            }
+        } else if let Some(parent) = parent_path(&normalized)
+            && !parent.is_empty()
+            && !self.path_exists_unchecked(&parent)?
+        {
+            return Err(EnvironmentError::NotFound(parent));
         }
         self.directories
             .lock()

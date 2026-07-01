@@ -8,7 +8,7 @@ use starweaver_agent::{
 };
 use starweaver_context::{AgentContext, BusMessage};
 use starweaver_core::TaskId;
-use starweaver_model::{tool_call_response, ModelResponse};
+use starweaver_model::{ModelResponse, tool_call_response};
 use starweaver_usage::Usage;
 
 fn response_with_usage(text: &str, usage: Usage) -> ModelResponse {
@@ -158,11 +158,11 @@ async fn sdk_subagent_registry_supports_multi_level_nested_delegation() {
     assert!(context.events.events().iter().any(|event| {
         event.kind == "subagent_completed" && event.payload["name"] == "grandchild"
     }));
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| { event.kind == "subagent_completed" && event.payload["name"] == "child" }));
+    assert!(
+        context.events.events().iter().any(|event| {
+            event.kind == "subagent_completed" && event.payload["name"] == "child"
+        })
+    );
     assert!(
         context.events.events().iter().any(|event| {
             event.kind == "subagent_stream_record"

@@ -4,13 +4,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use starweaver_agent::{
+    AgentCapability, AgentContext, AgentRuntimeBuilder, AgentSession, EnvironmentContextCapability,
+    HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
+    HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
+    MediaUnderstandingRequest, MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse,
+    SearchRequest, SearchResponse, SearchResultItem, ToolContext, ToolRegistry, ToolResult,
     attach_environment, context_tools, dynamic_tool_proxy, filesystem_tools, host_io_tools,
-    json_tool, namespaced_toolset, shell_tools, task_tools, AgentCapability, AgentContext,
-    AgentRuntimeBuilder, AgentSession, EnvironmentContextCapability, HostMediaCapabilities,
-    HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle, HostScrapeClient,
-    HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle, MediaUnderstandingRequest,
-    MediaUnderstandingResponse, ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse,
-    SearchResultItem, ToolContext, ToolRegistry, ToolResult,
+    json_tool, namespaced_toolset, shell_tools, task_tools,
 };
 use starweaver_context::{AgentContextHandle, DependencyStore, ToolConfig};
 use starweaver_core::{ConversationId, Metadata, RunId};
@@ -19,9 +19,9 @@ use starweaver_environment::{
     ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
-    tool_call_response, ContentPart, ModelMessage, ModelProfile, ModelRequest, ModelRequestPart,
-    ModelResponse, ProtocolFamily, TestModel, CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT,
-    CONTEXT_ORIGIN_METADATA,
+    CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, ContentPart, ModelMessage,
+    ModelProfile, ModelRequest, ModelRequestPart, ModelResponse, ProtocolFamily, TestModel,
+    tool_call_response,
 };
 use starweaver_usage::Usage;
 
@@ -147,8 +147,8 @@ async fn environment_context_capability_force_reinjects_unchanged_context() {
 }
 
 #[tokio::test]
-async fn environment_context_capability_keeps_initial_context_on_later_turn_even_if_environment_changes(
-) {
+async fn environment_context_capability_keeps_initial_context_on_later_turn_even_if_environment_changes()
+ {
     let provider =
         Arc::new(VirtualEnvironmentProvider::new("test").with_file("README.md", "hello"));
     let mut context = AgentContext::default();
@@ -455,11 +455,13 @@ async fn assert_filesystem_shell_results(
             .len(),
         3
     );
-    assert!(results.ignored_ls.content["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|entry| entry.as_str() != Some("src/main.rs")));
+    assert!(
+        results.ignored_ls.content["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry.as_str() != Some("src/main.rs"))
+    );
     assert_eq!(
         results.default_ls.content["entries"],
         serde_json::json!(["README.md", "docs/output.txt", "src/lib.rs", "src/main.rs"])
@@ -469,24 +471,32 @@ async fn assert_filesystem_shell_results(
         results.invalid_write_mode.content["kind"],
         "invalid_arguments"
     );
-    assert!(results.invalid_write_mode.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("unsupported write mode"));
-    assert!(results.invalid_write_mode.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("JSON schema"));
+    assert!(
+        results.invalid_write_mode.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported write mode")
+    );
+    assert!(
+        results.invalid_write_mode.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("JSON schema")
+    );
     assert!(results.edit_existing_create.is_error);
     assert_eq!(results.edit_existing_create.content["kind"], "model_retry");
-    assert!(results.edit_existing_create.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("file already exists"));
-    assert!(results.edit_existing_create.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("adjusted arguments"));
+    assert!(
+        results.edit_existing_create.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("file already exists")
+    );
+    assert!(
+        results.edit_existing_create.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("adjusted arguments")
+    );
     assert!(!results.multi_edit_create_then_replace.is_error);
     assert_eq!(
         provider.read_text("created.txt").await.unwrap(),
@@ -497,10 +507,12 @@ async fn assert_filesystem_shell_results(
         results.multi_edit_empty_later.content["kind"],
         "invalid_arguments"
     );
-    assert!(results.multi_edit_empty_later.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("old_string must be non-empty"));
+    assert!(
+        results.multi_edit_empty_later.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("old_string must be non-empty")
+    );
     assert_shell_results(results);
     assert_invalid_search_roots(results);
 }
@@ -518,20 +530,24 @@ fn assert_shell_results(results: &FilesystemShellResults) {
     assert_eq!(results.shell_with_env.content["stdout"], "ctx\noverride\n");
     assert!(results.empty_shell.is_error);
     assert_eq!(results.empty_shell.content["kind"], "invalid_arguments");
-    assert!(results.empty_shell.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("must not be empty"));
+    assert!(
+        results.empty_shell.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("must not be empty")
+    );
     assert!(results.empty_shell.content["retryable"].as_bool().unwrap());
     assert!(results.invalid_grep_context.is_error);
     assert_eq!(
         results.invalid_grep_context.content["kind"],
         "invalid_arguments"
     );
-    assert!(results.invalid_grep_context.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("context_lines must be greater than or equal to 0"));
+    assert!(
+        results.invalid_grep_context.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("context_lines must be greater than or equal to 0")
+    );
 }
 
 fn assert_invalid_search_roots(results: &FilesystemShellResults) {
@@ -666,10 +682,12 @@ async fn filesystem_mutation_tools_execute_through_environment_provider() {
         "move failed: {:?}",
         move_result.content
     );
-    assert!(provider
-        .read_text("docs/generated/readme-copy.md")
-        .await
-        .is_err());
+    assert!(
+        provider
+            .read_text("docs/generated/readme-copy.md")
+            .await
+            .is_err()
+    );
     assert_eq!(
         provider
             .read_text("docs/generated/readme-moved.md")
@@ -739,10 +757,12 @@ async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
             },
         )
         .await;
-    assert!(long.content["content"]
-        .as_str()
-        .unwrap()
-        .contains("... (line truncated)"));
+    assert!(
+        long.content["content"]
+            .as_str()
+            .unwrap()
+            .contains("... (line truncated)")
+    );
     assert_eq!(
         long.content["metadata"]["truncation_info"]["lines_truncated"],
         true
@@ -760,14 +780,18 @@ async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
         .await;
     assert!(binary.is_error);
     assert_eq!(binary.content["kind"], "model_retry");
-    assert!(binary.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("appears to be a binary file"));
-    assert!(binary.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("file-specific tool"));
+    assert!(
+        binary.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("appears to be a binary file")
+    );
+    assert!(
+        binary.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("file-specific tool")
+    );
 
     let image = registry
         .execute_call(
@@ -781,10 +805,12 @@ async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
         )
         .await;
     assert_eq!(image.content["content"], "image analysis");
-    assert!(image.content["url"]
-        .as_str()
-        .unwrap()
-        .starts_with("data:image/png;base64,"));
+    assert!(
+        image.content["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
 }
 
 #[tokio::test]
@@ -875,10 +901,12 @@ async fn filesystem_view_uses_relaxed_text_limits_for_configured_paths() {
         .await;
     assert!(binary.is_error);
     assert_eq!(binary.content["kind"], "model_retry");
-    assert!(binary.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("appears to be a binary file"));
+    assert!(
+        binary.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("appears to be a binary file")
+    );
 }
 
 #[tokio::test]
@@ -969,10 +997,12 @@ async fn filesystem_view_native_media_returns_provider_backed_content_parts() {
         .unwrap();
     assert_eq!(parts[0]["kind"], "data_url");
     assert_eq!(parts[0]["media_type"], "image/png");
-    assert!(image.private_metadata["starweaver_tool_return_prompt"]
-        .as_str()
-        .unwrap()
-        .contains("describe it"));
+    assert!(
+        image.private_metadata["starweaver_tool_return_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("describe it")
+    );
 }
 
 #[tokio::test]
@@ -1018,11 +1048,13 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
     assert_eq!(ls.content["truncated"], true);
     assert_eq!(ls.content["total_entries"], 899);
     assert_eq!(ls.content["showing"], 500);
-    assert!(ls.content["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|entry| !entry.as_str().unwrap().contains("very_long_file_name_0000")));
+    assert!(
+        ls.content["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| !entry.as_str().unwrap().contains("very_long_file_name_0000"))
+    );
 
     let glob = registry
         .execute_call(
@@ -1037,11 +1069,13 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
         .await;
     let glob_path = glob.content["output_file_path"].as_str().unwrap();
     assert!(glob_path.starts_with(".starweaver/tmp/glob-"));
-    assert!(provider
-        .read_text(glob_path)
-        .await
-        .unwrap()
-        .contains("very_long_file_name_0000"));
+    assert!(
+        provider
+            .read_text(glob_path)
+            .await
+            .unwrap()
+            .contains("very_long_file_name_0000")
+    );
 
     let grep = registry
         .execute_call(
@@ -1063,11 +1097,13 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
         .await;
     let grep_path = grep.content["output_file_path"].as_str().unwrap();
     assert!(grep_path.starts_with(".starweaver/tmp/grep-"));
-    assert!(provider
-        .read_text(grep_path)
-        .await
-        .unwrap()
-        .contains("needle line"));
+    assert!(
+        provider
+            .read_text(grep_path)
+            .await
+            .unwrap()
+            .contains("needle line")
+    );
 
     let shell = registry
         .execute_call(
@@ -1085,14 +1121,18 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
     assert!(stderr_path.starts_with(".starweaver/tmp/stderr-"));
     assert_eq!(provider.read_text(stdout_path).await.unwrap().len(), 25_000);
     assert_eq!(provider.read_text(stderr_path).await.unwrap().len(), 25_000);
-    assert!(shell.content["stdout"]
-        .as_str()
-        .unwrap()
-        .contains("truncated"));
-    assert!(shell.content["stderr"]
-        .as_str()
-        .unwrap()
-        .contains("truncated"));
+    assert!(
+        shell.content["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("truncated")
+    );
+    assert!(
+        shell.content["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("truncated")
+    );
     let shell_result_path = shell.content["output_file_path"].as_str().unwrap();
     assert!(shell_result_path.starts_with(".starweaver/tmp/shell-exec-"));
     let full_shell_result = provider.read_text(shell_result_path).await.unwrap();
@@ -1136,11 +1176,13 @@ async fn host_io_large_outputs_are_bounded_and_saved_to_tmp_files() {
     assert!(search.content["results_showing"].as_u64().unwrap() < 8);
     let search_path = search.content["output_file_path"].as_str().unwrap();
     assert!(search_path.starts_with(".starweaver/tmp/search-"));
-    assert!(provider
-        .read_text(search_path)
-        .await
-        .unwrap()
-        .contains("large snippet 7"));
+    assert!(
+        provider
+            .read_text(search_path)
+            .await
+            .unwrap()
+            .contains("large snippet 7")
+    );
     assert!(serde_json::to_string(&search.content).unwrap().len() <= 20_000);
 
     let scrape = scrape_tool
@@ -1157,10 +1199,12 @@ async fn host_io_large_outputs_are_bounded_and_saved_to_tmp_files() {
         provider.read_text(scrape_path).await.unwrap(),
         large_markdown()
     );
-    assert!(scrape.content["markdown_content"]
-        .as_str()
-        .unwrap()
-        .contains("output_file_path"));
+    assert!(
+        scrape.content["markdown_content"]
+            .as_str()
+            .unwrap()
+            .contains("output_file_path")
+    );
     assert!(serde_json::to_string(&scrape.content).unwrap().len() <= 20_000);
 }
 
@@ -1214,10 +1258,12 @@ async fn fetch_large_text_output_is_bounded_and_saved_to_tmp_file() {
     let fetch_path = fetch.content["output_file_path"].as_str().unwrap();
     assert!(fetch_path.starts_with(".starweaver/tmp/fetch-"));
     assert_eq!(provider.read_text(fetch_path).await.unwrap(), expected);
-    assert!(fetch.content["content"]
-        .as_str()
-        .unwrap()
-        .contains("output_file_path"));
+    assert!(
+        fetch.content["content"]
+            .as_str()
+            .unwrap()
+            .contains("output_file_path")
+    );
     assert!(serde_json::to_string(&fetch.content).unwrap().len() <= 20_000);
 }
 
@@ -1493,14 +1539,18 @@ async fn host_io_and_media_failures_return_actionable_tool_errors() {
     .await;
     assert!(empty_search.is_error);
     assert_eq!(empty_search.content["kind"], "invalid_arguments");
-    assert!(empty_search.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("query must not be empty"));
-    assert!(empty_search.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("JSON schema"));
+    assert!(
+        empty_search.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("query must not be empty")
+    );
+    assert!(
+        empty_search.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("JSON schema")
+    );
 
     let missing_media_adapter = execute_tool_call(
         &registry,
@@ -1512,10 +1562,12 @@ async fn host_io_and_media_failures_return_actionable_tool_errors() {
     .await;
     assert!(missing_media_adapter.is_error);
     assert_eq!(missing_media_adapter.content["kind"], "model_retry");
-    assert!(missing_media_adapter.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("HostMediaUnderstandingClientHandle"));
+    assert!(
+        missing_media_adapter.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("HostMediaUnderstandingClientHandle")
+    );
 
     let local_media_without_adapter = execute_tool_call(
         &registry,
@@ -1527,10 +1579,12 @@ async fn host_io_and_media_failures_return_actionable_tool_errors() {
     .await;
     assert!(local_media_without_adapter.is_error);
     assert_eq!(local_media_without_adapter.content["kind"], "model_retry");
-    assert!(local_media_without_adapter.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("media-capable model"));
+    assert!(
+        local_media_without_adapter.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("media-capable model")
+    );
 
     let mut failing_dependencies = starweaver_context::DependencyStore::new();
     failing_dependencies.insert(HostSearchClientHandle::new(Arc::new(FailingSearchClient)));
@@ -1546,14 +1600,18 @@ async fn host_io_and_media_failures_return_actionable_tool_errors() {
     .await;
     assert!(failing_search.is_error);
     assert_eq!(failing_search.content["kind"], "execution");
-    assert!(failing_search.content["message"]
-        .as_str()
-        .unwrap()
-        .contains("adapter unavailable"));
-    assert!(failing_search.content["how_to_fix"]
-        .as_str()
-        .unwrap()
-        .contains("underlying condition"));
+    assert!(
+        failing_search.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("adapter unavailable")
+    );
+    assert!(
+        failing_search.content["how_to_fix"]
+            .as_str()
+            .unwrap()
+            .contains("underlying condition")
+    );
 }
 
 #[tokio::test]
@@ -1844,69 +1902,87 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
 
     let filesystem_instructions = filesystem.get_instructions();
     assert_eq!(filesystem_instructions.len(), 13);
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "view"
+    assert!(filesystem_instructions.iter().any(|instruction| {
+        instruction.group == "view"
             && instruction
                 .content
-                .contains("pass `instructions` when you need focused analysis")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "edit"
+                .contains("pass `instructions` when you need focused analysis")
+    }));
+    assert!(filesystem_instructions.iter().any(|instruction| {
+        instruction.group == "edit"
             && instruction
                 .content
-                .contains("Use multi_edit instead of multiple edit calls")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "multi_edit"
+                .contains("Use multi_edit instead of multiple edit calls")
+    }));
+    assert!(filesystem_instructions.iter().any(|instruction| {
+        instruction.group == "multi_edit"
             && instruction
                 .content
-                .contains("do not issue concurrent edit calls")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "glob"
-            && instruction.content.contains("ripgrep-style glob semantics")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "grep"
-            && instruction.content.contains("ripgrep-backed regex")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "mkdir"
-            && instruction.content.contains("parents=true")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "delete"
+                .contains("do not issue concurrent edit calls")
+    }));
+    assert!(
+        filesystem_instructions
+            .iter()
+            .any(|instruction| instruction.group == "glob"
+                && instruction.content.contains("ripgrep-style glob semantics"))
+    );
+    assert!(
+        filesystem_instructions
+            .iter()
+            .any(|instruction| instruction.group == "grep"
+                && instruction.content.contains("ripgrep-backed regex"))
+    );
+    assert!(
+        filesystem_instructions
+            .iter()
+            .any(|instruction| instruction.group == "mkdir"
+                && instruction.content.contains("parents=true"))
+    );
+    assert!(filesystem_instructions.iter().any(|instruction| {
+        instruction.group == "delete"
             && instruction
                 .content
-                .contains("Verify broad recursive targets")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "move"
-            && instruction.content.contains("overwrite=true")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "copy"
-            && instruction.content.contains("multiple copies")));
-    assert!(filesystem_instructions
-        .iter()
-        .any(|instruction| instruction.group == "resource_ref"
-            && instruction.content.contains("durable reference")));
+                .contains("Verify broad recursive targets")
+    }));
+    assert!(
+        filesystem_instructions
+            .iter()
+            .any(|instruction| instruction.group == "move"
+                && instruction.content.contains("overwrite=true"))
+    );
+    assert!(
+        filesystem_instructions
+            .iter()
+            .any(|instruction| instruction.group == "copy"
+                && instruction.content.contains("multiple copies"))
+    );
+    assert!(
+        filesystem_instructions
+            .iter()
+            .any(|instruction| instruction.group == "resource_ref"
+                && instruction.content.contains("durable reference"))
+    );
     assert_eq!(shell.get_instructions().len(), 1);
-    assert!(shell.get_instructions()[0]
-        .content
-        .contains("Set background=true for long-running commands"));
+    assert!(
+        shell.get_instructions()[0]
+            .content
+            .contains("Set background=true for long-running commands")
+    );
     assert_eq!(task.get_instructions().len(), 1);
-    assert!(task.get_instructions()[0]
-        .content
-        .contains("Task management tools track multi-step work"));
+    assert!(
+        task.get_instructions()[0]
+            .content
+            .contains("Task management tools track multi-step work")
+    );
     assert_eq!(context.get_instructions().len(), 4);
     assert_eq!(host_io.get_instructions().len(), 6);
-    assert!(host_io
-        .get_instructions()
-        .iter()
-        .any(|instruction| instruction.group == "load_media_url"
-            && instruction.content.contains("native media/document URL")));
+    assert!(
+        host_io
+            .get_instructions()
+            .iter()
+            .any(|instruction| instruction.group == "load_media_url"
+                && instruction.content.contains("native media/document URL"))
+    );
 }
 
 #[test]
@@ -2064,10 +2140,12 @@ async fn tool_proxy_searches_and_calls_namespaced_toolsets() {
 
     assert_eq!(proxy.get_instructions()[0].group, "tool-proxy");
     assert_eq!(namespaced.name(), "workspace_filesystem");
-    assert!(namespaced
-        .get_tools()
-        .iter()
-        .any(|tool| tool.name() == "workspace_view"));
+    assert!(
+        namespaced
+            .get_tools()
+            .iter()
+            .any(|tool| tool.name() == "workspace_view")
+    );
 
     let search_tools = proxy_tools
         .iter()
@@ -2195,16 +2273,20 @@ fn assert_tool_schema_fields(
         "grep" => {
             assert_eq!(properties["max_files"]["type"], "integer");
             assert_eq!(properties["context_lines"]["type"], "integer");
-            assert!(schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!("pattern")));
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("pattern"))
+            );
         }
         "task_update" => {
-            assert!(schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::json!("task_id")));
+            assert!(
+                schema["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!("task_id"))
+            );
             assert!(properties["metadata"].is_object());
         }
         _ => {}

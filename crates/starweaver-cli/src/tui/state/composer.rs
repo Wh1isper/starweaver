@@ -1,6 +1,7 @@
 use super::{
-    format_size_bytes, pasted_image_paths, previous_char_boundary, FooterMode, InteractiveTuiState,
-    LocalCommandOutcome, PromptAttachment, PromptInput, SteeringSubmission, SubmissionKind,
+    FooterMode, InteractiveTuiState, LocalCommandOutcome, PromptAttachment, PromptInput,
+    SteeringSubmission, SubmissionKind, format_size_bytes, pasted_image_paths,
+    previous_char_boundary,
 };
 
 fn is_composer_word_char(ch: char) -> bool {

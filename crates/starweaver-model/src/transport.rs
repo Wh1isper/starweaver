@@ -18,12 +18,12 @@ pub use audit::{
 pub use client::{DynHttpClient, ModelEventStream, ModelHttpClient, ModelWebSocketEventSession};
 pub(crate) use config::extend_headers_case_insensitive;
 pub use config::{
-    build_http_request, merge_extra_body, AuthConfig, HttpModelConfig, HttpRequestOptions,
+    AuthConfig, HttpModelConfig, HttpRequestOptions, build_http_request, merge_extra_body,
 };
 pub use reqwest_client::ReqwestHttpClient;
 pub use retry::{
-    is_retryable_status, send_with_retries, should_retry_error, DynSleeper, ModelSleeper,
-    NoopSleeper, RetryPolicy, TokioSleeper,
+    DynSleeper, ModelSleeper, NoopSleeper, RetryPolicy, TokioSleeper, is_retryable_status,
+    send_with_retries, should_retry_error,
 };
 pub use types::{HttpMethod, HttpRequest, HttpResponse, MaxTokensParameter};
 pub use websocket::should_fallback_websocket_to_http;

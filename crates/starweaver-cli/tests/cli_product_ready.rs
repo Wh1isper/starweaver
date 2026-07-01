@@ -65,9 +65,11 @@ fn reset_removes_runtime_state_and_preserves_config() {
         "stderr={}",
         String::from_utf8_lossy(&reset.stderr)
     );
-    assert!(String::from_utf8(reset.stdout)
-        .unwrap()
-        .contains("status=reset"));
+    assert!(
+        String::from_utf8(reset.stdout)
+            .unwrap()
+            .contains("status=reset")
+    );
     assert!(!temp.path().join(".starweaver/starweaver.sqlite").exists());
     assert!(!temp.path().join(".starweaver/state.json").exists());
     assert!(!temp.path().join(".starweaver/store").exists());
@@ -123,6 +125,7 @@ fn tui_snapshot_renders_display_replay() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn approval_commands_list_show_and_decide_records() {
     let temp = tempfile::tempdir().unwrap();
     let run = cli(&temp)
@@ -161,9 +164,11 @@ fn approval_commands_list_show_and_decide_records() {
         .output()
         .unwrap();
     assert!(show.status.success());
-    assert!(String::from_utf8(show.stdout)
-        .unwrap()
-        .contains(&approval_id));
+    assert!(
+        String::from_utf8(show.stdout)
+            .unwrap()
+            .contains(&approval_id)
+    );
 
     assert_pending_hitl_blocks_resume(
         &cli(&temp)
@@ -207,9 +212,11 @@ fn approval_commands_list_show_and_decide_records() {
         .output()
         .unwrap();
     assert!(approve.status.success());
-    assert!(String::from_utf8(approve.stdout)
-        .unwrap()
-        .contains("status=approved"));
+    assert!(
+        String::from_utf8(approve.stdout)
+            .unwrap()
+            .contains("status=approved")
+    );
 
     let resume = cli(&temp)
         .args([
@@ -298,9 +305,11 @@ fn deferred_commands_complete_and_resume_waiting_session() {
         "stderr={}",
         String::from_utf8_lossy(&complete.stderr)
     );
-    assert!(String::from_utf8(complete.stdout)
-        .unwrap()
-        .contains("status=completed"));
+    assert!(
+        String::from_utf8(complete.stdout)
+            .unwrap()
+            .contains("status=completed")
+    );
 
     let resume = cli(&temp)
         .args([

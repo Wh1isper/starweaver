@@ -1,8 +1,8 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, LazyLock, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use async_trait::async_trait;
@@ -222,12 +222,14 @@ async fn capability_can_prepare_pending_tool_returns_before_first_request() {
         }),
         ModelMessage::Response(_) => false,
     }));
-    assert!(!captured[0].iter().any(|message| match message {
-        ModelMessage::Request(request) => request
-            .parts
-            .iter()
-            .any(|part| matches!(part, ModelRequestPart::UserPrompt { .. })),
-        ModelMessage::Response(_) => false,
+    assert!(!captured[0].iter().any(|message| {
+        match message {
+            ModelMessage::Request(request) => request
+                .parts
+                .iter()
+                .any(|part| matches!(part, ModelRequestPart::UserPrompt { .. })),
+            ModelMessage::Response(_) => false,
+        }
     }));
 }
 
@@ -276,11 +278,13 @@ async fn step_limit_failure_preserves_context_state_and_failure_event() {
         context.message_history[1],
         ModelMessage::Response(_)
     ));
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "run_failed"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "run_failed")
+    );
     assert!(events.iter().any(|record| matches!(
         record.event,
         starweaver_runtime::AgentStreamEvent::RunFailed { ref error_kind, .. }
@@ -596,12 +600,14 @@ async fn model_error_retry_recovers_context_overflow_history() {
     assert_eq!(captured.len(), 2);
     let retried_history = &captured[1];
     assert!(retried_history.iter().any(|message| match message {
-        ModelMessage::Request(request) => request.parts.iter().any(|part| match part {
-            ModelRequestPart::ToolReturn(tool_return) => tool_return
-                .content
-                .as_str()
-                .is_some_and(|content| content.contains("chars truncated")),
-            _ => false,
+        ModelMessage::Request(request) => request.parts.iter().any(|part| {
+            match part {
+                ModelRequestPart::ToolReturn(tool_return) => tool_return
+                    .content
+                    .as_str()
+                    .is_some_and(|content| content.contains("chars truncated")),
+                _ => false,
+            }
         }),
         ModelMessage::Response(_) => false,
     }));
@@ -728,12 +734,14 @@ async fn model_error_retry_recovers_stream_context_overflow() {
     let captured = model.captured.lock().unwrap().clone();
     assert_eq!(captured.len(), 2);
     assert!(captured[1].iter().any(|message| match message {
-        ModelMessage::Request(request) => request.parts.iter().any(|part| match part {
-            ModelRequestPart::ToolReturn(tool_return) => tool_return
-                .content
-                .as_str()
-                .is_some_and(|content| content.contains("chars truncated")),
-            _ => false,
+        ModelMessage::Request(request) => request.parts.iter().any(|part| {
+            match part {
+                ModelRequestPart::ToolReturn(tool_return) => tool_return
+                    .content
+                    .as_str()
+                    .is_some_and(|content| content.contains("chars truncated")),
+                _ => false,
+            }
         }),
         ModelMessage::Response(_) => false,
     }));
@@ -832,11 +840,13 @@ async fn provider_stream_transport_error_resumes_incremental_request() {
     assert_eq!(result.output, "stream resumed");
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
     assert_eq!(model.captured.lock().unwrap().len(), 2);
-    assert!(context
-        .events
-        .events()
-        .iter()
-        .any(|event| event.kind == "model_stream_resume"));
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "model_stream_resume")
+    );
     assert!(events.iter().any(|record| matches!(
         &record.event,
         starweaver_runtime::AgentStreamEvent::Custom { event }

@@ -274,9 +274,9 @@ impl PreparedToolset {
     pub fn with_instruction_prepare(
         mut self,
         prepare_instructions: impl Fn(Vec<ToolInstruction>) -> Vec<ToolInstruction>
-            + Send
-            + Sync
-            + 'static,
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         self.prepare_instructions = Arc::new(prepare_instructions);
         self

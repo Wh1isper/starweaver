@@ -1,21 +1,21 @@
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 use tokio_tungstenite::{
     connect_async_with_config,
     tungstenite::{
+        Error as WebSocketError, Message,
         client::IntoClientRequest,
         http::{HeaderName, HeaderValue},
         protocol::{
-            frame::{coding::CloseCode, CloseFrame},
             WebSocketConfig,
+            frame::{CloseFrame, coding::CloseCode},
         },
-        Error as WebSocketError, Message,
     },
 };
 
-use crate::{allow_real_model_requests, transport::is_retryable_status, ModelError};
+use crate::{ModelError, allow_real_model_requests, transport::is_retryable_status};
 
 use super::{HttpRequest, ModelEventStream, ModelWebSocketEventSession};
 
@@ -573,7 +573,7 @@ fn websocket_url_from_http_url(url: &str) -> Result<reqwest::Url, ModelError> {
         scheme => {
             return Err(ModelError::Transport(format!(
                 "unsupported websocket URL scheme: {scheme}"
-            )))
+            )));
         }
     };
     url.set_scheme(scheme).map_err(|()| {
@@ -735,8 +735,8 @@ fn response_error_code(body: &Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     };
 
     use futures_util::{SinkExt, StreamExt};

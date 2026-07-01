@@ -6,7 +6,7 @@ use starweaver_agent::{
     AgentSpec, AgentSpecError, AgentSpecRegistry, HostAdapterSpec, McpServerSpec,
     RetryPolicyPreset, TestModel,
 };
-use starweaver_model::{tool_call_response, ModelResponse};
+use starweaver_model::{ModelResponse, tool_call_response};
 
 #[tokio::test]
 async fn agent_spec_resolves_policy_host_and_mcp_profiles() {

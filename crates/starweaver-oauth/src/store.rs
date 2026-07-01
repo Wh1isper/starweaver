@@ -10,9 +10,9 @@ use std::{
 use fs2::FileExt;
 
 use crate::{
-    error::{io_error, OAuthResult},
-    types::{AuthFile, OAuthProviderRecord},
     STARWEAVER_OAUTH_AUTH_FILE_ENV,
+    error::{OAuthResult, io_error},
+    types::{AuthFile, OAuthProviderRecord},
 };
 
 /// File-backed OAuth credential store with process-level locking.

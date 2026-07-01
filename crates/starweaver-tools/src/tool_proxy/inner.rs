@@ -5,15 +5,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 
 use super::format::{format_search_results, format_tool_call_error, xml_escape, xml_result};
-use super::index::{score_entry, IndexedTool, SearchEntry, ToolProxyIndex};
+use super::index::{IndexedTool, SearchEntry, ToolProxyIndex, score_entry};
 use super::publish_tool_search_query_event;
-use super::{CallToolArgs, SearchToolsArgs};
-use super::{ToolSearchInitializationReport, ToolSearchNamespaceReport, ToolSearchNamespaceStatus};
 use super::{
     CALL_TOOL_NAME, PREFIXED_CALL_TOOL_SUFFIX, PREFIXED_SEARCH_TOOL_SUFFIX, SEARCH_TOOLS_NAME,
     TOOL_PROXY_INSTRUCTION_GROUP, TOOL_PROXY_NAME, TOOL_SEARCH_FAILED_EVENT_KIND,
     TOOL_SEARCH_NO_MATCH_EVENT_KIND,
 };
+use super::{CallToolArgs, SearchToolsArgs};
+use super::{ToolSearchInitializationReport, ToolSearchNamespaceReport, ToolSearchNamespaceStatus};
 use crate::{DynToolset, ToolContext, ToolError, ToolResult, Toolset};
 
 #[derive(Clone)]
@@ -292,13 +292,13 @@ impl ToolProxyInner {
                 tools.insert(name, indexed);
             }
 
-            if let Some(namespace) = namespace.as_ref() {
-                if namespace_tools.contains_key(namespace) {
-                    search_entries.push(SearchEntry::namespace(
-                        namespace,
-                        self.namespace_description(toolset.as_ref(), namespace),
-                    ));
-                }
+            if let Some(namespace) = namespace.as_ref()
+                && namespace_tools.contains_key(namespace)
+            {
+                search_entries.push(SearchEntry::namespace(
+                    namespace,
+                    self.namespace_description(toolset.as_ref(), namespace),
+                ));
             }
         }
 

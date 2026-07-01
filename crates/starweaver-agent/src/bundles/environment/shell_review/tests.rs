@@ -254,10 +254,12 @@ async fn review_deny_returns_structured_shell_result() {
     assert_eq!(blocked.content["return_code"], 1);
     assert_eq!(blocked.content["stdout"], "");
     assert_eq!(blocked.content["stderr"], "");
-    assert!(blocked.content["error"]
-        .as_str()
-        .unwrap()
-        .contains("Shell command blocked by review"));
+    assert!(
+        blocked.content["error"]
+            .as_str()
+            .unwrap()
+            .contains("Shell command blocked by review")
+    );
     assert_eq!(blocked.content["shell_review"]["risk_level"], "medium");
 }
 
@@ -311,10 +313,12 @@ async fn shell_exec_runs_review_before_provider_execution() {
         .await;
     assert!(!denied.is_error);
     assert_eq!(denied.content["return_code"], 1);
-    assert!(denied.content["error"]
-        .as_str()
-        .unwrap()
-        .contains("Shell command blocked by review"));
+    assert!(
+        denied.content["error"]
+            .as_str()
+            .unwrap()
+            .contains("Shell command blocked by review")
+    );
 
     let allowed = registry
         .execute_call(
