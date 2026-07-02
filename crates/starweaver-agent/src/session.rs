@@ -488,7 +488,7 @@ impl AgentSession {
         let mut results = AgentHitlResults::new();
 
         for interaction in interactions {
-            let canonical_id = self.canonical_tool_call_id(&interaction.tool_call_id);
+            let canonical_id = self.canonical_approval_id(state, &interaction.tool_call_id);
             if !approval_ids.contains(&canonical_id) {
                 return Err(AgentHitlError::UnknownApproval(canonical_id));
             }
@@ -772,7 +772,7 @@ impl AgentSession {
             return Err(AgentHitlError::NoPendingHitl);
         }
 
-        let mut approvals = self.canonical_approval_decisions(results.approvals)?;
+        let mut approvals = self.canonical_approval_decisions(state, results.approvals)?;
         let mut deferred_results =
             self.collect_deferred_results(state, results.deferred_results)?;
         let approval_ids = state
@@ -897,11 +897,12 @@ impl AgentSession {
 
     fn canonical_approval_decisions(
         &self,
+        state: &AgentRunState,
         approvals: BTreeMap<String, ToolApprovalDecision>,
     ) -> Result<BTreeMap<String, ToolApprovalDecision>, AgentHitlError> {
         let mut canonical = BTreeMap::new();
-        for (tool_call_id, decision) in approvals {
-            let canonical_id = self.canonical_tool_call_id(&tool_call_id);
+        for (approval_id, decision) in approvals {
+            let canonical_id = self.canonical_approval_id(state, &approval_id);
             if canonical.insert(canonical_id.clone(), decision).is_some() {
                 return Err(AgentHitlError::DuplicateDecision(canonical_id));
             }
@@ -931,6 +932,12 @@ impl AgentSession {
             return deferred_id.to_string();
         };
         format!("{prefix}{}", self.canonical_tool_call_id(tool_call_id))
+    }
+
+    fn canonical_approval_id(&self, state: &AgentRunState, approval_id: &str) -> String {
+        let prefix = format!("approval_{}_", state.run_id.as_str());
+        let tool_call_id = approval_id.strip_prefix(&prefix).unwrap_or(approval_id);
+        self.canonical_tool_call_id(tool_call_id)
     }
 
     fn canonical_tool_call_id(&self, tool_call_id: &str) -> String {

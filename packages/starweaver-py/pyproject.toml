@@ -16,6 +16,7 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+dependencies = ["pydantic>=2.0"]
 
 [project.urls]
 Repository = "https://github.com/Wh1isper/starweaver"

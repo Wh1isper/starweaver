@@ -5,13 +5,33 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use async_trait::async_trait;
 use starweaver_model::{
     ModelMessage, ModelResponse, ModelResponsePart, TestModel, ToolCallPart, tool_call_response,
 };
 use starweaver_runtime::{
-    Agent, AgentEndStrategy, AgentRuntimePolicy, FunctionOutputFunction, OutputFunctionContext,
-    OutputFunctionDefinition, OutputValidationError, OutputValue,
+    Agent, AgentEndStrategy, AgentRunState, AgentRuntimePolicy, FunctionOutputFunction,
+    OutputFunctionContext, OutputFunctionDefinition, OutputValidationError, OutputValidationResult,
+    OutputValidator, OutputValue,
 };
+
+struct RequiresParis;
+
+#[async_trait]
+impl OutputValidator for RequiresParis {
+    async fn validate(
+        &self,
+        _state: &mut AgentRunState,
+        output: &OutputValue,
+    ) -> OutputValidationResult<()> {
+        let value = output.parse::<serde_json::Value>()?;
+        if value["answer"] == "Paris" {
+            Ok(())
+        } else {
+            Err(OutputValidationError::retry("answer must be Paris"))
+        }
+    }
+}
 
 fn final_answer_function() -> FunctionOutputFunction<
     impl Send
@@ -188,6 +208,38 @@ async fn output_function_retry_sends_retry_prompt_and_accepts_next_call() {
         .unwrap();
 
     assert_eq!(result.output, r#"{"answer":"Paris"}"#);
+    assert_eq!(result.structured_output.unwrap()["answer"], "Paris");
+    assert_eq!(model.captured_messages().len(), 2);
+    assert!(format!("{:?}", model.captured_messages()[1]).contains("answer must be Paris"));
+}
+
+#[tokio::test]
+async fn output_function_result_runs_output_validators() {
+    let model = Arc::new(TestModel::with_responses(vec![
+        tool_call_response(
+            "call_1",
+            "final_answer",
+            serde_json::json!({"answer": "London"}),
+        ),
+        tool_call_response(
+            "call_2",
+            "final_answer",
+            serde_json::json!({"answer": "Paris"}),
+        ),
+    ]));
+
+    let result = Agent::new(model.clone())
+        .with_output_function(Arc::new(final_answer_function()))
+        .with_output_validator(Arc::new(RequiresParis))
+        .with_policy(AgentRuntimePolicy {
+            max_steps: 3,
+            output_retries: 1,
+            ..AgentRuntimePolicy::default()
+        })
+        .run("answer")
+        .await
+        .unwrap();
+
     assert_eq!(result.structured_output.unwrap()["answer"], "Paris");
     assert_eq!(model.captured_messages().len(), 2);
     assert!(format!("{:?}", model.captured_messages()[1]).contains("answer must be Paris"));

@@ -171,6 +171,33 @@ pub struct AgentStreamStatus {
     pub options: AgentStreamOptions,
 }
 
+/// Cloneable control handle for a live SDK stream run.
+#[derive(Clone)]
+pub struct AgentStreamController {
+    interrupted: Arc<AtomicBool>,
+    cancellation_token: CancellationToken,
+    latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
+}
+
+impl AgentStreamController {
+    /// Request cooperative cancellation of the running stream.
+    pub fn interrupt(&self) {
+        self.interrupted.store(true, Ordering::SeqCst);
+        self.cancellation_token.cancel();
+    }
+
+    /// Return whether cooperative cancellation has been requested.
+    #[must_use]
+    pub fn cancel_requested(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
+    }
+
+    /// Export the latest observed context state.
+    pub async fn recoverable_state(&self) -> ResumableState {
+        self.latest_context.lock().await.export_full_state()
+    }
+}
+
 /// Error returned by live stream handles.
 #[derive(Debug, Error)]
 pub enum AgentStreamError {
@@ -297,14 +324,23 @@ impl AgentStreamHandle {
         }
     }
 
+    /// Return a cloneable controller for this stream.
+    #[must_use]
+    pub fn controller(&self) -> AgentStreamController {
+        AgentStreamController {
+            interrupted: self.interrupted.clone(),
+            cancellation_token: self.cancellation_token.clone(),
+            latest_context: self.latest_context.clone(),
+        }
+    }
+
     /// Request cooperative cancellation of the running stream.
     ///
     /// The producer observes this flag at stream/capability boundaries and exits with
     /// `AgentStreamError::Interrupted`. `join` still has a timeout-backed abort fallback
     /// for models or tools that never yield another boundary.
     pub fn interrupt(&self) {
-        self.interrupted.store(true, Ordering::SeqCst);
-        self.cancellation_token.cancel();
+        self.controller().interrupt();
     }
 
     /// Return whether cooperative cancellation has been requested.

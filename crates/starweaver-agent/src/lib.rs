@@ -149,9 +149,9 @@ pub use starweaver_usage::{
     UsageSnapshotEntry, UsageTokenKind, pricing::CostBudget,
 };
 pub use streaming::{
-    AgentLiveStreamResult, AgentStreamCompletion, AgentStreamCurrentError, AgentStreamDropPolicy,
-    AgentStreamError, AgentStreamHandle, AgentStreamOptions, AgentStreamRunStatus,
-    AgentStreamStatus,
+    AgentLiveStreamResult, AgentStreamCompletion, AgentStreamController, AgentStreamCurrentError,
+    AgentStreamDropPolicy, AgentStreamError, AgentStreamHandle, AgentStreamOptions,
+    AgentStreamRunStatus, AgentStreamStatus,
 };
 pub use subagent::{
     AgentApp, BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,
