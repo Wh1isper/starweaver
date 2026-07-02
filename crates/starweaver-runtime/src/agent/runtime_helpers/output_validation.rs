@@ -12,7 +12,8 @@ use crate::{
 impl Agent {
     pub(in crate::agent) async fn try_call_output_function(
         &self,
-        state: &AgentRunState,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
         calls: &[starweaver_model::ToolCallPart],
     ) -> Result<Option<(String, Option<serde_json::Value>)>, CapabilityError> {
         let Some(call) = calls.iter().find(|call| {
@@ -39,7 +40,13 @@ impl Agent {
             .await
             .map_err(Self::output_validation_error)
         {
-            Ok(output) => Ok(Some((output.as_text(), output.as_json().cloned()))),
+            Ok(output) => {
+                self.call_before_output_validation(state, context, &output.as_text())
+                    .await?;
+                self.validate_output_value(state, context, output)
+                    .await
+                    .map(Some)
+            }
             Err(error) => Err(error),
         }
     }
@@ -54,11 +61,24 @@ impl Agent {
             .await?;
         let parsed = parse_output(output, self.output_schema.as_ref())
             .map_err(Self::output_validation_error)?;
-        state.structured_output = parsed.as_json().cloned();
-        self.call_output_validators(state, &parsed).await?;
-        self.call_validate_output(state, context, output).await?;
-        self.call_after_output_validation(state, context, output)
-            .await
+        self.validate_output_value(state, context, parsed).await?;
+        Ok(())
+    }
+
+    pub(in crate::agent) async fn validate_output_value(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        output: OutputValue,
+    ) -> Result<(String, Option<serde_json::Value>), CapabilityError> {
+        let output_text = output.as_text();
+        state.structured_output = output.as_json().cloned();
+        self.call_output_validators(state, &output).await?;
+        self.call_validate_output(state, context, &output_text)
+            .await?;
+        self.call_after_output_validation(state, context, &output_text)
+            .await?;
+        Ok((output_text, state.structured_output.clone()))
     }
 
     pub(in crate::agent) async fn call_before_output_validation(

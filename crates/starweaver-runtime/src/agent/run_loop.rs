@@ -1045,7 +1045,10 @@ impl Agent {
             let mut tool_calls = response.tool_calls();
             if !tool_calls.is_empty() {
                 let mut final_output_after_tools = None;
-                match self.try_call_output_function(&state, &tool_calls).await {
+                match self
+                    .try_call_output_function(&mut state, context, &tool_calls)
+                    .await
+                {
                     Ok(Some((output, structured_output))) => {
                         let ordinary_tool_calls = tool_calls
                             .iter()

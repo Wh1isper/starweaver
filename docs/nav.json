@@ -14,6 +14,7 @@
     "label": "Build Agents",
     "items": [
       "agent-sdk",
+      "python-sdk",
       "agent",
       "models",
       "tools",

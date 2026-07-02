@@ -13,6 +13,7 @@
 # Build Agents
 
 - [Agent SDK](agent-sdk.md)
+- [Python SDK](python-sdk.md)
 - [Agents](agent.md)
 - [Models](models.md)
 - [Tools](tools.md)

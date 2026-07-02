@@ -31,7 +31,7 @@ Current workspace members:
 - `crates/starweaver-cli` — CLI-first product surface for headless stdio runs, display-message rendering, session restore, launcher dispatch, and install/update workflows
 - `crates/starweaver-rpc-core` — shared JSON-RPC host protocol helpers, envelopes, errors, stream payload projection, and replay result helpers
 - `crates/starweaver-rpc` — standalone JSON-RPC host process for Desktop and local host integrations
-- `packages/starweaver-py` — Python distribution package and PyO3/maturin extension scaffold for future in-process Python SDK bindings
+- `packages/starweaver-py` — in-process Python SDK bindings, Python tool injection, deterministic test models, sessions, stream records, HITL helpers, and Python distribution artifacts
 
 Planned areas live in `spec/` until their responsibilities, integration points, and validation paths are clear:
 
@@ -80,6 +80,7 @@ Current docs:
 - `docs/install.md` — install and local validation
 - `docs/quickstart.md` — first agent, tools, structured output, sessions, and CLI run
 - `docs/agent-sdk.md` — SDK surface, layers, capabilities, bundles, and entry points
+- `docs/python-sdk.md` — in-process Python SDK, Python tool injection, HITL, sessions, stream records, and deterministic Python tests
 - `docs/agent.md` — agent builder and result basics
 - `docs/models.md` — test models, function models, and production-request guard
 - `docs/direct.md` — direct model, stream, and tool APIs

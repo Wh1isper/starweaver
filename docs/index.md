@@ -28,6 +28,7 @@ flowchart LR
 ## What you can build
 
 - SDK agents with static and dynamic instructions.
+- In-process Python agents and Python tool injection over the Rust runtime.
 - Provider-neutral model integrations and deterministic test models.
 - Typed function tools, toolsets, MCP-backed tools, and host-backed tools.
 - Structured JSON output with typed parsing and validation retry.
@@ -41,10 +42,11 @@ flowchart LR
 1. [Install](install.md): install from release artifacts or run from source.
 2. [Quickstart](quickstart.md): build and run your first agent.
 3. [Agent SDK](agent-sdk.md): understand the SDK surface and crate boundaries.
-4. [Tools](tools.md): add typed function tools and toolsets.
-5. [Structured Output](output.md): return JSON with schemas and typed parsing.
-6. [Session and Stream Contracts](session-stream.md): integrate durable product surfaces.
-7. [Release](release.md): prepare and publish Starweaver releases.
+4. [Python SDK](python-sdk.md): inject Python tools into the same runtime.
+5. [Tools](tools.md): add typed function tools and toolsets.
+6. [Structured Output](output.md): return JSON with schemas and typed parsing.
+7. [Session and Stream Contracts](session-stream.md): integrate durable product surfaces.
+8. [Release](release.md): prepare and publish Starweaver releases.
 
 ## Stability
 
