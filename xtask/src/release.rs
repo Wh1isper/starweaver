@@ -27,6 +27,16 @@ const WORKSPACE_DEPENDENCIES: [&str; 18] = [
     "starweaver-tools",
     "starweaver-usage",
 ];
+const PYTHON_PACKAGE_WORKSPACE_DEPENDENCIES: [&str; 8] = [
+    "starweaver-agent",
+    "starweaver-core",
+    "starweaver-environment",
+    "starweaver-model",
+    "starweaver-oauth-provider",
+    "starweaver-runtime",
+    "starweaver-session",
+    "starweaver-tools",
+];
 const NON_PUBLISH_WORKSPACE_CRATES: [&str; 1] = ["starweaver-rpc"];
 const DRY_RUN_PACKAGES: [&str; 3] = ["starweaver-core", "starweaver-usage", "starweaver-oauth"];
 const PUBLISH_PACKAGES: [&str; 18] = [
@@ -85,7 +95,18 @@ fn update_python_package_versions(root: &std::path::Path, version: &str) -> Resu
         return Ok(());
     }
     update_toml_table_version(&pyproject, "[project]\n", version)?;
-    update_toml_table_version(&cargo_manifest, "[package]\n", version)?;
+    let mut cargo_text = fs::read_to_string(&cargo_manifest).map_err(|error| error.to_string())?;
+    cargo_text = replace_toml_table_version(&cargo_text, "[package]\n", version)
+        .map_err(|error| format!("{}: {error}", cargo_manifest.display()))?;
+    for krate in PYTHON_PACKAGE_WORKSPACE_DEPENDENCIES {
+        cargo_text = replace_path_dependency_version(
+            &cargo_text,
+            krate,
+            &format!("../../crates/{krate}"),
+            version,
+        )?;
+    }
+    fs::write(&cargo_manifest, cargo_text).map_err(|error| error.to_string())?;
     run_command(
         Command::new("cargo")
             .arg("metadata")
@@ -177,10 +198,19 @@ fn replace_workspace_dependency_version(
     krate: &str,
     version: &str,
 ) -> Result<String, String> {
-    let needle = format!("{krate} = {{ path = \"crates/{krate}\", version = \"");
+    replace_path_dependency_version(text, krate, &format!("crates/{krate}"), version)
+}
+
+fn replace_path_dependency_version(
+    text: &str,
+    krate: &str,
+    path: &str,
+    version: &str,
+) -> Result<String, String> {
+    let needle = format!("{krate} = {{ path = \"{path}\", version = \"");
     let start = text
         .find(&needle)
-        .ok_or_else(|| format!("missing workspace dependency {krate}"))?
+        .ok_or_else(|| format!("missing path dependency {krate} at {path}"))?
         + needle.len();
     let end = text[start..]
         .find('"')
@@ -430,6 +460,10 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
 
 fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> {
     ensure_unique("workspace dependency", &WORKSPACE_DEPENDENCIES)?;
+    ensure_unique(
+        "Python package workspace dependency",
+        &PYTHON_PACKAGE_WORKSPACE_DEPENDENCIES,
+    )?;
     ensure_unique("non-publish workspace crate", &NON_PUBLISH_WORKSPACE_CRATES)?;
     ensure_unique("dry-run package", &DRY_RUN_PACKAGES)?;
     ensure_unique("publish package", &PUBLISH_PACKAGES)?;
@@ -470,6 +504,19 @@ fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> 
             return Err(format!(
                 "workspace dependency {krate} must use a path plus version entry"
             ));
+        }
+    }
+    let python_manifest = root.join("packages/starweaver-py/Cargo.toml");
+    if python_manifest.exists() {
+        let python_manifest_text =
+            fs::read_to_string(&python_manifest).map_err(|error| error.to_string())?;
+        for krate in PYTHON_PACKAGE_WORKSPACE_DEPENDENCIES {
+            let needle = format!("{krate} = {{ path = \"../../crates/{krate}\", version = \"");
+            if !python_manifest_text.contains(&needle) {
+                return Err(format!(
+                    "Python package workspace dependency {krate} must use a path plus version entry"
+                ));
+            }
         }
     }
     Ok(())
@@ -538,6 +585,30 @@ version = "9.9.9"
         };
         assert!(updated.contains("version = \"2.0.0\""));
         assert!(updated.contains("version = \"9.9.9\""));
+    }
+
+    #[test]
+    fn path_dependency_replacer_updates_selected_dependency_version() {
+        let text = r#"
+[dependencies]
+starweaver-agent = { path = "../../crates/starweaver-agent", version = "0.2.1" }
+starweaver-core = { path = "../../crates/starweaver-core", version = "0.2.1" }
+"#;
+        let updated = match replace_path_dependency_version(
+            text,
+            "starweaver-agent",
+            "../../crates/starweaver-agent",
+            "0.3.0",
+        ) {
+            Ok(updated) => updated,
+            Err(error) => panic!("path dependency version should update: {error}"),
+        };
+        assert!(updated.contains(
+            "starweaver-agent = { path = \"../../crates/starweaver-agent\", version = \"0.3.0\" }"
+        ));
+        assert!(updated.contains(
+            "starweaver-core = { path = \"../../crates/starweaver-core\", version = \"0.2.1\" }"
+        ));
     }
 
     #[test]
