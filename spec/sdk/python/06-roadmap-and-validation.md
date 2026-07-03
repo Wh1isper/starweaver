@@ -1,183 +1,432 @@
 # Roadmap And Validation
 
-This spec defines the implementation phases and the gates that must hold before
-`starweaver-py` is treated as application-ready.
+This spec defines the current baseline, next milestones, and validation gates
+for treating `starweaver-py` as application-ready.
 
-## Phase 0: Architecture Decision
+## Current Baseline
 
-Status: these specs.
+The repository already has a working Python package under
+`packages/starweaver-py` with PyO3/maturin packaging and tests.
 
-Deliverables:
+Implemented baseline:
 
-- confirm in-process binding boundary
-- confirm crate/package names
-- confirm Python import name
-- choose P0 model/test strategy
-- choose async bridge approach
-- confirm Claw's first integration scenario
-
-Validation:
-
-- spec review
-- no code changes required
-
-## Phase 1: Minimal In-Process Agent
-
-Deliverables:
-
-- `packages/starweaver-py` Python package with a PyO3/maturin native extension
-- maturin project setup
-- `starweaver` Python package
-- `TestModel` and `FunctionModel` bindings
-- `create_agent(...)`
-- `Agent.run(...)`
-- `AgentSession.run(...)`
-- `PythonTool` with Pydantic schema extraction
-- `ToolResult` conversion
-- Python exception to `ToolError` mapping
-- reviewed lint boundary for PyO3/FFI requirements
-- Rust and Python tests for one tool call and one multi-turn session
-
-Validation:
-
-- `cargo fmt --manifest-path packages/starweaver-py/Cargo.toml -- --check`
-- `cargo check --manifest-path packages/starweaver-py/Cargo.toml --all-targets --locked`
-- `cargo clippy --manifest-path packages/starweaver-py/Cargo.toml --all-targets --locked -- -D warnings`
-- `uv run pytest packages/starweaver-py/tests`
-- `make py-check`
-
-Exit criteria:
-
-- Python code can create an agent and call one Python tool in process.
-- No P0 agent/tool/session path shells out to Starweaver binaries.
-- No P0 Python tool path uses MCP.
-- Deterministic tests pass without provider credentials.
-
-## Phase 2: Streaming, State, And HITL
-
-Deliverables:
-
-- `run_stream` async iterator
-- typed `StreamEvent` classes
-- stream interruption
-- `export_state` and `session_from_state`
-- approval-required exception and resume flow
-- deferred-call exception and resume flow
-- cancellation propagation into Python tools
-- traceback capture and redaction policy
-
-Validation:
-
-- Python integration tests for stream final result, interruption, approval
-  resume, deferred resume, and state restore
-- Rust tests for dispatcher cancellation and error mapping
-
-Exit criteria:
-
-- A Python stream can be interrupted and the running Python tool is cancelled.
-- Approval/deferred records are resumed through Starweaver session APIs.
-- State restored from Python can continue a multi-turn session.
-
-## Phase 3: SDK Parity Surface
-
-Deliverables:
-
-- Python `Toolset`
-- toolset lifecycle
-- per-run `RunOptions`
+- package name `starweaver`
+- extension module `starweaver._native`
+- CPython 3.11 through 3.13 package metadata
+- deterministic `TestModel`
+- callback-backed `FunctionModel`
+- provider model helpers
+- `create_agent`
+- `Agent.run`
+- `Agent.run_stream`
+- `Agent.new_session`
+- `Agent.session`
+- `Agent.session_from_state`
+- `AgentSession.run`
+- `AgentSession.run_stream`
+- `AgentSession` async context manager
+- `AgentSession.export_state`
+- `AgentSession.export_full_state`
+- `AgentSession.resume_after_hitl`
+- `SessionArchive`
+- `Agent.session_from_archive`
+- `AgentRun` public live-run facade with `AgentStream` compatibility alias
+- `AgentRun.steer`
+- `AgentRun.send_message`
+- `AgentRun.messages`
+- `AgentSession.steer`
+- `AgentSession.messages`
+- optional guarded `Agent.steer`
+- `BusMessage`, `MessageDelivery`, `MessageBus`, and `ControlReceipt`
+- neutral Rust active-control handle and drain capability for live runs
+- stream evidence for submitted and received steering
+- Python tool injection
+- Pydantic/type-hint schema extraction
+- `ToolContext`
+- `ToolResult`
+- Python exception mapping
+- default parallel tool execution
+- duplicate tool-name sequential fallback
+- `sequential=True`
+- output policies, validators, and functions
+- capability bundles
 - subagent registration and delegation
-- skill registry helpers
-- environment provider wrappers
-- output validators and Pydantic output
-- model registry/profile helpers
-- usage and trace access
+- stream raw record projection and lazy `StreamEvent` accessors
+- stream interruption and recoverable state
+- raw HITL/deferred resume
+- typed HITL approval and deferred helpers
+- full-state archive helpers for simple JSON persistence and restore
+- `RuntimeConfig`
+- `Toolset`, `ToolLibrary`, `ToolSearchToolset`, and `ToolProxyToolset`
+- Python `SessionStore`, `InMemorySessionStore`, and `JsonSessionStore`
+  facades over canonical record JSON
+- Rust-owned virtual and local `EnvironmentProvider` wrappers
+- `SkillRegistry` and `SkillPackage` helpers backed by native skill parsing
+- `ResourceRef` and `ResourceRegistry`
+- `MediaUploader`
+- `StreamAdapter`
+- typed `ProviderAuth` and provider routing convenience helpers
 
-Validation:
+Known product gaps:
 
-- integration tests for toolsets, subagents, skills, environment-backed tools,
-  output validation retry, and usage snapshots
-- docs examples compile or run through Python test snippets
+- no native `SqliteSessionStore` Python facade yet
+- no Python implementation of the Rust `SessionStore` trait callback bridge
+- no envd-backed Python environment constructor yet
+- no separate `FileOperator`, `Shell`, `WorkspaceBinding`, `VirtualPath`, or
+  `VirtualMount` facade yet
+- no typed usage snapshot or trace metadata helper facade yet
+- no Python-defined environment provider trait bridge yet
 
-Exit criteria:
+## Milestone A: Polish The Current Python Surface
 
-- Python can compose agents with toolsets, subagents, skills, and environment
-  providers through Starweaver-owned contracts.
-- Python output validation participates in the Starweaver retry loop.
-- Usage and trace evidence can be read from Python results and stream events.
-
-## Phase 4: Claw Product Readiness
+Goal: make the already implemented SDK feel deliberate and stable before adding
+new control primitives.
 
 Deliverables:
 
-- Claw-owned Python resource/tool integration example
-- store-backed session and stream archive integration where needed
-- packaging matrix for supported Python and platform versions
-- CI wheel build
-- public docs under `docs/` after API stabilizes
-- migration guide from ad hoc Python orchestration to `starweaver-py`
+- `Agent.session(state=None)` alias
+- `AgentSession.__aenter__` and `AgentSession.__aexit__`
+- `AgentRun` Python facade over current `AgentStream`
+- keep `AgentStream` as alias or low-level compatibility name
+- typed `RunStatusSnapshot`
+- lazy `StreamEvent` convenience accessors over raw records
+- typed `PendingApproval`, `PendingDeferred`, `ApprovalDecision`, and
+  `DeferredResult`
+- `RunResult.approvals`, `RunResult.deferred`, and `RunResult.hitl`
+- raw dict result fields preserved
+- `.pyi` signatures updated
+- docs updated only for implemented stable APIs
 
 Validation:
 
-- Claw integration test or example app
-- wheel smoke tests on supported platforms
-- full workspace validation before release
+```bash
+uv run pytest packages/starweaver-py/tests
+make py-check
+git diff --check
+```
 
 Exit criteria:
 
-- Claw can build its agent runtime path on the Python library.
-- The Python package can be installed and smoke tested from CI wheels.
-- Public docs describe a stable API, not a provisional binding experiment.
+- Existing user code keeps working.
+- New context-manager/session/run names have tests.
+- Typed HITL helpers can resume approval and deferred flows.
+- Raw result and raw stream escape hatches remain available.
+
+Status: implemented with Python tests in `packages/starweaver-py/tests`.
+
+## Milestone B: Pythonic Active-Run Control
+
+Goal: make live steering, interruption, and message-bus writes available through
+Python SDK objects.
+
+Deliverables:
+
+- neutral Rust `AgentControlHandle` or equivalent in `starweaver-agent`
+- pending control queue for active runs
+- drain capability that injects queued `BusMessage` values into the active
+  `AgentContext`
+- `AgentRun.steer(...)`
+- `AgentRun.send_message(...)`
+- `AgentRun.messages`
+- `AgentSession.steer(...)`
+- `AgentSession.messages`
+- optional guarded `Agent.steer(...)`
+- `BusMessage`
+- `MessageDelivery`
+- `MessageBus`
+- `ControlReceipt`
+- stream evidence for submitted/received steering
+- migration path for CLI steering to reuse the shared Rust seam when practical
+
+Validation:
+
+```bash
+cargo test -p starweaver-agent --locked
+cargo test -p starweaver-runtime --test context --locked
+uv run pytest packages/starweaver-py/tests
+make py-check
+make fmt-check
+make check
+make test
+git diff --check
+```
+
+Exit criteria:
+
+- Python can steer an active stream from another task.
+- The steering message reaches the active runtime context.
+- Late steering triggers the existing steering guard path.
+- Message-bus ids remain idempotent after drain.
+- Generic active message writes do not become steering unless they use the
+  steering API or explicit steering metadata.
+- Active message writes do not require taking the session busy lock.
+- Terminal runs reject new control input with `StateError`.
+
+Status: implemented for the Python SDK path. CLI reuse of the shared Rust seam
+remains a follow-up migration item.
+
+## Milestone B1: Full-State Archive Helpers
+
+Goal: make durable Python persistence explicit without introducing a custom
+store backend.
+
+Deliverables:
+
+- `AgentSession.export_full_state()`
+- `SessionArchive.from_session(session)` with full state by default
+- `SessionArchive.to_dict()`, `from_dict()`, `to_json()`, `from_json()`,
+  `save()`, and `load()`
+- `Agent.session_from_archive(...)`
+- tests proving curated export omits full runtime extensions while full export
+  preserves message history and message-bus state
+
+Validation:
+
+```bash
+uv run pytest packages/starweaver-py/tests
+make py-check
+git diff --check
+```
+
+Status: implemented for raw-state archive persistence and Python record/store
+facades. Native `SqliteSessionStore` and Python-to-Rust `SessionStore` trait
+bridges remain future work.
+
+## Milestone C: Native SessionStore Facade
+
+Goal: expose durable session-store records to Python without adding a custom
+Python-to-Rust backend first.
+
+Deliverables:
+
+- `SessionRecord`
+- `RunRecord`
+- `StreamRecord`
+- `CheckpointRef`
+- `ApprovalRecord`
+- `DeferredToolRecord`
+- `SessionResumeSnapshot`
+- `SessionStore` base facade
+- `InMemorySessionStore`
+- `JsonSessionStore`
+- optional native `SqliteSessionStore` when storage migrations can be exposed
+  safely
+- `save_current_session(session, store=...)` captures full state
+
+Validation:
+
+```bash
+cargo test -p starweaver-session --locked
+cargo test -p starweaver-storage --locked
+uv run pytest packages/starweaver-py/tests
+make py-check
+git diff --check
+```
+
+Exit criteria:
+
+- Python can save/load session and run records with raw JSON preserved.
+- Full context state round trips through a store helper.
+- Stream records remain ordered.
+- Pending HITL records preserve canonical IDs.
+- Python callables and live objects are not serialized.
+
+Status: implemented for Python record/store facades with `InMemorySessionStore`
+and `JsonSessionStore`. Native SQLite wrapping remains open.
+
+## Milestone D: Toolsets And Dynamic Tool Composition
+
+Goal: add advanced tool composition without changing the Rust runtime loop.
+
+Deliverables:
+
+- `RuntimeConfig`
+- Python `Toolset`
+- per-run `toolsets=[...]`
+- `ToolLibrary`
+- `ToolSearchToolset`
+- persisted loaded tool/namespace IDs
+- typed tool-search initialization sideband events
+- `ToolProxyToolset` with fixed `search_tools` and `call_tool` surface
+
+Validation:
+
+```bash
+cargo test -p starweaver-tools --locked
+cargo test -p starweaver-agent --locked
+uv run pytest packages/starweaver-py/tests
+make py-check
+git diff --check
+```
+
+Exit criteria:
+
+- Python can compose agents and runs with named toolsets.
+- Toolset instructions enter the native instruction path.
+- Search and proxy state persists serializable IDs/namespaces.
+- Search and proxy remain distinct APIs.
+
+Status: implemented for runtime config, static toolsets, tool libraries, direct
+tool search, tool proxy, per-agent toolsets, and per-run toolsets.
+
+## Milestone E: Environment, Resources, Skills, Media, And Adapters
+
+Goal: expose the surrounding SDK features Python products need without
+duplicating Starweaver contracts.
+
+Deliverables:
+
+- `SkillRegistry`
+- skill list/load helpers
+- Rust-owned environment provider wrappers
+- `EnvironmentProvider.virtual(...)` and `EnvironmentProvider.local(...)`
+- future `EnvdEnvironment` constructor
+- `FileOperator`, `Shell`, `WorkspaceBinding`, `VirtualPath`, `VirtualMount`
+- `ResourceRegistry`, `ResourceRef`, and resumable resource wrappers
+- `MediaUploader`
+- stream adapter helpers over `starweaver-stream`
+- provider auth/model constructors over Rust provider and OAuth contracts
+- resource refs in Python inputs and tool results
+- usage snapshot helpers
+- trace metadata helpers
+- Python logging/OTel convenience only after redaction policy is clear
+
+Validation:
+
+```bash
+uv run pytest packages/starweaver-py/tests
+make py-check
+make docs-check
+make fmt-check
+make check
+make test
+git diff --check
+```
+
+Exit criteria:
+
+- Python can compose agents with tools, bundles, toolsets, subagents, skills,
+  and environment-backed resources through Starweaver-owned contracts.
+- Usage and trace evidence can be inspected without raw JSON path walking.
+- Environment/resource helpers respect Starweaver policy and restore rules.
+
+Status: partially implemented. Current Python exposes Rust-owned virtual/local
+environment providers, native skill registry scan/activate, resource refs,
+media upload adapter, stream adapter projections, provider auth/routing helpers,
+and environment attachment at agent/session/run scope. Envd construction,
+separate file/shell operator facades, typed usage/trace helpers, and
+Python-defined provider bridges remain open.
+
+## Milestone F: Application And Release Readiness
+
+Goal: make the package reliable for applications and releasable through the
+workspace release flow.
+
+Deliverables:
+
+- public `docs/python-sdk.md` updated for stable APIs
+- migration guide for older provisional Python APIs when needed
+- wheel smoke tests for supported platforms
+- Claw integration example or test app
+- release workflow validation for Python distributions
+- API compatibility checklist for public Python names
+
+Validation:
+
+```bash
+make py-check
+make docs-check
+make fmt-check
+make check
+make test
+make ci
+```
+
+Exit criteria:
+
+- Python package can be built and smoke tested from release artifacts.
+- Public docs describe implemented stable behavior.
+- Claw or an equivalent Python app can run the intended library path without
+  MCP, JSON-RPC, or a sidecar binary.
 
 ## Acceptance Gates
 
-Before `starweaver-py` is considered ready for application use:
+Before the Python SDK is considered application-ready:
 
-01. Python tools execute in process as Rust `Tool` implementations.
-02. No P0 agent/tool/session path shells out to `sw`, `starweaver-cli`, or
-    `starweaver-rpc`.
-03. No P0 Python tool injection path uses MCP.
-04. Tool schema, result, retry, approval, deferred, cancellation, and timeout
-    behavior round trip through Starweaver's native `Tool` and `ToolError`
-    contracts.
-05. `AgentSession` state export and restore work from Python.
-06. Streaming yields typed Python events backed by Starweaver stream records.
-07. Python callback dispatch does not hold the GIL across Rust runtime awaits.
-08. Cancellation propagates from Starweaver stream/session APIs into running
-    Python tools.
-09. Pydantic schema extraction has positive and negative tests.
-10. The package has deterministic tests that do not require live provider
-    credentials.
-11. Any required FFI or `unsafe` lint exception is scoped to
-    `packages/starweaver-py` and documented in that package.
-12. Public docs are added only after the reviewed API shape is stable enough
-    for users.
+01. Python tools execute in process as native Starweaver tools.
+02. The core Python agent/tool/session path does not shell out to Starweaver
+    binaries.
+03. The core Python tool path does not use MCP.
+04. Tool schema, result, retry, approval, deferred, cancellation, timeout, and
+    private metadata behavior round trip through native Starweaver contracts.
+05. Python callback dispatch does not hold the GIL across Rust runtime awaits.
+06. Cancellation propagates into running Python tools.
+07. Session state export and restore work from Python.
+08. Streaming yields Python events backed by Starweaver stream records.
+09. Raw stream records and raw state remain available.
+10. HITL can be resumed from Python without parsing hidden Rust internals.
+11. Typed HITL helpers preserve canonical ids and raw escape hatches.
+12. Active steering reaches the active run context, not a stale snapshot.
+13. Message bus helpers preserve idempotency, source, target, topic, template,
+    metadata, and subscriber semantics.
+14. Output validators/functions participate in the native output retry loop.
+15. Provider routing uses typed model/provider settings, not generic metadata.
+16. Any FFI or unsafe lint exception is local to `packages/starweaver-py`.
+17. Public docs cover only implemented stable APIs.
+18. Deterministic tests do not require live provider credentials.
 
 ## Open Decisions
 
-| Decision                        | Options                                                               | Recommendation                                                                               |
-| ------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Python import name              | `starweaver`, `starweaver_py`, `starweaver_sdk`                       | Use `starweaver` for the import and reserve `starweaver-py` for crate/project naming         |
-| PyPI name                       | `starweaver`, `starweaver-py`                                         | Prefer `starweaver` if available; otherwise publish `starweaver-py` with `import starweaver` |
-| Python version range            | 3.11, 3.12, 3.13                                                      | Support CPython 3.11 through 3.13; use 3.13 as the local and single-version CI default       |
-| Async bridge                    | `pyo3-async-runtimes`, custom dispatcher, hybrid                      | Hybrid: use official bridge where suitable and keep a Starweaver dispatcher abstraction      |
-| P0 model support                | test models only, registry models, direct provider helpers            | Start with test models plus registry-resolved models if the factory boundary is clean        |
-| Python model adapters           | P0, P1, never                                                         | Not P0; tool injection is the priority                                                       |
-| Default Python tool concurrency | sequential, parallel async                                            | Sequential by default with opt-in after tests                                                |
-| State model                     | raw JSON, Pydantic wrapper, both                                      | Both: Rust-owned JSON plus Python validation helpers                                         |
-| Claw resource mapping           | tools first, environment provider first, resource registry first      | Tools first, then resource refs, then provider integration                                   |
-| FFI lint boundary               | inherit workspace forbid, binding-local exception, separate workspace | Prefer binding-local exception only if PyO3 requires it                                      |
+| Decision                     | Recommendation                                                                                             |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Public live handle name      | Add `AgentRun`; keep `AgentStream` as alias or lower-level compatibility name.                             |
+| `Agent.session()`            | Add it as the preferred Python name.                                                                       |
+| `agent.steer(...)`           | Provide only for exactly one direct active run; prefer `run.steer(...)`.                                   |
+| Idle `session.steer(...)`    | Raise by default; optionally support `when_idle="queue"`.                                                  |
+| Stream event typing          | Start with lazy accessors over one class; split dataclasses only when needed.                              |
+| HITL helper mutability       | Helper methods build decisions; explicit resume remains visible.                                           |
+| Message bus topic field      | Python can expose `topic`; Rust stores it in `starweaver.topic` metadata unless the core contract changes. |
+| Python model adapters        | Not before active control and composition APIs are stable.                                                 |
+| Python environment providers | Start with Rust-owned providers; add Python-defined providers later.                                       |
+| Public docs timing           | Update docs after implementation and tests, not while APIs are speculative.                                |
 
 ## Review Checklist
 
-- Does the spec preserve Starweaver-native ownership boundaries?
-- Does it give Python developers the expected agent/tool/session ergonomics?
-- Does Python tool injection stay in process?
-- Does the plan avoid MCP/RPC/binary control flow for the core library path?
-- Does the async strategy have a testable cancellation and GIL story?
-- Does Claw have a plausible first integration path without waiting for every
-  future resource/provider feature?
-- Are the first implementation phases small enough to validate with
-  deterministic tests?
-- Is each public Python convenience clearly mapped to a Rust-owned contract?
+- Does the change preserve Starweaver-native ownership boundaries?
+- Does the Python surface feel natural to Python application authors?
+- Does it avoid RPC/MCP/binary paths for the core library flow?
+- Is every Python convenience mapped to a Rust-owned contract?
+- Does live control enter the active runtime loop?
+- Are raw records and ids still visible?
 - Are process-local Python dependencies separated from resumable state?
-- Are docs deferred until after API review?
+- Is callback cancellation testable?
+- Does the message bus stay MQ-like rather than becoming a UI event stream?
+- Are docs/specs updated in the right layer?
+
+## Validation Commands
+
+For Python package changes:
+
+```bash
+make py-check
+```
+
+For spec-only changes:
+
+```bash
+git diff --check
+```
+
+For docs example changes:
+
+```bash
+make docs-check
+```
+
+For repository-wide behavior changes:
+
+```bash
+make fmt-check
+make check
+make test
+```

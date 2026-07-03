@@ -151,7 +151,7 @@ Starweaver is organized as focused crates:
 - `starweaver-cli`: local CLI product surface, launcher dispatch, profiles, TUI, storage, install, and update workflows.
 - `starweaver-rpc-core`: shared JSON-RPC host protocol helpers and stream/replay projections.
 - `starweaver-rpc`: standalone JSON-RPC host process for Desktop and local host integrations.
-- `packages/starweaver-py`: in-process Python SDK bindings, Python tool injection, deterministic test models, sessions, and Python distribution artifacts.
+- `packages/starweaver-py`: in-process Python SDK bindings, Python tool injection, live run control, message bus facades, typed HITL helpers, deterministic test models, sessions, and Python distribution artifacts.
 
 ## Validation
 

@@ -1,9 +1,10 @@
 //! Python wrappers for Starweaver agents, runs, streams, and sessions.
 
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+    Arc, Mutex as StdMutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -11,11 +12,16 @@ use pyo3::{
 };
 use serde_json::{Map, Value};
 use starweaver_agent::{
-    AgentBuilder, AgentHitlError, AgentHitlResults, AgentLiveStreamResult, AgentRunOptions,
-    AgentSession, AgentStreamController, AgentStreamError, AgentStreamHandle, ResumableState,
+    AgentBuilder, AgentControlError, AgentControlHandle, AgentControlKind, AgentControlReceipt,
+    AgentHitlError, AgentHitlResults, AgentLiveStreamResult, AgentRunOptions, AgentSession,
+    AgentStreamController, AgentStreamCurrentError, AgentStreamDropPolicy, AgentStreamError,
+    AgentStreamHandle, AgentStreamOptions, AgentStreamRunStatus, BusMessage, ModelConfig,
+    ResumableState,
 };
 use starweaver_model::ToolReturnPart;
-use starweaver_runtime::{Agent as RuntimeAgent, AgentResult, AgentStreamResult, RunStatus};
+use starweaver_runtime::{
+    Agent as RuntimeAgent, AgentResult, AgentRunState, AgentStreamResult, RunStatus,
+};
 use starweaver_session::{DeferredToolResults, ToolApprovalDecision};
 use starweaver_tools::ToolRegistry;
 use tokio::sync::Mutex;
@@ -23,13 +29,17 @@ use tokio::sync::Mutex;
 use crate::{
     capability::PyCapabilityBundle,
     conversion::{json_to_py, py_to_json, serialize_to_py},
+    environment::extract_environment_provider,
+    media::extract_media_uploader,
     model::{extract_model_settings, extract_request_params},
     output::{extract_output_policy, extract_output_schema},
     runtime::{PyFutureError, enter_runtime, spawn_py_future},
+    skills::extract_skill_registry,
     stream::PyStreamEvent,
     subagent::{PySubagent, parse_delegation_mode},
     testing::py_model_from_any,
     tool::PyPythonTool,
+    toolset::{PyToolset, py_toolsets_to_dyn_toolsets},
 };
 
 /// Python wrapper around the Starweaver runtime agent.
@@ -37,6 +47,7 @@ use crate::{
 #[derive(Clone)]
 pub struct PyAgent {
     inner: RuntimeAgent,
+    default_environment: Option<starweaver_environment::DynEnvironmentProvider>,
 }
 
 impl PyAgent {
@@ -48,7 +59,7 @@ impl PyAgent {
 #[pymethods]
 impl PyAgent {
     #[new]
-    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None))]
+    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None, toolsets=None, runtime_config=None, skills=None, environment=None, media_uploader=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -63,6 +74,11 @@ impl PyAgent {
         subagents: Option<Vec<Py<PySubagent>>>,
         subagent_delegation_mode: Option<String>,
         capability_bundles: Option<Vec<Py<PyCapabilityBundle>>>,
+        toolsets: Option<Vec<Py<PyToolset>>>,
+        runtime_config: Option<&Bound<'_, PyAny>>,
+        skills: Option<&Bound<'_, PyAny>>,
+        environment: Option<&Bound<'_, PyAny>>,
+        media_uploader: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         if output_schema.is_some() && output_policy.is_some() {
             return Err(PyValueError::new_err(
@@ -81,8 +97,17 @@ impl PyAgent {
         for tool in tools.unwrap_or_default() {
             builder = builder.tool(tool.borrow(py).dyn_tool());
         }
+        for toolset in py_toolsets_to_dyn_toolsets(py, toolsets)? {
+            builder = builder.toolset(&toolset);
+        }
+        if let Some(registry) = extract_skill_registry(py, skills)? {
+            builder = builder.skills(registry);
+        }
         if let Some(settings) = extract_model_settings(py, model_settings)? {
             builder = builder.model_settings(settings);
+        }
+        if let Some(model_config) = extract_runtime_model_config(py, runtime_config)? {
+            builder = builder.model_config(model_config);
         }
         if let Some(params) = extract_request_params(py, request_params)? {
             builder = builder.request_params(params);
@@ -101,40 +126,40 @@ impl PyAgent {
         for bundle in capability_bundles.unwrap_or_default() {
             builder = builder.capability_bundle(bundle.borrow(py).bundle());
         }
+        if let Some(uploader) = extract_media_uploader(py, media_uploader)? {
+            builder = builder.media_uploader(uploader);
+        }
+        let default_environment = extract_environment_provider(py, environment)?;
         Ok(Self {
             inner: builder.build(),
+            default_environment,
         })
     }
 
     fn run(&self, py: Python<'_>, prompt: String) -> PyResult<Py<PyAny>> {
         let agent = self.inner.clone();
+        let environment = self.default_environment.clone();
         spawn_py_future(
             py,
             async move {
-                agent
-                    .run(prompt)
-                    .await
-                    .map_err(PyFutureError::from_agent_error)
+                if let Some(environment) = environment {
+                    AgentSession::new(agent)
+                        .with_environment(environment)
+                        .run(prompt)
+                        .await
+                        .map_err(PyFutureError::from_agent_error)
+                } else {
+                    agent
+                        .run(prompt)
+                        .await
+                        .map_err(PyFutureError::from_agent_error)
+                }
             },
             |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
         )
     }
 
-    fn run_stream_collect(&self, py: Python<'_>, prompt: String) -> PyResult<Py<PyAny>> {
-        let agent = self.inner.clone();
-        spawn_py_future(
-            py,
-            async move {
-                agent
-                    .run_stream(prompt)
-                    .await
-                    .map_err(PyFutureError::from_agent_error)
-            },
-            |py, result| Ok(Py::new(py, PyStreamRunResult::from_stream_result(result)?)?.into_any()),
-        )
-    }
-
-    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None))]
+    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, toolsets=None, environment=None))]
     #[allow(clippy::too_many_arguments)]
     fn stream(
         &self,
@@ -147,8 +172,15 @@ impl PyAgent {
         request_params: Option<&Bound<'_, PyAny>>,
         output_schema: Option<&Bound<'_, PyAny>>,
         output_policy: Option<&Bound<'_, PyAny>>,
+        toolsets: Option<Vec<Py<PyToolset>>>,
+        environment: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyAgentStream> {
         let mut session = AgentSession::new(self.inner.clone());
+        if let Some(environment) = extract_environment_provider(py, environment)?
+            .or_else(|| self.default_environment.clone())
+        {
+            session.set_environment(environment);
+        }
         let options = py_run_options(
             py,
             instructions,
@@ -158,8 +190,16 @@ impl PyAgent {
             request_params,
             output_schema,
             output_policy,
+            toolsets,
         )?;
-        let handle = enter_runtime(|| Ok(session.stream_with_options(prompt, options)))?;
+        let handle =
+            enter_runtime(|| {
+                Ok(session.stream_with_run_and_stream_options(
+                    prompt,
+                    options,
+                    python_stream_options(),
+                ))
+            })?;
         Ok(PyAgentStream::new(
             handle,
             Some(Arc::new(Mutex::new(session))),
@@ -167,22 +207,46 @@ impl PyAgent {
         ))
     }
 
-    fn new_session(&self) -> PySession {
-        PySession {
-            inner: Arc::new(Mutex::new(AgentSession::new(self.inner.clone()))),
-            busy: Arc::new(AtomicBool::new(false)),
+    #[pyo3(signature = (environment=None))]
+    fn new_session(
+        &self,
+        py: Python<'_>,
+        environment: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PySession> {
+        let mut session = AgentSession::new(self.inner.clone());
+        if let Some(environment) = extract_environment_provider(py, environment)?
+            .or_else(|| self.default_environment.clone())
+        {
+            session.set_environment(environment);
         }
+        Ok(PySession {
+            inner: Arc::new(Mutex::new(session)),
+            busy: Arc::new(AtomicBool::new(false)),
+            active_control: Arc::new(StdMutex::new(None)),
+            active_control_seq: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
-    fn session_from_state(&self, py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<PySession> {
+    #[pyo3(signature = (state, environment=None))]
+    fn session_from_state(
+        &self,
+        py: Python<'_>,
+        state: &Bound<'_, PyAny>,
+        environment: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PySession> {
         let state: ResumableState = serde_json::from_value(py_to_json(py, state)?)
             .map_err(|error| PyValueError::new_err(format!("invalid session state: {error}")))?;
+        let mut session = AgentSession::from_state(self.inner.clone(), state);
+        if let Some(environment) = extract_environment_provider(py, environment)?
+            .or_else(|| self.default_environment.clone())
+        {
+            session.set_environment(environment);
+        }
         Ok(PySession {
-            inner: Arc::new(Mutex::new(AgentSession::from_state(
-                self.inner.clone(),
-                state,
-            ))),
+            inner: Arc::new(Mutex::new(session)),
             busy: Arc::new(AtomicBool::new(false)),
+            active_control: Arc::new(StdMutex::new(None)),
+            active_control_seq: Arc::new(AtomicUsize::new(0)),
         })
     }
 }
@@ -242,9 +306,36 @@ impl PyAgentStream {
         )
     }
 
-    fn interrupt(&self) -> PyResult<()> {
-        self.controller.interrupt();
+    #[pyo3(signature = (reason=None))]
+    fn interrupt(&self, reason: Option<String>) -> PyResult<()> {
+        let _ = self.controller.control_handle().interrupt(reason);
         Ok(())
+    }
+
+    #[pyo3(signature = (text, id=None))]
+    fn steer(&self, py: Python<'_>, text: String, id: Option<String>) -> PyResult<Py<PyAny>> {
+        let control = self.controller.control_handle();
+        let id = id.unwrap_or_else(|| generated_control_id("steering"));
+        spawn_py_future(
+            py,
+            async move { control.steer(id, text).await.map_err(control_error_to_py) },
+            control_receipt_to_py,
+        )
+    }
+
+    fn send_message(&self, py: Python<'_>, message: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let message = parse_bus_message(py, message)?;
+        let control = self.controller.control_handle();
+        spawn_py_future(
+            py,
+            async move {
+                control
+                    .send_message(message)
+                    .await
+                    .map_err(control_error_to_py)
+            },
+            control_receipt_to_py,
+        )
     }
 
     fn join(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -318,6 +409,61 @@ impl PyAgentStream {
                     lease.release();
                 }
                 result
+            },
+            |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
+        )
+    }
+
+    #[pyo3(signature = (approvals=None, deferred_results=None))]
+    fn resume_after_hitl(
+        &self,
+        py: Python<'_>,
+        approvals: Option<&Bound<'_, PyAny>>,
+        deferred_results: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let Some(session) = self.session.clone() else {
+            return Err(PyRuntimeError::new_err(
+                "stream is not bound to a resumable session",
+            ));
+        };
+        let results = parse_hitl_results(py, approvals, deferred_results)?;
+        spawn_py_future(
+            py,
+            async move {
+                let mut session = session.lock().await;
+                session
+                    .resume_after_hitl(results)
+                    .await
+                    .map_err(hitl_error_to_py)
+            },
+            |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
+        )
+    }
+
+    #[pyo3(signature = (state, approvals=None, deferred_results=None))]
+    fn resume_after_hitl_for_state(
+        &self,
+        py: Python<'_>,
+        state: &Bound<'_, PyAny>,
+        approvals: Option<&Bound<'_, PyAny>>,
+        deferred_results: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let Some(session) = self.session.clone() else {
+            return Err(PyRuntimeError::new_err(
+                "stream is not bound to a resumable session",
+            ));
+        };
+        let state: AgentRunState = serde_json::from_value(py_to_json(py, state)?)
+            .map_err(|error| PyValueError::new_err(format!("invalid run state: {error}")))?;
+        let results = parse_hitl_results(py, approvals, deferred_results)?;
+        spawn_py_future(
+            py,
+            async move {
+                let mut session = session.lock().await;
+                session
+                    .resume_after_hitl_for_state(&state, results)
+                    .await
+                    .map_err(hitl_error_to_py)
             },
             |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
         )
@@ -516,21 +662,47 @@ impl PyStreamRunResult {
 pub struct PySession {
     inner: Arc<Mutex<AgentSession>>,
     busy: Arc<AtomicBool>,
+    active_control: Arc<StdMutex<Option<PyActiveControl>>>,
+    active_control_seq: Arc<AtomicUsize>,
 }
 
 impl PySession {
     fn acquire_operation(&self) -> PyResult<Arc<PySessionOperationLease>> {
-        PySessionOperationLease::acquire(self.busy.clone())
+        PySessionOperationLease::acquire(self.busy.clone(), None)
     }
+
+    fn acquire_stream_operation(
+        &self,
+        active_control_token: Option<usize>,
+    ) -> PyResult<Arc<PySessionOperationLease>> {
+        PySessionOperationLease::acquire(
+            self.busy.clone(),
+            active_control_token.map(|token| (self.active_control.clone(), token)),
+        )
+    }
+
+    fn next_active_control_token(&self) -> usize {
+        self.active_control_seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+}
+
+#[derive(Clone)]
+struct PyActiveControl {
+    token: usize,
+    handle: AgentControlHandle,
 }
 
 struct PySessionOperationLease {
     busy: Arc<AtomicBool>,
+    active_control: Option<(Arc<StdMutex<Option<PyActiveControl>>>, usize)>,
     released: AtomicBool,
 }
 
 impl PySessionOperationLease {
-    fn acquire(busy: Arc<AtomicBool>) -> PyResult<Arc<Self>> {
+    fn acquire(
+        busy: Arc<AtomicBool>,
+        active_control: Option<(Arc<StdMutex<Option<PyActiveControl>>>, usize)>,
+    ) -> PyResult<Arc<Self>> {
         if busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
@@ -539,12 +711,19 @@ impl PySessionOperationLease {
         }
         Ok(Arc::new(Self {
             busy,
+            active_control,
             released: AtomicBool::new(false),
         }))
     }
 
     fn release(&self) {
         if !self.released.swap(true, Ordering::SeqCst) {
+            if let Some((active_control, token)) = &self.active_control
+                && let Ok(mut guard) = active_control.lock()
+                && guard.as_ref().is_some_and(|active| active.token == *token)
+            {
+                *guard = None;
+            }
             self.busy.store(false, Ordering::SeqCst);
         }
     }
@@ -559,7 +738,7 @@ impl Drop for PySessionOperationLease {
 #[pymethods]
 impl PySession {
     fn run(&self, py: Python<'_>, prompt: String) -> PyResult<Py<PyAny>> {
-        let lease = self.acquire_operation()?;
+        let lease = self.acquire_stream_operation(None)?;
         let session = self.inner.clone();
         spawn_py_future(
             py,
@@ -575,24 +754,7 @@ impl PySession {
         )
     }
 
-    fn run_stream_collect(&self, py: Python<'_>, prompt: String) -> PyResult<Py<PyAny>> {
-        let lease = self.acquire_operation()?;
-        let session = self.inner.clone();
-        spawn_py_future(
-            py,
-            async move {
-                let _lease = lease;
-                let mut session = session.lock().await;
-                session
-                    .run_stream(prompt)
-                    .await
-                    .map_err(PyFutureError::from_agent_error)
-            },
-            |py, result| Ok(Py::new(py, PyStreamRunResult::from_stream_result(result)?)?.into_any()),
-        )
-    }
-
-    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None))]
+    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, toolsets=None, environment=None))]
     #[allow(clippy::too_many_arguments)]
     fn stream(
         &self,
@@ -605,8 +767,11 @@ impl PySession {
         request_params: Option<&Bound<'_, PyAny>>,
         output_schema: Option<&Bound<'_, PyAny>>,
         output_policy: Option<&Bound<'_, PyAny>>,
+        toolsets: Option<Vec<Py<PyToolset>>>,
+        environment: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyAgentStream> {
-        let lease = self.acquire_operation()?;
+        let active_control_token = self.next_active_control_token();
+        let lease = self.acquire_stream_operation(Some(active_control_token))?;
         let options = py_run_options(
             py,
             instructions,
@@ -616,12 +781,34 @@ impl PySession {
             request_params,
             output_schema,
             output_policy,
+            toolsets,
         )?;
         let mut session = self
             .inner
             .try_lock()
             .map_err(|_| PyRuntimeError::new_err("session is busy"))?;
-        let handle = enter_runtime(|| Ok(session.stream_with_options(prompt, options)))?;
+        if let Some(environment) = extract_environment_provider(py, environment)? {
+            session.set_environment(environment);
+        }
+        let handle =
+            enter_runtime(|| {
+                Ok(session.stream_with_run_and_stream_options(
+                    prompt,
+                    options,
+                    python_stream_options(),
+                ))
+            })?;
+        let control = handle.control_handle();
+        {
+            let mut active_control = self
+                .active_control
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("session active control lock poisoned"))?;
+            *active_control = Some(PyActiveControl {
+                token: active_control_token,
+                handle: control,
+            });
+        }
         Ok(PyAgentStream::new(
             handle,
             Some(self.inner.clone()),
@@ -645,6 +832,107 @@ impl PySession {
         serialize_to_py(py, &state)
     }
 
+    fn set_environment(&self, py: Python<'_>, environment: &Bound<'_, PyAny>) -> PyResult<()> {
+        let _lease = self.acquire_operation()?;
+        let environment = extract_environment_provider(py, Some(environment))?
+            .ok_or_else(|| PyValueError::new_err("environment must not be None"))?;
+        let mut session = self.inner.blocking_lock();
+        session.set_environment(environment);
+        Ok(())
+    }
+
+    fn export_environment_state(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let _lease = self.acquire_operation()?;
+        let session = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                let session = session.lock().await;
+                session
+                    .export_environment_state()
+                    .await
+                    .map_err(|error| PyFutureError::State(error.to_string()))
+            },
+            |py, state| match state {
+                Some(state) => serialize_to_py(py, &state),
+                None => Ok(py.None()),
+            },
+        )
+    }
+
+    #[pyo3(signature = (text, id=None))]
+    fn steer(&self, py: Python<'_>, text: String, id: Option<String>) -> PyResult<Py<PyAny>> {
+        let control = self
+            .active_control
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("session active control lock poisoned"))?
+            .as_ref()
+            .map(|active| active.handle.clone())
+            .ok_or_else(|| PyRuntimeError::new_err("no active run for session"))?;
+        let id = id.unwrap_or_else(|| generated_control_id("steering"));
+        spawn_py_future(
+            py,
+            async move { control.steer(id, text).await.map_err(control_error_to_py) },
+            control_receipt_to_py,
+        )
+    }
+
+    #[pyo3(signature = (reason=None))]
+    fn interrupt(&self, reason: Option<String>) -> PyResult<()> {
+        let control = self
+            .active_control
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("session active control lock poisoned"))?
+            .as_ref()
+            .map(|active| active.handle.clone())
+            .ok_or_else(|| PyRuntimeError::new_err("no active run for session"))?;
+        let _ = control.interrupt(reason);
+        Ok(())
+    }
+
+    fn message_send(&self, py: Python<'_>, message: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let _lease = self.acquire_operation()?;
+        let message = parse_bus_message(py, message)?;
+        let mut session = self.inner.blocking_lock();
+        let sent = session.context_mut().send_message(message);
+        serialize_to_py(py, &sent)
+    }
+
+    #[pyo3(signature = (agent_id=None))]
+    fn message_peek(&self, py: Python<'_>, agent_id: Option<String>) -> PyResult<Py<PyAny>> {
+        let _lease = self.acquire_operation()?;
+        let session = self.inner.blocking_lock();
+        let agent_id = agent_id.unwrap_or_else(|| session.context().agent_id.as_str().to_string());
+        serialize_to_py(py, &session.context().messages.peek(&agent_id))
+    }
+
+    #[pyo3(signature = (agent_id=None))]
+    fn message_consume(&self, py: Python<'_>, agent_id: Option<String>) -> PyResult<Py<PyAny>> {
+        let _lease = self.acquire_operation()?;
+        let mut session = self.inner.blocking_lock();
+        let agent_id = agent_id.unwrap_or_else(|| session.context().agent_id.as_str().to_string());
+        let messages = session.context_mut().consume_messages_for(&agent_id);
+        serialize_to_py(py, &messages)
+    }
+
+    #[pyo3(signature = (agent_id=None))]
+    fn message_subscribe(&self, agent_id: Option<String>) -> PyResult<()> {
+        let _lease = self.acquire_operation()?;
+        let mut session = self.inner.blocking_lock();
+        let agent_id = agent_id.unwrap_or_else(|| session.context().agent_id.as_str().to_string());
+        session.context_mut().messages.subscribe(agent_id);
+        Ok(())
+    }
+
+    #[pyo3(signature = (agent_id=None))]
+    fn message_unsubscribe(&self, agent_id: Option<String>) -> PyResult<()> {
+        let _lease = self.acquire_operation()?;
+        let mut session = self.inner.blocking_lock();
+        let agent_id = agent_id.unwrap_or_else(|| session.context().agent_id.as_str().to_string());
+        session.context_mut().messages.unsubscribe(&agent_id);
+        Ok(())
+    }
+
     #[pyo3(signature = (approvals=None, deferred_results=None))]
     fn resume_after_hitl(
         &self,
@@ -662,6 +950,33 @@ impl PySession {
                 let mut session = session.lock().await;
                 session
                     .resume_after_hitl(results)
+                    .await
+                    .map_err(hitl_error_to_py)
+            },
+            |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
+        )
+    }
+
+    #[pyo3(signature = (state, approvals=None, deferred_results=None))]
+    fn resume_after_hitl_for_state(
+        &self,
+        py: Python<'_>,
+        state: &Bound<'_, PyAny>,
+        approvals: Option<&Bound<'_, PyAny>>,
+        deferred_results: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let lease = self.acquire_operation()?;
+        let state: AgentRunState = serde_json::from_value(py_to_json(py, state)?)
+            .map_err(|error| PyValueError::new_err(format!("invalid run state: {error}")))?;
+        let results = parse_hitl_results(py, approvals, deferred_results)?;
+        let session = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                let _lease = lease;
+                let mut session = session.lock().await;
+                session
+                    .resume_after_hitl_for_state(&state, results)
                     .await
                     .map_err(hitl_error_to_py)
             },
@@ -700,10 +1015,11 @@ fn parse_approval_decision(value: Value) -> PyResult<ToolApprovalDecision> {
         Value::Bool(true) => Ok(ToolApprovalDecision::approved()),
         Value::Bool(false) => Ok(ToolApprovalDecision::denied("denied")),
         Value::Object(mut object) => {
-            let approved = object
-                .remove("approved")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(true);
+            let Some(approved) = object.remove("approved").and_then(|value| value.as_bool()) else {
+                return Err(PyValueError::new_err(
+                    "approval decision mappings must include approved: bool",
+                ));
+            };
             let decided_by = object
                 .remove("decided_by")
                 .and_then(|value| value.as_str().map(ToOwned::to_owned));
@@ -739,6 +1055,45 @@ fn parse_approval_decision(value: Value) -> PyResult<ToolApprovalDecision> {
     }
 }
 
+fn parse_bus_message(py: Python<'_>, message: &Bound<'_, PyAny>) -> PyResult<BusMessage> {
+    serde_json::from_value(py_to_json(py, message)?)
+        .map_err(|error| PyValueError::new_err(format!("invalid bus message: {error}")))
+}
+
+fn control_receipt_to_py(py: Python<'_>, receipt: AgentControlReceipt) -> PyResult<Py<PyAny>> {
+    json_to_py(
+        py,
+        &serde_json::json!({
+            "id": receipt.id,
+            "kind": control_kind_name(receipt.kind),
+            "queued": receipt.queued,
+            "run_id": receipt.run_id,
+            "session_id": receipt.session_id,
+        }),
+    )
+}
+
+const fn control_kind_name(kind: AgentControlKind) -> &'static str {
+    kind.as_str()
+}
+
+fn control_error_to_py(error: AgentControlError) -> PyFutureError {
+    match error {
+        AgentControlError::TerminalRun => PyFutureError::State(error.to_string()),
+    }
+}
+
+fn generated_control_id(prefix: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    format!("{prefix}-{nanos}")
+}
+
+fn python_stream_options() -> AgentStreamOptions {
+    AgentStreamOptions::new().drop_policy(AgentStreamDropPolicy::Backpressure)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn py_run_options(
     py: Python<'_>,
@@ -749,6 +1104,7 @@ fn py_run_options(
     request_params: Option<&Bound<'_, PyAny>>,
     output_schema: Option<&Bound<'_, PyAny>>,
     output_policy: Option<&Bound<'_, PyAny>>,
+    toolsets: Option<Vec<Py<PyToolset>>>,
 ) -> PyResult<AgentRunOptions> {
     if output_schema.is_some() && output_policy.is_some() {
         return Err(PyValueError::new_err(
@@ -769,6 +1125,10 @@ fn py_run_options(
     if !registry.is_empty() {
         options = options.append_tool_registry(&registry);
     }
+    let native_toolsets = py_toolsets_to_dyn_toolsets(py, toolsets)?;
+    if !native_toolsets.is_empty() {
+        options = options.toolsets(native_toolsets);
+    }
     if let Some(settings) = extract_model_settings(py, model_settings)? {
         options = options.model_settings(settings);
     }
@@ -782,6 +1142,26 @@ fn py_run_options(
         options = options.output_policy(policy);
     }
     Ok(options)
+}
+
+fn extract_runtime_model_config(
+    py: Python<'_>,
+    runtime_config: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<ModelConfig>> {
+    let Some(runtime_config) = runtime_config else {
+        return Ok(None);
+    };
+    if runtime_config.is_none() {
+        return Ok(None);
+    }
+    let value = match runtime_config.getattr("to_model_config") {
+        Ok(to_model_config) => py_to_json(py, &to_model_config.call0()?)?,
+        Err(_) => py_to_json(py, runtime_config)?,
+    };
+    let model_config_value = value.get("model_config").cloned().unwrap_or(value);
+    serde_json::from_value(model_config_value)
+        .map(Some)
+        .map_err(|error| PyValueError::new_err(format!("invalid runtime_config: {error}")))
 }
 
 fn to_py_value_error(error: serde_json::Error) -> PyErr {
@@ -819,7 +1199,7 @@ fn stream_error_to_py(error: AgentStreamError) -> PyFutureError {
     match error {
         AgentStreamError::Agent(error) => PyFutureError::from_agent_error(error),
         AgentStreamError::RuntimeUnavailable(_)
-        | AgentStreamError::Interrupted
+        | AgentStreamError::Interrupted { .. }
         | AgentStreamError::Join(_) => PyFutureError::Stream(error.to_string()),
     }
 }
@@ -844,12 +1224,41 @@ fn hitl_error_to_py(error: AgentHitlError) -> PyFutureError {
 fn stream_status_json(handle: &AgentStreamHandle) -> Value {
     let status = handle.status();
     serde_json::json!({
-        "run_status": format!("{:?}", status.run_status).to_ascii_lowercase(),
-        "current_error": status.current_error.map(|error| format!("{error:?}")),
+        "run_status": stream_run_status_name(status.run_status),
+        "current_error": status.current_error.map(stream_current_error_json),
         "cancel_requested": status.cancel_requested,
         "dropped_events": status.dropped_events,
         "receiver_closed": status.receiver_closed,
         "buffer_size": status.options.buffer_size,
-        "drop_policy": format!("{:?}", status.options.drop_policy).to_ascii_lowercase(),
+        "drop_policy": stream_drop_policy_name(status.options.drop_policy),
     })
+}
+
+const fn stream_run_status_name(status: AgentStreamRunStatus) -> &'static str {
+    match status {
+        AgentStreamRunStatus::Running => "running",
+        AgentStreamRunStatus::Cancelling => "cancelling",
+        AgentStreamRunStatus::Finished => "finished",
+    }
+}
+
+const fn stream_drop_policy_name(policy: AgentStreamDropPolicy) -> &'static str {
+    match policy {
+        AgentStreamDropPolicy::DropNewest => "drop_newest",
+        AgentStreamDropPolicy::Backpressure => "backpressure",
+    }
+}
+
+fn stream_current_error_json(error: AgentStreamCurrentError) -> Value {
+    match error {
+        AgentStreamCurrentError::Interrupted => {
+            serde_json::json!({"kind": "interrupted", "message": "stream interrupted"})
+        }
+        AgentStreamCurrentError::Agent(message) => {
+            serde_json::json!({"kind": "agent", "message": message})
+        }
+        AgentStreamCurrentError::Join(message) => {
+            serde_json::json!({"kind": "join", "message": message})
+        }
+    }
 }

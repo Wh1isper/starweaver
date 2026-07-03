@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, cast
 
 from . import _native
@@ -46,6 +47,53 @@ class RequestParams:
         return self._native.to_dict()
 
 
+@dataclass(frozen=True)
+class ProviderAuth:
+    """Typed provider auth selector for model constructors."""
+
+    provider: str
+    api_key: str | None = None
+    api_key_env: str | None = None
+
+    @classmethod
+    def openai(
+        cls,
+        *,
+        api_key: str | None = None,
+        api_key_env: str | None = "OPENAI_API_KEY",
+    ) -> ProviderAuth:
+        return cls("openai", api_key=api_key, api_key_env=api_key_env)
+
+    @classmethod
+    def anthropic(
+        cls,
+        *,
+        api_key: str | None = None,
+        api_key_env: str | None = "ANTHROPIC_API_KEY",
+    ) -> ProviderAuth:
+        return cls("anthropic", api_key=api_key, api_key_env=api_key_env)
+
+    @classmethod
+    def gemini(
+        cls,
+        *,
+        api_key: str | None = None,
+        api_key_env: str | None = "GEMINI_API_KEY",
+    ) -> ProviderAuth:
+        return cls("gemini", api_key=api_key, api_key_env=api_key_env)
+
+    @classmethod
+    def codex_oauth(cls) -> ProviderAuth:
+        return cls("codex")
+
+    def resolve_api_key(
+        self, api_key: str | None, api_key_env: str | None
+    ) -> tuple[str | None, str | None]:
+        return api_key if api_key is not None else self.api_key, (
+            api_key_env if api_key_env is not None else self.api_key_env
+        )
+
+
 class ProviderModel:
     """Production provider-backed model adapter."""
 
@@ -59,11 +107,14 @@ class ProviderModel:
         *,
         api_key: str | None = None,
         api_key_env: str | None = None,
+        auth: ProviderAuth | None = None,
         model_config_preset: str | None = None,
         model_settings: ModelSettings | Mapping[str, Any] | None = None,
         base_url: str | None = None,
         endpoint_path: str | None = None,
     ) -> ProviderModel:
+        if auth is not None:
+            api_key, api_key_env = auth.resolve_api_key(api_key, api_key_env)
         return cls(
             _native.ProviderModel.from_model_id(
                 model_id,
@@ -82,13 +133,75 @@ class ProviderModel:
         model_name: str,
         *,
         model_settings: ModelSettings | Mapping[str, Any] | None = None,
+        auth: ProviderAuth | None = None,
+        session_id: str | None = None,
+        thread_id: str | None = None,
+        stream_transport: str | None = None,
     ) -> ProviderModel:
+        if auth is not None and auth.provider != "codex":
+            raise ValueError("codex_oauth requires ProviderAuth.codex_oauth()")
         return cls(
             _native.ProviderModel.codex_oauth(
                 model_name,
-                model_settings=ensure_model_settings(model_settings),
+                model_settings=ensure_model_settings(
+                    _with_provider_settings(
+                        model_settings,
+                        codex=_clean_none({"session_id": session_id, "thread_id": thread_id}),
+                        openai_responses=_clean_none(
+                            {"stream_transport": _normalize_stream_transport(stream_transport)}
+                        ),
+                    )
+                ),
             )
         )
+
+    @classmethod
+    def openai(
+        cls,
+        model_name: str,
+        *,
+        protocol: str = "responses",
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        auth: ProviderAuth | None = None,
+        model_config_preset: str | None = None,
+        model_settings: ModelSettings | Mapping[str, Any] | None = None,
+        base_url: str | None = None,
+        endpoint_path: str | None = None,
+        stream_transport: str | None = None,
+    ) -> ProviderModel:
+        if auth is not None:
+            if auth.provider != "openai":
+                raise ValueError("ProviderModel.openai requires ProviderAuth.openai()")
+            api_key, api_key_env = auth.resolve_api_key(api_key, api_key_env)
+        if protocol in {"responses", "openai_responses"}:
+            return cls.openai_responses(
+                model_name,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                model_config_preset=model_config_preset,
+                model_settings=_with_provider_settings(
+                    model_settings,
+                    openai_responses=_clean_none(
+                        {"stream_transport": _normalize_stream_transport(stream_transport)}
+                    ),
+                ),
+                base_url=base_url,
+                endpoint_path=endpoint_path,
+            )
+        if protocol in {"chat", "openai_chat"}:
+            if stream_transport is not None:
+                raise ValueError("stream_transport only applies to OpenAI Responses")
+            return cls.openai_chat(
+                model_name,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                model_config_preset=model_config_preset,
+                model_settings=model_settings,
+                base_url=base_url,
+                endpoint_path=endpoint_path,
+            )
+        raise ValueError("protocol must be 'responses' or 'chat'")
 
     @classmethod
     def openai_responses(
@@ -97,18 +210,31 @@ class ProviderModel:
         *,
         api_key: str | None = None,
         api_key_env: str | None = None,
+        auth: ProviderAuth | None = None,
         model_config_preset: str | None = None,
         model_settings: ModelSettings | Mapping[str, Any] | None = None,
         base_url: str | None = None,
         endpoint_path: str | None = None,
+        stream_transport: str | None = None,
     ) -> ProviderModel:
+        if auth is not None:
+            if auth.provider != "openai":
+                raise ValueError("openai_responses requires ProviderAuth.openai()")
+            api_key, api_key_env = auth.resolve_api_key(api_key, api_key_env)
         return cls(
             _native.ProviderModel.openai_responses(
                 model_name,
                 api_key=api_key,
                 api_key_env=api_key_env,
                 model_config_preset=model_config_preset,
-                model_settings=ensure_model_settings(model_settings),
+                model_settings=ensure_model_settings(
+                    _with_provider_settings(
+                        model_settings,
+                        openai_responses=_clean_none(
+                            {"stream_transport": _normalize_stream_transport(stream_transport)}
+                        ),
+                    )
+                ),
                 base_url=base_url,
                 endpoint_path=endpoint_path,
             )
@@ -121,11 +247,16 @@ class ProviderModel:
         *,
         api_key: str | None = None,
         api_key_env: str | None = None,
+        auth: ProviderAuth | None = None,
         model_config_preset: str | None = None,
         model_settings: ModelSettings | Mapping[str, Any] | None = None,
         base_url: str | None = None,
         endpoint_path: str | None = None,
     ) -> ProviderModel:
+        if auth is not None:
+            if auth.provider != "openai":
+                raise ValueError("openai_chat requires ProviderAuth.openai()")
+            api_key, api_key_env = auth.resolve_api_key(api_key, api_key_env)
         return cls(
             _native.ProviderModel.openai_chat(
                 model_name,
@@ -145,11 +276,16 @@ class ProviderModel:
         *,
         api_key: str | None = None,
         api_key_env: str | None = None,
+        auth: ProviderAuth | None = None,
         model_config_preset: str | None = None,
         model_settings: ModelSettings | Mapping[str, Any] | None = None,
         base_url: str | None = None,
         endpoint_path: str | None = None,
     ) -> ProviderModel:
+        if auth is not None:
+            if auth.provider != "anthropic":
+                raise ValueError("anthropic requires ProviderAuth.anthropic()")
+            api_key, api_key_env = auth.resolve_api_key(api_key, api_key_env)
         return cls(
             _native.ProviderModel.anthropic(
                 model_name,
@@ -169,11 +305,16 @@ class ProviderModel:
         *,
         api_key: str | None = None,
         api_key_env: str | None = None,
+        auth: ProviderAuth | None = None,
         model_config_preset: str | None = None,
         model_settings: ModelSettings | Mapping[str, Any] | None = None,
         base_url: str | None = None,
         endpoint_path: str | None = None,
     ) -> ProviderModel:
+        if auth is not None:
+            if auth.provider != "gemini":
+                raise ValueError("gemini requires ProviderAuth.gemini()")
+            api_key, api_key_env = auth.resolve_api_key(api_key, api_key_env)
         return cls(
             _native.ProviderModel.gemini(
                 model_name,
@@ -201,6 +342,60 @@ def ensure_model_settings(
     if isinstance(value, _native.ModelSettings):
         return value
     return ModelSettings(cast(Mapping[str, Any], value)).to_native()
+
+
+def _with_provider_settings(
+    value: ModelSettings | Mapping[str, Any] | None,
+    *,
+    codex: Mapping[str, Any] | None = None,
+    openai_responses: Mapping[str, Any] | None = None,
+) -> ModelSettings | Mapping[str, Any] | None:
+    overlay: JsonObject = {}
+    provider_settings: JsonObject = {}
+    if codex:
+        provider_settings["codex"] = dict(codex)
+    if openai_responses:
+        provider_settings["openai_responses"] = dict(openai_responses)
+    if provider_settings:
+        overlay["provider_settings"] = provider_settings
+    if not overlay:
+        return value
+    payload = _model_settings_payload(value)
+    _deep_merge(payload, overlay)
+    return ModelSettings(payload)
+
+
+def _model_settings_payload(value: ModelSettings | Mapping[str, Any] | None) -> JsonObject:
+    if value is None:
+        return {}
+    if isinstance(value, ModelSettings):
+        return value.to_dict()
+    return dict(value)
+
+
+def _deep_merge(target: JsonObject, overlay: Mapping[str, Any]) -> None:
+    for key, value in overlay.items():
+        if isinstance(value, Mapping) and isinstance(target.get(key), Mapping):
+            nested = dict(cast(Mapping[str, Any], target[key]))
+            _deep_merge(nested, value)
+            target[key] = nested
+        else:
+            target[key] = value
+
+
+def _clean_none(value: Mapping[str, Any]) -> JsonObject:
+    return {key: item for key, item in value.items() if item is not None}
+
+
+def _normalize_stream_transport(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized in {"websocket", "ws"}:
+        return "web_socket"
+    if normalized in {"web_socket", "http", "auto"}:
+        return normalized
+    raise ValueError("stream_transport must be 'http', 'websocket', or 'auto'")
 
 
 def ensure_request_params(

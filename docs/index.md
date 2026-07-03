@@ -39,14 +39,16 @@ flowchart LR
 
 ## Learning path
 
-1. [Install](install.md): install from release artifacts or run from source.
-2. [Quickstart](quickstart.md): build and run your first agent.
-3. [Agent SDK](agent-sdk.md): understand the SDK surface and crate boundaries.
-4. [Python SDK](python-sdk.md): inject Python tools into the same runtime.
-5. [Tools](tools.md): add typed function tools and toolsets.
-6. [Structured Output](output.md): return JSON with schemas and typed parsing.
-7. [Session and Stream Contracts](session-stream.md): integrate durable product surfaces.
-8. [Release](release.md): prepare and publish Starweaver releases.
+01. [Install](install.md): install from release artifacts or run from source.
+02. [Quickstart](quickstart.md): build and run your first agent.
+03. [Agent SDK](agent-sdk.md): understand the SDK surface and crate boundaries.
+04. [Python SDK](python-sdk.md): inject Python tools into the same runtime.
+05. [Python Tools](python/tools.md): add in-process Python tools and toolsets.
+06. [Python Examples](python/examples.md): run complete Python examples.
+07. [Tools](tools.md): add Rust typed function tools and toolsets.
+08. [Structured Output](output.md): return JSON with schemas and typed parsing.
+09. [Session and Stream Contracts](session-stream.md): integrate durable product surfaces.
+10. [Release](release.md): prepare and publish Starweaver releases.
 
 ## Stability
 

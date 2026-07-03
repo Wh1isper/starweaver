@@ -1,162 +1,297 @@
-# Concept Mapping
+# Public Python API Contract
 
-This spec maps Python SDK concepts into Starweaver-native Rust seams. The goal
-is to make Python application code feel natural without creating a second
-runtime contract.
+This spec defines the Python-facing concepts and maps them to Starweaver Rust
+contracts. The goal is a Python API that feels natural without creating a
+second runtime model.
 
-## Current Rust Seams
+## API Layers
 
-The binding should use existing Starweaver seams instead of creating a parallel
-agent runtime:
+The Python package should expose three layers:
 
-| Rust seam                           | Binding use                                                                                              |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `AgentBuilder`                      | Python `create_agent(...)`, `Agent`, `AgentApp` construction                                             |
-| `AgentSession`                      | Python multi-turn sessions, run options, HITL resume, state export                                       |
-| `AgentRunOptions`                   | Per-run Python overrides for instructions, model settings, request params, tools, and toolsets           |
-| `AgentContext`                      | Python context facade, metadata/state/notes/messages/dependencies access                                 |
-| `ResumableState`                    | JSON-serializable Python state export and restore                                                        |
-| `Tool`                              | `PythonTool` adapter around Python callables                                                             |
-| `FunctionTool`                      | Rust reference implementation for callable-backed tools                                                  |
-| `ToolContext`                       | Python `ToolContext` facade passed into Python tools                                                     |
-| `ToolResult`                        | Python `ToolResult` return type and conversion target                                                    |
-| `ToolError`                         | Python exception mapping for retry, approval, deferred, validation, execution, cancellation, and timeout |
-| `Toolset` and `StaticToolset`       | Python `Toolset` and grouped tools with instructions and lifecycle                                       |
-| approval/deferred metadata          | Python HITL and deferred tool flow                                                                       |
-| `AgentStreamHandle`                 | Python async iterator and interruption surface                                                           |
-| `SubagentSpec` and SDK registry     | Python subagent config and delegation                                                                    |
-| `AgentSpec` and `AgentSpecRegistry` | Serializable Python agent profiles and registry-backed construction                                      |
-| `EnvironmentProvider`               | Python-visible local/virtual/sandbox/envd providers and future Python provider adapters                  |
-| `ModelAdapter`                      | Starweaver-native model handles; optional future Python model adapter                                    |
-| usage ledger and trace context      | Python usage snapshots and observability hooks                                                           |
+1. Declarative definitions: tools, output policies, capability bundles,
+   subagents, models, and run options.
+2. Runtime handles: `Agent`, `AgentSession`, and `AgentRun`.
+3. Evidence values: results, stream events, pending HITL items, state snapshots,
+   usage snapshots, and raw records.
 
-## Python Concept Map
+The public API should make the common path concise while keeping raw evidence
+available for applications that need forward compatibility.
 
-The Python SDK should map the major `ya-agent-sdk` style concepts to
-Starweaver-native contracts as follows.
-
-| Python concept      | Rust owner                                 | P0 shape                                                                                                   | Later shape                                                                                      |
-| ------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `create_agent(...)` | `starweaver-agent::AgentBuilder`           | Build an `Agent` from model, instructions, tools, toolsets, output policy, and capabilities                | Registry-backed `AgentSpec`, presets, environment and durability profiles                        |
-| `Agent`             | `AgentApp` plus `RuntimeAgent`             | Async context manager with `run`, `run_stream`, and `new_session`                                          | Application-level lifecycle hooks and resource management                                        |
-| `AgentSession`      | `starweaver-agent::AgentSession`           | Multi-turn stateful session with `run`, `run_stream`, `export_state`, and `from_state`                     | Store-backed sessions, replay cursors, stream archives                                           |
-| `RunOptions`        | `AgentRunOptions`                          | Per-run instructions, request params, tools, toolsets, and replace-tools flag                              | Typed model/output/approval/trace overrides                                                      |
-| `AgentContext`      | `starweaver-context::AgentContext`         | Read/write facade for state, metadata, notes, message bus, and dependencies                                | Capability-aware facade with usage, tool search, environment, and resource views                 |
-| `ResumableState`    | `starweaver-context::ResumableState`       | Python JSON object and Pydantic model wrapper                                                              | Full/curated export modes and versioned migrations                                               |
-| `@tool`             | `starweaver-tools::Tool`                   | Decorator returning `PythonTool` with Pydantic or explicit JSON schema                                     | Availability, prepare-definition, retry, timeout, return schema, strict mode, and per-tool hooks |
-| `BaseTool`          | `Tool`                                     | Subclassable Python base class with `name`, `schema`, and `call`                                           | Full lifecycle and cancellation hooks                                                            |
-| `Toolset`           | `Toolset`                                  | Grouped Python tools plus instructions                                                                     | Async enter/exit/prepare lifecycle and dynamic discovery                                         |
-| `ToolContext`       | `ToolContext`                              | Python object exposing run ids, retry, metadata, approval/deferred handles, cancellation, and dependencies | Controlled `AgentContext` handle and environment/resource helpers                                |
-| `ToolResult`        | `ToolResult`                               | JSON content plus optional metadata, model content, user content, and private metadata                     | Binary/resource return helpers and display content helpers                                       |
-| tool exceptions     | `ToolError`                                | Python exceptions mapped into Starweaver control flow                                                      | Rich Python tracebacks in private metadata and policy-aware redaction                            |
-| `stream_agent(...)` | `AgentStreamHandle`                        | `async for event in agent.run_stream(...)`                                                                 | replay cursor, backpressure options, event filters, and child stream attribution                 |
-| HITL approval       | approval metadata and `AgentHitlResults`   | Raise `ApprovalRequired` from Python tools and resume with decisions                                       | Durable approval records and Claw approval UI integration                                        |
-| deferred tools      | deferred metadata and `AgentHitlResults`   | Raise `CallDeferred` and resume with deferred result                                                       | Store-backed deferred jobs and service orchestration                                             |
-| subagents           | `SubagentSpec`, registry, delegation tools | Python `SubagentConfig` mapped into SDK registry                                                           | Nested sessions, stream evidence, inherited tools, worker mode                                   |
-| skills              | skill registry and skill toolsets          | List/load Starweaver skills from provider-visible paths                                                    | Hot reload and remote registry sync                                                              |
-| environment         | `EnvironmentProvider`                      | Expose local/virtual provider handles and environment-backed bundles                                       | Python-defined environment providers                                                             |
-| resources           | environment resource references            | Use resource refs as model/tool content and environment handles                                            | Resumable resource registry and Python resource providers                                        |
-| message bus         | `AgentContext` message bus                 | Python send/consume helpers                                                                                | Idempotent targeted/broadcast messages with multimodal payloads                                  |
-| models              | `ModelAdapter` and model presets           | Use Starweaver model handles or registry-resolved model specs                                              | Python-defined `ModelAdapter` only after runtime requirements are proven                         |
-| observability       | trace context and trace recorders          | Expose trace ids, run ids, usage snapshots                                                                 | Python logging bridge and OTel exporter options                                                  |
-
-## Python API Sketch
-
-P0 should support this application shape:
+## Preferred User Shape
 
 ```python
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from starweaver import ToolContext, ToolResult, create_agent, tool
 
 
 class LookupArgs(BaseModel):
-    query: str = Field(description="Search query submitted by the model")
+    query: str
 
 
-@tool(name="lookup", description="Lookup an internal value")
+@tool
 async def lookup(ctx: ToolContext, args: LookupArgs) -> ToolResult:
     return ToolResult({"value": args.query, "run_id": ctx.run_id})
 
 
 async def main() -> None:
-    async with create_agent(
-        model="test:text:ready",
-        instructions=["Answer with short responses."],
-        tools=[lookup],
-    ) as agent:
-        result = await agent.run("Say ready")
-        assert result.output == "ready"
+    async with create_agent(model=model, tools=[lookup]) as agent:
+        async with agent.session() as session:
+            result = await session.run("Say ready")
+            assert result.output
 ```
 
-Streaming should feel like normal Python async iteration:
+Advanced control should stay explicit:
 
 ```python
-async for event in agent.run_stream("Research this topic"):
-    if event.kind == "message_delta":
-        print(event.text, end="")
+async with agent.session() as session:
+    async with session.run_stream("Investigate") as run:
+        await run.steer("Prioritize implementation evidence.")
+        async for event in run:
+            ...
 ```
 
-Sessions and state should be explicit:
+## Concept Map
+
+| Python concept      | Rust owner                                      | Status              | Contract                                                                                                                        |
+| ------------------- | ----------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `create_agent(...)` | `starweaver-agent::AgentBuilder`                | current             | Build a reusable agent facade from model, instructions, tools, toolsets, output policy, subagents, bundles, and runtime config. |
+| `RuntimeConfig`     | runtime/context config seams                    | current             | Runtime and context knobs stay separate from provider `ModelSettings`.                                                          |
+| `Agent`             | `starweaver-runtime::Agent` plus SDK facade     | current             | Reusable configuration and resource owner.                                                                                      |
+| `Agent.session()`   | `starweaver-agent::AgentSession`                | current             | Pythonic alias for new or restored sessions.                                                                                    |
+| `AgentSession`      | `AgentSession`                                  | current             | Stateful conversation, export/restore, HITL resume, session streams, and active session control.                                |
+| `AgentRun`          | `AgentStreamHandle` plus control seam           | current             | Live run handle for events, result, interrupt, steer, messages, HITL, and recovery.                                             |
+| `AgentStream`       | `AgentRun` compatibility alias                  | current             | Compatibility name for the live run handle.                                                                                     |
+| `RunOptions`        | `AgentRunOptions`                               | current plus target | Per-run instructions, tools, toolsets, model settings, request params, output policy, trace metadata, and approval policy.      |
+| `@tool`             | `starweaver-tools::Tool`                        | current             | Python callable adapter registered as a native tool.                                                                            |
+| `BaseTool`          | `Tool`                                          | current             | Subclass-friendly tool definition.                                                                                              |
+| `ToolContext`       | `ToolContext`                                   | current             | Run ids, retry, metadata, approval, deferred result, cancellation.                                                              |
+| `ToolResult`        | `ToolResult`                                    | current             | Tool content, app value, user/model content, metadata, private metadata.                                                        |
+| tool exceptions     | `ToolError`                                     | current             | Python control exceptions map into native tool control flow.                                                                    |
+| `Toolset`           | `starweaver-tools` and SDK capability contracts | current             | Group static tools, instructions, metadata, and per-run composition without changing the tool loop.                             |
+| `ToolLibrary`       | Starweaver tool metadata and session state      | current             | Index tools/namespaces and expose search/proxy facades while persisting IDs, not Python objects.                                |
+| output policies     | `OutputPolicy`                                  | current             | Structured output, validators, output functions, retry budget.                                                                  |
+| stream events       | `AgentStreamRecord`                             | current             | Python `StreamEvent.kind`, lazy accessors, and raw JSON.                                                                        |
+| stream adapters     | `starweaver-stream`                             | current             | Projection helpers over canonical stream records; live control remains on `AgentRun`.                                           |
+| HITL result helpers | `AgentResult` helpers                           | current             | Pending approval/deferred records have typed helper objects plus raw dicts.                                                     |
+| message bus facade  | `AgentContext.messages`                         | current             | MQ-like send, peek, consume, steering, and idempotency.                                                                         |
+| active control      | neutral Rust SDK seam                           | current             | Live steering, message writes, interruption, recovery.                                                                          |
+| `SessionArchive`    | `ResumableState`                                | current             | Full-state JSON/file persistence helper.                                                                                        |
+| `SessionStore`      | `starweaver-session` and `starweaver-storage`   | partial             | Python record/store facades preserve canonical JSON; native SQLite and Rust trait callback bridges remain future work.          |
+| `CapabilityBundle`  | SDK capability bundle                           | current             | Static composition of instructions, tools, model/request overlays, output callbacks.                                            |
+| `Subagent`          | `SubagentSpec` and registry                     | current             | Register child agents through Starweaver delegation tools.                                                                      |
+| `SkillRegistry`     | Starweaver skill specs and bundles              | current             | List/load/inspect skills and attach skill toolsets or bundles through native skill parsing.                                     |
+| provider models     | `starweaver-model` adapters                     | current             | Provider helper constructors backed by Rust transports/profiles plus typed OAuth/routing helpers.                               |
+| environments        | `EnvironmentProvider`                           | partial             | Python wrappers over Rust-owned local and virtual providers; envd and Python-defined providers remain future work.              |
+| resources           | environment resource refs                       | current             | Resource refs, registries, and environment-owned resource lifecycle.                                                            |
+| media               | media filters and resource refs                 | current             | Upload/config adapters without embedding large binary state.                                                                    |
+| observability       | trace context and usage                         | partial             | Expose ids now; usage/trace helpers should become typed.                                                                        |
+
+## Agent
+
+`Agent` is reusable configuration. It should not become a hidden global
+conversation object.
+
+Current shape:
 
 ```python
-session = agent.new_session()
-await session.run("Remember that the project is Starweaver")
-
-state = session.export_state(mode="curated")
-restored = agent.session_from_state(state)
-result = await restored.run("What project did I mention?")
+async with create_agent(model=model, tools=[lookup]) as agent:
+    result = await agent.run("Say ready")
+    stream = agent.run_stream("Stream")
 ```
 
-HITL should preserve Starweaver control flow:
+Target additions:
 
 ```python
-from starweaver import ApprovalRequired
+class Agent:
+    def session(self, state: dict[str, object] | None = None) -> AgentSession: ...
+    def new_session(self) -> AgentSession: ...
+    def session_from_state(self, state: dict[str, object]) -> AgentSession: ...
 
+    async def run(self, prompt: str, **options) -> RunResult: ...
+    def run_stream(self, prompt: str, **options) -> AgentRun: ...
 
-@tool(name="deploy")
-async def deploy(ctx: ToolContext, args: DeployArgs) -> dict:
-    raise ApprovalRequired(
-        reason="Deployment changes production state",
-        metadata={"service": args.service},
-    )
-
-
-run = await session.run("Deploy api")
-if run.needs_approval:
-    resumed = await session.resume_after_hitl(
-        approvals={run.pending_approvals[0].id: {"approved": True}}
-    )
+    async def steer(self, text: str, **options) -> ControlReceipt: ...
 ```
+
+Rules:
+
+- `session()` should be the preferred Python name.
+- `new_session()` and `session_from_state()` remain explicit aliases.
+- `run()` and `run_stream()` may create ephemeral sessions for one-off use.
+- `agent.steer(...)` is optional convenience and must reject zero or multiple
+  direct active runs.
+
+## AgentSession
+
+`AgentSession` is the primary stateful conversation object.
+
+Target surface:
+
+```python
+class AgentSession:
+    async def __aenter__(self) -> AgentSession: ...
+    async def __aexit__(self, exc_type, exc, tb) -> None: ...
+
+    async def run(self, prompt: str, **options) -> RunResult: ...
+    def run_stream(self, prompt: str, **options) -> AgentRun: ...
+
+    async def steer(self, text: str, **options) -> ControlReceipt: ...
+    def interrupt(self, reason: str | None = None) -> None: ...
+
+    @property
+    def messages(self) -> MessageBus: ...
+    @property
+    def hitl(self) -> SessionHitl: ...
+
+    def export_state(self, mode: str = "curated") -> dict[str, object]: ...
+    async def resume_after_hitl(
+        self,
+        approvals: object | None = None,
+        deferred_results: object | None = None,
+    ) -> RunResult: ...
+```
+
+Rules:
+
+- One active run per session remains the default.
+- Concurrent conversations should use multiple sessions.
+- Idle message-bus writes mutate stored session state.
+- Active message-bus writes must go through the active control handle.
+- State export must not serialize Python callable objects or process-local
+  dependencies.
+
+## AgentRun
+
+`AgentRun` is the public live handle. It should own the behavior currently split
+between `AgentStream`, raw result dicts, and future control APIs.
+
+Target surface:
+
+```python
+class AgentRun:
+    async def __aenter__(self) -> AgentRun: ...
+    async def __aexit__(self, exc_type, exc, tb) -> None: ...
+
+    def __aiter__(self) -> AsyncIterator[StreamEvent]: ...
+    async def recv(self) -> StreamEvent | None: ...
+    async def join(self) -> StreamRunResult: ...
+    async def result(self) -> RunResult: ...
+
+    async def steer(self, text: str, **options) -> ControlReceipt: ...
+    async def send_message(self, message: BusMessage | dict[str, object]) -> ControlReceipt: ...
+    def interrupt(self, reason: str | None = None) -> None: ...
+
+    def status(self) -> RunStatusSnapshot: ...
+    async def recoverable_state(self) -> dict[str, object]: ...
+
+    @property
+    def messages(self) -> MessageBus: ...
+    def hitl(self) -> RunHitl: ...
+```
+
+Context-manager rules:
+
+- Normal exit waits for completion.
+- Exceptional exit interrupts, joins or completes, and preserves recoverable
+  state.
+- Python task cancellation while awaiting stream methods interrupts the Rust
+  run and re-raises `asyncio.CancelledError`.
+- Fire-and-observe behavior must use an explicit detach/receiver-close API.
+
+## Run Options
+
+`run()` and `run_stream()` should accept the same option family at the agent and
+session level:
+
+- `instructions`
+- `tools`
+- `replace_tools`
+- `model_settings`
+- `request_params`
+- `output_schema`
+- `output_policy`
+- future `toolsets`
+- future `runtime_config`
+- future `trace_metadata`
+- future `approval_policy`
+
+Unknown run options should raise `TypeError` instead of being ignored.
+
+## Results And Evidence
+
+`RunResult` should expose:
+
+- `output`
+- `structured_output`
+- `messages`
+- `raw_state`
+- `status`
+- `is_waiting`
+- `needs_approval`
+- `pending_approvals`
+- `pending_deferred`
+- future `approvals`
+- future `deferred`
+- future `usage`
+- future `trace`
+
+Raw fields stay available. Typed helpers should sit on top of them.
+
+`StreamEvent` should expose:
+
+- `kind`
+- `raw`
+- future `run_id`
+- future `step`
+- future `text_delta`
+- future `tool_call`
+- future `tool_return`
+- future `usage`
+- future `approval`
+- future `deferred`
+- future `sideband`
+- future `is_terminal`
+
+Do not fork the stream protocol. Unknown records must remain accessible through
+`raw`.
+
+## Error Model
+
+Public Python exceptions should mirror Starweaver control flow:
+
+- `StarweaverError`
+- `AgentError`
+- `ModelError`
+- `ToolError`
+- `OutputError`
+- `InvalidArguments`
+- `ModelRetry`
+- `OutputRetry`
+- `OutputValidationFailed`
+- `ApprovalRequired`
+- `CallDeferred`
+- `Cancelled`
+- `Timeout`
+- `StateError`
+- `StreamError`
+
+Control methods should return receipts when accepted or raise typed exceptions.
+They should not return `False` for important failures.
 
 ## Mapping Principles
 
-- Python convenience should be a facade over Starweaver-owned contracts.
-- Python decorators should produce explicit native handles, not hidden global
-  runtime state.
-- Pydantic should help build schemas, but Rust should own validation inside the
-  agent loop.
-- Python exceptions should map into public Starweaver control flow, not opaque
-  foreign errors.
-- Raw Starweaver records should remain accessible for forward compatibility.
-- Python APIs should prefer explicit sessions over hidden global conversation
-  state.
-
-## P0 Minimum Concept Set
-
-The first implementation should only claim Python SDK viability when these
-concepts work together:
-
-- `create_agent(...)`
-- deterministic test model
-- `@tool`
-- `ToolContext`
-- `ToolResult`
-- `Agent.run(...)`
-- `AgentSession.run(...)`
-- `AgentSession.export_state(...)`
-- Python exception mapping for ordinary execution errors
-
-Streaming, HITL, deferred tools, subagents, and environment providers can land
-after the minimal in-process agent is stable, but their API names should be
-reserved early enough to avoid churn.
+- Python convenience is a facade over Rust-owned contracts.
+- Python decorators produce explicit handles, not hidden global runtime state.
+- Pydantic helps build schemas, but Starweaver owns runtime validation.
+- Python exceptions map into public Starweaver control flow.
+- Raw evidence remains available for compatibility.
+- Sessions should be explicit; hidden global conversation state should be
+  avoided.
+- Live control must target active runs, not exported snapshots.
+- Message bus APIs should read like Python while preserving MQ semantics.
+- Durable store APIs persist full Starweaver state and native records, not
+  process-local Python objects.
+- Tool search/proxy state persists serializable IDs and namespaces.
+- Environment and resource facades configure Rust-owned providers; they do not
+  bypass provider enforcement.

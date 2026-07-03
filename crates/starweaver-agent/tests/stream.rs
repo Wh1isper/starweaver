@@ -1,13 +1,14 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    AgentBuilder, AgentCapability, AgentRunState, AgentRuntimePolicy, AgentStreamDropPolicy,
-    AgentStreamError, AgentStreamEvent, AgentStreamOptions, AgentStreamRecord,
-    AgentStreamRunStatus, AgentStreamSourceKind, CapabilityError, CapabilityResult, FunctionTool,
-    StaticCapabilityBundle, SubagentConfig, SubagentRegistry, TestModel, ToolContext, ToolResult,
+    AgentBuilder, AgentCapability, AgentControlKind, AgentRunState, AgentRuntimePolicy,
+    AgentStreamDropPolicy, AgentStreamError, AgentStreamEvent, AgentStreamOptions,
+    AgentStreamRecord, AgentStreamRunStatus, AgentStreamSourceKind, CapabilityError,
+    CapabilityResult, FunctionTool, StaticCapabilityBundle, SubagentConfig, SubagentRegistry,
+    TestModel, ToolContext, ToolResult,
 };
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
@@ -151,7 +152,7 @@ async fn live_stream_completion_repairs_dangling_tool_call_on_interrupt() {
 
     assert!(matches!(
         completion.error,
-        Some(AgentStreamError::Interrupted)
+        Some(AgentStreamError::Interrupted { .. })
     ));
     let Some(recorded_call) = completion.state.message_history.iter().find_map(|message| {
         let ModelMessage::Response(response) = message else {
@@ -245,8 +246,167 @@ async fn live_stream_status_reports_running_and_cancelling() {
     let completion = handle.complete().await;
     assert!(matches!(
         completion.error,
-        Some(AgentStreamError::Interrupted)
+        Some(AgentStreamError::Interrupted { .. })
     ));
+}
+
+#[tokio::test]
+async fn live_control_steering_reaches_active_runtime_context() {
+    let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
+    let captured_model = Arc::clone(&captured);
+    let model = Arc::new(starweaver_agent::FunctionModel::new(
+        move |messages, _settings, _info| {
+            captured_model.lock().unwrap().push(messages.clone());
+            let has_tool_return = messages.iter().any(|message| {
+                matches!(
+                    message,
+                    ModelMessage::Request(request)
+                        if request
+                            .parts
+                            .iter()
+                            .any(|part| matches!(part, ModelRequestPart::ToolReturn(_)))
+                )
+            });
+            if has_tool_return {
+                Ok(ModelResponse::text("done"))
+            } else {
+                Ok(ModelResponse {
+                    parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                        id: "call_wait".to_string(),
+                        name: "wait".to_string(),
+                        arguments: serde_json::json!({}).into(),
+                    })],
+                    ..ModelResponse::text("")
+                })
+            }
+        },
+    ));
+    let wait = Arc::new(FunctionTool::new(
+        "wait",
+        Some("Wait before returning".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, _args: serde_json::Value| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(ToolResult::new(serde_json::json!({"ok": true})))
+        },
+    ));
+    let app = AgentBuilder::new(model)
+        .tool(wait)
+        .policy(AgentRuntimePolicy {
+            max_steps: 4,
+            ..AgentRuntimePolicy::default()
+        })
+        .build_app();
+    let mut handle = app.stream("deploy");
+    while let Some(record) = handle.recv().await {
+        if matches!(record.event, AgentStreamEvent::ToolCall { .. }) {
+            break;
+        }
+    }
+
+    let receipt = handle
+        .control_handle()
+        .steer("ui-1", "Use the safe rollout path.")
+        .await
+        .unwrap();
+    assert_eq!(receipt.id, "ui-1");
+    assert_eq!(receipt.kind, AgentControlKind::Steering);
+    assert!(receipt.queued);
+
+    while handle.recv().await.is_some() {}
+    let result = handle.join().await.unwrap();
+
+    assert_eq!(result.result.output, "done");
+    assert_eq!(
+        result.context.steering_messages,
+        vec!["Use the safe rollout path.".to_string()]
+    );
+    let captured = captured.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2);
+    assert!(format!("{:?}", captured[1]).contains("Steering update from the user"));
+    assert!(result.events.iter().any(|record| {
+        matches!(
+            &record.event,
+            AgentStreamEvent::Custom { event } if event.kind == "steering_submitted"
+        )
+    }));
+    assert!(result.events.iter().any(|record| {
+        matches!(
+            &record.event,
+            AgentStreamEvent::Custom { event } if event.kind == "steering_received"
+        )
+    }));
+}
+
+#[tokio::test]
+async fn live_control_late_steering_reaches_output_guard() {
+    let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
+    let captured_model = Arc::clone(&captured);
+    let model = Arc::new(starweaver_agent::FunctionModel::new(
+        move |messages, _settings, _info| {
+            let request_count = {
+                let mut captured = captured_model.lock().unwrap();
+                captured.push(messages);
+                captured.len()
+            };
+            if request_count == 1 {
+                Ok(ModelResponse::text("ready"))
+            } else {
+                Ok(ModelResponse::text("done"))
+            }
+        },
+    ));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let app = AgentBuilder::new(model)
+        .capability(Arc::new(PauseDuringOutputValidation {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+            paused: std::sync::atomic::AtomicBool::new(false),
+        }))
+        .policy(AgentRuntimePolicy {
+            max_steps: 4,
+            ..AgentRuntimePolicy::default()
+        })
+        .build_app();
+    let mut handle = app.stream("finalize");
+
+    entered.notified().await;
+    let receipt = handle
+        .control_handle()
+        .steer("late-1", "Use the safe rollout path.")
+        .await
+        .unwrap();
+    assert_eq!(receipt.id, "late-1");
+    assert_eq!(receipt.kind, AgentControlKind::Steering);
+    assert!(receipt.queued);
+    release.notify_one();
+
+    while handle.recv().await.is_some() {}
+    let result = handle.join().await.unwrap();
+
+    assert_eq!(result.result.output, "done");
+    let captured = captured.lock().unwrap().clone();
+    assert_eq!(captured.len(), 2);
+    assert!(format!("{:?}", captured[1]).contains("Steering update from the user"));
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|record| { matches!(&record.event, AgentStreamEvent::SteeringGuard { .. }) })
+    );
+    assert!(result.events.iter().any(|record| {
+        matches!(
+            &record.event,
+            AgentStreamEvent::Custom { event } if event.kind == "steering_submitted"
+        )
+    }));
+    assert!(result.events.iter().any(|record| {
+        matches!(
+            &record.event,
+            AgentStreamEvent::Custom { event } if event.kind == "steering_received"
+        )
+    }));
 }
 
 struct CancelOnToolCall;
@@ -263,6 +423,29 @@ impl AgentCapability for CancelOnToolCall {
                 reason: "test interrupted at tool call".to_string(),
             });
         }
+        Ok(())
+    }
+}
+
+struct PauseDuringOutputValidation {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+    paused: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl AgentCapability for PauseDuringOutputValidation {
+    async fn validate_output_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        _context: &mut starweaver_agent::AgentContext,
+        _output: &str,
+    ) -> CapabilityResult<()> {
+        if self.paused.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.entered.notify_one();
+        self.release.notified().await;
         Ok(())
     }
 }

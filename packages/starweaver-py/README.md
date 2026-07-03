@@ -2,8 +2,8 @@
 
 `starweaver` is the in-process Python SDK and binding package for Starweaver.
 It keeps the Rust runtime as the canonical agent loop while exposing Python
-ergonomics for agents, tools, sessions, streaming records, HITL control flow,
-and deterministic tests.
+ergonomics for agents, tools, models, sessions, streams, resources, media, and
+deterministic tests.
 
 Python tools are injected directly as native Starweaver runtime tools. They do
 not use MCP, stdio, or another binary protocol.
@@ -34,74 +34,58 @@ async def main() -> None:
             {"text": "done"},
         ]
     )
-    agent = create_agent(model=model, tools=[add])
-    result = await agent.run("Add two numbers")
+    result = await create_agent(model=model, tools=[add]).run("Add two numbers")
     print(result.output)
 
 
 asyncio.run(main())
 ```
 
-## Tool Forms
+## Core Surfaces
 
-Tools can be registered with `@tool`, as raw callables, or as `BaseTool`
-subclasses. Typed function parameters produce JSON Schema automatically.
-Pydantic models are supported for argument validation.
+- `create_agent()` builds a Python facade over the Rust runtime.
+- `@tool`, raw callables, and `BaseTool` register in-process tools.
+- Independent tool calls run in parallel by default; use `sequential=True` for
+  ordered side effects.
+- `Toolset`, `ToolSearchToolset`, and `ToolProxyToolset` compose grouped tools.
+- `ProviderModel`, `TestModel`, and `FunctionModel` cover production providers,
+  deterministic scripts, and callback-backed tests.
+- `OutputSchema`, `OutputPolicy`, validators, and output functions handle final
+  output.
+- `AgentSession` and `SessionArchive` preserve reusable session state.
+- `EnvironmentProvider`, `ResourceRef`, `SkillRegistry`, and `MediaUploader`
+  expose environment, resource, skill, and media boundaries.
 
-```python
-from pydantic import BaseModel
-from starweaver import BaseTool, ToolContext, tool
+## Stream Boundary
 
+`run_stream()` currently returns `AgentRun`, an async iterator over canonical
+`StreamEvent` records plus a Python facade for `recv()`, `join()`, `result()`,
+`status()`, `recoverable_state()`, `interrupt()`, active messages, steering, and
+streamed HITL helpers. The stable portable contract is the canonical
+`StreamEvent.raw` record sequence and collected run result. Python live-control
+ergonomics are the current facade, not a separately frozen live-handle
+protocol.
 
-class SearchArgs(BaseModel):
-    query: str
+`AgentStream` remains a compatibility alias for `AgentRun`.
 
+## Documentation
 
-@tool
-async def search(args: SearchArgs) -> dict[str, str]:
-    return {"result": args.query}
+Start with `docs/python-sdk.md` in the repository. The Python docs are organized
+by feature:
 
+- `docs/python/agents.md`
+- `docs/python/tools.md`
+- `docs/python/toolsets.md`
+- `docs/python/models.md`
+- `docs/python/output.md`
+- `docs/python/sessions-streams.md`
+- `docs/python/environments-skills.md`
+- `docs/python/media.md`
+- `docs/python/testing.md`
+- `docs/python/examples.md`
+- `docs/python/stability.md`
 
-class DeployTool(BaseTool):
-    name = "deploy"
-
-    def __init__(self) -> None:
-        super().__init__(
-            parameters_schema={"type": "object", "properties": {}, "additionalProperties": False}
-        )
-
-    async def call(self, ctx: ToolContext, args: dict[str, object]) -> dict[str, bool]:
-        return {"ok": not ctx.is_cancelled()}
-```
-
-The runtime executes independent tool calls in parallel by default. A tool can
-set `sequential=True`, and repeated calls to the same tool name in one model
-response automatically run in model order.
-
-## Streams And HITL
-
-`run_stream()` returns a live `AgentStream` handle. It can be used as an async
-iterator, or through `recv()`, `join()`, `result()`, `interrupt()`, and
-`recoverable_state()`.
-
-Run results expose `status`, `is_waiting`, `pending_approvals`, and
-`pending_deferred`. Approval entries include `approval_id`; deferred entries
-include `deferred_id`, and those IDs can be passed back to
-`resume_after_hitl()`.
-
-## Per-Run Options
-
-`run()` and `run_stream()` support `instructions`, per-run `tools`,
-`replace_tools`, `model_settings`, `request_params`, `output_schema`, and
-`output_policy`. Unknown run options are rejected instead of ignored.
-
-`ProviderModel` exposes provider-backed models for OpenAI Responses, OpenAI Chat,
-Anthropic Messages, Gemini, and Codex OAuth through `from_model_id()` prefixes.
-`OutputPolicy` packages structured output modes, retry budgets, validators, and
-final-output functions. `CapabilityBundle` packages instructions, Python tools,
-model settings, request parameters, output validators, and output functions.
-`Subagent` registers another Python-created agent behind Starweaver's native
-delegation tools.
+Runnable examples live in `examples/python/`.
 
 ## Validation
 

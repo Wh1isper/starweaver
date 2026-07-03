@@ -2040,6 +2040,7 @@ dependencies = [
  "serde_json",
  "starweaver-agent",
  "starweaver-core",
+ "starweaver-environment",
  "starweaver-model",
  "starweaver-oauth-provider",
  "starweaver-runtime",

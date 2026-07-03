@@ -17,7 +17,6 @@ fn is_steering_message(message: &BusMessage) -> bool {
         .get("starweaver.topic")
         .and_then(serde_json::Value::as_str)
         == Some("steering")
-        || message.source == "user"
 }
 
 struct SteeringMessage {

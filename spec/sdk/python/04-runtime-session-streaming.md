@@ -1,202 +1,295 @@
-# Runtime, Sessions, Streaming, And HITL
+# Runtime, Sessions, Streams, State, And HITL
 
-This spec covers the Python-facing agent runtime API after Python tools can be
-registered in process.
+This spec defines the Python runtime handles after tools are registered:
+agents, sessions, live runs, streams, output, state restore, and HITL resume.
+
+## Current Baseline
+
+The package currently exposes:
+
+- `Agent.run(...)`
+- `Agent.run_stream(...)`
+- `Agent.session(...)`
+- `Agent.new_session()`
+- `Agent.session_from_state(...)`
+- `AgentSession.run(...)`
+- `AgentSession.run_stream(...)`
+- `AgentSession` async context manager
+- `AgentSession.export_state(...)`
+- `AgentSession.resume_after_hitl(...)`
+- `AgentRun` with `AgentStream` as compatibility alias
+- `AgentRun.recv()`
+- `AgentRun.join()`
+- `AgentRun.result()`
+- `AgentRun.interrupt()`
+- `AgentRun.steer()`
+- `AgentRun.send_message()`
+- `AgentRun.messages`
+- `AgentRun.hitl()`
+- `AgentRun.recoverable_state()`
+- `AgentRun.status()`
+- `AgentSession.steer(...)`
+- `AgentSession.messages`
+
+Current behavior already validates:
+
+- deterministic runs
+- session history continuation
+- state export and restore
+- per-run tools and options
+- stream records with raw JSON
+- stream interruption
+- Python task cancellation while waiting for stream result
+- cancellation propagation into Python tools
+- raw approval/deferred resume
+- typed approval/deferred helpers
+- session busy protection while a session stream is active
+- active steering without taking the session busy lock
+
+`AgentSession` and `AgentRun` are now the primary Python lifecycle objects.
 
 ## Agent Construction
 
-P0 should support deterministic tests before production providers:
+`create_agent(...)` should accept:
 
-- `TestModel` with fixed text.
-- `FunctionModel` for scripted model behavior and tool-call tests.
-- A registry-resolved model handle for real providers once the provider factory
-  boundary is extracted from CLI-only code, if needed.
+- `model`
+- `tools`
+- `instructions`
+- `name`
+- `model_settings`
+- `request_params`
+- `output_schema`
+- `output_policy`
+- `subagents`
+- `subagent_delegation_mode`
+- `capability_bundles`
 
-The Python model field should not become an untyped provider escape hatch.
-Acceptable P0 forms:
+Model inputs should be Starweaver-backed:
 
-- a native Python wrapper around a Rust `ModelAdapter`
-- a registry name resolved by `AgentSpecRegistry`
-- a test model helper from `starweaver.testing`
+- deterministic `TestModel`
+- callback-backed `FunctionModel`
+- `ProviderModel` helpers over Rust provider adapters
+- future registry/profile helpers
 
-Future forms:
+Python-defined model adapters are not a priority until tool, session, stream,
+HITL, and active control behavior are stable.
 
-- Python model config helpers for Starweaver model presets
-- gateway/profile resolution
-- Python-defined `ModelAdapter` only after tool injection, session, streaming,
-  and HITL are stable
+## Session Lifecycle
 
-## Agent And Session API
-
-The Python `Agent` should be an async context manager:
+Preferred future shape:
 
 ```python
-async with create_agent(model=model, tools=[lookup]) as agent:
-    result = await agent.run("Say ready")
+async with create_agent(model=model) as agent:
+    async with agent.session() as session:
+        first = await session.run("Remember Starweaver")
+        state = session.export_state()
+
+    restored = agent.session(state)
+    second = await restored.run("What did I mention?")
 ```
 
-Sessions should map directly to `AgentSession`.
+Rules:
 
-P0 session API:
+- Sessions are explicit stateful conversation objects.
+- One active operation per session remains the default.
+- Exported state is JSON-compatible and Rust-versioned.
+- Process-local Python callables and dependencies are not serialized.
+- Tools and bundles must be re-registered before a restored session can use
+  them.
+- `session.export_state("curated")` is the application default.
+- `session.export_state("full")` is for recovery, debugging, and internal
+  service boundaries.
 
-- `agent.new_session()`
-- `agent.session_from_state(state)`
-- `session.run(input, **run_options)`
-- `session.run_stream(input, **run_options)`
-- `session.export_state(mode="curated" | "full")`
-- `session.inject_hitl_results(...)`
-- `session.resume_after_hitl(...)`
-- `session.metadata`
-- `session.state`
+## Live Run Lifecycle
 
-Run options should map to `AgentRunOptions`:
+The current `AgentStream` should graduate into a public `AgentRun` concept.
 
-- per-run instructions
-- model settings
-- request params
-- extra tools
-- extra toolsets
-- replace-tools flag
-- output policy when supported
-- trace metadata when supported
+`AgentRun` owns:
+
+- event iteration
+- final result
+- interruption
+- status
+- recoverable state
+- active steering
+- message-bus writes
+- bound HITL helpers
+
+Context-manager behavior:
+
+```python
+async with session.run_stream("Research") as run:
+    async for event in run:
+        ...
+```
+
+- Normal exit joins the run.
+- Exceptional exit interrupts the run and preserves recoverable state.
+- Cancelling a Python task that awaits `recv`, `join`, or `result` interrupts
+  the native run and re-raises `asyncio.CancelledError`.
+- Dropping the native stream currently interrupts; public Python APIs should
+  prefer explicit context-manager semantics.
+
+## Streaming
+
+`StreamEvent.raw` remains the forward-compatible source of truth.
+
+Current `StreamEvent`:
+
+- `kind`
+- `raw`
+
+Target accessors:
+
+- `run_id`
+- `step`
+- `sideband`
+- `sideband_kind`
+- `sideband_payload`
+- `text_delta`
+- `tool_call`
+- `tool_return`
+- `usage`
+- `approval`
+- `deferred`
+- `is_terminal`
+
+The first typed implementation can use lazy accessors over a single
+`StreamEvent` class. Splitting into multiple dataclasses is optional and should
+wait for evidence that applications need pattern matching over concrete event
+types.
+
+## HITL And Deferred Work
+
+Current public API exposes raw lists:
+
+- `RunResult.pending_approvals`
+- `RunResult.pending_deferred`
+- `RunResult.pending_deferred_tools`
+- `RunResult.needs_approval`
+- `RunResult.is_waiting`
+
+Target typed helpers:
+
+```python
+waiting = await session.run("Deploy production")
+decision = waiting.approvals[0].approve(decided_by="alice")
+result = await session.resume_after_hitl(approvals=[decision])
+```
+
+Typed objects:
+
+- `PendingApproval`
+- `ApprovalDecision`
+- `PendingDeferred`
+- `DeferredResult`
+- `HitlSnapshot`
+- `SessionHitl`
+- `RunHitl`
+
+Rules:
+
+- Raw dict resume remains available as an escape hatch.
+- Typed helpers build canonical Starweaver decisions.
+- Approval ids and deferred ids remain visible.
+- Live `run.hitl().snapshot()` is valid after a `suspended` event. It may join
+  that already-suspended stream to obtain the canonical waiting result.
+- `run.hitl().resume_collected(...)` resumes through the owning session and
+  returns a collected `RunResult`; it is not a live continuation handle.
+- Python does not maintain a second pending-HITL store.
+
+## Output And Validation
+
+Current Python output features include:
+
+- `OutputSchema`
+- Pydantic schema helpers
+- `OutputPolicy`
+- structured output modes
+- output validators
+- output functions
+- `OutputContext`
+- `OutputValue`
+- output retry exceptions
+
+Rules:
+
+- Rust owns the output retry loop.
+- Python validators and output functions are callbacks inside that loop.
+- Output callbacks follow the same GIL, event-loop, cancellation, and private
+  metadata rules as tools.
+- Pydantic should document and validate schemas; it should not replace native
+  runtime parsing semantics.
 
 ## State Export And Restore
 
-Run state and resumable state should remain JSON-compatible and versioned by
-the Rust state schema. Python Pydantic models can validate and document the
-shape, but Rust owns the canonical export format.
+Python should expose two views:
 
-Python should expose both:
-
-- raw JSON state for persistence and forward compatibility
-- typed helper models for application validation and discoverability
+- raw JSON state for persistence and compatibility
+- typed helper wrappers for application discoverability
 
 Restore rules:
 
 - Serializable context state restores from `ResumableState`.
-- Process-local dependencies must be rehydrated by the Python application.
-- Python callable handles are not serialized.
-- Tool and toolset registration must happen again before a restored session can
-  run tools that depend on process-local Python objects.
+- Message history, pending HITL, message bus state, usage state, and run ids are
+  owned by the Rust state schema.
+- Process-local Python dependencies must be rehydrated by the application.
+- Python callables are not serialized.
+- Restored sessions must use newly registered tools/toolsets/bundles.
+- Full `SessionArchive` payloads may carry the collected pending HITL
+  `last_run_state`; curated archives must stay portable and omit that field.
 
-## HITL Mapping
+See `08-session-store-and-state.md` for the durable store contract. The short
+rule is that application persistence uses full `ResumableState` and native
+session/run/stream/HITL records. Python callables, dependencies, live provider
+connections, and environment handles are supplied again by the current process.
 
-| Python API                   | Rust contract                                             |
-| ---------------------------- | --------------------------------------------------------- |
-| `ApprovalRequired` exception | approval-required tool control flow                       |
-| `CallDeferred` exception     | deferred tool control flow                                |
-| `PendingApproval` dataclass  | approval records exposed from session/run result          |
-| `DeferredCall` dataclass     | deferred records exposed from session/run result          |
-| `resume_after_hitl(...)`     | `AgentHitlResults` into `AgentSession::resume_after_hitl` |
+## Interruption And Recovery
 
-Python run result helpers should map to Rust `AgentResult::has_pending_hitl()`,
-`pending_approvals()`, and `pending_deferred_tools()` instead of parsing raw
-state fields.
+Interruption must preserve a recoverable session state:
 
-HITL should preserve Starweaver control flow:
+- request cooperative cancellation
+- stop model streaming or tool execution at the next supported boundary
+- cancel Python tool futures when applicable
+- repair dangling tool calls
+- publish cancellation evidence
+- expose `recoverable_state()`
 
-```python
-run = await session.run("Deploy api")
-if run.needs_approval:
-    resumed = await session.resume_after_hitl(
-        approvals={run.pending_approvals[0].id: {"approved": True}}
-    )
-```
+`StreamError` is appropriate when a caller awaits a run that was deliberately
+interrupted. The caller can still inspect status and recoverable state.
 
-P0 can expose simple dictionaries for approval decisions. Later phases can add
-typed decision classes that mirror `ToolApprovalDecision`.
+## Error Categories
 
-## Streaming
+`AgentError`, `ModelError`, `ToolError`, `OutputError`, `StateError`, and
+`StreamError` should be stable Python API categories.
 
-Python streaming should expose typed events while preserving raw records for
-forward compatibility.
+Specific rules:
 
-P0:
-
-- `agent.run_stream(...) -> AsyncIterator[StreamEvent]`
-- `session.run_stream(...) -> AsyncIterator[StreamEvent]`
-- `StreamEvent.kind`
-- event dataclasses for message deltas, tool calls, tool results, approvals,
-  deferred calls, usage snapshots, lifecycle markers, and final result
-- `event.raw` backed by `AgentStreamRecord::to_raw_json()` for unrecognized
-  Starweaver records and forward-compatible extensions
-- `stream.interrupt()` or async context-managed stream handles
-
-Later:
-
-- backpressure options
-- replay cursor support
-- child stream source attribution
-- stream archive persistence
-- callback hooks for lifecycle events
-- event filters for UI surfaces
-
-The Python API should not invent a separate event protocol. It should project
-Starweaver stream records into Python-friendly classes.
-
-## Output And Validation
-
-P0:
-
-- text output
-- JSON schema output
-- Pydantic output model validation
-- output validators mapped to Starweaver output validation hooks
-
-The Python API can accept Pydantic model classes for ergonomics, but Rust owns
-the output retry loop and structured output parsing behavior.
-
-Output validator shape:
-
-```python
-async def validate_answer(ctx, output: Answer) -> None:
-    if not output.value:
-        raise ModelRetry("return a non-empty answer")
-```
-
-The validator exception should map into the same retry behavior used by Rust
-output validators.
-
-## Error Model
-
-Python exceptions should mirror public Starweaver control flow without leaking
-Rust implementation details.
-
-P0 exception classes:
-
-- `StarweaverError`
-- `AgentError`
-- `ModelError`
-- `ToolError`
-- `InvalidArguments`
-- `ModelRetry`
-- `ApprovalRequired`
-- `CallDeferred`
-- `Cancelled`
-- `Timeout`
-- `StateError`
-- `StreamError`
-
-Rust errors should convert into these Python exceptions at API boundaries.
-Python tool exceptions should convert back into `ToolError` while inside the
-runtime tool loop.
+- Invalid state transitions raise `StateError`.
+- Stream producer failure, receiver closure, and join failure raise
+  `StreamError`.
+- Runtime model failures raise `ModelError`.
+- Tool-loop failures visible at the API boundary raise `ToolError`.
+- Output parsing/validator/final-function failures raise `OutputError`.
+- Python task cancellation re-raises `asyncio.CancelledError` after requesting
+  native interruption.
 
 ## Runtime Validation
 
-P0 runtime validation should prove:
+Required tests for this layer:
 
 - agent run returns deterministic output
 - session run preserves message history
-- state export and restore work
-- a restored session can run after Python tools are re-registered
-- run options can add per-run tools
-- Python exceptions produce predictable Python API errors
-
-Streaming and HITL validation should land in the next phase:
-
-- final result through async stream
-- tool-call events through async stream
-- stream interruption cancels Python tools
-- approval resume
-- deferred resume
-- usage snapshot projection
+- state export and restore continue a session
+- restored session can use re-registered Python tools
+- per-run tools do not mutate agent defaults
+- unknown run options are rejected
+- stream yields raw records before completion
+- stream context-manager normal exit joins
+- exceptional stream context exit interrupts
+- interruption cancels running Python tool
+- task cancellation while awaiting stream result interrupts
+- approval resume succeeds
+- deferred resume succeeds
+- output validator retry participates in runtime loop
+- output function can produce final structured output

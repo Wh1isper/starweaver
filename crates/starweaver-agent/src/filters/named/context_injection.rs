@@ -525,7 +525,6 @@ fn is_steering_bus_message(message: &starweaver_context::BusMessage) -> bool {
         .get("starweaver.topic")
         .and_then(Value::as_str)
         == Some("steering")
-        || message.source == "user"
 }
 
 const fn latest_message_is_request(messages: &[ModelMessage]) -> bool {

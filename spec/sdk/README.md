@@ -66,15 +66,18 @@ flowchart TD
 
 ## Python SDK Subspecs
 
-The Python SDK planning surface lives under `python/`:
+The Python SDK product and architecture contract lives under `python/`:
 
-- `python/README.md` — Python SDK overview, ownership shape, and review order
-- `python/01-product-boundary.md` — product goals, non-goals, package layout, and binding boundary
-- `python/02-concept-mapping.md` — Python concept mapping to Starweaver Rust seams
-- `python/03-python-tool-injection.md` — in-process Python tools, schema/result conversion, and async bridge
-- `python/04-runtime-session-streaming.md` — agent construction, sessions, state, HITL, streaming, and errors
-- `python/05-ecosystem-and-claw.md` — toolsets, subagents, skills, resources, observability, and Claw integration
-- `python/06-roadmap-and-validation.md` — phases, acceptance gates, open decisions, and review checklist
+- `python/README.md` - Python SDK product thesis, current baseline, invariants, and review order
+- `python/01-product-boundary.md` - package ownership, dependency rules, provider boundary, and release shape
+- `python/02-concept-mapping.md` - public Python API contract and mapping to Rust seams
+- `python/03-python-tool-injection.md` - Python tools, callback runtime, schema/result conversion, and cancellation
+- `python/04-runtime-session-streaming.md` - agents, sessions, live runs, streams, state restore, HITL, and output
+- `python/05-ecosystem-and-claw.md` - composition layer, environments, resources, observability, and Claw path
+- `python/06-roadmap-and-validation.md` - current baseline, milestones, acceptance gates, open decisions, and validation
+- `python/07-pythonic-control-plane.md` - active-run steering, interruption, message bus, typed HITL, and required Rust seam
+- `python/08-session-store-and-state.md` - durable Python session-store contract, state boundaries, record wrappers, and restore
+- `python/09-advanced-composition.md` - runtime config, toolsets, tool search/proxy, skills, environments, resources, media, providers, and product adapters
 
 ## SDK Acceptance Gates
 

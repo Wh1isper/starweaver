@@ -1,81 +1,146 @@
-# Python Tool Injection
+# Python Tools And Callback Runtime
 
-Python tool injection is the central requirement for `starweaver-py`. A Python
-function or class must become a real Rust `Tool` implementation in the same
-process.
+Python tool injection is the central binding feature. A Python callable or
+class must become a real Starweaver `Tool` implementation in the same process.
 
-The runtime must see Python tools exactly as Starweaver tools so retries,
-approval, deferred execution, stream events, usage evidence, tracing, and
-durable state remain native.
+The runtime should see Python tools exactly like Rust tools: same schema,
+scheduling, retries, approval, deferred execution, cancellation, stream events,
+private metadata, and durable evidence.
 
-## Tool Adapter Shape
+## Current Baseline
+
+The current package provides:
+
+- `@tool` decorator
+- `Tool` wrapper
+- subclassable `BaseTool`
+- raw callable registration through `ensure_tool`
+- Pydantic model schema extraction
+- simple type-hint schema extraction
+- explicit JSON schema override
+- `ToolContext`
+- `ToolResult`
+- sync and async callback support
+- `sequential=True`
+- timeout and retry metadata
+- Python exception to `ToolError` mapping
+- traceback capture into private metadata
+- cancellation of the Python future when the Rust call is dropped
+
+This is already enough to prove the in-process tool architecture. The next work
+is polish, typed helper objects, more negative tests, and better integration
+with live run control.
+
+## Adapter Contract
 
 `PythonTool` should implement `starweaver_tools::Tool` and store:
 
 - stable name
-- description
+- optional description
 - parameters JSON schema
 - optional return JSON schema
 - metadata
-- strict mode
-- sequential flag
-- timeout and retry metadata
-- availability callback
-- prepare-definition callback
-- user-input preprocessor callback
+- strict schema flag
+- sequential scheduling flag
+- timeout metadata
+- retry metadata
 - Python callable handle
-- Python callback dispatcher handle
+- Python event loop handle
+- callback dispatcher state
 
-The implementation should follow the same conceptual shape as `FunctionTool`:
-a provider-neutral function definition plus a call path that converts model
-arguments into validated input and returns a `ToolResult`.
+It should not store hidden application state that claims to be resumable. If a
+tool depends on process-local Python objects, the application must re-register
+the tool before restored sessions can use it.
 
 ## Registration Flow
 
 ```mermaid
 sequenceDiagram
     participant App as Python app
-    participant Decorator as Python decorator
+    participant Decorator as tool decorator
     participant Native as starweaver._native
     participant Builder as AgentBuilder
-    participant Runtime as Runtime tool loop
-    participant Callback as Python callback dispatcher
+    participant Runtime as Starweaver runtime
+    participant Loop as Python event loop
 
-    App->>Decorator: @tool(callable)
-    Decorator->>Native: create PythonTool definition
+    App->>Decorator: define callable
+    Decorator->>Native: create PythonTool
     Native->>Builder: register DynTool
     Runtime->>Native: Tool::call(ctx, args)
-    Native->>Callback: schedule Python callable
-    Callback-->>Native: ToolResult or exception
+    Native->>Loop: schedule callable
+    Loop-->>Native: value or exception
     Native-->>Runtime: ToolResult or ToolError
+```
+
+## Supported Definition Styles
+
+Preferred:
+
+```python
+from pydantic import BaseModel
+from starweaver import ToolContext, ToolResult, tool
+
+
+class SearchArgs(BaseModel):
+    query: str
+
+
+@tool
+async def search(ctx: ToolContext, args: SearchArgs) -> ToolResult:
+    return ToolResult({"query": args.query})
+```
+
+Also supported:
+
+```python
+@tool
+def add(left: int, right: int) -> dict[str, int]:
+    return {"total": left + right}
+```
+
+Subclass form:
+
+```python
+class DeployTool(BaseTool):
+    name = "deploy"
+
+    async def call(self, ctx: ToolContext, args: dict[str, object]) -> dict[str, bool]:
+        return {"ok": not ctx.is_cancelled()}
 ```
 
 ## Schema Extraction
 
 Schema extraction order:
 
-1. Explicit JSON schema supplied to `tool(..., parameters_schema=...)`.
-2. Explicit Pydantic `BaseModel` argument schema.
-3. Python type hints mapped into JSON schema for simple primitives.
-4. Reject registration with a schema error when schema inference is ambiguous.
+1. Explicit `parameters_schema`.
+2. Pydantic `BaseModel` argument.
+3. Simple Python type hints for keyword parameters.
+4. Rejection with a clear error.
 
-The P0 implementation should prefer explicit failure over lossy inference. A
-tool that accepts `Any`, nested arbitrary objects, or untyped `**kwargs` should
-require an explicit schema.
-
-Supported P0 argument shapes:
+Supported shapes:
 
 - `(ctx: ToolContext, args: PydanticModel)`
 - `(args: PydanticModel)`
-- `(ctx: ToolContext, **json_fields)` only if explicit JSON schema is supplied
-- subclassed `BaseTool.call(ctx, args)`
+- `(ctx: ToolContext, args: dict[str, object])`
+- `(args: dict[str, object])`
+- typed keyword parameters such as `(query: str, limit: int = 10)`
+- `**kwargs` only when an explicit schema is supplied
+- `BaseTool.call(ctx, args)`
 
-Rejected P0 argument shapes:
+`ToolContext` injection is explicit: a parameter annotated as `ToolContext` is
+the context parameter, and an unannotated parameter named `ctx` is accepted as a
+short convenience. A business parameter named `context` is not special unless
+it is annotated as `ToolContext`.
 
-- untyped positional varargs
-- implicit schema from arbitrary Python classes
-- schema derived from docstring text alone
-- mixed positional fields without a Pydantic model or explicit schema
+Rejected shapes:
+
+- untyped `*args`
+- untyped `**kwargs` without explicit schema
+- arbitrary classes without Pydantic schema
+- docstring-only schema inference
+- ambiguous mixtures of Pydantic model and unrelated positional fields
+
+The P0 behavior should prefer explicit failure over lossy inference.
 
 ## Return Conversion
 
@@ -83,10 +148,10 @@ Return conversion order:
 
 1. `ToolResult`
 2. Pydantic model
-3. JSON-serializable dict/list/string/number/bool/null
-4. Reject with `ToolError::Execution` if the value is not serializable
+3. JSON-serializable value
+4. `ToolError::Execution` for non-serializable values
 
-`ToolResult` should expose Python fields that correspond to the Rust result:
+`ToolResult` maps to native Starweaver result fields:
 
 - `content`
 - `metadata`
@@ -95,130 +160,160 @@ Return conversion order:
 - `user_content`
 - `private_metadata`
 
-The default conversion should keep user-visible and model-visible content
-separate. Python tracebacks and local debug details belong in private metadata,
-not in model-visible tool content.
+Model-visible content and application/debug content must remain separate.
+Tracebacks and local exception details belong in private metadata.
 
 ## Exception Mapping
 
-| Python exception                                | Rust `ToolError`   |
-| ----------------------------------------------- | ------------------ |
-| `InvalidArguments` or Pydantic validation error | `InvalidArguments` |
-| `ModelRetry`                                    | `ModelRetry`       |
-| `ApprovalRequired`                              | `ApprovalRequired` |
-| `CallDeferred`                                  | `CallDeferred`     |
-| `asyncio.CancelledError`                        | `Cancelled`        |
-| `TimeoutError`                                  | `Timeout`          |
-| other `Exception`                               | `Execution`        |
+| Python exception          | Rust `ToolError`   |
+| ------------------------- | ------------------ |
+| `InvalidArguments`        | `InvalidArguments` |
+| Pydantic validation error | `InvalidArguments` |
+| `ModelRetry`              | `ModelRetry`       |
+| `ApprovalRequired`        | `ApprovalRequired` |
+| `CallDeferred`            | `CallDeferred`     |
+| `asyncio.CancelledError`  | `Cancelled`        |
+| `Cancelled`               | `Cancelled`        |
+| `TimeoutError`            | `Timeout`          |
+| `Timeout`                 | `Timeout`          |
+| other `Exception`         | `Execution`        |
 
-This mapping is required in both directions:
+The mapping must work in both directions:
 
 - Python API boundary: Rust errors become Python exceptions.
-- Tool-loop boundary: Python tool exceptions become Starweaver `ToolError`
-  variants.
+- Tool-loop boundary: Python exceptions become Starweaver `ToolError` values.
 
-## HITL And Deferred Control Flow
+User-defined exceptions with the same class name as Starweaver exceptions must
+not be misclassified. Use module/class identity, not name-only matching.
 
-Python tools should raise public exceptions for control flow:
+## HITL And Deferred Flow
+
+Python tools should request control flow through public exceptions:
 
 ```python
 from starweaver import ApprovalRequired, CallDeferred
 
 
 async def deploy(ctx, args):
-    raise ApprovalRequired(reason="Production deployment")
+    raise ApprovalRequired("production deploy", metadata={"service": args["service"]})
 
 
-async def long_job(ctx, args):
-    raise CallDeferred(reason="Job queued", metadata={"queue": "deploy"})
+async def slow_job(ctx, args):
+    raise CallDeferred("queued", metadata={"queue": "deploy"})
 ```
 
-The Rust runtime should record the same approval/deferred evidence it records
-for Rust tools. Python should not maintain a separate pending-approval store.
+Rust remains the source of truth for pending approval and deferred records.
+Python should not keep a parallel pending store.
+
+Typed Python HITL helpers should build decisions and deferred results, then pass
+those values through `AgentSession.resume_after_hitl(...)`.
 
 ## Async Runtime And GIL Strategy
 
-The difficult part is safely moving between Python asyncio, PyO3, and Tokio.
-
 Required constraints:
 
-- Python callers should use `await agent.run(...)` and `async for ...` without
-  managing a Tokio runtime directly.
-- Rust network/model/runtime work must not hold the GIL.
-- Python callables must execute on the Python event loop that owns them.
-- Cancellation must flow from `AgentStreamHandle::interrupt()` and
-  `ToolContext` cancellation into Python tasks.
-- Python exceptions must preserve enough traceback detail for debugging while
-  redacting tool-private metadata from model-visible content.
+- Python callers use `await`, `async for`, and `async with`.
+- Rust runtime/model/network work must not hold the GIL.
+- Python callbacks run on the Python event loop that registered them.
+- Starweaver cancellation cancels the corresponding Python task.
+- Callback tracebacks are captured for debugging without leaking to model
+  content.
 
-Recommended design:
+Implementation rules:
 
-1. `starweaver-py` owns a Tokio runtime handle or attaches to an existing one
-   inside the extension crate.
-2. The Python API returns awaitables backed by Rust futures.
-3. Each `Agent` captures a Python event loop handle at construction or first
-   use.
-4. `PythonTool::call` schedules the Python callable onto that loop through a
-   dispatcher and awaits the result from Tokio.
-5. GIL sections are limited to object conversion, scheduling, and result
-   extraction.
-6. The dispatcher owns cancellation links between Starweaver cancellation
-   tokens and Python tasks.
+1. The native extension owns or attaches to a Tokio runtime.
+2. Python APIs return awaitables backed by Rust futures.
+3. Each Python callback captures the event loop used at registration.
+4. Native code schedules the coroutine with `asyncio.run_coroutine_threadsafe`
+   or the selected async bridge.
+5. GIL sections are limited to conversion, scheduling, and result extraction.
+6. Dropping or cancelling the Rust-side future cancels the Python future.
 
-Open implementation decision:
-
-- Use `pyo3-async-runtimes` for future/awaitable conversion where it fits.
-- Still keep a small explicit `PythonCallbackDispatcher` abstraction because
-  tool callbacks, cancellation, traceback capture, and event-loop ownership are
-  Starweaver-specific.
+`pyo3-async-runtimes` may be used where it fits, but keep an explicit
+Starweaver callback dispatcher abstraction because cancellation, traceback
+capture, tool metadata, and event-loop ownership are product-specific.
 
 ## Cancellation
 
-Cancellation must be observable from Python tools:
+Python tool cancellation must be observable:
 
-- `ctx.is_cancelled`
-- `await ctx.cancelled()`
-- cancellation of the Python `asyncio.Task` when Starweaver interrupts a run
-- mapping `asyncio.CancelledError` to `ToolError::Cancelled`
+- `ctx.is_cancelled()`
+- future `await ctx.cancelled()`
+- cancellation of the Python `asyncio.Task`
+- `asyncio.CancelledError` mapped to native cancellation
+- recoverable state repaired for dangling tool calls after interruption
 
-P0 should test cancellation with a Python tool that blocks on an asyncio event
-and is interrupted by the Starweaver stream/session handle.
+The stream interruption tests should cover a Python tool blocked on an
+`asyncio.Event` and prove that `stream.interrupt()` cancels the coroutine.
 
 ## Concurrency Policy
 
 Default policy:
 
-- The Starweaver runtime executes independent tool calls in parallel by default.
-- Python tools should register with `sequential=False` by default once the
-  dispatcher tests prove Python callbacks do not hold the GIL across awaited
-  Rust runtime work.
-- Sync, stateful, or explicitly non-reentrant Python tools can set
-  `sequential=True`.
-- Duplicate calls to the same Python tool name in one model response still run
-  sequentially through the runtime fallback.
+- Independent tool calls run in parallel.
+- Python tools default to `sequential=False`.
+- Stateful or non-reentrant Python tools opt into `sequential=True`.
+- Duplicate calls to the same tool name in one model response fall back to
+  sequential execution.
+- Mixed Rust and Python tool scheduling uses the same runtime scheduler.
 
-The `sequential` flag should map to the existing Starweaver tool contract so the
-runtime can schedule mixed Rust and Python tools consistently.
+This keeps Python behavior aligned with the Starweaver tool contract instead of
+creating a Python-only scheduler.
 
-## Test Matrix
+## Tool Context
 
-P0 tests should cover:
+Current `ToolContext` exposes:
+
+- `run_id`
+- `conversation_id`
+- `run_step`
+- `retry`
+- `max_retries`
+- `metadata`
+- `approval`
+- `deferred_result`
+- `is_cancelled()`
+
+Future additions should be controlled facades:
+
+- dependencies
+- message bus access
+- resource handles
+- environment handle
+- `await cancelled()`
+
+Do not expose a mutable raw `AgentContext` to tools unless the mutation path is
+explicitly part of a stable Starweaver contract.
+
+## Validation Matrix
+
+Tests should cover:
 
 - async Python tool success
 - sync Python tool success
+- raw callable registration
+- `BaseTool` subclass registration
 - Pydantic argument validation
 - explicit JSON schema registration
 - invalid schema rejection
-- non-serializable return rejection
+- non-serializable return handling
 - `ToolResult` conversion
+- private metadata preservation
 - ordinary Python exception to `ToolError::Execution`
+- Starweaver control-flow exception identity checks
 - `ModelRetry`
 - `ApprovalRequired`
 - `CallDeferred`
 - timeout
 - cancellation
-- sequential scheduling
+- parallel default scheduling
+- duplicate-name sequential fallback
+- explicit `sequential=True`
 - traceback capture in private metadata
 
-These tests should run against deterministic Starweaver test models and should
-not require live provider credentials.
+Validation commands:
+
+```bash
+uv run pytest packages/starweaver-py/tests
+make py-check
+```

@@ -1,83 +1,156 @@
-# Starweaver Python SDK
+# Starweaver Python SDK Specs
 
-This folder owns the planning specs for `starweaver-py`, the in-process Python
-SDK and binding layer for Starweaver.
+This folder owns the product and architecture contract for `starweaver-py`, the
+in-process Python SDK for Starweaver.
 
-The Python SDK should let Python applications build Starweaver agents, inject
-Python tools and toolsets, stream runs, persist state, and compose subagents
-without going through the `sw` binary, `starweaver-rpc`, JSON-RPC host control,
-or MCP.
+The package already exists under `packages/starweaver-py`. These specs are not
+a greenfield proposal. They describe the intended Python product shape, the
+Rust contracts it must preserve, the current baseline, and the next layer that
+should make the Python SDK valuable beyond a thin binding.
 
-The target product shape is a Python library that feels close to
-`ya-agent-sdk` for application authors while preserving Starweaver-native
-runtime, tool, context, model, environment, usage, and stream contracts
-underneath.
+## Product Thesis
 
-## Spec Index
+Python applications should be able to use Starweaver as a native Python library:
+define tools, compose agents, stream runs, resume HITL, export state, and steer
+live work without starting `sw`, speaking JSON-RPC, or wrapping an MCP server.
 
-| Spec                              | Scope                                                                                                  |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `01-product-boundary.md`          | Product goals, non-goals, package layout, binding ownership, and FFI/lint boundary                     |
-| `02-concept-mapping.md`           | Mapping from Python SDK concepts to existing Starweaver Rust seams                                     |
-| `03-python-tool-injection.md`     | In-process Python tools, schema extraction, result conversion, error mapping, async/GIL strategy       |
-| `04-runtime-session-streaming.md` | Agent construction, model support, sessions, state, HITL, streaming, output, and errors                |
-| `05-ecosystem-and-claw.md`        | Toolsets, subagents, skills, environments, resources, message bus, observability, and Claw integration |
-| `06-roadmap-and-validation.md`    | Implementation phases, acceptance gates, open decisions, and review checklist                          |
+The Python layer is valuable when it exposes Starweaver's advanced primitives in
+normal Python forms:
+
+```python
+async with create_agent(model=model, tools=[deploy]) as agent:
+    async with agent.session() as session:
+        async with session.run_stream("Deploy api") as run:
+            await run.steer("Use the safe rollout path.")
+
+            async for event in run:
+                if event.kind == "suspended":
+                    waiting = await run.hitl().snapshot()
+                    decisions = [item.approve(decided_by="ui") for item in waiting.approvals]
+                    await run.hitl().resume_collected(approvals=decisions)
+
+            result = await run.result()
+```
+
+The Rust runtime still owns model requests, tool scheduling, retries, stream
+records, message bus semantics, session state, usage, and durable evidence.
+Python owns ergonomic names, decorators, context managers, dataclasses, Pydantic
+helpers, callback dispatch, and application-facing composition.
+
+## Document Map
+
+| Spec                              | Purpose                                                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `01-product-boundary.md`          | Product boundary, package ownership, dependency rules, and release shape                                             |
+| `02-concept-mapping.md`           | Public Python API contract and mapping to Rust seams                                                                 |
+| `03-python-tool-injection.md`     | Python tool adapters, schema/result conversion, callback runtime, and cancellation                                   |
+| `04-runtime-session-streaming.md` | Agents, sessions, streams, state restore, HITL, output, and error semantics                                          |
+| `05-ecosystem-and-claw.md`        | Composition layer, subagents, environments, resources, observability, and Claw path                                  |
+| `06-roadmap-and-validation.md`    | Current baseline, milestones, acceptance gates, open decisions, and validation                                       |
+| `07-pythonic-control-plane.md`    | Active-run steering, interruption, message bus, typed HITL, and required Rust seam                                   |
+| `08-session-store-and-state.md`   | Durable Python session-store contract, state boundaries, record wrappers, and restore                                |
+| `09-advanced-composition.md`      | Runtime config, toolsets, tool search/proxy, skills, environments, resources, media, providers, and product adapters |
 
 ## Ownership Shape
 
 ```mermaid
 flowchart TD
-    python_app["Python application or Claw"]
-    py_api["starweaver Python API"]
-    py_ext["starweaver-py extension crate"]
+    app["Python app or Claw"]
+    py["starweaver Python package"]
+    native["starweaver._native PyO3 extension"]
     agent["starweaver-agent"]
     runtime["starweaver-runtime"]
     tools["starweaver-tools"]
     context["starweaver-context"]
     model["starweaver-model"]
-    environment["starweaver-environment"]
     session["starweaver-session"]
     stream["starweaver-stream"]
+    env["starweaver-environment"]
 
-    python_app --> py_api
-    py_api --> py_ext
-    py_ext --> agent
-    py_ext --> tools
-    py_ext --> context
-    py_ext --> environment
-    py_ext --> session
-    py_ext --> stream
+    app --> py
+    py --> native
+    native --> agent
+    native --> tools
+    native --> context
+    native --> model
+    native --> session
+    native --> stream
+    native --> env
     agent --> runtime
-    tools --> runtime
-    context --> runtime
-    model --> runtime
-    environment --> agent
+    runtime --> context
+    runtime --> tools
+    runtime --> model
 ```
 
-## Review Order
+## Current Baseline
 
-1. Review `01-product-boundary.md` to confirm that the Python SDK is a binding
-   and ergonomics layer, not a new runtime or a host-control transport.
-2. Review `02-concept-mapping.md` to confirm the concept set that should be
-   exposed to Python.
-3. Review `03-python-tool-injection.md` before implementation. This is the
-   critical technical risk because it bridges Python callables, PyO3, Tokio,
-   Starweaver tools, cancellation, and HITL control flow.
-4. Review `04-runtime-session-streaming.md` for API shape and runtime behavior.
-5. Review `05-ecosystem-and-claw.md` for the Claw integration path and future
-   SDK breadth.
-6. Review `06-roadmap-and-validation.md` before creating the binding crate.
+The package currently provides:
+
+- `create_agent`, `Agent`, `AgentSession`, live `AgentRun`, and `AgentStream`
+  as a compatibility alias
+- deterministic `TestModel` and callback-backed `FunctionModel`
+- provider model helpers through Starweaver Rust provider adapters
+- Python `@tool`, `BaseTool`, `ToolContext`, and `ToolResult`
+- sync and async Python tool execution in the Starweaver tool loop
+- Pydantic and type-hint schema extraction
+- default parallel tool scheduling with explicit `sequential=True`
+- private traceback metadata for Python tool failures
+- output schemas, output validators, and output functions
+- capability bundles and SDK subagent registration
+- stream records with raw JSON preservation
+- stream interruption and cancellation propagation into Python tools
+- session state export/restore
+- raw HITL approval/deferred resume helpers
+- typed HITL approval/deferred helpers
+- Python message bus facade for idle session messages and active-run writes
+- active steering through a neutral Rust control handle and drain capability
+
+The main remaining layers are the advanced application facades now specified in
+root-level Python SDK specs: session-store records, toolsets, environment and
+resource wrappers, skill helpers, stream adapters, media/provider helpers,
+usage/trace helpers, and product adapter seams. Claw-specific workflow,
+schedule, memory, UI, database, and Docker-retention policy remain above
+`starweaver-py`.
 
 ## Cross-Cutting Invariants
 
-- Python agent execution is in process with the Rust runtime.
-- Python tool injection uses the Starweaver `Tool` trait, not MCP.
-- The Python SDK does not shell out to `sw`, `starweaver-cli`, or
-  `starweaver-rpc` for the P0 agent/tool/session path.
+- The Python SDK runs in process with the Rust runtime.
+- The Python tool path uses the Starweaver `Tool` trait, not MCP.
+- The core library path does not shell out to `sw`, `starweaver-cli`, or
+  `starweaver-rpc`.
 - Core Starweaver crates stay Python-free.
-- Python ergonomics can differ from Rust ergonomics, but Rust-owned contracts
-  remain Starweaver-native.
+- Python convenience must map to Starweaver-owned contracts.
+- Raw state, raw stream records, and raw result payloads remain available.
+- Provider affinity and provider-specific headers stay in typed model/provider
+  settings, not generic Python metadata.
+- Message bus APIs must preserve MQ-like coordination semantics.
+- Live steering must enter the active run through a Rust control queue, not by
+  mutating a stale context snapshot.
+- Durable persistence uses JSON-compatible Starweaver records and full
+  `ResumableState`; Python callables, process-local dependencies, live
+  environment handles, and provider connections are re-registered by the current
+  process.
+- `allowed_paths` is a capability boundary. `instructions_paths` is a
+  model-context/file-tree boundary. Python environment helpers must not collapse
+  them.
 - Claw-specific product policy lives above `starweaver-py`.
-- Public user docs should wait until the reviewed API shape is stable enough
-  for application developers.
+
+## Review Order
+
+1. Read `01-product-boundary.md` to confirm the product boundary.
+2. Read `02-concept-mapping.md` to review the public Python API contract.
+3. Read `03-python-tool-injection.md` before changing callback, schema, GIL,
+   cancellation, or exception behavior.
+4. Read `04-runtime-session-streaming.md` before changing sessions, streams,
+   state, output, or HITL.
+5. Read `07-pythonic-control-plane.md` before adding steering, interruption,
+   active message-bus writes, or typed live HITL helpers.
+6. Read `05-ecosystem-and-claw.md` before adding toolsets, environments,
+   resource providers, skills, observability, or Claw integration.
+7. Read `08-session-store-and-state.md` before changing durable state,
+   archive/store APIs, record wrappers, or restore behavior.
+8. Read `09-advanced-composition.md` before designing runtime config,
+   toolsets, tool library/search/proxy, skill helpers, environment/resource
+   facades, media adapters, provider/OAuth helpers, stream adapters, or product
+   runtime adapters.
+9. Read `06-roadmap-and-validation.md` before claiming a milestone is complete.

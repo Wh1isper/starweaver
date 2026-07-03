@@ -25,6 +25,33 @@ class _InvocationPlan:
     pydantic_model: type[Any] | None
     var_keyword: bool
     keyword_params: tuple[str, ...]
+    required_keyword_params: tuple[str, ...]
+
+
+@dataclass
+class _InvocationPlanBuilder:
+    wants_ctx: bool = False
+    args_param: str | None = None
+    pydantic_model: type[Any] | None = None
+    var_keyword: bool = False
+    keyword_params: list[str] | None = None
+    required_keyword_params: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.keyword_params is None:
+            self.keyword_params = []
+        if self.required_keyword_params is None:
+            self.required_keyword_params = []
+
+    def build(self) -> _InvocationPlan:
+        return _InvocationPlan(
+            wants_ctx=self.wants_ctx,
+            args_param=self.args_param,
+            pydantic_model=self.pydantic_model,
+            var_keyword=self.var_keyword,
+            keyword_params=tuple(self.keyword_params or ()),
+            required_keyword_params=tuple(self.required_keyword_params or ()),
+        )
 
 
 class Tool:
@@ -58,15 +85,10 @@ class Tool:
         self.parameters_schema = parameters_schema or _infer_schema(func, self._plan)
 
     async def _callback(self, ctx: ToolContext, args: JsonObject) -> Any:
-        try:
-            result = self._call_user_function(ctx, args)
-            if inspect.isawaitable(result):
-                result = await result
-            return result
-        except InvalidArguments:
-            raise
-        except TypeError as exc:
-            raise InvalidArguments(str(exc)) from exc
+        result = self._call_user_function(ctx, args)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
     def _call_user_function(self, ctx: ToolContext, args: JsonObject) -> Any:
         plan = self._plan
@@ -81,7 +103,7 @@ class Tool:
         elif plan.var_keyword:
             keyword.update(args)
         else:
-            keyword.update({name: args.get(name) for name in plan.keyword_params if name in args})
+            keyword.update(_validated_keyword_arguments(plan, args))
         return self.func(*positional, **keyword)
 
     def to_native(self) -> _native.PythonTool:
@@ -233,40 +255,96 @@ def tool(
 def _build_invocation_plan(func: Callable[..., Any]) -> _InvocationPlan:
     signature = inspect.signature(func)
     hints = get_type_hints(func)
-    wants_ctx = False
-    args_param: str | None = None
-    pydantic_model: type[Any] | None = None
-    var_keyword = False
-    keyword_params: list[str] = []
+    builder = _InvocationPlanBuilder()
 
     for param in signature.parameters.values():
         annotation = hints.get(param.name, param.annotation)
-        if param.kind is inspect.Parameter.VAR_POSITIONAL:
-            raise ValueError("tool functions cannot use *args")
-        if param.kind is inspect.Parameter.VAR_KEYWORD:
-            var_keyword = True
-            continue
-        if _is_context_param(param.name, annotation):
-            wants_ctx = True
-            continue
-        if _is_pydantic_model(annotation):
-            if pydantic_model is not None or args_param is not None or keyword_params:
-                raise ValueError("pydantic argument tools must use one model parameter")
-            pydantic_model = annotation
-            args_param = param.name
-            continue
-        if param.name == "args":
-            args_param = param.name
-            continue
-        keyword_params.append(param.name)
+        _add_invocation_parameter(builder, param, annotation)
 
-    return _InvocationPlan(
-        wants_ctx=wants_ctx,
-        args_param=args_param,
-        pydantic_model=pydantic_model,
-        var_keyword=var_keyword,
-        keyword_params=tuple(keyword_params),
-    )
+    return builder.build()
+
+
+def _add_invocation_parameter(
+    builder: _InvocationPlanBuilder,
+    param: inspect.Parameter,
+    annotation: Any,
+) -> None:
+    keyword_params, required_keyword_params = _builder_keyword_lists(builder)
+    if param.kind is inspect.Parameter.VAR_POSITIONAL:
+        raise ValueError("tool functions cannot use *args")
+    if param.kind is inspect.Parameter.VAR_KEYWORD:
+        _set_var_keyword_argument(builder)
+        return
+    if _is_context_param(param.name, annotation):
+        _set_context_argument(builder, keyword_params)
+        return
+    if _is_pydantic_model(annotation):
+        _set_pydantic_argument(builder, param.name, annotation)
+        return
+    if param.name == "args":
+        _set_args_argument(builder, param.name)
+        return
+    if builder.args_param is not None or builder.pydantic_model is not None:
+        raise ValueError("tool argument styles cannot be mixed")
+    keyword_params.append(param.name)
+    if param.default is inspect.Parameter.empty:
+        required_keyword_params.append(param.name)
+
+
+def _builder_keyword_lists(
+    builder: _InvocationPlanBuilder,
+) -> tuple[list[str], list[str]]:
+    keyword_params = builder.keyword_params
+    if keyword_params is None:
+        keyword_params = []
+        builder.keyword_params = keyword_params
+    required_keyword_params = builder.required_keyword_params
+    if required_keyword_params is None:
+        required_keyword_params = []
+        builder.required_keyword_params = required_keyword_params
+    return keyword_params, required_keyword_params
+
+
+def _set_var_keyword_argument(builder: _InvocationPlanBuilder) -> None:
+    if builder.args_param is not None or builder.pydantic_model is not None:
+        raise ValueError("**kwargs cannot be mixed with args or pydantic parameters")
+    builder.var_keyword = True
+
+
+def _set_context_argument(
+    builder: _InvocationPlanBuilder,
+    keyword_params: list[str],
+) -> None:
+    if builder.args_param is not None or builder.pydantic_model is not None or keyword_params:
+        raise ValueError("ToolContext parameter must precede tool argument parameters")
+    builder.wants_ctx = True
+
+
+def _set_pydantic_argument(
+    builder: _InvocationPlanBuilder,
+    name: str,
+    annotation: type[Any],
+) -> None:
+    if (
+        builder.pydantic_model is not None
+        or builder.args_param is not None
+        or builder.keyword_params
+        or builder.var_keyword
+    ):
+        raise ValueError("pydantic argument tools must use one model parameter")
+    builder.pydantic_model = annotation
+    builder.args_param = name
+
+
+def _set_args_argument(builder: _InvocationPlanBuilder, name: str) -> None:
+    if (
+        builder.args_param is not None
+        or builder.pydantic_model is not None
+        or builder.keyword_params
+        or builder.var_keyword
+    ):
+        raise ValueError("args parameter cannot be mixed with other tool arguments")
+    builder.args_param = name
 
 
 def _infer_schema(func: Callable[..., Any], plan: _InvocationPlan) -> JsonObject:
@@ -293,8 +371,29 @@ def _infer_schema(func: Callable[..., Any], plan: _InvocationPlan) -> JsonObject
     return schema
 
 
+def _validated_keyword_arguments(plan: _InvocationPlan, args: JsonObject) -> dict[str, Any]:
+    accepted = set(plan.keyword_params)
+    unexpected = sorted(set(args) - accepted)
+    if unexpected:
+        raise InvalidArguments(f"unexpected tool argument(s): {', '.join(unexpected)}")
+    missing = [name for name in plan.required_keyword_params if name not in args]
+    if missing:
+        raise InvalidArguments(f"missing required tool argument(s): {', '.join(missing)}")
+    return {name: args[name] for name in plan.keyword_params if name in args}
+
+
 def _is_context_param(name: str, annotation: Any) -> bool:
-    return name in {"ctx", "context"} or annotation is ToolContext
+    if _is_tool_context_annotation(annotation):
+        return True
+    return name == "ctx" and annotation is inspect.Parameter.empty
+
+
+def _is_tool_context_annotation(annotation: Any) -> bool:
+    if annotation is ToolContext:
+        return True
+    return getattr(annotation, "__name__", None) == "ToolContext" and getattr(
+        annotation, "__module__", ""
+    ).startswith("starweaver")
 
 
 def _is_pydantic_model(annotation: Any) -> bool:

@@ -352,6 +352,45 @@ async fn steering_messages_are_drained_into_model_requests_and_stream_ack() {
 }
 
 #[tokio::test]
+async fn user_source_messages_do_not_become_steering_without_topic() {
+    let model = Arc::new(TestModel::with_text("ok"));
+    let mut context = AgentContext::default();
+    context.enqueue_message(BusMessage::text("generic user note", "user").with_id("user-note"));
+
+    Agent::new(model.clone())
+        .run_with_context("hello", &mut context)
+        .await
+        .unwrap();
+
+    let captured = model.captured_messages();
+    let request = captured
+        .first()
+        .and_then(|messages| {
+            messages.iter().find_map(|message| match message {
+                ModelMessage::Request(request) => Some(request),
+                ModelMessage::Response(_) => None,
+            })
+        })
+        .unwrap();
+    assert!(!request.parts.iter().any(|part| matches!(
+        part,
+        ModelRequestPart::UserPrompt {
+            name: Some(name),
+            ..
+        } if name == "steering"
+    )));
+    assert!(context.steering_messages.is_empty());
+    assert!(
+        !context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "steering_received")
+    );
+    assert!(context.messages.has_pending(context.agent_id.as_str()));
+}
+
+#[tokio::test]
 async fn pending_steering_guard_retries_before_final_output() {
     let model = Arc::new(TestModel::with_responses(vec![
         ModelResponse::text("first answer"),
