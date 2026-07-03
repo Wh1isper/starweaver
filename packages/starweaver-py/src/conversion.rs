@@ -12,6 +12,16 @@ pub(crate) fn py_to_json(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<V
     if value.is_none() {
         return Ok(Value::Null);
     }
+    if let Ok(model_dump_json) = value.getattr("model_dump_json") {
+        let text: String = model_dump_json.call0()?.extract()?;
+        return serde_json::from_str(&text).map_err(|error| {
+            PyValueError::new_err(format!("value is not JSON serializable: {error}"))
+        });
+    }
+    if let Ok(model_dump) = value.getattr("model_dump") {
+        let dumped = model_dump.call0()?;
+        return py_to_json(py, &dumped);
+    }
     let json = py.import("json")?;
     let text: String = json.call_method1("dumps", (value,))?.extract()?;
     serde_json::from_str(&text)

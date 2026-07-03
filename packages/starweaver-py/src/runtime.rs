@@ -1,6 +1,6 @@
 //! Tokio runtime and Python future bridging.
 
-use std::{future::Future, sync::OnceLock};
+use std::{future::Future, sync::OnceLock, time::Duration};
 
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use starweaver_runtime::AgentError;
@@ -36,6 +36,7 @@ pub(crate) enum PyFutureError {
     Agent(String),
     Model(String),
     Tool(String),
+    Output(String),
     Cancelled(String),
     Stream(String),
     State(String),
@@ -48,6 +49,7 @@ impl PyFutureError {
             Self::Agent(_) => "AgentError",
             Self::Model(_) => "ModelError",
             Self::Tool(_) => "ToolError",
+            Self::Output(_) => "OutputError",
             Self::Cancelled(_) => "Cancelled",
             Self::Stream(_) => "StreamError",
             Self::State(_) => "StateError",
@@ -60,6 +62,7 @@ impl PyFutureError {
             | Self::Agent(message)
             | Self::Model(message)
             | Self::Tool(message)
+            | Self::Output(message)
             | Self::Cancelled(message)
             | Self::Stream(message)
             | Self::State(message) => message,
@@ -72,11 +75,11 @@ impl PyFutureError {
             AgentError::Cancelled { reason } => Self::Cancelled(reason),
             error @ (AgentError::ToolRetryLimitExceeded { .. }
             | AgentError::ToolCallsRequireTools) => Self::Tool(error.to_string()),
+            error @ (AgentError::StructuredOutput(_)
+            | AgentError::OutputRetryLimitExceeded { .. }) => Self::Output(error.to_string()),
             error @ (AgentError::Capability(_)
             | AgentError::CapabilityOrder(_)
-            | AgentError::StructuredOutput(_)
             | AgentError::DynamicInstruction(_)
-            | AgentError::OutputRetryLimitExceeded { .. }
             | AgentError::StepLimitExceeded { .. }
             | AgentError::UsageLimit(_)
             | AgentError::ExecutionSuspended { .. }
@@ -103,7 +106,7 @@ where
     let py_future_for_task = py_future.clone_ref(py);
     let loop_for_task = loop_obj.clone_ref(py);
 
-    tokio_runtime()?.spawn(async move {
+    let task = tokio_runtime()?.spawn(async move {
         let output = future.await;
         Python::attach(|py| {
             let schedule_result = match output {
@@ -125,6 +128,35 @@ where
             }
         });
     });
+    let abort_handle = task.abort_handle();
+    let py_future_for_cancel = py_future.clone_ref(py);
+    tokio_runtime()?.spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let state = Python::attach(|py| -> PyResult<Option<bool>> {
+                let done = py_future_for_cancel
+                    .call_method0(py, "done")?
+                    .extract::<bool>(py)?;
+                if !done {
+                    return Ok(None);
+                }
+                let cancelled = py_future_for_cancel
+                    .call_method0(py, "cancelled")?
+                    .extract::<bool>(py)?;
+                Ok(Some(cancelled))
+            });
+            match state {
+                Ok(Some(true)) => {
+                    abort_handle.abort();
+                    return;
+                }
+                Ok(Some(false)) | Err(_) => return,
+                Ok(None) => {}
+            }
+        }
+    });
 
     Ok(py_future)
 }
@@ -138,8 +170,16 @@ fn schedule_future_result(
     if py_future.call_method0(py, "done")?.extract::<bool>(py)? {
         return Ok(());
     }
+    if loop_obj
+        .call_method0(py, "is_closed")?
+        .extract::<bool>(py)?
+    {
+        return Ok(());
+    }
     let setter = py_future.getattr(py, "set_result")?;
-    loop_obj.call_method1(py, "call_soon_threadsafe", (setter, result))?;
+    if let Err(error) = loop_obj.call_method1(py, "call_soon_threadsafe", (setter, result)) {
+        return ignore_event_loop_closed(py, error);
+    }
     Ok(())
 }
 
@@ -150,6 +190,12 @@ fn schedule_future_exception(
     error: &PyFutureError,
 ) -> PyResult<()> {
     if py_future.call_method0(py, "done")?.extract::<bool>(py)? {
+        return Ok(());
+    }
+    if loop_obj
+        .call_method0(py, "is_closed")?
+        .extract::<bool>(py)?
+    {
         return Ok(());
     }
     let setter = py_future.getattr(py, "set_exception")?;
@@ -164,6 +210,19 @@ fn schedule_future_exception(
             .call1((error.message(),))?
             .unbind(),
     };
-    loop_obj.call_method1(py, "call_soon_threadsafe", (setter, exception))?;
+    if let Err(error) = loop_obj.call_method1(py, "call_soon_threadsafe", (setter, exception)) {
+        return ignore_event_loop_closed(py, error);
+    }
     Ok(())
+}
+
+fn ignore_event_loop_closed(py: Python<'_>, error: PyErr) -> PyResult<()> {
+    if error
+        .get_type(py)
+        .is(py.get_type::<pyo3::exceptions::PyRuntimeError>())
+        && error.to_string().contains("Event loop is closed")
+    {
+        return Ok(());
+    }
+    Err(error)
 }

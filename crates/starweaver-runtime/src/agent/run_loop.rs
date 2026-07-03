@@ -1060,14 +1060,14 @@ impl Agent {
                             })
                             .cloned()
                             .collect::<Vec<_>>();
-                        state.output = Some(output.clone());
-                        state.structured_output = structured_output;
                         if self.policy.end_strategy != AgentEndStrategy::Early
                             && !ordinary_tool_calls.is_empty()
                         {
-                            final_output_after_tools = Some(output);
+                            final_output_after_tools = Some((output, structured_output));
                             tool_calls = ordinary_tool_calls;
-                        } else {
+                        } else if !Self::has_pending_steering_messages(context) {
+                            state.output = Some(output.clone());
+                            state.structured_output = structured_output;
                             state.status = RunStatus::Completed;
                             self.call_run_complete(&mut state, context).await?;
                             checkpoint!(
@@ -1100,6 +1100,20 @@ impl Agent {
                                 state,
                                 history_len,
                             });
+                        } else {
+                            let Some(message) = Self::pending_steering_guard_message(context) else {
+                                unreachable!("pending steering guard message must exist");
+                            };
+                            stream_event!(
+                                &state,
+                                AgentStreamEvent::SteeringGuard {
+                                    step: state.run_step,
+                                    prompt: message.clone(),
+                                }
+                            );
+                            next_prompt = message;
+                            step_span.close(SpanStatus::Ok);
+                            continue;
                         }
                     }
                     Ok(None) => {}
@@ -1479,7 +1493,7 @@ impl Agent {
                         history_len,
                     });
                 }
-                if let Some(output) = final_output_after_tools {
+                if let Some((output, structured_output)) = final_output_after_tools {
                     if !state.pending_tool_returns.is_empty() {
                         let mut parts = Vec::new();
                         for tool_return in &state.pending_tool_returns {
@@ -1505,6 +1519,23 @@ impl Agent {
                             }));
                     }
                     state.pending_tool_returns.clear();
+                    if Self::has_pending_steering_messages(context) {
+                        let Some(message) = Self::pending_steering_guard_message(context) else {
+                            unreachable!("pending steering guard message must exist");
+                        };
+                        stream_event!(
+                            &state,
+                            AgentStreamEvent::SteeringGuard {
+                                step: state.run_step,
+                                prompt: message.clone(),
+                            }
+                        );
+                        next_prompt = message;
+                        step_span.close(SpanStatus::Ok);
+                        continue;
+                    }
+                    state.output = Some(output.clone());
+                    state.structured_output = structured_output;
                     state.status = RunStatus::Completed;
                     self.call_run_complete(&mut state, context).await?;
                     checkpoint!(

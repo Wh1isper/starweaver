@@ -1265,7 +1265,7 @@ async fn runtime_finish_stream_persists_interrupted_live_stream_recovery() {
         .unwrap_err();
     assert!(matches!(
         error,
-        starweaver_agent::AgentDurabilityError::Stream(AgentStreamError::Interrupted)
+        starweaver_agent::AgentDurabilityError::Stream(AgentStreamError::Interrupted { .. })
     ));
 
     let run_id = runtime.export_full_state().run_id.unwrap();
@@ -1274,7 +1274,7 @@ async fn runtime_finish_stream_persists_interrupted_live_stream_recovery() {
     assert_eq!(run.input.len(), 1);
     assert_eq!(
         run.metadata["live_stream_error"],
-        "agent stream interrupted"
+        "agent stream interrupted: agent stream interruption requested"
     );
 
     let stored_records = store
@@ -1895,7 +1895,7 @@ async fn session_live_stream_interrupt_returns_recoverable_state() {
     assert!(completion.is_err());
     assert!(matches!(
         completion.error,
-        Some(AgentStreamError::Interrupted)
+        Some(AgentStreamError::Interrupted { .. })
     ));
     assert!(completion.state.run_id.is_some());
 }
@@ -1936,7 +1936,7 @@ async fn session_live_stream_interrupt_cancels_model_stream_token() {
     assert!(completion.is_err());
     assert!(matches!(
         completion.error,
-        Some(AgentStreamError::Interrupted)
+        Some(AgentStreamError::Interrupted { .. })
     ));
 }
 
@@ -2007,7 +2007,7 @@ async fn session_live_stream_interrupt_cancels_running_tool_token() {
     assert!(completion.is_err());
     assert!(matches!(
         completion.error,
-        Some(AgentStreamError::Interrupted)
+        Some(AgentStreamError::Interrupted { .. })
     ));
 }
 

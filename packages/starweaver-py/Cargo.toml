@@ -20,6 +20,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 starweaver-agent = { path = "../../crates/starweaver-agent", version = "0.2.1" }
 starweaver-core = { path = "../../crates/starweaver-core", version = "0.2.1" }
+starweaver-environment = { path = "../../crates/starweaver-environment", version = "0.2.1" }
 starweaver-model = { path = "../../crates/starweaver-model", version = "0.2.1" }
 starweaver-oauth-provider = { path = "../../crates/starweaver-oauth-provider", version = "0.2.1" }
 starweaver-runtime = { path = "../../crates/starweaver-runtime", version = "0.2.1" }

@@ -60,8 +60,8 @@ pub use session::{
     HITL_DECISION_DIAGNOSTIC_EVENT_KIND, ResolvedHitlToolReturns,
 };
 pub use starweaver_context::{
-    AgentContext, AgentContextHandle, ModelCapability, ModelConfig, PerThousandRatio,
-    ResumableState, SecurityConfig, ToolAvailabilityPolicy, ToolConfig,
+    AgentContext, AgentContextHandle, BusMessage, MessageBus, ModelCapability, ModelConfig,
+    PerThousandRatio, ResumableState, SecurityConfig, ToolAvailabilityPolicy, ToolConfig,
 };
 pub use starweaver_core::{
     AgentId, CheckpointId, ConversationId, RunId, SessionId, SubagentLifecycleEvent,
@@ -149,6 +149,7 @@ pub use starweaver_usage::{
     UsageSnapshotEntry, UsageTokenKind, pricing::CostBudget,
 };
 pub use streaming::{
+    AgentControlError, AgentControlHandle, AgentControlKind, AgentControlReceipt,
     AgentLiveStreamResult, AgentStreamCompletion, AgentStreamController, AgentStreamCurrentError,
     AgentStreamDropPolicy, AgentStreamError, AgentStreamHandle, AgentStreamOptions,
     AgentStreamRunStatus, AgentStreamStatus,

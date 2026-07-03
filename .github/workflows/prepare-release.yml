@@ -91,5 +91,6 @@ jobs:
             echo ""
             echo "- Branch: \`$branch\`"
             echo "- Pull request URL: https://github.com/${{ github.repository }}/pull/new/$branch"
-            echo "- Release command after merge: \`gh release create v${VERSION} --target main --title \"Starweaver v${VERSION}\" --generate-notes\`"
+            echo "- Resolve merge commit after merge: \`merge_commit=\$(gh pr list --state merged --head \"$branch\" --json mergeCommit --jq '.[0].mergeCommit.oid')\`"
+            echo "- Release command after merge: \`gh release create v${VERSION} --target \"\$merge_commit\" --title \"Starweaver v${VERSION}\" --generate-notes\`"
           } >> "$GITHUB_STEP_SUMMARY"

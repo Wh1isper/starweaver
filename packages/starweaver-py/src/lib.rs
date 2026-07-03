@@ -6,14 +6,18 @@ mod agent;
 mod capability;
 mod context;
 mod conversion;
+mod environment;
 mod errors;
+mod media;
 mod model;
 mod output;
 mod runtime;
+mod skills;
 mod stream;
 mod subagent;
 mod testing;
 mod tool;
+mod toolset;
 
 /// Return the native package version.
 #[pyfunction]
@@ -33,6 +37,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<agent::PyStreamRunResult>()?;
     m.add_class::<capability::PyCapabilityBundle>()?;
     m.add_class::<context::PyToolContext>()?;
+    m.add_class::<environment::PyEnvironmentProvider>()?;
+    m.add_class::<media::PyMediaUploader>()?;
     m.add_class::<model::PyModelSettings>()?;
     m.add_class::<model::PyProviderModel>()?;
     m.add_class::<model::PyRequestParams>()?;
@@ -43,11 +49,19 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<output::PyOutputValidator>()?;
     m.add_class::<output::PyOutputValue>()?;
     m.add_class::<stream::PyStreamEvent>()?;
+    m.add_class::<skills::PySkillPackage>()?;
+    m.add_class::<skills::PySkillRegistry>()?;
     m.add_class::<subagent::PySubagent>()?;
     m.add_class::<testing::PyFunctionModel>()?;
     m.add_class::<testing::PyTestModel>()?;
     m.add_class::<tool::PyPythonTool>()?;
     m.add_class::<tool::PyToolResult>()?;
+    m.add_class::<toolset::PyToolset>()?;
+    m.add_function(wrap_pyfunction!(toolset::environment_toolsets, m)?)?;
+    m.add_function(wrap_pyfunction!(toolset::filesystem_toolset, m)?)?;
+    m.add_function(wrap_pyfunction!(toolset::shell_toolset, m)?)?;
+    m.add_function(wrap_pyfunction!(toolset::tool_search_toolset, m)?)?;
+    m.add_function(wrap_pyfunction!(toolset::tool_proxy_toolset, m)?)?;
     m.add_function(wrap_pyfunction!(testing::sleep_echo, m)?)?;
     Ok(())
 }

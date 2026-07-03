@@ -2104,7 +2104,7 @@ async fn background_shell_filter_injects_completed_results_once_and_status_summa
 }
 
 #[tokio::test]
-async fn bus_message_filter_leaves_user_steering_for_runtime_and_consumes_subagent_messages()
+async fn bus_message_filter_consumes_explicit_bus_messages_without_source_based_steering()
 -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
@@ -2135,18 +2135,14 @@ async fn bus_message_filter_leaves_user_steering_for_runtime_and_consumes_subage
             .iter()
             .filter(|text| text.contains("<bus-message"))
             .count(),
-        1
+        2
     );
-    assert!(!text.contains("<bus-message source=\"user\">"));
-    assert!(!text.contains("[urgent] please continue"));
+    assert!(text.contains("<bus-message source=\"user\">"));
+    assert!(text.contains("[urgent] please continue"));
     assert!(text.contains("<bus-message source=\"subagent\">"));
     assert!(text.contains("worker update"));
     assert!(context.steering_messages.is_empty());
-    assert!(context.messages.has_pending(context.agent_id.as_str()));
-    assert_eq!(
-        context.messages.peek(context.agent_id.as_str())[0].id,
-        "user-msg"
-    );
+    assert!(!context.messages.has_pending(context.agent_id.as_str()));
     let message_received = context
         .events
         .events()
@@ -2158,7 +2154,7 @@ async fn bus_message_filter_leaves_user_steering_for_runtime_and_consumes_subage
             .as_array()
             .expect("message_received payload should contain messages array")
             .len(),
-        1
+        2
     );
     assert!(
         !context

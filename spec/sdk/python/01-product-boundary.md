@@ -1,37 +1,59 @@
 # Product Boundary And Package Shape
 
-`starweaver-py` is the planned in-process Python SDK and binding layer for
-Starweaver. It should provide Python-native ergonomics while delegating agent
-execution, tool-loop semantics, state, model protocol, streaming, usage, and
-environment contracts to existing Starweaver Rust crates.
+`starweaver-py` is the Python product layer for Starweaver's in-process SDK.
+It is a real Python package plus a PyO3 native extension, not a wrapper around
+the CLI, JSON-RPC host protocol, or MCP.
+
+## Decision
+
+The Python SDK should make Python applications feel first-class while keeping
+Starweaver's runtime contract native:
+
+- Python owns application ergonomics and callback adaptation.
+- Rust owns execution, model protocol, tool-loop semantics, state, streaming,
+  usage, tracing, and durable evidence.
+- Python tools enter the runtime as native Starweaver tools in the same process.
+- Advanced Python control APIs must be backed by neutral Rust SDK seams before
+  they become public.
 
 ## Why This Exists
 
-Claw should be able to depend on a Python library, define Python tools and
-resources, and run Starweaver agents without standing up an MCP server or a
-Starweaver host process. That requires a real binding layer:
+Claw and other Python products need to define application resources, callbacks,
+tools, and orchestration in Python while still using Starweaver's agent loop and
+evidence model. A sidecar process or MCP-only bridge would make Python a host
+integration instead of an SDK.
 
-- Python code owns application orchestration and product resources.
-- Rust code owns the Starweaver runtime and durable evidence.
-- Python tools are registered as native Starweaver tools in the same process.
+The package should support this shape:
 
-This is different from host-control integration. JSON-RPC and MCP remain useful
-for process boundaries, hosts, and external tools, but they should not be the
-core library path for Claw's Python integration.
+```python
+from starweaver import create_agent, tool
+
+
+@tool
+async def lookup(query: str) -> dict[str, str]:
+    return {"query": query, "value": "ready"}
+
+
+async def main() -> None:
+    async with create_agent(model=model, tools=[lookup]) as agent:
+        result = await agent.run("Use lookup")
+        print(result.output)
+```
 
 ## Goals
 
-- Provide a first-class Python package for Starweaver agents.
-- Keep core execution in process with the Rust runtime.
-- Let Python tools be injected as real Starweaver `Tool` implementations.
-- Map the important SDK concepts into Python: agents, sessions, tools,
-  toolsets, context, resumable state, streaming, HITL, subagents, skills,
-  environments, resources, models, usage, and observability.
-- Give Claw a Python-native integration surface above Starweaver without
-  forcing Claw through MCP or a sidecar binary.
-- Keep Rust crates Python-free except for the dedicated binding crate.
-- Keep the Python surface ergonomic while the owned contracts remain
-  Starweaver-native.
+- Provide a first-class Python package named `starweaver`.
+- Keep the agent/tool/session path in process.
+- Let Python functions and classes become native Starweaver `Tool`
+  implementations.
+- Expose Pythonic agent, session, stream, state, output, HITL, subagent,
+  capability, and model helper APIs.
+- Add an active-run control plane for steering, interruption, message bus, and
+  typed HITL once the Rust control seam exists.
+- Preserve Starweaver-native result, stream, usage, state, and error evidence.
+- Keep Python package implementation details isolated from core Rust crates.
+- Give Claw a narrow library path first, then deeper resource/environment
+  integration after the lifecycle is proven.
 
 ## Non-Goals
 
@@ -39,109 +61,192 @@ core library path for Claw's Python integration.
   execution path.
 - Do not use MCP as the Python tool injection mechanism.
 - Do not mirror every Rust API one for one.
-- Do not make `starweaver-core`, `starweaver-runtime`, `starweaver-agent`,
-  `starweaver-tools`, `starweaver-context`, or `starweaver-model` depend on
-  Python.
-- Do not replace the Rust SDK or CLI product surface.
-- Do not move provider-specific routing headers into generic Python metadata.
-  Provider affinity remains typed Starweaver model/provider settings.
-- Do not make Claw-specific product policy part of the binding crate. Claw can
-  layer on top of `starweaver-py`.
+- Do not move Python dependencies into core Rust crates.
+- Do not create a second runtime, stream protocol, message bus, or state
+  format.
+- Do not make Claw-specific product policy part of `starweaver-py`.
+- Do not hide Starweaver ids that applications need for persistence, replay,
+  approval decisions, deferred work, and trace correlation.
+- Do not implement live steering by mutating exported state or latest-context
+  snapshots.
 
-## Binding Ownership
+## Owned Surfaces
 
-`starweaver-py` owns Python names, decorators, async iterators, dataclasses,
-Pydantic helpers, conversion code, and Python callback dispatch. It does not
-own the agent loop, provider protocol, tool loop, context state format,
-environment contracts, stream archive protocol, or durable session semantics.
+`packages/starweaver-py` owns:
 
-The Python API may intentionally look more decorator-oriented than the Rust SDK.
-That is acceptable because the convenience belongs to the Python product layer.
-The Rust SDK keeps explicit builders, typed context setters, `AgentSession`,
-and Starweaver-native type names.
+- `pyproject.toml` and Python package metadata
+- the PyO3 extension crate `starweaver-py`
+- the extension module `starweaver._native`
+- pure Python facades under `python/starweaver`
+- Python decorators, dataclasses, context managers, and helper objects
+- Pydantic integration and type-hint schema extraction
+- Python callback scheduling, GIL boundaries, and traceback capture
+- Python tests and wheel packaging
 
-## Candidate Package Layout
+It does not own:
 
-The repository owns the Python distribution under `packages/` so future
-language packages can share the same package domain:
+- runtime state transitions
+- provider request mapping
+- native tool-loop semantics
+- message history normalization
+- stream record schema
+- session store contracts
+- environment provider contracts
+- usage accounting and pricing contracts
+- host-control JSON-RPC protocol
+
+If Python needs a new runtime behavior, first express it as a Rust SDK contract
+that is useful without Python.
+
+## Current Package Shape
+
+Current package paths:
 
 ```text
 packages/starweaver-py/
   Cargo.toml
   pyproject.toml
-  src/lib.rs
-  src/agent.rs
-  src/error.rs
-  src/model.rs
-  src/session.rs
-  src/state.rs
-  src/stream.rs
-  src/tool.rs
-  src/toolset.rs
-  python/starweaver/__init__.py
-  python/starweaver/agent.py
-  python/starweaver/errors.py
-  python/starweaver/model.py
-  python/starweaver/session.py
-  python/starweaver/state.py
-  python/starweaver/stream.py
-  python/starweaver/testing.py
-  python/starweaver/tool.py
-  python/starweaver/toolset.py
+  src/
+    agent.rs
+    capability.rs
+    context.rs
+    conversion.rs
+    error.rs
+    lib.rs
+    model.rs
+    output.rs
+    runtime.rs
+    stream.rs
+    subagent.rs
+    testing.rs
+    tool.rs
+  python/starweaver/
+    __init__.py
+    _native.pyi
+    agent.py
+    capability.py
+    errors.py
+    model.py
+    output.py
+    py.typed
+    subagent.py
+    testing.py
+    tool.py
   tests/
 ```
 
-Rust crate name: `starweaver-py`.
+Expected future pure-Python modules:
 
-Python import name: `starweaver`.
+```text
+python/starweaver/
+  environment.py
+  hitl.py
+  messages.py
+  media.py
+  providers.py
+  resources.py
+  run.py
+  skills.py
+  state.py
+  store.py
+  stream.py
+  stream_adapter.py
+  toolset.py
+```
 
-Native extension module: `starweaver._native`.
+Those modules should be added when they introduce real public concepts, not as
+empty namespace churn.
 
-## Packaging Baseline
+## Naming And Versioning
 
-- Use PyO3 for Rust/Python bindings.
-- Use maturin mixed Rust/Python project layout for wheel builds.
-- Evaluate `pyo3-async-runtimes` for Rust future to Python awaitable bridging,
-  but keep the callback dispatcher design explicit before committing to a
-  specific bridge.
-- Keep pure Python ergonomics in `python/starweaver/*`; keep Rust object
-  ownership and conversion code in `src/*`.
-- Treat any FFI or `unsafe` lint exception as binding-crate local. Core
-  Starweaver crates should keep the workspace `unsafe_code = "forbid"` rule.
-- Keep `packages/starweaver-py` excluded from the Rust workspace until the
-  PyO3/FFI and wheel CI boundary is stable; validate it through `uv`, maturin,
-  and Python package CI.
+- Rust crate: `starweaver-py`
+- Python distribution: `starweaver`
+- Python import: `starweaver`
+- Native extension: `starweaver._native`
+- Supported Python range: CPython 3.11 through 3.13
+- Local default: Python 3.13 through the repository `.python-version`
 
-External implementation references:
+The Python version should follow the workspace release version. Public Python
+API additions should preserve raw escape hatches so downstream applications are
+not blocked by helper-class churn.
 
-- [PyO3 user guide](https://pyo3.rs/)
-- [maturin user guide](https://www.maturin.rs/)
-- [pyo3-async-runtimes docs](https://docs.rs/pyo3-async-runtimes/latest/pyo3_async_runtimes/)
+## Dependency Boundary
 
-## Workspace Boundary
-
-The binding crate can depend on:
+The binding crate may depend on Starweaver SDK/runtime crates, including:
 
 - `starweaver-agent`
 - `starweaver-context`
 - `starweaver-core`
-- `starweaver-environment`
 - `starweaver-model`
+- `starweaver-oauth-provider`
 - `starweaver-runtime`
 - `starweaver-session`
 - `starweaver-stream`
+- `starweaver-storage` when native store facades are exposed
 - `starweaver-tools`
 - `starweaver-usage`
+- `starweaver-environment` when environment wrappers are added
 
-The core crates should not depend on `starweaver-py`. If core behavior must be
-changed for Python, the change should first be expressed as a neutral Rust
-contract that is useful without Python.
+Core crates must not depend on `starweaver-py`.
+
+The root Rust workspace excludes `packages/starweaver-py`. Keep that boundary
+unless the PyO3 lint, build, and wheel behavior can be made workspace-native
+without weakening core crate rules.
+
+## Lint And Unsafe Boundary
+
+PyO3 generates FFI glue, so any required `unsafe_code = "allow"` exception must
+stay local to `packages/starweaver-py/Cargo.toml`.
+
+Core Starweaver crates keep the workspace `unsafe_code = "forbid"` rule.
+
+## Provider Boundary
+
+Python provider helpers should build Starweaver model adapters. They must not
+become untyped HTTP escape hatches.
+
+Allowed Python provider surfaces:
+
+- deterministic test models
+- callback-backed `FunctionModel`
+- `ProviderModel` helpers backed by Rust provider adapters
+- typed `ModelSettings`
+- typed `RequestParams`
+- profile/model-id helpers that resolve through Starweaver-owned code
+
+Provider-specific routing affinity remains in typed provider settings. Generic
+Python metadata must not become a place to smuggle provider session headers.
+
+## Claw Boundary
+
+Claw can build on top of `starweaver-py` by registering tools, resources,
+approval UIs, and product policies. Those decisions should stay above the
+binding crate.
+
+`starweaver-py` should expose the primitives Claw needs:
+
+- tools
+- sessions
+- streams
+- state export/restore
+- session-store records and archive helpers
+- HITL decisions
+- active control
+- resource references
+- environment bindings when ready
+- stream replay adapters
+- usage and trace evidence
+- observability evidence
+
+It should not encode Claw-specific queue names, UI concepts, policy decisions,
+or storage layout.
 
 ## Product Boundary Questions
 
-- Should the PyPI distribution be named `starweaver` or `starweaver-py`?
-- Which Python version floor should Claw require?
-- Should the binding crate join the Rust workspace after the PyO3/FFI and wheel
-  CI boundary is stable?
-- Does PyO3 require a binding-local lint exception for generated FFI glue?
-- Which provider/model factory should be exposed to Python first?
+| Question                                            | Current recommendation                                                                                |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| Should `AgentStream` be renamed?                    | Add `AgentRun` as the public live handle and keep `AgentStream` as compatibility or low-level naming. |
+| Should `Agent.session()` exist?                     | Yes. It is the Pythonic alias over `new_session()` and `session_from_state(...)`.                     |
+| Should Python expose raw `AgentContext`?            | Not as a mutable live object. Expose typed facades and raw state snapshots.                           |
+| Should Python support custom model adapters?        | Later. Current priority is tools, sessions, streams, output, and active control.                      |
+| Should public docs expose provisional control APIs? | No. Add user docs after implementation and tests land.                                                |

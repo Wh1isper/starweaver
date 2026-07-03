@@ -26,8 +26,12 @@ The workflow:
 After the release pull request is merged into `main`, publish the GitHub Release:
 
 ```bash
-gh release create vX.Y.Z --target main --title "Starweaver vX.Y.Z" --generate-notes
+merge_commit=$(gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid)
+gh release create vX.Y.Z --target "$merge_commit" --title "Starweaver vX.Y.Z" --generate-notes
 ```
+
+Use the release pull request merge commit as the release target, not the mutable `main` branch, so
+the tag always points at the reviewed release commit.
 
 For fully local preparation:
 
@@ -39,7 +43,7 @@ make publish-dry-run
 git add Cargo.toml Cargo.lock pyproject.toml uv.lock packages/starweaver-py
 git commit -m "Prepare release vX.Y.Z"
 git push
-gh release create vX.Y.Z --target main --title "Starweaver vX.Y.Z" --generate-notes
+gh release create vX.Y.Z --target "$(git rev-parse HEAD)" --title "Starweaver vX.Y.Z" --generate-notes
 ```
 
 ## Release workflow
@@ -114,6 +118,8 @@ make publish
 - GitHub Actions has `contents: write` permission so release assets can be uploaded.
 
 The release workflow maps `PYPI_API_TOKEN` to `UV_PUBLISH_TOKEN` for `uv publish`.
+It publishes with `uv publish --check-url https://pypi.org/simple/starweaver/` so reruns skip
+distribution files that are already visible on PyPI.
 
 ## After publishing
 

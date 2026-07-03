@@ -1056,7 +1056,7 @@ const fn session_run_status(status: RunStatus) -> SessionRunStatus {
 
 const fn live_stream_error_run_status(error: &AgentStreamError) -> RunStatus {
     match error {
-        AgentStreamError::Interrupted => RunStatus::Cancelled,
+        AgentStreamError::Interrupted { .. } => RunStatus::Cancelled,
         AgentStreamError::RuntimeUnavailable(_)
         | AgentStreamError::Join(_)
         | AgentStreamError::Agent(_) => RunStatus::Failed,

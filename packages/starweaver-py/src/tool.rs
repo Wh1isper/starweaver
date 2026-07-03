@@ -267,6 +267,17 @@ impl PyPythonTool {
     }
 }
 
+pub(crate) fn py_tool_list_to_dyn_tools(
+    py: Python<'_>,
+    tools: Option<Vec<Py<PyPythonTool>>>,
+) -> PyResult<Vec<DynTool>> {
+    let mut result = Vec::new();
+    for tool in tools.unwrap_or_default() {
+        result.push(tool.borrow(py).dyn_tool());
+    }
+    Ok(result)
+}
+
 #[pymethods]
 impl PyPythonTool {
     #[new]

@@ -1,6 +1,7 @@
 //! Live SDK streaming helpers.
 
 use std::{
+    collections::VecDeque,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -9,11 +10,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use starweaver_context::{AgentContext, AgentEvent, ResumableState};
+use starweaver_context::{AgentContext, AgentEvent, BusMessage, ResumableState};
 use starweaver_core::CancellationToken;
 use starweaver_runtime::{
-    AgentCapability, AgentError, AgentInput, AgentResult, AgentRunState, AgentStreamRecord,
-    AgentStreamResult, CapabilityError, CapabilityResult,
+    AgentCapability, AgentError, AgentInput, AgentResult, AgentRunState, AgentStreamEvent,
+    AgentStreamRecord, AgentStreamResult, CapabilityError, CapabilityResult, CapabilitySpec,
 };
 use thiserror::Error;
 use tokio::{
@@ -25,6 +26,7 @@ use crate::AgentSession;
 
 const DEFAULT_STREAM_BUFFER: usize = 256;
 const INTERRUPT_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+const CONTROL_DRAIN_CAPABILITY_ID: &str = "starweaver.agent.active_control.drain";
 
 /// Backpressure behavior for live SDK streams.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -154,6 +156,304 @@ pub enum AgentStreamCurrentError {
     Join(String),
 }
 
+/// Accepted live-run control input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentControlReceipt {
+    /// Accepted control id.
+    pub id: String,
+    /// Accepted control kind.
+    pub kind: AgentControlKind,
+    /// Whether the input was queued for active-run delivery.
+    pub queued: bool,
+    /// Active run id when known at enqueue time.
+    pub run_id: Option<String>,
+    /// Active session id when known at enqueue time.
+    pub session_id: Option<String>,
+}
+
+/// Kind of accepted live-run control input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgentControlKind {
+    /// Generic message-bus write.
+    Message,
+    /// User steering message.
+    Steering,
+    /// Run interruption.
+    Interrupt,
+}
+
+impl AgentControlKind {
+    /// Return the stable Python/API name for this control kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Steering => "steering",
+            Self::Interrupt => "interrupt",
+        }
+    }
+}
+
+/// Cloneable control handle for a live SDK run.
+#[derive(Clone)]
+pub struct AgentControlHandle {
+    interrupted: Arc<AtomicBool>,
+    interrupt_reason: Arc<Mutex<Option<String>>>,
+    cancellation_token: CancellationToken,
+    latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
+    pending_messages: Arc<tokio::sync::Mutex<VecDeque<BusMessage>>>,
+    finished: Arc<AtomicBool>,
+}
+
+impl AgentControlHandle {
+    /// Request cooperative cancellation of the active run.
+    #[must_use]
+    pub fn interrupt(&self, reason: Option<String>) -> AgentControlReceipt {
+        let reason = reason.unwrap_or_else(|| "agent stream interruption requested".to_string());
+        match self.interrupt_reason.lock() {
+            Ok(mut stored) => *stored = Some(reason),
+            Err(error) => *error.into_inner() = Some(reason),
+        }
+        self.interrupted.store(true, Ordering::SeqCst);
+        self.cancellation_token.cancel();
+        AgentControlReceipt {
+            id: "interrupt".to_string(),
+            kind: AgentControlKind::Interrupt,
+            queued: false,
+            run_id: None,
+            session_id: None,
+        }
+    }
+
+    /// Queue a message for injection into the active runtime context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgentControlError::TerminalRun`] when the run has already finished.
+    pub async fn send_message(
+        &self,
+        message: BusMessage,
+    ) -> Result<AgentControlReceipt, AgentControlError> {
+        if self.finished.load(Ordering::SeqCst) || self.interrupted.load(Ordering::SeqCst) {
+            return Err(AgentControlError::TerminalRun);
+        }
+        let kind = control_kind_for_message(&message);
+        let (run_id, session_id) = {
+            let context = self.latest_context.lock().await;
+            (
+                context
+                    .run_id
+                    .as_ref()
+                    .map(|run_id| run_id.as_str().to_string()),
+                context
+                    .session_id
+                    .as_ref()
+                    .map(|session_id| session_id.as_str().to_string()),
+            )
+        };
+        let receipt = AgentControlReceipt {
+            id: message.id.clone(),
+            kind,
+            queued: true,
+            run_id,
+            session_id,
+        };
+        {
+            let mut pending = self.pending_messages.lock().await;
+            if self.finished.load(Ordering::SeqCst) || self.interrupted.load(Ordering::SeqCst) {
+                return Err(AgentControlError::TerminalRun);
+            }
+            pending.push_back(message);
+        }
+        Ok(receipt)
+    }
+
+    /// Queue a user steering message for injection into the active runtime context.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AgentControlError::TerminalRun`] when the run has already finished.
+    pub async fn steer(
+        &self,
+        id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Result<AgentControlReceipt, AgentControlError> {
+        let id = id.into();
+        let text = text.into();
+        let mut message = BusMessage::text(text, "user").with_id(id.clone());
+        message.metadata.insert(
+            "starweaver.topic".to_string(),
+            serde_json::json!("steering"),
+        );
+        let mut receipt = self.send_message(message).await?;
+        receipt.kind = AgentControlKind::Steering;
+        Ok(receipt)
+    }
+
+    /// Export the latest observed recoverable run state.
+    pub async fn recoverable_state(&self) -> ResumableState {
+        self.latest_context.lock().await.export_full_state()
+    }
+
+    fn drain_capability(&self) -> Arc<dyn AgentCapability> {
+        Arc::new(AgentControlDrainCapability {
+            pending_messages: self.pending_messages.clone(),
+            finished: self.finished.clone(),
+        })
+    }
+
+    fn mark_finished(&self) {
+        self.finished.store(true, Ordering::SeqCst);
+    }
+
+    fn interrupt_reason(&self) -> String {
+        interrupt_reason(&self.interrupt_reason)
+    }
+}
+
+fn new_control_handle(
+    interrupted: Arc<AtomicBool>,
+    interrupt_reason: Arc<Mutex<Option<String>>>,
+    cancellation_token: CancellationToken,
+    latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
+) -> AgentControlHandle {
+    AgentControlHandle {
+        interrupted,
+        interrupt_reason,
+        cancellation_token,
+        latest_context,
+        pending_messages: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
+        finished: Arc::new(AtomicBool::new(false)),
+    }
+}
+
+fn control_kind_for_message(message: &BusMessage) -> AgentControlKind {
+    if message
+        .metadata
+        .get("starweaver.topic")
+        .and_then(serde_json::Value::as_str)
+        == Some("steering")
+    {
+        AgentControlKind::Steering
+    } else {
+        AgentControlKind::Message
+    }
+}
+
+/// Errors raised by live-run control APIs.
+#[derive(Debug, Error)]
+pub enum AgentControlError {
+    /// The control input targeted a run that has already terminated.
+    #[error("agent run has already completed")]
+    TerminalRun,
+}
+
+struct AgentControlDrainCapability {
+    pending_messages: Arc<tokio::sync::Mutex<VecDeque<BusMessage>>>,
+    finished: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl AgentCapability for AgentControlDrainCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new(CONTROL_DRAIN_CAPABILITY_ID)
+    }
+
+    async fn prepare_run_input_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        input: AgentInput,
+    ) -> CapabilityResult<AgentInput> {
+        self.drain(context).await;
+        Ok(input)
+    }
+
+    async fn prepare_model_messages_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        messages: Vec<starweaver_model::ModelMessage>,
+    ) -> CapabilityResult<Vec<starweaver_model::ModelMessage>> {
+        self.drain(context).await;
+        Ok(messages)
+    }
+
+    async fn after_output_validation_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        _output: &str,
+    ) -> CapabilityResult<()> {
+        self.drain_before_terminal_guard(context).await;
+        Ok(())
+    }
+}
+
+impl AgentControlDrainCapability {
+    async fn drain(&self, context: &mut AgentContext) {
+        let mut pending = self.pending_messages.lock().await;
+        drain_pending_control_messages(&mut pending, context);
+    }
+
+    async fn drain_before_terminal_guard(&self, context: &mut AgentContext) {
+        let mut pending = self.pending_messages.lock().await;
+        drain_pending_control_messages(&mut pending, context);
+        if !has_pending_runtime_steering(context) {
+            self.finished.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+fn drain_pending_control_messages(pending: &mut VecDeque<BusMessage>, context: &mut AgentContext) {
+    while let Some(message) = pending.pop_front() {
+        let id = message.id.clone();
+        let existed = context
+            .messages
+            .messages()
+            .iter()
+            .any(|existing| existing.id == id);
+        let topic = message
+            .metadata
+            .get("starweaver.topic")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        let accepted = context.send_message(message);
+        if existed {
+            continue;
+        }
+        let event_kind = if topic.as_deref() == Some("steering") {
+            "steering_submitted"
+        } else {
+            "message_submitted"
+        };
+        context.publish_event(AgentEvent::new(
+            event_kind,
+            serde_json::json!({
+                "id": accepted.id,
+                "topic": topic,
+                "queued_id": id,
+            }),
+        ));
+    }
+}
+
+fn has_pending_runtime_steering(context: &AgentContext) -> bool {
+    context
+        .messages
+        .peek(context.agent_id.as_str())
+        .iter()
+        .any(is_runtime_steering_message)
+}
+
+fn is_runtime_steering_message(message: &BusMessage) -> bool {
+    message
+        .metadata
+        .get("starweaver.topic")
+        .and_then(serde_json::Value::as_str)
+        == Some("steering")
+}
+
 /// Pollable live stream status snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentStreamStatus {
@@ -175,15 +475,14 @@ pub struct AgentStreamStatus {
 #[derive(Clone)]
 pub struct AgentStreamController {
     interrupted: Arc<AtomicBool>,
-    cancellation_token: CancellationToken,
     latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
+    control: AgentControlHandle,
 }
 
 impl AgentStreamController {
     /// Request cooperative cancellation of the running stream.
     pub fn interrupt(&self) {
-        self.interrupted.store(true, Ordering::SeqCst);
-        self.cancellation_token.cancel();
+        let _ = self.control.interrupt(None);
     }
 
     /// Return whether cooperative cancellation has been requested.
@@ -196,6 +495,12 @@ impl AgentStreamController {
     pub async fn recoverable_state(&self) -> ResumableState {
         self.latest_context.lock().await.export_full_state()
     }
+
+    /// Return the active-run control handle.
+    #[must_use]
+    pub fn control_handle(&self) -> AgentControlHandle {
+        self.control.clone()
+    }
 }
 
 /// Error returned by live stream handles.
@@ -205,8 +510,11 @@ pub enum AgentStreamError {
     #[error("tokio runtime unavailable for live agent stream: {0}")]
     RuntimeUnavailable(String),
     /// The caller deliberately interrupted the live stream.
-    #[error("agent stream interrupted")]
-    Interrupted,
+    #[error("agent stream interrupted: {reason}")]
+    Interrupted {
+        /// Human-readable cancellation reason.
+        reason: String,
+    },
     /// The runtime task failed before returning an agent result.
     #[error("agent stream task failed: {0}")]
     Join(String),
@@ -221,7 +529,7 @@ pub struct AgentStreamHandle {
     join: JoinHandle<Result<AgentLiveStreamResult, AgentError>>,
     latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
     interrupted: Arc<AtomicBool>,
-    cancellation_token: CancellationToken,
+    control: AgentControlHandle,
     dropped_events: Arc<AtomicUsize>,
     receiver_closed: Arc<AtomicBool>,
     current_error: Arc<Mutex<Option<AgentStreamCurrentError>>>,
@@ -236,7 +544,7 @@ impl AgentStreamHandle {
         join: JoinHandle<Result<AgentLiveStreamResult, AgentError>>,
         latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
         interrupted: Arc<AtomicBool>,
-        cancellation_token: CancellationToken,
+        control: AgentControlHandle,
         dropped_events: Arc<AtomicUsize>,
         receiver_closed: Arc<AtomicBool>,
         current_error: Arc<Mutex<Option<AgentStreamCurrentError>>>,
@@ -248,7 +556,7 @@ impl AgentStreamHandle {
             join,
             latest_context,
             interrupted,
-            cancellation_token,
+            control,
             dropped_events,
             receiver_closed,
             current_error,
@@ -329,9 +637,15 @@ impl AgentStreamHandle {
     pub fn controller(&self) -> AgentStreamController {
         AgentStreamController {
             interrupted: self.interrupted.clone(),
-            cancellation_token: self.cancellation_token.clone(),
             latest_context: self.latest_context.clone(),
+            control: self.control.clone(),
         }
+    }
+
+    /// Return the active-run control handle.
+    #[must_use]
+    pub fn control_handle(&self) -> AgentControlHandle {
+        self.control.clone()
     }
 
     /// Request cooperative cancellation of the running stream.
@@ -368,15 +682,22 @@ impl AgentStreamHandle {
     pub async fn join(self) -> Result<AgentLiveStreamResult, AgentStreamError> {
         let interrupted = self.interrupted.clone();
         let mut join = self.join;
+        let control = self.control.clone();
         if interrupted.load(Ordering::SeqCst) {
             if let Ok(result) = tokio::time::timeout(INTERRUPT_JOIN_TIMEOUT, &mut join).await {
+                control.mark_finished();
                 return map_stream_join_result(result);
             }
             join.abort();
             let _ = join.await;
-            return Err(AgentStreamError::Interrupted);
+            control.mark_finished();
+            return Err(AgentStreamError::Interrupted {
+                reason: control.interrupt_reason(),
+            });
         }
-        map_stream_join_result(join.await)
+        let result = map_stream_join_result(join.await);
+        control.mark_finished();
+        result
     }
 
     /// Wait for stream completion and return result, error, and recoverable state
@@ -415,10 +736,16 @@ impl AgentStreamHandle {
         self,
         session: &mut AgentSession,
     ) -> Result<AgentLiveStreamResult, AgentStreamError> {
-        let result = self.join().await?;
-        session.replace_context(result.context.clone());
-        session.record_result(&result.result);
-        Ok(result)
+        let completion = self.complete().await;
+        if let Some(result) = completion.result {
+            session.replace_context(result.context.clone());
+            session.record_result(&result.result);
+            return Ok(result);
+        }
+        session.replace_context(AgentContext::from_state(completion.state));
+        Err(completion.error.unwrap_or_else(|| {
+            AgentStreamError::Join("stream completed without result or error".to_string())
+        }))
     }
 }
 
@@ -465,23 +792,33 @@ pub(crate) fn try_start_session_stream_with_options(
     let (sender, receiver) = mpsc::channel(options.buffer_size);
     let latest_context = Arc::new(tokio::sync::Mutex::new(context.clone()));
     let interrupted = Arc::new(AtomicBool::new(false));
+    let interrupt_reason = Arc::new(Mutex::new(None));
     let cancellation_token = CancellationToken::new();
     let dropped_events = Arc::new(AtomicUsize::new(0));
     let receiver_closed = Arc::new(AtomicBool::new(false));
     let current_error = Arc::new(Mutex::new(None));
     let observed_events = Arc::new(Mutex::new(Vec::new()));
+    let control = new_control_handle(
+        interrupted.clone(),
+        interrupt_reason.clone(),
+        cancellation_token.clone(),
+        latest_context.clone(),
+    );
     let observer = Arc::new(LiveStreamObserver {
         sender,
         latest_context: latest_context.clone(),
         interrupted: interrupted.clone(),
+        interrupt_reason,
+        finished: control.finished.clone(),
         dropped_events: dropped_events.clone(),
         receiver_closed: receiver_closed.clone(),
         observed_events: observed_events.clone(),
         drop_policy: options.drop_policy,
     });
     let agent = agent
+        .with_capability(control.drain_capability())
         .with_stream_observer(observer)
-        .with_cancellation_token(cancellation_token.clone());
+        .with_cancellation_token(cancellation_token);
     let join_latest_context = latest_context.clone();
     let join_current_error = current_error.clone();
     let join = runtime.spawn(async move {
@@ -542,7 +879,7 @@ pub(crate) fn try_start_session_stream_with_options(
         join,
         latest_context,
         interrupted,
-        cancellation_token,
+        control,
         dropped_events,
         receiver_closed,
         current_error,
@@ -555,6 +892,8 @@ struct LiveStreamObserver {
     sender: mpsc::Sender<AgentStreamRecord>,
     latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
     interrupted: Arc<AtomicBool>,
+    interrupt_reason: Arc<Mutex<Option<String>>>,
+    finished: Arc<AtomicBool>,
     dropped_events: Arc<AtomicUsize>,
     receiver_closed: Arc<AtomicBool>,
     observed_events: Arc<Mutex<Vec<AgentStreamRecord>>>,
@@ -570,13 +909,21 @@ impl AgentCapability for LiveStreamObserver {
         event: &AgentStreamRecord,
     ) -> CapabilityResult<()> {
         *self.latest_context.lock().await = context.clone();
+        if matches!(
+            event.event,
+            AgentStreamEvent::RunComplete { .. }
+                | AgentStreamEvent::RunFailed { .. }
+                | AgentStreamEvent::Suspended { .. }
+        ) {
+            self.finished.store(true, Ordering::SeqCst);
+        }
         match self.observed_events.lock() {
             Ok(mut events) => events.push(event.clone()),
             Err(error) => error.into_inner().push(event.clone()),
         }
         if self.interrupted.load(Ordering::SeqCst) {
             return Err(CapabilityError::Cancelled {
-                reason: "agent stream interruption requested".to_string(),
+                reason: interrupt_reason(&self.interrupt_reason),
             });
         }
         if self.receiver_closed.load(Ordering::SeqCst) {
@@ -602,14 +949,28 @@ impl AgentCapability for LiveStreamObserver {
     }
 }
 
+fn interrupt_reason(reason: &Mutex<Option<String>>) -> String {
+    match reason.lock() {
+        Ok(reason) => reason
+            .clone()
+            .unwrap_or_else(|| "agent stream interruption requested".to_string()),
+        Err(error) => error
+            .into_inner()
+            .clone()
+            .unwrap_or_else(|| "agent stream interruption requested".to_string()),
+    }
+}
+
 fn map_stream_join_result(
     result: Result<Result<AgentLiveStreamResult, AgentError>, JoinError>,
 ) -> Result<AgentLiveStreamResult, AgentStreamError> {
     match result {
         Ok(Ok(result)) => Ok(result),
-        Ok(Err(AgentError::Cancelled { .. })) => Err(AgentStreamError::Interrupted),
+        Ok(Err(AgentError::Cancelled { reason })) => Err(AgentStreamError::Interrupted { reason }),
         Ok(Err(error)) => Err(AgentStreamError::Agent(error)),
-        Err(error) if error.is_cancelled() => Err(AgentStreamError::Interrupted),
+        Err(error) if error.is_cancelled() => Err(AgentStreamError::Interrupted {
+            reason: "agent stream task was cancelled".to_string(),
+        }),
         Err(error) => Err(AgentStreamError::Join(error.to_string())),
     }
 }
