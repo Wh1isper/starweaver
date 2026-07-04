@@ -50,6 +50,8 @@ helpers, callback dispatch, and application-facing composition.
 | `07-pythonic-control-plane.md`    | Active-run steering, interruption, message bus, typed HITL, and required Rust seam                                   |
 | `08-session-store-and-state.md`   | Durable Python session-store contract, state boundaries, record wrappers, and restore                                |
 | `09-advanced-composition.md`      | Runtime config, toolsets, tool search/proxy, skills, environments, resources, media, providers, and product adapters |
+| `10-claw-python-runtime-plan.md`  | Claw-like Python product runtime plan, Rust-to-Python binding gaps, storage/API/workspace execution mapping          |
+| `11-python-native-toolsets.md`    | Python `AbstractToolset` contract, dynamic toolset bridge, builders, Rust-backed wrappers, lifecycle, durability     |
 
 ## Ownership Shape
 
@@ -137,20 +139,27 @@ schedule, memory, UI, database, and Docker-retention policy remain above
 
 ## Review Order
 
-1. Read `01-product-boundary.md` to confirm the product boundary.
-2. Read `02-concept-mapping.md` to review the public Python API contract.
-3. Read `03-python-tool-injection.md` before changing callback, schema, GIL,
-   cancellation, or exception behavior.
-4. Read `04-runtime-session-streaming.md` before changing sessions, streams,
-   state, output, or HITL.
-5. Read `07-pythonic-control-plane.md` before adding steering, interruption,
-   active message-bus writes, or typed live HITL helpers.
-6. Read `05-ecosystem-and-claw.md` before adding toolsets, environments,
-   resource providers, skills, observability, or Claw integration.
-7. Read `08-session-store-and-state.md` before changing durable state,
-   archive/store APIs, record wrappers, or restore behavior.
-8. Read `09-advanced-composition.md` before designing runtime config,
-   toolsets, tool library/search/proxy, skill helpers, environment/resource
-   facades, media adapters, provider/OAuth helpers, stream adapters, or product
-   runtime adapters.
-9. Read `06-roadmap-and-validation.md` before claiming a milestone is complete.
+01. Read `01-product-boundary.md` to confirm the product boundary.
+02. Read `02-concept-mapping.md` to review the public Python API contract.
+03. Read `03-python-tool-injection.md` before changing callback, schema, GIL,
+    cancellation, or exception behavior.
+04. Read `04-runtime-session-streaming.md` before changing sessions, streams,
+    state, output, or HITL.
+05. Read `07-pythonic-control-plane.md` before adding steering, interruption,
+    active message-bus writes, or typed live HITL helpers.
+06. Read `05-ecosystem-and-claw.md` before adding toolsets, environments,
+    resource providers, skills, observability, or Claw integration.
+07. Read `08-session-store-and-state.md` before changing durable state,
+    archive/store APIs, record wrappers, or restore behavior.
+08. Read `09-advanced-composition.md` before designing runtime config,
+    toolsets, tool library/search/proxy, skill helpers, environment/resource
+    facades, media adapters, provider/OAuth helpers, stream adapters, or product
+    runtime adapters.
+09. Read `10-claw-python-runtime-plan.md` before implementing a Claw-like Python
+    service, API, durable run coordinator, workspace binding, product toolsets,
+    or product database integration on top of `starweaver-py`.
+10. Read `11-python-native-toolsets.md` before changing Python `Toolset`,
+    adding `AbstractToolset`, `PythonDynamicToolset`, `FunctionToolset`,
+    exposing Rust toolset wrappers, or designing context-aware dynamic toolset
+    callbacks.
+11. Read `06-roadmap-and-validation.md` before claiming a milestone is complete.

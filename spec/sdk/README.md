@@ -78,6 +78,8 @@ The Python SDK product and architecture contract lives under `python/`:
 - `python/07-pythonic-control-plane.md` - active-run steering, interruption, message bus, typed HITL, and required Rust seam
 - `python/08-session-store-and-state.md` - durable Python session-store contract, state boundaries, record wrappers, and restore
 - `python/09-advanced-composition.md` - runtime config, toolsets, tool search/proxy, skills, environments, resources, media, providers, and product adapters
+- `python/10-claw-python-runtime-plan.md` - Claw-like Python product runtime plan, Rust-to-Python binding gaps, and execution mapping
+- `python/11-python-native-toolsets.md` - Python-native toolset builder design, Rust-backed wrappers, lifecycle, and durability
 
 ## SDK Acceptance Gates
 

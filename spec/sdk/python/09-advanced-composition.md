@@ -78,6 +78,10 @@ approval/deferred wrappers, capability tags, supersession, and
 environment-backed toolsets. Those extensions must use Starweaver capability or
 toolset contracts instead of a Python-only middleware stack.
 
+`11-python-native-toolsets.md` is the authoritative design for the Python-native
+builder layer that should add `FunctionToolset`, decorators, toolset wrappers,
+dynamic factories, lifecycle callbacks, and durable ID validation.
+
 ## ToolLibrary, ToolSearchToolset, And ToolProxyToolset
 
 Tool search and tool proxy are distinct strategies and must stay distinct.
@@ -290,6 +294,10 @@ Core hooks:
 - environment binding;
 - resource refs;
 - usage and trace helpers.
+
+The product runtime plan in `10-claw-python-runtime-plan.md` defines the
+service-side controller, storage, workspace, API, and feature sequencing needed
+to replicate ya-claw behavior using `starweaver-py`.
 
 Product-owned features:
 

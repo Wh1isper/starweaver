@@ -14,8 +14,12 @@ mod media;
 mod web;
 
 use download::download;
-use media::{load_media_url, read_audio, read_image, read_video};
 use web::{fetch, scrape, search};
+
+// Remote media URL tools are intentionally kept implemented in `media.rs`, but are
+// not registered in the Agent SDK default host I/O toolset. Re-enable these imports
+// together with the commented registrations below if the SDK surface needs them again.
+// use media::{load_media_url, read_audio, read_image, read_video};
 
 pub use media::{
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
@@ -68,24 +72,26 @@ Download files from URLs and save to the active environment.
 </best-practices>
 </download-tool>";
 
-const LOAD_MEDIA_URL_GUIDELINES: &str = r"<load-media-url-tool>
+// Remote media URL guidance is intentionally not attached to `host_io_tools()` while
+// `load_media_url` is not part of the Agent SDK tool surface.
+// const LOAD_MEDIA_URL_GUIDELINES: &str = r"<load-media-url-tool>
+//
+// <description>Load multimedia content (images, videos, audio, and supported documents) directly from HTTP/HTTPS URL for model analysis.</description>
+//
+// <supported_urls>
+// - Images: `https://example.com/photo.jpg`, `https://example.com/image.png`
+// - Videos: `https://example.com/video.mp4`, `https://youtube.com/watch?v=xxx`
+// - Audio: `https://example.com/audio.mp3`, `https://example.com/recording.wav`
+// - Documents: `https://example.com/file.pdf` when document URL input is supported.
+// </supported_urls>
+//
+// <activation>
+// Use this tool when the active model advertises native media/document URL capability. If the active model lacks the relevant capability, use `view` for local media files or `download` plus a document conversion workflow for documents.
+// </activation>
+//
+// </load-media-url-tool>";
 
-<description>Load multimedia content (images, videos, audio, and supported documents) directly from HTTP/HTTPS URL for model analysis.</description>
-
-<supported_urls>
-- Images: `https://example.com/photo.jpg`, `https://example.com/image.png`
-- Videos: `https://example.com/video.mp4`, `https://youtube.com/watch?v=xxx`
-- Audio: `https://example.com/audio.mp3`, `https://example.com/recording.wav`
-- Documents: `https://example.com/file.pdf` when document URL input is supported.
-</supported_urls>
-
-<activation>
-Use this tool when the active model advertises native media/document URL capability. If the active model lacks the relevant capability, use `read_image`, `read_video`, or `read_audio` for media understanding, or `download` plus a document conversion workflow for documents.
-</activation>
-
-</load-media-url-tool>";
-
-/// Create host I/O tools for web access, downloads, and media understanding.
+/// Create host I/O tools for web access and downloads.
 #[must_use]
 pub fn host_io_tools() -> DynToolset {
     Arc::new(
@@ -100,13 +106,13 @@ fn host_io_tool_instructions() -> Vec<ToolInstruction> {
     vec![
         ToolInstruction::new(
             "host_io",
-            "These tools expose host-provided I/O capabilities such as web access, downloads, and media analysis.",
+            "These tools expose host-provided I/O capabilities such as web access and downloads.",
         ),
         ToolInstruction::new("search", SEARCH_GUIDELINES),
         ToolInstruction::new("fetch", FETCH_GUIDELINES),
         ToolInstruction::new("scrape", SCRAPE_GUIDELINES),
         ToolInstruction::new("download", DOWNLOAD_GUIDELINES),
-        ToolInstruction::new("load_media_url", LOAD_MEDIA_URL_GUIDELINES),
+        // ToolInstruction::new("load_media_url", LOAD_MEDIA_URL_GUIDELINES),
     ]
 }
 
@@ -136,30 +142,33 @@ fn host_io_tool_definitions() -> Vec<DynTool> {
             tool_metadata("host_io", false, false),
             download,
         ),
-        static_tool_with_metadata(
-            "read_image",
-            "Read and analyze an image from a URL. Use when native vision is unavailable.",
-            tool_metadata("host_io", false, false),
-            read_image,
-        ),
-        static_tool_with_metadata(
-            "read_video",
-            "Read and analyze a video from a URL. Use when native video understanding is unavailable.",
-            tool_metadata("host_io", false, false),
-            read_video,
-        ),
-        static_tool_with_metadata(
-            "read_audio",
-            "Read and analyze audio from a URL. Use when native audio understanding is unavailable.",
-            tool_metadata("host_io", false, false),
-            read_audio,
-        ),
-        static_tool_with_metadata(
-            "load_media_url",
-            "Load multimedia content directly from HTTP/HTTPS URL when model capabilities support it.",
-            tool_metadata("host_io", false, false),
-            load_media_url,
-        ),
+        // Remote media URL tools are intentionally not registered in the Agent SDK
+        // default host I/O toolset. Keep the implementation in `media.rs` for future
+        // opt-in restoration if needed.
+        // static_tool_with_metadata(
+        //     "read_image",
+        //     "Read and analyze an image from a URL. Use when native vision is unavailable.",
+        //     tool_metadata("host_io", false, false),
+        //     read_image,
+        // ),
+        // static_tool_with_metadata(
+        //     "read_video",
+        //     "Read and analyze a video from a URL. Use when native video understanding is unavailable.",
+        //     tool_metadata("host_io", false, false),
+        //     read_video,
+        // ),
+        // static_tool_with_metadata(
+        //     "read_audio",
+        //     "Read and analyze audio from a URL. Use when native audio understanding is unavailable.",
+        //     tool_metadata("host_io", false, false),
+        //     read_audio,
+        // ),
+        // static_tool_with_metadata(
+        //     "load_media_url",
+        //     "Load multimedia content directly from HTTP/HTTPS URL when model capabilities support it.",
+        //     tool_metadata("host_io", false, false),
+        //     load_media_url,
+        // ),
     ]
 }
 
