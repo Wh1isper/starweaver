@@ -20,8 +20,7 @@ use starweaver_environment::{
 };
 use starweaver_model::{
     CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, ContentPart, ModelMessage,
-    ModelProfile, ModelRequest, ModelRequestPart, ModelResponse, ProtocolFamily, TestModel,
-    tool_call_response,
+    ModelRequest, ModelRequestPart, ModelResponse, TestModel, tool_call_response,
 };
 use starweaver_usage::Usage;
 
@@ -1343,50 +1342,8 @@ fn unique_agent_test_dir() -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn agent_builder_attaches_model_media_capabilities_to_host_tools() {
-    let responses = vec![
-        tool_call_response(
-            "media",
-            "load_media_url",
-            serde_json::json!({"url": "https://example.com/video.mp4"}),
-        ),
-        ModelResponse::text("done"),
-    ];
-    let model = TestModel::with_responses(responses).with_profile(ModelProfile::for_protocol(
-        ProtocolFamily::GeminiGenerateContent,
-    ));
-    let mut session = AgentSession::new(
-        starweaver_agent::AgentBuilder::new(Arc::new(model))
-            .toolset(&host_io_tools())
-            .build(),
-    );
-
-    let result = session.run("load media").await.unwrap();
-    let tool_return = result
-        .state
-        .message_history
-        .iter()
-        .flat_map(|message| match message {
-            starweaver_model::ModelMessage::Request(request) => request.parts.iter().collect(),
-            starweaver_model::ModelMessage::Response(_) => Vec::new(),
-        })
-        .find_map(|part| match part {
-            starweaver_model::ModelRequestPart::ToolReturn(tool_return) => Some(tool_return),
-            _ => None,
-        })
-        .unwrap();
-
-    assert_eq!(tool_return.content["category"], "video");
-    assert_eq!(tool_return.content["native_supported"], true);
-    assert_eq!(tool_return.content["model_id"], "test");
-    assert_eq!(tool_return.content["provider_ready"]["type"], "media_url");
-}
-
-#[tokio::test]
-async fn agent_builder_filters_media_tools_by_model_capabilities() {
-    let model = TestModel::with_text("done").with_profile(ModelProfile::for_protocol(
-        ProtocolFamily::GeminiGenerateContent,
-    ));
+async fn agent_builder_does_not_register_remote_media_url_tools() {
+    let model = TestModel::with_text("done");
     let model_handle = Arc::new(model.clone());
     let mut session = AgentSession::new(
         starweaver_agent::AgentBuilder::new(model_handle)
@@ -1403,38 +1360,18 @@ async fn agent_builder_filters_media_tools_by_model_capabilities() {
         .iter()
         .map(|tool| tool.name.as_str())
         .collect::<Vec<_>>();
-    assert!(tool_names.contains(&"load_media_url"));
+    assert!(tool_names.contains(&"search"));
+    assert!(tool_names.contains(&"fetch"));
+    assert!(tool_names.contains(&"scrape"));
+    assert!(tool_names.contains(&"download"));
+    assert!(!tool_names.contains(&"load_media_url"));
     assert!(!tool_names.contains(&"read_image"));
     assert!(!tool_names.contains(&"read_video"));
     assert!(!tool_names.contains(&"read_audio"));
-
-    let text_model = TestModel::with_text("done").with_profile(ModelProfile::for_protocol(
-        ProtocolFamily::OpenAiChatCompletions,
-    ));
-    let text_model_handle = Arc::new(text_model.clone());
-    let mut text_session = AgentSession::new(
-        starweaver_agent::AgentBuilder::new(text_model_handle)
-            .toolset(&host_io_tools())
-            .build(),
-    );
-
-    let result = text_session.run("inspect tools").await.unwrap();
-
-    assert_eq!(result.output, "done");
-    let text_params = text_model.captured_params();
-    let text_tool_names = text_params[0]
-        .tools
-        .iter()
-        .map(|tool| tool.name.as_str())
-        .collect::<Vec<_>>();
-    assert!(text_tool_names.contains(&"load_media_url"));
-    assert!(!text_tool_names.contains(&"read_image"));
-    assert!(text_tool_names.contains(&"read_video"));
-    assert!(text_tool_names.contains(&"read_audio"));
 }
 
 #[tokio::test]
-async fn host_io_tools_use_injected_clients_and_capabilities() {
+async fn host_io_tools_use_injected_web_clients() {
     let toolset = host_io_tools();
     let search_tool = toolset
         .get_tools()
@@ -1446,29 +1383,9 @@ async fn host_io_tools_use_injected_clients_and_capabilities() {
         .into_iter()
         .find(|tool| tool.name() == "scrape")
         .unwrap();
-    let load_media_tool = toolset
-        .get_tools()
-        .into_iter()
-        .find(|tool| tool.name() == "load_media_url")
-        .unwrap();
-    let read_image_tool = toolset
-        .get_tools()
-        .into_iter()
-        .find(|tool| tool.name() == "read_image")
-        .unwrap();
     let mut dependencies = starweaver_context::DependencyStore::new();
     dependencies.insert(HostSearchClientHandle::new(Arc::new(FakeSearchClient)));
     dependencies.insert(HostScrapeClientHandle::new(Arc::new(FakeScrapeClient)));
-    dependencies.insert(HostMediaCapabilities {
-        model_id: Some("test-vision".to_string()),
-        supports_image_url: true,
-        supports_video_url: false,
-        supports_audio_url: false,
-        supports_document_url: false,
-    });
-    dependencies.insert(HostMediaUnderstandingClientHandle::new(Arc::new(
-        FakeMediaUnderstandingClient,
-    )));
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -1480,24 +1397,7 @@ async fn host_io_tools_use_injected_clients_and_capabilities() {
         .await
         .unwrap();
     let scrape = scrape_tool
-        .call(
-            context.clone(),
-            serde_json::json!({"url": "https://example.com"}),
-        )
-        .await
-        .unwrap();
-    let media = load_media_tool
-        .call(
-            context.clone(),
-            serde_json::json!({"url": "https://example.com/image.png"}),
-        )
-        .await
-        .unwrap();
-    let image = read_image_tool
-        .call(
-            context,
-            serde_json::json!({"url": "https://example.com/image.png"}),
-        )
+        .call(context, serde_json::json!({"url": "https://example.com"}))
         .await
         .unwrap();
 
@@ -1505,15 +1405,10 @@ async fn host_io_tools_use_injected_clients_and_capabilities() {
     assert_eq!(search.content["results"][0]["title"], "Rust SDK");
     assert_eq!(scrape.content["adapter"], "fake_scrape");
     assert_eq!(scrape.content["markdown_content"], "# Example");
-    assert_eq!(media.content["category"], "image");
-    assert_eq!(media.content["native_supported"], true);
-    assert_eq!(media.content["provider_ready"]["type"], "media_url");
-    assert_eq!(image.content["content"], "image analysis");
-    assert_eq!(image.content["model_id"], "fake-media-model");
 }
 
 #[tokio::test]
-async fn host_io_and_media_failures_return_actionable_tool_errors() {
+async fn host_io_and_view_media_failures_return_actionable_tool_errors() {
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&host_io_tools());
     registry.insert_toolset(&filesystem_tools());
@@ -1550,23 +1445,6 @@ async fn host_io_and_media_failures_return_actionable_tool_errors() {
             .as_str()
             .unwrap()
             .contains("JSON schema")
-    );
-
-    let missing_media_adapter = execute_tool_call(
-        &registry,
-        context.clone(),
-        "missing-media-adapter",
-        "read_image",
-        serde_json::json!({"url": "https://example.com/image.png"}),
-    )
-    .await;
-    assert!(missing_media_adapter.is_error);
-    assert_eq!(missing_media_adapter.content["kind"], "model_retry");
-    assert!(
-        missing_media_adapter.content["message"]
-            .as_str()
-            .unwrap()
-            .contains("HostMediaUnderstandingClientHandle")
     );
 
     let local_media_without_adapter = execute_tool_call(
@@ -1848,19 +1726,7 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
         &["task_create", "task_get", "task_update", "task_list"],
     );
     assert_tool_names(&context, &["summarize", "note", "note_get", "thinking"]);
-    assert_tool_names(
-        &host_io,
-        &[
-            "search",
-            "fetch",
-            "scrape",
-            "download",
-            "read_image",
-            "read_video",
-            "read_audio",
-            "load_media_url",
-        ],
-    );
+    assert_tool_names(&host_io, &["search", "fetch", "scrape", "download"]);
 
     let task_metadata = task
         .get_tools()
@@ -1995,14 +1861,7 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
             .contains("delegate tool's own execution model")
     );
     assert_eq!(context.get_instructions().len(), 4);
-    assert_eq!(host_io.get_instructions().len(), 6);
-    assert!(
-        host_io
-            .get_instructions()
-            .iter()
-            .any(|instruction| instruction.group == "load_media_url"
-                && instruction.content.contains("native media/document URL"))
-    );
+    assert_eq!(host_io.get_instructions().len(), 5);
 }
 
 #[test]
@@ -2117,10 +1976,6 @@ fn first_party_tool_arg_schemas_match_starweaver_sdk_and_describe_args() {
         (
             host_io_tools(),
             vec![
-                ("load_media_url", vec!["url"]),
-                ("read_audio", vec!["url"]),
-                ("read_image", vec!["url"]),
-                ("read_video", vec!["url"]),
                 ("download", vec!["urls", "save_dir"]),
                 ("fetch", vec!["url", "head_only"]),
                 ("scrape", vec!["url"]),

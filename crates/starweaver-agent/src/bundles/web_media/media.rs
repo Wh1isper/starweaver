@@ -126,6 +126,7 @@ impl MediaKind {
     }
 }
 
+#[allow(dead_code)]
 pub(super) async fn read_image(
     context: ToolContext,
     arguments: UrlArgs,
@@ -133,6 +134,7 @@ pub(super) async fn read_image(
     read_media(context, arguments.url, MediaKind::Image).await
 }
 
+#[allow(dead_code)]
 pub(super) async fn read_video(
     context: ToolContext,
     arguments: UrlArgs,
@@ -140,6 +142,7 @@ pub(super) async fn read_video(
     read_media(context, arguments.url, MediaKind::Video).await
 }
 
+#[allow(dead_code)]
 pub(super) async fn read_audio(
     context: ToolContext,
     arguments: UrlArgs,
@@ -147,6 +150,7 @@ pub(super) async fn read_audio(
     read_media(context, arguments.url, MediaKind::Audio).await
 }
 
+#[allow(dead_code)]
 pub(super) async fn load_media_url(
     context: ToolContext,
     arguments: UrlArgs,

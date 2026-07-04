@@ -269,6 +269,48 @@ Exit criteria:
 Status: implemented for runtime config, static toolsets, tool libraries, direct
 tool search, tool proxy, per-agent toolsets, and per-run toolsets.
 
+## Milestone D1: Python-Native Toolset Builder
+
+Goal: make Python toolset authoring feel like a native Python library while the
+Rust runtime remains the execution authority.
+
+Deliverables:
+
+- `FunctionToolset`
+- `@toolset.tool`
+- `@toolset.tool_plain`
+- `toolset.add_function(...)`
+- `toolset.add_tool(...)`
+- static toolset instructions
+- toolset-level defaults for retry, timeout, strict, sequential, and metadata
+- native wrapper facades for prefix, rename, static filter, approval-required,
+  deferred, metadata, and lifecycle policy
+- read-only `ToolsetContext` for later dynamic instructions and factories
+- dynamic factory bridge only after callback scheduling, timeout, cancellation,
+  and lifecycle reporting are implemented
+- durable toolset ID validation helpers
+
+Validation:
+
+```bash
+cargo test -p starweaver-tools --locked
+cargo test -p starweaver-agent --locked
+uv run pytest packages/starweaver-py/tests
+make py-check
+git diff --check
+```
+
+Exit criteria:
+
+- Python authors can define grouped tools with decorators.
+- Toolset wrappers chain through Rust-owned wrappers.
+- Toolset IDs are stable enough for durable products.
+- Dynamic callbacks do not create a Python-only preparation pipeline.
+- Approval, deferred, retry, timeout, cancellation, and stream evidence remain
+  native Starweaver behavior.
+
+Status: specified in `11-python-native-toolsets.md`; implementation pending.
+
 ## Milestone E: Environment, Resources, Skills, Media, And Adapters
 
 Goal: expose the surrounding SDK features Python products need without
@@ -348,6 +390,50 @@ Exit criteria:
 - Public docs describe implemented stable behavior.
 - Claw or an equivalent Python app can run the intended library path without
   MCP, JSON-RPC, or a sidecar binary.
+
+## Milestone G: Claw-Like Python Product Runtime
+
+Goal: prove that a Claw-like product can be built on `starweaver-py` without
+moving product policy into the SDK.
+
+Deliverables:
+
+- native SQLite session/stream/replay bindings exposed to Python;
+- product database schema and migrations above `starweaver-py`;
+- Python service app lifecycle, auth, ready/doctor, and notification hub;
+- profile resolver and runtime builder over `create_agent(...)`;
+- durable execution supervisor and run coordinator;
+- session submit state machine for idle, queued, running, HITL, restore, and
+  fork cases;
+- stream/SSE replay and optional AG-UI projection over canonical records;
+- HITL controller using typed approval/deferred helpers;
+- workspace binding model and local/envd/Docker-backed environment factory;
+- product toolsets for self-client, sessions, async tasks, schedule, workflow,
+  memory, agency, and bridge;
+- startup recovery for queued and orphan running runs.
+
+Validation:
+
+```bash
+cargo test -p starweaver-session --locked
+cargo test -p starweaver-stream --locked
+cargo test -p starweaver-storage --locked
+uv run pytest packages/starweaver-py/tests
+make py-check
+```
+
+Exit criteria:
+
+- A service process can start, create a session, stream a run, steer it, suspend
+  for HITL, resume it, complete it, persist full state, and recover after
+  restart.
+- Product APIs rebuild UI-visible state from stored stream/display records.
+- Product tables hold product policy while Starweaver records remain canonical
+  restore and replay evidence.
+- Schedules, workflows, memory, agency, and bridges reuse the same execution
+  coordinator instead of creating parallel runtime loops.
+
+Status: specified in `10-claw-python-runtime-plan.md`; implementation pending.
 
 ## Acceptance Gates
 

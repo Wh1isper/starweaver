@@ -68,24 +68,22 @@ Backed by `EnvironmentProvider` shell operations. Local desktop-style execution 
 
 ### Resource, Media, and Download Bundle
 
-Public tools:
+Default Agent SDK public tools:
 
 - `download`: stream one or more URLs into the active `EnvironmentProvider` or resource store
-- `load_media_url`: classify and pass remote image, video, audio, and document URLs into provider-ready model content when native model capabilities support the content type
-- `read_image`: analyze an image URL through a configured fallback understanding model when native vision is unavailable
-- `read_video`: analyze a video URL through a configured fallback understanding model when native video understanding is unavailable
-- `read_audio`: transcribe or analyze an audio URL through a configured fallback understanding model when native audio understanding is unavailable
 
-Backed by `EnvironmentProvider` resource APIs, model capability detection, media understanding fallback agents, download adapters, and media capability hooks. The tool implementations should stay provider-neutral at the SDK layer and route provider-specific native media behavior through `starweaver-model` profiles and request mapping.
+Remote media URL helpers such as `load_media_url`, `read_image`, `read_video`, and `read_audio` may remain implemented as provider-neutral building blocks, but they are not registered in the default Agent SDK `host_io_tools()` surface. Local media analysis should go through the filesystem `view` tool, which can use native model media support or a configured fallback media understanding adapter.
+
+Backed by `EnvironmentProvider` resource APIs, model capability detection, media understanding fallback agents, download adapters, and media capability hooks. The implementations should stay provider-neutral at the SDK layer and route provider-specific native media behavior through `starweaver-model` profiles and request mapping.
 
 PDF and Office conversion should be delivered through skill workflows that call shell commands such as PyMuPDF4LLM and MarkItDown in the active environment. These conversions remain outside the default SDK built-in host tool surface because broad document conversion is format-heavy, dependency-heavy, and better handled as an installable skill.
 
 Implementation requirements:
 
 - `download` validates HTTP/HTTPS URLs, follows host runtime redirects, streams with bounded memory, writes safe UUID filenames, records original URL, content type, byte size, checksum when available, and final provider path or resource id.
-- `load_media_url` accepts only HTTP and HTTPS URLs, detects content category through headers and extension hints, checks current model capabilities, returns provider-ready media/document URL parts when supported, and emits a precise fallback message that points to `read_image`, `read_video`, `read_audio`, or `download` plus document-conversion skills.
-- `read_image`, `read_video`, and `read_audio` use configurable fallback models, account usage into the parent `AgentContext`, preserve trace correlation, and return structured text evidence with source URL, model id, and truncation metadata.
-- Media and download tools share protocol validation, host-network-policy delegation, streaming size limits, content-type sniffing, and deterministic fake clients.
+- Remote media URL helper implementations, when explicitly re-enabled, accept only HTTP and HTTPS URLs, detect content category through headers and extension hints, check current model capabilities, and return provider-ready media/document URL parts or fallback guidance.
+- Local media analysis through `view` uses configurable fallback models when native model media support is unavailable, accounts usage into the parent `AgentContext`, preserves trace correlation, and returns structured text evidence with source path, model id, and truncation metadata.
+- Media and download code paths share protocol validation, host-network-policy delegation, streaming size limits, content-type sniffing, and deterministic fake clients.
 - Media preflight processors handle binary media before provider mapping: validate image bytes, detect actual image MIME type, correct mismatched declarations, account for base64 expansion, compress static images, split tall screenshots, apply GIF support policy, enforce image/video count limits while keeping newest media, and preserve clear system-reminder replacements for removed media.
 - Media upload processors run after local image processing and replace binary image/video content with URL parts when the active model profile supports URL media or when large videos should leave the request body. S3 protocol upload and provider resource-store upload adapters share one `MediaUploader` trait.
 

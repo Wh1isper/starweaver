@@ -23,10 +23,16 @@ The current package already includes:
 The next work should deepen composition without inventing Python-only
 equivalents of Starweaver SDK contracts.
 
-`09-advanced-composition.md` is the authoritative contract for the advanced
-facades in this area: runtime config, toolsets, tool library/search/proxy,
-skills, environments, resources, media upload, stream adapters, provider auth,
-and product runtime adapters.
+`09-advanced-composition.md` is the general contract for the advanced facades in
+this area: runtime config, toolsets, tool library/search/proxy, skills,
+environments, resources, media upload, stream adapters, provider auth, and
+product runtime adapters.
+
+`10-claw-python-runtime-plan.md` is the implementation plan for a Claw-like
+Python product runtime on top of `starweaver-py`.
+
+`11-python-native-toolsets.md` is the detailed contract for the next Pythonic
+toolset authoring layer.
 
 ## Capability Bundles
 
@@ -52,7 +58,8 @@ Rules:
 
 ## Toolsets
 
-Python should add toolsets after the current bundle/tool APIs stabilize.
+Python has the initial static toolset layer. The next layer should make toolset
+authoring feel native to Python without creating a Python-only tool runtime.
 
 Target surface:
 
@@ -87,6 +94,9 @@ Later scope:
 
 Toolsets should integrate with Starweaver capability/runtime hook contracts,
 not a Python-only middleware stack.
+
+The detailed builder, wrapper, lifecycle, dynamic-factory, and durability rules
+live in `11-python-native-toolsets.md`.
 
 Tool search and tool proxy are separate follow-on surfaces. Search mutates the
 visible tool set by loading selected tools or namespaces. Proxy keeps the model
@@ -278,6 +288,15 @@ P2 scenario:
 - Claw connects store-backed sessions and stream archives.
 - Claw integrates environment providers or sandbox resources.
 - Claw exposes usage and trace evidence in product analytics.
+
+Full Claw parity is a product runtime, not an SDK feature. The detailed plan is
+`10-claw-python-runtime-plan.md`; the short rule is:
+
+- `starweaver-py` owns Python facade quality and Rust binding coverage;
+- the Claw-like product owns API, database, queue, workflow, schedule, memory,
+  agency, bridge, UI, and Docker retention policy;
+- canonical restore and replay evidence should come from Starweaver session and
+  stream records whenever native bindings exist.
 
 ## Host Boundary
 
