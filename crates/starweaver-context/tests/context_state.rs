@@ -58,6 +58,55 @@ fn message_bus_supports_subscribers_targets_idempotency_and_matching() {
 }
 
 #[test]
+fn message_bus_mark_consumed_skips_selected_unread_messages() {
+    let mut bus = MessageBus::with_maxlen(10);
+    bus.subscribe("main");
+    bus.subscribe("other");
+    bus.send(
+        BusMessage::text("skip", "user")
+            .with_id("skip-me")
+            .with_target("main"),
+    );
+    bus.send(
+        BusMessage::text("keep", "user")
+            .with_id("keep-me")
+            .with_target("main"),
+    );
+    bus.send(
+        BusMessage::text("other", "user")
+            .with_id("other-only")
+            .with_target("other"),
+    );
+
+    let marked = bus.mark_consumed(
+        "main",
+        &[
+            "skip-me".to_string(),
+            "other-only".to_string(),
+            "missing".to_string(),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    assert_eq!(marked, 1);
+    assert_eq!(
+        bus.consume("main")
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["keep-me"]
+    );
+    assert_eq!(
+        bus.consume("other")
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["other-only"]
+    );
+}
+
+#[test]
 fn task_manager_completion_unblocks_dependent_tasks() {
     let mut manager = TaskManager::new();
     let first = manager.create("Prepare", "Prepare work", None, Metadata::default());
