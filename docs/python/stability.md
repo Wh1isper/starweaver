@@ -1,4 +1,4 @@
-# Python Stability And Known Gaps
+# Python Stability And Known Boundaries
 
 This page lists the boundaries that should stay explicit while the Python SDK
 is still young. Treat them as refactor candidates, not as product polish.
@@ -27,7 +27,7 @@ index is checked against `spec/sdk/python/12-api-compatibility-checklist.md` and
 | `agent_session_runtime`              | `create_agent`, `create_agent_runtime`, `Agent`, `AgentRuntime`, `AgentSession`, `AgentRun`, `AgentStream`, `RunResult`, `StreamRunResult`, `RunStatusSnapshot`, `StreamEvent`, `SessionArchive`                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `active_control_message_hitl`        | `BusMessage`, `MessageBus`, `MessageDelivery`, `ControlReceipt`, `HitlSnapshot`, `PendingApproval`, `PendingDeferred`, `ApprovalDecision`, `DeferredResult`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `tools_toolsets_mcp`                 | `tool`, `Tool`, `BaseTool`, `ToolContext`, `ToolResult`, `Toolset`, `ToolsetContext`, `ToolsetPreparation`, `AbstractToolset`, `PythonDynamicToolset`, `FunctionToolset`, `ToolsetFactory`, `toolset_factory`, `ToolLibrary`, `ToolSearchToolset`, `ToolProxyToolset`, `ToolsetIdentity`, `ToolsetIdIssue`, `ToolsetIdValidation`, `validate_toolset_ids`, `validate_toolsets_for_durability`, `ToolsetLifecyclePolicy`, `ToolsetLifecycleReport`, `ToolsetLifecycleState`, `filesystem_toolset`, `shell_toolset`, `environment_toolsets`, `McpTransport`, `McpToolset`, `McpToolSpec`, `McpResourceSpec`, `McpPromptSpec`, `McpSamplingSpec`, `McpSubscriptionSpec` |
-| `models_output_runtime_composition`  | `ProviderModel`, `ProviderAuth`, `ModelSettings`, `RequestParams`, `RuntimeConfig`, `CapabilityBundle`, `OutputSchema`, `OutputPolicy`, `OutputContext`, `OutputFunction`, `OutputValidator`, `OutputValue`, `output_validator`                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `models_output_runtime_composition`  | `ProviderModel`, `ProviderAuth`, `ModelSettings`, `RequestParams`, `RuntimeConfig`, `CapabilityBundle`, `PythonCapability`, `OutputSchema`, `OutputPolicy`, `OutputContext`, `OutputFunction`, `OutputValidator`, `OutputValue`, `output_validator`                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `environment_resources_skills_media` | `Environment`, `EnvironmentProvider`, `EnvdEnvironment`, `PythonEnvironmentProvider`, `LocalEnvironment`, `VirtualEnvironment`, `FileOperator`, `Shell`, `ShellProcess`, `WorkspaceBinding`, `VirtualMount`, `VirtualPath`, `BaseResource`, `ResumableResource`, `InstructableResource`, `ResourceRef`, `ResourceRegistry`, `ResourceRegistryState`, `RESOURCE_REF_KIND_KEY`, `SkillRegistry`, `SkillPackage`, `SkillSourceScope`, `MediaUploader`, `MediaUploadRequest`                                                                                                                                                                                             |
 | `storage_stream_observability`       | `SessionStore`, `InMemorySessionStore`, `JsonSessionStore`, `SqliteSessionStore`, `SqliteReplayEventLog`, `SqliteStreamArchive`, `InputPart`, `SessionStatus`, `RunStatus`, `ExecutionStatus`, `SessionRecord`, `RunRecord`, `StreamRecord`, `CheckpointRef`, `ApprovalRecord`, `DeferredToolRecord`, `SessionResumeSnapshot`, `StreamAdapter`, `Usage`, `UsageAgentTotal`, `UsageSnapshot`, `UsageSnapshotEntry`, `PricingEstimate`, `TraceMetadata`                                                                                                                                                                                                                |
 | `subagents_testing_errors_version`   | `Subagent`, `TestModel`, `FunctionModel`, `StarweaverError`, `AgentError`, `ToolError`, `ModelError`, `StateError`, `StreamError`, `OutputError`, `InvalidArguments`, `ApprovalRequired`, `CallDeferred`, `Cancelled`, `Timeout`, `ModelRetry`, `OutputRetry`, `OutputValidationFailed`, `__version__`, `version`                                                                                                                                                                                                                                                                                                                                                    |
@@ -47,27 +47,26 @@ is intentionally frozen for Python.
 `AgentStream` is a compatibility alias for `AgentRun`; new examples use
 `AgentRun`.
 
-## Known Gaps
+## Known Boundaries
 
-- Python provider model IDs do not resolve CLI gateway profiles such as
-  `homelab@openai-responses-ws:gpt-5.5`. Use Python provider IDs, direct
-  `base_url`/`api_key_env` overrides, or `oauth@codex:` until CLI profile
-  resolution is exposed.
-- Streamed HITL `resume_collected(...)` is collected resume through the owning
-  session, not a live continuation handle. `run.join().events` remains the
-  original suspended stream records and does not include post-resume records.
-- `AgentRuntime.run_stream(...)` is a collected durable run path, not a live
-  `AgentRun` owner. Use `Agent.run_stream(...)` or
-  `AgentSession.run_stream(...)` for steering, interruption, streamed HITL, and
-  service SSE fanout.
+- Streamed HITL `resume(...)` returns a live continuation `AgentRun` only for an
+  in-process session that is still alive. Durable recovery uses
+  `session_id`/`run_id` through the runtime/store APIs. `resume_collected(...)`
+  remains the compatibility path for applications that want a collected
+  `RunResult`; in that mode `run.join().events` remains the original suspended
+  stream records and does not include post-resume records.
+- `AgentRuntime.stream(...)` returns a live `AgentRun` owner and persists through
+  the bound runtime on join. `AgentRuntime.run_stream(...)` remains the collected
+  durable `StreamRunResult` path for callers that do not need live control.
 - `SessionArchive` serializes Starweaver state, not Python callables, provider
   connections, media upload callbacks, or live environment handles.
 - `EnvironmentProvider` handles are process-local and must be reattached after
   restore.
 - `SkillRegistry` loads native Starweaver skill packages; there is no separate
   Python skill authoring DSL.
-- `CapabilityBundle` is static composition. Python hook-level capabilities need
-  a typed Python hook contract before becoming public API.
+- `PythonCapability` currently exposes a narrow hook-level contract for
+  run-start state callbacks. Broader provider-message, request, tool, and output
+  mutation hooks need typed Python contracts before becoming public API.
 - `MediaUploader` adapts a callback into the native filter, but the host still
   owns resource lifecycle, storage, and access control.
 - `StreamAdapter` projects collected or replayed records only. It is not a

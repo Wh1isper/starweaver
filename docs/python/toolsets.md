@@ -434,12 +434,12 @@ surface should be exposed.
 
 ## Capability Bundles
 
-`CapabilityBundle` packages static composition that is broader than tools:
+`CapabilityBundle` packages composition that is broader than tools:
 instructions, Python tools, model settings, request params, output validators,
-and output functions.
+output functions, and narrow hook-level Python capabilities.
 
 ```python
-from starweaver import CapabilityBundle, create_agent, tool
+from starweaver import CapabilityBundle, PythonCapability, create_agent, tool
 from starweaver.testing import TestModel
 
 
@@ -448,14 +448,22 @@ async def audit(value: str) -> dict[str, str]:
     return {"value": value}
 
 
+def mark_run(state: dict[str, object]) -> dict[str, object]:
+    metadata = dict(state.get("metadata") or {})
+    metadata["audit_bundle"] = True
+    return {**state, "metadata": metadata}
+
+
 bundle = CapabilityBundle(
     "audit-bundle",
     instructions=["Prefer concise audit notes."],
     tools=[audit],
+    hooks=[PythonCapability("audit-start", on_run_start=mark_run)],
 )
 agent = create_agent(model=TestModel.text("ready"), capability_bundles=[bundle])
 ```
 
-The Python capability API is currently bundle-oriented. Hook-level capability
-callbacks should use a typed Python hook contract before becoming public API.
-Raw Rust `AgentCapability` callbacks remain a Rust-side extension point.
+`PythonCapability` currently exposes a typed `on_run_start(state)` callback for
+run-start state observation or mutation. Broader provider-message, request,
+tool-call, and output mutation hooks remain Rust-side extension points until
+they have typed Python contracts.

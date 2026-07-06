@@ -74,9 +74,11 @@ async with create_agent(model=model, tools=[deploy]) as agent:
                         item.approve(decided_by="web-ui")
                         for item in hitl.approvals
                     ]
-                    await run.hitl().resume_collected(approvals=approvals)
+                    continuation = await run.hitl().resume(approvals=approvals)
+                    result = await continuation.result()
+                    break
 
-            result = await run.result()
+            assert result.output
 ```
 
 One-off usage remains concise:
@@ -207,6 +209,9 @@ Return behavior:
   `ControlReceipt`
 - generic `send(...)` defaults to `source="application"` so it does not become
   runtime steering by accident
+- `peek(...)`, `consume(...)`, `subscribe(...)`, and `unsubscribe(...)` operate
+  on the session message-bus snapshot; active-run buses use `send(...)` and
+  `steer(...)` for live writes, then inspect messages after the run yields state
 
 `topic` maps to the Rust `starweaver.topic` metadata key unless the core bus
 contract grows a first-class topic field.
@@ -355,7 +360,8 @@ class PendingDeferred:
 
 ```python
 hitl = await run.hitl().snapshot()
-await run.hitl().resume_collected(approvals=[hitl.approvals[0].approve()])
+continuation = await run.hitl().resume(approvals=[hitl.approvals[0].approve()])
+result = await continuation.result()
 ```
 
 `run.hitl().snapshot()` is only valid after the stream has yielded a
@@ -363,13 +369,17 @@ await run.hitl().resume_collected(approvals=[hitl.approvals[0].approve()])
 canonical waiting result; it should not silently consume an arbitrary active
 stream just to inspect speculative HITL state.
 
-`run.hitl().resume_collected(...)` resumes through the owning session and
-returns a collected `RunResult`. It is not a live continuation handle. A future
-live HITL continuation API must use a distinct name and contract instead of
-overloading collected resume semantics. After collected resume, `run.result()`
-and `run.join().result` expose the final resumed result; `run.join().events`
+`run.hitl().resume(...)` resumes through the owning session and returns a live
+continuation `AgentRun` only while that session is still alive in the current
+process. The original suspended run remains the evidence for the suspended
+stream. `run.hitl().resume_collected(...)` keeps the compatibility shape for
+callers that need a collected `RunResult`; in that mode `run.join().events`
 remains the original suspended stream record list because the resumed execution
-is not a live stream.
+is not the same stream handle.
+
+Durable recovery must not depend on the live run object. Product runtimes should
+store the HITL decision evidence and resume by `session_id` and `run_id` through
+the durable runtime/store contract.
 
 Explicit resume remains visible. Helper methods build decisions; they should
 not secretly resume work as a side effect.

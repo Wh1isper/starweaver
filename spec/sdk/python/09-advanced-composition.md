@@ -317,8 +317,11 @@ Target:
 
 Current implementation status: Python exposes `ProviderModel.openai(...)`,
 explicit OpenAI protocol constructors, `ProviderModel.codex_oauth(...)`,
-gateway base URL and endpoint overrides, Responses stream transport selection,
-and `ProviderAuth` status helpers. `ProviderAuth.status()` and
+gateway base URL and endpoint overrides, CLI-style gateway provider IDs such as
+`homelab@openai-responses-ws:gpt-5-mini`, Responses stream transport selection,
+and `ProviderAuth` status helpers. Gateway provider IDs resolve provider
+routing only; full CLI agent profiles with prompts, toolsets, and product
+policy remain above `starweaver-py`. `ProviderAuth.status()` and
 `ProviderAuth.account_metadata()` read Rust-owned OAuth store records and return
 safe account/refresh metadata without exposing token material;
 `ProviderAuth.redacted_record()` preserves the provider record shape with token

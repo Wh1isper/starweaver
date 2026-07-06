@@ -114,15 +114,17 @@ Compatibility boundary:
 - Python dynamic inventory, instructions, factories, lifecycle, refresh,
   filtering, preparation, approval, deferred work, metadata, and durable IDs map
   to native Starweaver toolset preparation.
-- ya-agent-sdk-style pre/post hook needs should map to a typed Starweaver
-  capability/runtime hook contract before becoming public Python API.
+- ya-agent-sdk-style pre/post hook needs should map to typed Starweaver
+  capability/runtime hook contracts. The current Python API exposes
+  `PythonCapability` for run-start state hooks; lower-level tool-call
+  interception still needs a separate typed contract before becoming public.
 - An override similar to ya-agent-sdk's `_call_tool_func` must not execute tools
   outside the Rust registry. It should become a typed native execution policy or
   capability hook, and it must propagate approval and deferred control flow
   unchanged.
-- The current public Python toolset layer therefore supports composition and
-  dynamic preparation now, while hook-level call interception remains a planned
-  native-hook surface.
+- The current public Python toolset layer therefore supports composition,
+  dynamic preparation, and run-start capability hooks now, while hook-level
+  call interception remains a planned native-hook surface.
 
 ## Current Starweaver Baseline
 

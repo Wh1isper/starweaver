@@ -46,15 +46,18 @@ It packages:
 - request params
 - output validators
 - output functions
+- narrow run-start Python hooks through `PythonCapability`
 
 Rules:
 
-- Bundles are static composition objects.
+- Bundles are composition objects; static contributions remain the default
+  shape, and `PythonCapability` exposes the current typed hook-level run-start
+  callback.
 - They should map to SDK capability bundle contracts.
 - Python callbacks inside bundles follow the same callback runtime rules as
   tools and output functions.
-- Hook-level capabilities should not become public until there is a typed
-  Python hook contract.
+- Broader provider-message, request, tool-call, and output mutation hooks should
+  not become public until each has a typed Python hook contract.
 
 ## Toolsets
 

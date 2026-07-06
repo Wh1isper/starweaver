@@ -98,16 +98,20 @@ explicit protocol in its profile builder.
 `ProviderModel.from_model_id(...)` accepts Python package model IDs:
 
 - `openai:gpt-5-mini`
-- `openai_responses:gpt-5-mini`
-- `openai_chat:gpt-5-mini`
+- `openai_responses:gpt-5-mini` or `openai-responses:gpt-5-mini`
+- `openai_chat:gpt-5-mini` or `openai-chat:gpt-5-mini`
+- `openai-responses-ws:gpt-5-mini`
+- `homelab@openai-responses-ws:gpt-5-mini`
 - `anthropic:claude-sonnet-4-5`
 - `gemini:gemini-3.5-flash`
+- `google-cloud:gemini-3.5-pro`
 - `oauth@codex:gpt-5.5`
 
-The Python package currently does not resolve CLI gateway profile IDs such as
-`homelab@openai-responses-ws:gpt-5.5`. Use `base_url`, `endpoint_path`,
-`api_key_env`, and typed provider helpers directly until CLI profile resolution
-is exposed to Python.
+Gateway model IDs such as `homelab@openai-responses-ws:gpt-5-mini` use the
+same provider-prefix semantics as the CLI parser. Pass `base_url` explicitly or
+set `HOMELAB_BASE_URL`; pass `api_key` explicitly or set `HOMELAB_API_KEY`.
+These IDs resolve provider routing. They do not load full CLI agent profiles
+with toolsets, prompts, or product policy.
 
 ## Provider Auth And Codex OAuth
 

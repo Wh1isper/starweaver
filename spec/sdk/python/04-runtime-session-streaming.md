@@ -207,8 +207,15 @@ Rules:
 - Approval ids and deferred ids remain visible.
 - Live `run.hitl().snapshot()` is valid after a `suspended` event. It may join
   that already-suspended stream to obtain the canonical waiting result.
-- `run.hitl().resume_collected(...)` resumes through the owning session and
-  returns a collected `RunResult`; it is not a live continuation handle.
+- `run.hitl().resume(...)` is an in-process continuation helper for streams
+  whose owning `AgentSession` is still alive. It returns a live continuation
+  `AgentRun`.
+- `run.hitl().resume_collected(...)` remains available for compatibility when a
+  product wants a collected `RunResult` instead of a continuation stream.
+- Durable HITL recovery does not depend on a live `AgentRun` handle. Products
+  should persist the decision evidence and resume by `session_id` and `run_id`
+  through `AgentRuntime.resume_after_hitl_by_id(...)` or the shared
+  `SessionStore.resume_snapshot(...)` contract.
 - Python does not maintain a second pending-HITL store.
 
 ## Output And Validation

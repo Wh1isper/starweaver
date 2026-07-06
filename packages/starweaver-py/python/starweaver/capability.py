@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any, cast
 
@@ -29,6 +30,7 @@ class CapabilityBundle:
         request_params: RequestParams | Mapping[str, Any] | None = None,
         output_validators: Iterable[OutputValidator | Callable[..., Any]] | None = None,
         output_functions: Iterable[OutputFunction] | None = None,
+        hooks: Iterable[PythonCapability] | None = None,
     ) -> None:
         self.name = name
         self.instructions = tuple(instructions or ())
@@ -41,6 +43,7 @@ class CapabilityBundle:
         self.output_functions = tuple(
             ensure_output_function(function) for function in output_functions or ()
         )
+        self.hooks = tuple(ensure_python_capability(hook) for hook in hooks or ())
 
     def to_native(self) -> _native.CapabilityBundle:
         return _native.CapabilityBundle(
@@ -51,6 +54,31 @@ class CapabilityBundle:
             ensure_request_params(self.request_params),
             [validator.to_native() for validator in self.output_validators],
             [function.to_native() for function in self.output_functions],
+            [_native_python_capability(hook) for hook in self.hooks],
+        )
+
+
+class PythonCapability:
+    """Callback-backed runtime capability hook."""
+
+    def __init__(
+        self,
+        id: str,  # noqa: A002
+        *,
+        on_run_start: Callable[[dict[str, Any]], dict[str, Any] | None | Any],
+    ) -> None:
+        self.id = id
+        self.on_run_start = on_run_start
+
+    def to_native(self) -> _native.PythonCapability:
+        try:
+            event_loop: object | None = asyncio.get_running_loop()
+        except RuntimeError:
+            event_loop = None
+        return _native.PythonCapability(
+            self.id,
+            self.on_run_start,
+            event_loop,
         )
 
 
@@ -63,3 +91,19 @@ def ensure_capability_bundle(
     if isinstance(value, _native.CapabilityBundle):
         return value
     return cast(_native.CapabilityBundle, value)
+
+
+def ensure_python_capability(
+    value: PythonCapability | _native.PythonCapability,
+) -> PythonCapability | _native.PythonCapability:
+    if isinstance(value, (PythonCapability, _native.PythonCapability)):
+        return value
+    return cast(PythonCapability, value)
+
+
+def _native_python_capability(
+    value: PythonCapability | _native.PythonCapability,
+) -> _native.PythonCapability:
+    if isinstance(value, PythonCapability):
+        return value.to_native()
+    return value

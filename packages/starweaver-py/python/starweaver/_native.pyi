@@ -185,6 +185,15 @@ class CapabilityBundle:
         request_params: object | None = None,
         output_validators: list[OutputValidator] | None = None,
         output_functions: list[OutputFunction] | None = None,
+        hooks: list[PythonCapability] | None = None,
+    ) -> None: ...
+
+class PythonCapability:
+    def __init__(
+        self,
+        id: str,  # noqa: A002
+        on_run_start: object,
+        event_loop: object | None,
     ) -> None: ...
 
 class EnvironmentProvider:
@@ -821,6 +830,11 @@ class AgentStream:
         approvals: object | None = None,
         deferred_results: object | None = None,
     ) -> Awaitable[RunResult]: ...
+    def resume_after_hitl_stream(
+        self,
+        approvals: object | None = None,
+        deferred_results: object | None = None,
+    ) -> Awaitable[AgentStream]: ...
     def resume_after_hitl_for_state(
         self,
         state: object,
@@ -861,6 +875,11 @@ class AgentSession:
         approvals: object | None = None,
         deferred_results: object | None = None,
     ) -> Awaitable[RunResult]: ...
+    def resume_after_hitl_stream(
+        self,
+        approvals: object | None = None,
+        deferred_results: object | None = None,
+    ) -> Awaitable[AgentStream]: ...
     def resume_after_hitl_for_state(
         self,
         state: object,
@@ -898,6 +917,7 @@ class AgentRuntime:
     def durable_session_id(self) -> str | None: ...
     def run(self, prompt: str) -> Awaitable[RunResult]: ...
     def run_stream(self, prompt: str) -> Awaitable[StreamRunResult]: ...
+    def stream(self, prompt: str) -> AgentStream: ...
     def export_state(self) -> dict[str, object]: ...
     def export_full_state(self) -> dict[str, object]: ...
     def export_environment_state(self) -> Awaitable[dict[str, object] | None]: ...

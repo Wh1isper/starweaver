@@ -38,6 +38,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<agent::PySession>()?;
     m.add_class::<agent::PyStreamRunResult>()?;
     m.add_class::<capability::PyCapabilityBundle>()?;
+    m.add_class::<capability::PyPythonCapability>()?;
     m.add_class::<context::PyToolContext>()?;
     m.add_class::<context::PyToolsetContext>()?;
     m.add_class::<environment::PyEnvironmentProvider>()?;

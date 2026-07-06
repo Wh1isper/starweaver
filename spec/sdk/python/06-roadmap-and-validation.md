@@ -623,9 +623,10 @@ Before the Python SDK is considered application-ready:
     remains available after joining the stream.
 10. HITL can be resumed from Python without parsing hidden Rust internals.
     Current Python tests resume approvals and deferred results through
-    `SessionHitl.resume(...)`, `RunHitl.resume_collected(...)`, and raw
-    `resume_after_hitl(...)` payloads, and assert typed approval metadata reaches
-    the approved tool context.
+    `SessionHitl.resume(...)`, in-process `RunHitl.resume(...)` continuation
+    streams, `RunHitl.resume_collected(...)`, and raw `resume_after_hitl(...)`
+    payloads, and assert typed approval metadata reaches the approved tool
+    context.
 11. Typed HITL helpers preserve canonical ids and raw escape hatches. Current
     Python tests validate `PendingApproval`, `PendingDeferred`, `HitlSnapshot`,
     `ApprovalDecision`, and `DeferredResult` directly: canonical approval and

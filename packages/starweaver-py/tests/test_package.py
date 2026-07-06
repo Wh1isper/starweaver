@@ -41,6 +41,7 @@ from starweaver import (
     OutputSchema,
     ProviderAuth,
     ProviderModel,
+    PythonCapability,
     PythonDynamicToolset,
     PythonEnvironmentProvider,
     RequestParams,
@@ -1123,6 +1124,75 @@ def test_capability_bundle_contributes_tools() -> None:
         bundle = CapabilityBundle("bundle", tools=[bundled_echo])
         result = await create_agent(model=model, capability_bundles=[bundle]).run("use bundle")
         assert result.output == "done"
+
+    asyncio.run(run())
+
+
+def test_python_capability_run_start_hook_updates_state() -> None:
+    def mark_state(state: dict[str, object]) -> dict[str, object]:
+        metadata = dict(cast(Mapping[str, object], state.get("metadata") or {}))
+        metadata["python_capability"] = "run-start"
+        return {**state, "metadata": metadata}
+
+    bundle = CapabilityBundle(
+        "hook-bundle",
+        hooks=[PythonCapability("hook-start", on_run_start=mark_state)],
+    )
+
+    async def run() -> None:
+        result = await create_agent(
+            model=StarweaverTestModel.text("hooked"),
+            capability_bundles=[bundle],
+        ).run("hook")
+        assert result.output == "hooked"
+        assert result.raw_state["metadata"]["python_capability"] == "run-start"
+
+    asyncio.run(run())
+
+
+def test_python_capability_sync_hook_can_bind_outside_running_loop() -> None:
+    def mark_state(state: dict[str, object]) -> dict[str, object]:
+        metadata = dict(cast(Mapping[str, object], state.get("metadata") or {}))
+        metadata["python_capability_bound"] = "outside-loop"
+        return {**state, "metadata": metadata}
+
+    agent = create_agent(
+        model=StarweaverTestModel.text("hooked"),
+        capability_bundles=[
+            CapabilityBundle(
+                "hook-bundle",
+                hooks=[PythonCapability("hook-start", on_run_start=mark_state)],
+            )
+        ],
+    )
+
+    async def run() -> None:
+        result = await agent.run("hook")
+        assert result.output == "hooked"
+        assert result.raw_state["metadata"]["python_capability_bound"] == "outside-loop"
+
+    asyncio.run(run())
+
+
+def test_python_capability_async_run_start_hook_updates_state() -> None:
+    async def mark_state(state: dict[str, object]) -> dict[str, object]:
+        await asyncio.sleep(0)
+        metadata = dict(cast(Mapping[str, object], state.get("metadata") or {}))
+        metadata["python_capability_async"] = "run-start"
+        return {**state, "metadata": metadata}
+
+    async def run() -> None:
+        result = await create_agent(
+            model=StarweaverTestModel.text("hooked"),
+            capability_bundles=[
+                CapabilityBundle(
+                    "hook-bundle",
+                    hooks=[PythonCapability("hook-start", on_run_start=mark_state)],
+                )
+            ],
+        ).run("hook")
+        assert result.output == "hooked"
+        assert result.raw_state["metadata"]["python_capability_async"] == "run-start"
 
     asyncio.run(run())
 
@@ -2940,6 +3010,28 @@ def test_provider_model_from_model_id_dispatches_prefixes() -> None:
 
     codex_model = ProviderModel.codex_oauth("gpt-5.5")
     assert codex_model.to_native() is not None
+
+
+def test_provider_model_from_model_id_supports_cli_gateway_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    websocket = ProviderModel.from_model_id("openai-responses-ws:gpt-test", api_key="sk-test")
+    assert websocket.to_native() is not None
+
+    gateway = ProviderModel.from_model_id(
+        "homelab@openai-responses-ws:gpt-test",
+        api_key="gateway-test",
+        base_url="https://gateway.example/v1",
+    )
+    assert gateway.to_native() is not None
+
+    monkeypatch.setenv("HOMELAB_API_KEY", "gateway-env-test")
+    monkeypatch.setenv("HOMELAB_BASE_URL", "https://gateway-env.example/v1")
+    gateway_from_env = ProviderModel.from_model_id("homelab@openai-responses-ws:gpt-test")
+    assert gateway_from_env.to_native() is not None
+
+    google_alias = ProviderModel.from_model_id("google-cloud:gemini-test", api_key="google-test")
+    assert google_alias.to_native() is not None
 
 
 def test_provider_model_openai_facade_selects_protocols_and_auth() -> None:
@@ -5781,7 +5873,9 @@ def test_agent_runtime_binds_python_session_store_to_durable_runs() -> None:
     async def run() -> None:
         store = starweaver.InMemorySessionStore()
         runtime = create_agent_runtime(
-            model=StarweaverTestModel.responses([{"text": "stored"}, {"text": "stored"}]),
+            model=StarweaverTestModel.responses(
+                [{"text": "stored"}, {"text": "stored"}, {"text": "stored"}]
+            ),
             session_store=store,
             durable_session_id="runtime-session",
         )
@@ -5807,6 +5901,11 @@ def test_agent_runtime_binds_python_session_store_to_durable_runs() -> None:
 
         snapshot = await runtime.resume_snapshot("runtime-session", all_runs[-1].run_id)
         assert snapshot["state"]["message_history"]
+
+        live = runtime.stream("persist live stream")
+        assert (await live.result()).output == "stored"
+        live_runs = await store.list_runs("runtime-session")
+        assert len(live_runs) == 3
 
     asyncio.run(run())
 
@@ -6648,14 +6747,14 @@ def test_suspended_stream_rejects_control_and_exposes_hitl_snapshot() -> None:
                     with pytest.raises(StateError, match="already completed"):
                         await agent_run.steer("too late")
                     decision = snapshot.approvals[0].approve(decided_by="pytest")
-                    with pytest.raises(StateError, match="resume_collected"):
-                        await agent_run.hitl().resume(approvals=[decision])
-                    resumed = await agent_run.hitl().resume_collected(approvals=[decision])
+                    continuation = await agent_run.hitl().resume(approvals=[decision])
+                    assert session.active_run is continuation
+                    resumed = await continuation.result()
                     break
             assert resumed is not None
             assert resumed.output == "deployed"
-            assert (await agent_run.result()).output == "deployed"
-            assert (await agent_run.join()).result.output == "deployed"
+            assert (await agent_run.result()).is_waiting
+            assert (await agent_run.join()).result.is_waiting
 
     asyncio.run(run())
 
@@ -6758,6 +6857,40 @@ def test_direct_stream_hitl_resume_collected_uses_hidden_session() -> None:
                 resumed = await agent_run.hitl().resume_collected(approvals=[decision])
                 assert resumed.output == "deployed"
                 assert (await agent_run.result()).output == "deployed"
+                break
+
+    asyncio.run(run())
+
+
+def test_direct_stream_hitl_resume_returns_live_continuation() -> None:
+    @tool(parameters_schema={"type": "object", "properties": {}})
+    async def deploy(ctx: starweaver.ToolContext, args: dict[str, object]) -> dict[str, bool]:
+        if ctx.approval is None:
+            raise ApprovalRequired("deploy production", metadata={"risk": "high"})
+        return {"approved": True}
+
+    model = StarweaverTestModel.responses(
+        [
+            StarweaverTestModel.tool_call_response(
+                [{"id": "call_deploy", "name": "deploy", "arguments": {}}]
+            ),
+            {"text": "deployed"},
+        ]
+    )
+
+    async def run() -> None:
+        async with (
+            create_agent(model=model, tools=[deploy]) as agent,
+            agent.run_stream("deploy") as agent_run,
+        ):
+            async for event in agent_run:
+                if event.kind != "suspended":
+                    continue
+                snapshot = await agent_run.hitl().snapshot()
+                decision = snapshot.approvals[0].approve(decided_by="pytest")
+                continuation = await agent_run.hitl().resume(approvals=[decision])
+                assert (await continuation.result()).output == "deployed"
+                assert (await agent_run.result()).is_waiting
                 break
 
     asyncio.run(run())
