@@ -24,6 +24,7 @@ use tokio::{
 };
 
 use crate::AgentSession;
+use crate::session::{RunContextRestore, restore_context_overrides};
 
 const DEFAULT_STREAM_BUFFER: usize = 256;
 const INTERRUPT_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -537,12 +538,13 @@ pub struct AgentStreamHandle {
     current_error: Arc<Mutex<Option<AgentStreamCurrentError>>>,
     observed_events: Arc<Mutex<Vec<AgentStreamRecord>>>,
     options: AgentStreamOptions,
-    temporary_trace_metadata: Option<TemporaryTraceMetadata>,
+    temporary_run_context: Option<TemporaryRunContext>,
 }
 
 #[derive(Clone, Debug)]
-struct TemporaryTraceMetadata {
-    session_metadata: Metadata,
+struct TemporaryRunContext {
+    restore: RunContextRestore,
+    context_metadata: Metadata,
     trace_metadata: Metadata,
 }
 
@@ -571,32 +573,33 @@ impl AgentStreamHandle {
             current_error,
             observed_events,
             options,
-            temporary_trace_metadata: None,
+            temporary_run_context: None,
         }
     }
 
-    pub(crate) fn with_temporary_trace_metadata(
+    pub(crate) fn with_temporary_run_context(
         mut self,
-        session_metadata: Metadata,
+        restore: RunContextRestore,
+        context_metadata: Metadata,
         trace_metadata: Metadata,
     ) -> Self {
-        if !trace_metadata.is_empty() {
-            self.temporary_trace_metadata = Some(TemporaryTraceMetadata {
-                session_metadata,
-                trace_metadata,
-            });
-        }
+        self.temporary_run_context = Some(TemporaryRunContext {
+            restore,
+            context_metadata,
+            trace_metadata,
+        });
         self
     }
 
-    pub(crate) fn with_optional_temporary_trace_metadata(
+    pub(crate) fn with_optional_temporary_run_context(
         self,
-        session_metadata: Option<Metadata>,
+        restore: Option<RunContextRestore>,
+        context_metadata: Metadata,
         trace_metadata: Metadata,
     ) -> Self {
-        match session_metadata {
-            Some(session_metadata) => {
-                self.with_temporary_trace_metadata(session_metadata, trace_metadata)
+        match restore {
+            Some(restore) => {
+                self.with_temporary_run_context(restore, context_metadata, trace_metadata)
             }
             None => self,
         }
@@ -703,14 +706,14 @@ impl AgentStreamHandle {
     /// Export the latest observed context state.
     pub async fn recoverable_state(&self) -> ResumableState {
         let mut state = self.latest_context.lock().await.export_full_state();
-        restore_temporary_state_metadata(&mut state, self.temporary_trace_metadata.as_ref());
+        restore_temporary_state_context(&mut state, self.temporary_run_context.as_ref());
         state
     }
 
     /// Return the latest observed context clone.
     pub async fn latest_context(&self) -> AgentContext {
         let mut context = self.latest_context.lock().await.clone();
-        restore_temporary_context_metadata(&mut context, self.temporary_trace_metadata.as_ref());
+        restore_temporary_context(&mut context, self.temporary_run_context.as_ref());
         context
     }
 
@@ -724,13 +727,13 @@ impl AgentStreamHandle {
         let interrupted = self.interrupted.clone();
         let mut join = self.join;
         let control = self.control.clone();
-        let temporary_trace_metadata = self.temporary_trace_metadata.clone();
+        let temporary_run_context = self.temporary_run_context.clone();
         if interrupted.load(Ordering::SeqCst) {
             if let Ok(result) = tokio::time::timeout(INTERRUPT_JOIN_TIMEOUT, &mut join).await {
                 control.mark_finished();
                 let mut result = map_stream_join_result(result);
                 if let Ok(result) = &mut result {
-                    apply_temporary_trace_metadata(result, temporary_trace_metadata.as_ref());
+                    apply_temporary_run_context(result, temporary_run_context.as_ref());
                 }
                 return result;
             }
@@ -743,7 +746,7 @@ impl AgentStreamHandle {
         }
         let mut result = map_stream_join_result(join.await);
         if let Ok(result) = &mut result {
-            apply_temporary_trace_metadata(result, temporary_trace_metadata.as_ref());
+            apply_temporary_run_context(result, temporary_run_context.as_ref());
         }
         control.mark_finished();
         result
@@ -754,7 +757,7 @@ impl AgentStreamHandle {
     pub async fn complete(self) -> AgentStreamCompletion {
         let latest_context = self.latest_context.clone();
         let observed_events = self.observed_events.clone();
-        let temporary_trace_metadata = self.temporary_trace_metadata.clone();
+        let temporary_run_context = self.temporary_run_context.clone();
         match self.join().await {
             Ok(result) => {
                 let events = result.events.clone();
@@ -767,7 +770,7 @@ impl AgentStreamHandle {
             }
             Err(error) => {
                 let mut state = latest_context.lock().await.export_full_state();
-                restore_temporary_state_metadata(&mut state, temporary_trace_metadata.as_ref());
+                restore_temporary_state_context(&mut state, temporary_run_context.as_ref());
                 AgentStreamCompletion {
                     state,
                     result: None,
@@ -803,38 +806,49 @@ impl AgentStreamHandle {
     }
 }
 
-fn apply_temporary_trace_metadata(
+fn apply_temporary_run_context(
     result: &mut AgentLiveStreamResult,
-    temporary: Option<&TemporaryTraceMetadata>,
+    temporary: Option<&TemporaryRunContext>,
 ) {
     let Some(temporary) = temporary else {
         return;
     };
-    result.result.state.metadata.insert(
-        TRACE_METADATA_STATE_KEY.to_string(),
-        Value::Object(temporary.trace_metadata.clone()),
-    );
-    result
-        .context
-        .metadata
-        .clone_from(&temporary.session_metadata);
+    if !temporary.trace_metadata.is_empty() {
+        result.result.state.metadata.insert(
+            TRACE_METADATA_STATE_KEY.to_string(),
+            Value::Object(temporary.trace_metadata.clone()),
+        );
+    }
+    for (key, value) in &temporary.context_metadata {
+        result
+            .result
+            .state
+            .metadata
+            .insert(key.clone(), value.clone());
+    }
+    restore_context_overrides(&mut result.context, Some(temporary.restore.clone()));
 }
 
-fn restore_temporary_state_metadata(
+fn restore_temporary_state_context(
     state: &mut ResumableState,
-    temporary: Option<&TemporaryTraceMetadata>,
+    temporary: Option<&TemporaryRunContext>,
 ) {
     if let Some(temporary) = temporary {
-        state.metadata.clone_from(&temporary.session_metadata);
+        if let Some(metadata) = &temporary.restore.metadata {
+            state.metadata.clone_from(metadata);
+        }
+        if let Some(tool_config) = &temporary.restore.tool_config {
+            state.tool_config.clone_from(tool_config);
+        }
+        if let Some(security) = &temporary.restore.security {
+            state.security.clone_from(security);
+        }
     }
 }
 
-fn restore_temporary_context_metadata(
-    context: &mut AgentContext,
-    temporary: Option<&TemporaryTraceMetadata>,
-) {
+fn restore_temporary_context(context: &mut AgentContext, temporary: Option<&TemporaryRunContext>) {
     if let Some(temporary) = temporary {
-        context.metadata.clone_from(&temporary.session_metadata);
+        restore_context_overrides(context, Some(temporary.restore.clone()));
     }
 }
 

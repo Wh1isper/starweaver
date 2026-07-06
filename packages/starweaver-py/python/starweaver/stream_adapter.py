@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from . import _native
 from .agent import StreamEvent
 from .observability import UsageSnapshot
 from .toolset import ToolsetLifecycleReport
@@ -343,6 +344,13 @@ def _display_preview(kind: str, payload: Mapping[str, Any], event: StreamEvent) 
 
 
 def _display_to_agui(message: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        return dict(_native.display_to_agui(dict(message)))
+    except (TypeError, ValueError, RuntimeError):
+        return _display_to_agui_fallback(message)
+
+
+def _display_to_agui_fallback(message: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(message.get("payload") or {})
     payload["timestamp"] = message["timestamp"]
     if message.get("preview") is not None:

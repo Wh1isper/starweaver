@@ -27,6 +27,69 @@ def _ratio(value: float | int | Mapping[str, Any] | None) -> dict[str, int] | No
 
 
 @dataclass(frozen=True)
+class ShellReviewConfig:
+    """Shell command safety review configuration."""
+
+    enabled: bool = True
+    model: str | None = None
+    on_needs_approval: str = "defer"
+    risk_threshold: str = "high"
+    system_prompt: str | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> ShellReviewConfig:
+        return cls(**dict(value))
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "enabled": self.enabled,
+            "on_needs_approval": self.on_needs_approval,
+            "risk_threshold": self.risk_threshold,
+        }
+        _set_if_not_none(payload, "model", self.model)
+        _set_if_not_none(payload, "system_prompt", self.system_prompt)
+        return payload
+
+
+@dataclass(frozen=True)
+class SecurityConfig:
+    """Security-related runtime configuration."""
+
+    shell_review: ShellReviewConfig | Mapping[str, Any] | None = None
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> SecurityConfig:
+        return cls(**dict(value))
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if self.shell_review is not None:
+            payload["shell_review"] = ensure_shell_review_config(self.shell_review)
+        return payload
+
+
+@dataclass(frozen=True, init=False)
+class ToolConfig:
+    """Tool-level runtime configuration.
+
+    The payload is intentionally open-ended and validated by the native Rust
+    config schema, so Python does not drift when Rust adds a tool config field.
+    """
+
+    values: Mapping[str, Any] = field(default_factory=dict)
+
+    def __init__(self, **values: Any) -> None:
+        object.__setattr__(self, "values", dict(values))
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> ToolConfig:
+        return cls(**dict(value))
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.values)
+
+
+@dataclass(frozen=True)
 class RuntimeConfig:
     """Runtime/context config kept separate from provider settings."""
 
@@ -45,6 +108,8 @@ class RuntimeConfig:
     image_split_max_height: int | None = None
     image_split_overlap: int | None = None
     capabilities: Iterable[str] = field(default_factory=tuple)
+    tool_config: ToolConfig | Mapping[str, Any] | None = None
+    security: SecurityConfig | Mapping[str, Any] | None = None
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> RuntimeConfig:
@@ -102,7 +167,14 @@ class RuntimeConfig:
         return payload
 
     def to_dict(self) -> dict[str, Any]:
-        return {"model_config": self.to_model_config()}
+        payload: dict[str, Any] = {"model_config": self.to_model_config()}
+        tool_config = ensure_tool_config(self.tool_config)
+        security = ensure_security_config(self.security)
+        if tool_config is not None:
+            payload["tool_config"] = tool_config
+        if security is not None:
+            payload["security"] = security
+        return payload
 
 
 def ensure_runtime_config(value: RuntimeConfig | Mapping[str, Any] | None) -> Any | None:
@@ -115,6 +187,38 @@ def ensure_runtime_config(value: RuntimeConfig | Mapping[str, Any] | None) -> An
     raise TypeError("runtime_config must be RuntimeConfig, mapping, or None")
 
 
+def ensure_shell_review_config(
+    value: ShellReviewConfig | Mapping[str, Any],
+) -> dict[str, Any]:
+    if isinstance(value, ShellReviewConfig):
+        return value.to_dict()
+    if isinstance(value, Mapping):
+        return ShellReviewConfig.from_mapping(value).to_dict()
+    raise TypeError("shell_review must be ShellReviewConfig or mapping")
+
+
+def ensure_security_config(
+    value: SecurityConfig | Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, SecurityConfig):
+        return value.to_dict()
+    if isinstance(value, Mapping):
+        return SecurityConfig.from_mapping(value).to_dict()
+    raise TypeError("security must be SecurityConfig, mapping, or None")
+
+
+def ensure_tool_config(value: ToolConfig | Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, ToolConfig):
+        return value.to_dict()
+    if isinstance(value, Mapping):
+        return ToolConfig.from_mapping(value).to_dict()
+    raise TypeError("tool_config must be ToolConfig, mapping, or None")
+
+
 def _set_if_not_none(payload: dict[str, Any], key: str, value: Any | None) -> None:
     if value is not None:
         payload[key] = value
@@ -122,18 +226,19 @@ def _set_if_not_none(payload: dict[str, Any], key: str, value: Any | None) -> No
 
 def _unwrap_runtime_config_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = dict(value)
-    if "model_config" not in payload:
+    model_config = payload.pop("model_config", None)
+    if model_config is None:
         return payload
-    extra = sorted(key for key in payload if key != "model_config")
-    if extra:
-        joined = ", ".join(extra)
-        raise TypeError(
-            f"runtime_config mapping with model_config cannot include sibling field(s): {joined}"
-        )
-    model_config = payload["model_config"]
     if not isinstance(model_config, Mapping):
         raise TypeError("runtime_config['model_config'] must be a mapping")
-    return dict(model_config)
+    merged = dict(model_config)
+    for key, item in payload.items():
+        if key in merged:
+            raise TypeError(
+                f"runtime_config field appears both inside and outside model_config: {key}"
+            )
+        merged[key] = item
+    return merged
 
 
 def _capabilities(value: Iterable[str]) -> list[str]:

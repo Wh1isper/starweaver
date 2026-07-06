@@ -233,6 +233,230 @@ class PythonEnvironmentProvider:
         return provider_id
 
 
+class DockerEnvironmentProvider(PythonEnvironmentProvider):
+    """Docker-backed workspace provider using a bind-mounted host workspace."""
+
+    def __init__(
+        self,
+        image: str,
+        workspace: str | PathLike[str],
+        *,
+        id: str | None = None,  # noqa: A002
+        container_workspace: str = "/workspace",
+        name: str | None = None,
+        docker: str = "docker",
+        command: Sequence[str] = ("sleep", "infinity"),
+        env: Mapping[str, str] | None = None,
+        network: str | None = None,
+        user: str | None = None,
+        auto_remove: bool = True,
+    ) -> None:
+        super().__init__(id=id or f"docker-{uuid.uuid4().hex[:8]}")
+        self.image = image
+        self.workspace = Path(workspace).resolve()
+        self.container_workspace = container_workspace.rstrip("/") or "/workspace"
+        self.name = name
+        self.docker = docker
+        self.command = tuple(command)
+        self.env = dict(env or {})
+        self.network = network
+        self.user = user
+        self.auto_remove = auto_remove
+        self._container_id: str | None = None
+        self._lock = asyncio.Lock()
+
+    async def read_text(self, path: str) -> str:
+        return self._host_path(path).read_text()
+
+    async def read_bytes(self, path: str, offset: int = 0, length: int | None = None) -> bytes:
+        data = self._host_path(path).read_bytes()
+        end = None if length is None else offset + length
+        return data[offset:end]
+
+    async def write_text(self, path: str, content: str) -> None:
+        target = self._host_path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+
+    async def create_dir(self, path: str, parents: bool = True) -> None:
+        self._host_path(path).mkdir(parents=parents, exist_ok=parents)
+
+    async def delete_path(self, path: str, recursive: bool = False) -> None:
+        target = self._host_path(path)
+        if target.is_dir():
+            if not recursive:
+                target.rmdir()
+                return
+            for child in sorted(target.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+                if child.is_dir():
+                    child.rmdir()
+                else:
+                    child.unlink()
+            target.rmdir()
+            return
+        target.unlink()
+
+    async def move_path(self, src: str, dst: str, overwrite: bool = False) -> None:
+        source = self._host_path(src)
+        target = self._host_path(dst)
+        if target.exists() and not overwrite:
+            raise FileExistsError(dst)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.replace(target)
+
+    async def copy_path(self, src: str, dst: str, overwrite: bool = False) -> None:
+        source = self._host_path(src)
+        target = self._host_path(dst)
+        if target.exists() and not overwrite:
+            raise FileExistsError(dst)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            await self.create_dir(dst, parents=True)
+            for child in source.rglob("*"):
+                rel = child.relative_to(source)
+                child_target = target / rel
+                if child.is_dir():
+                    child_target.mkdir(parents=True, exist_ok=True)
+                else:
+                    child_target.parent.mkdir(parents=True, exist_ok=True)
+                    child_target.write_bytes(child.read_bytes())
+        else:
+            target.write_bytes(source.read_bytes())
+
+    async def stat(self, path: str) -> dict[str, Any]:
+        target = self._host_path(path)
+        stat = target.stat()
+        return {
+            "size": stat.st_size if target.is_file() else 0,
+            "is_file": target.is_file(),
+            "is_dir": target.is_dir(),
+            "modified_unix_seconds": int(stat.st_mtime),
+        }
+
+    async def list(self, path: str = "") -> list[str]:
+        target = self._host_path(path)
+        return sorted(child.name for child in target.iterdir())
+
+    async def run_shell(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        container_id = await self._ensure_container()
+        shell_command = str(command.get("command") or "")
+        timeout = command.get("timeout_seconds")
+        cwd = self._container_cwd(command.get("cwd"))
+        env = dict(self.env)
+        extra_env = command.get("environment")
+        if isinstance(extra_env, Mapping):
+            env.update({str(key): str(value) for key, value in extra_env.items()})
+        args = [self.docker, "exec", "-i", "-w", cwd]
+        for key, value in env.items():
+            args.extend(["-e", f"{key}={value}"])
+        args.extend([container_id, "sh", "-lc", shell_command])
+        status, stdout, stderr = await self._run(args, timeout=timeout)
+        return {
+            "status": status,
+            "stdout": stdout,
+            "stderr": stderr,
+            "metadata": {"container_id": container_id},
+        }
+
+    async def render_context(self) -> str | None:
+        return f"Docker workspace: {self.container_workspace}"
+
+    async def export_state(self) -> dict[str, Any]:
+        return {
+            "provider_id": self._provider_id(),
+            "metadata": {
+                "kind": "docker",
+                "image": self.image,
+                "workspace": str(self.workspace),
+                "container_workspace": self.container_workspace,
+                "container_id": self._container_id,
+            },
+        }
+
+    async def close(self) -> None:
+        if self._container_id is None:
+            return
+        container_id = self._container_id
+        self._container_id = None
+        await self._run([self.docker, "rm", "-f", container_id])
+
+    async def _ensure_container(self) -> str:
+        if self._container_id is not None:
+            return self._container_id
+        async with self._lock:
+            if self._container_id is not None:
+                return self._container_id
+            self.workspace.mkdir(parents=True, exist_ok=True)
+            args = [self.docker, "run", "-d"]
+            if self.auto_remove:
+                args.append("--rm")
+            if self.name:
+                args.extend(["--name", self.name])
+            args.extend(
+                [
+                    "-v",
+                    f"{self.workspace}:{self.container_workspace}",
+                    "-w",
+                    self.container_workspace,
+                ]
+            )
+            if self.network:
+                args.extend(["--network", self.network])
+            if self.user:
+                args.extend(["--user", self.user])
+            for key, value in self.env.items():
+                args.extend(["-e", f"{key}={value}"])
+            args.append(self.image)
+            args.extend(self.command)
+            status, stdout, stderr = await self._run(args)
+            if status != 0:
+                raise RuntimeError(f"docker run failed: {stderr or stdout}")
+            self._container_id = stdout.strip()
+            return self._container_id
+
+    async def _run(
+        self,
+        args: Sequence[str],
+        *,
+        timeout: int | float | None = None,
+    ) -> tuple[int, str, str]:
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except TimeoutError:
+            process.kill()
+            stdout, stderr = await process.communicate()
+            return 124, stdout.decode(), stderr.decode()
+        return process.returncode or 0, stdout.decode(), stderr.decode()
+
+    def _host_path(self, path: str) -> Path:
+        path_text = str(path)
+        if path_text == self.container_workspace:
+            relative = Path()
+        elif path_text.startswith(f"{self.container_workspace}/"):
+            relative = Path(path_text.removeprefix(self.container_workspace).lstrip("/"))
+        else:
+            relative = Path(path_text.lstrip("/"))
+        target = (self.workspace / relative).resolve()
+        try:
+            target.relative_to(self.workspace)
+        except ValueError as error:
+            raise ValueError(f"path escapes docker workspace: {path}") from error
+        return target
+
+    def _container_cwd(self, cwd: object) -> str:
+        if not cwd:
+            return self.container_workspace
+        cwd_text = str(cwd)
+        if cwd_text.startswith("/"):
+            return cwd_text
+        return f"{self.container_workspace}/{cwd_text.strip('/')}"
+
+
 class EnvironmentProvider:
     """Provider-scoped filesystem, shell, resource, and state access."""
 
@@ -299,6 +523,15 @@ class EnvironmentProvider:
                 tmp_namespace=tmp_namespace,
             )
         )
+
+    @classmethod
+    def docker(
+        cls,
+        image: str,
+        workspace: str | PathLike[str],
+        **kwargs: Any,
+    ) -> EnvironmentProvider:
+        return DockerEnvironmentProvider(image, workspace, **kwargs).as_environment_provider()
 
     @classmethod
     def composite(

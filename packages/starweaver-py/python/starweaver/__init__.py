@@ -29,6 +29,7 @@ from .agent import (
 )
 from .capability import CapabilityBundle, PythonCapability
 from .environment import (
+    DockerEnvironmentProvider,
     EnvdEnvironment,
     Environment,
     EnvironmentProvider,
@@ -87,7 +88,7 @@ from .resources import (
     ResourceRegistryState,
     ResumableResource,
 )
-from .runtime import RuntimeConfig
+from .runtime import RuntimeConfig, SecurityConfig, ShellReviewConfig, ToolConfig
 from .skills import SkillPackage, SkillRegistry, SkillSourceScope
 from .store import (
     ApprovalRecord,
@@ -171,6 +172,7 @@ __all__ = [
     "ControlReceipt",
     "DeferredResult",
     "DeferredToolRecord",
+    "DockerEnvironmentProvider",
     "EnvdEnvironment",
     "Environment",
     "EnvironmentProvider",
@@ -226,6 +228,7 @@ __all__ = [
     "RunStatus",
     "RunStatusSnapshot",
     "RuntimeConfig",
+    "SecurityConfig",
     "SessionArchive",
     "SessionRecord",
     "SessionResumeSnapshot",
@@ -233,6 +236,7 @@ __all__ = [
     "SessionStore",
     "Shell",
     "ShellProcess",
+    "ShellReviewConfig",
     "SkillPackage",
     "SkillRegistry",
     "SkillSourceScope",
@@ -250,6 +254,7 @@ __all__ = [
     "TestModel",
     "Timeout",
     "Tool",
+    "ToolConfig",
     "ToolContext",
     "ToolError",
     "ToolLibrary",

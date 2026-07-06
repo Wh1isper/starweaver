@@ -806,6 +806,7 @@ pub fn tool_proxy_toolset(
     toolsets: Vec<Py<PyToolset>>,
     prefix: Option<String>,
     max_results: Option<usize>,
+    namespace_descriptions: Option<std::collections::BTreeMap<String, String>>,
     py: Python<'_>,
 ) -> PyResult<PyToolset> {
     let inner_toolsets = py_toolsets_to_dyn_toolsets(py, Some(toolsets))?;
@@ -817,6 +818,9 @@ pub fn tool_proxy_toolset(
     }
     if let Some(max_results) = max_results {
         toolset = toolset.with_max_results(max_results);
+    }
+    if let Some(namespace_descriptions) = namespace_descriptions {
+        toolset = toolset.with_namespace_descriptions(namespace_descriptions);
     }
     Ok(PyToolset::new(Arc::new(toolset)))
 }

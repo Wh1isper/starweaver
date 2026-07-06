@@ -2,15 +2,51 @@
 
 use pyo3::{prelude::*, types::PyBool};
 use starweaver_agent::EnvironmentHandle;
-use starweaver_context::AgentContext;
+use starweaver_context::{AgentContext, AgentContextHandle};
 use starweaver_environment::{DynEnvironmentProvider, EnvironmentState};
 use starweaver_tools::ToolContext;
 
 use crate::{
-    conversion::{json_to_py, serialize_to_py},
+    conversion::{json_to_py, py_to_json, serialize_to_py},
     environment::PyEnvironmentProvider,
     runtime::{PyFutureError, spawn_py_future},
 };
+
+/// Python projection of a shared Starweaver context snapshot handle.
+#[pyclass(name = "AgentContextHandle", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyAgentContextHandle {
+    inner: AgentContextHandle,
+}
+
+impl PyAgentContextHandle {
+    const fn new(inner: AgentContextHandle) -> Self {
+        Self { inner }
+    }
+}
+
+#[pymethods]
+impl PyAgentContextHandle {
+    fn snapshot(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        serialize_to_py(py, &self.inner.snapshot().export_full_state())
+    }
+
+    #[getter]
+    fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_to_py(
+            py,
+            &serde_json::Value::Object(self.inner.snapshot().metadata.clone()),
+        )
+    }
+
+    fn set_metadata(&self, py: Python<'_>, key: String, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value = py_to_json(py, value)?;
+        self.inner.update(|context| {
+            context.metadata.insert(key, value);
+        });
+        Ok(())
+    }
+}
 
 /// Python projection of Starweaver's tool execution context.
 #[pyclass(name = "ToolContext", skip_from_py_object)]
@@ -22,6 +58,37 @@ pub struct PyToolContext {
 impl PyToolContext {
     pub(crate) const fn new(inner: ToolContext) -> Self {
         Self { inner }
+    }
+
+    fn context_snapshot(&self) -> Option<AgentContext> {
+        self.inner
+            .dependency::<AgentContextHandle>()
+            .map(|handle| handle.snapshot())
+            .or_else(|| {
+                self.inner
+                    .dependency::<AgentContext>()
+                    .map(|context| context.as_ref().clone())
+            })
+    }
+
+    fn context_handle_snapshot(&self) -> Option<AgentContextHandle> {
+        self.inner
+            .dependency::<AgentContextHandle>()
+            .map(|handle| handle.as_ref().clone())
+    }
+
+    fn environment_provider(&self) -> Option<DynEnvironmentProvider> {
+        self.inner
+            .dependency::<EnvironmentHandle>()
+            .map(|handle| handle.provider())
+            .or_else(|| {
+                self.context_snapshot().and_then(|context| {
+                    context
+                        .dependencies
+                        .get::<EnvironmentHandle>()
+                        .map(|handle| handle.provider())
+                })
+            })
     }
 }
 
@@ -35,6 +102,18 @@ impl PyToolContext {
     #[getter]
     fn conversation_id(&self) -> String {
         self.inner.conversation_id.as_str().to_string()
+    }
+
+    #[getter]
+    fn agent_id(&self) -> Option<String> {
+        self.context_snapshot()
+            .map(|context| context.agent_id.as_str().to_string())
+    }
+
+    #[getter]
+    fn session_id(&self) -> Option<String> {
+        self.context_snapshot()
+            .and_then(|context| context.session_id.map(|id| id.as_str().to_string()))
     }
 
     #[getter]
@@ -55,6 +134,62 @@ impl PyToolContext {
     #[getter]
     fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         json_to_py(py, &serde_json::Value::Object(self.inner.metadata.clone()))
+    }
+
+    #[getter]
+    fn context_handle(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self.context_handle_snapshot() {
+            Some(handle) => Ok(Py::new(py, PyAgentContextHandle::new(handle))?.into_any()),
+            None => Ok(py.None()),
+        }
+    }
+
+    #[getter]
+    fn workspace_root(&self) -> Option<String> {
+        self.environment_provider()
+            .and_then(|provider| provider.shell_review_context().default_cwd)
+    }
+
+    #[getter]
+    fn environment(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self.environment_provider() {
+            Some(provider) => {
+                Ok(Py::new(py, PyEnvironmentProvider::new(provider.clone()))?.into_any())
+            }
+            None => Ok(py.None()),
+        }
+    }
+
+    #[getter]
+    fn raw_context(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        match self.context_snapshot() {
+            Some(context) => serialize_to_py(py, &context.export_full_state()),
+            None => Ok(py.None()),
+        }
+    }
+
+    fn export_resources(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let Some(provider) = self.environment_provider() else {
+            return Ok(py.None());
+        };
+        spawn_py_future(
+            py,
+            async move {
+                provider
+                    .export_state()
+                    .await
+                    .map(|state| state.resources)
+                    .map_err(|error| PyFutureError::Runtime(error.to_string()))
+            },
+            |py, resources| {
+                let resources = serialize_to_py(py, &resources)?;
+                let registry = py
+                    .import("starweaver.resources")?
+                    .getattr("ResourceRegistry")?
+                    .call1((resources,))?;
+                Ok(registry.unbind())
+            },
+        )
     }
 
     #[getter]

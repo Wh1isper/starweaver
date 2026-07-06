@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use starweaver_context::ToolConfig;
 use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
 use starweaver_tools::{DynTool, DynToolset, ToolRegistry};
 
@@ -43,6 +44,13 @@ impl AgentOverride {
     #[must_use]
     pub fn request_params(mut self, params: ModelRequestParameters) -> Self {
         self.agent.request_params = params;
+        self
+    }
+
+    /// Override tool-level runtime configuration.
+    #[must_use]
+    pub fn tool_config(mut self, tool_config: Option<ToolConfig>) -> Self {
+        self.agent.tool_config = tool_config;
         self
     }
 

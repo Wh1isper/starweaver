@@ -21,7 +21,14 @@ from .media import MediaUploader, ensure_media_uploader
 from .model import ModelSettings, RequestParams, ensure_model_settings, ensure_request_params
 from .observability import TraceMetadata, Usage, UsageSnapshot
 from .output import OutputPolicy, OutputSchema, ensure_output_policy, ensure_output_schema
-from .runtime import RuntimeConfig, ensure_runtime_config
+from .runtime import (
+    RuntimeConfig,
+    SecurityConfig,
+    ToolConfig,
+    ensure_runtime_config,
+    ensure_security_config,
+    ensure_tool_config,
+)
 from .skills import SkillRegistry, ensure_skill_registry
 from .subagent import Subagent, ensure_subagent
 from .tool import BaseTool, Tool, ensure_tool
@@ -1021,6 +1028,9 @@ class Agent:
         output_schema: OutputSchema | dict[str, Any] | None = None,
         output_policy: OutputPolicy | dict[str, Any] | None = None,
         trace_metadata: Mapping[str, Any] | None = None,
+        context_metadata: Mapping[str, Any] | None = None,
+        tool_config: ToolConfig | Mapping[str, Any] | None = None,
+        security: SecurityConfig | Mapping[str, Any] | None = None,
         toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
         | None = None,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
@@ -1035,6 +1045,9 @@ class Agent:
             output_schema=output_schema,
             output_policy=output_policy,
             trace_metadata=trace_metadata,
+            context_metadata=context_metadata,
+            tool_config=tool_config,
+            security=security,
             toolsets=toolsets,
             environment=environment,
         ).result()
@@ -1051,6 +1064,9 @@ class Agent:
         output_schema: OutputSchema | dict[str, Any] | None = None,
         output_policy: OutputPolicy | dict[str, Any] | None = None,
         trace_metadata: Mapping[str, Any] | None = None,
+        context_metadata: Mapping[str, Any] | None = None,
+        tool_config: ToolConfig | Mapping[str, Any] | None = None,
+        security: SecurityConfig | Mapping[str, Any] | None = None,
         toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
         | None = None,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
@@ -1071,6 +1087,9 @@ class Agent:
                 dict(trace_metadata) if trace_metadata is not None else None,
                 ensure_toolsets([*self._python_toolsets, *(toolsets or ())]),
                 ensure_environment_provider(environment),
+                dict(context_metadata) if context_metadata is not None else None,
+                ensure_tool_config(tool_config),
+                ensure_security_config(security),
             ),
             agent=self,
         )
@@ -1239,6 +1258,9 @@ class AgentSession:
         output_schema: OutputSchema | dict[str, Any] | None = None,
         output_policy: OutputPolicy | dict[str, Any] | None = None,
         trace_metadata: Mapping[str, Any] | None = None,
+        context_metadata: Mapping[str, Any] | None = None,
+        tool_config: ToolConfig | Mapping[str, Any] | None = None,
+        security: SecurityConfig | Mapping[str, Any] | None = None,
         toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
         | None = None,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
@@ -1253,6 +1275,9 @@ class AgentSession:
             output_schema=output_schema,
             output_policy=output_policy,
             trace_metadata=trace_metadata,
+            context_metadata=context_metadata,
+            tool_config=tool_config,
+            security=security,
             toolsets=toolsets,
             environment=environment,
         ).result()
@@ -1269,6 +1294,9 @@ class AgentSession:
         output_schema: OutputSchema | dict[str, Any] | None = None,
         output_policy: OutputPolicy | dict[str, Any] | None = None,
         trace_metadata: Mapping[str, Any] | None = None,
+        context_metadata: Mapping[str, Any] | None = None,
+        tool_config: ToolConfig | Mapping[str, Any] | None = None,
+        security: SecurityConfig | Mapping[str, Any] | None = None,
         toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
         | None = None,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
@@ -1291,6 +1319,9 @@ class AgentSession:
                 dict(trace_metadata) if trace_metadata is not None else None,
                 ensure_toolsets([*self._default_toolsets, *(toolsets or ())]),
                 ensure_environment_provider(environment),
+                dict(context_metadata) if context_metadata is not None else None,
+                ensure_tool_config(tool_config),
+                ensure_security_config(security),
             ),
             session=self,
         )
@@ -1304,6 +1335,13 @@ class AgentSession:
 
     def export_full_state(self) -> dict[str, Any]:
         return self.export_state("full")
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return dict(self._native.metadata)
+
+    def set_metadata(self, key: str, value: Any) -> None:
+        self._native.set_metadata(key, value)
 
     def set_environment(
         self,
@@ -1685,6 +1723,8 @@ def create_agent(
     skills: SkillRegistry | _native.SkillRegistry | None = None,
     environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
     media_uploader: MediaUploader | _native.MediaUploader | None = None,
+    tool_config: ToolConfig | Mapping[str, Any] | None = None,
+    security: SecurityConfig | Mapping[str, Any] | None = None,
 ) -> Agent:
     """Create a Python Starweaver agent."""
 
@@ -1715,6 +1755,8 @@ def create_agent(
             ensure_skill_registry(skills),
             ensure_environment_provider(environment),
             ensure_media_uploader(media_uploader),
+            ensure_tool_config(tool_config),
+            ensure_security_config(security),
         ),
         profile_toolsets=profile_toolsets,
     )
@@ -1744,6 +1786,8 @@ def create_agent_runtime(
     stream_archive: Any | None = None,
     replay_event_log: Any | None = None,
     state: Mapping[str, Any] | None = None,
+    tool_config: ToolConfig | Mapping[str, Any] | None = None,
+    security: SecurityConfig | Mapping[str, Any] | None = None,
 ) -> AgentRuntime:
     """Create an owned Starweaver runtime with optional durable storage."""
 
@@ -1778,6 +1822,8 @@ def create_agent_runtime(
             stream_archive,
             replay_event_log,
             dict(state) if state is not None else None,
+            ensure_tool_config(tool_config),
+            ensure_security_config(security),
         )
     )
 

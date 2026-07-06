@@ -426,12 +426,14 @@ class ToolProxyToolset(Toolset):
         *,
         prefix: str | None = None,
         max_results: int | None = None,
+        namespace_descriptions: Mapping[str, str] | None = None,
     ) -> None:
         toolsets = _library_toolsets(library)
         native = _native.tool_proxy_toolset(
             [toolset.to_native() for toolset in toolsets],
             prefix,
             max_results,
+            dict(namespace_descriptions) if namespace_descriptions is not None else None,
         )
         super().__init__(
             "tool_proxy",
@@ -440,6 +442,7 @@ class ToolProxyToolset(Toolset):
         self.library = ToolLibrary(toolsets)
         self.prefix = prefix
         self.max_results = max_results
+        self.namespace_descriptions = dict(namespace_descriptions or {})
 
 
 @dataclass(frozen=True)

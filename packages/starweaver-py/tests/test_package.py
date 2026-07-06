@@ -19,6 +19,7 @@ from starweaver import (
     CallDeferred,
     Cancelled,
     CapabilityBundle,
+    DockerEnvironmentProvider,
     EnvironmentProvider,
     ExecutionStatus,
     FunctionToolset,
@@ -48,7 +49,9 @@ from starweaver import (
     ResourceRef,
     RunStatus,
     RuntimeConfig,
+    SecurityConfig,
     SessionStatus,
+    ShellReviewConfig,
     SkillPackage,
     SkillRegistry,
     SkillSourceScope,
@@ -57,6 +60,7 @@ from starweaver import (
     StreamError,
     Subagent,
     Timeout,
+    ToolConfig,
     ToolContext,
     ToolError,
     ToolLibrary,
@@ -842,6 +846,111 @@ def test_per_run_trace_metadata_reaches_model_without_persisting_session_state()
         assert metadata["audit_id"] == "run-1"
 
     asyncio.run(run())
+
+
+def test_tool_context_exposes_run_context_and_run_overrides_without_persisting() -> None:
+    observed: list[dict[str, object]] = []
+
+    @tool
+    async def inspect_context(ctx: ToolContext) -> dict[str, object]:
+        raw_context = ctx.raw_context
+        assert isinstance(raw_context, dict)
+        metadata = raw_context["metadata"]
+        assert isinstance(metadata, dict)
+        assert metadata["session_marker"] == "session"
+        assert metadata["run_marker"] == "run"
+        assert ctx.agent_id
+        assert ctx.session_id
+        assert ctx.context_handle is not None
+        assert ctx.context_handle.metadata["run_marker"] == "run"
+        assert ctx.environment is not None
+        resources_future = ctx.export_resources()
+        assert resources_future is not None
+        resources = await resources_future
+        assert resources is not None
+        tool_config = raw_context["tool_config"]
+        assert isinstance(tool_config, dict)
+        assert tool_config["view_relaxed_text_patterns"] == ["*.log"]
+        security = raw_context["security"]
+        assert isinstance(security, dict)
+        shell_review = security["shell_review"]
+        assert isinstance(shell_review, dict)
+        assert shell_review["enabled"] is True
+        assert shell_review["risk_threshold"] == "medium"
+        observed.append(
+            {
+                "agent_id": ctx.agent_id,
+                "session_id": ctx.session_id,
+                "workspace_root": ctx.workspace_root,
+            }
+        )
+        return {"ok": True}
+
+    async def run() -> None:
+        model = StarweaverTestModel.responses(
+            [
+                StarweaverTestModel.tool_call_response(
+                    [{"id": "call_inspect", "name": "inspect_context", "arguments": {}}]
+                ),
+                {"text": "done"},
+            ]
+        )
+        environment = EnvironmentProvider.virtual(
+            resources=[
+                ResourceRef(
+                    id="workspace",
+                    uri="file:///workspace",
+                    metadata={"kind": "workspace"},
+                )
+            ]
+        )
+        session = create_agent(model=model, tools=[inspect_context]).new_session(
+            environment=environment
+        )
+        session.set_metadata("session_marker", "session")
+        result = await session.run(
+            "inspect",
+            context_metadata={"run_marker": "run"},
+            tool_config=ToolConfig(view_relaxed_text_patterns=["*.log"]),
+            security=SecurityConfig(
+                shell_review=ShellReviewConfig(
+                    enabled=True,
+                    risk_threshold="medium",
+                )
+            ),
+        )
+        assert result.output == "done"
+        assert result.raw_state["metadata"]["run_marker"] == "run"
+        full_state = session.export_full_state()
+        assert full_state["metadata"] == {"session_marker": "session"}
+        assert full_state.get("tool_config", {}).get("view_relaxed_text_patterns") != ["*.log"]
+        assert full_state.get("security", {}) == {}
+
+    asyncio.run(run())
+    assert observed
+
+
+def test_runtime_config_can_carry_tool_and_security_config() -> None:
+    runtime_config = RuntimeConfig(
+        context_window=42,
+        tool_config=ToolConfig(view_relaxed_text_patterns=["*.md"]),
+        security=SecurityConfig(shell_review={"enabled": True, "risk_threshold": "low"}),
+    )
+    payload = runtime_config.to_dict()
+    assert payload["model_config"]["context_window"] == 42
+    assert payload["tool_config"]["view_relaxed_text_patterns"] == ["*.md"]
+    assert payload["security"]["shell_review"]["risk_threshold"] == "low"
+
+
+def test_docker_environment_provider_is_public_python_provider(tmp_path: Path) -> None:
+    provider = DockerEnvironmentProvider("alpine:latest", tmp_path)
+    assert provider.id.startswith("docker-")
+    assert provider.workspace == tmp_path.resolve()
+    state = asyncio.run(provider.export_state())
+    assert state["metadata"]["kind"] == "docker"
+    assert state["metadata"]["image"] == "alpine:latest"
+    asyncio.run(provider.write_text("/workspace/output.txt", "ok"))
+    assert (tmp_path / "output.txt").read_text() == "ok"
 
 
 def test_generic_metadata_does_not_become_provider_routing_settings() -> None:
@@ -2782,6 +2891,60 @@ def test_tool_proxy_scoped_prefix_uses_fixed_surface_and_records_loaded_state() 
     asyncio.run(run())
 
 
+def test_tool_proxy_uses_namespace_descriptions_for_search() -> None:
+    @tool
+    async def lookup(value: str) -> dict[str, str]:
+        return {"value": value}
+
+    async def run() -> None:
+        model = StarweaverTestModel.responses(
+            [
+                StarweaverTestModel.tool_call_response(
+                    [
+                        {
+                            "id": "call_proxy_search",
+                            "name": "search_tools",
+                            "arguments": {"query": "deployments"},
+                        }
+                    ]
+                ),
+                StarweaverTestModel.tool_call_response(
+                    [
+                        {
+                            "id": "call_proxy_lookup",
+                            "name": "call_tool",
+                            "arguments": {
+                                "name": "lookup",
+                                "arguments": {"value": "ok"},
+                            },
+                        }
+                    ]
+                ),
+                {"text": "done"},
+            ]
+        )
+        session = create_agent(
+            model=model,
+            toolsets=[
+                ToolProxyToolset(
+                    [Toolset("workspace", id="workspace", tools=[lookup])],
+                    namespace_descriptions={
+                        "workspace": "Deployment operations exposed by the workspace runtime."
+                    },
+                )
+            ],
+        ).new_session()
+        stream = session.run_stream("proxy deployment tool")
+        joined = await stream.join()
+        assert joined.result.output == "done"
+
+        full_state = session.export_full_state()
+        assert full_state["tool_search_loaded_tools"] == ["lookup"]
+        assert full_state["tool_search_loaded_namespaces"] == ["workspace"]
+
+    asyncio.run(run())
+
+
 def test_mcp_toolset_config_exposes_deferred_native_tools() -> None:
     async def run() -> None:
         toolset = McpToolset(
@@ -2919,12 +3082,12 @@ def test_runtime_config_mapping_is_strict_and_normalized() -> None:
             runtime_config={"temperature": 0.1},
         )
 
-    with pytest.raises(TypeError, match="cannot include sibling"):
+    with pytest.raises(TypeError, match="appears both"):
         create_agent(
             model=StarweaverTestModel.text("unused"),
             runtime_config={
                 "model_config": {"context_window": 1000},
-                "compact_threshold": 0.5,
+                "context_window": 2000,
             },
         )
 
