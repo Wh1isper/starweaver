@@ -310,15 +310,18 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
             "deferred_model",
             Arc::new(scripted_tool_model("deferred_probe")),
         );
+    let mut environment_filesystem = None;
+    let mut environment_shell = None;
     for toolset in default_toolsets(config) {
         let name = toolset.name().to_string();
         registry = registry.with_toolset(toolset.clone());
         match name.as_str() {
             "filesystem" => {
-                registry = registry.with_toolset_alias("filesystem", toolset.clone());
-                registry = registry.with_toolset_alias("environment", toolset);
+                environment_filesystem = Some(toolset.clone());
+                registry = registry.with_toolset_alias("filesystem", toolset);
             }
             "shell" => {
+                environment_shell = Some(toolset.clone());
                 registry = registry.with_toolset_alias("shell", toolset);
             }
             "task" => {
@@ -332,6 +335,10 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
             }
             _ => {}
         }
+    }
+    if let (Some(filesystem), Some(shell)) = (environment_filesystem, environment_shell) {
+        registry =
+            registry.with_toolset_alias("environment", environment_toolset(&filesystem, &shell));
     }
     for server in configured_mcp_server_specs(config) {
         registry = registry.with_mcp_server(server.name.clone(), server);
@@ -361,26 +368,13 @@ fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
     let approval = tool_need_approval(config);
     let shell_review_approval = shell_review_adjusted_approval(config, &approval);
     let mut toolsets = vec![Arc::new(control_flow_toolset()) as DynToolset];
-    let mut filesystem = None;
-    let mut shell = None;
     for toolset in core_toolsets() {
-        match toolset.name() {
-            "filesystem" => filesystem = Some(toolset.clone()),
-            "shell" => shell = Some(toolset.clone()),
-            _ => {}
-        }
         let selected_approval = if toolset.name() == "shell" {
             &shell_review_approval
         } else {
             &approval
         };
         toolsets.push(policy_toolset(toolset, selected_approval));
-    }
-    if let (Some(filesystem), Some(shell)) = (filesystem, shell) {
-        toolsets.push(policy_toolset(
-            environment_toolset(&filesystem, &shell),
-            &shell_review_approval,
-        ));
     }
     toolsets.push(policy_toolset(configured_skill_toolset(config), &approval));
     if let Some(mcp_proxy) = configured_mcp_proxy_toolset(config) {
