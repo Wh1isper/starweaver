@@ -27,16 +27,6 @@ const WORKSPACE_DEPENDENCIES: [&str; 18] = [
     "starweaver-tools",
     "starweaver-usage",
 ];
-const PYTHON_PACKAGE_WORKSPACE_DEPENDENCIES: [&str; 8] = [
-    "starweaver-agent",
-    "starweaver-core",
-    "starweaver-environment",
-    "starweaver-model",
-    "starweaver-oauth-provider",
-    "starweaver-runtime",
-    "starweaver-session",
-    "starweaver-tools",
-];
 const NON_PUBLISH_WORKSPACE_CRATES: [&str; 1] = ["starweaver-rpc"];
 const DRY_RUN_PACKAGES: [&str; 3] = ["starweaver-core", "starweaver-usage", "starweaver-oauth"];
 const PUBLISH_PACKAGES: [&str; 18] = [
@@ -98,10 +88,10 @@ fn update_python_package_versions(root: &std::path::Path, version: &str) -> Resu
     let mut cargo_text = fs::read_to_string(&cargo_manifest).map_err(|error| error.to_string())?;
     cargo_text = replace_toml_table_version(&cargo_text, "[package]\n", version)
         .map_err(|error| format!("{}: {error}", cargo_manifest.display()))?;
-    for krate in PYTHON_PACKAGE_WORKSPACE_DEPENDENCIES {
+    for krate in python_package_workspace_dependencies(&cargo_text)? {
         cargo_text = replace_path_dependency_version(
             &cargo_text,
-            krate,
+            &krate,
             &format!("../../crates/{krate}"),
             version,
         )?;
@@ -221,6 +211,40 @@ fn replace_path_dependency_version(
     output.push_str(version);
     output.push_str(&text[end..]);
     Ok(output)
+}
+
+fn python_package_workspace_dependencies(text: &str) -> Result<BTreeSet<String>, String> {
+    let manifest: toml::Value = text
+        .parse()
+        .map_err(|error| format!("invalid Python package Cargo.toml: {error}"))?;
+    let dependencies = manifest
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| "missing Python package [dependencies]".to_string())?;
+    let mut crates = BTreeSet::new();
+    for (name, dependency) in dependencies {
+        let Some(table) = dependency.as_table() else {
+            continue;
+        };
+        let Some(path) = table.get("path").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        let Some(crate_name) = path.strip_prefix("../../crates/") else {
+            continue;
+        };
+        if crate_name != name {
+            return Err(format!(
+                "Python package dependency {name} path points at crate {crate_name}"
+            ));
+        }
+        if !table.contains_key("version") {
+            return Err(format!(
+                "Python package workspace dependency {name} must include a version"
+            ));
+        }
+        crates.insert(name.clone());
+    }
+    Ok(crates)
 }
 
 pub fn workspace_version(args: &[String]) -> Result<(), String> {
@@ -460,10 +484,6 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
 
 fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> {
     ensure_unique("workspace dependency", &WORKSPACE_DEPENDENCIES)?;
-    ensure_unique(
-        "Python package workspace dependency",
-        &PYTHON_PACKAGE_WORKSPACE_DEPENDENCIES,
-    )?;
     ensure_unique("non-publish workspace crate", &NON_PUBLISH_WORKSPACE_CRATES)?;
     ensure_unique("dry-run package", &DRY_RUN_PACKAGES)?;
     ensure_unique("publish package", &PUBLISH_PACKAGES)?;
@@ -510,7 +530,12 @@ fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> 
     if python_manifest.exists() {
         let python_manifest_text =
             fs::read_to_string(&python_manifest).map_err(|error| error.to_string())?;
-        for krate in PYTHON_PACKAGE_WORKSPACE_DEPENDENCIES {
+        for krate in python_package_workspace_dependencies(&python_manifest_text)? {
+            if !workspace_dependencies.contains(krate.as_str()) {
+                return Err(format!(
+                    "Python package workspace dependency {krate} must be a publishable workspace dependency"
+                ));
+            }
             let needle = format!("{krate} = {{ path = \"../../crates/{krate}\", version = \"");
             if !python_manifest_text.contains(&needle) {
                 return Err(format!(
@@ -609,6 +634,28 @@ starweaver-core = { path = "../../crates/starweaver-core", version = "0.2.1" }
         assert!(updated.contains(
             "starweaver-core = { path = \"../../crates/starweaver-core\", version = \"0.2.1\" }"
         ));
+    }
+
+    #[test]
+    fn python_package_workspace_dependencies_parse_all_crate_paths() {
+        let text = r#"
+[dependencies]
+serde = "1"
+starweaver-agent = { path = "../../crates/starweaver-agent", version = "0.3.0" }
+starweaver-context = { path = "../../crates/starweaver-context", version = "0.3.0" }
+tokio = { version = "1", features = ["sync"] }
+"#;
+        let dependencies = match python_package_workspace_dependencies(text) {
+            Ok(dependencies) => dependencies,
+            Err(error) => panic!("Python package dependencies should parse: {error}"),
+        };
+        assert_eq!(
+            dependencies,
+            BTreeSet::from([
+                "starweaver-agent".to_string(),
+                "starweaver-context".to_string(),
+            ])
+        );
     }
 
     #[test]
