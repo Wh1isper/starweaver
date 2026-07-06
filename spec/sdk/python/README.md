@@ -39,19 +39,21 @@ helpers, callback dispatch, and application-facing composition.
 
 ## Document Map
 
-| Spec                              | Purpose                                                                                                              |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `01-product-boundary.md`          | Product boundary, package ownership, dependency rules, and release shape                                             |
-| `02-concept-mapping.md`           | Public Python API contract and mapping to Rust seams                                                                 |
-| `03-python-tool-injection.md`     | Python tool adapters, schema/result conversion, callback runtime, and cancellation                                   |
-| `04-runtime-session-streaming.md` | Agents, sessions, streams, state restore, HITL, output, and error semantics                                          |
-| `05-ecosystem-and-claw.md`        | Composition layer, subagents, environments, resources, observability, and Claw path                                  |
-| `06-roadmap-and-validation.md`    | Current baseline, milestones, acceptance gates, open decisions, and validation                                       |
-| `07-pythonic-control-plane.md`    | Active-run steering, interruption, message bus, typed HITL, and required Rust seam                                   |
-| `08-session-store-and-state.md`   | Durable Python session-store contract, state boundaries, record wrappers, and restore                                |
-| `09-advanced-composition.md`      | Runtime config, toolsets, tool search/proxy, skills, environments, resources, media, providers, and product adapters |
-| `10-claw-python-runtime-plan.md`  | Claw-like Python product runtime plan, Rust-to-Python binding gaps, storage/API/workspace execution mapping          |
-| `11-python-native-toolsets.md`    | Python `AbstractToolset` contract, dynamic toolset bridge, builders, Rust-backed wrappers, lifecycle, durability     |
+| Spec                                | Purpose                                                                                                              |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `01-product-boundary.md`            | Product boundary, package ownership, dependency rules, and release shape                                             |
+| `02-concept-mapping.md`             | Public Python API contract and mapping to Rust seams                                                                 |
+| `03-python-tool-injection.md`       | Python tool adapters, schema/result conversion, callback runtime, and cancellation                                   |
+| `04-runtime-session-streaming.md`   | Agents, sessions, streams, state restore, HITL, output, and error semantics                                          |
+| `05-ecosystem-and-claw.md`          | Composition layer, subagents, environments, resources, observability, and Claw path                                  |
+| `06-roadmap-and-validation.md`      | Current baseline, milestones, acceptance gates, open decisions, and validation                                       |
+| `07-pythonic-control-plane.md`      | Active-run steering, interruption, message bus, typed HITL, and required Rust seam                                   |
+| `08-session-store-and-state.md`     | Durable Python session-store contract, state boundaries, record wrappers, and restore                                |
+| `09-advanced-composition.md`        | Runtime config, toolsets, tool search/proxy, skills, environments, resources, media, providers, and product adapters |
+| `10-claw-python-runtime-plan.md`    | Claw-like Python product runtime plan, Rust-to-Python binding gaps, storage/API/workspace execution mapping          |
+| `11-python-native-toolsets.md`      | Python `AbstractToolset` contract, dynamic toolset bridge, builders, Rust-backed wrappers, lifecycle, durability     |
+| `12-api-compatibility-checklist.md` | Public top-level Python names that must stay import-compatible for application readiness                             |
+| `13-batch-alignment-audit.md`       | Batch audit findings and fix plans for source-backed Python SDK spec alignment                                       |
 
 ## Ownership Shape
 
@@ -102,17 +104,17 @@ The package currently provides:
 - stream records with raw JSON preservation
 - stream interruption and cancellation propagation into Python tools
 - session state export/restore
+- owned durable runtime construction with `create_agent_runtime(...)`
+- Python and native `SessionStore` binding through `AgentRuntime`
 - raw HITL approval/deferred resume helpers
 - typed HITL approval/deferred helpers
 - Python message bus facade for idle session messages and active-run writes
 - active steering through a neutral Rust control handle and drain capability
 
-The main remaining layers are the advanced application facades now specified in
-root-level Python SDK specs: session-store records, toolsets, environment and
-resource wrappers, skill helpers, stream adapters, media/provider helpers,
-usage/trace helpers, and product adapter seams. Claw-specific workflow,
-schedule, memory, UI, database, and Docker-retention policy remain above
-`starweaver-py`.
+The main remaining layers are product adapter seams and the Claw-like service
+runtime specified in the root-level Python SDK specs. Claw-specific workflow,
+schedule, memory, UI, database, queueing, SSE replay, recovery, and
+Docker-retention policy remain above `starweaver-py`.
 
 ## Cross-Cutting Invariants
 
@@ -162,4 +164,8 @@ schedule, memory, UI, database, and Docker-retention policy remain above
     adding `AbstractToolset`, `PythonDynamicToolset`, `FunctionToolset`,
     exposing Rust toolset wrappers, or designing context-aware dynamic toolset
     callbacks.
-11. Read `06-roadmap-and-validation.md` before claiming a milestone is complete.
+11. Read `12-api-compatibility-checklist.md` before adding, removing, renaming,
+    or promoting a top-level Python public API name.
+12. Read `13-batch-alignment-audit.md` before batching multiple Python SDK spec
+    alignment issues into one implementation pass.
+13. Read `06-roadmap-and-validation.md` before claiming a milestone is complete.

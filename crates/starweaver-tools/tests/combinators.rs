@@ -5,11 +5,13 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use starweaver_core::{ConversationId, Metadata, RunId};
+use starweaver_context::AgentContext;
+use starweaver_core::{AgentId, ConversationId, Metadata, RunId};
 use starweaver_tools::{
-    ApprovalRequiredToolset, DeferredToolset, DynTool, DynToolset, DynamicToolset, FilteredToolset,
-    FunctionTool, LazyToolset, PreparedToolset, RenamedToolset, StaticToolset, ToolApprovalState,
-    ToolContext, ToolInstruction, ToolRegistry, ToolResult, Toolset,
+    ApprovalRequiredToolset, CombinedToolset, DeferredToolset, DynTool, DynToolset, DynamicToolset,
+    FilteredToolset, FunctionTool, LazyToolset, MetadataToolset, PreparedToolset, RenamedToolset,
+    StaticToolset, ToolApprovalState, ToolContext, ToolInstruction, ToolRegistry, ToolResult,
+    Toolset,
 };
 
 fn echo_tool(name: &str) -> DynTool {
@@ -72,6 +74,77 @@ async fn renamed_toolset_exposes_alias_and_delegates_to_inner_tool() {
         )
         .await;
     assert_eq!(result.content["query"], "rust");
+}
+
+#[tokio::test]
+async fn metadata_toolset_merges_metadata_and_delegates_execution() {
+    let mut base_metadata = Metadata::default();
+    base_metadata.insert("bundle".to_string(), serde_json::json!("base"));
+    base_metadata.insert("mode".to_string(), serde_json::json!("read"));
+    let lookup_tool = FunctionTool::new(
+        "lookup",
+        Some("Lookup".to_string()),
+        serde_json::json!({"type":"object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    )
+    .with_metadata(base_metadata);
+
+    let mut wrapper_metadata = Metadata::default();
+    wrapper_metadata.insert("bundle".to_string(), serde_json::json!("workspace"));
+    wrapper_metadata.insert("owner".to_string(), serde_json::json!("python"));
+    let inner = Arc::new(StaticToolset::new("tools").with_tool(Arc::new(lookup_tool)));
+    let with_metadata: DynToolset = Arc::new(MetadataToolset::new(inner, wrapper_metadata));
+    let registry = ToolRegistry::new().with_toolset(&with_metadata);
+
+    let definitions = registry.definitions();
+    assert_eq!(definitions[0].metadata["bundle"], "workspace");
+    assert_eq!(definitions[0].metadata["mode"], "read");
+    assert_eq!(definitions[0].metadata["owner"], "python");
+
+    let result = registry
+        .execute_call(
+            ToolContext::new(RunId::new(), ConversationId::new(), 0),
+            &starweaver_model::ToolCallPart {
+                id: "call_lookup".to_string(),
+                name: "lookup".to_string(),
+                arguments: serde_json::json!({"value": "ok"}).into(),
+            },
+        )
+        .await;
+    assert_eq!(result.content["value"], "ok");
+}
+
+#[tokio::test]
+async fn combined_toolset_prepares_context_aware_members() {
+    let dynamic = Arc::new(
+        DynamicToolset::new("dynamic", || vec![echo_tool("dynamic_tool")])
+            .with_instructions(|| vec![ToolInstruction::new("dynamic", "Use dynamic.")]),
+    ) as DynToolset;
+    let static_tools = Arc::new(
+        StaticToolset::new("static")
+            .with_tool(echo_tool("static_tool"))
+            .with_instruction(ToolInstruction::new("static", "Use static.")),
+    ) as DynToolset;
+    let combined =
+        Arc::new(CombinedToolset::new("combined", vec![dynamic, static_tools]).with_id("combined"))
+            as DynToolset;
+    let preparation = combined
+        .prepare_with_context(&AgentContext::new(AgentId::from_string("combined-test")))
+        .await
+        .unwrap();
+
+    let mut registry = ToolRegistry::new();
+    for tool in preparation.tools {
+        registry.insert(tool);
+    }
+    for instruction in preparation.instructions {
+        registry.insert_instruction(instruction);
+    }
+    let definitions = registry.definitions();
+    assert_eq!(definitions.len(), 2);
+    assert_eq!(definitions[0].name, "dynamic_tool");
+    assert_eq!(definitions[1].name, "static_tool");
+    assert_eq!(registry.instructions().len(), 2);
 }
 
 #[tokio::test]

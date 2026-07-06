@@ -1,6 +1,6 @@
 XTASK = cargo run -p xtask --locked --
 PY_PACKAGE = packages/starweaver-py
-PY_SOURCES = $(PY_PACKAGE)/python $(PY_PACKAGE)/tests
+PY_SOURCES = $(PY_PACKAGE)/python $(PY_PACKAGE)/tests scripts/python_wheel_smoke.py examples/python
 PY_DIST_DIR ?= dist/python
 CORE_COVERAGE_MIN_LINES ?= 95
 AGENT_COVERAGE_MIN_LINES ?= 90
@@ -131,8 +131,13 @@ py-build: py-sync ## Build Python package distributions with uv
 	@rm -rf $(PY_DIST_DIR)
 	@uv build --package starweaver -o $(PY_DIST_DIR)
 
+.PHONY: py-wheel-smoke
+py-wheel-smoke: py-build ## Install the built wheel into a clean venv and run smoke checks
+	@echo "Running Python wheel smoke"
+	@env -u CONDA_PREFIX -u CONDA_DEFAULT_ENV uv run python scripts/python_wheel_smoke.py $(PY_DIST_DIR)
+
 .PHONY: py-check
-py-check: py-lint py-rust-check py-test py-build ## Run all Python package checks; defaults to Python 3.13
+py-check: py-lint py-rust-check py-test py-wheel-smoke ## Run all Python package checks; defaults to Python 3.13
 
 .PHONY: replay-check
 replay-check: ## Run model replay and request-parameter contract tests

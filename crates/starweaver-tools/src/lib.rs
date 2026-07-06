@@ -13,8 +13,8 @@ pub mod tool_proxy;
 pub mod toolset;
 
 pub use combinators::{
-    ApprovalRequiredToolset, DeferredToolset, DynamicToolset, FilteredToolset, LazyToolset,
-    PreparedToolset, RenamedToolset, ToolPredicate,
+    ApprovalRequiredToolset, CombinedToolset, DeferredToolset, DynamicToolset, FilteredToolset,
+    LazyToolset, MetadataToolset, PreparedToolset, RenamedToolset, ToolPredicate,
 };
 pub use context::{ToolApprovalState, ToolContext};
 pub use error::{ToolError, error_return};

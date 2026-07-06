@@ -143,6 +143,9 @@ pub struct AgentContext {
     /// Trace correlation context.
     #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
     pub trace_context: TraceContext,
+    /// Current runtime run step for context-aware preparation.
+    #[serde(skip)]
+    pub current_run_step: usize,
     /// Context metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
@@ -207,6 +210,7 @@ impl AgentContext {
             notes: NoteStore::new(),
             messages,
             trace_context: TraceContext::default(),
+            current_run_step: 0,
             metadata: Metadata::default(),
             dependencies: DependencyStore::new(),
         }

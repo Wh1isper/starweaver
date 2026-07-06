@@ -10,7 +10,8 @@ use starweaver_model::ToolDefinition;
 
 use crate::{
     DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolResult,
-    ToolUserInputPreprocessResult, Toolset,
+    ToolUserInputPreprocessResult, Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy,
+    ToolsetLifecycleReport, ToolsetPreparation,
 };
 
 /// Tool wrapper that prefixes the exposed tool name and delegates execution to the wrapped tool.
@@ -138,19 +139,47 @@ impl PrefixedToolset {
     pub fn inner(&self) -> DynToolset {
         self.toolset.clone()
     }
+
+    fn prefixed_tools(&self, tools: Vec<DynTool>) -> Vec<DynTool> {
+        tools
+            .into_iter()
+            .map(|tool| Arc::new(PrefixedTool::new(self.prefix.clone(), tool)) as DynTool)
+            .collect()
+    }
+
+    fn prefixed_instructions(&self, instructions: Vec<ToolInstruction>) -> Vec<ToolInstruction> {
+        instructions
+            .into_iter()
+            .map(|instruction| ToolInstruction {
+                group: prefixed_name(&self.prefix, &instruction.group),
+                content: instruction.content,
+                dynamic: instruction.dynamic,
+            })
+            .collect()
+    }
+
+    fn wrapper_report(
+        &self,
+        mut report: ToolsetLifecycleReport,
+        tool_count: usize,
+        instruction_count: usize,
+    ) -> ToolsetLifecycleReport {
+        report.name.clone_from(&self.name);
+        report.id = self.id().map(ToOwned::to_owned);
+        report.tool_count = tool_count;
+        report.instruction_count = instruction_count;
+        report
+    }
 }
 
+#[async_trait]
 impl Toolset for PrefixedToolset {
     fn name(&self) -> &str {
         &self.name
     }
 
     fn get_tools(&self) -> Vec<DynTool> {
-        self.toolset
-            .get_tools()
-            .into_iter()
-            .map(|tool| Arc::new(PrefixedTool::new(self.prefix.clone(), tool)) as DynTool)
-            .collect()
+        self.prefixed_tools(self.toolset.get_tools())
     }
 
     fn max_retries(&self) -> Option<usize> {
@@ -166,15 +195,46 @@ impl Toolset for PrefixedToolset {
     }
 
     fn get_instructions(&self) -> Vec<ToolInstruction> {
-        self.toolset
-            .get_instructions()
-            .into_iter()
-            .map(|instruction| ToolInstruction {
-                group: prefixed_name(&self.prefix, &instruction.group),
-                content: instruction.content,
-                dynamic: instruction.dynamic,
-            })
-            .collect()
+        self.prefixed_instructions(self.toolset.get_instructions())
+    }
+
+    fn lifecycle_policy(&self) -> ToolsetLifecyclePolicy {
+        self.toolset.lifecycle_policy()
+    }
+
+    async fn prepare_with_context(
+        &self,
+        context: &AgentContext,
+    ) -> Result<ToolsetPreparation, ToolsetLifecycleError> {
+        let preparation = self.toolset.prepare_with_context(context).await?;
+        let tools = self.prefixed_tools(preparation.tools);
+        let instructions = self.prefixed_instructions(preparation.instructions);
+        let report = self.wrapper_report(preparation.report, tools.len(), instructions.len());
+        Ok(ToolsetPreparation {
+            tools,
+            instructions,
+            report,
+        })
+    }
+
+    async fn enter_with_context(
+        &self,
+        context: &AgentContext,
+    ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
+        let report = self.toolset.enter_with_context(context).await?;
+        Ok(self.wrapper_report(
+            report,
+            self.get_tools().len(),
+            self.get_instructions().len(),
+        ))
+    }
+
+    async fn exit_with_context(
+        &self,
+        context: &AgentContext,
+    ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
+        let report = self.toolset.exit_with_context(context).await?;
+        Ok(self.wrapper_report(report, 0, 0))
     }
 }
 

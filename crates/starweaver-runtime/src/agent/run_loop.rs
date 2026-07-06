@@ -586,7 +586,8 @@ impl Agent {
             Self::previous_assistant_response_reference(&context.message_history);
         Self::sync_compact_context_metadata(context, &mut state);
         self.call_run_start(&mut state, context).await?;
-        let run_tools = match self.prepare_run_tools(context).await {
+        context.current_run_step = state.run_step;
+        let mut run_tools = match self.prepare_run_tools(context, true).await {
             Ok(tools) => tools,
             Err(error) => {
                 fail_run!(
@@ -631,6 +632,29 @@ impl Agent {
                         steps: state.run_step,
                     }
                 );
+            }
+
+            context.current_run_step = state.run_step;
+            if state.run_step > 0 {
+                run_tools = match self.prepare_run_tools(context, false).await {
+                    Ok(tools) => tools,
+                    Err(error) => {
+                        step_span.close(SpanStatus::Error {
+                            error_type: "capability_error".to_string(),
+                        });
+                        run_span.close(SpanStatus::Error {
+                            error_type: "capability_error".to_string(),
+                        });
+                        fail_run!(
+                            &mut state,
+                            &run_id,
+                            context_event_cursor,
+                            previous_trace_context.clone(),
+                            error
+                        );
+                    }
+                };
+                stream_context_events!(&state, context_event_cursor);
             }
 
             checkpoint!(
@@ -967,6 +991,7 @@ impl Agent {
                 context.tool_id_wrapper.wrap_response_part(part);
             }
             state.run_step += 1;
+            context.current_run_step = state.run_step;
             let response_usage = response.usage.clone();
             stream_event!(
                 &state,

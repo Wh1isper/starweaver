@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from os import PathLike, fspath
 from typing import Any, cast
 
 from . import _native
@@ -54,6 +55,7 @@ class ProviderAuth:
     provider: str
     api_key: str | None = None
     api_key_env: str | None = None
+    auth_file: str | None = None
 
     @classmethod
     def openai(
@@ -83,8 +85,8 @@ class ProviderAuth:
         return cls("gemini", api_key=api_key, api_key_env=api_key_env)
 
     @classmethod
-    def codex_oauth(cls) -> ProviderAuth:
-        return cls("codex")
+    def codex_oauth(cls, *, auth_file: str | PathLike[str] | None = None) -> ProviderAuth:
+        return cls("codex", auth_file=_optional_path(auth_file))
 
     def resolve_api_key(
         self, api_key: str | None, api_key_env: str | None
@@ -92,6 +94,33 @@ class ProviderAuth:
         return api_key if api_key is not None else self.api_key, (
             api_key_env if api_key_env is not None else self.api_key_env
         )
+
+    def status(self) -> JsonObject:
+        """Return a safe auth status snapshot without token material."""
+
+        if self.provider == "codex":
+            return _native.oauth_provider_status("codex", auth_file=self.auth_file)
+        return {
+            "provider_name": self.provider,
+            "auth_type": "api_key",
+            "api_key_env": self.api_key_env,
+            "has_inline_api_key": self.api_key is not None and bool(self.api_key.strip()),
+        }
+
+    def account_metadata(self) -> JsonObject | None:
+        """Return OAuth account metadata when the provider has a stored record."""
+
+        status = self.status()
+        account = status.get("account")
+        return dict(account) if isinstance(account, Mapping) else None
+
+    def redacted_record(self) -> JsonObject | None:
+        """Return a stored OAuth provider record with token fields redacted."""
+
+        if self.provider != "codex":
+            return None
+        record = _native.oauth_provider_redacted_record("codex", auth_file=self.auth_file)
+        return dict(record) if isinstance(record, Mapping) else None
 
 
 class ProviderModel:
@@ -134,12 +163,14 @@ class ProviderModel:
         *,
         model_settings: ModelSettings | Mapping[str, Any] | None = None,
         auth: ProviderAuth | None = None,
+        auth_file: str | PathLike[str] | None = None,
         session_id: str | None = None,
         thread_id: str | None = None,
         stream_transport: str | None = None,
     ) -> ProviderModel:
         if auth is not None and auth.provider != "codex":
             raise ValueError("codex_oauth requires ProviderAuth.codex_oauth()")
+        resolved_auth_file = _optional_path(auth_file) or (auth.auth_file if auth else None)
         return cls(
             _native.ProviderModel.codex_oauth(
                 model_name,
@@ -152,6 +183,7 @@ class ProviderModel:
                         ),
                     )
                 ),
+                auth_file=resolved_auth_file,
             )
         )
 
@@ -396,6 +428,10 @@ def _normalize_stream_transport(value: str | None) -> str | None:
     if normalized in {"web_socket", "http", "auto"}:
         return normalized
     raise ValueError("stream_transport must be 'http', 'websocket', or 'auto'")
+
+
+def _optional_path(value: str | PathLike[str] | None) -> str | None:
+    return None if value is None else fspath(value)
 
 
 def ensure_request_params(

@@ -8,17 +8,20 @@ use serde::Deserialize;
 use starweaver_agent::{
     AgentBuilder, AgentRunOptions, FunctionTool, OutputPolicy, TestModel, ToolContext, ToolResult,
 };
+use starweaver_context::AgentContext;
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelResponse, ModelSettings, ModelSettings as CapturedSettings,
     OutputMode, PreparedInstruction, ProtocolFamily,
 };
+use starweaver_tools::{DynTool, DynToolset, ToolInstruction, Toolset, ToolsetPreparation};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct CapturedRequest {
     messages: Vec<ModelMessage>,
     settings: Option<CapturedSettings>,
     params: ModelRequestParameters,
+    context: ModelRequestContext,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
@@ -30,6 +33,46 @@ struct RunAnswer {
 struct CaptureModel {
     captured: Arc<Mutex<Vec<CapturedRequest>>>,
     response: String,
+}
+
+struct ContextPreparedToolset;
+
+#[async_trait]
+impl Toolset for ContextPreparedToolset {
+    fn name(&self) -> &'static str {
+        "context_prepared"
+    }
+
+    fn id(&self) -> Option<&str> {
+        Some("context_prepared")
+    }
+
+    fn get_tools(&self) -> Vec<DynTool> {
+        Vec::new()
+    }
+
+    async fn prepare_with_context(
+        &self,
+        context: &AgentContext,
+    ) -> Result<ToolsetPreparation, starweaver_tools::ToolsetLifecycleError> {
+        Ok(ToolsetPreparation::initialized(
+            self.name(),
+            self.id().map(ToOwned::to_owned),
+            vec![Arc::new(FunctionTool::new(
+                "context_tool",
+                Some(format!(
+                    "Context tool for {}",
+                    context.conversation_id.as_str()
+                )),
+                serde_json::json!({"type": "object"}),
+                |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+            ))],
+            vec![ToolInstruction::new(
+                "context_prepared",
+                "Use context tool.",
+            )],
+        ))
+    }
 }
 
 impl CaptureModel {
@@ -76,12 +119,13 @@ impl ModelAdapter for CaptureModel {
         messages: Vec<ModelMessage>,
         settings: Option<ModelSettings>,
         params: ModelRequestParameters,
-        _context: ModelRequestContext,
+        context: ModelRequestContext,
     ) -> Result<ModelResponse, ModelError> {
         self.captured.lock().unwrap().push(CapturedRequest {
             messages,
             settings,
             params,
+            context,
         });
         Ok(ModelResponse::text(self.response.clone()))
     }
@@ -150,6 +194,26 @@ async fn session_run_options_add_toolsets_settings_params_and_instructions_for_o
         Some(0.2)
     );
     assert!(format!("{:?}", captured_snapshot[0].messages).contains("run-only instruction"));
+}
+
+#[tokio::test]
+async fn session_run_options_prepare_context_aware_toolsets() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = Arc::new(CaptureModel::new(captured.clone()));
+    let mut session = AgentBuilder::new(model).build_app().session();
+    let toolset = Arc::new(ContextPreparedToolset) as DynToolset;
+
+    let result =
+        Box::pin(session.run_with_options("hello", AgentRunOptions::new().toolsets(vec![toolset])))
+            .await
+            .unwrap();
+
+    assert_eq!(result.output, "ok");
+    let captured_snapshot = captured.lock().unwrap().clone();
+    assert_eq!(captured_snapshot.len(), 1);
+    assert_eq!(captured_snapshot[0].params.tools.len(), 1);
+    assert_eq!(captured_snapshot[0].params.tools[0].name, "context_tool");
+    assert!(format!("{:?}", captured_snapshot[0].messages).contains("Use context tool."));
 }
 
 #[tokio::test]
@@ -242,6 +306,48 @@ async fn session_run_options_apply_output_policy_for_one_run() {
         "runanswer"
     );
     assert!(captured_snapshot[1].params.output_schema.is_none());
+}
+
+#[tokio::test]
+async fn session_run_options_attach_trace_metadata_without_persisting_it() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = Arc::new(CaptureModel::new(captured.clone()));
+    let mut session = AgentBuilder::new(model).build_app().session();
+    session.set_metadata("session_key", serde_json::json!("session"));
+
+    let result = Box::pin(session.run_with_options(
+        "trace",
+        AgentRunOptions::new().trace_metadata(serde_json::Map::from_iter([(
+            "audit_id".to_string(),
+            serde_json::json!("run-1"),
+        )])),
+    ))
+    .await
+    .unwrap();
+
+    let captured_snapshot = captured.lock().unwrap().clone();
+    assert_eq!(captured_snapshot.len(), 1);
+    assert_eq!(
+        captured_snapshot[0].context.llm_trace_metadata["audit_id"],
+        "run-1"
+    );
+    assert_eq!(
+        captured_snapshot[0].context.llm_trace_metadata["session_key"],
+        "session"
+    );
+    assert_eq!(
+        result.state.metadata["starweaver.trace_metadata"]["audit_id"],
+        "run-1"
+    );
+
+    let session_state = session.export_full_state();
+    assert_eq!(session_state.metadata["session_key"], "session");
+    assert!(!session_state.metadata.contains_key("audit_id"));
+    assert!(
+        !session_state
+            .metadata
+            .contains_key("starweaver.trace_metadata")
+    );
 }
 
 #[tokio::test]

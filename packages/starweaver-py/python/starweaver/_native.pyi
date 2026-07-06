@@ -5,6 +5,14 @@ __version__: str
 
 def version() -> str: ...
 def sleep_echo(value: object, delay_ms: int = 0) -> Awaitable[Any]: ...
+def oauth_provider_status(
+    provider_name: str,
+    auth_file: str | None = None,
+) -> dict[str, object]: ...
+def oauth_provider_redacted_record(
+    provider_name: str,
+    auth_file: str | None = None,
+) -> dict[str, object] | None: ...
 
 class TestModel:
     def __init__(self, text: str | None = None, responses: object | None = None) -> None: ...
@@ -52,6 +60,7 @@ class ProviderModel:
     def codex_oauth(
         model_name: str,
         model_settings: object | None = None,
+        auth_file: str | None = None,
     ) -> ProviderModel: ...
     @staticmethod
     def openai_responses(
@@ -180,6 +189,12 @@ class CapabilityBundle:
 
 class EnvironmentProvider:
     @staticmethod
+    def python_provider(
+        provider: object,
+        event_loop: object,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider: ...
+    @staticmethod
     def virtual_provider(
         id: str = "virtual",  # noqa: A002
         files: object | None = None,
@@ -198,6 +213,35 @@ class EnvironmentProvider:
         allowed_programs: list[str] | None = None,
         tmp_namespace: str | None = None,
     ) -> EnvironmentProvider: ...
+    @staticmethod
+    def composite(
+        mount_ids: list[str],
+        providers: object,
+        id: str | None = None,  # noqa: A002
+        modes: list[str] | None = None,
+        defaults: list[bool] | None = None,
+        default_for_shell: list[bool] | None = None,
+    ) -> EnvironmentProvider: ...
+    @staticmethod
+    def envd_local(
+        environment: object,
+        environment_id: str | None = None,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider: ...
+    @staticmethod
+    def envd_http(
+        endpoint: str,
+        environment_id: str | None = None,
+        token: str | None = None,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider: ...
+    @staticmethod
+    def envd_stdio(
+        program: str,
+        args: list[str] | None = None,
+        environment_id: str | None = None,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider: ...
     @property
     def id(self) -> str: ...
     def read_text(self, path: str) -> Awaitable[str]: ...
@@ -211,6 +255,8 @@ class EnvironmentProvider:
     def write_tmp_file(self, filename: str, content: object) -> Awaitable[str]: ...
     def create_dir(self, path: str, parents: bool) -> Awaitable[None]: ...
     def delete_path(self, path: str, recursive: bool) -> Awaitable[None]: ...
+    def move_path(self, src: str, dst: str, overwrite: bool) -> Awaitable[None]: ...
+    def copy_path(self, src: str, dst: str, overwrite: bool) -> Awaitable[None]: ...
     def list(self, path: str) -> Awaitable[list[str]]: ...
     def list_with_options(
         self,
@@ -239,6 +285,7 @@ class EnvironmentProvider:
         include_hidden: bool = False,
         include_ignored: bool = False,
     ) -> Awaitable[list[dict[str, object]]]: ...
+    def render_context(self) -> Awaitable[str | None]: ...
     def run_shell(
         self,
         command: str,
@@ -246,6 +293,31 @@ class EnvironmentProvider:
         cwd: str | None = None,
         environment: object | None = None,
     ) -> Awaitable[dict[str, object]]: ...
+    def start_process(
+        self,
+        command: str,
+        timeout_seconds: int | None = None,
+        cwd: str | None = None,
+        environment: object | None = None,
+    ) -> Awaitable[dict[str, object]]: ...
+    def wait_process(
+        self,
+        process_id: str,
+        timeout_seconds: int = 0,
+    ) -> Awaitable[dict[str, object]]: ...
+    def list_processes(self) -> Awaitable[list[dict[str, object]]]: ...
+    def input_process(
+        self,
+        process_id: str,
+        text: str,
+        close_stdin: bool = False,
+    ) -> Awaitable[dict[str, object]]: ...
+    def signal_process(
+        self,
+        process_id: str,
+        signal: int,
+    ) -> Awaitable[dict[str, object]]: ...
+    def kill_process(self, process_id: str) -> Awaitable[dict[str, object]]: ...
     def export_state(self) -> Awaitable[dict[str, object]]: ...
 
 class MediaUploader:
@@ -286,6 +358,7 @@ class ToolContext:
     @property
     def deferred_result(self) -> object | None: ...
     def is_cancelled(self) -> bool: ...
+    def cancelled(self) -> Awaitable[bool]: ...
 
 class ToolResult:
     def __init__(
@@ -329,6 +402,52 @@ class PythonTool:
     def name(self) -> str: ...
     def definition_json(self) -> dict[str, object]: ...
 
+class ToolsetContext:
+    @property
+    def agent_id(self) -> str: ...
+    @property
+    def run_id(self) -> str | None: ...
+    @property
+    def session_id(self) -> str | None: ...
+    @property
+    def conversation_id(self) -> str: ...
+    @property
+    def run_step(self) -> int: ...
+    @property
+    def metadata(self) -> dict[str, object]: ...
+    @property
+    def workspace_root(self) -> str | None: ...
+    @property
+    def environment(self) -> EnvironmentProvider | None: ...
+    @property
+    def resources(self) -> object: ...
+    @property
+    def raw_context(self) -> dict[str, object]: ...
+
+class ToolsetLifecyclePolicy:
+    def __init__(
+        self,
+        initialization_timeout_ms: int | None = None,
+        read_timeout_ms: int | None = None,
+        exit_timeout_ms: int | None = None,
+        enter_before_prepare: bool = True,
+        exit_after_run: bool = True,
+        fail_on_unavailable: bool = False,
+    ) -> None: ...
+    @property
+    def initialization_timeout_ms(self) -> int | None: ...
+    @property
+    def read_timeout_ms(self) -> int | None: ...
+    @property
+    def exit_timeout_ms(self) -> int | None: ...
+    @property
+    def enter_before_prepare(self) -> bool: ...
+    @property
+    def exit_after_run(self) -> bool: ...
+    @property
+    def fail_on_unavailable(self) -> bool: ...
+    def to_dict(self) -> dict[str, object]: ...
+
 class Toolset:
     def __init__(
         self,
@@ -354,6 +473,49 @@ def tool_proxy_toolset(
     toolsets: list[Toolset],
     prefix: str | None = None,
     max_results: int | None = None,
+) -> Toolset: ...
+def combined_toolset(
+    name: str,
+    toolsets: list[Toolset],
+    id: str | None = None,  # noqa: A002
+    max_retries: int | None = None,
+    timeout_ms: int | None = None,
+) -> Toolset: ...
+def mcp_toolset(config: object) -> Toolset: ...
+def dynamic_toolset(
+    name: str,
+    prepare_callback: object,
+    refresh_callback: object,
+    enter_callback: object,
+    exit_callback: object,
+    event_loop: object,
+    id: str | None = None,  # noqa: A002
+    max_retries: int | None = None,
+    timeout_ms: int | None = None,
+    lifecycle_policy: ToolsetLifecyclePolicy | None = None,
+) -> Toolset: ...
+def prepared_toolset(
+    toolset: Toolset,
+    callback: object,
+    event_loop: object,
+) -> Toolset: ...
+def prefixed_toolset(toolset: Toolset, prefix: str) -> Toolset: ...
+def filtered_toolset(
+    toolset: Toolset,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+) -> Toolset: ...
+def renamed_toolset(toolset: Toolset, mappings: dict[str, str]) -> Toolset: ...
+def metadata_toolset(toolset: Toolset, metadata: object) -> Toolset: ...
+def approval_required_toolset(
+    toolset: Toolset,
+    names: list[str],
+    reason: str | None = None,
+) -> Toolset: ...
+def deferred_toolset(
+    toolset: Toolset,
+    names: list[str],
+    reason: str | None = None,
 ) -> Toolset: ...
 def filesystem_toolset() -> Toolset: ...
 def shell_toolset() -> Toolset: ...
@@ -409,6 +571,208 @@ class SkillRegistry:
     def toolset(self) -> Toolset: ...
     def to_dict(self) -> dict[str, object]: ...
 
+class SqliteReplayEventLog:
+    def __init__(self, path: str) -> None: ...
+    @staticmethod
+    def open(path: str) -> SqliteReplayEventLog: ...
+    @staticmethod
+    def in_memory() -> SqliteReplayEventLog: ...
+    def append(self, scope: str, event: object) -> Awaitable[None]: ...
+    def replay_after(
+        self,
+        scope: str,
+        cursor: object | None = None,
+        limit: int | None = None,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def compact_snapshot(self, scope: str) -> Awaitable[dict[str, object]]: ...
+    def save_snapshot(self, scope: str, snapshot: object) -> Awaitable[None]: ...
+
+class PythonSessionStore:
+    def __init__(self, store: object, event_loop: object) -> None: ...
+    def save_session(self, record: object) -> Awaitable[None]: ...
+    def load_session(self, session_id: str) -> Awaitable[dict[str, object]]: ...
+    def list_sessions(
+        self,
+        filter: object | None = None,  # noqa: A002
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def update_session_status(self, session_id: str, status: str) -> Awaitable[None]: ...
+    def save_context_state(self, session_id: str, state: object) -> Awaitable[None]: ...
+    def save_environment_state(
+        self,
+        session_id: str,
+        environment_state: object,
+    ) -> Awaitable[None]: ...
+    def append_run(self, record: object) -> Awaitable[None]: ...
+    def load_run(self, session_id: str, run_id: str) -> Awaitable[dict[str, object]]: ...
+    def list_runs(self, session_id: str) -> Awaitable[list[dict[str, object]]]: ...
+    def update_run_status(
+        self,
+        session_id: str,
+        run_id: str,
+        status: str,
+        output_preview: str | None = None,
+    ) -> Awaitable[None]: ...
+    def append_checkpoint(self, session_id: str, checkpoint: object) -> Awaitable[None]: ...
+    def load_checkpoints(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def append_stream_records(
+        self,
+        session_id: str,
+        run_id: str,
+        records: object,
+    ) -> Awaitable[None]: ...
+    def replay_stream_records(
+        self,
+        session_id: str,
+        run_id: str,
+        after_sequence: int | None = None,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def save_stream_cursor(
+        self,
+        session_id: str,
+        run_id: str,
+        cursor: object,
+    ) -> Awaitable[None]: ...
+    def append_approval(self, record: object) -> Awaitable[None]: ...
+    def load_approvals(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def append_deferred_tool(self, record: object) -> Awaitable[None]: ...
+    def load_deferred_tools(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def resume_snapshot(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[dict[str, object]]: ...
+    def compact_run_trace(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[dict[str, object]]: ...
+    def compact_session_trace(self, session_id: str) -> Awaitable[dict[str, object]]: ...
+
+class SqliteSessionStore:
+    def __init__(self, path: str) -> None: ...
+    @staticmethod
+    def open(path: str) -> SqliteSessionStore: ...
+    @staticmethod
+    def in_memory() -> SqliteSessionStore: ...
+    @staticmethod
+    def migrate(path: str) -> list[str]: ...
+    @staticmethod
+    def migration_status(path: str) -> dict[str, object]: ...
+    def save_session(self, record: object) -> Awaitable[None]: ...
+    def load_session(self, session_id: str) -> Awaitable[dict[str, object]]: ...
+    def list_sessions(
+        self,
+        filter: object | None = None,  # noqa: A002
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def update_session_status(self, session_id: str, status: str) -> Awaitable[None]: ...
+    def save_context_state(self, session_id: str, state: object) -> Awaitable[None]: ...
+    def save_environment_state(
+        self,
+        session_id: str,
+        environment_state: object,
+    ) -> Awaitable[None]: ...
+    def append_run(self, record: object) -> Awaitable[None]: ...
+    def load_run(self, session_id: str, run_id: str) -> Awaitable[dict[str, object]]: ...
+    def list_runs(self, session_id: str) -> Awaitable[list[dict[str, object]]]: ...
+    def update_run_status(
+        self,
+        session_id: str,
+        run_id: str,
+        status: str,
+        output_preview: str | None = None,
+    ) -> Awaitable[None]: ...
+    def append_checkpoint(self, session_id: str, checkpoint: object) -> Awaitable[None]: ...
+    def load_checkpoints(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def append_stream_records(
+        self,
+        session_id: str,
+        run_id: str,
+        records: object,
+    ) -> Awaitable[None]: ...
+    def replay_stream_records(
+        self,
+        session_id: str,
+        run_id: str,
+        after_sequence: int | None = None,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def save_stream_cursor(
+        self,
+        session_id: str,
+        run_id: str,
+        cursor: object,
+    ) -> Awaitable[None]: ...
+    def append_approval(self, record: object) -> Awaitable[None]: ...
+    def load_approvals(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def append_deferred_tool(self, record: object) -> Awaitable[None]: ...
+    def load_deferred_tools(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def resume_snapshot(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[dict[str, object]]: ...
+    def compact_run_trace(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[dict[str, object]]: ...
+    def compact_session_trace(self, session_id: str) -> Awaitable[dict[str, object]]: ...
+
+class SqliteStreamArchive:
+    def __init__(self, path: str) -> None: ...
+    @staticmethod
+    def open(path: str) -> SqliteStreamArchive: ...
+    @staticmethod
+    def in_memory() -> SqliteStreamArchive: ...
+    def append_raw_records(
+        self,
+        session_id: str,
+        run_id: str,
+        records: object,
+    ) -> Awaitable[None]: ...
+    def replay_raw_after(
+        self,
+        session_id: str,
+        run_id: str,
+        cursor: object | None = None,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def append_display_messages(
+        self,
+        scope: str,
+        messages: object,
+    ) -> Awaitable[None]: ...
+    def replay_display_after(
+        self,
+        scope: str,
+        cursor: object | None = None,
+    ) -> Awaitable[list[dict[str, object]]]: ...
+    def append_snapshot(self, scope: str, snapshot: object) -> Awaitable[None]: ...
+    def latest_snapshot(self, scope: str) -> Awaitable[dict[str, object] | None]: ...
+    def cursor_range(self, scope: str) -> Awaitable[dict[str, object] | None]: ...
+
 class RunResult:
     @property
     def output(self) -> str: ...
@@ -445,6 +809,8 @@ class StreamRunResult:
 
 class AgentStream:
     def recv(self) -> Awaitable[StreamEvent | None]: ...
+    def close_receiver(self) -> None: ...
+    def detach(self) -> None: ...
     def interrupt(self, reason: str | None = None) -> None: ...
     def steer(self, text: str, id: str | None = None) -> Awaitable[dict[str, object]]: ...  # noqa: A002
     def send_message(self, message: object) -> Awaitable[dict[str, object]]: ...
@@ -476,6 +842,7 @@ class AgentSession:
         request_params: object | None = None,
         output_schema: object | None = None,
         output_policy: object | None = None,
+        trace_metadata: object | None = None,
         toolsets: list[Toolset] | None = None,
         environment: EnvironmentProvider | None = None,
     ) -> AgentStream: ...
@@ -501,6 +868,53 @@ class AgentSession:
         deferred_results: object | None = None,
     ) -> Awaitable[RunResult]: ...
 
+class AgentRuntime:
+    def __init__(
+        self,
+        model: object,
+        tools: list[PythonTool] | None = None,
+        instructions: list[str] | None = None,
+        name: str | None = None,
+        model_settings: object | None = None,
+        request_params: object | None = None,
+        output_schema: object | None = None,
+        output_policy: object | None = None,
+        subagents: list[Subagent] | None = None,
+        subagent_delegation_mode: str | None = None,
+        capability_bundles: list[CapabilityBundle] | None = None,
+        toolsets: list[Toolset] | None = None,
+        approval_required_tools: list[str] | None = None,
+        runtime_config: object | None = None,
+        skills: SkillRegistry | None = None,
+        environment: EnvironmentProvider | None = None,
+        media_uploader: MediaUploader | None = None,
+        session_store: object | None = None,
+        durable_session_id: str | None = None,
+        stream_archive: object | None = None,
+        replay_event_log: object | None = None,
+        state: object | None = None,
+    ) -> None: ...
+    @property
+    def durable_session_id(self) -> str | None: ...
+    def run(self, prompt: str) -> Awaitable[RunResult]: ...
+    def run_stream(self, prompt: str) -> Awaitable[StreamRunResult]: ...
+    def export_state(self) -> dict[str, object]: ...
+    def export_full_state(self) -> dict[str, object]: ...
+    def export_environment_state(self) -> Awaitable[dict[str, object] | None]: ...
+    def set_environment(self, environment: EnvironmentProvider) -> None: ...
+    def resume_snapshot(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> Awaitable[dict[str, object]]: ...
+    def resume_after_hitl_by_id(
+        self,
+        session_id: str,
+        run_id: str,
+        approvals: object | None = None,
+        deferred_results: object | None = None,
+    ) -> Awaitable[RunResult]: ...
+
 class Agent:
     def __init__(
         self,
@@ -516,6 +930,7 @@ class Agent:
         subagent_delegation_mode: str | None = None,
         capability_bundles: list[CapabilityBundle] | None = None,
         toolsets: list[Toolset] | None = None,
+        approval_required_tools: list[str] | None = None,
         runtime_config: object | None = None,
         skills: SkillRegistry | None = None,
         environment: EnvironmentProvider | None = None,
@@ -532,6 +947,7 @@ class Agent:
         request_params: object | None = None,
         output_schema: object | None = None,
         output_policy: object | None = None,
+        trace_metadata: object | None = None,
         toolsets: list[Toolset] | None = None,
         environment: EnvironmentProvider | None = None,
     ) -> AgentStream: ...

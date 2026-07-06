@@ -70,9 +70,13 @@ impl AgentSpecRegistry {
     /// Register a toolset under an additional caller-provided alias.
     #[must_use]
     pub fn with_toolset_alias(mut self, alias: impl Into<String>, toolset: DynToolset) -> Self {
-        self.toolsets_by_key.insert(alias.into(), toolset.clone());
-        self.register_toolset_keys(&toolset);
-        self.toolsets.push(toolset);
+        let name = toolset.name().to_string();
+        let id = toolset.id().map(str::to_string);
+        self.toolsets_by_key.insert(name, toolset.clone());
+        if let Some(id) = id {
+            self.toolsets_by_key.insert(id, toolset.clone());
+        }
+        self.toolsets_by_key.insert(alias.into(), toolset);
         self
     }
 

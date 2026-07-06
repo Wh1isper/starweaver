@@ -48,8 +48,8 @@ async def main() -> None:
   implementations.
 - Expose Pythonic agent, session, stream, state, output, HITL, subagent,
   capability, and model helper APIs.
-- Add an active-run control plane for steering, interruption, message bus, and
-  typed HITL once the Rust control seam exists.
+- Expose the active-run control plane for steering, interruption, message bus,
+  and typed HITL through Rust-backed live handles.
 - Preserve Starweaver-native result, stream, usage, state, and error evidence.
 - Keep Python package implementation details isolated from core Rust crates.
 - Give Claw a narrow library path first, then deeper resource/environment
@@ -111,51 +111,61 @@ packages/starweaver-py/
     capability.rs
     context.rs
     conversion.rs
-    error.rs
+    environment.rs
+    errors.rs
     lib.rs
+    media.rs
     model.rs
     output.rs
     runtime.rs
+    skills.rs
+    store.rs
     stream.rs
     subagent.rs
     testing.rs
     tool.rs
+    toolset.rs
   python/starweaver/
     __init__.py
     _native.pyi
     agent.py
     capability.py
+    environment.py
     errors.py
+    media.py
     model.py
+    observability.py
     output.py
     py.typed
+    resources.py
+    runtime.py
+    skills.py
+    store.py
+    stream_adapter.py
     subagent.py
     testing.py
     tool.py
+    toolset.py
   tests/
+    test_package.py
 ```
 
-Expected future pure-Python modules:
+Deferred module splits:
 
 ```text
 python/starweaver/
-  environment.py
   hitl.py
   messages.py
-  media.py
   providers.py
-  resources.py
   run.py
-  skills.py
   state.py
-  store.py
   stream.py
-  stream_adapter.py
-  toolset.py
 ```
 
-Those modules should be added when they introduce real public concepts, not as
-empty namespace churn.
+These splits should happen only when they improve ownership clarity. Today the
+related public concepts intentionally live in `agent.py`, `model.py`,
+`resources.py`, `store.py`, and `stream_adapter.py`; do not create empty
+namespace churn just to match a planned layout.
 
 ## Naming And Versioning
 
@@ -233,7 +243,7 @@ binding crate.
 - HITL decisions
 - active control
 - resource references
-- environment bindings when ready
+- environment bindings
 - stream replay adapters
 - usage and trace evidence
 - observability evidence
@@ -243,10 +253,10 @@ or storage layout.
 
 ## Product Boundary Questions
 
-| Question                                            | Current recommendation                                                                                |
-| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Should `AgentStream` be renamed?                    | Add `AgentRun` as the public live handle and keep `AgentStream` as compatibility or low-level naming. |
-| Should `Agent.session()` exist?                     | Yes. It is the Pythonic alias over `new_session()` and `session_from_state(...)`.                     |
-| Should Python expose raw `AgentContext`?            | Not as a mutable live object. Expose typed facades and raw state snapshots.                           |
-| Should Python support custom model adapters?        | Later. Current priority is tools, sessions, streams, output, and active control.                      |
-| Should public docs expose provisional control APIs? | No. Add user docs after implementation and tests land.                                                |
+| Question                                            | Current recommendation                                                                            |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Should `AgentStream` be renamed?                    | `AgentRun` is the public live handle; `AgentStream` remains a compatibility alias.                |
+| Should `Agent.session()` exist?                     | Yes. It is the Pythonic alias over `new_session()` and `session_from_state(...)`.                 |
+| Should Python expose raw `AgentContext`?            | Not as a mutable live object. Expose typed facades and raw state snapshots.                       |
+| Should Python support custom model adapters?        | Later. Current priority is tools, sessions, streams, output, and active control.                  |
+| Should public docs expose provisional control APIs? | Stable docs cover implemented control APIs; provisional hook surfaces stay in specs until tested. |

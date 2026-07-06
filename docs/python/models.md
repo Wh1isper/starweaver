@@ -82,13 +82,18 @@ from starweaver import ModelSettings, ProviderModel, create_agent
 
 
 async def run_provider() -> None:
-    model = ProviderModel.openai_responses(
+    model = ProviderModel.openai(
         "gpt-5-mini",
         model_settings=ModelSettings(timeout_ms=30_000),
     )
     result = await create_agent(model=model).run("Write one sentence.")
     print(result.output)
 ```
+
+`ProviderModel.openai(...)` defaults to the OpenAI Responses protocol. Pass
+`protocol="chat"` for the OpenAI Chat adapter, or call
+`openai_responses(...)` and `openai_chat(...)` directly when a product wants an
+explicit protocol in its profile builder.
 
 `ProviderModel.from_model_id(...)` accepts Python package model IDs:
 
@@ -104,27 +109,49 @@ The Python package currently does not resolve CLI gateway profile IDs such as
 `api_key_env`, and typed provider helpers directly until CLI profile resolution
 is exposed to Python.
 
-## Codex OAuth
+## Provider Auth And Codex OAuth
 
 `ProviderModel.codex_oauth(...)` uses the Starweaver OAuth store and does not
 require an API key:
 
 ```python
-from starweaver import ModelSettings, ProviderModel, create_agent
+from starweaver import ModelSettings, ProviderAuth, ProviderModel, create_agent
 
 
 async def run_codex_oauth() -> None:
+    auth = ProviderAuth.codex_oauth()
+    status = auth.status()
+    if status["logged_in"]:
+        account = auth.account_metadata()
+        assert account is None or "email" in account
+
     model = ProviderModel.codex_oauth(
         "gpt-5.5",
+        auth=auth,
         model_settings=ModelSettings.preset("openai_responses_high_fast"),
     )
     result = await create_agent(model=model).run("Reply with one word.")
     print(result.output)
 ```
 
+`ProviderAuth.status()` returns a safe auth snapshot for product diagnostics.
+For OAuth-backed Codex auth it includes account metadata, token presence
+booleans, the auth file path, and the last successful refresh timestamp, but it
+does not expose token material. Use `ProviderAuth.redacted_record()` only for
+diagnostics that need the full provider record shape with token fields replaced
+by `"<redacted>"`.
+
+Pass `auth_file=...` to `ProviderAuth.codex_oauth(...)` or
+`ProviderModel.codex_oauth(...)` when a service owns an explicit Starweaver
+OAuth store path.
+
 Codex routing helpers accept typed provider settings such as `session_id` and
 `thread_id`. OpenAI Responses helpers accept `stream_transport` values
 `"http"`, `"websocket"`, or `"auto"`.
+
+Generic request metadata and trace metadata remain audit context. They do not
+become provider routing headers; use typed provider settings for routing
+affinity.
 
 ## Model Settings
 

@@ -79,15 +79,21 @@ The dynamic Python object is not a second runtime. It is adapted into a native
 responsible for when preparation, lifecycle, conflict detection, approval,
 deferred control flow, retry, cancellation, and evidence happen.
 
-## Reference Lessons From Pydantic AI
+## Reference Lessons From ya-agent-sdk And Pydantic AI
 
-Pydantic AI's toolset model is a useful API reference:
+ya-agent-sdk's toolset model, built on Pydantic AI-style tool execution, is the
+API reference for Claw-like product authorship:
 
-- `AbstractToolset` is the base interface for custom toolset classes;
-- `FunctionToolset` groups local functions;
+- `BaseTool` is the subclass-friendly interface for individual tools;
+- `Toolset` is the product-owned container for tools and instructions;
+- `AbstractToolset` is the base interface for custom dynamic toolset classes;
+- `FunctionToolset` groups local functions behind decorators;
 - `@toolset.tool` registers context-aware tools;
 - `@toolset.tool_plain` registers context-free tools;
 - toolsets can provide instructions;
+- toolsets can run global and tool-level pre/post hooks around calls;
+- toolsets can override a call function for timeout, retry, tracing, or error
+  mapping;
 - toolsets can be attached at agent construction and at run time;
 - dynamic toolset factories can derive toolsets from run context;
 - wrappers can prefix, filter, rename, prepare, require approval, defer loading,
@@ -101,6 +107,23 @@ approval/deferred control flow, dynamic search, proxy, and stream evidence.
 The Python API should expose those contracts rather than building a second
 Python middleware stack.
 
+Compatibility boundary:
+
+- `BaseTool`, `AbstractToolset`, `PythonDynamicToolset`, and `FunctionToolset`
+  cover the authoring shape Claw product code expects.
+- Python dynamic inventory, instructions, factories, lifecycle, refresh,
+  filtering, preparation, approval, deferred work, metadata, and durable IDs map
+  to native Starweaver toolset preparation.
+- ya-agent-sdk-style pre/post hook needs should map to a typed Starweaver
+  capability/runtime hook contract before becoming public Python API.
+- An override similar to ya-agent-sdk's `_call_tool_func` must not execute tools
+  outside the Rust registry. It should become a typed native execution policy or
+  capability hook, and it must propagate approval and deferred control flow
+  unchanged.
+- The current public Python toolset layer therefore supports composition and
+  dynamic preparation now, while hook-level call interception remains a planned
+  native-hook surface.
+
 ## Current Starweaver Baseline
 
 Current `starweaver-py` exposes:
@@ -109,6 +132,10 @@ Current `starweaver-py` exposes:
 - `BaseTool`;
 - `ToolContext` and `ToolResult`;
 - static `Toolset`;
+- dynamic `AbstractToolset`;
+- `PythonDynamicToolset` as an explicit Python compatibility base over the same
+  public contract;
+- `FunctionToolset`;
 - `ToolLibrary`;
 - `ToolSearchToolset`;
 - `ToolProxyToolset`;
@@ -116,6 +143,8 @@ Current `starweaver-py` exposes:
 - `shell_toolset()`;
 - `environment_toolsets()`;
 - per-agent and per-run `toolsets=[...]`.
+- wrapper methods for prefix, static include/exclude filtering, rename,
+  approval-required, and deferred toolsets.
 
 Current Rust tools already provide:
 
@@ -133,8 +162,9 @@ Current Rust tools already provide:
 - lifecycle events for initialized, unavailable, failed, refreshed, and
   closed states.
 
-The gap is not basic capability. The gap is a polished Python builder layer
-and the missing PyO3 bridges for context-aware dynamic/lifecycle toolsets.
+The Python builder layer now exists for local functions, dynamic inventory, and
+advanced wrapper callbacks. Predicate filtering, prepared callbacks, and
+refresh-specific callbacks are exposed through the Python dynamic toolset bridge.
 
 ## Public API Shape
 
@@ -166,6 +196,7 @@ class AbstractToolset:
     ) -> Iterable[str | ToolInstruction] | str | None: ...
 
     async def prepare(self, ctx: ToolsetContext) -> ToolsetPreparation: ...
+    async def refresh(self, ctx: ToolsetContext) -> ToolsetPreparation: ...
 
     def to_native(self) -> _native.Toolset: ...
 ```
@@ -177,6 +208,7 @@ Rules:
 - `get_tools()` and `get_instructions()` may be sync or async.
 - `prepare()` is optional; the default implementation calls `get_tools()` and
   `get_instructions()`.
+- `refresh()` is optional; the default implementation calls `prepare()`.
 - `enter()` and `exit()` are optional lifecycle hooks.
 - Python exceptions map to preparation failures or unavailable reports according
   to `ToolsetLifecyclePolicy`.
@@ -191,7 +223,9 @@ compose like native toolsets:
 ```python
 toolset.prefixed("workspace")
 toolset.filtered(include=["read_file"])
+toolset.filtered(predicate=lambda definition: definition["name"].startswith("read_"))
 toolset.renamed({"read_file": "workspace_read"})
+toolset.prepared(lambda ctx, definitions: definitions)
 toolset.approval_required(names="*")
 toolset.deferred(names=["open_browser"])
 toolset.with_lifecycle(policy)
@@ -215,9 +249,10 @@ Rust responsibilities:
 
 Python-facing rules:
 
-- users normally subclass `AbstractToolset`, not `PythonDynamicToolset`;
-- `PythonDynamicToolset` can remain private or semi-private unless advanced
-  embedding requires it;
+- users normally subclass `AbstractToolset`;
+- `PythonDynamicToolset` may be exported as a compatibility base for products
+  that want the dynamic-toolset name in their public code, but it should remain
+  equivalent to `AbstractToolset` rather than exposing Rust internals;
 - the bridge must not cache a prepared inventory across run steps unless the
   lifecycle policy explicitly asks for run-scoped preparation;
 - durable restore validates toolset IDs against currently registered Python
@@ -399,6 +434,52 @@ Implementation rule:
 - wrapper IDs are deterministic from the inner ID when possible;
 - leaf toolsets used in durable execution must have stable explicit IDs.
 
+Current implementation status:
+
+- implemented: `prefixed`, static `filtered(include=...)`,
+  static `filtered(exclude=...)`, `renamed`, `approval_required`, and
+  `deferred`;
+- implemented: these wrappers preserve context-aware Python dynamic inventory
+  because Rust wrappers delegate lifecycle and `prepare_with_context` to the
+  wrapped toolset before transforming tools;
+- implemented: HITL approved execution re-prepares context-aware toolsets
+  before executing the approved call, so `AbstractToolset` wrappers work during
+  resume;
+- implemented: typed `McpToolset`, `McpTransport`, and MCP server spec
+  dataclasses build Rust `McpToolsetConfig` values and expose native deferred
+  MCP tool calls;
+- implemented: public `ToolsetLifecyclePolicy` is exposed to Python dynamic
+  toolsets and supports enter/read/exit timeouts, enter/exit toggles,
+  unavailable failure policy, and `AbstractToolset.with_lifecycle(policy)`;
+- implemented: `ToolsetLifecycleReport` and `ToolsetLifecycleState` expose
+  Rust lifecycle sideband events through `StreamEvent.toolset_lifecycle_report`
+  and `StreamAdapter.toolset_lifecycle_reports()`;
+- implemented: `validate_toolset_ids()` and `ToolLibrary.validate_ids()` report
+  missing, empty, or duplicate durable ids without materializing dynamic
+  `AbstractToolset` instances;
+- implemented: `validate_toolsets_for_durability()` is the durable-product
+  entry point and returns a report with `require_ids()` and
+  `require_serializable_dynamic_state()` chainable checks;
+- implemented: `SessionArchive` records required toolset IDs for the current
+  Python agent profile, and `Agent.session_from_archive(...)` validates those
+  IDs against the currently registered Python toolsets before restore;
+- implemented: `Toolset.with_metadata()` and `AbstractToolset.with_metadata()`
+  map to a native metadata wrapper that merges runtime metadata into every
+  exposed tool definition while preserving wrapped lifecycle and preparation;
+- implemented: `ToolsetFactory`, `toolset_factory()`, and `Agent.toolset()`
+  adapt context-aware factory callables into `PythonDynamicToolset`, support
+  per-run-step and run-scoped factory evaluation, and allow factories to return
+  single toolsets, sequences, or `ToolsetPreparation(toolsets=[...])`;
+- implemented: `Toolset.prepared()` and `AbstractToolset.prepared()` pass
+  current `ToolsetContext` plus prepared tool definitions to Python callbacks
+  and expose the returned definitions through native runtime preparation;
+- implemented: `Toolset.filtered(predicate=...)` and
+  `AbstractToolset.filtered(predicate=...)` build on prepared callbacks for
+  callback-backed filtering;
+- implemented: `AbstractToolset.refresh()` is called when a Python dynamic
+  toolset is prepared again for the same run, such as HITL approval resume, and
+  reports the refreshed lifecycle state.
+
 ## Lifecycle Semantics
 
 Toolset lifecycle should use the Rust lifecycle model.
@@ -498,6 +579,13 @@ Rules:
 - transport lifecycle is governed by toolset lifecycle policy;
 - MCP is one toolset provider, not the generic toolset abstraction.
 
+Current implementation status: implemented for typed config construction over
+`McpToolsetConfig`, `McpTransport`, `McpToolSpec`, `McpResourceSpec`,
+`McpPromptSpec`, `McpSamplingSpec`, and `McpSubscriptionSpec`. The Python
+constructor returns a native Starweaver `McpToolset` whose tool calls enter the
+normal deferred-control-flow path. Live transport clients and product-specific
+MCP dispatch policy stay outside this typed config binding.
+
 ## Approval And Deferred Control Flow
 
 Python builder options should map to native control flow:
@@ -572,6 +660,7 @@ Rules:
 - Python callable objects are never serialized;
 - dynamic factories are re-registered by current process startup;
 - restored sessions validate that required toolset IDs are present;
+- archives store required toolset IDs, not Python callable objects;
 - runtime policy comes from the current profile, not stale archived Python
   objects.
 
@@ -584,8 +673,8 @@ Add the Python public contract and pure-Python validation helpers:
 - add `AbstractToolset`;
 - add `ToolsetContext`;
 - add `ToolsetPreparation`;
-- add `ToolsetLifecyclePolicy`, `ToolsetLifecycleReport`, and
-  `ToolsetLifecycleState` facades;
+- add `ToolsetLifecyclePolicy`;
+- add `ToolsetLifecycleReport` and `ToolsetLifecycleState` facades;
 - define default `prepare()` in terms of `get_tools()` and
   `get_instructions()`;
 - define optional `enter()` and `exit()` hooks;
@@ -644,8 +733,16 @@ Add PyO3 constructors for existing Rust wrappers:
 - metadata;
 - lifecycle policy values.
 
-Static filtering can be native. Predicate filtering waits for the callback
-bridge.
+Current implementation status:
+
+- implemented: lifecycle policy values map to Rust
+  `ToolsetLifecyclePolicy` through `PythonDynamicToolset`;
+- implemented: metadata wrappers map to Rust `MetadataToolset`;
+- implemented: callback-backed predicate filters are exposed through
+  `filtered(predicate=...)` and use the prepared-callback bridge.
+
+Static filtering remains native. Predicate filtering is callback-backed because
+it evaluates prepared tool definition dictionaries in Python.
 
 ### Step 5: Add Dynamic Factories And Decorators
 
@@ -659,6 +756,12 @@ Support dynamic factories as a thin layer over `AbstractToolset`:
 
 Factories return `Toolset`, `AbstractToolset`, or sequences of either. They are
 adapted into `PythonDynamicToolset` instances before entering the Rust runtime.
+
+Current implementation status: implemented through `ToolsetFactory`,
+`toolset_factory()`, and `Agent.toolset()`. Per-run SDK options keep dynamic
+toolsets in the runtime toolset list instead of flattening them into a static
+registry, so factories and returned `AbstractToolset` values are prepared with
+the current `ToolsetContext`.
 
 ### Step 6: Extend ToolsetContext
 
@@ -705,6 +808,8 @@ Python tests:
 - per-agent and per-run toolsets;
 - wrapper chaining;
 - approval/deferred wrappers preserve canonical IDs;
+- session archives record required dynamic toolset IDs and restore fails when
+  the current profile is missing one;
 - cancellation reaches running Python tool callbacks;
 - private traceback metadata does not become model-visible.
 
@@ -733,12 +838,17 @@ The Python native toolset work is complete when:
 
 - a Python author can subclass `AbstractToolset` and provide context-aware
   tools, instructions, preparation, and lifecycle hooks;
+- `PythonDynamicToolset` is available as an explicit Python base for the same
+  contract when products want the bridge name in their source model;
 - `PythonDynamicToolset` adapts that object into the native Rust `Toolset`
   lifecycle without bypassing runtime-owned preparation;
 - a Python author can build a useful toolset with decorators only;
 - the same toolset can be attached to an agent or to a single run;
 - wrappers are chainable and backed by Rust wrappers;
-- dynamic factories can safely use run context through the callback bridge;
+- implemented: dynamic factories can safely use run context through the
+  callback bridge;
+- implemented: prepared callbacks, predicate filters, and refresh callbacks use
+  the same bridge without bypassing Rust runtime preparation;
 - durable products can validate stable toolset IDs;
 - the Rust runtime remains responsible for preparation, execution, approval,
   deferred control flow, retries, cancellation, and evidence;

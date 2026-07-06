@@ -42,6 +42,9 @@ Run options are additive by default and do not mutate agent defaults:
 - `request_params=RequestParams(...)` forwards provider-neutral request data.
 - `output_schema=OutputSchema(...)` or `output_policy=OutputPolicy(...)`
   controls final output.
+- `trace_metadata={...}` adds low-cardinality run evidence to model request
+  tracing and the returned `RunResult` without persisting it as session
+  metadata.
 - `toolsets=[...]` attaches grouped tools and instructions for one run.
 - `environment=EnvironmentProvider(...)` attaches a process-local provider for
   one run.

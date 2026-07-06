@@ -13,11 +13,12 @@ use pyo3::{
 use serde_json::{Map, Value};
 use starweaver_agent::{
     AgentBuilder, AgentControlError, AgentControlHandle, AgentControlKind, AgentControlReceipt,
-    AgentHitlError, AgentHitlResults, AgentLiveStreamResult, AgentRunOptions, AgentSession,
-    AgentStreamController, AgentStreamCurrentError, AgentStreamDropPolicy, AgentStreamError,
-    AgentStreamHandle, AgentStreamOptions, AgentStreamRunStatus, BusMessage, ModelConfig,
-    ResumableState,
+    AgentDurabilityError, AgentHitlError, AgentHitlResults, AgentLiveStreamResult, AgentRunOptions,
+    AgentRuntime as SdkAgentRuntime, AgentRuntimeBuilder, AgentSession, AgentStreamController,
+    AgentStreamCurrentError, AgentStreamDropPolicy, AgentStreamError, AgentStreamHandle,
+    AgentStreamOptions, AgentStreamRunStatus, BusMessage, ModelConfig, ResumableState,
 };
+use starweaver_core::{RunId, SessionId};
 use starweaver_model::ToolReturnPart;
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentResult, AgentRunState, AgentStreamResult, RunStatus,
@@ -28,13 +29,14 @@ use tokio::sync::Mutex;
 
 use crate::{
     capability::PyCapabilityBundle,
-    conversion::{json_to_py, py_to_json, serialize_to_py},
+    conversion::{json_to_py, optional_py_to_metadata, py_to_json, serialize_to_py},
     environment::extract_environment_provider,
     media::extract_media_uploader,
     model::{extract_model_settings, extract_request_params},
     output::{extract_output_policy, extract_output_schema},
     runtime::{PyFutureError, enter_runtime, spawn_py_future},
     skills::extract_skill_registry,
+    store::{extract_replay_event_log, extract_session_store, extract_stream_archive},
     stream::PyStreamEvent,
     subagent::{PySubagent, parse_delegation_mode},
     testing::py_model_from_any,
@@ -59,7 +61,7 @@ impl PyAgent {
 #[pymethods]
 impl PyAgent {
     #[new]
-    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None, toolsets=None, runtime_config=None, skills=None, environment=None, media_uploader=None))]
+    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None, toolsets=None, approval_required_tools=None, runtime_config=None, skills=None, environment=None, media_uploader=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -75,6 +77,7 @@ impl PyAgent {
         subagent_delegation_mode: Option<String>,
         capability_bundles: Option<Vec<Py<PyCapabilityBundle>>>,
         toolsets: Option<Vec<Py<PyToolset>>>,
+        approval_required_tools: Option<Vec<String>>,
         runtime_config: Option<&Bound<'_, PyAny>>,
         skills: Option<&Bound<'_, PyAny>>,
         environment: Option<&Bound<'_, PyAny>>,
@@ -99,6 +102,9 @@ impl PyAgent {
         }
         for toolset in py_toolsets_to_dyn_toolsets(py, toolsets)? {
             builder = builder.toolset(&toolset);
+        }
+        if let Some(approval_required_tools) = approval_required_tools {
+            builder = builder.approval_required_tools(approval_required_tools);
         }
         if let Some(registry) = extract_skill_registry(py, skills)? {
             builder = builder.skills(registry);
@@ -159,7 +165,7 @@ impl PyAgent {
         )
     }
 
-    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, toolsets=None, environment=None))]
+    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, trace_metadata=None, toolsets=None, environment=None))]
     #[allow(clippy::too_many_arguments)]
     fn stream(
         &self,
@@ -172,6 +178,7 @@ impl PyAgent {
         request_params: Option<&Bound<'_, PyAny>>,
         output_schema: Option<&Bound<'_, PyAny>>,
         output_policy: Option<&Bound<'_, PyAny>>,
+        trace_metadata: Option<&Bound<'_, PyAny>>,
         toolsets: Option<Vec<Py<PyToolset>>>,
         environment: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyAgentStream> {
@@ -190,6 +197,7 @@ impl PyAgent {
             request_params,
             output_schema,
             output_policy,
+            trace_metadata,
             toolsets,
         )?;
         let handle =
@@ -251,6 +259,249 @@ impl PyAgent {
     }
 }
 
+/// Python wrapper around the owned Starweaver SDK runtime.
+#[pyclass(name = "AgentRuntime", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyAgentRuntime {
+    inner: Arc<Mutex<SdkAgentRuntime>>,
+}
+
+#[pymethods]
+impl PyAgentRuntime {
+    #[new]
+    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None, toolsets=None, approval_required_tools=None, runtime_config=None, skills=None, environment=None, media_uploader=None, session_store=None, durable_session_id=None, stream_archive=None, replay_event_log=None, state=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        model: &Bound<'_, PyAny>,
+        tools: Option<Vec<Py<PyPythonTool>>>,
+        instructions: Option<Vec<String>>,
+        name: Option<String>,
+        model_settings: Option<&Bound<'_, PyAny>>,
+        request_params: Option<&Bound<'_, PyAny>>,
+        output_schema: Option<&Bound<'_, PyAny>>,
+        output_policy: Option<&Bound<'_, PyAny>>,
+        subagents: Option<Vec<Py<PySubagent>>>,
+        subagent_delegation_mode: Option<String>,
+        capability_bundles: Option<Vec<Py<PyCapabilityBundle>>>,
+        toolsets: Option<Vec<Py<PyToolset>>>,
+        approval_required_tools: Option<Vec<String>>,
+        runtime_config: Option<&Bound<'_, PyAny>>,
+        skills: Option<&Bound<'_, PyAny>>,
+        environment: Option<&Bound<'_, PyAny>>,
+        media_uploader: Option<&Bound<'_, PyAny>>,
+        session_store: Option<&Bound<'_, PyAny>>,
+        durable_session_id: Option<String>,
+        stream_archive: Option<&Bound<'_, PyAny>>,
+        replay_event_log: Option<&Bound<'_, PyAny>>,
+        state: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        if output_schema.is_some() && output_policy.is_some() {
+            return Err(PyValueError::new_err(
+                "pass output_schema or output_policy, not both",
+            ));
+        }
+        let mut builder = AgentBuilder::new(py_model_from_any(model)?);
+        if let Some(name) = name {
+            builder = builder.agent_name(name);
+        }
+        if let Some(instructions) = instructions {
+            for instruction in instructions {
+                builder = builder.instruction(instruction);
+            }
+        }
+        for tool in tools.unwrap_or_default() {
+            builder = builder.tool(tool.borrow(py).dyn_tool());
+        }
+        for toolset in py_toolsets_to_dyn_toolsets(py, toolsets)? {
+            builder = builder.toolset(&toolset);
+        }
+        if let Some(approval_required_tools) = approval_required_tools {
+            builder = builder.approval_required_tools(approval_required_tools);
+        }
+        if let Some(registry) = extract_skill_registry(py, skills)? {
+            builder = builder.skills(registry);
+        }
+        if let Some(settings) = extract_model_settings(py, model_settings)? {
+            builder = builder.model_settings(settings);
+        }
+        if let Some(model_config) = extract_runtime_model_config(py, runtime_config)? {
+            builder = builder.model_config(model_config);
+        }
+        if let Some(params) = extract_request_params(py, request_params)? {
+            builder = builder.request_params(params);
+        }
+        if let Some(schema) = extract_output_schema(py, output_schema)? {
+            builder = builder.output_schema(schema);
+        }
+        if let Some(policy) = extract_output_policy(py, output_policy)? {
+            builder = builder.output_policy(policy);
+        }
+        for subagent in subagents.unwrap_or_default() {
+            builder = builder.subagent(subagent.borrow(py).config());
+        }
+        builder =
+            builder.subagent_delegation_mode(parse_delegation_mode(subagent_delegation_mode)?);
+        for bundle in capability_bundles.unwrap_or_default() {
+            builder = builder.capability_bundle(bundle.borrow(py).bundle());
+        }
+        if let Some(uploader) = extract_media_uploader(py, media_uploader)? {
+            builder = builder.media_uploader(uploader);
+        }
+        let mut builder = AgentRuntimeBuilder::from_builder(builder);
+        if let Some(store) = extract_session_store(session_store)? {
+            builder = builder.session_store(store);
+        }
+        if let Some(session_id) = durable_session_id {
+            builder = builder.durable_session_id(SessionId::from_string(session_id));
+        }
+        if let Some(archive) = extract_stream_archive(stream_archive)? {
+            builder = builder.stream_archive(archive);
+        }
+        if let Some(log) = extract_replay_event_log(replay_event_log)? {
+            builder = builder.replay_event_log(log);
+        }
+        if let Some(state) = state {
+            let state: ResumableState =
+                serde_json::from_value(py_to_json(py, state)?).map_err(|error| {
+                    PyValueError::new_err(format!("invalid runtime state: {error}"))
+                })?;
+            builder = builder.state(state);
+        }
+        if let Some(environment) = extract_environment_provider(py, environment)? {
+            builder = builder.environment(environment);
+        }
+        Ok(Self {
+            inner: Arc::new(Mutex::new(builder.build())),
+        })
+    }
+
+    #[getter]
+    fn durable_session_id(&self) -> Option<String> {
+        self.inner
+            .blocking_lock()
+            .durable_session_id()
+            .map(|session_id| session_id.as_str().to_string())
+    }
+
+    fn run(&self, py: Python<'_>, prompt: String) -> PyResult<Py<PyAny>> {
+        let runtime = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                let mut runtime = runtime.lock().await;
+                runtime
+                    .run(prompt)
+                    .await
+                    .map_err(PyFutureError::from_agent_error)
+            },
+            |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
+        )
+    }
+
+    fn run_stream(&self, py: Python<'_>, prompt: String) -> PyResult<Py<PyAny>> {
+        let runtime = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                let mut runtime = runtime.lock().await;
+                runtime
+                    .run_stream(prompt)
+                    .await
+                    .map_err(PyFutureError::from_agent_error)
+            },
+            |py, result| Ok(Py::new(py, PyStreamRunResult::from_stream_result(result)?)?.into_any()),
+        )
+    }
+
+    fn export_state(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let runtime = self.inner.blocking_lock();
+        serialize_to_py(py, &runtime.export_state())
+    }
+
+    fn export_full_state(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let runtime = self.inner.blocking_lock();
+        serialize_to_py(py, &runtime.export_full_state())
+    }
+
+    fn export_environment_state(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let runtime = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                let runtime = runtime.lock().await;
+                runtime
+                    .export_environment_state()
+                    .await
+                    .map_err(|error| PyFutureError::State(error.to_string()))
+            },
+            |py, state| match state {
+                Some(state) => serialize_to_py(py, &state),
+                None => Ok(py.None()),
+            },
+        )
+    }
+
+    fn set_environment(&self, py: Python<'_>, environment: &Bound<'_, PyAny>) -> PyResult<()> {
+        let environment = extract_environment_provider(py, Some(environment))?
+            .ok_or_else(|| PyValueError::new_err("environment must not be None"))?;
+        let mut runtime = self.inner.blocking_lock();
+        runtime.restore_environment(environment);
+        Ok(())
+    }
+
+    fn resume_snapshot(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        run_id: String,
+    ) -> PyResult<Py<PyAny>> {
+        let runtime = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                let runtime = runtime.lock().await;
+                runtime
+                    .resume_snapshot(
+                        &SessionId::from_string(session_id),
+                        &RunId::from_string(run_id),
+                    )
+                    .await
+                    .map_err(durability_error_to_py)
+            },
+            |py, snapshot| serialize_to_py(py, &snapshot),
+        )
+    }
+
+    #[pyo3(signature = (session_id, run_id, approvals=None, deferred_results=None))]
+    fn resume_after_hitl_by_id(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        run_id: String,
+        approvals: Option<&Bound<'_, PyAny>>,
+        deferred_results: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let runtime = self.inner.clone();
+        let results = parse_hitl_results(py, approvals, deferred_results)?;
+        spawn_py_future(
+            py,
+            async move {
+                let mut runtime = runtime.lock().await;
+                runtime
+                    .resume_after_hitl_by_id(
+                        &SessionId::from_string(session_id),
+                        &RunId::from_string(run_id),
+                        results,
+                    )
+                    .await
+                    .map_err(durability_error_to_py)
+            },
+            |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
+        )
+    }
+}
+
 /// Live Python stream handle over Starweaver stream records.
 #[pyclass(name = "AgentStream", skip_from_py_object)]
 #[derive(Clone)]
@@ -259,6 +510,7 @@ pub struct PyAgentStream {
     controller: AgentStreamController,
     session: Option<Arc<Mutex<AgentSession>>>,
     session_lease: Option<Arc<PySessionOperationLease>>,
+    detached: Arc<AtomicBool>,
 }
 
 impl PyAgentStream {
@@ -273,15 +525,18 @@ impl PyAgentStream {
             controller,
             session,
             session_lease,
+            detached: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
 impl Drop for PyAgentStream {
     fn drop(&mut self) {
-        self.controller.interrupt();
-        if let Some(lease) = &self.session_lease {
-            lease.release();
+        if !self.detached.load(Ordering::SeqCst) {
+            self.controller.interrupt();
+            if let Some(lease) = &self.session_lease {
+                lease.release();
+            }
         }
     }
 }
@@ -304,6 +559,46 @@ impl PyAgentStream {
                 None => Ok(py.None()),
             },
         )
+    }
+
+    fn close_receiver(&self) -> PyResult<()> {
+        let mut guard = self
+            .handle
+            .try_lock()
+            .map_err(|_| PyRuntimeError::new_err("stream is busy"))?;
+        if let Some(handle) = guard.as_mut() {
+            handle.close_receiver();
+        }
+        Ok(())
+    }
+
+    fn detach(&self) -> PyResult<()> {
+        let handle = self.handle.clone();
+        let session = self.session.clone();
+        let session_lease = self.session_lease.clone();
+        let detached = self.detached.clone();
+        enter_runtime(|| {
+            detached.store(true, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let stream = {
+                    let mut guard = handle.lock().await;
+                    guard.take()
+                };
+                if let Some(mut stream) = stream {
+                    stream.close_receiver();
+                    if let Some(session) = session {
+                        let mut session = session.lock().await;
+                        let _ = stream.finish_into_session(&mut session).await;
+                    } else {
+                        let _ = stream.join().await;
+                    }
+                }
+                if let Some(lease) = &session_lease {
+                    lease.release();
+                }
+            });
+            Ok(())
+        })
     }
 
     #[pyo3(signature = (reason=None))]
@@ -754,7 +1049,7 @@ impl PySession {
         )
     }
 
-    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, toolsets=None, environment=None))]
+    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, trace_metadata=None, toolsets=None, environment=None))]
     #[allow(clippy::too_many_arguments)]
     fn stream(
         &self,
@@ -767,6 +1062,7 @@ impl PySession {
         request_params: Option<&Bound<'_, PyAny>>,
         output_schema: Option<&Bound<'_, PyAny>>,
         output_policy: Option<&Bound<'_, PyAny>>,
+        trace_metadata: Option<&Bound<'_, PyAny>>,
         toolsets: Option<Vec<Py<PyToolset>>>,
         environment: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyAgentStream> {
@@ -781,6 +1077,7 @@ impl PySession {
             request_params,
             output_schema,
             output_policy,
+            trace_metadata,
             toolsets,
         )?;
         let mut session = self
@@ -1104,6 +1401,7 @@ fn py_run_options(
     request_params: Option<&Bound<'_, PyAny>>,
     output_schema: Option<&Bound<'_, PyAny>>,
     output_policy: Option<&Bound<'_, PyAny>>,
+    trace_metadata: Option<&Bound<'_, PyAny>>,
     toolsets: Option<Vec<Py<PyToolset>>>,
 ) -> PyResult<AgentRunOptions> {
     if output_schema.is_some() && output_policy.is_some() {
@@ -1140,6 +1438,10 @@ fn py_run_options(
     }
     if let Some(policy) = extract_output_policy(py, output_policy)? {
         options = options.output_policy(policy);
+    }
+    let metadata = optional_py_to_metadata(py, trace_metadata)?;
+    if !metadata.is_empty() {
+        options = options.trace_metadata(metadata);
     }
     Ok(options)
 }
@@ -1218,6 +1520,18 @@ fn hitl_error_to_py(error: AgentHitlError) -> PyFutureError {
         | AgentHitlError::DeferredResultNotTerminal { .. } => {
             PyFutureError::State(error.to_string())
         }
+    }
+}
+
+fn durability_error_to_py(error: AgentDurabilityError) -> PyFutureError {
+    match error {
+        AgentDurabilityError::Agent(error) => PyFutureError::from_agent_error(error),
+        AgentDurabilityError::Stream(error) => stream_error_to_py(error),
+        AgentDurabilityError::Hitl(error) => hitl_error_to_py(error),
+        AgentDurabilityError::MissingSessionStore
+        | AgentDurabilityError::MissingCheckpointState { .. }
+        | AgentDurabilityError::SessionStore(_)
+        | AgentDurabilityError::Replay(_) => PyFutureError::State(error.to_string()),
     }
 }
 

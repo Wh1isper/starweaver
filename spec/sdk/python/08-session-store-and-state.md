@@ -102,31 +102,66 @@ Rules:
 - JSON round trips must not require Python callables;
 - malformed archive fields fail early instead of being silently skipped.
 
-### SessionStore Facade
+### SessionStore Facade And Native Bridge
 
-Python must expose native record shapes before adding custom Python backends:
+Python exposes native record shapes and a callback-backed bridge for custom
+Python backends:
 
 ```python
 class SessionStore:
+    def to_native(self) -> _native.PythonSessionStore: ...
+
     async def save_session(self, record: SessionRecord) -> None: ...
     async def load_session(self, session_id: str) -> SessionRecord: ...
+    async def list_sessions(self, filter: Mapping[str, object] | None = None) -> list[SessionRecord]: ...
+    async def update_session_status(self, session_id: str, status: str) -> None: ...
     async def save_context_state(
         self,
         session_id: str,
         state: Mapping[str, object],
     ) -> None: ...
+    async def save_environment_state(
+        self,
+        session_id: str,
+        environment_state: Mapping[str, object],
+    ) -> None: ...
     async def append_run(self, record: RunRecord) -> None: ...
+    async def load_run(self, session_id: str, run_id: str) -> RunRecord: ...
+    async def list_runs(self, session_id: str) -> list[RunRecord]: ...
+    async def update_run_status(
+        self,
+        session_id: str,
+        run_id: str,
+        status: str,
+        output_preview: str | None = None,
+    ) -> None: ...
+    async def append_checkpoint(self, session_id: str, checkpoint: Mapping[str, object]) -> None: ...
+    async def load_checkpoints(self, session_id: str, run_id: str) -> list[Mapping[str, object]]: ...
     async def append_stream_records(
         self,
         session_id: str,
         run_id: str,
         records: Sequence[StreamRecord],
     ) -> None: ...
+    async def replay_stream_records(
+        self,
+        session_id: str,
+        run_id: str,
+        after_sequence: int | None = None,
+    ) -> list[StreamRecord]: ...
+    async def save_stream_cursor(
+        self,
+        session_id: str,
+        run_id: str,
+        cursor: Mapping[str, object],
+    ) -> None: ...
     async def resume_snapshot(
         self,
         session_id: str,
         run_id: str | None = None,
     ) -> SessionResumeSnapshot: ...
+    async def compact_run_trace(self, session_id: str, run_id: str) -> Mapping[str, object]: ...
+    async def compact_session_trace(self, session_id: str) -> Mapping[str, object]: ...
 ```
 
 Required wrappers:
@@ -143,8 +178,8 @@ Required concrete stores:
 
 - `InMemorySessionStore` for deterministic tests and examples.
 - `JsonSessionStore` for simple local file persistence.
-- `SqliteSessionStore` only when it can wrap the native storage crate without
-  weakening Rust migration semantics.
+- `SqliteSessionStore` wrapping the native storage crate without weakening Rust
+  migration semantics.
 
 Store rules:
 
@@ -159,12 +194,32 @@ Store rules:
 
 ### Python-Implemented Store Backend
 
-A Python implementation of the Rust `SessionStore` trait is a later bridge. It
-requires async Rust-to-Python callback scheduling, bidirectional error mapping,
-backpressure, cancellation semantics, GIL boundaries, and versioned record
-validation. It should be added only after native store facades are stable and a
-product needs a custom Python database/service store to participate directly in
-Rust durable execution.
+`SessionStore.to_native()` adapts a Python store into the Rust `SessionStore`
+trait through `_native.PythonSessionStore`. The bridge:
+
+- schedules Rust trait calls back onto the Python event loop that created the
+  native handle;
+- accepts sync or async Python store methods;
+- normalizes Python wrapper objects through `to_dict()`;
+- validates returned records against Rust session types;
+- maps missing records to `SessionStoreError::NotFound` where possible;
+- cancels pending Python futures if the Rust caller drops the operation.
+
+`SqliteSessionStore.to_native()` returns its native SQLite handle directly.
+`create_agent_runtime(..., session_store=...)` binds either Python callback
+stores or native SQLite stores into `AgentRuntimeBuilder`, so durable Rust
+execution writes session, run, checkpoint, stream, approval, and deferred
+evidence through the same `SessionStore` contract. The remaining integration
+work is product-level coordination above the SDK: queueing, ownership claims,
+API state, replay cursors, workspace policy, and recovery semantics.
+
+Current Python package tests exercise the callback-backed `_native.PythonSessionStore`
+handle across the full native bridge surface: session status and context state,
+environment state, runs, run status, checkpoints, stream records and cursors,
+approval records, deferred tool records, resume snapshots, and compact traces.
+Resume snapshots preserve the full latest `AgentCheckpoint` record because that
+is the Rust `SessionResumeSnapshot` contract; `CheckpointRef` remains the
+run-record reference shape.
 
 ## Acceptance Checks
 
@@ -181,8 +236,14 @@ A Python session-store implementation is correct only if:
 - Python tools, callbacks, dependencies, and live environment handles are not
   serialized;
 - current security and approval policy cannot be weakened by stale state;
+- restored sessions use the current agent profile approval policy and current
+  environment provider bindings instead of archived process-local objects;
 - raw record dictionaries remain available for fields added by future Rust
   versions.
+- Python `SessionStore.to_native()` round trips through the native Rust trait
+  bridge without bypassing record validation.
+- `create_agent_runtime(session_store=..., durable_session_id=...)` persists
+  durable run evidence through the bound native `SessionStore`.
 
 Validation commands:
 

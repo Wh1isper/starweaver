@@ -15,6 +15,13 @@ use starweaver_model::{
 };
 use starweaver_usage::Usage;
 
+fn stable_session_id(session: &starweaver_agent::AgentSession) -> String {
+    session.context().session_id().map_or_else(
+        || panic!("SDK session should have a stable id"),
+        |session_id| session_id.as_str().to_string(),
+    )
+}
+
 #[tokio::test]
 async fn facade_reexports_stream_event_types() {
     let stream = AgentBuilder::new(Arc::new(TestModel::with_text("ok")))
@@ -297,7 +304,9 @@ async fn live_control_steering_reaches_active_runtime_context() {
             ..AgentRuntimePolicy::default()
         })
         .build_app();
-    let mut handle = app.stream("deploy");
+    let mut session = app.session();
+    let session_id = stable_session_id(&session);
+    let mut handle = session.stream("deploy");
     while let Some(record) = handle.recv().await {
         if matches!(record.event, AgentStreamEvent::ToolCall { .. }) {
             break;
@@ -312,11 +321,25 @@ async fn live_control_steering_reaches_active_runtime_context() {
     assert_eq!(receipt.id, "ui-1");
     assert_eq!(receipt.kind, AgentControlKind::Steering);
     assert!(receipt.queued);
+    assert!(
+        receipt
+            .run_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("run_"))
+    );
+    assert_eq!(receipt.session_id.as_deref(), Some(session_id.as_str()));
 
     while handle.recv().await.is_some() {}
     let result = handle.join().await.unwrap();
 
     assert_eq!(result.result.output, "done");
+    assert_eq!(
+        result
+            .context
+            .session_id()
+            .map(starweaver_agent::SessionId::as_str),
+        Some(session_id.as_str())
+    );
     assert_eq!(
         result.context.steering_messages,
         vec!["Use the safe rollout path.".to_string()]

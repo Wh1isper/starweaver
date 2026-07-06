@@ -305,6 +305,34 @@ all_subagents: true
 }
 
 #[tokio::test]
+async fn agent_spec_all_toolsets_ignores_key_only_aliases() {
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let model = Arc::new(ToolCaptureModel {
+        captured_tools: captured_tools.clone(),
+    });
+    let filesystem: DynToolset = Arc::new(StaticToolset::new("filesystem").with_tool(tool("view")));
+    let spec = AgentSpec::from_yaml(
+        r"
+name: all-selected-with-alias
+model:
+  model_id: capture
+all_toolsets: true
+",
+    )
+    .unwrap();
+    let registry = AgentSpecRegistry::new()
+        .with_model("capture", model)
+        .with_toolset(filesystem.clone())
+        .with_toolset_alias("environment", filesystem);
+
+    let app = spec.builder(&registry).unwrap().build_app();
+    app.run("hello").await.unwrap();
+
+    assert_eq!(captured_tools.lock().unwrap()[0], vec!["view"]);
+    assert!(registry.resolve_toolset("environment").is_some());
+}
+
+#[tokio::test]
 async fn agent_spec_materializes_approval_preset_and_toolset_wrapper() {
     let model = Arc::new(FunctionModel::new(|_messages, _settings, _info| {
         Ok(ModelResponse {

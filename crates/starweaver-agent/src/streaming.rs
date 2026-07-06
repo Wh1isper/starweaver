@@ -10,8 +10,9 @@ use std::{
 };
 
 use async_trait::async_trait;
+use serde_json::Value;
 use starweaver_context::{AgentContext, AgentEvent, BusMessage, ResumableState};
-use starweaver_core::CancellationToken;
+use starweaver_core::{CancellationToken, Metadata};
 use starweaver_runtime::{
     AgentCapability, AgentError, AgentInput, AgentResult, AgentRunState, AgentStreamEvent,
     AgentStreamRecord, AgentStreamResult, CapabilityError, CapabilityResult, CapabilitySpec,
@@ -27,6 +28,7 @@ use crate::AgentSession;
 const DEFAULT_STREAM_BUFFER: usize = 256;
 const INTERRUPT_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 const CONTROL_DRAIN_CAPABILITY_ID: &str = "starweaver.agent.active_control.drain";
+const TRACE_METADATA_STATE_KEY: &str = "starweaver.trace_metadata";
 
 /// Backpressure behavior for live SDK streams.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -535,6 +537,13 @@ pub struct AgentStreamHandle {
     current_error: Arc<Mutex<Option<AgentStreamCurrentError>>>,
     observed_events: Arc<Mutex<Vec<AgentStreamRecord>>>,
     options: AgentStreamOptions,
+    temporary_trace_metadata: Option<TemporaryTraceMetadata>,
+}
+
+#[derive(Clone, Debug)]
+struct TemporaryTraceMetadata {
+    session_metadata: Metadata,
+    trace_metadata: Metadata,
 }
 
 impl AgentStreamHandle {
@@ -562,6 +571,34 @@ impl AgentStreamHandle {
             current_error,
             observed_events,
             options,
+            temporary_trace_metadata: None,
+        }
+    }
+
+    pub(crate) fn with_temporary_trace_metadata(
+        mut self,
+        session_metadata: Metadata,
+        trace_metadata: Metadata,
+    ) -> Self {
+        if !trace_metadata.is_empty() {
+            self.temporary_trace_metadata = Some(TemporaryTraceMetadata {
+                session_metadata,
+                trace_metadata,
+            });
+        }
+        self
+    }
+
+    pub(crate) fn with_optional_temporary_trace_metadata(
+        self,
+        session_metadata: Option<Metadata>,
+        trace_metadata: Metadata,
+    ) -> Self {
+        match session_metadata {
+            Some(session_metadata) => {
+                self.with_temporary_trace_metadata(session_metadata, trace_metadata)
+            }
+            None => self,
         }
     }
 
@@ -665,12 +702,16 @@ impl AgentStreamHandle {
 
     /// Export the latest observed context state.
     pub async fn recoverable_state(&self) -> ResumableState {
-        self.latest_context.lock().await.export_full_state()
+        let mut state = self.latest_context.lock().await.export_full_state();
+        restore_temporary_state_metadata(&mut state, self.temporary_trace_metadata.as_ref());
+        state
     }
 
     /// Return the latest observed context clone.
     pub async fn latest_context(&self) -> AgentContext {
-        self.latest_context.lock().await.clone()
+        let mut context = self.latest_context.lock().await.clone();
+        restore_temporary_context_metadata(&mut context, self.temporary_trace_metadata.as_ref());
+        context
     }
 
     /// Wait for stream completion and return the final result.
@@ -683,10 +724,15 @@ impl AgentStreamHandle {
         let interrupted = self.interrupted.clone();
         let mut join = self.join;
         let control = self.control.clone();
+        let temporary_trace_metadata = self.temporary_trace_metadata.clone();
         if interrupted.load(Ordering::SeqCst) {
             if let Ok(result) = tokio::time::timeout(INTERRUPT_JOIN_TIMEOUT, &mut join).await {
                 control.mark_finished();
-                return map_stream_join_result(result);
+                let mut result = map_stream_join_result(result);
+                if let Ok(result) = &mut result {
+                    apply_temporary_trace_metadata(result, temporary_trace_metadata.as_ref());
+                }
+                return result;
             }
             join.abort();
             let _ = join.await;
@@ -695,7 +741,10 @@ impl AgentStreamHandle {
                 reason: control.interrupt_reason(),
             });
         }
-        let result = map_stream_join_result(join.await);
+        let mut result = map_stream_join_result(join.await);
+        if let Ok(result) = &mut result {
+            apply_temporary_trace_metadata(result, temporary_trace_metadata.as_ref());
+        }
         control.mark_finished();
         result
     }
@@ -705,6 +754,7 @@ impl AgentStreamHandle {
     pub async fn complete(self) -> AgentStreamCompletion {
         let latest_context = self.latest_context.clone();
         let observed_events = self.observed_events.clone();
+        let temporary_trace_metadata = self.temporary_trace_metadata.clone();
         match self.join().await {
             Ok(result) => {
                 let events = result.events.clone();
@@ -715,15 +765,19 @@ impl AgentStreamHandle {
                     events,
                 }
             }
-            Err(error) => AgentStreamCompletion {
-                state: latest_context.lock().await.export_full_state(),
-                result: None,
-                error: Some(error),
-                events: match observed_events.lock() {
-                    Ok(events) => events.clone(),
-                    Err(error) => error.into_inner().clone(),
-                },
-            },
+            Err(error) => {
+                let mut state = latest_context.lock().await.export_full_state();
+                restore_temporary_state_metadata(&mut state, temporary_trace_metadata.as_ref());
+                AgentStreamCompletion {
+                    state,
+                    result: None,
+                    error: Some(error),
+                    events: match observed_events.lock() {
+                        Ok(events) => events.clone(),
+                        Err(error) => error.into_inner().clone(),
+                    },
+                }
+            }
         }
     }
 
@@ -746,6 +800,41 @@ impl AgentStreamHandle {
         Err(completion.error.unwrap_or_else(|| {
             AgentStreamError::Join("stream completed without result or error".to_string())
         }))
+    }
+}
+
+fn apply_temporary_trace_metadata(
+    result: &mut AgentLiveStreamResult,
+    temporary: Option<&TemporaryTraceMetadata>,
+) {
+    let Some(temporary) = temporary else {
+        return;
+    };
+    result.result.state.metadata.insert(
+        TRACE_METADATA_STATE_KEY.to_string(),
+        Value::Object(temporary.trace_metadata.clone()),
+    );
+    result
+        .context
+        .metadata
+        .clone_from(&temporary.session_metadata);
+}
+
+fn restore_temporary_state_metadata(
+    state: &mut ResumableState,
+    temporary: Option<&TemporaryTraceMetadata>,
+) {
+    if let Some(temporary) = temporary {
+        state.metadata.clone_from(&temporary.session_metadata);
+    }
+}
+
+fn restore_temporary_context_metadata(
+    context: &mut AgentContext,
+    temporary: Option<&TemporaryTraceMetadata>,
+) {
+    if let Some(temporary) = temporary {
+        context.metadata.clone_from(&temporary.session_metadata);
     }
 }
 

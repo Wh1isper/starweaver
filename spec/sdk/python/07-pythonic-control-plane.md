@@ -12,7 +12,7 @@ The earlier Python package could stream, interrupt, export recoverable state, an
 resume raw HITL, but it did not provide a polished live control API. This spec
 captures the implemented control-plane shape and the remaining migration seams.
 
-Missing product layer:
+Implemented product-facing shape:
 
 - `AgentRun` as the public live-run object
 - `async with agent.session()`
@@ -31,12 +31,15 @@ control seam instead of a Python-only workaround.
 
 Current seams:
 
-- Python `AgentStream` wraps native `AgentStreamHandle`.
-- `AgentStream` is an async iterator and async context manager.
+- Python `AgentRun` wraps native `AgentStreamHandle`.
+- `AgentRun` is an async iterator and async context manager.
+- `AgentStream` remains a compatibility alias for `AgentRun`.
 - Exceptional stream exit and Python task cancellation request interruption.
 - Native `AgentStreamController` supports interruption and recoverable state.
 - `PySession` protects a session with one active operation at a time.
-- Current result helpers expose pending approval/deferred records as raw dicts.
+- Result helpers expose pending approval/deferred records as raw dicts and typed
+  `PendingApproval`, `PendingDeferred`, `HitlSnapshot`, `ApprovalDecision`, and
+  `DeferredResult` helpers.
 - `starweaver-context::MessageBus` supports idempotent send, target, source,
   template, metadata, subscriber cursors, consume, and peek.
 - Runtime steering consumes bus messages with topic `steering` before model
@@ -90,7 +93,7 @@ async with create_agent(model=model) as agent:
 
 ### AgentRun
 
-`AgentRun` should be the primary live handle.
+`AgentRun` is the primary live handle.
 
 ```python
 class AgentRun:
@@ -114,7 +117,7 @@ class AgentRun:
     def hitl(self) -> RunHitl: ...
 ```
 
-`AgentStream` can remain as an alias or lower-level compatibility name.
+`AgentStream` remains as a compatibility alias.
 
 ### AgentSession Control
 
@@ -290,7 +293,7 @@ flowchart TD
     runtime --> request
 ```
 
-The handle should integrate with `AgentStreamController`:
+The handle integrates with `AgentStreamController`:
 
 - `interrupt` continues to use the cancellation token.
 - `recoverable_state` continues to read latest observed context.
@@ -340,7 +343,7 @@ class PendingDeferred:
     def cancel(self, reason: str | None = None, **metadata) -> DeferredResult: ...
 ```
 
-`RunResult` should expose both raw and typed views:
+`RunResult` exposes both raw and typed views:
 
 - `pending_approvals`
 - `pending_deferred`
@@ -421,7 +424,9 @@ Python tests:
 - stream later yields steering evidence
 - custom stream events expose `sideband_kind` without raw JSON parsing
 - `await session.steer("...")` targets active session run
-- `await agent.steer("...")` rejects ambiguity
+- `await session.steer("...", when_idle="queue")` stores idle session steering
+- `await agent.steer("...")` targets exactly one direct active run and rejects
+  zero-run or ambiguous states
 - `session.messages.send(...)` preserves message fields in exported state
 - `run.messages.steer(...)` reaches active runtime context
 - typed approval resume works

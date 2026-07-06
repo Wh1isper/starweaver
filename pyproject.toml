@@ -21,8 +21,10 @@ dev = [
 
 [tool.pyright]
 include = [
+    "examples/python",
     "packages/starweaver-py/python/starweaver",
     "packages/starweaver-py/tests",
+    "scripts/python_wheel_smoke.py",
 ]
 exclude = [
     "**/__pycache__",

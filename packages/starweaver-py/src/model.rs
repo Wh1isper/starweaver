@@ -1,6 +1,6 @@
 //! Python wrappers for Starweaver model configuration and provider models.
 
-use std::{env, sync::Arc};
+use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
 
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -8,13 +8,14 @@ use pyo3::{
     types::PyDict,
 };
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use starweaver_model::{
     ModelAdapter, ModelError, ModelProfile, ModelRequestParameters, ModelSettings,
     ProfileOverrideModel, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient,
     anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
     openai_chat_http_config, openai_responses_http_config,
 };
+use starweaver_oauth::{OAuthError, OAuthStore};
 
 use crate::conversion::{py_to_json, serialize_to_py};
 
@@ -132,6 +133,7 @@ impl PyProviderModel {
                 provider_name,
                 model_name,
                 extract_model_settings(py, model_settings)?,
+                None,
             );
         }
 
@@ -194,16 +196,18 @@ impl PyProviderModel {
     }
 
     #[staticmethod]
-    #[pyo3(signature = (model_name, model_settings=None))]
+    #[pyo3(signature = (model_name, model_settings=None, auth_file=None))]
     fn codex_oauth(
         py: Python<'_>,
         model_name: String,
         model_settings: Option<&Bound<'_, PyAny>>,
+        auth_file: Option<String>,
     ) -> PyResult<Self> {
         build_oauth_model(
             "codex",
             &model_name,
             extract_model_settings(py, model_settings)?,
+            auth_file,
         )
     }
 
@@ -312,6 +316,60 @@ impl PyProviderModel {
             extract_model_settings(py, model_settings)?,
         )
     }
+}
+
+#[pyfunction]
+#[pyo3(signature = (provider_name, auth_file=None))]
+pub(crate) fn oauth_provider_status(
+    py: Python<'_>,
+    provider_name: String,
+    auth_file: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let store = oauth_store(auth_file);
+    let record = store
+        .get_provider(&provider_name)
+        .map_err(oauth_error_to_py)?;
+    let status = match record {
+        Some(record) => {
+            let record_status = record.status_value();
+            json!({
+                "provider_name": provider_name,
+                "auth_file": store.path(),
+                "logged_in": true,
+                "account": record.account,
+                "has_access_token": !record.tokens.access_token.trim().is_empty(),
+                "has_refresh_token": record.tokens.refresh_token.as_ref().is_some_and(|token| !token.trim().is_empty()),
+                "last_refresh_at": record.last_refresh_at,
+                "record": record_status,
+            })
+        }
+        None => json!({
+            "provider_name": provider_name,
+            "auth_file": store.path(),
+            "logged_in": false,
+            "account": null,
+            "has_access_token": false,
+            "has_refresh_token": false,
+            "last_refresh_at": null,
+            "record": null,
+        }),
+    };
+    serialize_to_py(py, &status)
+}
+
+#[pyfunction]
+#[pyo3(signature = (provider_name, auth_file=None))]
+pub(crate) fn oauth_provider_redacted_record(
+    py: Python<'_>,
+    provider_name: String,
+    auth_file: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let store = oauth_store(auth_file);
+    let record = store
+        .get_provider(&provider_name)
+        .map_err(oauth_error_to_py)?
+        .map(|record| record.redacted_value());
+    serialize_to_py(py, &record)
 }
 
 pub(crate) fn extract_model_settings(
@@ -435,9 +493,18 @@ fn build_oauth_model(
     provider_name: &str,
     model_name: &str,
     model_settings: Option<ModelSettings>,
+    auth_file: Option<String>,
 ) -> PyResult<PyProviderModel> {
-    let model = starweaver_oauth_provider::infer_oauth_model(provider_name, model_name)
-        .map_err(model_error_to_py)?;
+    let model = match (provider_name, auth_file) {
+        ("codex", Some(auth_file)) => starweaver_oauth_provider::build_codex_model_with_store(
+            model_name,
+            OAuthStore::new(PathBuf::from(auth_file)),
+            BTreeMap::new(),
+        )
+        .map_err(model_error_to_py)?,
+        _ => starweaver_oauth_provider::infer_oauth_model(provider_name, model_name)
+            .map_err(model_error_to_py)?,
+    };
     let mut inner: Arc<dyn ModelAdapter> = Arc::new(model);
     if let Some(settings) = model_settings {
         let profile = inner.profile().clone();
@@ -460,5 +527,15 @@ fn provider_profile(
 
 #[allow(dead_code)]
 fn model_error_to_py(error: ModelError) -> PyErr {
+    PyRuntimeError::new_err(error.to_string())
+}
+
+fn oauth_store(auth_file: Option<String>) -> OAuthStore {
+    auth_file.map_or_else(OAuthStore::default_store, |path| {
+        OAuthStore::new(PathBuf::from(path))
+    })
+}
+
+fn oauth_error_to_py(error: OAuthError) -> PyErr {
     PyRuntimeError::new_err(error.to_string())
 }

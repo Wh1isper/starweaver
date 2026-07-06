@@ -6,7 +6,6 @@ use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
 
 use super::format::{format_search_results, format_tool_call_error, xml_escape, xml_result};
 use super::index::{IndexedTool, SearchEntry, ToolProxyIndex, score_entry};
-use super::publish_tool_search_query_event;
 use super::{
     CALL_TOOL_NAME, PREFIXED_CALL_TOOL_SUFFIX, PREFIXED_SEARCH_TOOL_SUFFIX, SEARCH_TOOLS_NAME,
     TOOL_PROXY_INSTRUCTION_GROUP, TOOL_PROXY_NAME, TOOL_SEARCH_FAILED_EVENT_KIND,
@@ -14,6 +13,7 @@ use super::{
 };
 use super::{CallToolArgs, SearchToolsArgs};
 use super::{ToolSearchInitializationReport, ToolSearchNamespaceReport, ToolSearchNamespaceStatus};
+use super::{publish_tool_search_initialization_event, publish_tool_search_query_event};
 use crate::{DynToolset, ToolContext, ToolError, ToolResult, Toolset};
 
 #[derive(Clone)]
@@ -166,6 +166,7 @@ impl ToolProxyInner {
         context: &ToolContext,
         arguments: &SearchToolsArgs,
     ) -> ToolResult {
+        publish_tool_search_initialization_event(self, context, &self.name, &self.search_tool_name);
         if arguments.query.trim().is_empty() {
             publish_tool_search_query_event(
                 context,
