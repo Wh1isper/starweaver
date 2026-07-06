@@ -2121,6 +2121,68 @@ async fn background_shell_filter_injects_completed_results_once_without_repeated
 }
 
 #[tokio::test]
+async fn background_shell_filter_keeps_running_status_and_consumes_terminal_results()
+-> starweaver_agent::CapabilityResult<()> {
+    let request = user_request(vec![ContentPart::Text {
+        text: "hello".to_string(),
+    }]);
+    let provider = Arc::new(
+        VirtualEnvironmentProvider::new("process")
+            .with_process(ShellProcessSnapshot {
+                process_id: "running_1".to_string(),
+                command: "sleep 10".to_string(),
+                status: ShellProcessStatus::Running,
+                stdout: String::new(),
+                stderr: String::new(),
+                return_code: None,
+                metadata: Metadata::default(),
+            })
+            .with_process(ShellProcessSnapshot {
+                process_id: "done_1".to_string(),
+                command: "echo done".to_string(),
+                status: ShellProcessStatus::Completed,
+                stdout: "done".to_string(),
+                stderr: String::new(),
+                return_code: Some(0),
+                metadata: Metadata::default(),
+            }),
+    );
+    let mut context = AgentContext::default();
+    attach_environment(&mut context, provider);
+
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_background_shell_mixed"),
+        ConversationId::new(),
+    );
+    let messages = NamedFilterCapability::new("background_shell")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![ModelMessage::Request(request.clone())],
+        )
+        .await?;
+    let text = request_text_parts(messages.last().expect("request")).join("\n");
+    assert!(text.contains("<background-result process-id=\"done_1\""));
+    assert!(text.contains("<background-status>"));
+    assert!(text.contains("<process id=\"running_1\" status=\"running\""));
+    assert!(!text.contains("<process id=\"done_1\" status=\"completed\""));
+
+    let messages = NamedFilterCapability::new("background_shell")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+    let text = request_text_parts(messages.last().expect("request")).join("\n");
+    assert!(!text.contains("<background-result process-id=\"done_1\""));
+    assert!(text.contains("<background-status>"));
+    assert!(text.contains("<process id=\"running_1\" status=\"running\""));
+    assert!(!text.contains("done_1"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn bus_message_filter_consumes_explicit_bus_messages_without_source_based_steering()
 -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
