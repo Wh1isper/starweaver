@@ -2065,7 +2065,7 @@ async fn filters_repair_and_normalize_provider_aware_response_parts()
 }
 
 #[tokio::test]
-async fn background_shell_filter_injects_completed_results_once_and_status_summary()
+async fn background_shell_filter_injects_completed_results_once_without_repeated_status()
 -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
@@ -2098,7 +2098,7 @@ async fn background_shell_filter_injects_completed_results_once_and_status_summa
     let text = request_text_parts(messages.last().expect("request")).join("\n");
     assert!(text.contains("<background-result process-id=\"process_1\""));
     assert!(text.contains("<stdout>ready &amp; done</stdout>"));
-    assert!(text.contains("<background-status>"));
+    assert!(!text.contains("<background-status>"));
     assert!(
         context
             .events
@@ -2116,7 +2116,7 @@ async fn background_shell_filter_injects_completed_results_once_and_status_summa
         .await?;
     let text = request_text_parts(messages.last().expect("request")).join("\n");
     assert!(!text.contains("<background-result process-id=\"process_1\""));
-    assert!(text.contains("<background-status>"));
+    assert!(!text.contains("<background-status>"));
     Ok(())
 }
 
