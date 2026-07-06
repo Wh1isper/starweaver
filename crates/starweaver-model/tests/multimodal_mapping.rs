@@ -127,6 +127,33 @@ async fn gemini_maps_binary_as_inline_data() {
 }
 
 #[tokio::test]
+async fn gemini_maps_data_url_as_inline_data() {
+    let http = CaptureHttpClient::new(HttpResponse::ok(json!({
+        "candidates": [{"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}]
+    })));
+    let client = protocol_client(ProtocolFamily::GeminiGenerateContent, http.clone());
+
+    client
+        .request(
+            history_with(ContentPart::DataUrl {
+                data_url: "data:video/mp4;base64,AQID".to_string(),
+                media_type: "video/mp4".to_string(),
+            }),
+            None,
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let body = http.last_body();
+    assert_eq!(
+        body["contents"][0]["parts"][0]["inlineData"],
+        json!({"data": "AQID", "mimeType": "video/mp4"})
+    );
+}
+
+#[tokio::test]
 async fn bedrock_maps_binary_as_base64_bytes() {
     let http = CaptureHttpClient::new(HttpResponse::ok(json!({
         "output": {"message": {"content": [{"text": "ok"}]}},
@@ -138,6 +165,34 @@ async fn bedrock_maps_binary_as_base64_bytes() {
         .request(
             history_with(ContentPart::Binary {
                 data: vec![1, 2, 3],
+                media_type: "image/png".to_string(),
+            }),
+            None,
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    let body = http.last_body();
+    assert_eq!(
+        body["messages"][0]["content"][0]["image"],
+        json!({"format": "png", "source": {"bytes": "AQID"}})
+    );
+}
+
+#[tokio::test]
+async fn bedrock_maps_data_url_as_base64_bytes() {
+    let http = CaptureHttpClient::new(HttpResponse::ok(json!({
+        "output": {"message": {"content": [{"text": "ok"}]}},
+        "stopReason": "end_turn"
+    })));
+    let client = protocol_client(ProtocolFamily::BedrockConverse, http.clone());
+
+    client
+        .request(
+            history_with(ContentPart::DataUrl {
+                data_url: "data:image/png;base64,AQID".to_string(),
                 media_type: "image/png".to_string(),
             }),
             None,

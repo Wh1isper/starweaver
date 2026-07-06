@@ -17,6 +17,15 @@ pub(super) struct UrlArgs {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub(super) struct ReadMediaArgs {
+    /// HTTP or HTTPS media URL to read.
+    pub(super) url: String,
+    /// Optional focused instructions for media analysis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) instructions: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(super) struct FetchArgs {
     /// URL of the web resource to fetch.
     pub(super) url: String,

@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use reqwest::{Method, Url, header, redirect::Policy};
+use starweaver_context::AgentContext;
 use starweaver_tools::{ToolContext, ToolError};
 
 use crate::bundles::helpers::tool_execution_error;
@@ -63,11 +64,7 @@ pub(super) async fn fetch_http_resource(
             format!("response exceeds configured {max_bytes} byte limit"),
         ));
     }
-    let body = response
-        .bytes()
-        .await
-        .map_err(|error| tool_execution_error(tool, error))?
-        .to_vec();
+    let body = read_limited_body(context, tool, response, max_bytes).await?;
     if u64::try_from(body.len()).map_or(true, |length| length > max_bytes) {
         return Err(tool_execution_error(
             tool,
@@ -81,6 +78,39 @@ pub(super) async fn fetch_http_resource(
         content_length,
         body: Some(body),
     })
+}
+
+async fn read_limited_body(
+    context: &ToolContext,
+    tool: &str,
+    mut response: reqwest::Response,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ToolError> {
+    let chunk_size = context
+        .dependency::<AgentContext>()
+        .map_or(64 * 1024, |context| {
+            context.tool_config.fetch_stream_chunk_size
+        })
+        .max(1);
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| tool_execution_error(tool, error))?
+    {
+        let next_len = body.len().saturating_add(chunk.len());
+        if u64::try_from(next_len).map_or(true, |length| length > max_bytes) {
+            return Err(tool_execution_error(
+                tool,
+                format!("response exceeds configured {max_bytes} byte limit"),
+            ));
+        }
+        body.extend_from_slice(&chunk);
+        if chunk.len() > chunk_size {
+            tokio::task::yield_now().await;
+        }
+    }
+    Ok(body)
 }
 
 pub(super) fn http_client(tool: &str) -> Result<reqwest::Client, ToolError> {
@@ -150,9 +180,16 @@ pub(super) fn extension_for_content_type_from_extension(extension: Option<&str>)
         Some("mp4") => Some("video/mp4".to_string()),
         Some("webm") => Some("video/webm".to_string()),
         Some("mov") => Some("video/quicktime".to_string()),
+        Some("m4v") => Some("video/x-m4v".to_string()),
+        Some("avi") => Some("video/x-msvideo".to_string()),
+        Some("mkv") => Some("video/x-matroska".to_string()),
         Some("mp3") => Some("audio/mpeg".to_string()),
         Some("wav") => Some("audio/wav".to_string()),
         Some("ogg") => Some("audio/ogg".to_string()),
+        Some("m4a") => Some("audio/mp4".to_string()),
+        Some("flac") => Some("audio/flac".to_string()),
+        Some("aac") => Some("audio/aac".to_string()),
+        Some("opus") => Some("audio/opus".to_string()),
         Some("pdf") => Some("application/pdf".to_string()),
         Some("docx") => Some(
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string(),
@@ -183,6 +220,13 @@ pub(super) fn extension_for_content_type(content_type: Option<&str>) -> Option<S
         "image/jpeg" => Some("jpg".to_string()),
         "image/gif" => Some("gif".to_string()),
         "image/webp" => Some("webp".to_string()),
+        "video/mp4" => Some("mp4".to_string()),
+        "video/webm" => Some("webm".to_string()),
+        "video/quicktime" => Some("mov".to_string()),
+        "audio/mpeg" => Some("mp3".to_string()),
+        "audio/wav" => Some("wav".to_string()),
+        "audio/ogg" => Some("ogg".to_string()),
+        "audio/mp4" => Some("m4a".to_string()),
         "application/pdf" => Some("pdf".to_string()),
         _ => None,
     }

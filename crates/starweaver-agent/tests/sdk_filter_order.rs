@@ -1464,6 +1464,7 @@ async fn compact_trim_preserves_response_thinking_parts_like_summary_trim()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn capability_filter_uses_model_capabilities_for_user_and_tool_media()
 -> starweaver_agent::CapabilityResult<()> {
     let request = ModelRequest {
@@ -1484,6 +1485,10 @@ async fn capability_filter_uses_model_capabilities_for_user_and_tool_media()
                         url: "https://example.test/file.pdf".to_string(),
                         media_type: "application/pdf".to_string(),
                     },
+                    ContentPart::Binary {
+                        data: vec![4, 5, 6],
+                        media_type: "audio/mpeg".to_string(),
+                    },
                 ],
                 name: None,
                 metadata: serde_json::Map::new(),
@@ -1502,6 +1507,10 @@ async fn capability_filter_uses_model_capabilities_for_user_and_tool_media()
                     ContentPart::FileUrl {
                         url: "https://example.test/tool-file.pdf".to_string(),
                         media_type: "application/pdf".to_string(),
+                    },
+                    ContentPart::DataUrl {
+                        data_url: "data:audio/mpeg;base64,AAAA".to_string(),
+                        media_type: "audio/mpeg".to_string(),
                     },
                 ]),
             )),
@@ -1530,7 +1539,7 @@ async fn capability_filter_uses_model_capabilities_for_user_and_tool_media()
         .await?;
 
     let filtered_content = latest_user_content(&messages);
-    assert_eq!(filtered_content.len(), 4);
+    assert_eq!(filtered_content.len(), 5);
     assert!(matches!(&filtered_content[0], ContentPart::Text { text } if text == "inspect"));
     assert!(
         matches!(&filtered_content[1], ContentPart::ImageUrl { url } if url.ends_with("image.png"))
@@ -1539,7 +1548,10 @@ async fn capability_filter_uses_model_capabilities_for_user_and_tool_media()
         matches!(&filtered_content[2], ContentPart::Text { text } if text.contains("type='video'"))
     );
     assert!(
-        matches!(&filtered_content[3], ContentPart::Text { text } if text.contains("type='document'"))
+        matches!(&filtered_content[3], ContentPart::Text { text } if text.contains("type='audio'"))
+    );
+    assert!(
+        matches!(&filtered_content[4], ContentPart::Text { text } if text.contains("type='document'"))
     );
 
     let tool_content = messages
@@ -1552,7 +1564,7 @@ async fn capability_filter_uses_model_capabilities_for_user_and_tool_media()
             ModelMessage::Response(_) => None,
         })
         .expect("tool return array");
-    assert_eq!(tool_content.len(), 3);
+    assert_eq!(tool_content.len(), 4);
     assert_eq!(tool_content[0]["kind"], "image_url");
     assert!(
         tool_content[1]
@@ -1562,11 +1574,16 @@ async fn capability_filter_uses_model_capabilities_for_user_and_tool_media()
     assert!(
         tool_content[2]
             .as_str()
+            .is_some_and(|text| text.contains("type='audio'"))
+    );
+    assert!(
+        tool_content[3]
+            .as_str()
             .is_some_and(|text| text.contains("type='document'"))
     );
     assert_eq!(
         latest_request_metadata(&messages)["starweaver_capability_replacements"],
-        serde_json::json!(4)
+        serde_json::json!(6)
     );
     Ok(())
 }

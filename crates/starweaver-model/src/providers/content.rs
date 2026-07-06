@@ -3,7 +3,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 
-use crate::message::ContentPart;
+use crate::{message::ContentPart, parse_data_url};
 
 #[cfg(test)]
 pub fn text_from_content(content: &[ContentPart]) -> String {
@@ -123,9 +123,7 @@ pub fn gemini_parts_from_content(content: &[ContentPart]) -> Vec<Value> {
             ContentPart::DataUrl {
                 data_url,
                 media_type,
-            } => json!({
-                "fileData": {"fileUri": data_url, "mimeType": media_type}
-            }),
+            } => gemini_data_url(data_url, media_type),
         })
         .collect()
 }
@@ -149,19 +147,62 @@ pub fn bedrock_content_from_content(content: &[ContentPart]) -> Vec<Value> {
                     json!({"document": {"format": bedrock_media_format(media_type), "source": {"bytes": base64_payload(data)}}})
                 }
             }
-            ContentPart::ResourceRef { uri, media_type, .. } | ContentPart::DataUrl { data_url: uri, media_type } => {
+            ContentPart::ResourceRef {
+                uri, media_type, ..
+            } => {
                 if media_type.starts_with("image/") {
                     json!({"image": {"format": bedrock_media_format(media_type), "source": {"bytes": uri}}})
                 } else {
                     json!({"document": {"format": bedrock_media_format(media_type), "source": {"bytes": uri}}})
                 }
             }
+            ContentPart::DataUrl {
+                data_url,
+                media_type,
+            } => bedrock_data_url(data_url, media_type),
         })
         .collect()
 }
 
 fn data_url(media_type: &str, data: &[u8]) -> String {
     format!("data:{media_type};base64,{}", base64_payload(data))
+}
+
+fn gemini_data_url(data_url: &str, fallback_media_type: &str) -> Value {
+    parse_data_url(data_url).map_or_else(
+        |_| {
+            json!({
+                "fileData": {"fileUri": data_url, "mimeType": fallback_media_type}
+            })
+        },
+        |parsed| {
+            json!({
+                "inlineData": {
+                    "data": base64_payload(&parsed.data),
+                    "mimeType": parsed.media_type,
+                }
+            })
+        },
+    )
+}
+
+fn bedrock_data_url(data_url: &str, fallback_media_type: &str) -> Value {
+    parse_data_url(data_url).map_or_else(
+        |_| {
+            if fallback_media_type.starts_with("image/") {
+                json!({"image": {"format": bedrock_media_format(fallback_media_type), "source": {"bytes": data_url}}})
+            } else {
+                json!({"document": {"format": bedrock_media_format(fallback_media_type), "source": {"bytes": data_url}}})
+            }
+        },
+        |parsed| {
+            if parsed.media_type.starts_with("image/") {
+                json!({"image": {"format": bedrock_media_format(&parsed.media_type), "source": {"bytes": base64_payload(&parsed.data)}}})
+            } else {
+                json!({"document": {"format": bedrock_media_format(&parsed.media_type), "source": {"bytes": base64_payload(&parsed.data)}}})
+            }
+        },
+    )
 }
 
 fn base64_payload(data: &[u8]) -> String {
