@@ -260,6 +260,33 @@ impl MessageBus {
             .collect()
     }
 
+    /// Mark specific unread messages as consumed for a subscriber.
+    ///
+    /// Returns the number of currently unread messages that were marked consumed.
+    pub fn mark_consumed(
+        &mut self,
+        agent_id: impl Into<String>,
+        message_ids: &BTreeSet<String>,
+    ) -> usize {
+        let agent_id = agent_id.into();
+        if !self.cursors.contains_key(&agent_id) || message_ids.is_empty() {
+            return 0;
+        }
+        let cursor = self.cursors.get(&agent_id).copied().unwrap_or_default();
+        let consumed = self.consumed_ids.entry(agent_id.clone()).or_default();
+        let mut marked = 0;
+        for message in self.messages.iter().skip(cursor) {
+            if message_ids.contains(&message.id)
+                && is_deliverable(message, &agent_id)
+                && !consumed.contains(&message.id)
+            {
+                consumed.insert(message.id.clone());
+                marked += 1;
+            }
+        }
+        marked
+    }
+
     /// Return whether there are pending messages for one subscriber.
     #[must_use]
     pub fn has_pending(&self, agent_id: &str) -> bool {

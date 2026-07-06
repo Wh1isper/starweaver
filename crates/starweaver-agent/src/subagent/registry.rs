@@ -1,8 +1,10 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent, BusMessage};
@@ -34,6 +36,9 @@ pub const DELEGATE_BACKEND_TOOL_NAME: &str = "__delegate_backend";
 
 /// Tool name for explicit background delegation when blocking delegate remains visible.
 pub const SPAWN_DELEGATE_TOOL_NAME: &str = "spawn_delegate";
+
+/// Tool name for bounded background subagent fan-in.
+pub const WAIT_SUBAGENT_TOOL_NAME: &str = "wait_subagent";
 
 const BACKGROUND_SUBAGENT_CAPABILITY_ID: &str = "starweaver.subagent.background";
 
@@ -91,6 +96,20 @@ struct DelegateArgs {
     metadata: Option<serde_json::Value>,
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+struct WaitSubagentArgs {
+    /// Optional background subagent ID to wait for. Omit to wait for all known background subagents.
+    #[serde(default)]
+    agent_id: Option<String>,
+    /// Maximum seconds to wait before returning without cancelling the subagent.
+    #[serde(default = "default_wait_subagent_timeout_seconds")]
+    timeout_seconds: f64,
+}
+
+const fn default_wait_subagent_timeout_seconds() -> f64 {
+    30.0
+}
+
 /// Snapshot of one active background subagent task.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackgroundSubagentTaskInfo {
@@ -104,16 +123,90 @@ pub struct BackgroundSubagentTaskInfo {
     pub is_resume: bool,
 }
 
+/// Terminal status for a background subagent task.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackgroundSubagentTaskStatus {
+    /// The background subagent completed successfully.
+    Completed,
+    /// The background subagent failed.
+    Failed,
+    /// The background subagent was cancelled.
+    Cancelled,
+}
+
+impl BackgroundSubagentTaskStatus {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// Cached terminal result for a background subagent task.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BackgroundSubagentTaskResult {
+    /// Stable background subagent id.
+    pub agent_id: String,
+    /// Registered subagent name.
+    pub subagent_name: String,
+    /// Terminal task status.
+    pub status: BackgroundSubagentTaskStatus,
+    /// Successful result content, when available.
+    pub content: Option<String>,
+    /// Error message, when available.
+    pub error: Option<String>,
+    /// Completion timestamp.
+    pub completed_at: DateTime<Utc>,
+}
+
+impl BackgroundSubagentTaskResult {
+    fn completed(agent_id: String, subagent_name: String, content: String) -> Self {
+        Self {
+            agent_id,
+            subagent_name,
+            status: BackgroundSubagentTaskStatus::Completed,
+            content: Some(content),
+            error: None,
+            completed_at: Utc::now(),
+        }
+    }
+
+    fn failed(agent_id: String, subagent_name: String, error: String) -> Self {
+        Self {
+            agent_id,
+            subagent_name,
+            status: BackgroundSubagentTaskStatus::Failed,
+            content: None,
+            error: Some(error),
+            completed_at: Utc::now(),
+        }
+    }
+}
+
 #[derive(Default)]
 struct BackgroundSubagentState {
     active_tasks: BTreeMap<String, BackgroundSubagentTaskInfo>,
+    task_results: BTreeMap<String, BackgroundSubagentTaskResult>,
+    delivered_task_results: BTreeSet<String>,
+    waiting_task_results: BTreeSet<String>,
     pending_messages: Vec<BusMessage>,
 }
 
 /// Shared monitor for detached subagent runs and pending result redelivery.
-#[derive(Default)]
 pub struct BackgroundSubagentMonitor {
     state: Mutex<BackgroundSubagentState>,
+    notify: tokio::sync::Notify,
+}
+
+impl Default for BackgroundSubagentMonitor {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(BackgroundSubagentState::default()),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
 }
 
 impl BackgroundSubagentMonitor {
@@ -121,6 +214,16 @@ impl BackgroundSubagentMonitor {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn with_state<R>(&self, f: impl FnOnce(&mut BackgroundSubagentState) -> R) -> R {
+        match self.state.lock() {
+            Ok(mut state) => f(&mut state),
+            Err(error) => {
+                let mut state = error.into_inner();
+                f(&mut state)
+            }
+        }
     }
 
     fn register_task(
@@ -136,74 +239,169 @@ impl BackgroundSubagentMonitor {
             prompt,
             is_resume,
         };
-        match self.state.lock() {
-            Ok(mut state) => {
-                state.active_tasks.insert(agent_id, info);
-            }
-            Err(error) => {
-                let mut state = error.into_inner();
-                state.active_tasks.insert(agent_id, info);
-            }
-        }
+        self.with_state(|state| {
+            state.active_tasks.insert(agent_id, info);
+        });
+        self.notify.notify_waiters();
     }
 
     fn complete_task(&self, agent_id: &str) {
-        match self.state.lock() {
-            Ok(mut state) => {
-                state.active_tasks.remove(agent_id);
-            }
-            Err(error) => {
-                let mut state = error.into_inner();
-                state.active_tasks.remove(agent_id);
-            }
-        }
+        self.with_state(|state| {
+            state.active_tasks.remove(agent_id);
+        });
+        self.notify.notify_waiters();
     }
 
     /// Return active background subagent tasks.
     #[must_use]
     pub fn active_tasks(&self) -> Vec<BackgroundSubagentTaskInfo> {
-        match self.state.lock() {
-            Ok(state) => state.active_tasks.values().cloned().collect(),
-            Err(error) => error.into_inner().active_tasks.values().cloned().collect(),
-        }
+        self.with_state(|state| state.active_tasks.values().cloned().collect())
     }
 
     /// Return whether any background task is active.
     #[must_use]
     pub fn has_active_tasks(&self) -> bool {
-        match self.state.lock() {
-            Ok(state) => !state.active_tasks.is_empty(),
-            Err(error) => !error.into_inner().active_tasks.is_empty(),
+        self.with_state(|state| !state.active_tasks.is_empty())
+    }
+
+    /// Return cached terminal background subagent results keyed by agent id.
+    #[must_use]
+    pub fn task_results(&self) -> BTreeMap<String, BackgroundSubagentTaskResult> {
+        self.with_state(|state| state.task_results.clone())
+    }
+
+    /// Return stable ids for active or cached-result background subagents.
+    #[must_use]
+    pub fn known_task_ids(&self) -> Vec<String> {
+        self.with_state(|state| {
+            state
+                .active_tasks
+                .keys()
+                .chain(state.task_results.keys())
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+    }
+
+    fn get_task_result(&self, agent_id: &str) -> Option<BackgroundSubagentTaskResult> {
+        self.with_state(|state| state.task_results.get(agent_id).cloned())
+    }
+
+    fn record_task_result(&self, result: BackgroundSubagentTaskResult) {
+        self.with_state(|state| {
+            state.task_results.insert(result.agent_id.clone(), result);
+        });
+        self.notify.notify_waiters();
+    }
+
+    fn begin_task_result_wait(&self, agent_id: &str) {
+        self.with_state(|state| {
+            state.waiting_task_results.insert(agent_id.to_string());
+        });
+    }
+
+    fn end_task_result_wait(&self, agent_id: &str) {
+        self.with_state(|state| {
+            state.waiting_task_results.remove(agent_id);
+        });
+    }
+
+    /// Return the stable bus message id for a background task result.
+    #[must_use]
+    pub fn get_task_result_message_id(&self, agent_id: &str) -> String {
+        format!("background-subagent-result:{agent_id}")
+    }
+
+    fn mark_task_result_delivered(&self, agent_id: &str) -> String {
+        let message_id = self.get_task_result_message_id(agent_id);
+        self.with_state(|state| {
+            state.delivered_task_results.insert(agent_id.to_string());
+            state
+                .pending_messages
+                .retain(|message| message.id != message_id);
+        });
+        message_id
+    }
+
+    fn should_deliver_task_result_message(&self, agent_id: &str) -> bool {
+        self.with_state(|state| {
+            !state.delivered_task_results.contains(agent_id)
+                && !state.waiting_task_results.contains(agent_id)
+        })
+    }
+
+    async fn wait_for_agent(
+        &self,
+        agent_id: &str,
+        timeout: Duration,
+    ) -> Option<BackgroundSubagentTaskResult> {
+        if let Some(result) = self.get_task_result(agent_id) {
+            return Some(result);
         }
+        if !self.known_task_ids().iter().any(|id| id == agent_id) || timeout.is_zero() {
+            return None;
+        }
+        let wait = async {
+            loop {
+                self.notify.notified().await;
+                if let Some(result) = self.get_task_result(agent_id) {
+                    return Some(result);
+                }
+                if !self.known_task_ids().iter().any(|id| id == agent_id) {
+                    return None;
+                }
+            }
+        };
+        tokio::time::timeout(timeout, wait).await.unwrap_or(None)
+    }
+
+    async fn wait_for_agents(
+        &self,
+        agent_ids: &[String],
+        timeout: Duration,
+    ) -> BTreeMap<String, Option<BackgroundSubagentTaskResult>> {
+        let all_ready = || {
+            agent_ids.iter().all(|agent_id| {
+                self.get_task_result(agent_id).is_some()
+                    || !self.known_task_ids().iter().any(|id| id == agent_id)
+            })
+        };
+        if !timeout.is_zero() && !all_ready() {
+            let wait = async {
+                while !all_ready() {
+                    self.notify.notified().await;
+                }
+            };
+            let _ = tokio::time::timeout(timeout, wait).await;
+        }
+        agent_ids
+            .iter()
+            .map(|agent_id| (agent_id.clone(), self.get_task_result(agent_id)))
+            .collect()
     }
 
     fn enqueue_message(&self, message: BusMessage) {
-        match self.state.lock() {
-            Ok(mut state) => state.pending_messages.push(message),
-            Err(error) => {
-                let mut state = error.into_inner();
-                state.pending_messages.push(message);
-            }
-        }
+        self.with_state(|state| {
+            state.pending_messages.push(message);
+        });
     }
 
     /// Return whether pending completion messages are waiting for redelivery.
     #[must_use]
     pub fn has_pending_messages(&self) -> bool {
-        match self.state.lock() {
-            Ok(state) => !state.pending_messages.is_empty(),
-            Err(error) => !error.into_inner().pending_messages.is_empty(),
-        }
+        self.with_state(|state| !state.pending_messages.is_empty())
     }
 
     fn drain_pending_messages(&self) -> Vec<BusMessage> {
-        match self.state.lock() {
-            Ok(mut state) => std::mem::take(&mut state.pending_messages),
-            Err(error) => {
-                let mut state = error.into_inner();
-                std::mem::take(&mut state.pending_messages)
-            }
-        }
+        self.with_state(|state| {
+            let delivered = state.delivered_task_results.clone();
+            std::mem::take(&mut state.pending_messages)
+                .into_iter()
+                .filter(|message| !delivered.contains(&message.source))
+                .collect()
+        })
     }
 }
 
@@ -358,7 +556,7 @@ impl SubagentRegistry {
     ) -> DynTool {
         self.background_delegate_tool_named(
             "delegate",
-            "Delegate task to a registered SDK subagent asynchronously. Do not wait or poll; the result arrives via message bus.",
+            "Delegate task to a registered SDK subagent asynchronously. Do not manually poll or loop; use wait_subagent once with a bounded timeout only when you need the result before continuing.",
             monitor,
         )
     }
@@ -371,8 +569,75 @@ impl SubagentRegistry {
     ) -> DynTool {
         self.background_delegate_tool_named(
             SPAWN_DELEGATE_TOOL_NAME,
-            "Spawn a registered SDK subagent in the background. Do not wait or poll; the result arrives via message bus.",
+            "Spawn a registered SDK subagent in the background. Do not manually poll or loop; the result arrives via message bus unless consumed by wait_subagent.",
             monitor,
+        )
+    }
+
+    /// Create a bounded fan-in tool for background subagent results.
+    #[must_use]
+    pub fn wait_subagent_tool(
+        self: &Arc<Self>,
+        monitor: Arc<BackgroundSubagentMonitor>,
+    ) -> DynTool {
+        Arc::new(
+            typed_json_tool::<WaitSubagentArgs, _, _>(
+                WAIT_SUBAGENT_TOOL_NAME,
+                Some(
+                    "Wait for one or more background subagents to finish and return their cached results."
+                        .to_string(),
+                ),
+                move |context: ToolContext, arguments: WaitSubagentArgs| {
+                    let monitor = monitor.clone();
+                    async move {
+                        let context_handle = context.dependency::<AgentContextHandle>().ok_or_else(|| {
+                            ToolError::Execution {
+                                tool: WAIT_SUBAGENT_TOOL_NAME.to_string(),
+                                message: "missing AgentContextHandle dependency".to_string(),
+                            }
+                        })?;
+                        let snapshot = context_handle.snapshot();
+                        if snapshot.parent_run_id.is_some()
+                            || snapshot.metadata.contains_key("parent_agent_id")
+                            || snapshot.agent_id.as_str() != "main"
+                        {
+                            return Err(ToolError::Execution {
+                                tool: WAIT_SUBAGENT_TOOL_NAME.to_string(),
+                                message: "wait_subagent is only available to the main agent".to_string(),
+                            });
+                        }
+                        let timeout = normalize_wait_subagent_timeout(arguments.timeout_seconds);
+                        let content = if let Some(agent_id) = arguments.agent_id {
+                            wait_for_one_background_subagent(
+                                &monitor,
+                                &context_handle,
+                                &agent_id,
+                                timeout,
+                                snapshot.agent_id.as_str(),
+                            )
+                            .await
+                        } else {
+                            wait_for_all_background_subagents(
+                                &monitor,
+                                &context_handle,
+                                timeout,
+                                snapshot.agent_id.as_str(),
+                            )
+                            .await
+                        };
+                        Ok(ToolResult::new(content))
+                    }
+                },
+            )
+            .with_tag("delegation")
+            .with_prepare_definition(|context, definition| {
+                let monitor = context.dependency::<BackgroundSubagentMonitor>()?;
+                let main_agent = context.parent_run_id.is_none()
+                    && !context.metadata.contains_key("parent_agent_id")
+                    && context.agent_id.as_str() == "main";
+                (main_agent && (monitor.has_active_tasks() || !monitor.task_results().is_empty()))
+                    .then_some(definition)
+            }),
         )
     }
 
@@ -562,7 +827,7 @@ impl SubagentRegistry {
                             "subagent_name": subagent_name,
                             "agent_id": agent_id,
                             "message": format!(
-                                "{action} delegate: {subagent_name} (id: {agent_id}). Do not wait, poll, or loop for the result. If you have no other immediate work, finish your current response now; the Starweaver host will automatically notify you when the result arrives via message bus."
+                                "{action} delegate: {subagent_name} (id: {agent_id}). Do not manually poll or loop for the result. If you need the result before continuing, call wait_subagent once with a bounded timeout. If you have no other immediate work, finish your current response now; the Starweaver host will automatically notify you when the result arrives via message bus."
                             ),
                         })))
                     }
@@ -606,7 +871,7 @@ Sequential delegate calls across turns run serially.\n\
         let roster = self.roster_instruction(parent_tools)?;
         let content = format!(
             "In this agent, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.\n\
-After calling delegate, do not wait, poll, or loop for the result. If no other immediate work remains, finish your current response; the Starweaver host will automatically notify you when the result arrives.\n\
+After calling delegate, do not manually poll or loop. If the delegated result is required before you can answer or integrate the work, call wait_subagent once with a bounded timeout. Otherwise finish the current response and let the Starweaver host notify you when the result arrives.\n\
 Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.\n\n\
 {roster}"
         );
@@ -620,7 +885,8 @@ Use subagent_name from the available subagents below. Pass agent_id to resume a 
             SPAWN_DELEGATE_TOOL_NAME,
             "Use this to run a subagent asynchronously when immediate results are not required.\n\
 Use the same subagent_name values listed for delegate.\n\
-The call returns right away with an agent ID; do not wait, poll, or loop for the result.\n\
+The call returns right away with an agent ID; do not manually poll or loop for the result.\n\
+If the delegated result is required before you can answer or integrate work, call wait_subagent once with a bounded timeout.\n\
 If no other immediate work remains after spawning, finish your current response; the Starweaver host will automatically notify you when the result arrives via message bus.\n\
 Pass agent_id to resume a previous background subagent.",
         )
@@ -967,7 +1233,7 @@ async fn run_background_delegate(
     agent_id: String,
     target_agent_id: String,
 ) {
-    let message = match Box::pin(run_background_delegate_inner(
+    let (result, message) = match Box::pin(run_background_delegate_inner(
         registry,
         &context_handle,
         &tool_context,
@@ -977,27 +1243,48 @@ async fn run_background_delegate(
     .await
     {
         Ok(output) => {
-            BusMessage::text(output, agent_id.clone()).with_target(target_agent_id.as_str())
+            let result = BackgroundSubagentTaskResult::completed(
+                agent_id.clone(),
+                arguments.subagent_name.clone(),
+                output.clone(),
+            );
+            let message = BusMessage::text(output, agent_id.clone())
+                .with_id(monitor.get_task_result_message_id(&agent_id))
+                .with_target(target_agent_id.as_str());
+            (result, message)
         }
-        Err(error) => BusMessage::text(
-            format!(
-                "Spawned delegate '{}' (id: {agent_id}) failed: {error}",
-                arguments.subagent_name
-            ),
-            agent_id.clone(),
-        )
-        .with_target(target_agent_id.as_str()),
+        Err(error) => {
+            let error = error.to_string();
+            let result = BackgroundSubagentTaskResult::failed(
+                agent_id.clone(),
+                arguments.subagent_name.clone(),
+                error.clone(),
+            );
+            let message = BusMessage::text(
+                format!(
+                    "Spawned delegate '{}' (id: {agent_id}) failed: {error}",
+                    arguments.subagent_name
+                ),
+                agent_id.clone(),
+            )
+            .with_id(monitor.get_task_result_message_id(&agent_id))
+            .with_target(target_agent_id.as_str());
+            (result, message)
+        }
     };
-    if context_handle
-        .snapshot()
-        .messages
-        .is_subscribed(&target_agent_id)
-    {
-        context_handle.update(|context| {
-            context.send_message(message.clone());
-        });
-    } else {
-        monitor.enqueue_message(message);
+    monitor.record_task_result(result);
+    if monitor.should_deliver_task_result_message(&agent_id) {
+        if context_handle
+            .snapshot()
+            .messages
+            .is_subscribed(&target_agent_id)
+        {
+            context_handle.update(|context| {
+                context.send_message(message.clone());
+            });
+        } else {
+            monitor.enqueue_message(message);
+        }
     }
     monitor.complete_task(&agent_id);
 }
@@ -1038,6 +1325,141 @@ async fn run_background_delegate_inner(
     .await?;
     context_handle.update(|context| merge_background_subagent_context(context, &parent_context));
     Ok(result.output().to_string())
+}
+
+const MAX_WAIT_SUBAGENT_TIMEOUT_SECONDS: f64 = 300.0;
+
+fn normalize_wait_subagent_timeout(timeout_seconds: f64) -> Duration {
+    let timeout_seconds = if timeout_seconds.is_finite() {
+        timeout_seconds.clamp(0.0, MAX_WAIT_SUBAGENT_TIMEOUT_SECONDS)
+    } else {
+        MAX_WAIT_SUBAGENT_TIMEOUT_SECONDS
+    };
+    Duration::from_secs_f64(timeout_seconds)
+}
+
+async fn wait_for_one_background_subagent(
+    monitor: &BackgroundSubagentMonitor,
+    context_handle: &AgentContextHandle,
+    agent_id: &str,
+    timeout: Duration,
+    target: &str,
+) -> serde_json::Value {
+    let known_ids = monitor.known_task_ids();
+    if !known_ids.iter().any(|known_id| known_id == agent_id) {
+        return serde_json::json!({
+            "status": "not_found",
+            "agent_id": agent_id,
+            "timed_out": false,
+            "known_agent_ids": known_ids,
+        });
+    }
+
+    monitor.begin_task_result_wait(agent_id);
+    let result = monitor.wait_for_agent(agent_id, timeout).await;
+    monitor.end_task_result_wait(agent_id);
+
+    let Some(result) = result else {
+        return serde_json::json!({
+            "status": "running",
+            "agent_id": agent_id,
+            "timed_out": true,
+            "message": "Subagent is still running.",
+        });
+    };
+    mark_background_result_delivered(monitor, context_handle, agent_id, target);
+    format_background_result(&result)
+}
+
+async fn wait_for_all_background_subagents(
+    monitor: &BackgroundSubagentMonitor,
+    context_handle: &AgentContextHandle,
+    timeout: Duration,
+    target: &str,
+) -> serde_json::Value {
+    let agent_ids = monitor.known_task_ids();
+    if agent_ids.is_empty() {
+        return serde_json::json!({
+            "status": "empty",
+            "timed_out": false,
+            "results": [],
+        });
+    }
+
+    for agent_id in &agent_ids {
+        monitor.begin_task_result_wait(agent_id);
+    }
+    let results_by_id = monitor.wait_for_agents(&agent_ids, timeout).await;
+    for agent_id in &agent_ids {
+        monitor.end_task_result_wait(agent_id);
+    }
+
+    let mut timed_out = false;
+    let mut formatted_results = Vec::new();
+    for agent_id in &agent_ids {
+        if let Some(result) = results_by_id.get(agent_id).and_then(Clone::clone) {
+            mark_background_result_delivered(monitor, context_handle, agent_id, target);
+            formatted_results.push(format_background_result(&result));
+        } else {
+            timed_out = true;
+            formatted_results.push(serde_json::json!({
+                "status": "running",
+                "agent_id": agent_id,
+                "timed_out": true,
+                "message": "Subagent is still running.",
+            }));
+        }
+    }
+
+    let has_terminal = formatted_results
+        .iter()
+        .any(|item| item.get("status").and_then(serde_json::Value::as_str) != Some("running"));
+    let status = if timed_out && has_terminal {
+        "partial"
+    } else if timed_out {
+        "running"
+    } else {
+        "completed"
+    };
+
+    serde_json::json!({
+        "status": status,
+        "timed_out": timed_out,
+        "results": formatted_results,
+    })
+}
+
+fn mark_background_result_delivered(
+    monitor: &BackgroundSubagentMonitor,
+    context_handle: &AgentContextHandle,
+    agent_id: &str,
+    target: &str,
+) {
+    let message_id = monitor.mark_task_result_delivered(agent_id);
+    context_handle.update(|context| {
+        let mut message_ids = BTreeSet::new();
+        message_ids.insert(message_id);
+        context
+            .messages
+            .mark_consumed(target.to_string(), &message_ids);
+    });
+}
+
+fn format_background_result(result: &BackgroundSubagentTaskResult) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "status": result.status.as_str(),
+        "agent_id": result.agent_id,
+        "subagent_name": result.subagent_name,
+        "timed_out": false,
+        "completed_at": result.completed_at.to_rfc3339(),
+    });
+    if let Some(content) = &result.content {
+        payload["result"] = serde_json::json!(content);
+    }
+    if let Some(error) = &result.error {
+        payload["error"] = serde_json::json!(error);
+    }
+    payload
 }
 
 fn merge_background_subagent_context(target: &mut AgentContext, source: &AgentContext) {

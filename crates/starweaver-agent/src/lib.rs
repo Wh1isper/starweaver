@@ -156,11 +156,11 @@ pub use streaming::{
 };
 pub use subagent::{
     AgentApp, BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,
-    DELEGATE_BACKEND_TOOL_NAME, DynSubagentExecutionHook, SPAWN_DELEGATE_TOOL_NAME,
-    SubagentCapabilityInheritancePolicy, SubagentConfig, SubagentDelegationMode,
-    SubagentExecutionHook, SubagentExecutionMetadata, SubagentExecutionOutcome,
-    SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
-    SubagentToolInheritanceError, SubagentToolInheritancePolicy,
+    BackgroundSubagentTaskResult, BackgroundSubagentTaskStatus, DELEGATE_BACKEND_TOOL_NAME,
+    DynSubagentExecutionHook, SPAWN_DELEGATE_TOOL_NAME, SubagentCapabilityInheritancePolicy,
+    SubagentConfig, SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
+    SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
+    SubagentToolInheritanceError, SubagentToolInheritancePolicy, WAIT_SUBAGENT_TOOL_NAME,
 };
 pub use subagent_config::{
     SubagentConfigError, SubagentSpecProjection, load_subagent_from_file, load_subagents_from_dir,
@@ -705,12 +705,14 @@ impl AgentBuilder {
                 tools.insert(subagents.hidden_delegate_backend_tool());
                 if let Some(monitor) = &background_subagents {
                     tools.insert(subagents.async_delegate_tool(monitor.clone()));
+                    tools.insert(subagents.wait_subagent_tool(monitor.clone()));
                 }
             }
             if subagent_delegation_mode.exposes_spawn_delegate()
                 && let Some(monitor) = &background_subagents
             {
                 tools.insert(subagents.spawn_delegate_tool(monitor.clone()));
+                tools.insert(subagents.wait_subagent_tool(monitor.clone()));
             }
             tools.insert(subagents.subagent_info_tool());
         }

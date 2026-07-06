@@ -327,10 +327,9 @@ pub(super) async fn background_shell_filter(
         let mut injected_ids = background_injected_ids(context);
         let mut summary = Vec::new();
         for process in processes {
-            summary.push(background_status_line(&process));
-            if process.status != starweaver_environment::ShellProcessStatus::Running
-                && !injected_ids.contains(&process.process_id)
-            {
+            if process.status == starweaver_environment::ShellProcessStatus::Running {
+                summary.push(background_status_line(&process));
+            } else if !injected_ids.contains(&process.process_id) {
                 injection_parts.push(format_completed_background_result(&process));
                 context.publish_event(starweaver_context::AgentEvent::new(
                     "background_shell_complete",
