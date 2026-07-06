@@ -96,5 +96,6 @@ make py-sync
 make py-lint
 make py-rust-check
 make py-test
+make py-wheel-smoke
 make py-check
 ```

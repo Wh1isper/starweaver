@@ -8,7 +8,8 @@ use starweaver_model::ToolDefinition;
 
 use crate::{
     DynTool, DynToolset, Tool, ToolApprovalState, ToolContext, ToolError, ToolInstruction,
-    ToolResult, ToolUserInputPreprocessResult, Toolset,
+    ToolResult, ToolUserInputPreprocessResult, Toolset, ToolsetLifecycleError,
+    ToolsetLifecyclePolicy, ToolsetLifecycleReport, ToolsetPreparation,
 };
 
 /// Toolset wrapper that marks and gates tools through approval control flow.
@@ -61,25 +62,14 @@ impl ApprovalRequiredToolset {
         self.reason = reason.into();
         self
     }
-}
 
-impl Toolset for ApprovalRequiredToolset {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn id(&self) -> Option<&str> {
-        self.id.as_deref()
-    }
-
-    fn get_tools(&self) -> Vec<DynTool> {
+    fn wrapped_tools(&self, tools: Vec<DynTool>) -> Vec<DynTool> {
         let toolset_key = self
             .inner
             .id()
             .unwrap_or_else(|| self.inner.name())
             .to_string();
-        self.inner
-            .get_tools()
+        tools
             .into_iter()
             .map(|tool| {
                 Arc::new(ApprovalRequiredTool {
@@ -92,12 +82,83 @@ impl Toolset for ApprovalRequiredToolset {
             .collect()
     }
 
+    fn wrapper_report(
+        &self,
+        mut report: ToolsetLifecycleReport,
+        tool_count: usize,
+        instruction_count: usize,
+    ) -> ToolsetLifecycleReport {
+        report.name.clone_from(&self.name);
+        report.id.clone_from(&self.id);
+        report.tool_count = tool_count;
+        report.instruction_count = instruction_count;
+        report
+    }
+}
+
+#[async_trait]
+impl Toolset for ApprovalRequiredToolset {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn get_tools(&self) -> Vec<DynTool> {
+        self.wrapped_tools(self.inner.get_tools())
+    }
+
     fn max_retries(&self) -> Option<usize> {
         self.inner.max_retries()
     }
 
+    fn timeout_ms(&self) -> Option<u64> {
+        self.inner.timeout_ms()
+    }
+
     fn get_instructions(&self) -> Vec<ToolInstruction> {
         self.inner.get_instructions()
+    }
+
+    fn lifecycle_policy(&self) -> ToolsetLifecyclePolicy {
+        self.inner.lifecycle_policy()
+    }
+
+    async fn prepare_with_context(
+        &self,
+        context: &AgentContext,
+    ) -> Result<ToolsetPreparation, ToolsetLifecycleError> {
+        let preparation = self.inner.prepare_with_context(context).await?;
+        let tools = self.wrapped_tools(preparation.tools);
+        let instructions = preparation.instructions;
+        let report = self.wrapper_report(preparation.report, tools.len(), instructions.len());
+        Ok(ToolsetPreparation {
+            tools,
+            instructions,
+            report,
+        })
+    }
+
+    async fn enter_with_context(
+        &self,
+        context: &AgentContext,
+    ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
+        let report = self.inner.enter_with_context(context).await?;
+        Ok(self.wrapper_report(
+            report,
+            self.get_tools().len(),
+            self.get_instructions().len(),
+        ))
+    }
+
+    async fn exit_with_context(
+        &self,
+        context: &AgentContext,
+    ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
+        let report = self.inner.exit_with_context(context).await?;
+        Ok(self.wrapper_report(report, 0, 0))
     }
 }
 

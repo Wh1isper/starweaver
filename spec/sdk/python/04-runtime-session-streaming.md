@@ -50,7 +50,7 @@ Current behavior already validates:
 
 ## Agent Construction
 
-`create_agent(...)` should accept:
+`create_agent(...)` accepts:
 
 - `model`
 - `tools`
@@ -63,20 +63,26 @@ Current behavior already validates:
 - `subagents`
 - `subagent_delegation_mode`
 - `capability_bundles`
+- `toolsets`
+- `approval_required_tools`
+- `runtime_config`
+- `skills`
+- `environment`
+- `media_uploader`
 
 Model inputs should be Starweaver-backed:
 
 - deterministic `TestModel`
 - callback-backed `FunctionModel`
 - `ProviderModel` helpers over Rust provider adapters
-- future registry/profile helpers
+- product-owned registry/profile helpers that resolve to Starweaver models
 
 Python-defined model adapters are not a priority until tool, session, stream,
 HITL, and active control behavior are stable.
 
 ## Session Lifecycle
 
-Preferred future shape:
+Preferred shape:
 
 ```python
 async with create_agent(model=model) as agent:
@@ -102,13 +108,15 @@ Rules:
 
 ## Live Run Lifecycle
 
-The current `AgentStream` should graduate into a public `AgentRun` concept.
+`AgentRun` is the public live-run concept. `AgentStream` remains a compatibility
+alias for existing code.
 
 `AgentRun` owns:
 
 - event iteration
 - final result
 - interruption
+- explicit receiver close and detach
 - status
 - recoverable state
 - active steering
@@ -127,20 +135,20 @@ async with session.run_stream("Research") as run:
 - Exceptional exit interrupts the run and preserves recoverable state.
 - Cancelling a Python task that awaits `recv`, `join`, or `result` interrupts
   the native run and re-raises `asyncio.CancelledError`.
-- Dropping the native stream currently interrupts; public Python APIs should
-  prefer explicit context-manager semantics.
+- Public Python code should use explicit context-manager, `close_receiver()`, or
+  `detach()` semantics instead of relying on object drop behavior.
+- Fire-and-observe code should call `close_receiver()` when it only wants to
+  stop reading records but still intends to `join()`, or `detach()` when the
+  run should continue in the background and release the Python handle.
 
 ## Streaming
 
 `StreamEvent.raw` remains the forward-compatible source of truth.
 
-Current `StreamEvent`:
+`StreamEvent` exposes:
 
 - `kind`
 - `raw`
-
-Target accessors:
-
 - `run_id`
 - `step`
 - `sideband`
@@ -150,26 +158,31 @@ Target accessors:
 - `tool_call`
 - `tool_return`
 - `usage`
+- `usage_record`
+- `usage_snapshot`
 - `approval`
 - `deferred`
+- `toolset_lifecycle_report`
 - `is_terminal`
 
-The first typed implementation can use lazy accessors over a single
-`StreamEvent` class. Splitting into multiple dataclasses is optional and should
-wait for evidence that applications need pattern matching over concrete event
-types.
+The typed implementation uses lazy accessors over a single `StreamEvent` class.
+Splitting into multiple dataclasses remains optional and should wait for
+evidence that applications need pattern matching over concrete event types.
 
 ## HITL And Deferred Work
 
-Current public API exposes raw lists:
+Current public API exposes raw lists and typed helpers:
 
 - `RunResult.pending_approvals`
 - `RunResult.pending_deferred`
 - `RunResult.pending_deferred_tools`
 - `RunResult.needs_approval`
 - `RunResult.is_waiting`
+- `RunResult.approvals`
+- `RunResult.deferred`
+- `RunResult.hitl`
 
-Target typed helpers:
+Typed helper shape:
 
 ```python
 waiting = await session.run("Deploy production")

@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, get_type_hints, overload
+from typing import Any, cast, get_type_hints, overload
 
 from . import _native
 from .errors import InvalidArguments
@@ -74,6 +74,8 @@ class Tool:
         self.func = func
         self.name = name or func.__name__
         self.description = description or inspect.getdoc(func)
+        if strict is True and not _has_description(self.description):
+            raise ValueError(f"strict tool {self.name!r} requires a description")
         self.return_schema = return_schema
         self.metadata = metadata or {}
         self.strict = strict
@@ -82,7 +84,9 @@ class Tool:
         self.max_retries = max_retries
         self._explicit_schema = parameters_schema
         self._plan = _build_invocation_plan(func)
-        self.parameters_schema = parameters_schema or _infer_schema(func, self._plan)
+        self.parameters_schema = _validate_parameters_schema(
+            parameters_schema or _infer_schema(func, self._plan)
+        )
 
     async def _callback(self, ctx: ToolContext, args: JsonObject) -> Any:
         result = self._call_user_function(ctx, args)
@@ -371,6 +375,72 @@ def _infer_schema(func: Callable[..., Any], plan: _InvocationPlan) -> JsonObject
     return schema
 
 
+def _validate_parameters_schema(schema: Mapping[str, Any]) -> JsonObject:
+    if not isinstance(schema, Mapping):
+        raise TypeError("parameters_schema must be a JSON object")
+    schema_dict = dict(schema)
+    _validate_json_schema_value(schema_dict, "parameters_schema")
+    schema_type = schema_dict.get("type")
+    if schema_type != "object":
+        raise ValueError("parameters_schema must declare type 'object'")
+    property_names = _validate_schema_properties(schema_dict.get("properties"))
+    _validate_schema_required(schema_dict.get("required"), property_names)
+    _validate_schema_additional_properties(schema_dict.get("additionalProperties"))
+    return cast(JsonObject, schema_dict)
+
+
+def _validate_schema_properties(properties: object) -> set[str] | None:
+    if properties is not None:
+        if not isinstance(properties, Mapping):
+            raise TypeError("parameters_schema properties must be an object")
+        property_names = set()
+        for name, value in properties.items():
+            if not isinstance(name, str):
+                raise TypeError("parameters_schema property names must be strings")
+            if not isinstance(value, Mapping):
+                raise TypeError(f"parameters_schema property {name!r} must be an object")
+            property_names.add(name)
+        return property_names
+    return None
+
+
+def _validate_schema_required(required: object, property_names: set[str] | None) -> None:
+    if required is not None:
+        if isinstance(required, str) or not isinstance(required, Sequence):
+            raise TypeError("parameters_schema required must be a list of strings")
+        required_names: list[str] = []
+        for value in required:
+            if not isinstance(value, str):
+                raise TypeError("parameters_schema required must be a list of strings")
+            required_names.append(value)
+        if property_names is not None:
+            unknown = sorted(set(required_names) - property_names)
+            if unknown:
+                joined = ", ".join(unknown)
+                raise ValueError(f"parameters_schema required names are not properties: {joined}")
+
+
+def _validate_schema_additional_properties(additional: object) -> None:
+    if additional is not None and not isinstance(additional, (bool, Mapping)):
+        raise TypeError("parameters_schema additionalProperties must be a boolean or object")
+
+
+def _validate_json_schema_value(value: object, path: str) -> None:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path} object keys must be strings")
+            _validate_json_schema_value(nested, f"{path}.{key}")
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for index, nested in enumerate(value):
+            _validate_json_schema_value(nested, f"{path}[{index}]")
+        return
+    raise ValueError(f"{path} must contain only JSON-compatible values")
+
+
 def _validated_keyword_arguments(plan: _InvocationPlan, args: JsonObject) -> dict[str, Any]:
     accepted = set(plan.keyword_params)
     unexpected = sorted(set(args) - accepted)
@@ -398,6 +468,10 @@ def _is_tool_context_annotation(annotation: Any) -> bool:
 
 def _is_pydantic_model(annotation: Any) -> bool:
     return inspect.isclass(annotation) and hasattr(annotation, "model_json_schema")
+
+
+def _has_description(description: str | None) -> bool:
+    return bool(description and description.strip())
 
 
 def _json_schema_for_type(annotation: Any) -> JsonObject:

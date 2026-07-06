@@ -58,10 +58,13 @@ Rules:
 
 ## Toolsets
 
-Python has the initial static toolset layer. The next layer should make toolset
-authoring feel native to Python without creating a Python-only tool runtime.
+Python toolset authoring should feel native to Python without creating a
+Python-only tool runtime. The Claw-style product path should use
+`AbstractToolset` or the explicit `PythonDynamicToolset` compatibility base for
+context-aware product toolsets, with `FunctionToolset` for decorator-authored
+local functions. Plain `Toolset` remains the static grouping helper.
 
-Target surface:
+Static surface:
 
 ```python
 toolset = Toolset(
@@ -73,24 +76,34 @@ toolset = Toolset(
 agent = create_agent(model=model, toolsets=[toolset])
 ```
 
+Dynamic product surface:
+
+```python
+from starweaver import AbstractToolset, ToolsetContext, ToolsetPreparation
+
+
+class ProductToolset(AbstractToolset):
+    name = "claw.product"
+    id = "claw.product"
+
+    async def prepare(self, ctx: ToolsetContext) -> ToolsetPreparation:
+        return ToolsetPreparation(
+            tools=[list_sessions, submit_to_session],
+            instructions=["Use product tools through canonical API ids."],
+        )
+```
+
 P0 toolset scope:
 
-- name
-- tools
-- instructions
-- static registration
-- per-run toolsets
-- conversion into Starweaver `Toolset`
-
-Later scope:
-
-- async enter/exit lifecycle
-- prepare hooks
-- dynamic discovery
-- tool filtering and renaming
-- approval/deferred wrappers
-- proxy wrappers
-- environment-backed toolsets
+- stable names and durable IDs;
+- static and dynamic registration;
+- per-agent and per-run toolsets;
+- conversion into native Starweaver `Toolset` values;
+- async enter/exit lifecycle;
+- context-aware prepare and refresh callbacks;
+- wrapper support for filtering, renaming, prepared definitions, metadata,
+  approval, deferred calls, search, and proxy;
+- environment-backed toolsets through Starweaver environment providers.
 
 Toolsets should integrate with Starweaver capability/runtime hook contracts,
 not a Python-only middleware stack.
@@ -155,12 +168,16 @@ Environment support should start as wrappers over Rust-owned providers:
 - environment-backed filesystem/shell bundles
 - resource refs in input and tool results
 
-Python-defined providers can come later:
+Python-defined providers are available through `PythonEnvironmentProvider` when
+product code owns the workspace or resource boundary:
 
-- `PythonEnvironmentProvider`
 - Python file/resource operations
-- Python process/shell extension traits
+- Python foreground shell operation callbacks
 - resumable resource registry integration
+
+Python process/shell extension traits remain a later layer; background process
+support currently comes from native providers that implement
+`ProcessShellProvider`.
 
 Rules:
 
@@ -232,12 +249,11 @@ Current useful fields:
 - metadata
 - raw state
 - raw stream records
+- typed usage snapshots on results and stream events
+- typed trace metadata helpers
 
 Target helpers:
 
-- usage snapshots on results and stream events
-- trace ids
-- span correlation ids
 - Python logging bridge
 - OTel exporter convenience configuration
 - Langfuse-friendly metadata helpers
@@ -272,6 +288,8 @@ P0 scenario:
 - Claw imports `starweaver`.
 - Claw creates an agent with a deterministic or provider model.
 - Claw injects Python tools over product resources.
+- Claw groups product tools with `AbstractToolset` or `PythonDynamicToolset`
+  subclasses so run context, lifecycle, and durable IDs stay explicit.
 - Starweaver runs the tool loop in process.
 - Claw stores exported session state.
 

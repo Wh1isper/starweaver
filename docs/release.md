@@ -39,6 +39,7 @@ For fully local preparation:
 make upversion VERSION=X.Y.Z
 make ci
 make cli-smoke
+make py-wheel-smoke
 make publish-dry-run
 git add Cargo.toml Cargo.lock pyproject.toml uv.lock packages/starweaver-py
 git commit -m "Prepare release vX.Y.Z"
@@ -89,6 +90,11 @@ distributions.
 
 Python distributions include an sdist plus wheels for CPython 3.11, 3.12, and 3.13 on the configured
 Linux, macOS, and Windows targets.
+
+`make py-wheel-smoke` installs the locally built wheel into a clean virtual
+environment, runs a deterministic in-process agent smoke, and runs the
+Claw-like Python library-path and minimal product-runtime smoke examples
+against the installed artifact.
 
 ## Publish crates
 

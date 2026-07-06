@@ -53,39 +53,40 @@ async with agent.session() as session:
 
 ## Concept Map
 
-| Python concept      | Rust owner                                      | Status              | Contract                                                                                                                        |
-| ------------------- | ----------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `create_agent(...)` | `starweaver-agent::AgentBuilder`                | current             | Build a reusable agent facade from model, instructions, tools, toolsets, output policy, subagents, bundles, and runtime config. |
-| `RuntimeConfig`     | runtime/context config seams                    | current             | Runtime and context knobs stay separate from provider `ModelSettings`.                                                          |
-| `Agent`             | `starweaver-runtime::Agent` plus SDK facade     | current             | Reusable configuration and resource owner.                                                                                      |
-| `Agent.session()`   | `starweaver-agent::AgentSession`                | current             | Pythonic alias for new or restored sessions.                                                                                    |
-| `AgentSession`      | `AgentSession`                                  | current             | Stateful conversation, export/restore, HITL resume, session streams, and active session control.                                |
-| `AgentRun`          | `AgentStreamHandle` plus control seam           | current             | Live run handle for events, result, interrupt, steer, messages, HITL, and recovery.                                             |
-| `AgentStream`       | `AgentRun` compatibility alias                  | current             | Compatibility name for the live run handle.                                                                                     |
-| `RunOptions`        | `AgentRunOptions`                               | current plus target | Per-run instructions, tools, toolsets, model settings, request params, output policy, trace metadata, and approval policy.      |
-| `@tool`             | `starweaver-tools::Tool`                        | current             | Python callable adapter registered as a native tool.                                                                            |
-| `BaseTool`          | `Tool`                                          | current             | Subclass-friendly tool definition.                                                                                              |
-| `ToolContext`       | `ToolContext`                                   | current             | Run ids, retry, metadata, approval, deferred result, cancellation.                                                              |
-| `ToolResult`        | `ToolResult`                                    | current             | Tool content, app value, user/model content, metadata, private metadata.                                                        |
-| tool exceptions     | `ToolError`                                     | current             | Python control exceptions map into native tool control flow.                                                                    |
-| `Toolset`           | `starweaver-tools` and SDK capability contracts | current             | Group static tools, instructions, metadata, and per-run composition without changing the tool loop.                             |
-| `ToolLibrary`       | Starweaver tool metadata and session state      | current             | Index tools/namespaces and expose search/proxy facades while persisting IDs, not Python objects.                                |
-| output policies     | `OutputPolicy`                                  | current             | Structured output, validators, output functions, retry budget.                                                                  |
-| stream events       | `AgentStreamRecord`                             | current             | Python `StreamEvent.kind`, lazy accessors, and raw JSON.                                                                        |
-| stream adapters     | `starweaver-stream`                             | current             | Projection helpers over canonical stream records; live control remains on `AgentRun`.                                           |
-| HITL result helpers | `AgentResult` helpers                           | current             | Pending approval/deferred records have typed helper objects plus raw dicts.                                                     |
-| message bus facade  | `AgentContext.messages`                         | current             | MQ-like send, peek, consume, steering, and idempotency.                                                                         |
-| active control      | neutral Rust SDK seam                           | current             | Live steering, message writes, interruption, recovery.                                                                          |
-| `SessionArchive`    | `ResumableState`                                | current             | Full-state JSON/file persistence helper.                                                                                        |
-| `SessionStore`      | `starweaver-session` and `starweaver-storage`   | partial             | Python record/store facades preserve canonical JSON; native SQLite and Rust trait callback bridges remain future work.          |
-| `CapabilityBundle`  | SDK capability bundle                           | current             | Static composition of instructions, tools, model/request overlays, output callbacks.                                            |
-| `Subagent`          | `SubagentSpec` and registry                     | current             | Register child agents through Starweaver delegation tools.                                                                      |
-| `SkillRegistry`     | Starweaver skill specs and bundles              | current             | List/load/inspect skills and attach skill toolsets or bundles through native skill parsing.                                     |
-| provider models     | `starweaver-model` adapters                     | current             | Provider helper constructors backed by Rust transports/profiles plus typed OAuth/routing helpers.                               |
-| environments        | `EnvironmentProvider`                           | partial             | Python wrappers over Rust-owned local and virtual providers; envd and Python-defined providers remain future work.              |
-| resources           | environment resource refs                       | current             | Resource refs, registries, and environment-owned resource lifecycle.                                                            |
-| media               | media filters and resource refs                 | current             | Upload/config adapters without embedding large binary state.                                                                    |
-| observability       | trace context and usage                         | partial             | Expose ids now; usage/trace helpers should become typed.                                                                        |
+| Python concept      | Rust owner                                      | Status              | Contract                                                                                                                                                                                    |
+| ------------------- | ----------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `create_agent(...)` | `starweaver-agent::AgentBuilder`                | current             | Build a reusable agent facade from model, instructions, tools, toolsets, output policy, approval-required policy, subagents, bundles, and runtime config.                                   |
+| `RuntimeConfig`     | runtime/context config seams                    | current             | Runtime and context knobs stay separate from provider `ModelSettings`.                                                                                                                      |
+| `Agent`             | `starweaver-runtime::Agent` plus SDK facade     | current             | Reusable configuration and resource owner.                                                                                                                                                  |
+| `Agent.session()`   | `starweaver-agent::AgentSession`                | current             | Pythonic alias for new or restored sessions.                                                                                                                                                |
+| `AgentSession`      | `AgentSession`                                  | current             | Stateful conversation, export/restore, HITL resume, session streams, and active session control.                                                                                            |
+| `AgentRun`          | `AgentStreamHandle` plus control seam           | current             | Live run handle for events, result, interrupt, steer, messages, HITL, and recovery.                                                                                                         |
+| `AgentStream`       | `AgentRun` compatibility alias                  | current             | Compatibility name for the live run handle.                                                                                                                                                 |
+| `AgentRuntime`      | `starweaver-agent::AgentRuntimeBuilder`         | current             | Owned durable runtime facade for Python apps that need native `SessionStore`, stream archive, replay log, and durable session IDs.                                                          |
+| `RunOptions`        | `AgentRunOptions`                               | current plus target | Current per-run instructions, tools, toolsets, model settings, request params, output policy, trace metadata, and environment; future per-run approval policy must be typed.                |
+| `@tool`             | `starweaver-tools::Tool`                        | current             | Python callable adapter registered as a native tool.                                                                                                                                        |
+| `BaseTool`          | `Tool`                                          | current             | Subclass-friendly tool definition.                                                                                                                                                          |
+| `ToolContext`       | `ToolContext`                                   | current             | Run ids, retry, metadata, approval, deferred result, cancellation.                                                                                                                          |
+| `ToolResult`        | `ToolResult`                                    | current             | Tool content, app value, user/model content, metadata, private metadata.                                                                                                                    |
+| tool exceptions     | `ToolError`                                     | current             | Python control exceptions map into native tool control flow.                                                                                                                                |
+| `Toolset`           | `starweaver-tools` and SDK capability contracts | current             | Group static tools, instructions, metadata, and per-run composition without changing the tool loop.                                                                                         |
+| `ToolLibrary`       | Starweaver tool metadata and session state      | current             | Index tools/namespaces and expose search/proxy facades while persisting IDs, not Python objects.                                                                                            |
+| output policies     | `OutputPolicy`                                  | current             | Structured output, validators, output functions, retry budget.                                                                                                                              |
+| stream events       | `AgentStreamRecord`                             | current             | Python `StreamEvent.kind`, lazy accessors, and raw JSON.                                                                                                                                    |
+| stream adapters     | `starweaver-stream`                             | current             | Projection helpers over canonical stream records; live control remains on `AgentRun`.                                                                                                       |
+| HITL result helpers | `AgentResult` helpers                           | current             | Pending approval/deferred records have typed helper objects plus raw dicts.                                                                                                                 |
+| message bus facade  | `AgentContext.messages`                         | current             | MQ-like send, peek, consume, steering, and idempotency.                                                                                                                                     |
+| active control      | neutral Rust SDK seam                           | current             | Live steering, message writes, interruption, recovery.                                                                                                                                      |
+| `SessionArchive`    | `ResumableState`                                | current             | Full-state JSON/file persistence helper.                                                                                                                                                    |
+| `SessionStore`      | `starweaver-session` and `starweaver-storage`   | current             | Python record/store facades, native SQLite session/replay/archive facades, Python callback-backed native `SessionStore` bridge, and `AgentRuntime` durable binding preserve canonical JSON. |
+| `CapabilityBundle`  | SDK capability bundle                           | current             | Static composition of instructions, tools, model/request overlays, output callbacks.                                                                                                        |
+| `Subagent`          | `SubagentSpec` and registry                     | current             | Register child agents through Starweaver delegation tools.                                                                                                                                  |
+| `SkillRegistry`     | Starweaver skill specs and bundles              | current             | List/load/inspect skills and attach skill toolsets or bundles through native skill parsing.                                                                                                 |
+| provider models     | `starweaver-model` adapters                     | current             | Provider helper constructors backed by Rust transports/profiles plus typed OAuth/routing helpers.                                                                                           |
+| environments        | `EnvironmentProvider`                           | current             | Python wrappers over Rust-owned local, virtual, composite, and envd-backed providers, plus callback-backed `PythonEnvironmentProvider` bridge for Python-defined providers.                 |
+| resources           | environment resource refs                       | current             | Resource refs, registries, and environment-owned resource lifecycle.                                                                                                                        |
+| media               | media filters and resource refs                 | current             | Upload/config adapters without embedding large binary state.                                                                                                                                |
+| observability       | trace context and usage                         | current             | Typed usage snapshot, pricing, and trace metadata helpers project canonical runtime evidence without raw JSON path walking.                                                                 |
 
 ## Agent
 
@@ -100,7 +101,7 @@ async with create_agent(model=model, tools=[lookup]) as agent:
     stream = agent.run_stream("Stream")
 ```
 
-Target additions:
+Current lifecycle helpers:
 
 ```python
 class Agent:
@@ -126,7 +127,7 @@ Rules:
 
 `AgentSession` is the primary stateful conversation object.
 
-Target surface:
+Current surface:
 
 ```python
 class AgentSession:
@@ -163,10 +164,11 @@ Rules:
 
 ## AgentRun
 
-`AgentRun` is the public live handle. It should own the behavior currently split
-between `AgentStream`, raw result dicts, and future control APIs.
+`AgentRun` is the public live handle. It owns the behavior that was previously
+split between `AgentStream`, raw result dictionaries, and planned control APIs.
+`AgentStream` remains a compatibility alias for this object.
 
-Target surface:
+Current surface:
 
 ```python
 class AgentRun:
@@ -178,6 +180,8 @@ class AgentRun:
     async def join(self) -> StreamRunResult: ...
     async def result(self) -> RunResult: ...
 
+    def close_receiver(self) -> None: ...
+    def detach(self) -> None: ...
     async def steer(self, text: str, **options) -> ControlReceipt: ...
     async def send_message(self, message: BusMessage | dict[str, object]) -> ControlReceipt: ...
     def interrupt(self, reason: str | None = None) -> None: ...
@@ -201,7 +205,7 @@ Context-manager rules:
 
 ## Run Options
 
-`run()` and `run_stream()` should accept the same option family at the agent and
+`run()` and `run_stream()` accept the same current option family at the agent and
 session level:
 
 - `instructions`
@@ -211,16 +215,18 @@ session level:
 - `request_params`
 - `output_schema`
 - `output_policy`
-- future `toolsets`
-- future `runtime_config`
-- future `trace_metadata`
-- future `approval_policy`
+- `toolsets`
+- `trace_metadata`
+- `environment`
 
-Unknown run options should raise `TypeError` instead of being ignored.
+`RuntimeConfig` and `approval_required_tools` are construction/runtime options
+today. A future per-run approval policy should be introduced only as a typed
+Starweaver policy, not as arbitrary option dictionaries. Unknown run options
+raise `TypeError` instead of being ignored.
 
 ## Results And Evidence
 
-`RunResult` should expose:
+`RunResult` exposes:
 
 - `output`
 - `structured_output`
@@ -231,27 +237,35 @@ Unknown run options should raise `TypeError` instead of being ignored.
 - `needs_approval`
 - `pending_approvals`
 - `pending_deferred`
-- future `approvals`
-- future `deferred`
-- future `usage`
-- future `trace`
+- `pending_deferred_tools`
+- `approvals`
+- `deferred`
+- `usage`
+- `usage_snapshot`
+- `trace`
+- `trace_metadata`
 
 Raw fields stay available. Typed helpers should sit on top of them.
 
-`StreamEvent` should expose:
+`StreamEvent` exposes:
 
 - `kind`
 - `raw`
-- future `run_id`
-- future `step`
-- future `text_delta`
-- future `tool_call`
-- future `tool_return`
-- future `usage`
-- future `approval`
-- future `deferred`
-- future `sideband`
-- future `is_terminal`
+- `run_id`
+- `step`
+- `text_delta`
+- `tool_call`
+- `tool_return`
+- `usage`
+- `usage_record`
+- `usage_snapshot`
+- `approval`
+- `deferred`
+- `sideband`
+- `sideband_kind`
+- `sideband_payload`
+- `toolset_lifecycle_report`
+- `is_terminal`
 
 Do not fork the stream protocol. Unknown records must remain accessible through
 `raw`.

@@ -14,7 +14,7 @@ use starweaver_session::{
 };
 use starweaver_tools::{
     DynTool, DynToolset, ToolApprovalState, ToolContext, ToolError, ToolRegistry,
-    ToolUserInputPreprocessResult,
+    ToolUserInputPreprocessResult, error_return,
 };
 use thiserror::Error;
 
@@ -31,6 +31,7 @@ use starweaver_runtime::{
 
 /// Context event emitted when HITL decisions cannot be applied to a waiting run.
 pub const HITL_DECISION_DIAGNOSTIC_EVENT_KIND: &str = "hitl_decision_diagnostic";
+const TRACE_METADATA_STATE_KEY: &str = "starweaver.trace_metadata";
 
 /// Context-backed SDK session for repeated runs through one agent.
 #[derive(Clone)]
@@ -48,7 +49,9 @@ pub struct AgentRunOptions {
     request_params: Option<ModelRequestParameters>,
     output_policy: Option<OutputPolicy>,
     tools: ToolRegistry,
+    toolsets: Vec<DynToolset>,
     replace_tools: bool,
+    trace_metadata: Metadata,
 }
 
 impl AgentRunOptions {
@@ -96,16 +99,24 @@ impl AgentRunOptions {
     /// Add one runtime toolset for this run.
     #[must_use]
     pub fn toolset(mut self, toolset: &DynToolset) -> Self {
-        self.tools.insert_toolset(toolset);
+        self.toolsets.push(toolset.clone());
         self
     }
 
     /// Add many runtime toolsets for this run.
     #[must_use]
     pub fn toolsets(mut self, toolsets: impl IntoIterator<Item = DynToolset>) -> Self {
-        for toolset in toolsets {
-            self.tools.insert_toolset(&toolset);
-        }
+        self.toolsets.extend(toolsets);
+        self
+    }
+
+    /// Add metadata for this run's model request trace context.
+    ///
+    /// The metadata is visible to model adapters and copied to the returned run
+    /// state, but it is not persisted as session metadata for later runs.
+    #[must_use]
+    pub fn trace_metadata(mut self, metadata: Metadata) -> Self {
+        merge_metadata(&mut self.trace_metadata, metadata);
         self
     }
 
@@ -131,6 +142,9 @@ impl AgentRunOptions {
             override_builder = override_builder.with_tools(self.tools);
         } else if !self.tools.is_empty() {
             override_builder = override_builder.append_tools(&self.tools);
+        }
+        for toolset in &self.toolsets {
+            override_builder = override_builder.toolset(toolset);
         }
         if !self.instructions.is_empty() {
             override_builder = override_builder.append_instructions(self.instructions);
@@ -378,7 +392,8 @@ impl AgentSession {
     /// Create a session from a runtime agent and a fresh context.
     #[must_use]
     pub fn new(agent: RuntimeAgent) -> Self {
-        let context = agent.new_context();
+        let mut context = agent.new_context();
+        context.set_session_id(SessionId::new());
         Self::with_context(agent, context)
     }
 
@@ -992,7 +1007,26 @@ impl AgentSession {
         call: &ToolCallPart,
         approval: ToolApprovalState,
     ) -> ToolReturnPart {
-        let tools = self.agent.tools();
+        self.context.current_run_step = state.run_step;
+        let tools = match self
+            .agent
+            .prepare_tools_for_context(&mut self.context)
+            .await
+        {
+            Ok(tools) => tools,
+            Err(error) => {
+                self.agent
+                    .close_toolsets_for_context(&mut self.context)
+                    .await;
+                return error_return(
+                    call,
+                    &ToolError::Execution {
+                        tool: call.name.clone(),
+                        message: error.to_string(),
+                    },
+                );
+            }
+        };
         let context_handle = AgentContextHandle::new(self.context.clone());
         let mut tool_dependencies = self.context.dependencies.clone();
         tool_dependencies.insert(self.context.clone());
@@ -1009,6 +1043,9 @@ impl AgentSession {
         let started_at = std::time::Instant::now();
         let mut tool_return = tools.execute_call(tool_context, call).await;
         self.absorb_tool_context_handle(&context_handle);
+        self.agent
+            .close_toolsets_for_context(&mut self.context)
+            .await;
         if !tool_return.is_error {
             self.context.usage.tool_calls = self.context.usage.tool_calls.saturating_add(1);
         }
@@ -1098,10 +1135,15 @@ impl AgentSession {
         prompt: impl Into<AgentInput>,
         options: AgentRunOptions,
     ) -> Result<AgentResult, AgentError> {
+        let trace_metadata = options.trace_metadata.clone();
+        let original_metadata = apply_run_trace_metadata(&mut self.context, &trace_metadata);
         let result = options
             .apply(&self.agent)
             .run_with_context(prompt, &mut self.context)
-            .await?;
+            .await;
+        restore_context_metadata(&mut self.context, original_metadata);
+        let mut result = result?;
+        attach_result_trace_metadata(&mut result, &trace_metadata);
         self.record_result(&result);
         Ok(result)
     }
@@ -1135,10 +1177,15 @@ impl AgentSession {
         options: AgentRunOptions,
     ) -> Result<AgentStreamResult, AgentError> {
         let mut events = Vec::<AgentStreamRecord>::new();
+        let trace_metadata = options.trace_metadata.clone();
+        let original_metadata = apply_run_trace_metadata(&mut self.context, &trace_metadata);
         let result = options
             .apply(&self.agent)
             .run_with_context_and_stream_events(prompt, &mut self.context, &mut events)
-            .await?;
+            .await;
+        restore_context_metadata(&mut self.context, original_metadata);
+        let mut result = result?;
+        attach_result_trace_metadata(&mut result, &trace_metadata);
         self.record_result(&result);
         Ok(AgentStreamResult { result, events })
     }
@@ -1215,11 +1262,11 @@ impl AgentSession {
         prompt: impl Into<AgentInput>,
         options: AgentRunOptions,
     ) -> AgentStreamHandle {
-        start_session_stream(
-            options.apply(&self.agent),
-            self.context.clone(),
-            prompt.into(),
-        )
+        let trace_metadata = options.trace_metadata.clone();
+        let mut context = self.context.clone();
+        let original_metadata = apply_run_trace_metadata(&mut context, &trace_metadata);
+        start_session_stream(options.apply(&self.agent), context, prompt.into())
+            .with_optional_temporary_trace_metadata(original_metadata, trace_metadata)
     }
 
     /// Try to start a live stream run with per-run SDK overrides.
@@ -1233,10 +1280,12 @@ impl AgentSession {
         prompt: impl Into<AgentInput>,
         options: AgentRunOptions,
     ) -> Result<AgentStreamHandle, AgentStreamError> {
-        try_start_session_stream(
-            options.apply(&self.agent),
-            self.context.clone(),
-            prompt.into(),
+        let trace_metadata = options.trace_metadata.clone();
+        let mut context = self.context.clone();
+        let original_metadata = apply_run_trace_metadata(&mut context, &trace_metadata);
+        Ok(
+            try_start_session_stream(options.apply(&self.agent), context, prompt.into())?
+                .with_optional_temporary_trace_metadata(original_metadata, trace_metadata),
         )
     }
 
@@ -1252,12 +1301,16 @@ impl AgentSession {
         options: AgentRunOptions,
         stream_options: AgentStreamOptions,
     ) -> AgentStreamHandle {
+        let trace_metadata = options.trace_metadata.clone();
+        let mut context = self.context.clone();
+        let original_metadata = apply_run_trace_metadata(&mut context, &trace_metadata);
         start_session_stream_with_options(
             options.apply(&self.agent),
-            self.context.clone(),
+            context,
             prompt.into(),
             stream_options,
         )
+        .with_optional_temporary_trace_metadata(original_metadata, trace_metadata)
     }
 
     /// Try to start a live stream run with both run overrides and stream delivery options.
@@ -1272,12 +1325,16 @@ impl AgentSession {
         options: AgentRunOptions,
         stream_options: AgentStreamOptions,
     ) -> Result<AgentStreamHandle, AgentStreamError> {
-        try_start_session_stream_with_options(
+        let trace_metadata = options.trace_metadata.clone();
+        let mut context = self.context.clone();
+        let original_metadata = apply_run_trace_metadata(&mut context, &trace_metadata);
+        Ok(try_start_session_stream_with_options(
             options.apply(&self.agent),
-            self.context.clone(),
+            context,
             prompt.into(),
             stream_options,
-        )
+        )?
+        .with_optional_temporary_trace_metadata(original_metadata, trace_metadata))
     }
 }
 
@@ -1383,6 +1440,33 @@ fn pending_tool_calls_by_id(state: &AgentRunState) -> BTreeMap<String, ToolCallP
 fn merge_metadata(target: &mut Metadata, incoming: Metadata) {
     for (key, value) in incoming {
         target.insert(key, value);
+    }
+}
+
+fn apply_run_trace_metadata(
+    context: &mut AgentContext,
+    trace_metadata: &Metadata,
+) -> Option<Metadata> {
+    if trace_metadata.is_empty() {
+        return None;
+    }
+    let original = context.metadata.clone();
+    merge_metadata(&mut context.metadata, trace_metadata.clone());
+    Some(original)
+}
+
+fn restore_context_metadata(context: &mut AgentContext, original_metadata: Option<Metadata>) {
+    if let Some(original_metadata) = original_metadata {
+        context.metadata = original_metadata;
+    }
+}
+
+fn attach_result_trace_metadata(result: &mut AgentResult, trace_metadata: &Metadata) {
+    if !trace_metadata.is_empty() {
+        result.state.metadata.insert(
+            TRACE_METADATA_STATE_KEY.to_string(),
+            Value::Object(trace_metadata.clone()),
+        );
     }
 }
 
@@ -1512,10 +1596,15 @@ impl AgentSession {
         prompt: impl Into<AgentInput>,
         options: AgentRunOptions,
     ) -> Result<AgentIterResult, AgentError> {
+        let trace_metadata = options.trace_metadata.clone();
+        let original_metadata = apply_run_trace_metadata(&mut self.context, &trace_metadata);
         let result = options
             .apply(&self.agent)
             .run_with_context_iter(prompt, &mut self.context)
-            .await?;
+            .await;
+        restore_context_metadata(&mut self.context, original_metadata);
+        let mut result = result?;
+        attach_result_trace_metadata(&mut result.result, &trace_metadata);
         self.record_result(&result.result);
         Ok(result)
     }

@@ -11,6 +11,12 @@ must stay the same as the Rust SDK. Python tools are injected directly through
 PyO3 as native Starweaver runtime tools. They do not use MCP, stdio, or a
 sidecar binary protocol.
 
+Result and stream evidence keeps the canonical Rust JSON available while
+exposing typed helpers for common application code. `RunResult.usage`,
+`RunResult.usage_snapshot`, `RunResult.trace_metadata`,
+`StreamEvent.usage_record`, and `StreamEvent.usage_snapshot` wrap usage and
+trace records without changing `raw_state` or `StreamEvent.raw`.
+
 ## Install From A Checkout
 
 Local development uses `uv` from the repository root. The repository default
@@ -50,17 +56,20 @@ then shows how it composes with the rest of the SDK:
   and stream lifecycle.
 - [Tools](python/tools.md): `@tool`, `BaseTool`, Pydantic arguments, control
   flow, retry, timeout, and parallel execution.
-- [Toolsets](python/toolsets.md): static tool groups, tool search, tool proxy,
-  environment-backed tools, and capability bundles.
+- [Toolsets](python/toolsets.md): static groups, `AbstractToolset`,
+  `FunctionToolset`, durable ID validation, lifecycle policy and reports,
+  dynamic factories, native wrapper combinators including metadata wrappers,
+  tool search, tool proxy, environment-backed tools, and capability bundles.
 - [Models](python/models.md): deterministic models, production providers,
   Codex OAuth, request params, and model settings.
 - [Structured Output](python/output.md): `OutputSchema`, `OutputPolicy`,
   validators, output functions, and media output gates.
 - [Sessions and Streams](python/sessions-streams.md): state export, archives,
-  canonical stream records, active control, and HITL resume.
+  canonical stream records, native SQLite session/replay/archive stores,
+  durable `AgentRuntime` store binding, active control, and HITL resume.
 - [Environments and Skills](python/environments-skills.md): virtual/local
-  providers, resource authority, first-party environment tools, and native
-  skill packages.
+  providers, file and shell facades, resource authority, first-party
+  environment tools, and native skill packages.
 - [Resources and Media](python/media.md): `ResourceRef`, `ResourceRegistry`,
   media upload callbacks, and runtime media capabilities.
 - [Testing](python/testing.md): deterministic models, callback models,

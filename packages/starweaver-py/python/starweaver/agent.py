@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from os import PathLike
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, overload
 from weakref import WeakSet
 
 from . import _native
@@ -19,12 +19,22 @@ from .environment import EnvironmentProvider, ensure_environment_provider
 from .errors import StateError
 from .media import MediaUploader, ensure_media_uploader
 from .model import ModelSettings, RequestParams, ensure_model_settings, ensure_request_params
+from .observability import TraceMetadata, Usage, UsageSnapshot
 from .output import OutputPolicy, OutputSchema, ensure_output_policy, ensure_output_schema
 from .runtime import RuntimeConfig, ensure_runtime_config
 from .skills import SkillRegistry, ensure_skill_registry
 from .subagent import Subagent, ensure_subagent
 from .tool import BaseTool, Tool, ensure_tool
-from .toolset import Toolset, ensure_toolsets
+from .toolset import (
+    AbstractToolset,
+    Toolset,
+    ToolsetContext,
+    ToolsetFactory,
+    ToolsetLifecycleReport,
+    ensure_toolsets,
+    toolset_factory,
+    validate_toolsets_for_durability,
+)
 
 SESSION_ARCHIVE_FORMAT = "starweaver.session.archive"
 SESSION_ARCHIVE_VERSION = 1
@@ -365,6 +375,7 @@ class SessionArchive:
     last_run_state: dict[str, Any] | None = None
     session_id: str | None = None
     run_id: str | None = None
+    required_toolset_ids: tuple[str, ...] = ()
     mode: Literal["full", "curated"] = "full"
     version: int = SESSION_ARCHIVE_VERSION
     format: Literal["starweaver.session.archive"] = SESSION_ARCHIVE_FORMAT
@@ -386,6 +397,7 @@ class SessionArchive:
             state,
             mode=mode,
             last_run_state=session._last_hitl_state if mode == "full" else None,
+            required_toolset_ids=_required_toolset_ids_for_archive(session._required_toolsets),
         )
 
     @classmethod
@@ -396,6 +408,7 @@ class SessionArchive:
         mode: Literal["full", "curated"] = "full",
         version: int = SESSION_ARCHIVE_VERSION,
         last_run_state: Mapping[str, Any] | None = None,
+        required_toolset_ids: Iterable[str] | None = None,
     ) -> SessionArchive:
         if mode not in {"full", "curated"}:
             raise ValueError("mode must be 'full' or 'curated'")
@@ -411,6 +424,7 @@ class SessionArchive:
             else None,
             session_id=_optional_str(state_copy.get("session_id")),
             run_id=_optional_str(state_copy.get("run_id")),
+            required_toolset_ids=_normalize_required_toolset_ids(required_toolset_ids),
             mode=mode,
             version=version,
             format=SESSION_ARCHIVE_FORMAT,
@@ -447,6 +461,7 @@ class SessionArchive:
             ),
             session_id=_optional_str(raw.get("session_id") or state.get("session_id")),
             run_id=_optional_str(raw.get("run_id") or state.get("run_id")),
+            required_toolset_ids=_normalize_required_toolset_ids(raw.get("required_toolset_ids")),
             mode=mode,  # type: ignore[arg-type]
             version=raw_version,
             format=SESSION_ARCHIVE_FORMAT,
@@ -474,6 +489,8 @@ class SessionArchive:
             payload["session_id"] = self.session_id
         if self.run_id is not None:
             payload["run_id"] = self.run_id
+        if self.required_toolset_ids:
+            payload["required_toolset_ids"] = list(self.required_toolset_ids)
         if self.last_run_state is not None:
             payload["last_run_state"] = copy.deepcopy(self.last_run_state)
         return payload
@@ -565,6 +582,22 @@ class StreamEvent:
         return dict(usage) if isinstance(usage, Mapping) else None
 
     @property
+    def usage_record(self) -> Usage | None:
+        usage = self.usage
+        return Usage(usage) if usage is not None else None
+
+    @property
+    def usage_snapshot(self) -> UsageSnapshot | None:
+        if self.sideband_kind != "usage_snapshot":
+            return None
+        payload = self.sideband_payload
+        return UsageSnapshot(payload) if payload is not None else None
+
+    @property
+    def toolset_lifecycle_report(self) -> ToolsetLifecycleReport | None:
+        return ToolsetLifecycleReport.from_sideband(self.sideband)
+
+    @property
     def approval(self) -> dict[str, Any] | None:
         event = _event_payload(self.raw)
         approval = event.get("approval")
@@ -606,6 +639,22 @@ class RunResult:
     @property
     def raw_run_state(self) -> dict[str, Any]:
         return self.raw_state
+
+    @property
+    def usage(self) -> Usage:
+        return Usage(self.raw_state.get("usage") if isinstance(self.raw_state, Mapping) else None)
+
+    @property
+    def usage_snapshot(self) -> UsageSnapshot:
+        return UsageSnapshot.from_state(self.raw_state)
+
+    @property
+    def trace(self) -> TraceMetadata:
+        return TraceMetadata.from_state(self.raw_state)
+
+    @property
+    def trace_metadata(self) -> TraceMetadata:
+        return self.trace
 
     @property
     def status(self) -> str:
@@ -855,12 +904,80 @@ class RunHitl:
         )
 
 
+class AgentRuntime:
+    """Owned Python runtime with optional durable session-store persistence."""
+
+    def __init__(self, native: _native.AgentRuntime) -> None:
+        self._native = native
+
+    @property
+    def durable_session_id(self) -> str | None:
+        return self._native.durable_session_id
+
+    async def run(self, prompt: str) -> RunResult:
+        return RunResult(await self._native.run(prompt))
+
+    async def run_stream(self, prompt: str) -> StreamRunResult:
+        return StreamRunResult(await self._native.run_stream(prompt))
+
+    def export_state(self) -> dict[str, Any]:
+        return dict(self._native.export_state())
+
+    def export_full_state(self) -> dict[str, Any]:
+        return dict(self._native.export_full_state())
+
+    def set_environment(
+        self,
+        environment: EnvironmentProvider | _native.EnvironmentProvider,
+    ) -> None:
+        native_environment = ensure_environment_provider(environment)
+        if native_environment is None:
+            raise TypeError("environment must not be None")
+        self._native.set_environment(native_environment)
+
+    async def export_environment_state(self) -> dict[str, Any] | None:
+        raw = await self._native.export_environment_state()
+        return dict(raw) if raw is not None else None
+
+    async def resume_snapshot(self, session_id: str, run_id: str) -> dict[str, Any]:
+        return dict(await self._native.resume_snapshot(session_id, run_id))
+
+    async def resume_after_hitl_by_id(
+        self,
+        session_id: str,
+        run_id: str,
+        *,
+        approvals: object | None = None,
+        deferred_results: object | None = None,
+    ) -> RunResult:
+        return RunResult(
+            await self._native.resume_after_hitl_by_id(
+                session_id,
+                run_id,
+                _approval_payload(approvals),
+                _deferred_payload(deferred_results),
+            )
+        )
+
+
 class Agent:
     """Python facade over a native Starweaver agent."""
 
-    def __init__(self, native: _native.Agent) -> None:
+    def __init__(
+        self,
+        native: _native.Agent,
+        *,
+        profile_toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
+        | None = None,
+    ) -> None:
         self._native = native
         self._active_runs: WeakSet[AgentRun] = WeakSet()
+        self._python_toolsets: list[
+            Toolset | AbstractToolset | Callable[[ToolsetContext], Any]
+        ] = []
+        self._profile_toolsets: list[
+            Toolset | AbstractToolset | Callable[[ToolsetContext], Any]
+        ] = list(profile_toolsets or ())
 
     async def __aenter__(self) -> Agent:
         return self
@@ -889,7 +1006,9 @@ class Agent:
         request_params: RequestParams | dict[str, Any] | None = None,
         output_schema: OutputSchema | dict[str, Any] | None = None,
         output_policy: OutputPolicy | dict[str, Any] | None = None,
-        toolsets: Iterable[Toolset] | None = None,
+        trace_metadata: Mapping[str, Any] | None = None,
+        toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
+        | None = None,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
     ) -> RunResult:
         return await self.run_stream(
@@ -901,6 +1020,7 @@ class Agent:
             request_params=request_params,
             output_schema=output_schema,
             output_policy=output_policy,
+            trace_metadata=trace_metadata,
             toolsets=toolsets,
             environment=environment,
         ).result()
@@ -916,7 +1036,9 @@ class Agent:
         request_params: RequestParams | dict[str, Any] | None = None,
         output_schema: OutputSchema | dict[str, Any] | None = None,
         output_policy: OutputPolicy | dict[str, Any] | None = None,
-        toolsets: Iterable[Toolset] | None = None,
+        trace_metadata: Mapping[str, Any] | None = None,
+        toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
+        | None = None,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
     ) -> AgentRun:
         if output_schema is not None and output_policy is not None:
@@ -932,13 +1054,70 @@ class Agent:
                 ensure_request_params(request_params),
                 ensure_output_schema(output_schema),
                 ensure_output_policy(output_policy),
-                ensure_toolsets(toolsets),
+                dict(trace_metadata) if trace_metadata is not None else None,
+                ensure_toolsets([*self._python_toolsets, *(toolsets or ())]),
                 ensure_environment_provider(environment),
             ),
             agent=self,
         )
         self._active_runs.add(run)
         return run
+
+    @overload
+    def toolset(
+        self,
+        factory: Callable[[ToolsetContext], Any],
+        /,
+        *,
+        name: str | None = None,
+        id: str | None = None,
+        per_run_step: bool = True,
+        max_retries: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> ToolsetFactory: ...
+
+    @overload
+    def toolset(
+        self,
+        factory: None = None,
+        /,
+        *,
+        name: str | None = None,
+        id: str | None = None,
+        per_run_step: bool = True,
+        max_retries: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> Callable[[Callable[[ToolsetContext], Any]], ToolsetFactory]: ...
+
+    def toolset(
+        self,
+        factory: Callable[[ToolsetContext], Any] | None = None,
+        /,
+        *,
+        name: str | None = None,
+        id: str | None = None,  # noqa: A002
+        per_run_step: bool = True,
+        max_retries: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> ToolsetFactory | Callable[[Callable[[ToolsetContext], Any]], ToolsetFactory]:
+        """Register a context-aware toolset factory on this Python facade."""
+
+        def wrap(inner: Callable[[ToolsetContext], Any]) -> ToolsetFactory:
+            prepared = toolset_factory(
+                inner,
+                name=name,
+                id=id,
+                per_run_step=per_run_step,
+                max_retries=max_retries,
+                timeout_ms=timeout_ms,
+            )
+            self._python_toolsets.append(prepared)
+            self._profile_toolsets.append(prepared)
+            return prepared
+
+        if factory is None:
+            return wrap
+        return wrap(factory)
 
     def session(
         self,
@@ -957,7 +1136,11 @@ class Agent:
         *,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
     ) -> AgentSession:
-        return AgentSession(self._native.new_session(ensure_environment_provider(environment)))
+        return AgentSession(
+            self._native.new_session(ensure_environment_provider(environment)),
+            default_toolsets=self._python_toolsets,
+            required_toolsets=self._profile_toolsets,
+        )
 
     def session_from_state(
         self,
@@ -966,7 +1149,9 @@ class Agent:
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
     ) -> AgentSession:
         return AgentSession(
-            self._native.session_from_state(state, ensure_environment_provider(environment))
+            self._native.session_from_state(state, ensure_environment_provider(environment)),
+            default_toolsets=self._python_toolsets,
+            required_toolsets=self._profile_toolsets,
         )
 
     def session_from_archive(
@@ -976,6 +1161,10 @@ class Agent:
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
     ) -> AgentSession:
         archive = _ensure_session_archive(archive)
+        _validate_archive_toolset_requirements(
+            archive.required_toolset_ids,
+            self._profile_toolsets,
+        )
         session = self.session_from_state(archive.state, environment=environment)
         session._last_hitl_state = copy.deepcopy(archive.last_run_state)
         return session
@@ -993,11 +1182,21 @@ class Agent:
 class AgentSession:
     """Stateful Python facade over a Starweaver agent session."""
 
-    def __init__(self, native: _native.AgentSession) -> None:
+    def __init__(
+        self,
+        native: _native.AgentSession,
+        *,
+        default_toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
+        | None = None,
+        required_toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
+        | None = None,
+    ) -> None:
         self._native = native
         self._active_run: AgentRun | None = None
         self._last_result: RunResult | None = None
         self._last_hitl_state: dict[str, Any] | None = None
+        self._default_toolsets = list(default_toolsets or ())
+        self._required_toolsets = list(required_toolsets or ())
 
     async def __aenter__(self) -> AgentSession:
         return self
@@ -1025,7 +1224,9 @@ class AgentSession:
         request_params: RequestParams | dict[str, Any] | None = None,
         output_schema: OutputSchema | dict[str, Any] | None = None,
         output_policy: OutputPolicy | dict[str, Any] | None = None,
-        toolsets: Iterable[Toolset] | None = None,
+        trace_metadata: Mapping[str, Any] | None = None,
+        toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
+        | None = None,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
     ) -> RunResult:
         return await self.run_stream(
@@ -1037,6 +1238,7 @@ class AgentSession:
             request_params=request_params,
             output_schema=output_schema,
             output_policy=output_policy,
+            trace_metadata=trace_metadata,
             toolsets=toolsets,
             environment=environment,
         ).result()
@@ -1052,7 +1254,9 @@ class AgentSession:
         request_params: RequestParams | dict[str, Any] | None = None,
         output_schema: OutputSchema | dict[str, Any] | None = None,
         output_policy: OutputPolicy | dict[str, Any] | None = None,
-        toolsets: Iterable[Toolset] | None = None,
+        trace_metadata: Mapping[str, Any] | None = None,
+        toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]]
+        | None = None,
         environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
     ) -> AgentRun:
         if self.active_run is not None:
@@ -1070,7 +1274,8 @@ class AgentSession:
                 ensure_request_params(request_params),
                 ensure_output_schema(output_schema),
                 ensure_output_policy(output_policy),
-                ensure_toolsets(toolsets),
+                dict(trace_metadata) if trace_metadata is not None else None,
+                ensure_toolsets([*self._default_toolsets, *(toolsets or ())]),
                 ensure_environment_provider(environment),
             ),
             session=self,
@@ -1127,10 +1332,31 @@ class AgentSession:
         return result
 
     async def steer(self, text: str, **options: Any) -> ControlReceipt:
+        when_idle = options.pop("when_idle", None)
+        if when_idle is not None and when_idle != "queue":
+            raise ValueError("when_idle must be 'queue' when provided")
+        message_id = _optional_str(options.pop("id", None))
+        if options:
+            unknown = ", ".join(sorted(options))
+            raise TypeError(f"unexpected steering options: {unknown}")
         run = self.active_run
-        if run is None:
+        if run is not None:
+            run_options = {"id": message_id} if message_id is not None else {}
+            return await run.steer(text, **run_options)
+        if when_idle != "queue":
             raise StateError("no active run for session")
-        return await run.steer(text, **options)
+        delivery = await self.messages.steer(
+            text,
+            when_idle="queue",
+            id=message_id,
+        )
+        state = self.export_state("curated")
+        return ControlReceipt(
+            id=delivery.message.id,
+            kind="steering",
+            queued=True,
+            session_id=_optional_str(state.get("session_id")),
+        )
 
     def interrupt(self, reason: str | None = None) -> None:
         run = self.active_run
@@ -1182,6 +1408,7 @@ class AgentRun:
         self._joined: StreamRunResult | None = None
         self._join_future: asyncio.Future[Any] | None = None
         self._finished = False
+        self._detached = False
         self._terminal_event_seen = False
         self._suspended_seen = False
         self._last_hitl_state: dict[str, Any] | None = None
@@ -1190,6 +1417,8 @@ class AgentRun:
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        if self._detached:
+            return None
         if exc_type is not None:
             self.interrupt()
         if self._joined is None:
@@ -1214,6 +1443,8 @@ class AgentRun:
         return self._finished
 
     async def recv(self) -> StreamEvent | None:
+        if self._detached:
+            raise StateError("agent run has been detached")
         try:
             event = await self._native.recv()
         except asyncio.CancelledError:
@@ -1233,6 +1464,20 @@ class AgentRun:
             self._native.interrupt(reason)
         except TypeError:
             self._native.interrupt()
+
+    def close_receiver(self) -> None:
+        if self._detached:
+            raise StateError("agent run has been detached")
+        self._native.close_receiver()
+
+    def detach(self) -> None:
+        if self._joined is not None or self._finished:
+            return
+        self._native.close_receiver()
+        self._detached = True
+        if self._join_future is None:
+            self._join_future = asyncio.ensure_future(self._native.join())
+            self._join_future.add_done_callback(self._finalize_join_future)
 
     async def steer(self, text: str, **options: Any) -> ControlReceipt:
         if self._joined is not None or self._finished or self._terminal_event_seen:
@@ -1265,9 +1510,13 @@ class AgentRun:
         return snapshot
 
     async def recoverable_state(self) -> dict[str, Any]:
+        if self._detached:
+            raise StateError("agent run has been detached")
         return await self._native.recoverable_state()
 
     async def join(self) -> StreamRunResult:
+        if self._detached:
+            raise StateError("agent run has been detached")
         if self._joined is not None:
             return self._joined
         if self._join_future is None:
@@ -1374,7 +1623,8 @@ def create_agent(
     subagents: Iterable[Subagent] | None = None,
     subagent_delegation_mode: str = "blocking",
     capability_bundles: Iterable[CapabilityBundle] | None = None,
-    toolsets: Iterable[Toolset] | None = None,
+    toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]] | None = None,
+    approval_required_tools: Iterable[str] | None = None,
     runtime_config: RuntimeConfig | Mapping[str, Any] | None = None,
     skills: SkillRegistry | _native.SkillRegistry | None = None,
     environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
@@ -1389,6 +1639,7 @@ def create_agent(
     native_tools = [ensure_tool(tool).to_native() for tool in tools or ()]
     native_subagents = [ensure_subagent(subagent) for subagent in subagents or ()]
     native_bundles = [ensure_capability_bundle(bundle) for bundle in capability_bundles or ()]
+    profile_toolsets = list(toolsets or ())
     return Agent(
         _native.Agent(
             native_model,
@@ -1402,11 +1653,75 @@ def create_agent(
             native_subagents,
             subagent_delegation_mode,
             native_bundles,
-            ensure_toolsets(toolsets),
+            ensure_toolsets(profile_toolsets),
+            list(approval_required_tools or ()),
             ensure_runtime_config(runtime_config),
             ensure_skill_registry(skills),
             ensure_environment_provider(environment),
             ensure_media_uploader(media_uploader),
+        ),
+        profile_toolsets=profile_toolsets,
+    )
+
+
+def create_agent_runtime(
+    *,
+    model: Any,
+    tools: Iterable[Tool | BaseTool | Callable[..., Any]] | None = None,
+    instructions: Iterable[str] | None = None,
+    name: str | None = None,
+    model_settings: ModelSettings | dict[str, Any] | None = None,
+    request_params: RequestParams | dict[str, Any] | None = None,
+    output_schema: OutputSchema | dict[str, Any] | None = None,
+    output_policy: OutputPolicy | dict[str, Any] | None = None,
+    subagents: Iterable[Subagent] | None = None,
+    subagent_delegation_mode: str = "blocking",
+    capability_bundles: Iterable[CapabilityBundle] | None = None,
+    toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]] | None = None,
+    approval_required_tools: Iterable[str] | None = None,
+    runtime_config: RuntimeConfig | Mapping[str, Any] | None = None,
+    skills: SkillRegistry | _native.SkillRegistry | None = None,
+    environment: EnvironmentProvider | _native.EnvironmentProvider | None = None,
+    media_uploader: MediaUploader | _native.MediaUploader | None = None,
+    session_store: Any | None = None,
+    durable_session_id: str | None = None,
+    stream_archive: Any | None = None,
+    replay_event_log: Any | None = None,
+    state: Mapping[str, Any] | None = None,
+) -> AgentRuntime:
+    """Create an owned Starweaver runtime with optional durable storage."""
+
+    if output_schema is not None and output_policy is not None:
+        raise ValueError("pass output_schema or output_policy, not both")
+    to_native = getattr(model, "to_native", None)
+    native_model = to_native() if callable(to_native) else getattr(model, "_native", model)
+    native_tools = [ensure_tool(tool).to_native() for tool in tools or ()]
+    native_subagents = [ensure_subagent(subagent) for subagent in subagents or ()]
+    native_bundles = [ensure_capability_bundle(bundle) for bundle in capability_bundles or ()]
+    return AgentRuntime(
+        _native.AgentRuntime(
+            native_model,
+            native_tools,
+            list(instructions or ()),
+            name,
+            ensure_model_settings(model_settings),
+            ensure_request_params(request_params),
+            ensure_output_schema(output_schema),
+            ensure_output_policy(output_policy),
+            native_subagents,
+            subagent_delegation_mode,
+            native_bundles,
+            ensure_toolsets(toolsets),
+            list(approval_required_tools or ()),
+            ensure_runtime_config(runtime_config),
+            ensure_skill_registry(skills),
+            ensure_environment_provider(environment),
+            ensure_media_uploader(media_uploader),
+            session_store,
+            durable_session_id,
+            stream_archive,
+            replay_event_log,
+            dict(state) if state is not None else None,
         )
     )
 
@@ -1421,6 +1736,54 @@ def _ensure_session_archive(archive: SessionArchive | Mapping[str, Any]) -> Sess
     if isinstance(archive, SessionArchive):
         return archive
     return SessionArchive.from_dict(archive)
+
+
+def _normalize_required_toolset_ids(values: object) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if isinstance(values, str | bytes | bytearray) or not isinstance(values, Iterable):
+        raise TypeError("required_toolset_ids must be an iterable of strings")
+    ids: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise TypeError("required_toolset_ids entries must be strings")
+        if not value.strip():
+            raise ValueError("required_toolset_ids entries must not be empty")
+        ids.append(value)
+    duplicates = sorted({value for value in ids if ids.count(value) > 1})
+    if duplicates:
+        raise ValueError(f"required_toolset_ids contains duplicates: {duplicates}")
+    return tuple(ids)
+
+
+def _required_toolset_ids_for_archive(
+    toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]],
+) -> tuple[str, ...]:
+    values = tuple(toolsets)
+    if not values:
+        return ()
+    validation = validate_toolsets_for_durability(values)
+    validation.require_serializable_dynamic_state()
+    return tuple(identity.id for identity in validation.identities if identity.id is not None)
+
+
+def _validate_archive_toolset_requirements(
+    required_ids: Iterable[str],
+    toolsets: Iterable[Toolset | AbstractToolset | Callable[[ToolsetContext], Any]],
+) -> None:
+    required = set(_normalize_required_toolset_ids(required_ids))
+    if not required:
+        return
+    try:
+        current_ids = set(_required_toolset_ids_for_archive(toolsets))
+    except ValueError as error:
+        raise StateError(f"current agent toolsets are not durable: {error}") from error
+    missing = sorted(required - current_ids)
+    if missing:
+        details = ", ".join(missing)
+        raise StateError(
+            f"restored session requires toolset ids missing from current agent: {details}"
+        )
 
 
 def _approval_payload(approvals: object | None) -> object | None:

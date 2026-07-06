@@ -27,13 +27,16 @@ impl Agent {
     pub(in crate::agent) async fn prepare_run_tools(
         &self,
         context: &mut AgentContext,
+        enter_toolsets: bool,
     ) -> Result<ToolRegistry, AgentError> {
         let mut tools = self.tools.clone();
         for toolset in &self.toolsets {
-            tools
-                .insert_toolset_with_context(context, toolset)
-                .await
-                .map_err(|error| AgentError::Capability(error.to_string()))?;
+            let result = if enter_toolsets {
+                tools.insert_toolset_with_context(context, toolset).await
+            } else {
+                tools.refresh_toolset_with_context(context, toolset).await
+            };
+            result.map_err(|error| AgentError::Capability(error.to_string()))?;
         }
         context.context_manage_tool_names = tools
             .tools()

@@ -1,6 +1,9 @@
 //! Tool registry and execution dispatch.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 use starweaver_context::AgentContext;
@@ -179,8 +182,36 @@ impl ToolRegistry {
         context: &mut AgentContext,
         toolset: &DynToolset,
     ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
+        self.insert_toolset_with_context_mode(context, toolset, true)
+            .await
+    }
+
+    /// Refresh and insert all tools and instructions from a toolset without re-entering it.
+    ///
+    /// This is used when a run advances to a new model step and the runtime needs
+    /// context-aware inventory to update without re-running lifecycle enter hooks.
+    ///
+    /// # Errors
+    ///
+    /// Returns a lifecycle error when context-aware preparation fails or exceeds its
+    /// configured timeout.
+    pub async fn refresh_toolset_with_context(
+        &mut self,
+        context: &mut AgentContext,
+        toolset: &DynToolset,
+    ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
+        self.insert_toolset_with_context_mode(context, toolset, false)
+            .await
+    }
+
+    async fn insert_toolset_with_context_mode(
+        &mut self,
+        context: &mut AgentContext,
+        toolset: &DynToolset,
+        enter_before_prepare: bool,
+    ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
         let policy = toolset.lifecycle_policy();
-        if policy.enter_before_prepare {
+        if enter_before_prepare && policy.enter_before_prepare {
             let enter_result = if let Some(timeout_ms) = policy.initialization_timeout_ms {
                 tokio::time::timeout(
                     Duration::from_millis(timeout_ms),
@@ -220,6 +251,11 @@ impl ToolRegistry {
                 } = preparation;
                 let should_fail = policy.fail_on_unavailable
                     && report.state == crate::ToolsetLifecycleState::Unavailable;
+                if let Err(error) = self.validate_prepared_toolset_names(toolset, &tools) {
+                    let report = error.to_report(toolset.id().map(ToOwned::to_owned));
+                    context.publish_event(report.into_event());
+                    return Err(error);
+                }
                 self.insert_prepared_toolset(toolset, tools, instructions);
                 let report_for_event = report.clone();
                 context.publish_event(report_for_event.into_event());
@@ -267,6 +303,30 @@ impl ToolRegistry {
         for instruction in instructions {
             self.insert_instruction(instruction);
         }
+    }
+
+    fn validate_prepared_toolset_names(
+        &self,
+        toolset: &DynToolset,
+        tools: &[DynTool],
+    ) -> Result<(), ToolsetLifecycleError> {
+        let mut seen = BTreeSet::new();
+        for tool in tools {
+            let name = tool.name();
+            if !seen.insert(name.to_string()) {
+                return Err(ToolsetLifecycleError::failed(
+                    toolset.name(),
+                    format!("duplicate tool name {name:?} within prepared toolset"),
+                ));
+            }
+            if self.contains(name) {
+                return Err(ToolsetLifecycleError::failed(
+                    toolset.name(),
+                    format!("duplicate tool name {name:?} across prepared toolsets"),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Insert all tools and instructions from another registry.

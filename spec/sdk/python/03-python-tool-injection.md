@@ -238,7 +238,7 @@ capture, tool metadata, and event-loop ownership are product-specific.
 Python tool cancellation must be observable:
 
 - `ctx.is_cancelled()`
-- future `await ctx.cancelled()`
+- `await ctx.cancelled()`
 - cancellation of the Python `asyncio.Task`
 - `asyncio.CancelledError` mapped to native cancellation
 - recoverable state repaired for dangling tool calls after interruption
@@ -273,6 +273,7 @@ Current `ToolContext` exposes:
 - `approval`
 - `deferred_result`
 - `is_cancelled()`
+- `await cancelled()`
 
 Future additions should be controlled facades:
 
@@ -280,7 +281,6 @@ Future additions should be controlled facades:
 - message bus access
 - resource handles
 - environment handle
-- `await cancelled()`
 
 Do not expose a mutable raw `AgentContext` to tools unless the mutation path is
 explicitly part of a stable Starweaver contract.
@@ -310,6 +310,31 @@ Tests should cover:
 - duplicate-name sequential fallback
 - explicit `sequential=True`
 - traceback capture in private metadata
+
+Current Python package tests include end-to-end coverage for `ToolResult`
+layering from Python callbacks into native tool returns: `model_content` becomes
+the tool-return content, `app_value` and `user_content` are preserved as
+separate evidence, and `private_metadata` is retained without entering public
+tool-return `content` or `metadata`. Ordinary Python exceptions are also covered:
+tracebacks are captured in `private_metadata` while model-facing error content
+receives only the canonical tool error payload. Explicit parameter schemas are
+covered in both directions: valid object schemas reach the provider-neutral tool
+definition unchanged, while malformed explicit schemas fail at registration
+before they can enter the native runtime. Python tool timeout is covered by an
+end-to-end test that verifies the canonical timeout tool-return metadata and the
+corresponding Python coroutine cancellation. Pydantic argument validation is
+covered for both successful model construction and validation failure:
+`ValidationError` becomes a canonical `invalid_arguments` tool return with
+private Python traceback evidence. Public `InvalidArguments`, `Cancelled`, and
+`Timeout` exceptions plus standard `asyncio.CancelledError` and `TimeoutError`
+are covered with canonical tool-return metadata.
+Cancellation coverage proves Python task cancellation, `ToolContext.is_cancelled()`
+visibility, and `await ToolContext.cancelled()` visibility from the cancelled
+callback.
+Control-flow exception identity is covered for `ModelRetry`, `ApprovalRequired`,
+and `CallDeferred`: user-defined exceptions with those class names remain
+ordinary execution errors unless they are instances of the public
+`starweaver.errors` classes.
 
 Validation commands:
 

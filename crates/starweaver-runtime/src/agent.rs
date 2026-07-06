@@ -210,6 +210,26 @@ impl Agent {
         tools
     }
 
+    /// Prepare this agent's static tools and context-aware toolsets for a concrete context.
+    ///
+    /// This uses the same lifecycle-aware path as the normal run loop and is intended for
+    /// host operations that need to execute a previously suspended tool call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an agent error when a context-aware toolset cannot be prepared.
+    pub async fn prepare_tools_for_context(
+        &self,
+        context: &mut AgentContext,
+    ) -> Result<ToolRegistry, AgentError> {
+        self.prepare_run_tools(context, true).await
+    }
+
+    /// Close context-aware toolsets after host-side execution outside the normal run loop.
+    pub async fn close_toolsets_for_context(&self, context: &mut AgentContext) {
+        self.close_run_toolsets(context).await;
+    }
+
     /// Set the agent-level retry default for runtime tools.
     #[must_use]
     pub const fn with_tool_retries(mut self, max_retries: usize) -> Self {

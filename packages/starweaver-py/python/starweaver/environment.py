@@ -2,13 +2,235 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import asyncio
+import uuid
+from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import asdict, dataclass, is_dataclass
 from os import PathLike
 from pathlib import Path
-from typing import Any, cast
+from signal import Signals
+from typing import Any, Literal, cast
 
 from . import _native
 from .resources import ResourceRef, ensure_resource_ref
+
+
+def _jsonify(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    if isinstance(value, Mapping):
+        return {str(key): _jsonify(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return [_jsonify(item) for item in value]
+    if is_dataclass(value) and not isinstance(value, type):
+        return _jsonify(asdict(value))
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return _jsonify(to_dict())
+    return value
+
+
+@dataclass(frozen=True)
+class ShellProcess:
+    """Snapshot handle for a provider-owned background shell process."""
+
+    raw: dict[str, Any]
+
+    @classmethod
+    def from_raw(cls, raw: Mapping[str, Any]) -> ShellProcess:
+        return cls(dict(raw))
+
+    @property
+    def process_id(self) -> str:
+        return str(self.raw["process_id"])
+
+    @property
+    def command(self) -> str:
+        return str(self.raw.get("command") or "")
+
+    @property
+    def status(self) -> str:
+        return str(self.raw.get("status") or "running")
+
+    @property
+    def stdout(self) -> str:
+        return str(self.raw.get("stdout") or "")
+
+    @property
+    def stderr(self) -> str:
+        return str(self.raw.get("stderr") or "")
+
+    @property
+    def return_code(self) -> int | None:
+        value = self.raw.get("return_code")
+        if value is None:
+            return None
+        return int(value)
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        metadata = self.raw.get("metadata")
+        return dict(metadata) if isinstance(metadata, Mapping) else {}
+
+    @property
+    def running(self) -> bool:
+        return self.status == "running"
+
+    @property
+    def terminal(self) -> bool:
+        return self.status in {"completed", "failed", "killed"}
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.raw)
+
+
+@dataclass(frozen=True)
+class VirtualPath:
+    """Agent-facing POSIX-style path inside an environment binding."""
+
+    path: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", self.path.replace("\\", "/"))
+
+    def join(self, *parts: str) -> VirtualPath:
+        path = self.path.rstrip("/")
+        for part in parts:
+            normalized = part.replace("\\", "/").strip("/")
+            path = normalized if not path else f"{path}/{normalized}"
+        return VirtualPath(path)
+
+    def as_posix(self) -> str:
+        return self.path
+
+    def __str__(self) -> str:
+        return self.path
+
+
+@dataclass(frozen=True)
+class VirtualMount:
+    """One provider mounted into a composite workspace binding."""
+
+    id: str
+    environment: EnvironmentProvider
+    mode: Literal["read_write", "read_only"] = "read_write"
+    default: bool = False
+    default_for_shell: bool = False
+
+    @property
+    def root(self) -> VirtualPath:
+        return VirtualPath(f"/environment/{self.id}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "root": str(self.root),
+            "mode": self.mode,
+            "default": self.default,
+            "default_for_shell": self.default_for_shell,
+            "provider_id": self.environment.id,
+        }
+
+
+@dataclass(frozen=True)
+class WorkspaceBinding:
+    """Composite workspace binding over one or more environment providers."""
+
+    mounts: tuple[VirtualMount, ...]
+    id: str | None = None
+
+    def __init__(
+        self,
+        mounts: Sequence[VirtualMount],
+        *,
+        id: str | None = None,  # noqa: A002
+    ) -> None:
+        object.__setattr__(self, "mounts", tuple(mounts))
+        object.__setattr__(self, "id", id)
+
+    def environment(self) -> EnvironmentProvider:
+        return EnvironmentProvider.composite(self.mounts, id=self.id)
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"mounts": [mount.to_dict() for mount in self.mounts]}
+        if self.id is not None:
+            payload["id"] = self.id
+        return payload
+
+
+class PythonEnvironmentProvider:
+    """Python-defined provider adapted into Starweaver's native environment trait."""
+
+    id: str = "python"
+
+    def __init__(self, *, id: str | None = None) -> None:  # noqa: A002
+        if id is not None:
+            self.id = id
+
+    def to_native(self) -> _native.EnvironmentProvider:
+        provider_id = self._provider_id()
+        return _native.EnvironmentProvider.python_provider(
+            self,
+            asyncio.get_running_loop(),
+            id=provider_id,
+        )
+
+    def as_environment_provider(self) -> EnvironmentProvider:
+        return EnvironmentProvider(self.to_native())
+
+    async def read_text(self, path: str) -> str:
+        raise NotImplementedError("read_text must be implemented")
+
+    async def read_bytes(self, path: str, offset: int = 0, length: int | None = None) -> bytes:
+        data = (await self.read_text(path)).encode()
+        end = None if length is None else offset + length
+        return data[offset:end]
+
+    async def write_text(self, path: str, content: str) -> None:
+        raise NotImplementedError("write_text must be implemented")
+
+    async def create_dir(self, path: str, parents: bool = True) -> None:
+        raise NotImplementedError("create_dir must be implemented")
+
+    async def delete_path(self, path: str, recursive: bool = False) -> None:
+        raise NotImplementedError("delete_path must be implemented")
+
+    async def move_path(self, src: str, dst: str, overwrite: bool = False) -> None:
+        await self.copy_path(src, dst, overwrite=overwrite)
+        await self.delete_path(src)
+
+    async def copy_path(self, src: str, dst: str, overwrite: bool = False) -> None:
+        _ = overwrite
+        await self.write_text(dst, await self.read_text(src))
+
+    async def write_tmp_file(self, filename: str, content: str | bytes) -> str:
+        path = f".tmp/{filename.lstrip('/')}"
+        text = content.decode("utf-8") if isinstance(content, bytes) else content
+        await self.write_text(path, text)
+        return path
+
+    async def stat(self, path: str) -> dict[str, Any]:
+        raise NotImplementedError("stat must be implemented")
+
+    async def list(self, path: str = "") -> list[str]:
+        raise NotImplementedError("list must be implemented")
+
+    async def run_shell(self, command: Mapping[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError("run_shell must be implemented")
+
+    async def render_context(self) -> str | None:
+        return None
+
+    async def export_state(self) -> dict[str, Any]:
+        return {"provider_id": self._provider_id()}
+
+    def _provider_id(self) -> str:
+        provider_id = getattr(self, "id", None)
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            raise ValueError("environment provider id must not be empty")
+        return provider_id
 
 
 class EnvironmentProvider:
@@ -16,6 +238,21 @@ class EnvironmentProvider:
 
     def __init__(self, native: _native.EnvironmentProvider) -> None:
         self._native = native
+
+    @classmethod
+    def from_python(
+        cls,
+        provider: PythonEnvironmentProvider,
+        *,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider:
+        return cls(
+            _native.EnvironmentProvider.python_provider(
+                provider,
+                asyncio.get_running_loop(),
+                id=id,
+            )
+        )
 
     @classmethod
     def virtual(
@@ -63,12 +300,93 @@ class EnvironmentProvider:
             )
         )
 
+    @classmethod
+    def composite(
+        cls,
+        mounts: Sequence[VirtualMount],
+        *,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider:
+        return cls(
+            _native.EnvironmentProvider.composite(
+                [mount.id for mount in mounts],
+                [mount.environment.to_native() for mount in mounts],
+                id=id,
+                modes=[mount.mode for mount in mounts],
+                defaults=[mount.default for mount in mounts],
+                default_for_shell=[mount.default_for_shell for mount in mounts],
+            )
+        )
+
+    @classmethod
+    def envd_local(
+        cls,
+        environment: EnvironmentProvider | _native.EnvironmentProvider,
+        *,
+        environment_id: str | None = None,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider:
+        native_environment = ensure_environment_provider(environment)
+        if native_environment is None:
+            raise TypeError("environment must be an EnvironmentProvider")
+        return cls(
+            _native.EnvironmentProvider.envd_local(
+                native_environment,
+                environment_id=environment_id,
+                id=id,
+            )
+        )
+
+    @classmethod
+    def envd_http(
+        cls,
+        endpoint: str,
+        *,
+        environment_id: str = "env_cli_default",
+        token: str | None = None,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider:
+        return cls(
+            _native.EnvironmentProvider.envd_http(
+                endpoint,
+                environment_id=environment_id,
+                token=token,
+                id=id,
+            )
+        )
+
+    @classmethod
+    def envd_stdio(
+        cls,
+        program: str | PathLike[str],
+        *,
+        args: Sequence[str] | None = None,
+        environment_id: str = "env_cli_default",
+        id: str | None = None,  # noqa: A002
+    ) -> EnvironmentProvider:
+        return cls(
+            _native.EnvironmentProvider.envd_stdio(
+                str(Path(program)),
+                args=list(args or ()),
+                environment_id=environment_id,
+                id=id,
+            )
+        )
+
     @property
     def id(self) -> str:
         return self._native.id
 
     def to_native(self) -> _native.EnvironmentProvider:
         return self._native
+
+    @property
+    def files(self) -> FileOperator:
+        return FileOperator(self)
+
+    @property
+    def shell(self) -> Shell:
+        return Shell(self)
 
     async def read_text(self, path: str) -> str:
         return cast(str, await self._native.read_text(path))
@@ -93,6 +411,12 @@ class EnvironmentProvider:
 
     async def delete_path(self, path: str, *, recursive: bool = False) -> None:
         await self._native.delete_path(path, recursive)
+
+    async def move_path(self, src: str, dst: str, *, overwrite: bool = False) -> None:
+        await self._native.move_path(src, dst, overwrite)
+
+    async def copy_path(self, src: str, dst: str, *, overwrite: bool = False) -> None:
+        await self._native.copy_path(src, dst, overwrite)
 
     async def list(self, path: str = "") -> list[str]:
         return cast(list[str], await self._native.list(path))
@@ -164,6 +488,11 @@ class EnvironmentProvider:
             ),
         )
 
+    async def render_context(self) -> str | None:
+        """Render provider-supplied model-facing environment context."""
+
+        return cast(str | None, await self._native.render_context())
+
     async def run_shell(
         self,
         command: str,
@@ -182,8 +511,349 @@ class EnvironmentProvider:
             ),
         )
 
+    async def start_process(
+        self,
+        command: str,
+        *,
+        timeout_seconds: int | None = None,
+        cwd: str | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> ShellProcess:
+        return ShellProcess.from_raw(
+            cast(
+                dict[str, Any],
+                await self._native.start_process(
+                    command,
+                    timeout_seconds=timeout_seconds,
+                    cwd=cwd,
+                    environment=dict(environment or {}),
+                ),
+            )
+        )
+
+    async def wait_process(
+        self,
+        process: ShellProcess | str,
+        *,
+        timeout_seconds: int = 0,
+    ) -> ShellProcess:
+        return ShellProcess.from_raw(
+            cast(
+                dict[str, Any],
+                await self._native.wait_process(
+                    _process_id(process),
+                    timeout_seconds=timeout_seconds,
+                ),
+            )
+        )
+
+    async def list_processes(self) -> list[ShellProcess]:
+        snapshots = cast(list[dict[str, Any]], await self._native.list_processes())
+        return [ShellProcess.from_raw(snapshot) for snapshot in snapshots]
+
+    async def input_process(
+        self,
+        process: ShellProcess | str,
+        text: str,
+        *,
+        close_stdin: bool = False,
+    ) -> ShellProcess:
+        return ShellProcess.from_raw(
+            cast(
+                dict[str, Any],
+                await self._native.input_process(
+                    _process_id(process),
+                    text,
+                    close_stdin=close_stdin,
+                ),
+            )
+        )
+
+    async def signal_process(
+        self,
+        process: ShellProcess | str,
+        signal: int | str,
+    ) -> ShellProcess:
+        return ShellProcess.from_raw(
+            cast(
+                dict[str, Any],
+                await self._native.signal_process(_process_id(process), _signal_number(signal)),
+            )
+        )
+
+    async def kill_process(self, process: ShellProcess | str) -> ShellProcess:
+        return ShellProcess.from_raw(
+            cast(dict[str, Any], await self._native.kill_process(_process_id(process)))
+        )
+
     async def export_state(self) -> dict[str, Any]:
         return cast(dict[str, Any], await self._native.export_state())
+
+
+class Environment(EnvironmentProvider):
+    """Semantic base facade for Rust-owned environment providers."""
+
+
+class VirtualEnvironment(Environment):
+    """Deterministic in-memory environment backed by the native virtual provider."""
+
+    def __init__(
+        self,
+        native: _native.EnvironmentProvider | None = None,
+        *,
+        id: str = "virtual",  # noqa: A002
+        files: Mapping[str, str] | None = None,
+        resources: Sequence[ResourceRef | Mapping[str, Any]] | None = None,
+        shell_outputs: Mapping[str, str | Mapping[str, Any]] | None = None,
+        tmp_namespace: str | None = None,
+    ) -> None:
+        super().__init__(
+            native
+            or _native.EnvironmentProvider.virtual_provider(
+                id,
+                files=dict(files or {}),
+                resources=[ensure_resource_ref(resource).to_dict() for resource in resources or ()],
+                shell_outputs=dict(shell_outputs or {}),
+                tmp_namespace=tmp_namespace,
+            )
+        )
+
+
+class LocalEnvironment(Environment):
+    """Local filesystem environment backed by the native local provider."""
+
+    def __init__(
+        self,
+        root: str | PathLike[str] | _native.EnvironmentProvider,
+        *,
+        id: str | None = None,  # noqa: A002
+        allowed_paths: Sequence[str | PathLike[str]] | None = None,
+        context_file_tree_roots: Sequence[str | PathLike[str]] | None = None,
+        writable: bool = False,
+        allow_shell: bool = False,
+        allowed_programs: Sequence[str] | None = None,
+        tmp_namespace: str | None = None,
+    ) -> None:
+        if isinstance(root, _native.EnvironmentProvider):
+            super().__init__(root)
+            return
+        super().__init__(
+            _native.EnvironmentProvider.local(
+                str(Path(root)),
+                id=id,
+                allowed_paths=[str(Path(path)) for path in allowed_paths or ()],
+                context_file_tree_roots=[str(Path(path)) for path in context_file_tree_roots or ()],
+                writable=writable,
+                allow_shell=allow_shell,
+                allowed_programs=list(allowed_programs or ()),
+                tmp_namespace=tmp_namespace,
+            )
+        )
+
+
+class EnvdEnvironment(Environment):
+    """Environment facade backed by local, HTTP, or stdio envd providers."""
+
+    @classmethod
+    def from_local(
+        cls,
+        environment: EnvironmentProvider | _native.EnvironmentProvider,
+        *,
+        environment_id: str | None = None,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvdEnvironment:
+        native_environment = ensure_environment_provider(environment)
+        if native_environment is None:
+            raise TypeError("environment must be an EnvironmentProvider")
+        return cls(
+            _native.EnvironmentProvider.envd_local(
+                native_environment,
+                environment_id=environment_id,
+                id=id,
+            )
+        )
+
+    @classmethod
+    def http(
+        cls,
+        endpoint: str,
+        *,
+        environment_id: str = "env_cli_default",
+        token: str | None = None,
+        id: str | None = None,  # noqa: A002
+    ) -> EnvdEnvironment:
+        return cls(
+            _native.EnvironmentProvider.envd_http(
+                endpoint,
+                environment_id=environment_id,
+                token=token,
+                id=id,
+            )
+        )
+
+    @classmethod
+    def stdio(
+        cls,
+        program: str | PathLike[str],
+        *,
+        args: Sequence[str] | None = None,
+        environment_id: str = "env_cli_default",
+        id: str | None = None,  # noqa: A002
+    ) -> EnvdEnvironment:
+        return cls(
+            _native.EnvironmentProvider.envd_stdio(
+                str(Path(program)),
+                args=list(args or ()),
+                environment_id=environment_id,
+                id=id,
+            )
+        )
+
+
+class FileOperator:
+    """Application-facing file facade over an environment provider."""
+
+    def __init__(self, environment: EnvironmentProvider) -> None:
+        self.environment = environment
+
+    async def read(self, path: str) -> str:
+        return await self.environment.read_text(path)
+
+    async def read_bytes(
+        self,
+        path: str,
+        *,
+        offset: int = 0,
+        length: int | None = None,
+    ) -> bytes:
+        return await self.environment.read_bytes(path, offset=offset, length=length)
+
+    async def write(self, path: str, content: str) -> None:
+        await self.environment.write_text(path, content)
+
+    async def list_with_options(
+        self,
+        path: str = "",
+        *,
+        max_entries: int = 0,
+        ignore_patterns: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        return await self.environment.list_with_options(
+            path,
+            max_entries=max_entries,
+            ignore_patterns=ignore_patterns,
+        )
+
+    async def list_dir_with_types(
+        self,
+        path: str = "",
+        *,
+        max_entries: int = 0,
+        ignore_patterns: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        listing = await self.list_with_options(
+            path,
+            max_entries=max_entries,
+            ignore_patterns=ignore_patterns,
+        )
+        entries: list[dict[str, Any]] = []
+        for name in listing.get("entries", []):
+            child_path = _join_provider_path(path, str(name))
+            stat = await self.environment.stat(child_path)
+            entries.append({"name": str(name), "path": child_path, **stat})
+        return entries
+
+    async def walk_files(
+        self,
+        root: str = "",
+        *,
+        include_hidden: bool = False,
+        include_ignored: bool = False,
+        max_results: int = 500,
+    ) -> AsyncIterator[dict[str, Any]]:
+        matches = await self.environment.glob(
+            "**/*",
+            path=root,
+            include_hidden=include_hidden,
+            include_ignored=include_ignored,
+            max_results=max_results,
+        )
+        for match in matches:
+            path = str(match["path"])
+            yield {"path": path, **await self.environment.stat(path)}
+
+    async def truncate_to_tmp(
+        self,
+        content: str | bytes,
+        *,
+        suffix: str = ".txt",
+    ) -> ResourceRef:
+        filename = f"{uuid.uuid4().hex}{suffix}"
+        path = await self.environment.write_tmp_file(filename, content)
+        return ResourceRef.typed(path, kind="file", metadata={"path": path})
+
+
+class Shell:
+    """Application-facing foreground shell facade over an environment provider."""
+
+    def __init__(self, environment: EnvironmentProvider) -> None:
+        self.environment = environment
+
+    async def execute(
+        self,
+        command: str,
+        *,
+        timeout_seconds: int | None = None,
+        cwd: str | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return await self.environment.run_shell(
+            command,
+            timeout_seconds=timeout_seconds,
+            cwd=cwd,
+            environment=environment,
+        )
+
+    async def start(
+        self,
+        command: str,
+        *,
+        timeout_seconds: int | None = None,
+        cwd: str | None = None,
+        environment: Mapping[str, str] | None = None,
+    ) -> ShellProcess:
+        return await self.environment.start_process(
+            command,
+            timeout_seconds=timeout_seconds,
+            cwd=cwd,
+            environment=environment,
+        )
+
+    async def wait_process(
+        self,
+        handle: ShellProcess | str,
+        *,
+        timeout_seconds: int = 0,
+    ) -> ShellProcess:
+        return await self.environment.wait_process(handle, timeout_seconds=timeout_seconds)
+
+    async def list_processes(self) -> list[ShellProcess]:
+        return await self.environment.list_processes()
+
+    async def kill_process(self, handle: ShellProcess | str) -> ShellProcess:
+        return await self.environment.kill_process(handle)
+
+    async def write_stdin(
+        self,
+        handle: ShellProcess | str,
+        data: str,
+        *,
+        close_stdin: bool = False,
+    ) -> ShellProcess:
+        return await self.environment.input_process(handle, data, close_stdin=close_stdin)
+
+    async def send_signal(self, handle: ShellProcess | str, signal: int | str) -> ShellProcess:
+        return await self.environment.signal_process(handle, signal)
 
 
 def ensure_environment_provider(
@@ -197,3 +867,21 @@ def ensure_environment_provider(
     if isinstance(value, _native.EnvironmentProvider):
         return value
     raise TypeError("environment must be an EnvironmentProvider")
+
+
+def _join_provider_path(root: str, name: str) -> str:
+    root = root.strip("/")
+    return name if not root else f"{root}/{name}"
+
+
+def _process_id(process: ShellProcess | str) -> str:
+    return process.process_id if isinstance(process, ShellProcess) else str(process)
+
+
+def _signal_number(signal: int | str) -> int:
+    if isinstance(signal, int):
+        return signal
+    name = signal.upper()
+    if not name.startswith("SIG"):
+        name = f"SIG{name}"
+    return Signals[name].value

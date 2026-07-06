@@ -1046,6 +1046,12 @@ fn search_direct_tools(
     arguments: &SearchToolsArgs,
     search_tool_name: &str,
 ) -> ToolResult {
+    publish_tool_search_initialization_event(
+        inner,
+        context,
+        TOOL_SEARCH_TOOLSET_NAME,
+        search_tool_name,
+    );
     if arguments.query.trim().is_empty() {
         publish_tool_search_query_event(
             context,
@@ -1096,6 +1102,22 @@ fn search_direct_tools(
         "loaded_tools": loaded_tools,
         "loaded_namespaces": loaded_namespaces,
     }))
+}
+
+fn publish_tool_search_initialization_event(
+    inner: &ToolProxyInner,
+    context: &ToolContext,
+    toolset_name: &str,
+    search_tool_name: &str,
+) {
+    let Some(handle) = context.dependency::<AgentContextHandle>() else {
+        return;
+    };
+    handle.update(|agent_context| {
+        let report =
+            inner.initialization_report(toolset_name, search_tool_name, Some(agent_context));
+        publish_tool_search_report(agent_context, TOOL_SEARCH_INITIALIZED_EVENT_KIND, &report);
+    });
 }
 
 pub(super) fn publish_tool_search_query_event(

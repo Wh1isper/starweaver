@@ -66,6 +66,7 @@ Required P0 contract:
 
 - stable name;
 - static tools;
+- context-aware dynamic tools through `AbstractToolset`;
 - grouped instructions;
 - metadata;
 - per-agent and per-run `toolsets=[...]`;
@@ -73,14 +74,15 @@ Required P0 contract:
 - raw tool metadata available for inspection;
 - collision errors are typed and deterministic.
 
-Later extensions can add async lifecycle, prepare hooks, dynamic filtering,
-approval/deferred wrappers, capability tags, supersession, and
-environment-backed toolsets. Those extensions must use Starweaver capability or
-toolset contracts instead of a Python-only middleware stack.
+Later extensions can add dynamic filtering, approval/deferred wrappers,
+capability tags, supersession, and richer environment-backed toolsets. Those
+extensions must use Starweaver capability or toolset contracts instead of a
+Python-only middleware stack.
 
 `11-python-native-toolsets.md` is the authoritative design for the Python-native
-builder layer that should add `FunctionToolset`, decorators, toolset wrappers,
-dynamic factories, lifecycle callbacks, and durable ID validation.
+builder layer that should add `AbstractToolset`, the `PythonDynamicToolset`
+bridge, `FunctionToolset`, decorators, toolset wrappers, dynamic factories,
+lifecycle callbacks, and durable ID validation.
 
 ## ToolLibrary, ToolSearchToolset, And ToolProxyToolset
 
@@ -187,6 +189,23 @@ class Shell:
     async def send_signal(self, handle: ExecutionHandle, signal: str) -> None: ...
 ```
 
+Current status: `Environment` is the semantic Python facade over
+`EnvironmentProvider`, and `VirtualEnvironment`, `LocalEnvironment`, and
+`EnvdEnvironment` provide named constructors over the same Rust-owned provider
+families. `FileOperator` is implemented over existing provider file methods.
+`Shell.execute(...)` is implemented over foreground provider shell execution,
+and background process methods are implemented over the Rust
+`ProcessShellProvider` snapshot contract. Python returns `ShellProcess`
+snapshots and does not own the live process store. `WorkspaceBinding`,
+`VirtualMount`, and `VirtualPath` are implemented as Python value objects over
+the Rust `CompositeEnvironmentProvider`, including `/environment/{id}` routing,
+read-only mount enforcement, default shell mount selection, and process-id
+rebasing. `EnvironmentProvider.envd_local(...)`, `envd_http(...)`, and
+`envd_stdio(...)` plus `EnvdEnvironment.from_local(...)`, `http(...)`, and
+`stdio(...)` are implemented over `EnvdEnvironmentProvider`, `LocalEnvd`, and
+`EnvdRpcClient`, so Python applications can bind local or remote envd services
+without reimplementing the envd protocol.
+
 Rules:
 
 - `allowed_paths` is a capability boundary;
@@ -221,6 +240,14 @@ Rules:
   deserializing arbitrary Python objects;
 - large tool outputs should use `ResourceRef` or temp spill when available.
 
+Current Python evidence covers `BaseResource`, `ResumableResource`,
+`InstructableResource`, `ResourceRef`, `ResourceRegistry`, and
+`ResourceRegistryState` facades, resource refs attached to environment providers
+and dynamic toolset context, typed resource and registry state/restore helpers
+for serializable resource references, and durable `InputPart.file(...)` /
+`InputPart.binary(...)` helpers accepting `ResourceRef` values while emitting
+canonical session input JSON.
+
 ## MediaUploader
 
 Python media helpers configure Starweaver media/filter seams and optional
@@ -241,6 +268,14 @@ Rules:
 - optional storage dependencies remain optional;
 - private media URLs and redaction details stay out of model-visible content.
 
+Current Python evidence covers successful upload callbacks returning
+`ResourceRef`-style content parts, the concrete
+`MediaUploader.resource_store(...)` adapter for product-owned resource stores,
+preflight evidence passed to the callback/store, and upload failure metadata
+that keeps adapter-private URLs out of model-visible content while allowing the
+run to continue. Product-specific S3 clients, credential rotation, and retention
+policy remain above the SDK.
+
 ## StreamAdapter
 
 Stream adapters are projections over `starweaver-stream`.
@@ -251,6 +286,13 @@ Potential adapters:
 - AG-UI-style adapter;
 - SSE cursor adapter;
 - replay buffer helper.
+
+Current implementation status: `StreamAdapter` preserves raw records and now
+projects already-collected or replayed records into display messages, AG-UI
+event dictionaries/JSONL, raw SSE frames/text, cursor ranges, replay windows,
+and replay buffers. These helpers remain projections only; live stream fanout,
+authorization, notification delivery, and product session state stay above the
+SDK.
 
 Rules:
 
@@ -272,6 +314,17 @@ Target:
 - gateway endpoint overrides;
 - WebSocket Responses opt-in;
 - refresh status helpers.
+
+Current implementation status: Python exposes `ProviderModel.openai(...)`,
+explicit OpenAI protocol constructors, `ProviderModel.codex_oauth(...)`,
+gateway base URL and endpoint overrides, Responses stream transport selection,
+and `ProviderAuth` status helpers. `ProviderAuth.status()` and
+`ProviderAuth.account_metadata()` read Rust-owned OAuth store records and return
+safe account/refresh metadata without exposing token material;
+`ProviderAuth.redacted_record()` preserves the provider record shape with token
+fields replaced by redaction markers. `ProviderModel.codex_oauth(...)` accepts
+the same explicit `auth_file` path so diagnostics and model construction use
+one store.
 
 Rules:
 
@@ -318,7 +371,8 @@ Advanced composition is correct only if:
   and environment-backed resources through Starweaver-owned contracts;
 - dynamic tool search/proxy state is serializable by ID;
 - environment helpers respect `allowed_paths` and `instructions_paths`
-  separately;
+  separately, with `render_context()` available to inspect model-facing
+  environment context;
 - resource lifecycle belongs to the environment/provider;
 - provider routing uses typed settings, not generic metadata;
 - stream adapters preserve raw records and stable cursors;

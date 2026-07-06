@@ -75,6 +75,11 @@ async def inspect_payload(args: dict[str, object]) -> dict[str, object]:
     return {"keys": sorted(args)}
 ```
 
+Explicit parameter schemas must be JSON-compatible object schemas. Starweaver
+rejects schemas with non-object top-level types, malformed `properties`,
+malformed `required` lists, invalid `additionalProperties` values, or values
+that cannot be serialized to JSON.
+
 ## Tool Context
 
 Add a first `ToolContext` parameter when the tool needs runtime state,
@@ -90,7 +95,9 @@ async def deploy(ctx: ToolContext, args: dict[str, object]) -> dict[str, bool]:
 ```
 
 `ToolContext` must precede business arguments. A business parameter named
-`context` is allowed when it is not typed as `ToolContext`.
+`context` is allowed when it is not typed as `ToolContext`. Use
+`ctx.is_cancelled()` for a synchronous check and `await ctx.cancelled()` to wait
+until Starweaver requests cooperative cancellation.
 
 ## Class Tools
 
@@ -127,6 +134,39 @@ async def append_audit_line(line: str) -> dict[str, bool]:
 The runtime automatically falls back to sequential execution when the same tool
 name appears more than once in one model response. That keeps duplicate writes
 predictable without making unrelated tools slower.
+
+Set `strict=True` when the provider should receive a strict tool definition. In
+strict mode, Starweaver requires every Python tool to have an explicit
+`description` or a function docstring at registration time.
+
+## Structured Results
+
+Return `ToolResult` when a tool needs separate application, model, user, and
+debug surfaces:
+
+```python
+from starweaver import ToolResult, tool
+
+
+@tool(parameters_schema={"type": "object", "properties": {}})
+async def inspect_release(args: dict[str, object]) -> ToolResult:
+    return ToolResult(
+        {"raw": "application record"},
+        metadata={"audit": "release"},
+        app_value={"release_id": 42},
+        model_content={"summary": "release is ready"},
+        user_content={"markdown": "**Ready**"},
+        private_metadata={"trace_id": "host-only"},
+    )
+```
+
+`model_content` becomes the tool-return content used for the next model
+request. `metadata` is public tool-return metadata. `app_value` and
+`user_content` remain available to application and UI code. `private_metadata`
+is preserved in canonical stream/session evidence for debugging, but it must not
+be treated as model-facing content. Python exception tracebacks are captured in
+private metadata and are kept out of public tool-return `content` and
+`metadata`.
 
 ## Control Flow
 
@@ -165,6 +205,11 @@ async def run_with_approval(model) -> None:
 Deferred helpers mirror approvals: use `waiting.hitl.deferred[0].complete(...)`
 or pass canonical deferred-result JSON to
 `resume_after_hitl(deferred_results=...)`.
+
+When approval policy is profile-level rather than tool-implementation-level,
+pass `approval_required_tools=[...]` to `create_agent(...)` or
+`create_agent_runtime(...)`. Entries match native Starweaver approval policy:
+tool name, toolset name/id, metadata bundle, or `*`.
 
 ## Metadata, Retry, And Timeout
 
