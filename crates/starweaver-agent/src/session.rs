@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_context::{AgentContext, AgentContextHandle, BusMessage, ResumableState};
+use starweaver_context::{
+    AgentContext, AgentContextHandle, BusMessage, ResumableState, SecurityConfig, ToolConfig,
+};
 use starweaver_core::{Metadata, SessionId, TraceContext};
 use starweaver_environment::{DynEnvironmentProvider, EnvironmentError, EnvironmentState};
 use starweaver_model::{ModelRequestParameters, ModelSettings, ToolCallPart, ToolReturnPart};
@@ -51,7 +53,10 @@ pub struct AgentRunOptions {
     tools: ToolRegistry,
     toolsets: Vec<DynToolset>,
     replace_tools: bool,
+    context_metadata: Metadata,
     trace_metadata: Metadata,
+    tool_config: Option<ToolConfig>,
+    security: Option<SecurityConfig>,
 }
 
 impl AgentRunOptions {
@@ -120,6 +125,32 @@ impl AgentRunOptions {
         self
     }
 
+    /// Add metadata visible to runtime context, tools, toolsets, and result state
+    /// for this run only.
+    ///
+    /// This metadata is composed over the session context while the run is active
+    /// and restored afterwards, so it can carry product run context without
+    /// mutating the reusable session.
+    #[must_use]
+    pub fn context_metadata(mut self, metadata: Metadata) -> Self {
+        merge_metadata(&mut self.context_metadata, metadata);
+        self
+    }
+
+    /// Override tool-level configuration for this run only.
+    #[must_use]
+    pub fn tool_config(mut self, tool_config: ToolConfig) -> Self {
+        self.tool_config = Some(tool_config);
+        self
+    }
+
+    /// Override security configuration for this run only.
+    #[must_use]
+    pub fn security(mut self, security: SecurityConfig) -> Self {
+        self.security = Some(security);
+        self
+    }
+
     /// Merge tools from another registry into this run.
     #[must_use]
     pub fn append_tool_registry(mut self, tools: &ToolRegistry) -> Self {
@@ -157,6 +188,9 @@ impl AgentRunOptions {
         }
         if let Some(policy) = self.output_policy {
             override_builder = override_builder.output_policy(policy);
+        }
+        if let Some(tool_config) = self.tool_config {
+            override_builder = override_builder.tool_config(Some(tool_config));
         }
         override_builder.build()
     }
@@ -1136,13 +1170,21 @@ impl AgentSession {
         options: AgentRunOptions,
     ) -> Result<AgentResult, AgentError> {
         let trace_metadata = options.trace_metadata.clone();
-        let original_metadata = apply_run_trace_metadata(&mut self.context, &trace_metadata);
+        let context_metadata = options.context_metadata.clone();
+        let restore = apply_run_context_overrides(
+            &mut self.context,
+            &context_metadata,
+            &trace_metadata,
+            options.tool_config.as_ref(),
+            options.security.as_ref(),
+        );
         let result = options
             .apply(&self.agent)
             .run_with_context(prompt, &mut self.context)
             .await;
-        restore_context_metadata(&mut self.context, original_metadata);
+        restore_context_overrides(&mut self.context, restore);
         let mut result = result?;
+        attach_result_context_metadata(&mut result, &context_metadata);
         attach_result_trace_metadata(&mut result, &trace_metadata);
         self.record_result(&result);
         Ok(result)
@@ -1178,13 +1220,21 @@ impl AgentSession {
     ) -> Result<AgentStreamResult, AgentError> {
         let mut events = Vec::<AgentStreamRecord>::new();
         let trace_metadata = options.trace_metadata.clone();
-        let original_metadata = apply_run_trace_metadata(&mut self.context, &trace_metadata);
+        let context_metadata = options.context_metadata.clone();
+        let restore = apply_run_context_overrides(
+            &mut self.context,
+            &context_metadata,
+            &trace_metadata,
+            options.tool_config.as_ref(),
+            options.security.as_ref(),
+        );
         let result = options
             .apply(&self.agent)
             .run_with_context_and_stream_events(prompt, &mut self.context, &mut events)
             .await;
-        restore_context_metadata(&mut self.context, original_metadata);
+        restore_context_overrides(&mut self.context, restore);
         let mut result = result?;
+        attach_result_context_metadata(&mut result, &context_metadata);
         attach_result_trace_metadata(&mut result, &trace_metadata);
         self.record_result(&result);
         Ok(AgentStreamResult { result, events })
@@ -1263,10 +1313,17 @@ impl AgentSession {
         options: AgentRunOptions,
     ) -> AgentStreamHandle {
         let trace_metadata = options.trace_metadata.clone();
+        let context_metadata = options.context_metadata.clone();
         let mut context = self.context.clone();
-        let original_metadata = apply_run_trace_metadata(&mut context, &trace_metadata);
+        let restore = apply_run_context_overrides(
+            &mut context,
+            &context_metadata,
+            &trace_metadata,
+            options.tool_config.as_ref(),
+            options.security.as_ref(),
+        );
         start_session_stream(options.apply(&self.agent), context, prompt.into())
-            .with_optional_temporary_trace_metadata(original_metadata, trace_metadata)
+            .with_optional_temporary_run_context(restore, context_metadata, trace_metadata)
     }
 
     /// Try to start a live stream run with per-run SDK overrides.
@@ -1281,11 +1338,18 @@ impl AgentSession {
         options: AgentRunOptions,
     ) -> Result<AgentStreamHandle, AgentStreamError> {
         let trace_metadata = options.trace_metadata.clone();
+        let context_metadata = options.context_metadata.clone();
         let mut context = self.context.clone();
-        let original_metadata = apply_run_trace_metadata(&mut context, &trace_metadata);
+        let restore = apply_run_context_overrides(
+            &mut context,
+            &context_metadata,
+            &trace_metadata,
+            options.tool_config.as_ref(),
+            options.security.as_ref(),
+        );
         Ok(
             try_start_session_stream(options.apply(&self.agent), context, prompt.into())?
-                .with_optional_temporary_trace_metadata(original_metadata, trace_metadata),
+                .with_optional_temporary_run_context(restore, context_metadata, trace_metadata),
         )
     }
 
@@ -1302,15 +1366,22 @@ impl AgentSession {
         stream_options: AgentStreamOptions,
     ) -> AgentStreamHandle {
         let trace_metadata = options.trace_metadata.clone();
+        let context_metadata = options.context_metadata.clone();
         let mut context = self.context.clone();
-        let original_metadata = apply_run_trace_metadata(&mut context, &trace_metadata);
+        let restore = apply_run_context_overrides(
+            &mut context,
+            &context_metadata,
+            &trace_metadata,
+            options.tool_config.as_ref(),
+            options.security.as_ref(),
+        );
         start_session_stream_with_options(
             options.apply(&self.agent),
             context,
             prompt.into(),
             stream_options,
         )
-        .with_optional_temporary_trace_metadata(original_metadata, trace_metadata)
+        .with_optional_temporary_run_context(restore, context_metadata, trace_metadata)
     }
 
     /// Try to start a live stream run with both run overrides and stream delivery options.
@@ -1326,15 +1397,22 @@ impl AgentSession {
         stream_options: AgentStreamOptions,
     ) -> Result<AgentStreamHandle, AgentStreamError> {
         let trace_metadata = options.trace_metadata.clone();
+        let context_metadata = options.context_metadata.clone();
         let mut context = self.context.clone();
-        let original_metadata = apply_run_trace_metadata(&mut context, &trace_metadata);
+        let restore = apply_run_context_overrides(
+            &mut context,
+            &context_metadata,
+            &trace_metadata,
+            options.tool_config.as_ref(),
+            options.security.as_ref(),
+        );
         Ok(try_start_session_stream_with_options(
             options.apply(&self.agent),
             context,
             prompt.into(),
             stream_options,
         )?
-        .with_optional_temporary_trace_metadata(original_metadata, trace_metadata))
+        .with_optional_temporary_run_context(restore, context_metadata, trace_metadata))
     }
 }
 
@@ -1443,21 +1521,60 @@ fn merge_metadata(target: &mut Metadata, incoming: Metadata) {
     }
 }
 
-fn apply_run_trace_metadata(
+#[derive(Clone, Debug)]
+pub(crate) struct RunContextRestore {
+    pub(crate) metadata: Option<Metadata>,
+    pub(crate) tool_config: Option<ToolConfig>,
+    pub(crate) security: Option<SecurityConfig>,
+}
+
+fn apply_run_context_overrides(
     context: &mut AgentContext,
+    context_metadata: &Metadata,
     trace_metadata: &Metadata,
-) -> Option<Metadata> {
-    if trace_metadata.is_empty() {
+    tool_config: Option<&ToolConfig>,
+    security: Option<&SecurityConfig>,
+) -> Option<RunContextRestore> {
+    if context_metadata.is_empty()
+        && trace_metadata.is_empty()
+        && tool_config.is_none()
+        && security.is_none()
+    {
         return None;
     }
-    let original = context.metadata.clone();
-    merge_metadata(&mut context.metadata, trace_metadata.clone());
+    let original = RunContextRestore {
+        metadata: (!context_metadata.is_empty() || !trace_metadata.is_empty())
+            .then(|| context.metadata.clone()),
+        tool_config: tool_config.map(|_| context.tool_config.clone()),
+        security: security.map(|_| context.security.clone()),
+    };
+    if !context_metadata.is_empty() {
+        merge_metadata(&mut context.metadata, context_metadata.clone());
+    }
+    if !trace_metadata.is_empty() {
+        merge_metadata(&mut context.metadata, trace_metadata.clone());
+    }
+    if let Some(security) = security {
+        context.security = security.clone();
+    }
     Some(original)
 }
 
-fn restore_context_metadata(context: &mut AgentContext, original_metadata: Option<Metadata>) {
-    if let Some(original_metadata) = original_metadata {
+pub(crate) fn restore_context_overrides(
+    context: &mut AgentContext,
+    restore: Option<RunContextRestore>,
+) {
+    let Some(restore) = restore else {
+        return;
+    };
+    if let Some(original_metadata) = restore.metadata {
         context.metadata = original_metadata;
+    }
+    if let Some(tool_config) = restore.tool_config {
+        context.tool_config = tool_config;
+    }
+    if let Some(security) = restore.security {
+        context.security = security;
     }
 }
 
@@ -1467,6 +1584,12 @@ fn attach_result_trace_metadata(result: &mut AgentResult, trace_metadata: &Metad
             TRACE_METADATA_STATE_KEY.to_string(),
             Value::Object(trace_metadata.clone()),
         );
+    }
+}
+
+fn attach_result_context_metadata(result: &mut AgentResult, context_metadata: &Metadata) {
+    if !context_metadata.is_empty() {
+        merge_metadata(&mut result.state.metadata, context_metadata.clone());
     }
 }
 
@@ -1597,13 +1720,21 @@ impl AgentSession {
         options: AgentRunOptions,
     ) -> Result<AgentIterResult, AgentError> {
         let trace_metadata = options.trace_metadata.clone();
-        let original_metadata = apply_run_trace_metadata(&mut self.context, &trace_metadata);
+        let context_metadata = options.context_metadata.clone();
+        let restore = apply_run_context_overrides(
+            &mut self.context,
+            &context_metadata,
+            &trace_metadata,
+            options.tool_config.as_ref(),
+            options.security.as_ref(),
+        );
         let result = options
             .apply(&self.agent)
             .run_with_context_iter(prompt, &mut self.context)
             .await;
-        restore_context_metadata(&mut self.context, original_metadata);
+        restore_context_overrides(&mut self.context, restore);
         let mut result = result?;
+        attach_result_context_metadata(&mut result.result, &context_metadata);
         attach_result_trace_metadata(&mut result.result, &trace_metadata);
         self.record_result(&result.result);
         Ok(result)

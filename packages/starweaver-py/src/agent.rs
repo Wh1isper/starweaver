@@ -17,6 +17,7 @@ use starweaver_agent::{
     AgentRuntime as SdkAgentRuntime, AgentRuntimeBuilder, AgentSession, AgentStreamController,
     AgentStreamCurrentError, AgentStreamDropPolicy, AgentStreamError, AgentStreamHandle,
     AgentStreamOptions, AgentStreamRunStatus, BusMessage, ModelConfig, ResumableState,
+    SecurityConfig, ToolConfig,
 };
 use starweaver_core::{RunId, SessionId};
 use starweaver_model::ToolReturnPart;
@@ -50,6 +51,7 @@ use crate::{
 pub struct PyAgent {
     inner: RuntimeAgent,
     default_environment: Option<starweaver_environment::DynEnvironmentProvider>,
+    default_security: Option<SecurityConfig>,
 }
 
 impl PyAgent {
@@ -61,7 +63,7 @@ impl PyAgent {
 #[pymethods]
 impl PyAgent {
     #[new]
-    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None, toolsets=None, approval_required_tools=None, runtime_config=None, skills=None, environment=None, media_uploader=None))]
+    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None, toolsets=None, approval_required_tools=None, runtime_config=None, skills=None, environment=None, media_uploader=None, tool_config=None, security=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -82,6 +84,8 @@ impl PyAgent {
         skills: Option<&Bound<'_, PyAny>>,
         environment: Option<&Bound<'_, PyAny>>,
         media_uploader: Option<&Bound<'_, PyAny>>,
+        tool_config: Option<&Bound<'_, PyAny>>,
+        security: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         if output_schema.is_some() && output_policy.is_some() {
             return Err(PyValueError::new_err(
@@ -115,6 +119,9 @@ impl PyAgent {
         if let Some(model_config) = extract_runtime_model_config(py, runtime_config)? {
             builder = builder.model_config(model_config);
         }
+        if let Some(tool_config) = extract_effective_tool_config(py, runtime_config, tool_config)? {
+            builder = builder.tool_config(tool_config);
+        }
         if let Some(params) = extract_request_params(py, request_params)? {
             builder = builder.request_params(params);
         }
@@ -136,21 +143,30 @@ impl PyAgent {
             builder = builder.media_uploader(uploader);
         }
         let default_environment = extract_environment_provider(py, environment)?;
+        let default_security = extract_effective_security_config(py, runtime_config, security)?;
         Ok(Self {
             inner: builder.build(),
             default_environment,
+            default_security,
         })
     }
 
     fn run(&self, py: Python<'_>, prompt: String) -> PyResult<Py<PyAny>> {
         let agent = self.inner.clone();
         let environment = self.default_environment.clone();
+        let security = self.default_security.clone();
         spawn_py_future(
             py,
             async move {
-                if let Some(environment) = environment {
-                    AgentSession::new(agent)
-                        .with_environment(environment)
+                if environment.is_some() || security.is_some() {
+                    let mut session = AgentSession::new(agent);
+                    if let Some(environment) = environment {
+                        session.set_environment(environment);
+                    }
+                    if let Some(security) = security {
+                        session.context_mut().security = security;
+                    }
+                    session
                         .run(prompt)
                         .await
                         .map_err(PyFutureError::from_agent_error)
@@ -165,7 +181,7 @@ impl PyAgent {
         )
     }
 
-    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, trace_metadata=None, toolsets=None, environment=None))]
+    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, trace_metadata=None, toolsets=None, environment=None, context_metadata=None, tool_config=None, security=None))]
     #[allow(clippy::too_many_arguments)]
     fn stream(
         &self,
@@ -181,12 +197,18 @@ impl PyAgent {
         trace_metadata: Option<&Bound<'_, PyAny>>,
         toolsets: Option<Vec<Py<PyToolset>>>,
         environment: Option<&Bound<'_, PyAny>>,
+        context_metadata: Option<&Bound<'_, PyAny>>,
+        tool_config: Option<&Bound<'_, PyAny>>,
+        security: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyAgentStream> {
         let mut session = AgentSession::new(self.inner.clone());
         if let Some(environment) = extract_environment_provider(py, environment)?
             .or_else(|| self.default_environment.clone())
         {
             session.set_environment(environment);
+        }
+        if let Some(security) = self.default_security.clone() {
+            session.context_mut().security = security;
         }
         let options = py_run_options(
             py,
@@ -198,6 +220,9 @@ impl PyAgent {
             output_schema,
             output_policy,
             trace_metadata,
+            context_metadata,
+            tool_config,
+            security,
             toolsets,
         )?;
         let handle =
@@ -227,6 +252,9 @@ impl PyAgent {
         {
             session.set_environment(environment);
         }
+        if let Some(security) = self.default_security.clone() {
+            session.context_mut().security = security;
+        }
         Ok(PySession {
             inner: Arc::new(Mutex::new(session)),
             busy: Arc::new(AtomicBool::new(false)),
@@ -250,6 +278,9 @@ impl PyAgent {
         {
             session.set_environment(environment);
         }
+        if let Some(security) = self.default_security.clone() {
+            session.context_mut().security = security;
+        }
         Ok(PySession {
             inner: Arc::new(Mutex::new(session)),
             busy: Arc::new(AtomicBool::new(false)),
@@ -269,7 +300,7 @@ pub struct PyAgentRuntime {
 #[pymethods]
 impl PyAgentRuntime {
     #[new]
-    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None, toolsets=None, approval_required_tools=None, runtime_config=None, skills=None, environment=None, media_uploader=None, session_store=None, durable_session_id=None, stream_archive=None, replay_event_log=None, state=None))]
+    #[pyo3(signature = (model, tools=None, instructions=None, name=None, model_settings=None, request_params=None, output_schema=None, output_policy=None, subagents=None, subagent_delegation_mode=None, capability_bundles=None, toolsets=None, approval_required_tools=None, runtime_config=None, skills=None, environment=None, media_uploader=None, session_store=None, durable_session_id=None, stream_archive=None, replay_event_log=None, state=None, tool_config=None, security=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
@@ -295,6 +326,8 @@ impl PyAgentRuntime {
         stream_archive: Option<&Bound<'_, PyAny>>,
         replay_event_log: Option<&Bound<'_, PyAny>>,
         state: Option<&Bound<'_, PyAny>>,
+        tool_config: Option<&Bound<'_, PyAny>>,
+        security: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         if output_schema.is_some() && output_policy.is_some() {
             return Err(PyValueError::new_err(
@@ -327,6 +360,9 @@ impl PyAgentRuntime {
         }
         if let Some(model_config) = extract_runtime_model_config(py, runtime_config)? {
             builder = builder.model_config(model_config);
+        }
+        if let Some(tool_config) = extract_effective_tool_config(py, runtime_config, tool_config)? {
+            builder = builder.tool_config(tool_config);
         }
         if let Some(params) = extract_request_params(py, request_params)? {
             builder = builder.request_params(params);
@@ -370,6 +406,9 @@ impl PyAgentRuntime {
         }
         if let Some(environment) = extract_environment_provider(py, environment)? {
             builder = builder.environment(environment);
+        }
+        if let Some(security) = extract_effective_security_config(py, runtime_config, security)? {
+            builder = builder.security(security);
         }
         Ok(Self {
             inner: Arc::new(Mutex::new(builder.build())),
@@ -1151,7 +1190,7 @@ impl PySession {
         )
     }
 
-    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, trace_metadata=None, toolsets=None, environment=None))]
+    #[pyo3(signature = (prompt, instructions=None, tools=None, replace_tools=false, model_settings=None, request_params=None, output_schema=None, output_policy=None, trace_metadata=None, toolsets=None, environment=None, context_metadata=None, tool_config=None, security=None))]
     #[allow(clippy::too_many_arguments)]
     fn stream(
         &self,
@@ -1167,6 +1206,9 @@ impl PySession {
         trace_metadata: Option<&Bound<'_, PyAny>>,
         toolsets: Option<Vec<Py<PyToolset>>>,
         environment: Option<&Bound<'_, PyAny>>,
+        context_metadata: Option<&Bound<'_, PyAny>>,
+        tool_config: Option<&Bound<'_, PyAny>>,
+        security: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyAgentStream> {
         let active_control_token = self.next_active_control_token();
         let lease = self.acquire_stream_operation(Some(active_control_token))?;
@@ -1180,6 +1222,9 @@ impl PySession {
             output_schema,
             output_policy,
             trace_metadata,
+            context_metadata,
+            tool_config,
+            security,
             toolsets,
         )?;
         let mut session = self
@@ -1229,6 +1274,25 @@ impl PySession {
             }
         };
         serialize_to_py(py, &state)
+    }
+
+    #[getter]
+    fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let session = self.inner.blocking_lock();
+        json_to_py(
+            py,
+            &serde_json::Value::Object(session.context().metadata.clone()),
+        )
+    }
+
+    fn set_metadata(&self, py: Python<'_>, key: String, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value = py_to_json(py, value)?;
+        let mut session = self
+            .inner
+            .try_lock()
+            .map_err(|_| PyRuntimeError::new_err("session is busy"))?;
+        session.set_metadata(key, value);
+        Ok(())
     }
 
     fn set_environment(&self, py: Python<'_>, environment: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -1555,6 +1619,9 @@ fn py_run_options(
     output_schema: Option<&Bound<'_, PyAny>>,
     output_policy: Option<&Bound<'_, PyAny>>,
     trace_metadata: Option<&Bound<'_, PyAny>>,
+    context_metadata: Option<&Bound<'_, PyAny>>,
+    tool_config: Option<&Bound<'_, PyAny>>,
+    security: Option<&Bound<'_, PyAny>>,
     toolsets: Option<Vec<Py<PyToolset>>>,
 ) -> PyResult<AgentRunOptions> {
     if output_schema.is_some() && output_policy.is_some() {
@@ -1596,6 +1663,16 @@ fn py_run_options(
     if !metadata.is_empty() {
         options = options.trace_metadata(metadata);
     }
+    let metadata = optional_py_to_metadata(py, context_metadata)?;
+    if !metadata.is_empty() {
+        options = options.context_metadata(metadata);
+    }
+    if let Some(tool_config) = extract_tool_config(py, tool_config)? {
+        options = options.tool_config(tool_config);
+    }
+    if let Some(security) = extract_security_config(py, security)? {
+        options = options.security(security);
+    }
     Ok(options)
 }
 
@@ -1603,20 +1680,99 @@ fn extract_runtime_model_config(
     py: Python<'_>,
     runtime_config: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<ModelConfig>> {
-    let Some(runtime_config) = runtime_config else {
+    let Some(value) = runtime_config_json(py, runtime_config)? else {
         return Ok(None);
-    };
-    if runtime_config.is_none() {
-        return Ok(None);
-    }
-    let value = match runtime_config.getattr("to_model_config") {
-        Ok(to_model_config) => py_to_json(py, &to_model_config.call0()?)?,
-        Err(_) => py_to_json(py, runtime_config)?,
     };
     let model_config_value = value.get("model_config").cloned().unwrap_or(value);
     serde_json::from_value(model_config_value)
         .map(Some)
         .map_err(|error| PyValueError::new_err(format!("invalid runtime_config: {error}")))
+}
+
+fn extract_effective_tool_config(
+    py: Python<'_>,
+    runtime_config: Option<&Bound<'_, PyAny>>,
+    tool_config: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<ToolConfig>> {
+    if let Some(tool_config) = extract_tool_config(py, tool_config)? {
+        return Ok(Some(tool_config));
+    }
+    let Some(value) = runtime_config_json(py, runtime_config)? else {
+        return Ok(None);
+    };
+    let Some(tool_config_value) = value.get("tool_config").cloned() else {
+        return Ok(None);
+    };
+    serde_json::from_value(tool_config_value)
+        .map(Some)
+        .map_err(|error| {
+            PyValueError::new_err(format!("invalid runtime_config.tool_config: {error}"))
+        })
+}
+
+fn extract_effective_security_config(
+    py: Python<'_>,
+    runtime_config: Option<&Bound<'_, PyAny>>,
+    security: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<SecurityConfig>> {
+    if let Some(security) = extract_security_config(py, security)? {
+        return Ok(Some(security));
+    }
+    let Some(value) = runtime_config_json(py, runtime_config)? else {
+        return Ok(None);
+    };
+    let Some(security_value) = value.get("security").cloned() else {
+        return Ok(None);
+    };
+    serde_json::from_value(security_value)
+        .map(Some)
+        .map_err(|error| PyValueError::new_err(format!("invalid runtime_config.security: {error}")))
+}
+
+fn extract_tool_config(
+    py: Python<'_>,
+    tool_config: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<ToolConfig>> {
+    let Some(value) = config_json(py, tool_config)? else {
+        return Ok(None);
+    };
+    let tool_config_value = value.get("tool_config").cloned().unwrap_or(value);
+    serde_json::from_value(tool_config_value)
+        .map(Some)
+        .map_err(|error| PyValueError::new_err(format!("invalid tool_config: {error}")))
+}
+
+fn extract_security_config(
+    py: Python<'_>,
+    security: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<SecurityConfig>> {
+    let Some(value) = config_json(py, security)? else {
+        return Ok(None);
+    };
+    let security_value = value.get("security").cloned().unwrap_or(value);
+    serde_json::from_value(security_value)
+        .map(Some)
+        .map_err(|error| PyValueError::new_err(format!("invalid security: {error}")))
+}
+
+fn runtime_config_json(
+    py: Python<'_>,
+    runtime_config: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<Value>> {
+    config_json(py, runtime_config)
+}
+
+fn config_json(py: Python<'_>, value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Value>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_none() {
+        return Ok(None);
+    }
+    match value.getattr("to_dict") {
+        Ok(to_dict) => py_to_json(py, &to_dict.call0()?).map(Some),
+        Err(_) => py_to_json(py, value).map(Some),
+    }
 }
 
 fn to_py_value_error(error: serde_json::Error) -> PyErr {

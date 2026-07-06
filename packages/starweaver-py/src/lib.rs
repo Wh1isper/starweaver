@@ -39,6 +39,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<agent::PyStreamRunResult>()?;
     m.add_class::<capability::PyCapabilityBundle>()?;
     m.add_class::<capability::PyPythonCapability>()?;
+    m.add_class::<context::PyAgentContextHandle>()?;
     m.add_class::<context::PyToolContext>()?;
     m.add_class::<context::PyToolsetContext>()?;
     m.add_class::<environment::PyEnvironmentProvider>()?;
@@ -55,6 +56,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<output::PyOutputValidator>()?;
     m.add_class::<output::PyOutputValue>()?;
     m.add_class::<stream::PyStreamEvent>()?;
+    m.add_function(wrap_pyfunction!(stream::display_to_agui, m)?)?;
+    m.add_function(wrap_pyfunction!(stream::display_to_agui_jsonl_py, m)?)?;
     m.add_class::<skills::PySkillPackage>()?;
     m.add_class::<skills::PySkillRegistry>()?;
     m.add_class::<store::PyPythonSessionStore>()?;
