@@ -11,9 +11,10 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 use starweaver_model::{
     ModelAdapter, ModelError, ModelProfile, ModelRequestParameters, ModelSettings,
-    ProfileOverrideModel, ProtocolFamily, ProtocolModelClient, ReqwestHttpClient,
-    anthropic_http_config, gemini_http_config, get_model_config, get_model_settings,
-    openai_chat_http_config, openai_responses_http_config,
+    OpenAiResponsesSettings, ProfileOverrideModel, ProtocolFamily, ProtocolModelClient,
+    ProviderSettings, ReqwestHttpClient, ResponseStreamTransport, anthropic_http_config,
+    gemini_http_config, get_model_config, get_model_settings, openai_chat_http_config,
+    openai_responses_http_config,
 };
 use starweaver_oauth::{OAuthError, OAuthStore};
 
@@ -137,62 +138,64 @@ impl PyProviderModel {
             );
         }
 
-        let (provider_name, model_name) = model_id.split_once(':').ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "invalid model id {model_id:?}; expected provider:model"
-            ))
-        })?;
-        if provider_name.is_empty() || model_name.is_empty() {
-            return Err(PyValueError::new_err(format!(
-                "invalid model id {model_id:?}; expected provider:model"
-            )));
+        let parsed = ParsedProviderModelId::parse(&model_id)
+            .ok_or_else(|| invalid_provider_model_id_error(&model_id))?;
+
+        let mut resolved_base_url = base_url;
+        let mut resolved_api_key_env = api_key_env;
+        if let Some(gateway_name) = parsed.gateway_name.as_deref() {
+            let env_prefix = gateway_name.to_ascii_uppercase().replace('-', "_");
+            if resolved_api_key_env.is_none() {
+                resolved_api_key_env = Some(format!("{env_prefix}_API_KEY"));
+            }
+            if resolved_base_url.is_none() {
+                resolved_base_url = env::var(format!("{env_prefix}_BASE_URL")).ok();
+            }
         }
 
-        match provider_name {
-            "openai" | "openai_responses" => Self::openai_responses(
-                py,
-                model_name.to_string(),
-                api_key,
-                api_key_env,
-                model_config_preset,
-                model_settings,
-                base_url,
-                endpoint_path,
-            ),
-            "openai_chat" => Self::openai_chat(
-                py,
-                model_name.to_string(),
-                api_key,
-                api_key_env,
-                model_config_preset,
-                model_settings,
-                base_url,
-                endpoint_path,
-            ),
-            "anthropic" => Self::anthropic(
-                py,
-                model_name.to_string(),
-                api_key,
-                api_key_env,
-                model_config_preset,
-                model_settings,
-                base_url,
-                endpoint_path,
-            ),
-            "gemini" => Self::gemini(
-                py,
-                model_name.to_string(),
-                api_key,
-                api_key_env,
-                model_config_preset,
-                model_settings,
-                base_url,
-                endpoint_path,
-            ),
-            other => Err(PyValueError::new_err(format!(
-                "unsupported model provider prefix {other:?}"
-            ))),
+        let mut settings = extract_model_settings(py, model_settings)?;
+        if let Some(stream_transport) = parsed.stream_transport {
+            settings = Some(merge_model_settings(
+                openai_responses_stream_transport_settings(stream_transport),
+                settings,
+            ));
         }
+
+        let mut http_config = match parsed.protocol {
+            ProtocolFamily::OpenAiResponses => openai_responses_http_config(resolve_api_key(
+                api_key,
+                resolved_api_key_env,
+                parsed.default_api_key_env(),
+            )?),
+            ProtocolFamily::OpenAiChatCompletions => openai_chat_http_config(resolve_api_key(
+                api_key,
+                resolved_api_key_env,
+                parsed.default_api_key_env(),
+            )?),
+            ProtocolFamily::AnthropicMessages => anthropic_http_config(resolve_api_key(
+                api_key,
+                resolved_api_key_env,
+                parsed.default_api_key_env(),
+            )?),
+            ProtocolFamily::GeminiGenerateContent => gemini_http_config(
+                resolve_api_key(api_key, resolved_api_key_env, parsed.default_api_key_env())?,
+                parsed.model_name.clone(),
+            ),
+            ProtocolFamily::BedrockConverse => {
+                return Err(PyValueError::new_err(
+                    "unsupported model provider prefix for Bedrock Converse",
+                ));
+            }
+        };
+        apply_http_overrides(&mut http_config, resolved_base_url, endpoint_path);
+        build_protocol_model(
+            parsed.provider,
+            parsed.model_name,
+            parsed.protocol,
+            http_config,
+            model_config_preset,
+            settings,
+        )
     }
 
     #[staticmethod]
@@ -463,6 +466,45 @@ fn apply_http_overrides(
     }
 }
 
+fn invalid_provider_model_id_error(model_id: &str) -> PyErr {
+    let Some((prefix, model_name)) = model_id.split_once(':') else {
+        return PyValueError::new_err(format!(
+            "invalid model id {model_id:?}; expected provider:model"
+        ));
+    };
+    if prefix.is_empty() || model_name.trim().is_empty() {
+        return PyValueError::new_err(format!(
+            "invalid model id {model_id:?}; expected provider:model"
+        ));
+    }
+    let provider_prefix = prefix
+        .split_once('@')
+        .map_or(prefix, |(_, right)| right)
+        .replace('_', "-");
+    PyValueError::new_err(format!(
+        "unsupported model provider prefix {provider_prefix:?}"
+    ))
+}
+
+fn openai_responses_stream_transport_settings(
+    stream_transport: ResponseStreamTransport,
+) -> ModelSettings {
+    ModelSettings {
+        provider_settings: ProviderSettings {
+            openai_responses: Some(OpenAiResponsesSettings {
+                stream_transport: Some(stream_transport),
+                ..OpenAiResponsesSettings::default()
+            }),
+            ..ProviderSettings::default()
+        },
+        ..ModelSettings::default()
+    }
+}
+
+fn merge_model_settings(base: ModelSettings, overlay: Option<ModelSettings>) -> ModelSettings {
+    overlay.map_or(base.clone(), |overlay| base.merge(&overlay))
+}
+
 fn build_protocol_model(
     provider_name: impl Into<String>,
     model_name: String,
@@ -487,6 +529,60 @@ fn build_protocol_model(
     Ok(PyProviderModel {
         inner: Arc::new(client),
     })
+}
+
+struct ParsedProviderModelId {
+    provider: String,
+    model_name: String,
+    protocol: ProtocolFamily,
+    gateway_name: Option<String>,
+    stream_transport: Option<ResponseStreamTransport>,
+}
+
+impl ParsedProviderModelId {
+    fn parse(model_id: &str) -> Option<Self> {
+        let (prefix, model_name) = model_id.split_once(':')?;
+        if model_name.trim().is_empty() {
+            return None;
+        }
+        let (gateway_name, provider_prefix) = prefix
+            .split_once('@')
+            .map_or((None, prefix), |(left, right)| (Some(left), right));
+        if gateway_name == Some("oauth") {
+            return None;
+        }
+        let provider_prefix = provider_prefix.replace('_', "-");
+        let (provider, protocol, stream_transport) = match provider_prefix.as_str() {
+            "openai" | "openai-responses" => ("openai", ProtocolFamily::OpenAiResponses, None),
+            "openai-responses-ws" => (
+                "openai",
+                ProtocolFamily::OpenAiResponses,
+                Some(ResponseStreamTransport::Auto),
+            ),
+            "openai-chat" => ("openai", ProtocolFamily::OpenAiChatCompletions, None),
+            "anthropic" | "claude" => ("anthropic", ProtocolFamily::AnthropicMessages, None),
+            "gemini" | "google" | "google-gla" | "google-cloud" | "google-vertex" => {
+                ("gemini", ProtocolFamily::GeminiGenerateContent, None)
+            }
+            _ => return None,
+        };
+        Some(Self {
+            provider: provider.to_string(),
+            model_name: model_name.to_string(),
+            protocol,
+            gateway_name: gateway_name.map(str::to_string),
+            stream_transport,
+        })
+    }
+
+    fn default_api_key_env(&self) -> &'static str {
+        match self.provider.as_str() {
+            "openai" => "OPENAI_API_KEY",
+            "anthropic" => "ANTHROPIC_API_KEY",
+            "gemini" => "GEMINI_API_KEY",
+            _ => "STARWEAVER_API_KEY",
+        }
+    }
 }
 
 fn build_oauth_model(

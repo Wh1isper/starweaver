@@ -21,7 +21,7 @@ use starweaver_agent::{
 use starweaver_core::{RunId, SessionId};
 use starweaver_model::ToolReturnPart;
 use starweaver_runtime::{
-    Agent as RuntimeAgent, AgentResult, AgentRunState, AgentStreamResult, RunStatus,
+    Agent as RuntimeAgent, AgentInput, AgentResult, AgentRunState, AgentStreamResult, RunStatus,
 };
 use starweaver_session::{DeferredToolResults, ToolApprovalDecision};
 use starweaver_tools::ToolRegistry;
@@ -414,6 +414,21 @@ impl PyAgentRuntime {
         )
     }
 
+    fn stream(&self, prompt: String) -> PyResult<PyAgentStream> {
+        let mut runtime = self
+            .inner
+            .try_lock()
+            .map_err(|_| PyRuntimeError::new_err("runtime is busy"))?;
+        let handle = enter_runtime(|| {
+            Ok(runtime.stream_with_stream_options(prompt.clone(), python_stream_options()))
+        })?;
+        Ok(PyAgentStream::new_runtime(
+            handle,
+            self.inner.clone(),
+            prompt,
+        ))
+    }
+
     fn export_state(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let runtime = self.inner.blocking_lock();
         serialize_to_py(py, &runtime.export_state())
@@ -509,6 +524,8 @@ pub struct PyAgentStream {
     handle: Arc<Mutex<Option<AgentStreamHandle>>>,
     controller: AgentStreamController,
     session: Option<Arc<Mutex<AgentSession>>>,
+    runtime: Option<Arc<Mutex<SdkAgentRuntime>>>,
+    runtime_input: Option<String>,
     session_lease: Option<Arc<PySessionOperationLease>>,
     detached: Arc<AtomicBool>,
 }
@@ -524,7 +541,26 @@ impl PyAgentStream {
             handle: Arc::new(Mutex::new(Some(handle))),
             controller,
             session,
+            runtime: None,
+            runtime_input: None,
             session_lease,
+            detached: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn new_runtime(
+        handle: AgentStreamHandle,
+        runtime: Arc<Mutex<SdkAgentRuntime>>,
+        input: String,
+    ) -> Self {
+        let controller = handle.controller();
+        Self {
+            handle: Arc::new(Mutex::new(Some(handle))),
+            controller,
+            session: None,
+            runtime: Some(runtime),
+            runtime_input: Some(input),
+            session_lease: None,
             detached: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -575,6 +611,8 @@ impl PyAgentStream {
     fn detach(&self) -> PyResult<()> {
         let handle = self.handle.clone();
         let session = self.session.clone();
+        let runtime = self.runtime.clone();
+        let runtime_input = self.runtime_input.clone();
         let session_lease = self.session_lease.clone();
         let detached = self.detached.clone();
         enter_runtime(|| {
@@ -586,7 +624,11 @@ impl PyAgentStream {
                 };
                 if let Some(mut stream) = stream {
                     stream.close_receiver();
-                    if let Some(session) = session {
+                    if let Some(runtime) = runtime {
+                        let mut runtime = runtime.lock().await;
+                        let input = runtime_input.unwrap_or_default();
+                        let _ = runtime.finish_stream(AgentInput::text(input), stream).await;
+                    } else if let Some(session) = session {
                         let mut session = session.lock().await;
                         let _ = stream.finish_into_session(&mut session).await;
                     } else {
@@ -636,6 +678,8 @@ impl PyAgentStream {
     fn join(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let handle = self.handle.clone();
         let session = self.session.clone();
+        let runtime = self.runtime.clone();
+        let runtime_input = self.runtime_input.clone();
         let session_lease = self.session_lease.clone();
         spawn_py_future(
             py,
@@ -650,7 +694,14 @@ impl PyAgentStream {
                             "stream has already completed".to_string(),
                         ));
                     };
-                    let result = if let Some(session) = session {
+                    let result = if let Some(runtime) = runtime {
+                        let mut runtime = runtime.lock().await;
+                        let input = runtime_input.unwrap_or_default();
+                        runtime
+                            .finish_stream(AgentInput::text(input), stream)
+                            .await
+                            .map_err(durability_error_to_py)?
+                    } else if let Some(session) = session {
                         let mut session = session.lock().await;
                         stream
                             .finish_into_session(&mut session)
@@ -674,6 +725,8 @@ impl PyAgentStream {
     fn result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let handle = self.handle.clone();
         let session = self.session.clone();
+        let runtime = self.runtime.clone();
+        let runtime_input = self.runtime_input.clone();
         let session_lease = self.session_lease.clone();
         spawn_py_future(
             py,
@@ -688,7 +741,14 @@ impl PyAgentStream {
                             "stream has already completed".to_string(),
                         ));
                     };
-                    let result = if let Some(session) = session {
+                    let result = if let Some(runtime) = runtime {
+                        let mut runtime = runtime.lock().await;
+                        let input = runtime_input.unwrap_or_default();
+                        runtime
+                            .finish_stream(AgentInput::text(input), stream)
+                            .await
+                            .map_err(durability_error_to_py)?
+                    } else if let Some(session) = session {
                         let mut session = session.lock().await;
                         stream
                             .finish_into_session(&mut session)
@@ -732,6 +792,48 @@ impl PyAgentStream {
                     .map_err(hitl_error_to_py)
             },
             |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
+        )
+    }
+
+    #[pyo3(signature = (approvals=None, deferred_results=None))]
+    fn resume_after_hitl_stream(
+        &self,
+        py: Python<'_>,
+        approvals: Option<&Bound<'_, PyAny>>,
+        deferred_results: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let Some(session) = self.session.clone() else {
+            return Err(PyRuntimeError::new_err(
+                "stream is not bound to a resumable session",
+            ));
+        };
+        let results = parse_hitl_results(py, approvals, deferred_results)?;
+        spawn_py_future(
+            py,
+            async move {
+                let handle = {
+                    let mut session_guard = session.lock().await;
+                    if results.is_empty() {
+                        if session_guard.context().pending_tool_returns.is_empty() {
+                            return Err(hitl_error_to_py(AgentHitlError::NoWaitingRun));
+                        }
+                    } else {
+                        session_guard
+                            .inject_hitl_results(results)
+                            .await
+                            .map_err(hitl_error_to_py)?;
+                    }
+                    session_guard.stream_with_run_and_stream_options(
+                        "",
+                        AgentRunOptions::new(),
+                        python_stream_options(),
+                    )
+                };
+                Ok((handle, session))
+            },
+            |py, (handle, session)| {
+                Ok(Py::new(py, PyAgentStream::new(handle, Some(session), None))?.into_any())
+            },
         )
     }
 
@@ -1251,6 +1353,57 @@ impl PySession {
                     .map_err(hitl_error_to_py)
             },
             |py, result| Ok(Py::new(py, PyRunResult::from_agent_result(result)?)?.into_any()),
+        )
+    }
+
+    #[pyo3(signature = (approvals=None, deferred_results=None))]
+    fn resume_after_hitl_stream(
+        &self,
+        py: Python<'_>,
+        approvals: Option<&Bound<'_, PyAny>>,
+        deferred_results: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let active_control_token = self.next_active_control_token();
+        let lease = self.acquire_stream_operation(Some(active_control_token))?;
+        let results = parse_hitl_results(py, approvals, deferred_results)?;
+        let session = self.inner.clone();
+        let active_control = self.active_control.clone();
+        spawn_py_future(
+            py,
+            async move {
+                let handle = {
+                    let mut session_guard = session.lock().await;
+                    if results.is_empty() {
+                        if session_guard.context().pending_tool_returns.is_empty() {
+                            return Err(hitl_error_to_py(AgentHitlError::NoWaitingRun));
+                        }
+                    } else {
+                        session_guard
+                            .inject_hitl_results(results)
+                            .await
+                            .map_err(hitl_error_to_py)?;
+                    }
+                    session_guard.stream_with_run_and_stream_options(
+                        "",
+                        AgentRunOptions::new(),
+                        python_stream_options(),
+                    )
+                };
+                let control = handle.control_handle();
+                {
+                    let mut guard = active_control.lock().map_err(|_| {
+                        PyFutureError::State("session active control lock poisoned".to_string())
+                    })?;
+                    *guard = Some(PyActiveControl {
+                        token: active_control_token,
+                        handle: control,
+                    });
+                }
+                Ok((handle, session, lease))
+            },
+            |py, (handle, session, lease)| {
+                Ok(Py::new(py, PyAgentStream::new(handle, Some(session), Some(lease)))?.into_any())
+            },
         )
     }
 

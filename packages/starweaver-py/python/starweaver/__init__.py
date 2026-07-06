@@ -27,7 +27,7 @@ from .agent import (
     create_agent,
     create_agent_runtime,
 )
-from .capability import CapabilityBundle
+from .capability import CapabilityBundle, PythonCapability
 from .environment import (
     EnvdEnvironment,
     Environment,
@@ -213,6 +213,7 @@ __all__ = [
     "PricingEstimate",
     "ProviderAuth",
     "ProviderModel",
+    "PythonCapability",
     "PythonDynamicToolset",
     "PythonEnvironmentProvider",
     "RequestParams",

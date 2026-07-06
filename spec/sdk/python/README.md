@@ -27,9 +27,11 @@ async with create_agent(model=model, tools=[deploy]) as agent:
                 if event.kind == "suspended":
                     waiting = await run.hitl().snapshot()
                     decisions = [item.approve(decided_by="ui") for item in waiting.approvals]
-                    await run.hitl().resume_collected(approvals=decisions)
+                    continuation = await run.hitl().resume(approvals=decisions)
+                    result = await continuation.result()
+                    break
 
-            result = await run.result()
+            assert result.output
 ```
 
 The Rust runtime still owns model requests, tool scheduling, retries, stream
@@ -53,7 +55,6 @@ helpers, callback dispatch, and application-facing composition.
 | `10-claw-python-runtime-plan.md`    | Claw-like Python product runtime plan, Rust-to-Python binding gaps, storage/API/workspace execution mapping          |
 | `11-python-native-toolsets.md`      | Python `AbstractToolset` contract, dynamic toolset bridge, builders, Rust-backed wrappers, lifecycle, durability     |
 | `12-api-compatibility-checklist.md` | Public top-level Python names that must stay import-compatible for application readiness                             |
-| `13-batch-alignment-audit.md`       | Batch audit findings and fix plans for source-backed Python SDK spec alignment                                       |
 
 ## Ownership Shape
 
@@ -148,7 +149,7 @@ Docker-retention policy remain above `starweaver-py`.
 04. Read `04-runtime-session-streaming.md` before changing sessions, streams,
     state, output, or HITL.
 05. Read `07-pythonic-control-plane.md` before adding steering, interruption,
-    active message-bus writes, or typed live HITL helpers.
+    active message-bus writes, or typed in-process HITL helpers.
 06. Read `05-ecosystem-and-claw.md` before adding toolsets, environments,
     resource providers, skills, observability, or Claw integration.
 07. Read `08-session-store-and-state.md` before changing durable state,
@@ -166,6 +167,4 @@ Docker-retention policy remain above `starweaver-py`.
     callbacks.
 11. Read `12-api-compatibility-checklist.md` before adding, removing, renaming,
     or promoting a top-level Python public API name.
-12. Read `13-batch-alignment-audit.md` before batching multiple Python SDK spec
-    alignment issues into one implementation pass.
-13. Read `06-roadmap-and-validation.md` before claiming a milestone is complete.
+12. Read `06-roadmap-and-validation.md` before claiming a milestone is complete.

@@ -867,6 +867,17 @@ class SessionHitl:
     ) -> RunResult:
         return await self.resume(approvals=approvals, deferred_results=deferred_results)
 
+    async def resume_stream(
+        self,
+        *,
+        approvals: object | None = None,
+        deferred_results: object | None = None,
+    ) -> AgentRun:
+        return await self._session.resume_after_hitl_stream(
+            approvals=approvals,
+            deferred_results=deferred_results,
+        )
+
 
 class RunHitl:
     """HITL helper bound to an AgentRun."""
@@ -897,10 +908,10 @@ class RunHitl:
         *,
         approvals: object | None = None,
         deferred_results: object | None = None,
-    ) -> RunResult:
-        raise StateError(
-            "run.hitl().resume is not a live continuation API; "
-            "use run.hitl().resume_collected() for collected session resume"
+    ) -> AgentRun:
+        return await self._run._resume_hitl_stream(
+            approvals=approvals,
+            deferred_results=deferred_results,
         )
 
 
@@ -919,6 +930,9 @@ class AgentRuntime:
 
     async def run_stream(self, prompt: str) -> StreamRunResult:
         return StreamRunResult(await self._native.run_stream(prompt))
+
+    def stream(self, prompt: str) -> AgentRun:
+        return AgentRun(self._native.stream(prompt))
 
     def export_state(self) -> dict[str, Any]:
         return dict(self._native.export_state())
@@ -1331,6 +1345,24 @@ class AgentSession:
         self._set_last_result(result)
         return result
 
+    async def resume_after_hitl_stream(
+        self,
+        *,
+        approvals: object | None = None,
+        deferred_results: object | None = None,
+    ) -> AgentRun:
+        if self.active_run is not None:
+            raise StateError("session is busy")
+        continuation = AgentRun(
+            await self._native.resume_after_hitl_stream(
+                _approval_payload(approvals),
+                _deferred_payload(deferred_results),
+            ),
+            session=self,
+        )
+        self._active_run = continuation
+        return continuation
+
     async def steer(self, text: str, **options: Any) -> ControlReceipt:
         when_idle = options.pop("when_idle", None)
         if when_idle is not None and when_idle != "queue":
@@ -1571,6 +1603,30 @@ class AgentRun:
         self._set_hitl_state_from_result(result)
         self._replace_joined_result(result)
         return result
+
+    async def _resume_hitl_stream(
+        self,
+        *,
+        approvals: object | None = None,
+        deferred_results: object | None = None,
+    ) -> AgentRun:
+        if self._joined is None:
+            await self.join()
+        if self._session is not None:
+            return await self._session.resume_after_hitl_stream(
+                approvals=approvals,
+                deferred_results=deferred_results,
+            )
+        continuation = AgentRun(
+            await self._native.resume_after_hitl_stream(
+                _approval_payload(approvals),
+                _deferred_payload(deferred_results),
+            ),
+            agent=self._agent,
+        )
+        if self._agent is not None:
+            self._agent._active_runs.add(continuation)
+        return continuation
 
     def _replace_joined_result(self, result: RunResult) -> None:
         events = self._joined.events if self._joined is not None else []

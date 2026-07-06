@@ -292,11 +292,10 @@ adapts through `to_native()`. `stream_archive` and `replay_event_log` accept the
 native SQLite archive/log facades when the product wants separate replay
 surfaces.
 
-`AgentRuntime.run_stream(...)` is a collected durable run result. It persists
-canonical stream records through the runtime but does not return the live
-`AgentRun` control facade. Use `Agent.run_stream(...)` or
-`AgentSession.run_stream(...)` when the application needs live steering,
-interruption, or streamed HITL control.
+`AgentRuntime.stream(...)` returns a live `AgentRun` facade and persists the
+completed stream through the bound runtime when the run is joined. Keep
+`AgentRuntime.run_stream(...)` for compatibility when the product wants a
+collected durable `StreamRunResult` instead of a live owner.
 
 ## Active Control
 
@@ -338,6 +337,12 @@ control handle and `delivery.receipt` is the `ControlReceipt`.
 Generic `messages.send(...)` defaults to `source="application"` and never
 becomes model-visible steering by source alone. Use `messages.steer(...)` or
 topic `steering` for that path.
+
+`peek(...)`, `consume(...)`, `subscribe(...)`, and `unsubscribe(...)` are
+session message-bus operations. They inspect or move cursors on the session
+snapshot and are not live stream inspection APIs. During an active session run,
+use `run.messages.send(...)` or `run.messages.steer(...)` for live writes, then
+inspect session messages after the run yields state.
 
 ## Receiver Close And Detach
 
@@ -388,13 +393,20 @@ async def stream_hitl(session) -> None:
                 continue
             snapshot = await run.hitl().snapshot()
             decision = snapshot.approvals[0].approve(decided_by="ui")
-            result = await run.hitl().resume_collected(approvals=[decision])
+            continuation = await run.hitl().resume(approvals=[decision])
+            result = await continuation.result()
             assert result.output
             break
 ```
 
-`resume_collected(...)` resumes through the owning session and returns a
-collected `RunResult`. It is not a live continuation handle. After collected
-resume, `run.result()` and `run.join().result` expose the final resumed result;
-`run.join().events` remains the original suspended stream records and does not
-include post-resume replay records.
+`resume(...)` returns a new live `AgentRun` continuation while the owning
+`AgentSession` is still alive in the current process. The original suspended run
+remains the evidence for the suspended stream. `resume_collected(...)` remains
+available when an application wants the older collected `RunResult` shape; in
+that mode `run.join().events` remains the original suspended stream records and
+does not include post-resume replay records.
+
+Durable HITL recovery should use stored session/run evidence instead of a live
+handle. Persist the decision records, then resume through
+`AgentRuntime.resume_after_hitl_by_id(session_id, run_id, ...)` or
+`SessionStore.resume_snapshot(session_id, run_id)`.

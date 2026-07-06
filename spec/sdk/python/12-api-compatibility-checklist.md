@@ -96,6 +96,7 @@ PUBLIC_API_GROUPS = {
         "RequestParams",
         "RuntimeConfig",
         "CapabilityBundle",
+        "PythonCapability",
         "OutputSchema",
         "OutputPolicy",
         "OutputContext",
