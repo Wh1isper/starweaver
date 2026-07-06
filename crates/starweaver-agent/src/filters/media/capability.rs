@@ -12,11 +12,8 @@ pub(in crate::filters) fn capability_filter(
     context: &AgentContext,
     mut messages: Vec<ModelMessage>,
 ) -> Vec<ModelMessage> {
-    let capabilities = &context.model_config.capabilities;
-    let has_vision = capabilities.contains(&ModelCapability::Vision);
-    let has_video = capabilities.contains(&ModelCapability::VideoUnderstanding);
-    let has_document = capabilities.contains(&ModelCapability::DocumentUnderstanding);
-    if has_vision && has_video && has_document {
+    let support = MediaCapabilitySupport::from_context(context);
+    if support.all() {
         return messages;
     }
 
@@ -26,36 +23,20 @@ pub(in crate::filters) fn capability_filter(
             for part in &mut request.parts {
                 match part {
                     ModelRequestPart::UserPrompt { content, .. } => {
-                        removed +=
-                            filter_content_parts(content, has_vision, has_video, has_document);
+                        removed += filter_content_parts(content, support);
                     }
                     ModelRequestPart::ToolReturn(tool_return) => {
-                        let outcome = filter_tool_value(
-                            &mut tool_return.content,
-                            has_vision,
-                            has_video,
-                            has_document,
-                        );
+                        let outcome = filter_tool_value(&mut tool_return.content, support);
                         removed += outcome.removed_count();
                         if let Some(user_content) = &mut tool_return.user_content {
-                            let outcome = filter_tool_value(
-                                user_content,
-                                has_vision,
-                                has_video,
-                                has_document,
-                            );
+                            let outcome = filter_tool_value(user_content, support);
                             removed += outcome.removed_count();
                         }
                         if let Some(content_parts) = tool_return
                             .private_metadata
                             .get_mut("starweaver_tool_return_content_parts")
                         {
-                            let outcome = filter_tool_value(
-                                content_parts,
-                                has_vision,
-                                has_video,
-                                has_document,
-                            );
+                            let outcome = filter_tool_value(content_parts, support);
                             removed += outcome.removed_count();
                         }
                     }
@@ -75,24 +56,52 @@ pub(in crate::filters) fn capability_filter(
     messages
 }
 
-fn filter_content_parts(
-    content: &mut Vec<ContentPart>,
-    has_vision: bool,
-    has_video: bool,
-    has_document: bool,
-) -> usize {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+struct MediaCapabilitySupport {
+    vision: bool,
+    video: bool,
+    audio: bool,
+    document: bool,
+}
+
+impl MediaCapabilitySupport {
+    fn from_context(context: &AgentContext) -> Self {
+        let capabilities = &context.model_config.capabilities;
+        Self {
+            vision: capabilities.contains(&ModelCapability::Vision),
+            video: capabilities.contains(&ModelCapability::VideoUnderstanding),
+            audio: capabilities.contains(&ModelCapability::AudioUnderstanding),
+            document: capabilities.contains(&ModelCapability::DocumentUnderstanding),
+        }
+    }
+
+    const fn all(self) -> bool {
+        self.vision && self.video && self.audio && self.document
+    }
+
+    const fn unsupported_kind(self, kind: Option<FilteredMediaKind>) -> Option<FilteredMediaKind> {
+        match kind {
+            Some(FilteredMediaKind::Image) if !self.vision => Some(FilteredMediaKind::Image),
+            Some(FilteredMediaKind::Video) if !self.video => Some(FilteredMediaKind::Video),
+            Some(FilteredMediaKind::Audio) if !self.audio => Some(FilteredMediaKind::Audio),
+            Some(FilteredMediaKind::Document) if !self.document => {
+                Some(FilteredMediaKind::Document)
+            }
+            Some(_) | None => None,
+        }
+    }
+}
+
+fn filter_content_parts(content: &mut Vec<ContentPart>, support: MediaCapabilitySupport) -> usize {
     let mut removed = RemovalOutcome::default();
     content.retain(|item| {
-        unsupported_kind(
-            content_part_media_kind(item),
-            has_vision,
-            has_video,
-            has_document,
-        )
-        .is_none_or(|kind| {
-            removed.mark(kind);
-            false
-        })
+        support
+            .unsupported_kind(content_part_media_kind(item))
+            .is_none_or(|kind| {
+                removed.mark(kind);
+                false
+            })
     });
     content.extend(
         removed
@@ -103,14 +112,9 @@ fn filter_content_parts(
     removed.removed_count()
 }
 
-fn filter_tool_value(
-    value: &mut Value,
-    has_vision: bool,
-    has_video: bool,
-    has_document: bool,
-) -> RemovalOutcome {
+fn filter_tool_value(value: &mut Value, support: MediaCapabilitySupport) -> RemovalOutcome {
     if let Some(kind) = value_media_kind(value) {
-        if let Some(kind) = unsupported_kind(Some(kind), has_vision, has_video, has_document) {
+        if let Some(kind) = support.unsupported_kind(Some(kind)) {
             let mut removed = RemovalOutcome::default();
             removed.mark(kind);
             *value = Value::String(removal_reminder(kind).to_string());
@@ -124,8 +128,7 @@ fn filter_tool_value(
             let mut removed = RemovalOutcome::default();
             let mut filtered = Vec::with_capacity(items.len());
             for mut item in std::mem::take(items) {
-                let child_removed =
-                    filter_tool_value(&mut item, has_vision, has_video, has_document);
+                let child_removed = filter_tool_value(&mut item, support);
                 if matches!(item, Value::String(_)) && child_removed.removed_count() > 0 {
                     removed.merge(&child_removed);
                     continue;
@@ -140,32 +143,13 @@ fn filter_tool_value(
         Value::Object(object) => {
             let mut removed = RemovalOutcome::default();
             for item in object.values_mut() {
-                removed.merge(&filter_tool_value(
-                    item,
-                    has_vision,
-                    has_video,
-                    has_document,
-                ));
+                removed.merge(&filter_tool_value(item, support));
             }
             removed
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
             RemovalOutcome::default()
         }
-    }
-}
-
-const fn unsupported_kind(
-    kind: Option<FilteredMediaKind>,
-    has_vision: bool,
-    has_video: bool,
-    has_document: bool,
-) -> Option<FilteredMediaKind> {
-    match kind {
-        Some(FilteredMediaKind::Image) if !has_vision => Some(FilteredMediaKind::Image),
-        Some(FilteredMediaKind::Video) if !has_video => Some(FilteredMediaKind::Video),
-        Some(FilteredMediaKind::Document) if !has_document => Some(FilteredMediaKind::Document),
-        Some(_) | None => None,
     }
 }
 
@@ -209,6 +193,8 @@ fn media_type_kind(media_type: &str) -> Option<FilteredMediaKind> {
         Some(FilteredMediaKind::Image)
     } else if normalized.starts_with("video/") {
         Some(FilteredMediaKind::Video)
+    } else if normalized.starts_with("audio/") {
+        Some(FilteredMediaKind::Audio)
     } else if is_document_media_type(&normalized) {
         Some(FilteredMediaKind::Document)
     } else {
@@ -233,6 +219,9 @@ const fn removal_reminder(kind: FilteredMediaKind) -> &'static str {
         FilteredMediaKind::Video => {
             "<filtered-content type='video'>Video content has been filtered out as the current model does not support video understanding.</filtered-content>"
         }
+        FilteredMediaKind::Audio => {
+            "<filtered-content type='audio'>Audio content has been filtered out as the current model does not support audio understanding.</filtered-content>"
+        }
         FilteredMediaKind::Document => {
             "<filtered-content type='document'>Document content has been filtered out as the current model does not support document understanding.</filtered-content>"
         }
@@ -243,6 +232,7 @@ const fn removal_reminder(kind: FilteredMediaKind) -> &'static str {
 enum FilteredMediaKind {
     Image,
     Video,
+    Audio,
     Document,
 }
 
@@ -250,6 +240,7 @@ enum FilteredMediaKind {
 struct RemovalOutcome {
     images: usize,
     videos: usize,
+    audios: usize,
     documents: usize,
 }
 
@@ -258,12 +249,13 @@ impl RemovalOutcome {
         match kind {
             FilteredMediaKind::Image => self.images += 1,
             FilteredMediaKind::Video => self.videos += 1,
+            FilteredMediaKind::Audio => self.audios += 1,
             FilteredMediaKind::Document => self.documents += 1,
         }
     }
 
     const fn removed_count(&self) -> usize {
-        self.images + self.videos + self.documents
+        self.images + self.videos + self.audios + self.documents
     }
 
     fn reminders(&self) -> Vec<String> {
@@ -274,6 +266,9 @@ impl RemovalOutcome {
         if self.videos > 0 {
             reminders.push(removal_reminder(FilteredMediaKind::Video).to_string());
         }
+        if self.audios > 0 {
+            reminders.push(removal_reminder(FilteredMediaKind::Audio).to_string());
+        }
         if self.documents > 0 {
             reminders.push(removal_reminder(FilteredMediaKind::Document).to_string());
         }
@@ -283,6 +278,7 @@ impl RemovalOutcome {
     const fn merge(&mut self, other: &Self) {
         self.images += other.images;
         self.videos += other.videos;
+        self.audios += other.audios;
         self.documents += other.documents;
     }
 }

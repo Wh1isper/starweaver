@@ -71,8 +71,9 @@ Backed by `EnvironmentProvider` shell operations. Local desktop-style execution 
 Default Agent SDK public tools:
 
 - `download`: stream one or more URLs into the active `EnvironmentProvider` or resource store
+- `read_media`: read an HTTP/HTTPS image, video, audio, or supported YouTube URL as model-consumable media, using native model media input when available and a configured media-understanding fallback adapter otherwise
 
-Remote media URL helpers such as `load_media_url`, `read_image`, `read_video`, and `read_audio` may remain implemented as provider-neutral building blocks, but they are not registered in the default Agent SDK `host_io_tools()` surface. Local media analysis should go through the filesystem `view` tool, which can use native model media support or a configured fallback media understanding adapter.
+Legacy split remote media URL helpers such as `load_media_url`, `read_image`, `read_video`, and `read_audio` may remain implemented as provider-neutral building blocks, but they are not registered in the default Agent SDK `host_io_tools()` surface. Local media analysis should go through the filesystem `view` tool, which can use native model media support or a configured fallback media understanding adapter.
 
 Backed by `EnvironmentProvider` resource APIs, model capability detection, media understanding fallback agents, download adapters, and media capability hooks. The implementations should stay provider-neutral at the SDK layer and route provider-specific native media behavior through `starweaver-model` profiles and request mapping.
 
@@ -81,7 +82,7 @@ PDF and Office conversion should be delivered through skill workflows that call 
 Implementation requirements:
 
 - `download` validates HTTP/HTTPS URLs, follows host runtime redirects, streams with bounded memory, writes safe UUID filenames, records original URL, content type, byte size, checksum when available, and final provider path or resource id.
-- Remote media URL helper implementations, when explicitly re-enabled, accept only HTTP and HTTPS URLs, detect content category through headers and extension hints, check current model capabilities, and return provider-ready media/document URL parts or fallback guidance.
+- `read_media` accepts only HTTP and HTTPS URLs, detects image/video/audio content through media sniffing, headers, and extension hints, enforces configurable inline size limits with bounded HTTP streaming, compresses oversized images when possible, and returns provider-ready media content parts or fallback media-understanding output. Documents and text/web pages should route to `download`, document-conversion workflows, `scrape`, or `fetch`.
 - Local media analysis through `view` uses configurable fallback models when native model media support is unavailable, accounts usage into the parent `AgentContext`, preserves trace correlation, and returns structured text evidence with source path, model id, and truncation metadata.
 - Media and download code paths share protocol validation, host-network-policy delegation, streaming size limits, content-type sniffing, and deterministic fake clients.
 - Media preflight processors handle binary media before provider mapping: validate image bytes, detect actual image MIME type, correct mismatched declarations, account for base64 expansion, compress static images, split tall screenshots, apply GIF support policy, enforce image/video count limits while keeping newest media, and preserve clear system-reminder replacements for removed media.

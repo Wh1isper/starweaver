@@ -974,6 +974,7 @@ async fn filesystem_view_native_media_returns_provider_backed_content_parts() {
         supports_video_url: false,
         supports_audio_url: false,
         supports_document_url: false,
+        supports_youtube_url: false,
     });
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
@@ -1267,6 +1268,228 @@ async fn fetch_large_text_output_is_bounded_and_saved_to_tmp_file() {
 }
 
 #[tokio::test]
+async fn read_media_native_image_url_returns_provider_backed_content_parts() {
+    let app = axum::Router::new().route(
+        "/image.png",
+        axum::routing::get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "image/png")],
+                b"\x89PNG\r\n\x1a\nsmall".to_vec(),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let tool = host_io_tools()
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read_media")
+        .unwrap();
+    let agent_context = AgentContext::default();
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    dependencies.insert(HostMediaCapabilities {
+        model_id: Some("vision-model".to_string()),
+        supports_image_url: true,
+        ..HostMediaCapabilities::default()
+    });
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let result = tool
+        .call(
+            context,
+            serde_json::json!({
+                "url": format!("http://{addr}/image.png"),
+                "instructions": "describe the image"
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.content["success"], true);
+    assert_eq!(result.content["media_kind"], "image");
+    assert_eq!(result.content["media_type"], "image/png");
+    assert_eq!(result.content["native_supported"], true);
+    assert_eq!(
+        result.model_content,
+        Some(serde_json::json!(
+            "The image is attached in the user message."
+        ))
+    );
+    let parts = result.private_metadata["starweaver_tool_return_content_parts"]
+        .as_array()
+        .unwrap();
+    assert_eq!(parts[0]["kind"], "data_url");
+    assert_eq!(parts[0]["media_type"], "image/png");
+    assert!(
+        parts[0]["data_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,")
+    );
+    assert!(
+        result.private_metadata["starweaver_tool_return_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("describe the image")
+    );
+}
+
+#[tokio::test]
+async fn read_media_uses_fallback_adapter_when_native_media_is_unavailable() {
+    let app = axum::Router::new().route(
+        "/clip.mp4",
+        axum::routing::get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "video/mp4")],
+                b"\0\0\0\x18ftypmp42small".to_vec(),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let tool = host_io_tools()
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read_media")
+        .unwrap();
+    let mut dependencies = DependencyStore::new();
+    dependencies.insert(AgentContext::default());
+    dependencies.insert(HostMediaUnderstandingClientHandle::new(Arc::new(
+        FakeMediaUnderstandingClient,
+    )));
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let result = tool
+        .call(
+            context,
+            serde_json::json!({
+                "url": format!("http://{addr}/clip.mp4"),
+                "instructions": "summarize the clip"
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.content["success"], true);
+    assert_eq!(result.content["media_kind"], "video");
+    assert_eq!(result.content["model_id"], "fake-media-model");
+    assert!(
+        result.content["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:video/mp4;base64,")
+    );
+}
+
+#[tokio::test]
+async fn read_media_youtube_url_uses_native_file_url_when_supported() {
+    let tool = host_io_tools()
+        .get_tools()
+        .into_iter()
+        .find(|tool| tool.name() == "read_media")
+        .unwrap();
+    let mut dependencies = DependencyStore::new();
+    dependencies.insert(HostMediaCapabilities {
+        model_id: Some("gemini-model".to_string()),
+        supports_video_url: true,
+        supports_youtube_url: true,
+        ..HostMediaCapabilities::default()
+    });
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let result = tool
+        .call(
+            context,
+            serde_json::json!({
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "instructions": "focus on the chorus"
+            }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.content["success"], true);
+    assert_eq!(result.content["youtube_url"], true);
+    assert_eq!(result.content["media_kind"], "video");
+    let parts = result.private_metadata["starweaver_tool_return_content_parts"]
+        .as_array()
+        .unwrap();
+    assert_eq!(parts[0]["kind"], "file_url");
+    assert_eq!(parts[0]["media_type"], "video/mp4");
+    assert_eq!(
+        parts[0]["url"],
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    );
+    assert!(
+        result.private_metadata["starweaver_tool_return_prompt"]
+            .as_str()
+            .unwrap()
+            .contains("focus on the chorus")
+    );
+}
+
+#[tokio::test]
+async fn read_media_rejects_non_media_http_url_with_actionable_retry() {
+    let app = axum::Router::new().route(
+        "/page",
+        axum::routing::get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "text/html")],
+                "<html><body>not media</body></html>",
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&host_io_tools());
+    let mut dependencies = DependencyStore::new();
+    dependencies.insert(AgentContext::default());
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies);
+
+    let result = execute_tool_call(
+        &registry,
+        context,
+        "read-media-page",
+        "read_media",
+        serde_json::json!({"url": format!("http://{addr}/page")}),
+    )
+    .await;
+
+    assert!(result.is_error);
+    assert_eq!(result.content["kind"], "model_retry");
+    assert!(
+        result.content["message"]
+            .as_str()
+            .unwrap()
+            .contains("Use `scrape`")
+    );
+}
+
+#[tokio::test]
 async fn local_shell_tmp_output_path_can_be_viewed() {
     let root = unique_agent_test_dir();
     let provider = Arc::new(
@@ -1342,7 +1565,7 @@ fn unique_agent_test_dir() -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn agent_builder_does_not_register_remote_media_url_tools() {
+async fn agent_builder_registers_unified_read_media_url_tool() {
     let model = TestModel::with_text("done");
     let model_handle = Arc::new(model.clone());
     let mut session = AgentSession::new(
@@ -1364,6 +1587,7 @@ async fn agent_builder_does_not_register_remote_media_url_tools() {
     assert!(tool_names.contains(&"fetch"));
     assert!(tool_names.contains(&"scrape"));
     assert!(tool_names.contains(&"download"));
+    assert!(tool_names.contains(&"read_media"));
     assert!(!tool_names.contains(&"load_media_url"));
     assert!(!tool_names.contains(&"read_image"));
     assert!(!tool_names.contains(&"read_video"));
@@ -1726,7 +1950,10 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
         &["task_create", "task_get", "task_update", "task_list"],
     );
     assert_tool_names(&context, &["summarize", "note", "note_get", "thinking"]);
-    assert_tool_names(&host_io, &["search", "fetch", "scrape", "download"]);
+    assert_tool_names(
+        &host_io,
+        &["search", "fetch", "scrape", "download", "read_media"],
+    );
 
     let task_metadata = task
         .get_tools()
@@ -1861,7 +2088,7 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
             .contains("delegate tool's own execution model")
     );
     assert_eq!(context.get_instructions().len(), 4);
-    assert_eq!(host_io.get_instructions().len(), 5);
+    assert_eq!(host_io.get_instructions().len(), 6);
 }
 
 #[test]
@@ -1978,6 +2205,7 @@ fn first_party_tool_arg_schemas_match_starweaver_sdk_and_describe_args() {
             vec![
                 ("download", vec!["urls", "save_dir"]),
                 ("fetch", vec!["url", "head_only"]),
+                ("read_media", vec!["url", "instructions"]),
                 ("scrape", vec!["url"]),
                 ("search", vec!["query", "num"]),
             ],
