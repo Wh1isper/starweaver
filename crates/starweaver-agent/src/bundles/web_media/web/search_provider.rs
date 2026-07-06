@@ -3,13 +3,13 @@ use serde_json::Value;
 use starweaver_tools::{ToolError, ToolResult};
 
 use super::{SearchRequest, SearchResponse, SearchResultItem};
-use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::helpers::{tool_execution_error, tool_feedback};
 
 use super::super::{http::first_env, http::http_client, json_result};
 
 pub(super) async fn brave_search(request: SearchRequest) -> Result<ToolResult, ToolError> {
     let Some(key) = first_env(["BRAVE_SEARCH_API_KEY", "BRAVE_API_KEY"]) else {
-        return Err(tool_execution_error(
+        return Err(tool_feedback(
             "search",
             "No search API key configured. Set BRAVE_SEARCH_API_KEY or BRAVE_API_KEY, or provide a HostSearchClientHandle search adapter.",
         ));
@@ -32,9 +32,11 @@ pub(super) async fn brave_search(request: SearchRequest) -> Result<ToolResult, T
         .await
         .map_err(|error| tool_execution_error("search", error))?;
     if !status.is_success() {
-        return Err(tool_execution_error(
+        return Err(tool_feedback(
             "search",
-            format!("Brave Search returned HTTP {status}: {value}"),
+            format!(
+                "Brave Search returned HTTP {status}: {value}. Refine the query, verify API credentials, or use a configured HostSearchClientHandle search adapter."
+            ),
         ));
     }
     let mut results = Vec::new();

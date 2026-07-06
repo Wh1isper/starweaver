@@ -3,10 +3,10 @@
 use starweaver_environment::EnvironmentError;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
-use super::{EditArgs, MultiEditArgs, WriteArgs, text::ensure_file_missing, tool_execution_error};
+use super::{EditArgs, MultiEditArgs, WriteArgs, text::ensure_file_missing};
 use crate::bundles::{
     environment::handle::environment_provider,
-    helpers::{tool_invalid_arguments, tool_model_retry},
+    helpers::{tool_environment_error, tool_feedback, tool_invalid_arguments},
 };
 
 pub(super) async fn write_text(
@@ -18,7 +18,7 @@ pub(super) async fn write_text(
         Some("a") => match provider.read_text(&arguments.file_path).await {
             Ok(existing) => format!("{existing}{}", arguments.content),
             Err(EnvironmentError::NotFound(_)) => arguments.content,
-            Err(error) => return Err(tool_execution_error("write", error)),
+            Err(error) => return Err(tool_environment_error("write", error)),
         },
         Some("w") | None => arguments.content,
         Some(mode) => {
@@ -33,7 +33,7 @@ pub(super) async fn write_text(
     provider
         .write_text(&arguments.file_path, &next_content)
         .await
-        .map_err(|error| tool_execution_error("write", error))?;
+        .map_err(|error| tool_environment_error("write", error))?;
     Ok(ToolResult::new(
         serde_json::json!({"file_path": arguments.file_path, "written": true}),
     ))
@@ -49,7 +49,7 @@ pub(super) async fn edit_text(
         provider
             .write_text(&arguments.file_path, &arguments.new_string)
             .await
-            .map_err(|error| tool_execution_error("edit", error))?;
+            .map_err(|error| tool_environment_error("edit", error))?;
         return Ok(ToolResult::new(serde_json::json!({
             "file_path": arguments.file_path,
             "created": true,
@@ -58,7 +58,7 @@ pub(super) async fn edit_text(
     let file_content = provider
         .read_text(&arguments.file_path)
         .await
-        .map_err(|error| tool_execution_error("edit", error))?;
+        .map_err(|error| tool_environment_error("edit", error))?;
     let updated = apply_replacement(
         "edit",
         &file_content,
@@ -69,7 +69,7 @@ pub(super) async fn edit_text(
     provider
         .write_text(&arguments.file_path, &updated)
         .await
-        .map_err(|error| tool_execution_error("edit", error))?;
+        .map_err(|error| tool_environment_error("edit", error))?;
     Ok(ToolResult::new(serde_json::json!({
         "file_path": arguments.file_path,
         "edited": true,
@@ -83,7 +83,7 @@ pub(super) async fn multi_edit_text(
     let provider = environment_provider(&tool_context, "multi_edit")?;
     let mut edits = arguments.edits.into_iter();
     let Some(first) = edits.next() else {
-        return Err(tool_execution_error(
+        return Err(tool_invalid_arguments(
             "multi_edit",
             "at least one edit is required",
         ));
@@ -95,7 +95,7 @@ pub(super) async fn multi_edit_text(
         let existing = provider
             .read_text(&arguments.file_path)
             .await
-            .map_err(|error| tool_execution_error("multi_edit", error))?;
+            .map_err(|error| tool_environment_error("multi_edit", error))?;
         apply_replacement(
             "multi_edit",
             &existing,
@@ -116,7 +116,7 @@ pub(super) async fn multi_edit_text(
     provider
         .write_text(&arguments.file_path, &updated_content)
         .await
-        .map_err(|error| tool_execution_error("multi_edit", error))?;
+        .map_err(|error| tool_environment_error("multi_edit", error))?;
     Ok(ToolResult::new(serde_json::json!({
         "file_path": arguments.file_path,
         "edited": true,
@@ -137,7 +137,7 @@ fn apply_replacement(
         ));
     }
     if !content.contains(old_string) {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             tool,
             "old_string was not found in the current file content. Re-read the file with view, include the exact whitespace and indentation, then retry with a matching old_string.",
         ));
@@ -147,7 +147,7 @@ fn apply_replacement(
     }
     let occurrences = content.matches(old_string).count();
     if occurrences > 1 {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             tool,
             "old_string appears multiple times. Add surrounding context so old_string is unique, or set replace_all=true if every occurrence should be replaced.",
         ));

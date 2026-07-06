@@ -131,6 +131,7 @@ pub(super) enum ToolVisibility {
     Deferred,
     TaskPanel,
     ErrorImportant,
+    ContextHandoff,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -510,6 +511,10 @@ fn project_tool_full(tool: &ToolTimelineItem, projection: &mut TuiProjection, de
 }
 
 fn project_tool_concise(tool: &ToolTimelineItem, projection: &mut TuiProjection) {
+    if matches!(tool.visibility, ToolVisibility::ContextHandoff) {
+        project_context_handoff_tool_concise(tool, projection);
+        return;
+    }
     if tool.concise.line.trim().is_empty() {
         return;
     }
@@ -524,6 +529,27 @@ fn project_tool_concise(tool: &ToolTimelineItem, projection: &mut TuiProjection)
         projection
             .lines
             .extend(tool.concise.detail_lines.iter().cloned());
+    }
+}
+
+fn project_context_handoff_tool_concise(tool: &ToolTimelineItem, projection: &mut TuiProjection) {
+    if tool.return_lines.is_empty() {
+        if !tool.concise.line.trim().is_empty() {
+            push_section_gap(&mut projection.lines);
+            projection.lines.push(format_concise_tool_summary_line(
+                &tool.concise.line,
+                ToolSummaryImportance::Important,
+            ));
+        }
+        return;
+    }
+    push_section_gap(&mut projection.lines);
+    for (index, line) in tool.return_lines.iter().enumerate() {
+        if index == 0 && line == "Tool result: summarize" {
+            projection.lines.push("Summary complete".to_string());
+        } else {
+            projection.lines.push(line.clone());
+        }
     }
 }
 

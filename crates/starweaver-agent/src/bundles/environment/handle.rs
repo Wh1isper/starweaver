@@ -12,7 +12,7 @@ use starweaver_runtime::{
 };
 use starweaver_tools::{ToolContext, ToolError};
 
-use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::helpers::tool_user_error;
 
 /// `AgentContext` dependency that exposes the active SDK environment.
 #[derive(Clone)]
@@ -242,14 +242,12 @@ pub(super) fn environment_provider(
     tool: &str,
 ) -> Result<DynEnvironmentProvider, ToolError> {
     let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
-        tool_execution_error(tool, "AgentContext dependency is missing from ToolContext")
+        tool_user_error(tool, "AgentContext dependency is missing from ToolContext")
     })?;
     let environment = agent_context
         .dependencies
         .get::<EnvironmentHandle>()
-        .ok_or_else(|| {
-            tool_execution_error(tool, "EnvironmentHandle is missing from AgentContext")
-        })?;
+        .ok_or_else(|| tool_user_error(tool, "EnvironmentHandle is missing from AgentContext"))?;
     Ok(environment.provider())
 }
 

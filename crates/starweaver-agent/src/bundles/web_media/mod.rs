@@ -5,7 +5,9 @@ use starweaver_tools::{
     DynTool, DynToolset, StaticToolset, ToolError, ToolInstruction, ToolResult,
 };
 
-use super::helpers::{static_tool_with_metadata, tool_execution_error, tool_metadata};
+use super::helpers::{
+    static_tool_with_metadata, tool_execution_error, tool_feedback, tool_metadata,
+};
 
 mod args;
 mod download;
@@ -149,10 +151,7 @@ fn json_result(value: impl Serialize, tool: &str) -> Result<ToolResult, ToolErro
 
 fn unsuccessful_tool_result(tool: &str, value: &serde_json::Value) -> ToolError {
     let message = unsuccessful_result_message(tool, value);
-    ToolError::Execution {
-        tool: tool.to_string(),
-        message,
-    }
+    tool_feedback(tool, message)
 }
 
 fn unsuccessful_result_message(tool: &str, value: &serde_json::Value) -> String {

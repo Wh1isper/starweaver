@@ -115,24 +115,10 @@ async fn sdk_subagent_registry_returns_task_result_envelope() {
 }
 
 #[tokio::test]
-async fn sdk_subagent_registry_supports_multi_level_nested_delegation() {
+async fn sdk_subagent_registry_does_not_expose_nested_delegation_tools() {
     let grandchild =
         Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("grandchild output"))).build());
-    let child = Arc::new(
-        AgentBuilder::new(Arc::new(TestModel::with_responses(vec![
-            tool_call_response(
-                "call_nested",
-                "delegate",
-                serde_json::json!({
-                    "subagent_name": "grandchild",
-                    "prompt": "nested work",
-                    "metadata": {"source": "child"}
-                }),
-            ),
-            ModelResponse::text("child output"),
-        ])))
-        .build(),
-    );
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
     let registry = Arc::new(
         SubagentRegistry::new()
             .with_subagent(SubagentConfig::new("grandchild", grandchild))
@@ -144,33 +130,37 @@ async fn sdk_subagent_registry_supports_multi_level_nested_delegation() {
                 ),
             ),
     );
-    let mut context = AgentContext::default();
-    context.insert_dependency(SubagentParentTools(
-        ToolRegistry::new().with_tool(registry.delegate_tool()),
-    ));
+    let parent_tools = ToolRegistry::new().with_tool(registry.delegate_tool());
+    let inherited = registry
+        .subagent("child")
+        .unwrap()
+        .tool_inheritance
+        .resolve(&parent_tools)
+        .unwrap();
+    assert!(inherited.get("delegate").is_none());
+    assert!(inherited.get("subagent_info").is_none());
+    assert!(inherited.get("spawn_delegate").is_none());
+    assert!(inherited.get("wait_subagent").is_none());
 
+    let mut context = AgentContext::default();
+    context.insert_dependency(SubagentParentTools(parent_tools));
     let result = registry
-        .delegate("child", "delegate to grandchild", &mut context)
+        .delegate(
+            "child",
+            "handle work without nested delegation",
+            &mut context,
+        )
         .await
         .unwrap();
 
     assert_eq!(result.output, "child output");
-    assert!(context.events.events().iter().any(|event| {
-        event.kind == "subagent_completed" && event.payload["name"] == "grandchild"
+    assert!(context.events.events().iter().all(|event| {
+        !(event.kind == "subagent_completed" && event.payload["name"] == "grandchild")
     }));
     assert!(
         context.events.events().iter().any(|event| {
             event.kind == "subagent_completed" && event.payload["name"] == "child"
         })
-    );
-    assert!(
-        context.events.events().iter().any(|event| {
-            event.kind == "subagent_stream_record"
-                && event.payload["name"] == "child"
-                && event.payload["record"]["source"]["agent_name"] == "grandchild"
-        }),
-        "events: {:#?}",
-        context.events.events()
     );
 }
 

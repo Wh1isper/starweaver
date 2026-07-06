@@ -13,7 +13,7 @@ use super::{
 };
 use crate::bundles::{
     EnvironmentHandle,
-    helpers::{tool_execution_error, tool_invalid_arguments, tool_model_retry},
+    helpers::{tool_environment_error, tool_feedback, tool_invalid_arguments, tool_user_error},
 };
 
 pub(super) async fn download(
@@ -50,7 +50,7 @@ async fn download_one(
     )
     .await?;
     if !(200..400).contains(&resource.status) {
-        return Err(tool_execution_error(
+        return Err(tool_feedback(
             "download",
             format!(
                 "HTTP {} returned for {}. Verify the URL, authentication, and whether the resource exists before retrying.",
@@ -63,7 +63,7 @@ async fn download_one(
         Ok(text) if is_text_like(resource.content_type.as_deref()) || looks_textual(text) => text,
         Ok(text) if resource.content_type.is_none() => text,
         _ => {
-            return Err(tool_model_retry(
+            return Err(tool_feedback(
                 "download",
                 format!(
                     "binary download is not supported by the current text-only EnvironmentProvider for {url}. Use fetch for inline media when possible, configure a binary resource EnvironmentProvider extension, or use a different tool/provider that can write binary files."
@@ -79,7 +79,7 @@ async fn download_one(
     provider
         .write_text(&path, text)
         .await
-        .map_err(|error| tool_execution_error("download", error))?;
+        .map_err(|error| tool_environment_error("download", error))?;
     Ok(serde_json::json!({
         "success": true,
         "url": url,
@@ -115,13 +115,11 @@ fn environment_provider(
     tool: &str,
 ) -> Result<DynEnvironmentProvider, ToolError> {
     let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
-        tool_execution_error(tool, "AgentContext dependency is missing from ToolContext")
+        tool_user_error(tool, "AgentContext dependency is missing from ToolContext")
     })?;
     let environment = agent_context
         .dependencies
         .get::<EnvironmentHandle>()
-        .ok_or_else(|| {
-            tool_execution_error(tool, "EnvironmentHandle is missing from AgentContext")
-        })?;
+        .ok_or_else(|| tool_user_error(tool, "EnvironmentHandle is missing from AgentContext"))?;
     Ok(environment.provider())
 }

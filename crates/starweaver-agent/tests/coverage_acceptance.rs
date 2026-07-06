@@ -244,8 +244,8 @@ fn subagent_tool_inheritance_covers_builder_and_error_paths() {
     .resolve(&parent)
     .unwrap();
     assert!(inherited.get("required_tool").is_some());
-    assert!(inherited.get("delegate").is_some());
-    assert!(inherited.get("subagent_info").is_some());
+    assert!(inherited.get("delegate").is_none());
+    assert!(inherited.get("subagent_info").is_none());
 
     let denied_result =
         SubagentToolInheritancePolicy::new(vec!["required_tool".to_string()], vec![])

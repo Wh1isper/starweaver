@@ -826,6 +826,9 @@ fn streaming_args_preview(arguments: &str) -> Option<String> {
 }
 
 fn tool_visibility(tool_return: &starweaver_model::ToolReturnPart) -> ToolVisibility {
+    if tool_return.name == "summarize" {
+        return ToolVisibility::ContextHandoff;
+    }
     if tool_return
         .metadata
         .get("control_flow")

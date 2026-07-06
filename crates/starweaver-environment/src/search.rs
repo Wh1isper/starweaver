@@ -1,6 +1,6 @@
 //! Text search helpers for provider-backed grep operations.
 
-use std::{io, path::Path};
+use std::{collections::VecDeque, io, path::Path};
 
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
@@ -80,23 +80,26 @@ pub fn local_grep_file_match_limit(
 pub struct LocalGrepSink<'a> {
     path: &'a str,
     grep_matches: &'a mut Vec<FileGrepMatch>,
+    context_lines: usize,
     max_results: usize,
-    pending_before_context: Vec<(usize, String)>,
-    active_match_index: Option<usize>,
+    recent_lines: VecDeque<(usize, String)>,
+    active_matches: Vec<(usize, usize)>,
 }
 
 impl<'a> LocalGrepSink<'a> {
     pub(crate) const fn new(
         path: &'a str,
         grep_matches: &'a mut Vec<FileGrepMatch>,
+        context_lines: usize,
         max_results: usize,
     ) -> Self {
         Self {
             path,
             grep_matches,
+            context_lines,
             max_results,
-            pending_before_context: Vec::new(),
-            active_match_index: None,
+            recent_lines: VecDeque::new(),
+            active_matches: Vec::new(),
         }
     }
 
@@ -113,6 +116,36 @@ impl<'a> LocalGrepSink<'a> {
     const fn should_accept_match(&self) -> bool {
         self.max_results == 0 || self.grep_matches.len() < self.max_results
     }
+
+    fn push_recent_line(&mut self, line_number: usize, line: String) {
+        if self.context_lines == 0 {
+            return;
+        }
+        self.recent_lines.push_back((line_number, line));
+        while self.recent_lines.len() > self.context_lines {
+            self.recent_lines.pop_front();
+        }
+    }
+
+    fn push_after_context_line(&mut self, line_number: usize, line: &str) {
+        if self.context_lines == 0 {
+            return;
+        }
+        self.active_matches.retain(|(_, match_line_number)| {
+            line_number.saturating_sub(*match_line_number) <= self.context_lines
+        });
+        for (index, match_line_number) in &self.active_matches {
+            if line_number > *match_line_number
+                && line_number - *match_line_number <= self.context_lines
+                && let Some(grep_match) = self.grep_matches.get_mut(*index)
+            {
+                grep_match.context.push_str(line);
+            }
+        }
+        self.active_matches.retain(|(_, match_line_number)| {
+            line_number.saturating_sub(*match_line_number) < self.context_lines
+        });
+    }
 }
 
 impl Sink for LocalGrepSink<'_> {
@@ -125,12 +158,12 @@ impl Sink for LocalGrepSink<'_> {
         let line_number = Self::line_number(mat.line_number());
         let matching_line = Self::line_string(mat.bytes());
         let context_start_line = self
-            .pending_before_context
-            .first()
+            .recent_lines
+            .front()
             .map_or(line_number, |(line_number, _)| *line_number);
         let mut context = String::new();
-        for (_, line) in self.pending_before_context.drain(..) {
-            context.push_str(&line);
+        for (_, line) in &self.recent_lines {
+            context.push_str(line);
         }
         context.push_str(&matching_line);
         self.grep_matches.push(FileGrepMatch {
@@ -140,7 +173,12 @@ impl Sink for LocalGrepSink<'_> {
             context,
             context_start_line,
         });
-        self.active_match_index = Some(self.grep_matches.len() - 1);
+        let match_index = self.grep_matches.len() - 1;
+        self.push_after_context_line(line_number, &matching_line);
+        self.push_recent_line(line_number, matching_line);
+        if self.context_lines > 0 {
+            self.active_matches.push((match_index, line_number));
+        }
         Ok(true)
     }
 
@@ -152,23 +190,20 @@ impl Sink for LocalGrepSink<'_> {
         let line = Self::line_string(context.bytes());
         match context.kind() {
             grep_searcher::SinkContextKind::Before => {
-                self.pending_before_context
-                    .push((Self::line_number(context.line_number()), line));
+                self.push_recent_line(Self::line_number(context.line_number()), line);
             }
             grep_searcher::SinkContextKind::After | grep_searcher::SinkContextKind::Other => {
-                if let Some(index) = self.active_match_index
-                    && let Some(grep_match) = self.grep_matches.get_mut(index)
-                {
-                    grep_match.context.push_str(&line);
-                }
+                let line_number = Self::line_number(context.line_number());
+                self.push_after_context_line(line_number, &line);
+                self.push_recent_line(line_number, line);
             }
         }
         Ok(true)
     }
 
     fn context_break(&mut self, _searcher: &Searcher) -> Result<bool, Self::Error> {
-        self.pending_before_context.clear();
-        self.active_match_index = None;
+        self.recent_lines.clear();
+        self.active_matches.clear();
         Ok(true)
     }
 
@@ -181,8 +216,8 @@ impl Sink for LocalGrepSink<'_> {
     }
 
     fn finish(&mut self, _searcher: &Searcher, _finish: &SinkFinish) -> Result<(), Self::Error> {
-        self.pending_before_context.clear();
-        self.active_match_index = None;
+        self.recent_lines.clear();
+        self.active_matches.clear();
         Ok(())
     }
 }

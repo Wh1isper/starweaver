@@ -149,6 +149,40 @@ async fn subagent_info_tool_lists_known_subagents_with_empty_args_schema() {
     );
 }
 
+#[test]
+fn subagent_tool_inheritance_never_exposes_delegation_tools_to_children() {
+    let ordinary = Arc::new(FunctionTool::new(
+        "ordinary",
+        Some("Ordinary inherited tool".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let delegate = Arc::new(FunctionTool::new(
+        "delegate",
+        Some("Delegation tool".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let wait_subagent = Arc::new(FunctionTool::new(
+        WAIT_SUBAGENT_TOOL_NAME,
+        Some("Wait for subagent".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let parent = ToolRegistry::new()
+        .with_tool(ordinary)
+        .with_tool(delegate)
+        .with_tool(wait_subagent);
+
+    let inherited = SubagentToolInheritancePolicy::default()
+        .with_inherit_all_when_empty(true)
+        .with_nested_delegation(true)
+        .resolve(&parent)
+        .unwrap();
+
+    assert_eq!(inherited.names(), vec!["ordinary".to_string()]);
+}
+
 #[tokio::test]
 async fn subagent_delegate_tool_reports_missing_agent_context() {
     let registry = Arc::new(SubagentRegistry::new());
@@ -163,6 +197,10 @@ async fn subagent_delegate_tool_reports_missing_agent_context() {
         .unwrap_err();
 
     assert_eq!(delegate.name(), "ask_subagent");
+    assert!(matches!(
+        error,
+        starweaver_agent::ToolError::UserError { .. }
+    ));
     assert!(
         error
             .to_string()

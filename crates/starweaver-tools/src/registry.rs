@@ -15,6 +15,9 @@ use crate::{
     ToolsetLifecycleReport, ToolsetPreparation, error_return,
 };
 
+/// Default retry budget for unexpected/internal tool execution failures.
+pub const DEFAULT_TOOL_MAX_RETRIES: usize = 3;
+
 fn success_return(call: &ToolCallPart, result: ToolResult) -> ToolReturnPart {
     let model_return_content = result
         .model_content
@@ -30,6 +33,28 @@ fn success_return(call: &ToolCallPart, result: ToolResult) -> ToolReturnPart {
         user_content: result.user_content,
         private_metadata: result.private_metadata,
     }
+}
+
+fn retry_error_return(
+    call: &ToolCallPart,
+    error: &ToolError,
+    attempt: usize,
+    max_retries: usize,
+) -> ToolReturnPart {
+    let mut returned = error_return(call, error);
+    if error.unexpected() {
+        returned
+            .metadata
+            .insert("tool_retry".to_string(), serde_json::json!(attempt));
+        returned
+            .metadata
+            .insert("max_retries".to_string(), serde_json::json!(max_retries));
+        if let Some(content) = returned.content.as_object_mut() {
+            content.insert("tool_retry".to_string(), serde_json::json!(attempt));
+            content.insert("max_retries".to_string(), serde_json::json!(max_retries));
+        }
+    }
+    returned
 }
 
 /// Report describing which tools are visible for a specific agent context.
@@ -441,70 +466,105 @@ impl ToolRegistry {
             .metadata
             .entry("tool_name".to_string())
             .or_insert_with(|| serde_json::json!(call.name.clone()));
-        match self.tools.get(&call.name) {
-            Some(tool) => {
-                if let Some(error) = call.arguments.invalid_error() {
-                    return error_return(
-                        call,
-                        &ToolError::InvalidArguments {
-                            tool: call.name.clone(),
-                            message: format!(
-                                "tool arguments must be valid JSON before execution: {error}"
-                            ),
-                        },
-                    );
-                }
-                let mut arguments = call.arguments.execution_value();
-                if let Err(error) = self
-                    .execution_hooks
-                    .run_before(&mut context, call, &mut arguments)
-                    .await
-                {
-                    return error_return(call, &error);
-                }
-                let timeout_ms = self.timeout_ms_for(&call.name);
-                let cancellation_token = context.cancellation_token();
-                let cancelled = || ToolError::Cancelled {
+        let Some(tool) = self.tools.get(&call.name) else {
+            return error_return(call, &ToolError::NotFound(call.name.clone()));
+        };
+        self.execute_registered_call(tool, context, call).await
+    }
+
+    async fn execute_registered_call(
+        &self,
+        tool: &DynTool,
+        mut context: ToolContext,
+        call: &ToolCallPart,
+    ) -> ToolReturnPart {
+        if let Some(error) = call.arguments.invalid_error() {
+            return error_return(
+                call,
+                &ToolError::InvalidArguments {
                     tool: call.name.clone(),
-                    reason: "agent run cancellation requested".to_string(),
-                };
-                let result = if cancellation_token.is_cancelled() {
-                    Err(cancelled())
-                } else if let Some(timeout_ms) = timeout_ms {
-                    tokio::select! {
-                        biased;
-                        () = cancellation_token.cancelled() => Err(cancelled()),
-                        result = tokio::time::timeout(
-                            Duration::from_millis(timeout_ms),
-                            tool.call(context.clone(), arguments),
-                        ) => result.unwrap_or_else(|_| {
-                            Err(ToolError::Timeout {
-                                tool: call.name.clone(),
-                                timeout_ms,
-                            })
-                        }),
-                    }
-                } else {
-                    tokio::select! {
-                        biased;
-                        () = cancellation_token.cancelled() => Err(cancelled()),
-                        result = tool.call(context.clone(), arguments) => result,
-                    }
-                };
-                let mut outcome = ToolExecutionOutcome::from_result(result);
-                if let Err(error) = self
-                    .execution_hooks
-                    .run_after(&context, call, &mut outcome)
-                    .await
-                {
-                    outcome = ToolExecutionOutcome::Error(error);
-                }
-                match outcome.into_result() {
-                    Ok(result) => success_return(call, result),
-                    Err(error) => error_return(call, &error),
-                }
+                    message: format!("tool arguments must be valid JSON before execution: {error}"),
+                },
+            );
+        }
+        let mut arguments = call.arguments.execution_value();
+        if let Err(error) = self
+            .execution_hooks
+            .run_before(&mut context, call, &mut arguments)
+            .await
+        {
+            return error_return(call, &error);
+        }
+        let timeout_ms = self.timeout_ms_for(&call.name);
+        let max_retries = self.max_retries_for(&call.name);
+        let base_retry = context.retry;
+        let mut attempt = 0;
+        loop {
+            let attempt_context = context
+                .clone()
+                .with_retry_budget(base_retry.saturating_add(attempt), max_retries);
+            let result = self
+                .execute_tool_attempt(
+                    tool,
+                    attempt_context.clone(),
+                    call,
+                    arguments.clone(),
+                    timeout_ms,
+                )
+                .await;
+            let mut outcome = ToolExecutionOutcome::from_result(result);
+            if let Err(error) = self
+                .execution_hooks
+                .run_after(&attempt_context, call, &mut outcome)
+                .await
+            {
+                outcome = ToolExecutionOutcome::Error(error);
             }
-            None => error_return(call, &ToolError::NotFound(call.name.clone())),
+            match outcome.into_result() {
+                Ok(result) => return success_return(call, result),
+                Err(error) if error.unexpected() && attempt < max_retries => {
+                    attempt = attempt.saturating_add(1);
+                }
+                Err(error) => return retry_error_return(call, &error, attempt, max_retries),
+            }
+        }
+    }
+
+    async fn execute_tool_attempt(
+        &self,
+        tool: &DynTool,
+        context: ToolContext,
+        call: &ToolCallPart,
+        arguments: serde_json::Value,
+        timeout_ms: Option<u64>,
+    ) -> Result<ToolResult, ToolError> {
+        let cancellation_token = context.cancellation_token();
+        let cancelled = || ToolError::Cancelled {
+            tool: call.name.clone(),
+            reason: "agent run cancellation requested".to_string(),
+        };
+        if cancellation_token.is_cancelled() {
+            return Err(cancelled());
+        }
+        if let Some(timeout_ms) = timeout_ms {
+            return tokio::select! {
+                biased;
+                () = cancellation_token.cancelled() => Err(cancelled()),
+                result = tokio::time::timeout(
+                    Duration::from_millis(timeout_ms),
+                    tool.call(context, arguments),
+                ) => result.unwrap_or_else(|_| {
+                    Err(ToolError::Timeout {
+                        tool: call.name.clone(),
+                        timeout_ms,
+                    })
+                }),
+            };
+        }
+        tokio::select! {
+            biased;
+            () = cancellation_token.cancelled() => Err(cancelled()),
+            result = tool.call(context, arguments) => result,
         }
     }
 
@@ -512,12 +572,12 @@ impl ToolRegistry {
     #[must_use]
     pub fn max_retries_for(&self, name: &str) -> usize {
         self.tools.get(name).map_or_else(
-            || self.max_retries.unwrap_or(1),
+            || self.max_retries.unwrap_or(DEFAULT_TOOL_MAX_RETRIES),
             |tool| {
                 tool.max_retries()
                     .or_else(|| self.toolset_max_retries.get(name).copied())
                     .or(self.max_retries)
-                    .unwrap_or(1)
+                    .unwrap_or(DEFAULT_TOOL_MAX_RETRIES)
             },
         )
     }

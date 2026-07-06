@@ -174,6 +174,17 @@ Tool exceptions map onto runtime tool control flow:
 
 - `InvalidArguments` asks the model to retry with corrected arguments.
 - `ModelRetry` asks the model to retry the tool call with the provided message.
+- `Feedback` returns agent-readable guidance with `success: false` and
+  `is_error: false`; use it for expected, user- or environment-correctable
+  conditions such as missing files, unsupported formats, HTTP 404s, or policy
+  denials.
+- `UserError` represents application or integration code using a tool
+  incorrectly, such as missing runtime dependencies or direct calls to tools
+  that require runtime wiring. It is `is_error: true`, but it does not trigger
+  model retry or internal unexpected retry.
+- `Execution` represents unexpected tool/runtime failure. The Rust tool registry
+  retries the same call internally before returning the failure, using a default
+  budget of 3 attempts unless overridden.
 - `ApprovalRequired` suspends the run until approval is supplied.
 - `CallDeferred` suspends the run until an external deferred result is supplied.
 - `Cancelled` and `Timeout` map to canonical runtime cancellation and timeout

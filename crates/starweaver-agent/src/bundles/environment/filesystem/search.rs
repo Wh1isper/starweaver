@@ -6,14 +6,14 @@ use starweaver_tools::{ToolContext, ToolError, ToolResult};
 use super::{
     GlobArgs, GrepArgs,
     output::{guard_glob_output, guard_grep_output},
-    tool_config_from_context, tool_execution_error,
+    tool_config_from_context,
 };
 use crate::bundles::{
     environment::{
         common::{limit_or_unlimited, non_negative_limit},
         handle::environment_provider,
     },
-    helpers::tool_model_retry,
+    helpers::{tool_environment_error, tool_feedback},
 };
 
 pub(super) async fn glob_files(
@@ -34,7 +34,7 @@ pub(super) async fn glob_files(
             },
         )
         .await
-        .map_err(|error| tool_execution_error("glob", error))?;
+        .map_err(|error| tool_environment_error("glob", error))?;
     let result = serde_json::json!({
         "root": arguments.root,
         "pattern": arguments.pattern,
@@ -73,7 +73,7 @@ pub(super) async fn grep_files(
             },
         )
         .await
-        .map_err(|error| tool_execution_error("grep", error))?;
+        .map_err(|error| tool_environment_error("grep", error))?;
     guard_grep_output(
         provider.as_ref(),
         &tool_config,
@@ -86,7 +86,7 @@ pub(super) async fn grep_files(
 
 fn validate_single_search_root(tool: &str, root: &str) -> Result<(), ToolError> {
     if root.chars().any(|ch| matches!(ch, '\n' | '\r' | '\0')) {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             tool,
             "root must be a single directory path. For multiple directories, issue parallel tool calls with one root per call, or use a shared parent root with a narrower file pattern.",
         ));

@@ -244,7 +244,7 @@ async fn direct_tool_search_loads_tools_for_next_turn_and_restores_state() {
             json!({"topic":"before-search"}),
         )
         .await;
-    assert!(matches!(unloaded, Err(ToolError::Execution { .. })));
+    assert!(matches!(unloaded, Err(ToolError::UserError { .. })));
 
     let search_tool = tools
         .iter()

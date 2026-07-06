@@ -19,9 +19,17 @@ pub enum ToolError {
         /// Validation message.
         message: String,
     },
-    /// Tool execution failed.
+    /// Tool execution failed unexpectedly.
     #[error("tool {tool} failed: {message}")]
     Execution {
+        /// Tool name.
+        tool: String,
+        /// Error message.
+        message: String,
+    },
+    /// Tool was used incorrectly by application or integration code.
+    #[error("tool {tool} user error: {message}")]
+    UserError {
         /// Tool name.
         tool: String,
         /// Error message.
@@ -42,6 +50,14 @@ pub enum ToolError {
         tool: String,
         /// Cancellation reason.
         reason: String,
+    },
+    /// Tool returned agent-readable feedback without treating it as a model or tool failure.
+    #[error("tool {tool} returned feedback: {message}")]
+    Feedback {
+        /// Tool name.
+        tool: String,
+        /// Feedback message.
+        message: String,
     },
     /// Tool asked the model to retry the call with corrected input.
     #[error("tool {tool} requested model retry: {message}")]
@@ -81,67 +97,53 @@ pub enum ToolError {
 /// Convert a tool error into a model-visible tool return.
 #[must_use]
 pub fn error_return(call: &ToolCallPart, error: &ToolError) -> ToolReturnPart {
-    let report = ToolErrorReport::from_error(error);
-    let mut metadata = report.metadata;
-    metadata.insert("error_kind".to_string(), serde_json::json!(report.kind));
-    metadata.insert("tool".to_string(), serde_json::json!(report.tool));
-    metadata.insert("message".to_string(), serde_json::json!(report.message));
-    metadata.insert(
-        "how_to_fix".to_string(),
-        serde_json::json!(report.how_to_fix),
-    );
-    metadata.insert("retryable".to_string(), serde_json::json!(report.retryable));
+    let (kind, mut metadata) = tool_error_metadata(error);
+    let tool = error.tool_name().to_string();
+    let message = error.user_message();
+    let (how_to_fix, retryable, retry_requires_corrected_input) = error.recovery_guidance();
+    let runtime_retryable = error.runtime_retryable();
+    let unexpected = error.unexpected();
+
+    metadata.insert("error_kind".to_string(), serde_json::json!(kind));
+    metadata.insert("tool".to_string(), serde_json::json!(tool));
+    metadata.insert("message".to_string(), serde_json::json!(message));
+    metadata.insert("how_to_fix".to_string(), serde_json::json!(how_to_fix));
+    metadata.insert("retryable".to_string(), serde_json::json!(retryable));
     metadata.insert(
         "retry_requires_corrected_input".to_string(),
-        serde_json::json!(report.retry_requires_corrected_input),
+        serde_json::json!(retry_requires_corrected_input),
     );
+    metadata.insert(
+        "runtime_retryable".to_string(),
+        serde_json::json!(runtime_retryable),
+    );
+    metadata.insert(
+        "model_retryable".to_string(),
+        serde_json::json!(runtime_retryable),
+    );
+    metadata.insert("unexpected".to_string(), serde_json::json!(unexpected));
+
     ToolReturnPart {
         tool_call_id: call.id.clone(),
         name: call.name.clone(),
         content: serde_json::json!({
             "error": error.to_string(),
-            "kind": report.kind,
-            "tool": report.tool,
-            "message": report.message,
-            "how_to_fix": report.how_to_fix,
-            "retryable": report.retryable,
-            "retry_requires_corrected_input": report.retry_requires_corrected_input,
+            "kind": kind,
+            "tool": tool,
+            "message": message,
+            "how_to_fix": how_to_fix,
+            "retryable": retryable,
+            "retry_requires_corrected_input": retry_requires_corrected_input,
+            "runtime_retryable": runtime_retryable,
+            "model_retryable": runtime_retryable,
+            "unexpected": unexpected,
+            "success": false,
         }),
-        is_error: true,
+        is_error: error.is_error_return(),
         metadata,
         app_value: None,
         user_content: None,
-        private_metadata: report.private_metadata,
-    }
-}
-
-struct ToolErrorReport {
-    kind: &'static str,
-    tool: String,
-    message: String,
-    how_to_fix: String,
-    retryable: bool,
-    retry_requires_corrected_input: bool,
-    metadata: Metadata,
-    private_metadata: Metadata,
-}
-
-impl ToolErrorReport {
-    fn from_error(error: &ToolError) -> Self {
-        let (kind, metadata) = tool_error_metadata(error);
-        let tool = error.tool_name().to_string();
-        let message = error.user_message();
-        let (how_to_fix, retryable, retry_requires_corrected_input) = error.recovery_guidance();
-        Self {
-            kind,
-            tool,
-            message,
-            how_to_fix,
-            retryable,
-            retry_requires_corrected_input,
-            metadata,
-            private_metadata: error.private_metadata(),
-        }
+        private_metadata: error.private_metadata(),
     }
 }
 
@@ -173,8 +175,10 @@ impl ToolError {
             Self::NotFound(_)
             | Self::InvalidArguments { .. }
             | Self::Execution { .. }
+            | Self::UserError { .. }
             | Self::Timeout { .. }
             | Self::Cancelled { .. }
+            | Self::Feedback { .. }
             | Self::ModelRetry { .. }
             | Self::ApprovalRequired { .. }
             | Self::CallDeferred { .. } => Metadata::default(),
@@ -186,8 +190,10 @@ impl ToolError {
             Self::NotFound(tool)
             | Self::InvalidArguments { tool, .. }
             | Self::Execution { tool, .. }
+            | Self::UserError { tool, .. }
             | Self::Timeout { tool, .. }
             | Self::Cancelled { tool, .. }
+            | Self::Feedback { tool, .. }
             | Self::ModelRetry { tool, .. }
             | Self::ApprovalRequired { tool, .. }
             | Self::CallDeferred { tool, .. } => tool,
@@ -200,6 +206,8 @@ impl ToolError {
             Self::NotFound(tool) => format!("tool {tool:?} is not registered for this run"),
             Self::InvalidArguments { message, .. }
             | Self::Execution { message, .. }
+            | Self::UserError { message, .. }
+            | Self::Feedback { message, .. }
             | Self::ModelRetry { message, .. } => message.clone(),
             Self::Timeout { timeout_ms, .. } => {
                 format!("tool execution exceeded the {timeout_ms}ms timeout")
@@ -230,9 +238,20 @@ impl ToolError {
                 true,
             ),
             Self::Execution { .. } => (
-                "Read the error message, fix the underlying condition, then retry if the inputs or environment can be corrected. For filesystem paths, verify the path and permissions; for network calls, verify the URL, service availability, and size limits."
+                "This looks like an unexpected tool/runtime failure. The runtime may retry the same tool call automatically. If it still fails, inspect the message and choose a safer alternative or report the tool/provider issue."
+                    .to_string(),
+                true,
+                false,
+            ),
+            Self::UserError { .. } => (
+                "This is an application or integration usage error, not a model-correctable tool failure. Fix the runtime/tool wiring, required dependencies, or call path before retrying."
                     .to_string(),
                 false,
+                false,
+            ),
+            Self::Feedback { message, .. } => (
+                format!("Use this feedback to choose the next step; do not repeat the same call unchanged unless the underlying condition changed: {message}"),
+                true,
                 false,
             ),
             Self::Timeout { .. } => (
@@ -267,6 +286,56 @@ impl ToolError {
             Self::WithPrivateMetadata { source, .. } => source.recovery_guidance(),
         }
     }
+
+    /// Return whether this error should trigger a model correction retry.
+    #[must_use]
+    pub fn runtime_retryable(&self) -> bool {
+        match self {
+            Self::InvalidArguments { .. } | Self::ModelRetry { .. } => true,
+            Self::WithPrivateMetadata { source, .. } => source.runtime_retryable(),
+            Self::NotFound(_)
+            | Self::Execution { .. }
+            | Self::UserError { .. }
+            | Self::Timeout { .. }
+            | Self::Cancelled { .. }
+            | Self::Feedback { .. }
+            | Self::ApprovalRequired { .. }
+            | Self::CallDeferred { .. } => false,
+        }
+    }
+
+    /// Return whether this error represents an unexpected tool/runtime failure.
+    #[must_use]
+    pub fn unexpected(&self) -> bool {
+        match self {
+            Self::Execution { .. } => true,
+            Self::WithPrivateMetadata { source, .. } => source.unexpected(),
+            Self::NotFound(_)
+            | Self::InvalidArguments { .. }
+            | Self::UserError { .. }
+            | Self::Timeout { .. }
+            | Self::Cancelled { .. }
+            | Self::Feedback { .. }
+            | Self::ModelRetry { .. }
+            | Self::ApprovalRequired { .. }
+            | Self::CallDeferred { .. } => false,
+        }
+    }
+
+    fn is_error_return(&self) -> bool {
+        match self {
+            Self::InvalidArguments { .. }
+            | Self::Execution { .. }
+            | Self::UserError { .. }
+            | Self::Timeout { .. }
+            | Self::Cancelled { .. }
+            | Self::ModelRetry { .. }
+            | Self::ApprovalRequired { .. }
+            | Self::CallDeferred { .. } => true,
+            Self::WithPrivateMetadata { source, .. } => source.is_error_return(),
+            Self::NotFound(_) | Self::Feedback { .. } => false,
+        }
+    }
 }
 
 fn tool_error_metadata(error: &ToolError) -> (&'static str, Metadata) {
@@ -275,6 +344,8 @@ fn tool_error_metadata(error: &ToolError) -> (&'static str, Metadata) {
         ToolError::NotFound(_) => ("not_found", metadata),
         ToolError::InvalidArguments { .. } => ("invalid_arguments", metadata),
         ToolError::Execution { .. } => ("execution", metadata),
+        ToolError::UserError { .. } => ("user_error", metadata),
+        ToolError::Feedback { .. } => ("feedback", metadata),
         ToolError::Timeout { timeout_ms, .. } => {
             metadata.insert("timeout_ms".to_string(), serde_json::json!(timeout_ms));
             ("timeout", metadata)

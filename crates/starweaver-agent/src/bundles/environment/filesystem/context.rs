@@ -4,14 +4,14 @@ use starweaver_context::{AgentContext, ToolConfig};
 use starweaver_environment::{EnvironmentProvider, matches_path_pattern};
 use starweaver_tools::{ToolContext, ToolError};
 
-use super::tool_execution_error;
+use crate::bundles::helpers::{tool_execution_error, tool_user_error};
 
 pub(super) fn tool_config_from_context(
     context: &ToolContext,
     tool: &str,
 ) -> Result<ToolConfig, ToolError> {
     let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
-        tool_execution_error(tool, "AgentContext dependency is missing from ToolContext")
+        tool_user_error(tool, "AgentContext dependency is missing from ToolContext")
     })?;
     Ok(agent_context.tool_config.clone())
 }

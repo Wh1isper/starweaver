@@ -3,7 +3,7 @@ use starweaver_context::AgentContext;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use crate::{
-    bundles::helpers::tool_model_retry,
+    bundles::helpers::tool_feedback,
     media_compression::{compress_image_to_model_limit, data_url, raw_budget_for_encoded_limit},
 };
 
@@ -33,7 +33,7 @@ pub(super) fn fetch_image_result(
             match compress_image_to_model_limit(&body, max_image_bytes, &media_type) {
                 Ok(compressed) => {
                     if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
-                        return Err(tool_model_retry(
+                        return Err(tool_feedback(
                             "fetch",
                             format!(
                                 "Fetched image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Download the image and resize or convert it to a smaller format before retrying."
@@ -45,7 +45,7 @@ pub(super) fn fetch_image_result(
                     compressed_for_model = compressed.compressed;
                 }
                 Err(error) => {
-                    return Err(tool_model_retry(
+                    return Err(tool_feedback(
                         "fetch",
                         format!(
                             "Fetched image could not be compressed for inline model input: {error}. Download the image and resize or convert it to a supported smaller format before retrying."

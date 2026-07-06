@@ -468,8 +468,11 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
             let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
             if !entry
                 .file_type()
-                .is_some_and(|file_type| file_type.is_file())
+                .is_some_and(|file_type| file_type.is_file() || file_type.is_dir())
             {
+                continue;
+            }
+            if entry.path() == search_root {
                 continue;
             }
             let logical = self.logical_provider_path(entry.path())?;
@@ -548,7 +551,12 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
                 .binary_detection(BinaryDetection::quit(b'\x00'))
                 .max_matches(max_matches)
                 .build();
-            let mut sink = LocalGrepSink::new(&logical, &mut grep_matches, options.max_results);
+            let mut sink = LocalGrepSink::new(
+                &logical,
+                &mut grep_matches,
+                options.context_lines,
+                options.max_results,
+            );
             let _ = searcher.search_path(&matcher, entry.path(), &mut sink);
         }
         Ok(grep_matches)
