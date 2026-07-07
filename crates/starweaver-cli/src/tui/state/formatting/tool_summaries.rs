@@ -77,6 +77,7 @@ pub(in crate::tui::state) fn format_tool_return_summary(
             ToolVisibility::ApprovalRequired
                 | ToolVisibility::Deferred
                 | ToolVisibility::ErrorImportant
+                | ToolVisibility::ContextHandoff
         );
     let mut summary = ToolConciseSummary::new(
         match category {
@@ -362,6 +363,12 @@ fn task_return_summary(name: &str, _result: &Value, _arguments: Option<&Value>) 
 }
 
 fn generic_call_summary(name: &str, args_preview: Option<&str>) -> String {
+    if name == "summarize" {
+        return args_preview.map_or_else(
+            || "Summarizing progress...".to_string(),
+            |args| format!("Summarizing progress... {}", truncate_concise(args)),
+        );
+    }
     args_preview.map_or_else(
         || format!("Calling {name}"),
         |args| format!("Calling {name} {}", truncate_concise(args)),
@@ -369,6 +376,9 @@ fn generic_call_summary(name: &str, args_preview: Option<&str>) -> String {
 }
 
 fn generic_return_summary(name: &str, arguments: Option<&Value>) -> String {
+    if name == "summarize" {
+        return "Summary complete".to_string();
+    }
     arguments
         .and_then(|args| value_args_preview(args, CONCISE_ARG_MAX_CHARS))
         .map_or_else(

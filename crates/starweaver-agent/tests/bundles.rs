@@ -465,11 +465,8 @@ async fn assert_filesystem_shell_results(
         results.default_ls.content["entries"],
         serde_json::json!(["README.md", "docs/output.txt", "src/lib.rs", "src/main.rs"])
     );
-    assert!(results.invalid_write_mode.is_error);
-    assert_eq!(
-        results.invalid_write_mode.content["kind"],
-        "invalid_arguments"
-    );
+    assert!(!results.invalid_write_mode.is_error);
+    assert_eq!(results.invalid_write_mode.content["kind"], "feedback");
     assert!(
         results.invalid_write_mode.content["message"]
             .as_str()
@@ -480,10 +477,10 @@ async fn assert_filesystem_shell_results(
         results.invalid_write_mode.content["how_to_fix"]
             .as_str()
             .unwrap()
-            .contains("JSON schema")
+            .contains("next step")
     );
-    assert!(results.edit_existing_create.is_error);
-    assert_eq!(results.edit_existing_create.content["kind"], "model_retry");
+    assert!(!results.edit_existing_create.is_error);
+    assert_eq!(results.edit_existing_create.content["kind"], "feedback");
     assert!(
         results.edit_existing_create.content["message"]
             .as_str()
@@ -494,18 +491,15 @@ async fn assert_filesystem_shell_results(
         results.edit_existing_create.content["how_to_fix"]
             .as_str()
             .unwrap()
-            .contains("adjusted arguments")
+            .contains("next step")
     );
     assert!(!results.multi_edit_create_then_replace.is_error);
     assert_eq!(
         provider.read_text("created.txt").await.unwrap(),
         "Hello Universe"
     );
-    assert!(results.multi_edit_empty_later.is_error);
-    assert_eq!(
-        results.multi_edit_empty_later.content["kind"],
-        "invalid_arguments"
-    );
+    assert!(!results.multi_edit_empty_later.is_error);
+    assert_eq!(results.multi_edit_empty_later.content["kind"], "feedback");
     assert!(
         results.multi_edit_empty_later.content["message"]
             .as_str()
@@ -527,8 +521,8 @@ fn assert_shell_results(results: &FilesystemShellResults) {
         "override"
     );
     assert_eq!(results.shell_with_env.content["stdout"], "ctx\noverride\n");
-    assert!(results.empty_shell.is_error);
-    assert_eq!(results.empty_shell.content["kind"], "invalid_arguments");
+    assert!(!results.empty_shell.is_error);
+    assert_eq!(results.empty_shell.content["kind"], "feedback");
     assert!(
         results.empty_shell.content["message"]
             .as_str()
@@ -536,11 +530,8 @@ fn assert_shell_results(results: &FilesystemShellResults) {
             .contains("must not be empty")
     );
     assert!(results.empty_shell.content["retryable"].as_bool().unwrap());
-    assert!(results.invalid_grep_context.is_error);
-    assert_eq!(
-        results.invalid_grep_context.content["kind"],
-        "invalid_arguments"
-    );
+    assert!(!results.invalid_grep_context.is_error);
+    assert_eq!(results.invalid_grep_context.content["kind"], "feedback");
     assert!(
         results.invalid_grep_context.content["message"]
             .as_str()
@@ -550,28 +541,22 @@ fn assert_shell_results(results: &FilesystemShellResults) {
 }
 
 fn assert_invalid_search_roots(results: &FilesystemShellResults) {
-    assert!(results.invalid_glob_multi_root.is_error);
-    assert_eq!(
-        results.invalid_glob_multi_root.content["kind"],
-        "model_retry"
-    );
-    let invalid_glob_root_error = results.invalid_glob_multi_root.content["error"]
+    assert!(!results.invalid_glob_multi_root.is_error);
+    assert_eq!(results.invalid_glob_multi_root.content["kind"], "feedback");
+    let invalid_glob_root_message = results.invalid_glob_multi_root.content["message"]
         .as_str()
         .unwrap();
-    assert!(invalid_glob_root_error.contains("root must be a single directory path"));
-    assert!(invalid_glob_root_error.contains("parallel tool calls"));
-    assert!(!invalid_glob_root_error.contains("src\ndocs"));
-    assert!(results.invalid_grep_multi_root.is_error);
-    assert_eq!(
-        results.invalid_grep_multi_root.content["kind"],
-        "model_retry"
-    );
-    let invalid_grep_root_error = results.invalid_grep_multi_root.content["error"]
+    assert!(invalid_glob_root_message.contains("root must be a single directory path"));
+    assert!(invalid_glob_root_message.contains("parallel tool calls"));
+    assert!(!invalid_glob_root_message.contains("src\ndocs"));
+    assert!(!results.invalid_grep_multi_root.is_error);
+    assert_eq!(results.invalid_grep_multi_root.content["kind"], "feedback");
+    let invalid_grep_root_message = results.invalid_grep_multi_root.content["message"]
         .as_str()
         .unwrap();
-    assert!(invalid_grep_root_error.contains("root must be a single directory path"));
-    assert!(invalid_grep_root_error.contains("parallel tool calls"));
-    assert!(!invalid_grep_root_error.contains("src\ndocs"));
+    assert!(invalid_grep_root_message.contains("root must be a single directory path"));
+    assert!(invalid_grep_root_message.contains("parallel tool calls"));
+    assert!(!invalid_grep_root_message.contains("src\ndocs"));
 }
 
 async fn assert_background_shell(
@@ -777,8 +762,8 @@ async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
             },
         )
         .await;
-    assert!(binary.is_error);
-    assert_eq!(binary.content["kind"], "model_retry");
+    assert!(!binary.is_error);
+    assert_eq!(binary.content["kind"], "feedback");
     assert!(
         binary.content["message"]
             .as_str()
@@ -898,8 +883,8 @@ async fn filesystem_view_uses_relaxed_text_limits_for_configured_paths() {
             },
         )
         .await;
-    assert!(binary.is_error);
-    assert_eq!(binary.content["kind"], "model_retry");
+    assert!(!binary.is_error);
+    assert_eq!(binary.content["kind"], "feedback");
     assert!(
         binary.content["message"]
             .as_str()
@@ -1479,8 +1464,8 @@ async fn read_media_rejects_non_media_http_url_with_actionable_retry() {
     )
     .await;
 
-    assert!(result.is_error);
-    assert_eq!(result.content["kind"], "model_retry");
+    assert!(!result.is_error);
+    assert_eq!(result.content["kind"], "feedback");
     assert!(
         result.content["message"]
             .as_str()
@@ -1656,8 +1641,8 @@ async fn host_io_and_view_media_failures_return_actionable_tool_errors() {
         serde_json::json!({"query": "   "}),
     )
     .await;
-    assert!(empty_search.is_error);
-    assert_eq!(empty_search.content["kind"], "invalid_arguments");
+    assert!(!empty_search.is_error);
+    assert_eq!(empty_search.content["kind"], "feedback");
     assert!(
         empty_search.content["message"]
             .as_str()
@@ -1668,7 +1653,7 @@ async fn host_io_and_view_media_failures_return_actionable_tool_errors() {
         empty_search.content["how_to_fix"]
             .as_str()
             .unwrap()
-            .contains("JSON schema")
+            .contains("next step")
     );
 
     let local_media_without_adapter = execute_tool_call(
@@ -1679,8 +1664,8 @@ async fn host_io_and_view_media_failures_return_actionable_tool_errors() {
         serde_json::json!({"path": "image.png"}),
     )
     .await;
-    assert!(local_media_without_adapter.is_error);
-    assert_eq!(local_media_without_adapter.content["kind"], "model_retry");
+    assert!(!local_media_without_adapter.is_error);
+    assert_eq!(local_media_without_adapter.content["kind"], "feedback");
     assert!(
         local_media_without_adapter.content["message"]
             .as_str()
@@ -1712,7 +1697,7 @@ async fn host_io_and_view_media_failures_return_actionable_tool_errors() {
         failing_search.content["how_to_fix"]
             .as_str()
             .unwrap()
-            .contains("underlying condition")
+            .contains("tool/runtime failure")
     );
 }
 

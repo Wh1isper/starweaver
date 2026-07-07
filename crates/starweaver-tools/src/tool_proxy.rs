@@ -995,13 +995,13 @@ impl Tool for SearchLoadedTool {
 
     async fn call(&self, context: ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
         let Some(handle) = context.dependency::<AgentContextHandle>() else {
-            return Err(ToolError::Execution {
+            return Err(ToolError::UserError {
                 tool: self.inner.name.clone(),
                 message: "direct tool-search calls require AgentContextHandle".to_string(),
             });
         };
         if !self.is_loaded(&handle.snapshot()) {
-            return Err(ToolError::Execution {
+            return Err(ToolError::UserError {
                 tool: self.inner.name.clone(),
                 message: format!(
                     "tool is not loaded; call {TOOL_SEARCH_NAME} before invoking {}",

@@ -544,6 +544,36 @@ fn display_message_to_stream_record(
         DisplayMessageKind::SubagentFailed => AgentStreamEvent::Custom {
             event: starweaver_context::AgentEvent::new("subagent_failed", message.payload.clone()),
         },
+        DisplayMessageKind::CompactionStarted => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "compaction_started",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::CompactionCompleted => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "compaction_completed",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::CompactionFailed => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "compaction_failed",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::HandoffStarted => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("handoff_started", message.payload.clone()),
+        },
+        DisplayMessageKind::HandoffCompleted => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "handoff_completed",
+                message.payload.clone(),
+            ),
+        },
+        DisplayMessageKind::HandoffFailed => AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new("handoff_failed", message.payload.clone()),
+        },
         DisplayMessageKind::SteeringSubmitted => AgentStreamEvent::Custom {
             event: starweaver_context::AgentEvent::new(
                 "steering_submitted",

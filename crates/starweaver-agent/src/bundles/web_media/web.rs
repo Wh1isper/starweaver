@@ -12,7 +12,7 @@ use super::{
     http::{MAX_FETCH_BYTES, fetch_http_resource, first_env, is_text_like},
     json_result,
 };
-use crate::bundles::helpers::{tool_execution_error, tool_invalid_arguments};
+use crate::bundles::helpers::{tool_execution_error, tool_feedback, tool_invalid_arguments};
 use crate::bundles::output::{
     DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
     environment_provider_from_context, fit_text_fields_to_limit, output_too_large_message,
@@ -231,7 +231,7 @@ pub(super) async fn fetch(
         ));
     };
     if !(200..400).contains(&resource.status) {
-        return Err(tool_execution_error(
+        return Err(tool_feedback(
             "fetch",
             format!(
                 "HTTP {} returned for {}. Verify the URL, authentication, and whether the resource exists. Use head_only=true if you only need availability metadata.",

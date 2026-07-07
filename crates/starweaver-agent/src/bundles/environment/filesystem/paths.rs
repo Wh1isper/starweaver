@@ -9,6 +9,7 @@ use tokio::sync::Semaphore;
 use super::{DeleteArgs, FilePathArgs, ListArgs, MkdirArgs, PathPairsArgs, tool_execution_error};
 use crate::bundles::environment::common::limit_or_unlimited;
 use crate::bundles::environment::handle::environment_provider;
+use crate::bundles::helpers::tool_environment_error;
 
 const LS_MAX_CONCURRENT_CALLS: usize = 16;
 static LS_CONCURRENCY_LIMIT: LazyLock<Semaphore> =
@@ -34,7 +35,7 @@ pub(super) async fn list_files(
             },
         )
         .await
-        .map_err(|error| tool_execution_error("ls", error))?;
+        .map_err(|error| tool_environment_error("ls", error))?;
     let mut result = serde_json::json!({
         "path": arguments.path,
         "ignore": ignore,
@@ -60,7 +61,7 @@ pub(super) async fn mkdir_paths(
         provider
             .create_dir(&path, arguments.parents)
             .await
-            .map_err(|error| tool_execution_error("mkdir", error))?;
+            .map_err(|error| tool_environment_error("mkdir", error))?;
         created.push(path);
     }
     Ok(ToolResult::new(serde_json::json!({
@@ -80,7 +81,7 @@ pub(super) async fn delete_paths(
         match provider.delete_path(&path, arguments.recursive).await {
             Ok(()) => deleted.push(path),
             Err(EnvironmentError::NotFound(_)) if arguments.force => missing.push(path),
-            Err(error) => return Err(tool_execution_error("delete", error)),
+            Err(error) => return Err(tool_environment_error("delete", error)),
         }
     }
     Ok(ToolResult::new(serde_json::json!({
@@ -101,7 +102,7 @@ pub(super) async fn move_paths(
         provider
             .move_path(&pair.src, &pair.dst, arguments.overwrite)
             .await
-            .map_err(|error| tool_execution_error("move", error))?;
+            .map_err(|error| tool_environment_error("move", error))?;
         moved.push(serde_json::json!({"src": pair.src, "dst": pair.dst}));
     }
     Ok(ToolResult::new(serde_json::json!({
@@ -120,7 +121,7 @@ pub(super) async fn copy_paths(
         provider
             .copy_path(&pair.src, &pair.dst, arguments.overwrite)
             .await
-            .map_err(|error| tool_execution_error("copy", error))?;
+            .map_err(|error| tool_environment_error("copy", error))?;
         copied.push(serde_json::json!({"src": pair.src, "dst": pair.dst}));
     }
     Ok(ToolResult::new(serde_json::json!({

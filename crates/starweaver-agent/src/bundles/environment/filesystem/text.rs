@@ -7,9 +7,9 @@ use starweaver_tools::{ToolError, ToolResult};
 
 use super::{
     ViewArgs, context::uses_relaxed_text_limits, default_view_line_limit,
-    default_view_max_line_length, tool_execution_error,
+    default_view_max_line_length,
 };
-use crate::bundles::helpers::tool_model_retry;
+use crate::bundles::helpers::{tool_environment_error, tool_feedback};
 
 const BINARY_CHECK_BYTES: usize = 8192;
 
@@ -22,9 +22,9 @@ pub(super) async fn read_text_file(
     let binary_probe = provider
         .read_bytes(&arguments.file_path, 0, Some(BINARY_CHECK_BYTES))
         .await
-        .map_err(|error| tool_execution_error("view", error))?;
+        .map_err(|error| tool_environment_error("view", error))?;
     if binary_probe.contains(&0) {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             "view",
             format!(
                 "{} appears to be a binary file. Use an appropriate file-specific tool instead: pdf_convert for PDFs, office_to_markdown for Office/EPUB documents, media understanding for images/audio/video, or shell tools such as xxd for hex inspection.",
@@ -40,7 +40,7 @@ pub(super) async fn read_text_file(
         tool_config.view_max_text_file_size
     };
     if stat.size > max_file_size {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             "view",
             format!(
                 "file is too large to inspect safely ({}). Maximum supported text view size is {}. Use shell tools such as head, tail, or sed -n to read portions of this file, or narrow the request if a range-capable tool is available.",
@@ -70,7 +70,7 @@ pub(super) async fn read_text_file(
     let full_content = provider
         .read_text(&arguments.file_path)
         .await
-        .map_err(|error| tool_execution_error("view", error))?;
+        .map_err(|error| tool_environment_error("view", error))?;
     let selection = select_text_lines(
         &arguments.file_path,
         &full_content,
@@ -89,12 +89,12 @@ pub(super) async fn ensure_file_missing(
     path: &str,
 ) -> Result<(), ToolError> {
     match provider.stat(path).await {
-        Ok(_) => Err(tool_model_retry(
+        Ok(_) => Err(tool_feedback(
             tool,
             "file already exists. Use write with mode \"w\" to overwrite existing content, or choose a different file path for create operations.",
         )),
         Err(EnvironmentError::NotFound(_)) => Ok(()),
-        Err(error) => Err(tool_execution_error(tool, error)),
+        Err(error) => Err(tool_environment_error(tool, error)),
     }
 }
 

@@ -57,7 +57,7 @@ fn retry_precedence_is_tool_then_toolset_then_registry_then_default() {
     assert_eq!(registry.max_retries_for("overridden"), 5);
     assert_eq!(registry.max_retries_for("inherited"), 2);
     assert_eq!(registry.max_retries_for("standalone"), 7);
-    assert_eq!(ToolRegistry::new().max_retries_for("missing"), 1);
+    assert_eq!(ToolRegistry::new().max_retries_for("missing"), 3);
 }
 
 #[tokio::test]

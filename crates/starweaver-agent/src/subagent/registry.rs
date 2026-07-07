@@ -591,7 +591,7 @@ impl SubagentRegistry {
                     let monitor = monitor.clone();
                     async move {
                         let context_handle = context.dependency::<AgentContextHandle>().ok_or_else(|| {
-                            ToolError::Execution {
+                            ToolError::UserError {
                                 tool: WAIT_SUBAGENT_TOOL_NAME.to_string(),
                                 message: "missing AgentContextHandle dependency".to_string(),
                             }
@@ -601,7 +601,7 @@ impl SubagentRegistry {
                             || snapshot.metadata.contains_key("parent_agent_id")
                             || snapshot.agent_id.as_str() != "main"
                         {
-                            return Err(ToolError::Execution {
+                            return Err(ToolError::UserError {
                                 tool: WAIT_SUBAGENT_TOOL_NAME.to_string(),
                                 message: "wait_subagent is only available to the main agent".to_string(),
                             });
@@ -700,7 +700,7 @@ impl SubagentRegistry {
                 async move {
                     let context_handle =
                         context.dependency::<AgentContextHandle>().ok_or_else(|| {
-                            ToolError::Execution {
+                            ToolError::UserError {
                                 tool: tool_name.clone(),
                                 message: "missing AgentContextHandle dependency".to_string(),
                             }
@@ -776,7 +776,7 @@ impl SubagentRegistry {
                     async move {
                         let context_handle =
                             context.dependency::<AgentContextHandle>().ok_or_else(|| {
-                                ToolError::Execution {
+                                ToolError::UserError {
                                     tool: tool_name.clone(),
                                     message: "missing AgentContextHandle dependency".to_string(),
                                 }
@@ -785,7 +785,7 @@ impl SubagentRegistry {
                         if parent_context.parent_run_id.is_some()
                             || parent_context.metadata.contains_key("parent_agent_id")
                         {
-                            return Err(ToolError::Execution {
+                            return Err(ToolError::UserError {
                                 tool: tool_name.clone(),
                                 message: "background subagent delegation is only available to the main agent"
                                     .to_string(),

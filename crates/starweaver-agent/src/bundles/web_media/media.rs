@@ -15,7 +15,7 @@ use super::{
     },
     json_result,
 };
-use crate::bundles::helpers::{tool_execution_error, tool_model_retry};
+use crate::bundles::helpers::{tool_execution_error, tool_feedback};
 use crate::media_compression::{
     compress_image_to_model_limit, data_url, raw_budget_for_encoded_limit,
 };
@@ -241,10 +241,10 @@ pub(super) async fn read_media(
     )
     .await?;
     if !(200..400).contains(&resource.status) {
-        return Err(tool_execution_error(
+        return Err(tool_feedback(
             "read_media",
             format!(
-                "HTTP status {} while reading media URL {}",
+                "HTTP status {} while reading media URL {}. Verify the URL, authentication, and whether the media resource exists.",
                 resource.status, resource.final_url
             ),
         ));
@@ -261,7 +261,7 @@ pub(super) async fn read_media(
 
     let (kind, mut media_type) = classify_loaded_media(&body, &resource, &arguments.url);
     if !matches!(kind, MediaKind::Image | MediaKind::Video | MediaKind::Audio) {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             "read_media",
             unsupported_media_message(kind, &arguments.url),
         ));
@@ -269,7 +269,7 @@ pub(super) async fn read_media(
 
     let max_inline = max_inline_bytes(&tool_config, kind);
     if u64::try_from(body.len()).map_or(true, |length| length > max_inline) {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             "read_media",
             format!(
                 "{} URL is too large to inline ({} bytes). Maximum supported inline size is {} bytes. Use `download` to save it, then inspect a smaller or converted local file with `view`.",
@@ -285,7 +285,7 @@ pub(super) async fn read_media(
     if kind == MediaKind::Image {
         let mut image_media_type = normalized_image_media_type(&body, media_type.as_deref());
         if !is_supported_inline_image(&image_media_type) {
-            return Err(tool_model_retry(
+            return Err(tool_feedback(
                 "read_media",
                 format!(
                     "unsupported image format '{image_media_type}' for {}. Supported formats: image/gif, image/jpeg, image/png, image/webp. Use `download`, convert the image to a supported format, then inspect it with `view`.",
@@ -299,7 +299,7 @@ pub(super) async fn read_media(
                 match compress_image_to_model_limit(&body, max_image_bytes, &image_media_type) {
                     Ok(compressed) => {
                         if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
-                            return Err(tool_model_retry(
+                            return Err(tool_feedback(
                                 "read_media",
                                 format!(
                                     "Image URL could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Use `download`, resize or convert it to a smaller supported format, then inspect it with `view`."
@@ -311,7 +311,7 @@ pub(super) async fn read_media(
                         compressed_for_model = compressed.compressed;
                     }
                     Err(error) => {
-                        return Err(tool_model_retry(
+                        return Err(tool_feedback(
                             "read_media",
                             format!(
                                 "Image URL could not be compressed for inline model input: {error}. Use `download`, resize or convert it to a supported smaller format, then inspect it with `view`."
@@ -323,7 +323,7 @@ pub(super) async fn read_media(
         }
         media_type = Some(image_media_type);
     } else if media_type.is_none() {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             "read_media",
             format!(
                 "{} URL media type could not be determined for {}. Use `download`, inspect the file type locally, then retry with `view`.",
@@ -366,7 +366,7 @@ pub(super) async fn read_media(
         return json_result(response, "read_media");
     }
 
-    Err(tool_model_retry(
+    Err(tool_feedback(
         "read_media",
         format!(
             "The active model does not advertise native support for this remote {} URL and no HostMediaUnderstandingClientHandle fallback adapter is configured. Configure a fallback adapter, switch to a media-capable model, or use `download` followed by local `view` on a supported file.",
@@ -397,7 +397,7 @@ async fn read_legacy_media(
             .map_err(|error| tool_execution_error(media_kind.as_str(), error))?;
         return json_result(response, media_kind.as_str());
     }
-    Err(tool_model_retry(
+    Err(tool_feedback(
         media_kind.as_str(),
         format!(
             "no HostMediaUnderstandingClientHandle fallback adapter is configured for {media_kind}. Configure a fallback adapter, use load_media_url if the active model supports this media URL kind, or switch to a media-capable model. native_supported={native_supported}",
@@ -432,7 +432,7 @@ async fn read_youtube_url(
         return json_result(response, "read_media");
     }
 
-    Err(tool_model_retry(
+    Err(tool_feedback(
         "read_media",
         "The active model does not advertise native YouTube URL support and no HostMediaUnderstandingClientHandle fallback adapter is configured. Use a direct downloadable video/audio URL, configure a fallback adapter, or provide a local downloaded file to `view`.",
     ))

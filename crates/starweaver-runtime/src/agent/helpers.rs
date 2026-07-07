@@ -34,19 +34,24 @@ pub(super) const fn has_pending_tool_control_flow(state: &AgentRunState) -> bool
 }
 
 pub(super) fn is_tool_retry_return(tool_return: &starweaver_model::ToolReturnPart) -> bool {
-    matches!(
-        tool_return
-            .metadata
-            .get("error_kind")
-            .and_then(serde_json::Value::as_str),
-        Some("model_retry" | "invalid_arguments")
-    ) || matches!(
-        tool_return
-            .content
-            .get("kind")
-            .and_then(serde_json::Value::as_str),
-        Some("model_retry" | "invalid_arguments")
-    )
+    tool_return_bool(tool_return, "runtime_retryable").unwrap_or(false)
+}
+
+pub(super) fn is_successful_tool_return(tool_return: &starweaver_model::ToolReturnPart) -> bool {
+    !tool_return.is_error && tool_return_bool(tool_return, "success").is_none_or(|success| success)
+}
+
+fn tool_return_bool(tool_return: &starweaver_model::ToolReturnPart, key: &str) -> Option<bool> {
+    tool_return
+        .metadata
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .or_else(|| {
+            tool_return
+                .content
+                .get(key)
+                .and_then(serde_json::Value::as_bool)
+        })
 }
 
 pub(super) fn mark_tool_retry_return(

@@ -3,6 +3,7 @@ use std::{future::Future, sync::Arc};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use starweaver_core::Metadata;
+use starweaver_environment::EnvironmentError;
 use starweaver_tools::{
     DynTool, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY, ToolContext, ToolError, ToolResult,
     typed_json_tool,
@@ -106,15 +107,41 @@ pub fn tool_execution_error(tool: &str, error: impl std::fmt::Display) -> ToolEr
     }
 }
 
-pub fn tool_invalid_arguments(tool: &str, message: impl Into<String>) -> ToolError {
-    ToolError::InvalidArguments {
+pub fn tool_user_error(tool: &str, error: impl std::fmt::Display) -> ToolError {
+    ToolError::UserError {
         tool: tool.to_string(),
-        message: message.into(),
+        message: error.to_string(),
     }
 }
 
-pub fn tool_model_retry(tool: &str, message: impl Into<String>) -> ToolError {
-    ToolError::ModelRetry {
+pub fn tool_environment_error(tool: &str, error: EnvironmentError) -> ToolError {
+    match error {
+        EnvironmentError::Provider(message) => tool_execution_error(tool, message),
+        EnvironmentError::NotFound(path) => tool_feedback(
+            tool,
+            format!(
+                "environment resource not found: {path}. Verify the path or resource name, then retry with an existing target."
+            ),
+        ),
+        EnvironmentError::AccessDenied(message) => tool_feedback(
+            tool,
+            format!(
+                "environment access denied: {message}. Choose an allowed path, working directory, command, or resource according to the active environment policy."
+            ),
+        ),
+        EnvironmentError::InvalidRequest(message) => tool_feedback(
+            tool,
+            format!("invalid environment request: {message}. Adjust the tool arguments and retry."),
+        ),
+    }
+}
+
+pub fn tool_invalid_arguments(tool: &str, message: impl Into<String>) -> ToolError {
+    tool_feedback(tool, message)
+}
+
+pub fn tool_feedback(tool: &str, message: impl Into<String>) -> ToolError {
+    ToolError::Feedback {
         tool: tool.to_string(),
         message: message.into(),
     }

@@ -9,7 +9,7 @@ use starweaver_agent::{
     BackgroundSubagentMonitor, DELEGATE_BACKEND_TOOL_NAME, FunctionTool, SPAWN_DELEGATE_TOOL_NAME,
     SubagentConfig, SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
     SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy,
-    TestModel, ToolContext, ToolRegistry, ToolResult, WAIT_SUBAGENT_TOOL_NAME,
+    TestModel, ToolContext, ToolError, ToolRegistry, ToolResult, WAIT_SUBAGENT_TOOL_NAME,
 };
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
@@ -149,6 +149,40 @@ async fn subagent_info_tool_lists_known_subagents_with_empty_args_schema() {
     );
 }
 
+#[test]
+fn subagent_tool_inheritance_never_exposes_delegation_tools_to_children() {
+    let ordinary = Arc::new(FunctionTool::new(
+        "ordinary",
+        Some("Ordinary inherited tool".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let delegate = Arc::new(FunctionTool::new(
+        "delegate",
+        Some("Delegation tool".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let wait_subagent = Arc::new(FunctionTool::new(
+        WAIT_SUBAGENT_TOOL_NAME,
+        Some("Wait for subagent".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let parent = ToolRegistry::new()
+        .with_tool(ordinary)
+        .with_tool(delegate)
+        .with_tool(wait_subagent);
+
+    let inherited = SubagentToolInheritancePolicy::default()
+        .with_inherit_all_when_empty(true)
+        .with_nested_delegation(true)
+        .resolve(&parent)
+        .unwrap();
+
+    assert_eq!(inherited.names(), vec!["ordinary".to_string()]);
+}
+
 #[tokio::test]
 async fn subagent_delegate_tool_reports_missing_agent_context() {
     let registry = Arc::new(SubagentRegistry::new());
@@ -163,6 +197,10 @@ async fn subagent_delegate_tool_reports_missing_agent_context() {
         .unwrap_err();
 
     assert_eq!(delegate.name(), "ask_subagent");
+    assert!(matches!(
+        error,
+        starweaver_agent::ToolError::UserError { .. }
+    ));
     assert!(
         error
             .to_string()
@@ -427,6 +465,256 @@ async fn wait_subagent_unknown_agent_reports_known_ids() {
 }
 
 #[tokio::test]
+async fn async_delegate_and_wait_guard_errors_are_user_facing() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let delegate = registry.async_delegate_tool(monitor.clone());
+    let wait = registry.wait_subagent_tool(monitor);
+    let empty_context = ToolContext::new(RunId::default(), ConversationId::default(), 0);
+
+    let missing_delegate_context = delegate
+        .call(
+            empty_context.clone(),
+            serde_json::json!({"name": "child", "prompt": "help"}),
+        )
+        .await
+        .unwrap_err();
+    match missing_delegate_context {
+        ToolError::UserError { tool, message } => {
+            assert_eq!(tool, "delegate");
+            assert_eq!(message, "missing AgentContextHandle dependency");
+        }
+        other => panic!("expected user error, got {other:?}"),
+    }
+
+    let missing_wait_context = wait
+        .call(empty_context, serde_json::json!({"timeout_seconds": 0}))
+        .await
+        .unwrap_err();
+    match missing_wait_context {
+        ToolError::UserError { tool, message } => {
+            assert_eq!(tool, WAIT_SUBAGENT_TOOL_NAME);
+            assert_eq!(message, "missing AgentContextHandle dependency");
+        }
+        other => panic!("expected user error, got {other:?}"),
+    }
+
+    let nested_parent = AgentContext {
+        parent_run_id: Some(RunId::from_string("parent-run")),
+        ..AgentContext::default()
+    };
+    let nested_handle = AgentContextHandle::new(nested_parent.clone());
+    let nested_context = delegation_tool_context(&nested_parent, nested_handle.clone());
+
+    let nested_delegate = delegate
+        .call(
+            nested_context.clone(),
+            serde_json::json!({"name": "child", "prompt": "help"}),
+        )
+        .await
+        .unwrap_err();
+    match nested_delegate {
+        ToolError::UserError { tool, message } => {
+            assert_eq!(tool, "delegate");
+            assert_eq!(
+                message,
+                "background subagent delegation is only available to the main agent"
+            );
+        }
+        other => panic!("expected user error, got {other:?}"),
+    }
+
+    let nested_wait = wait
+        .call(nested_context, serde_json::json!({"timeout_seconds": 0}))
+        .await
+        .unwrap_err();
+    match nested_wait {
+        ToolError::UserError { tool, message } => {
+            assert_eq!(tool, WAIT_SUBAGENT_TOOL_NAME);
+            assert_eq!(message, "wait_subagent is only available to the main agent");
+        }
+        other => panic!("expected user error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn wait_subagent_without_agent_id_reports_empty_and_completed() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let delegate = registry.async_delegate_tool(monitor.clone());
+    let wait = registry.wait_subagent_tool(monitor.clone());
+    let parent = AgentContext::default();
+    let context_handle = AgentContextHandle::new(parent.clone());
+
+    let empty = wait
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({"timeout_seconds": 0}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty.content["status"], "empty");
+    assert_eq!(empty.content["timed_out"], false);
+    assert_eq!(empty.content["results"], serde_json::json!([]));
+
+    delegate
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help",
+                "agent_id": "child-bg-all"
+            }),
+        )
+        .await
+        .unwrap();
+
+    for _ in 0..50 {
+        if !monitor.has_active_tasks() && !monitor.task_results().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let completed = wait
+        .call(
+            delegation_tool_context(&context_handle.snapshot(), context_handle.clone()),
+            serde_json::json!({"timeout_seconds": 0}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(completed.content["status"], "completed");
+    assert_eq!(completed.content["timed_out"], false);
+    assert_eq!(completed.content["results"][0]["status"], "completed");
+    assert_eq!(completed.content["results"][0]["agent_id"], "child-bg-all");
+    assert_eq!(completed.content["results"][0]["result"], "child output");
+}
+
+#[tokio::test]
+async fn wait_subagent_without_agent_id_reports_running_timeout() {
+    let slow_child_model = TestModel::with_responses(vec![
+        starweaver_model::tool_call_response("call_slow", "slow", serde_json::json!({})),
+        ModelResponse::text("slow child output"),
+    ]);
+    let slow_tool = Arc::new(FunctionTool::new(
+        "slow",
+        Some("Slow background child tool".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, _args: serde_json::Value| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(ToolResult::new(serde_json::json!({"ok": true})))
+        },
+    ));
+    let slow_child = Arc::new(
+        AgentBuilder::new(Arc::new(slow_child_model))
+            .tool(slow_tool)
+            .policy(AgentRuntimePolicy {
+                max_steps: 4,
+                ..AgentRuntimePolicy::default()
+            })
+            .build(),
+    );
+    let slow_registry = Arc::new(
+        SubagentRegistry::new().with_subagent(SubagentConfig::new("slow_child", slow_child)),
+    );
+    let slow_monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let slow_delegate = slow_registry.async_delegate_tool(slow_monitor.clone());
+    let slow_wait = slow_registry.wait_subagent_tool(slow_monitor.clone());
+    let slow_parent = AgentContext::default();
+    let slow_handle = AgentContextHandle::new(slow_parent.clone());
+
+    slow_delegate
+        .call(
+            delegation_tool_context(&slow_parent, slow_handle.clone()),
+            serde_json::json!({
+                "name": "slow_child",
+                "prompt": "help",
+                "agent_id": "child-bg-running"
+            }),
+        )
+        .await
+        .unwrap();
+
+    let running = slow_wait
+        .call(
+            delegation_tool_context(&slow_parent, slow_handle),
+            serde_json::json!({"timeout_seconds": 0}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(running.content["status"], "running");
+    assert_eq!(running.content["timed_out"], true);
+    assert_eq!(running.content["results"][0]["status"], "running");
+    assert_eq!(
+        running.content["results"][0]["agent_id"],
+        "child-bg-running"
+    );
+
+    for _ in 0..50 {
+        if !slow_monitor.has_active_tasks() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!slow_monitor.has_active_tasks());
+}
+
+#[tokio::test]
+async fn async_delegate_reports_generated_agent_id_and_resume_status() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let delegate = registry.async_delegate_tool(monitor.clone());
+    let mut parent = AgentContext::default();
+    parent
+        .subagent_history
+        .insert("child-bg-resume".to_string(), Vec::new());
+    let context_handle = AgentContextHandle::new(parent.clone());
+
+    let generated = delegate
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({"name": "child", "prompt": "help"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(generated.content["status"], "spawned");
+    assert!(
+        generated.content["agent_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("child-bg-")
+    );
+
+    let resumed = delegate
+        .call(
+            delegation_tool_context(&parent, context_handle),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help again",
+                "agent_id": "child-bg-resume"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resumed.content["status"], "resumed");
+    assert_eq!(resumed.content["agent_id"], "child-bg-resume");
+
+    for _ in 0..50 {
+        if !monitor.has_active_tasks() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(!monitor.has_active_tasks());
+}
+
+#[tokio::test]
 async fn async_delegate_redelivers_pending_result_when_parent_is_not_subscribed() {
     let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child output"))).build());
     let registry =
@@ -459,12 +747,40 @@ async fn async_delegate_redelivers_pending_result_when_parent_is_not_subscribed(
     assert!(monitor.has_pending_messages());
 
     let capability = BackgroundSubagentCapability::new(monitor.clone());
+    assert_eq!(
+        capability.spec().id.as_str(),
+        "starweaver.subagent.background"
+    );
     let mut state = AgentRunState::new(RunId::default(), ConversationId::default());
     let mut resumed = AgentContext::default();
     capability
         .on_run_start_with_context(&mut state, &mut resumed)
         .await
         .unwrap();
+    let messages = capability
+        .prepare_model_messages_with_context(&mut state, &mut resumed, Vec::new())
+        .await
+        .unwrap();
+    assert!(messages.is_empty());
+    let mut tool_context = ToolContext::new(RunId::default(), ConversationId::default(), 0);
+    capability
+        .before_tool_execution_with_context(
+            &mut state,
+            &mut resumed,
+            &mut tool_context,
+            &ToolCallPart {
+                id: "call-background".to_string(),
+                name: "delegate".to_string(),
+                arguments: serde_json::json!({}).into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        tool_context
+            .dependency::<BackgroundSubagentMonitor>()
+            .is_some()
+    );
 
     assert!(!monitor.has_pending_messages());
     let pending = resumed.messages.peek(resumed.agent_id.as_str());

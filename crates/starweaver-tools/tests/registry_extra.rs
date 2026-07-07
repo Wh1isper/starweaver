@@ -129,7 +129,7 @@ async fn registry_dispatch_selects_removes_and_auto_inherits_tools() {
         arguments: json!({}).into(),
     };
     let missing = registry.execute_call(context(), &missing_call).await;
-    assert!(missing.is_error);
+    assert!(!missing.is_error);
     assert_eq!(missing.content["kind"], "not_found");
     assert_eq!(missing.content["tool"], "missing");
     assert!(

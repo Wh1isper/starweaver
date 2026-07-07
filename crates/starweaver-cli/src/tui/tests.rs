@@ -1079,6 +1079,7 @@ fn compact_custom_events_render_status_lines() {
 #[test]
 fn compact_custom_events_render_full_summary_content_without_truncation() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
     let long_line = format!("{}END_MARKER", "compact-summary-".repeat(24));
     let lines = (1..=14)
         .map(|index| format!("line-{index}: {long_line}"))
@@ -1100,6 +1101,7 @@ fn compact_custom_events_render_full_summary_content_without_truncation() {
         },
     ));
 
+    assert!(body_has_line(&state, "Context compacted"));
     assert!(body_has_line(
         &state,
         &("    │ line-14: ".to_string() + &long_line)
@@ -1150,6 +1152,7 @@ fn handoff_custom_events_render_summary_lines() {
 #[test]
 fn summarize_tool_return_renders_full_content_without_truncation() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.set_render_mode(TuiRenderMode::Concise);
     let long_line = format!("{}END_MARKER", "summary-content-".repeat(24));
     let lines = (1..=14)
         .map(|index| format!("line-{index}: {long_line}"))
@@ -1171,6 +1174,8 @@ fn summarize_tool_return_renders_full_content_without_truncation() {
         },
     ));
 
+    assert!(body_has_line(&state, "Summary complete"));
+    assert!(!body_has_line(&state, "Tool result: summarize"));
     assert!(body_has_line(
         &state,
         &("    │ line-14: ".to_string() + &long_line)
@@ -1332,8 +1337,8 @@ fn shell_tool_call_and_error_render_background_args_duration_and_context_errors(
                 call.id,
                 "shell_exec",
                 json!({
-                    "error": "tool shell_exec failed: ProcessShellHandle is missing from AgentContext",
-                    "kind": "execution"
+                    "error": "tool shell_exec user error: ProcessShellHandle is missing from AgentContext",
+                    "kind": "user_error"
                 }),
             )
             .with_error(true)
@@ -4670,15 +4675,33 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
             9,
             session_id.clone(),
             run_id.clone(),
-            DisplayMessageKind::RunCompleted,
-        ),
+            DisplayMessageKind::HandoffCompleted,
+        )
+        .with_payload(json!({"content": "Replay handoff summary.\nKeep exact handoff detail."})),
         DisplayMessage::new(
             10,
             session_id.clone(),
             run_id.clone(),
+            DisplayMessageKind::CompactionCompleted,
+        )
+        .with_payload(json!({
+            "original_message_count": 8,
+            "compacted_message_count": 3,
+            "summary": "Replay compaction summary.\nKeep exact compaction detail."
+        })),
+        DisplayMessage::new(
+            11,
+            session_id.clone(),
+            run_id.clone(),
+            DisplayMessageKind::RunCompleted,
+        ),
+        DisplayMessage::new(
+            12,
+            session_id.clone(),
+            run_id.clone(),
             DisplayMessageKind::RunFailed,
         ),
-        DisplayMessage::new(11, session_id, run_id, DisplayMessageKind::RunCancelled),
+        DisplayMessage::new(13, session_id, run_id, DisplayMessageKind::RunCancelled),
     ];
     let snapshot = super::snapshot::TuiSnapshot::from_parts(
         "session_snapshot".to_string(),
@@ -4686,7 +4709,7 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
         &approvals,
         &deferred,
     );
-    assert_eq!(snapshot.messages, 12);
+    assert_eq!(snapshot.messages, 14);
     assert_eq!(snapshot.pending_approvals, 1);
     assert_eq!(snapshot.pending_deferred, 1);
     assert_eq!(snapshot.assistant_text, "hello world");
@@ -4769,6 +4792,16 @@ fn snapshot_from_parts_covers_status_and_pending_counts() {
             .iter()
             .any(|line| line == "Steering received: try another path")
     );
+    assert!(body_has_line(&state, "Summary complete"));
+    assert!(body_has_line(&state, "    │ Replay handoff summary."));
+    assert!(body_has_line(&state, "    │ Keep exact handoff detail."));
+    assert!(body_has_line(&state, "Context compacted"));
+    assert!(body_has_line(
+        &state,
+        "  Summary: 8 -> 3 messages (63% reduction)"
+    ));
+    assert!(body_has_line(&state, "    │ Replay compaction summary."));
+    assert!(body_has_line(&state, "    │ Keep exact compaction detail."));
     assert!(
         state
             .body

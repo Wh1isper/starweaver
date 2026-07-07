@@ -33,6 +33,14 @@ class ModelRetry(ToolError):
     """Ask the model to retry with corrected input."""
 
 
+class Feedback(ToolError):
+    """Return agent-readable feedback without treating the tool call as failed."""
+
+
+class UserError(ToolError):
+    """Application or integration code used a tool incorrectly."""
+
+
 class OutputRetry(OutputError):
     """Ask the model to retry with corrected final output."""
 

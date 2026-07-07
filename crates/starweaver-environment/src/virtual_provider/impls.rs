@@ -12,9 +12,9 @@ use crate::{
     DEFAULT_FILE_TREE_MAX_DEPTH, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
     EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileListOptions,
     FileListResult, FileStat, FileTreeBlock, PathGlob, ShellCommand, ShellOutput,
-    ShellReviewEnvironmentContext, include_path, list_ignore_match, normalize_requested_path,
-    parent_path, path_contains, render_environment_context_xml, render_virtual_file_tree_listing,
-    replace_logical_prefix, strip_path_prefix,
+    ShellReviewEnvironmentContext, include_path, list_ignore_match, logical_ancestors,
+    normalize_requested_path, parent_path, path_contains, render_environment_context_xml,
+    render_virtual_file_tree_listing, replace_logical_prefix, strip_path_prefix,
 };
 
 use super::VirtualEnvironmentProvider;
@@ -540,8 +540,17 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
         self.check_file(path, false)?;
         let prefix = path.trim_matches('/');
         let path_glob = PathGlob::new(pattern)?;
+        let mut entries = BTreeSet::new();
+        for file_path in self.all_file_keys()? {
+            entries.extend(logical_ancestors(&file_path));
+            entries.insert(file_path);
+        }
+        entries.extend(self.all_dir_keys()?);
         let mut glob_matches = Vec::new();
-        for entry in self.all_file_keys()? {
+        for entry in entries {
+            if !prefix.is_empty() && entry == prefix {
+                continue;
+            }
             if path_contains(prefix, &entry)
                 && include_path(&entry, options.include_hidden)
                 && path_glob.is_match(strip_path_prefix(prefix, &entry))

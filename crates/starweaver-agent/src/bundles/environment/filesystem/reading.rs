@@ -6,9 +6,12 @@ use starweaver_tools::{ToolContext, ToolError, ToolResult};
 use super::{
     ViewArgs,
     media::{ViewFileKind, classify_view_path, read_media_file},
-    read_text_file, tool_config_from_context, tool_execution_error,
+    read_text_file, tool_config_from_context,
 };
-use crate::bundles::{environment::handle::environment_provider, helpers::tool_model_retry};
+use crate::bundles::{
+    environment::handle::environment_provider,
+    helpers::{tool_environment_error, tool_feedback},
+};
 
 pub(super) async fn read_text(
     tool_context: ToolContext,
@@ -19,7 +22,7 @@ pub(super) async fn read_text(
     let stat = match provider.stat(&arguments.file_path).await {
         Ok(stat) => stat,
         Err(EnvironmentError::NotFound(_)) => {
-            return Err(tool_model_retry(
+            return Err(tool_feedback(
                 "view",
                 format!(
                     "file not found: {}. Verify the path with ls/glob, then call view with an existing file path.",
@@ -27,10 +30,10 @@ pub(super) async fn read_text(
                 ),
             ));
         }
-        Err(error) => return Err(tool_execution_error("view", error)),
+        Err(error) => return Err(tool_environment_error("view", error)),
     };
     if stat.is_dir {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             "view",
             format!(
                 "path is a directory, not a file: {}. Use ls to list directory entries, then call view on a specific file.",
@@ -50,14 +53,14 @@ pub(super) async fn read_text(
             )
             .await
         }
-        ViewFileKind::Pdf => Err(tool_model_retry(
+        ViewFileKind::Pdf => Err(tool_feedback(
             "view",
             format!(
                 "PDF files are not parsed by view: {}. Use pdf_convert for provider-scoped PDF conversion.",
                 arguments.file_path
             ),
         )),
-        ViewFileKind::Office => Err(tool_model_retry(
+        ViewFileKind::Office => Err(tool_feedback(
             "view",
             format!(
                 "Office and EPUB files are not parsed by view: {}. Use office_to_markdown for provider-scoped conversion.",

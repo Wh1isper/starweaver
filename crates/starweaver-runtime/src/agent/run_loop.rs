@@ -23,8 +23,8 @@ use crate::{
     agent::{
         Agent, AgentEndStrategy, AgentError, AgentInput, AgentResult, AgentToolExecutionMode,
         helpers::{
-            has_pending_tool_control_flow, is_tool_retry_return, mark_tool_retry_return,
-            record_tool_control_flow, tool_return_control_flow,
+            has_pending_tool_control_flow, is_successful_tool_return, is_tool_retry_return,
+            mark_tool_retry_return, record_tool_control_flow, tool_return_control_flow,
         },
         run_loop_helpers::{agent_error_kind, preserve_pending_tool_returns_for_resume},
         runtime_helpers::{request_instruction_insert_index, tool_return_media_prompt},
@@ -494,7 +494,7 @@ impl Agent {
                     }
                 );
                 record_tool_control_flow(&mut $state, &tool_return);
-                if !tool_return.is_error {
+                if is_successful_tool_return(&tool_return) {
                     $state.usage.tool_calls = $state.usage.tool_calls.saturating_add(1);
                     $context.usage.tool_calls = $context.usage.tool_calls.saturating_add(1);
                 }

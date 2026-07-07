@@ -374,6 +374,16 @@ fn py_error_to_tool_error(tool: &str, timeout_ms: Option<u64>, error: PyErr) -> 
                     message,
                 }
                 .with_private_metadata(private_metadata),
+                "Feedback" => ToolError::Feedback {
+                    tool: tool.to_string(),
+                    message,
+                }
+                .with_private_metadata(private_metadata),
+                "UserError" => ToolError::UserError {
+                    tool: tool.to_string(),
+                    message,
+                }
+                .with_private_metadata(private_metadata),
                 "ApprovalRequired" => ToolError::ApprovalRequired {
                     tool: tool.to_string(),
                     metadata: exception_metadata(py, &error),
@@ -432,6 +442,8 @@ fn starweaver_tool_error_kind<'a>(py: Python<'a>, error: &PyErr) -> Option<&'sta
     for (class_name, kind) in [
         ("InvalidArguments", "InvalidArguments"),
         ("ModelRetry", "ModelRetry"),
+        ("Feedback", "Feedback"),
+        ("UserError", "UserError"),
         ("ApprovalRequired", "ApprovalRequired"),
         ("CallDeferred", "CallDeferred"),
         ("Cancelled", "Cancelled"),

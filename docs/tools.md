@@ -310,9 +310,17 @@ read, and set `exit_after_run` when the runtime should call `exit_with_context` 
 the run exits. The runtime publishes lifecycle reports as context events, including
 `toolset_initialized`, `toolset_failed`, `toolset_unavailable`, and `toolset_closed`.
 
-## Retry metadata
+## Retry and feedback semantics
 
-Retry limits can be set at the tool, toolset, registry, or agent level. The runtime passes retry counters through `ToolContext` and records retry metadata on retryable tool returns.
+Retry limits can be set at the tool, toolset, registry, or agent level. When no override is configured, tools get a default retry budget of 3 retries for unexpected execution failures. `ToolRegistry` uses that budget internally by rerunning the same tool call, so transient provider/runtime failures do not require the model to regenerate tool arguments.
+
+Model correction retry is separate from internal execution retry. `ToolError::ModelRetry` and JSON/Serde argument validation failures (`ToolError::InvalidArguments`) ask the model to correct the tool call and consume the model retry budget. Use these only when the model produced bad tool input.
+
+Expected conditions that the agent can reason about, such as a missing file, invalid path for the active environment, unsupported media format, HTTP 404, or an output-size limit, should be returned as `ToolError::Feedback`. Feedback is serialized as an agent-readable tool return with `success: false` and `is_error: false`; it does not consume model retry budget.
+
+Developer or integration mistakes, such as missing required runtime dependencies, direct calls to tools that require an `AgentContextHandle`, or dynamic tool-proxy calls before the proxy is loaded, should be returned as `ToolError::UserError`. User errors are `is_error: true`, but they are not model-retryable and are not unexpected execution failures, so they do not consume model retry budget or internal unexpected retry budget.
+
+The runtime passes retry counters through `ToolContext` and records retry metadata on model-retryable tool returns and exhausted internal execution retries.
 
 ## Timeout metadata
 

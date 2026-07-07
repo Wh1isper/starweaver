@@ -20,7 +20,7 @@ pub struct SubagentToolInheritancePolicy {
     /// Parent tool names withheld from the child registry.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub denied_tools: Vec<String>,
-    /// Whether nested delegation tools can be inherited.
+    /// Deprecated compatibility flag. Subagent delegation tools are never inherited by child agents.
     #[serde(default, skip_serializing_if = "is_false")]
     pub allow_nested_delegation: bool,
 }
@@ -70,7 +70,7 @@ impl SubagentToolInheritancePolicy {
         self
     }
 
-    /// Allow inheriting delegation tools for nested coordination.
+    /// Deprecated compatibility setter. Delegation tools are never inherited by child agents.
     #[must_use]
     pub const fn with_nested_delegation(mut self, allowed: bool) -> Self {
         self.allow_nested_delegation = allowed;
@@ -113,13 +113,20 @@ impl SubagentToolInheritancePolicy {
         for name in &self.denied_tools {
             inherited.remove(name);
         }
-        if !self.allow_nested_delegation {
-            inherited.remove("delegate");
-            inherited.remove("subagent_info");
-            inherited.remove("spawn_delegate");
-            inherited.remove("__delegate_backend");
-        }
+        remove_delegation_tools(&mut inherited);
         Ok(inherited)
+    }
+}
+
+fn remove_delegation_tools(registry: &mut ToolRegistry) {
+    for name in [
+        "delegate",
+        "subagent_info",
+        "spawn_delegate",
+        "wait_subagent",
+        "__delegate_backend",
+    ] {
+        registry.remove(name);
     }
 }
 

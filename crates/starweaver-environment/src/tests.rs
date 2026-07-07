@@ -255,6 +255,100 @@ fn path_glob_matches_ripgrep_style_patterns() {
     assert!(anchored_dir.is_match("src/lib.rs"));
     assert!(!anchored_dir.is_match("src/nested/mod.rs"));
     assert!(!anchored_dir.is_match("nested/src/lib.rs"));
+
+    let empty = PathGlob::new("").unwrap();
+    assert!(empty.is_match("README.md"));
+    assert!(empty.is_match("src/lib.rs"));
+
+    let windows_separator = PathGlob::new("src\\*.rs").unwrap();
+    assert!(windows_separator.is_match("src/lib.rs"));
+    assert!(!windows_separator.is_match("src/nested/mod.rs"));
+
+    let leading_current_dir = PathGlob::new("./src/*.rs").unwrap();
+    assert!(leading_current_dir.is_match("src/lib.rs"));
+}
+
+#[tokio::test]
+async fn virtual_provider_glob_includes_files_and_directories() {
+    let provider = VirtualEnvironmentProvider::new("test")
+        .with_file("src/lib.rs", "pub fn library() {}\n")
+        .with_file("src/nested/mod.rs", "pub mod nested;\n")
+        .with_file("tests/search.rs", "#[test] fn search() {}\n");
+    provider.create_dir("empty", true).await.unwrap();
+    provider.create_dir("src/generated", true).await.unwrap();
+
+    let all_matches = provider
+        .glob(
+            "",
+            "**/*",
+            FileGlobOptions {
+                include_hidden: true,
+                include_ignored: true,
+                max_results: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let all_paths = all_matches
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        all_paths,
+        vec![
+            "empty",
+            "src",
+            "src/generated",
+            "src/lib.rs",
+            "src/nested",
+            "src/nested/mod.rs",
+            "tests",
+            "tests/search.rs",
+        ]
+    );
+
+    let src_matches = provider
+        .glob("src", "**/*", FileGlobOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        src_matches
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "src/generated",
+            "src/lib.rs",
+            "src/nested",
+            "src/nested/mod.rs"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn virtual_provider_glob_deduplicates_file_directory_conflicts() {
+    let provider = VirtualEnvironmentProvider::new("test");
+    provider.create_dir("foo", true).await.unwrap();
+    provider.write_text("foo", "needle\n").await.unwrap();
+
+    let glob_matches = provider
+        .glob("", "**/*", FileGlobOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        glob_matches
+            .iter()
+            .filter(|entry| entry.path == "foo")
+            .count(),
+        1
+    );
+
+    let grep_matches = provider
+        .grep("", "needle", FileGrepOptions::default())
+        .await
+        .unwrap();
+    assert_eq!(grep_matches.len(), 1);
+    assert_eq!(grep_matches[0].path, "foo");
 }
 
 #[tokio::test]
@@ -346,8 +440,10 @@ async fn virtual_provider_search_respects_root_hidden_limits_and_invalid_pattern
 #[tokio::test]
 async fn local_provider_search_respects_gitignore_hidden_and_policy() {
     let root = unique_test_dir();
-    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("src/nested")).unwrap();
+    std::fs::create_dir_all(root.join("empty")).unwrap();
     std::fs::write(root.join("src/lib.rs"), "needle\n").unwrap();
+    std::fs::write(root.join("src/nested/mod.rs"), "needle nested\n").unwrap();
     std::fs::write(root.join("src/ignored.log"), "needle ignored\n").unwrap();
     std::fs::write(root.join(".hidden.rs"), "needle hidden\n").unwrap();
     std::fs::write(root.join(".gitignore"), "*.log\n").unwrap();
@@ -365,7 +461,11 @@ async fn local_provider_search_respects_gitignore_hidden_and_policy() {
         .iter()
         .map(|entry| entry.path.as_str())
         .collect::<Vec<_>>();
+    assert!(visible_paths.contains(&"empty"));
+    assert!(visible_paths.contains(&"src"));
     assert!(visible_paths.contains(&"src/lib.rs"));
+    assert!(visible_paths.contains(&"src/nested"));
+    assert!(visible_paths.contains(&"src/nested/mod.rs"));
     assert!(!visible_paths.contains(&"src/ignored.log"));
     assert!(!visible_paths.contains(&".hidden.rs"));
 
@@ -404,7 +504,24 @@ async fn local_provider_search_respects_gitignore_hidden_and_policy() {
         )
         .await
         .unwrap();
-    assert_eq!(grep_matches.len(), 3);
+    assert_eq!(grep_matches.len(), 4);
+
+    let root_level = provider
+        .glob("", "/*.rs", FileGlobOptions::default())
+        .await
+        .unwrap();
+    assert!(root_level.is_empty());
+
+    let nested_rust = provider
+        .glob("src", "**/*.rs", FileGlobOptions::default())
+        .await
+        .unwrap();
+    let mut nested_paths = nested_rust
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    nested_paths.sort_unstable();
+    assert_eq!(nested_paths, vec!["src/lib.rs", "src/nested/mod.rs"]);
 
     let restricted = provider.with_policy(EnvironmentPolicy {
         files: FilePolicy {
@@ -429,7 +546,11 @@ async fn local_provider_grep_streams_context_limits_and_binary_detection() {
     let root = unique_test_dir();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/a.txt"), "before\nneedle one\nafter\n").unwrap();
-    std::fs::write(root.join("src/b.txt"), "needle two\nneedle three\n").unwrap();
+    std::fs::write(
+        root.join("src/b.txt"),
+        "line 1\nneedle two\nneedle three\nline 4\n",
+    )
+    .unwrap();
     std::fs::write(root.join("src/binary.bin"), b"needle\0binary\n").unwrap();
 
     let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
@@ -459,6 +580,35 @@ async fn local_provider_grep_streams_context_limits_and_binary_detection() {
     assert_eq!(context_matches[0].matching_line, "needle one");
     assert_eq!(context_matches[0].context_start_line, 1);
     assert_eq!(context_matches[0].context, "before\nneedle one\nafter\n");
+
+    let adjacent_matches = provider
+        .grep(
+            "",
+            "needle (two|three)",
+            FileGrepOptions {
+                include: Some("**/*.txt".to_string()),
+                include_hidden: false,
+                include_ignored: false,
+                max_results: 10,
+                max_matches_per_file: 10,
+                max_files: 10,
+                context_lines: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(adjacent_matches.len(), 2);
+    assert_eq!(adjacent_matches[0].line_number, 2);
+    assert_eq!(
+        adjacent_matches[0].context,
+        "line 1\nneedle two\nneedle three\n"
+    );
+    assert_eq!(adjacent_matches[1].line_number, 3);
+    assert_eq!(
+        adjacent_matches[1].context,
+        "needle two\nneedle three\nline 4\n"
+    );
+    assert_eq!(adjacent_matches[1].context_start_line, 2);
 
     let limited_matches = provider
         .grep(

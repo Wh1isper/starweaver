@@ -4,7 +4,7 @@ use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use super::ScrapeResponse;
 use super::html::{extract_title, html_to_markdown, is_html};
-use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::helpers::{tool_execution_error, tool_feedback};
 
 use super::super::{
     http::{MAX_FETCH_BYTES, fetch_http_resource, http_client, validate_http_url},
@@ -33,9 +33,11 @@ pub(super) async fn firecrawl_scrape(
         .await
         .map_err(|error| tool_execution_error("scrape", error))?;
     if !status.is_success() || value.get("success").and_then(Value::as_bool) == Some(false) {
-        return Err(tool_execution_error(
+        return Err(tool_feedback(
             "scrape",
-            format!("Firecrawl returned HTTP {status}"),
+            format!(
+                "Firecrawl returned HTTP {status}. Verify the URL, API key, Firecrawl service status, and whether the page can be scraped."
+            ),
         ));
     }
     let data = value.get("data").unwrap_or(&value);
@@ -74,9 +76,9 @@ pub(super) fn cloudflare_scrape(
     _token: &str,
 ) -> Result<ScrapeResponse, ToolError> {
     validate_http_url(context, "scrape", url)?;
-    Err(tool_execution_error(
+    Err(tool_feedback(
         "scrape",
-        "Cloudflare scrape adapter is not configured in this SDK build",
+        "Cloudflare scrape adapter is not configured in this SDK build. Use the local or Firecrawl scrape adapter, or configure Cloudflare support before retrying.",
     ))
 }
 

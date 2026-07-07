@@ -48,6 +48,7 @@ from .errors import (
     ApprovalRequired,
     CallDeferred,
     Cancelled,
+    Feedback,
     InvalidArguments,
     ModelError,
     ModelRetry,
@@ -59,6 +60,7 @@ from .errors import (
     StreamError,
     Timeout,
     ToolError,
+    UserError,
 )
 from .media import MediaUploader, MediaUploadRequest
 from .model import ModelSettings, ProviderAuth, ProviderModel, RequestParams
@@ -177,6 +179,7 @@ __all__ = [
     "Environment",
     "EnvironmentProvider",
     "ExecutionStatus",
+    "Feedback",
     "FileOperator",
     "FunctionModel",
     "FunctionToolset",
@@ -276,6 +279,7 @@ __all__ = [
     "UsageAgentTotal",
     "UsageSnapshot",
     "UsageSnapshotEntry",
+    "UserError",
     "VirtualEnvironment",
     "VirtualMount",
     "VirtualPath",

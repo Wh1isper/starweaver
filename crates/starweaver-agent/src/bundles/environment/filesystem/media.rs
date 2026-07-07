@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{ViewArgs, format_size, tool_execution_error};
-use crate::bundles::helpers::tool_model_retry;
+use crate::bundles::helpers::{tool_environment_error, tool_feedback};
 
 #[allow(clippy::too_many_lines)]
 pub(super) async fn read_media_file(
@@ -31,7 +31,7 @@ pub(super) async fn read_media_file(
         MediaKind::Audio => tool_config.view_max_inline_audio_bytes,
     };
     if stat.size > max_inline {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             "view",
             format!(
                 "{} file is too large to inline ({}). Maximum supported inline size is {}. Use a smaller file, compress it first, or use a provider/tool that supports larger media resources.",
@@ -44,7 +44,7 @@ pub(super) async fn read_media_file(
     let mut data = provider
         .read_bytes(&arguments.file_path, 0, None)
         .await
-        .map_err(|error| tool_execution_error("view", error))?;
+        .map_err(|error| tool_environment_error("view", error))?;
     let mut media_type = match media_kind {
         MediaKind::Image => detect_image_media_type(&data)
             .or_else(|| image_media_type(&arguments.file_path))
@@ -54,7 +54,7 @@ pub(super) async fn read_media_file(
         MediaKind::Audio => audio_media_type(&arguments.file_path).to_string(),
     };
     if media_kind == MediaKind::Image && !is_supported_inline_image(&media_type) {
-        return Err(tool_model_retry(
+        return Err(tool_feedback(
             "view",
             format!(
                 "unsupported image format '{media_type}' for {}. Supported formats: image/gif, image/jpeg, image/png, image/webp. Convert the image to a supported format and retry.",
@@ -73,7 +73,7 @@ pub(super) async fn read_media_file(
             match compress_image_to_model_limit(&data, max_image_bytes, &media_type) {
                 Ok(compressed) => {
                     if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
-                        return Err(tool_model_retry(
+                        return Err(tool_feedback(
                             "view",
                             format!(
                                 "Image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Resize or convert it to a smaller supported format before retrying."
@@ -85,7 +85,7 @@ pub(super) async fn read_media_file(
                     compressed_for_model = compressed.compressed;
                 }
                 Err(error) => {
-                    return Err(tool_model_retry(
+                    return Err(tool_feedback(
                         "view",
                         format!(
                             "Image could not be compressed for inline model input: {error}. Resize or convert it to a smaller supported format before retrying."
@@ -154,7 +154,7 @@ pub(super) async fn read_media_file(
             .map_err(|error| tool_execution_error("view", error));
     }
 
-    Err(tool_model_retry(
+    Err(tool_feedback(
         "view",
         format!(
             "The active model does not advertise native support for this local {} file and no HostMediaUnderstandingClientHandle fallback adapter is configured. Configure a fallback adapter, switch to a media-capable model, or use a file conversion/transcription workflow.",

@@ -9,7 +9,7 @@ pub(super) async fn summarize(
     arguments: SummarizeArgs,
 ) -> Result<ToolResult, ToolError> {
     let Some(handle) = context.dependency::<AgentContextHandle>() else {
-        return Err(ToolError::Execution {
+        return Err(ToolError::UserError {
             tool: "summarize".to_string(),
             message: "summarize requires AgentContextHandle".to_string(),
         });

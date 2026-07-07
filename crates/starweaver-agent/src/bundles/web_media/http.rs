@@ -4,7 +4,7 @@ use reqwest::{Method, Url, header, redirect::Policy};
 use starweaver_context::AgentContext;
 use starweaver_tools::{ToolContext, ToolError};
 
-use crate::bundles::helpers::tool_execution_error;
+use crate::bundles::helpers::{tool_execution_error, tool_feedback};
 
 pub(super) const MAX_FETCH_BYTES: u64 = 2 * 1024 * 1024;
 pub(super) const MAX_DOWNLOAD_BYTES: u64 = 10 * 1024 * 1024;
@@ -59,16 +59,20 @@ pub(super) async fn fetch_http_resource(
         });
     }
     if content_length.is_some_and(|length| length > max_bytes) {
-        return Err(tool_execution_error(
+        return Err(tool_feedback(
             tool,
-            format!("response exceeds configured {max_bytes} byte limit"),
+            format!(
+                "response exceeds configured {max_bytes} byte limit. Use a narrower request, head_only=true, download, or a tool with larger streaming/storage support."
+            ),
         ));
     }
     let body = read_limited_body(context, tool, response, max_bytes).await?;
     if u64::try_from(body.len()).map_or(true, |length| length > max_bytes) {
-        return Err(tool_execution_error(
+        return Err(tool_feedback(
             tool,
-            format!("response exceeds configured {max_bytes} byte limit"),
+            format!(
+                "response exceeds configured {max_bytes} byte limit. Use a narrower request, head_only=true, download, or a tool with larger streaming/storage support."
+            ),
         ));
     }
     Ok(HttpResource {
@@ -100,9 +104,11 @@ async fn read_limited_body(
     {
         let next_len = body.len().saturating_add(chunk.len());
         if u64::try_from(next_len).map_or(true, |length| length > max_bytes) {
-            return Err(tool_execution_error(
+            return Err(tool_feedback(
                 tool,
-                format!("response exceeds configured {max_bytes} byte limit"),
+                format!(
+                    "response exceeds configured {max_bytes} byte limit. Use a narrower request, head_only=true, download, or a tool with larger streaming/storage support."
+                ),
             ));
         }
         body.extend_from_slice(&chunk);
@@ -127,15 +133,23 @@ pub(super) fn validate_http_url(
     tool: &str,
     raw_url: &str,
 ) -> Result<Url, ToolError> {
-    let url = Url::parse(raw_url).map_err(|error| tool_execution_error(tool, error))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(tool_execution_error(
+    let url = Url::parse(raw_url).map_err(|error| {
+        tool_feedback(
             tool,
-            "only http and https URLs are supported",
+            format!("invalid URL: {error}. Use a full http:// or https:// URL with a host."),
+        )
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(tool_feedback(
+            tool,
+            "only http and https URLs are supported. Use a full http:// or https:// URL.",
         ));
     }
     if url.host_str().is_none() {
-        return Err(tool_execution_error(tool, "URL host is required"));
+        return Err(tool_feedback(
+            tool,
+            "URL host is required. Use a full http:// or https:// URL with a host.",
+        ));
     }
     Ok(url)
 }

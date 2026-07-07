@@ -17,7 +17,7 @@ use super::{
 };
 use crate::bundles::helpers::{
     static_sequential_tool, static_sequential_tool_with_metadata, static_tool,
-    tool_execution_error, tool_invalid_arguments, tool_metadata,
+    tool_environment_error, tool_invalid_arguments, tool_metadata, tool_user_error,
 };
 use crate::bundles::output::{
     DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
@@ -142,7 +142,7 @@ async fn shell_exec(
         let snapshot = provider
             .start_process(shell_command)
             .await
-            .map_err(|error| tool_execution_error("shell_exec", error))?;
+            .map_err(|error| tool_environment_error("shell_exec", error))?;
         return process_result(&context, &snapshot).await;
     }
     let provider = environment_provider(&context, "shell_exec")?;
@@ -162,7 +162,7 @@ async fn shell_exec(
     let output = provider
         .run_shell(shell_command)
         .await
-        .map_err(|error| tool_execution_error("shell_exec", error))?;
+        .map_err(|error| tool_environment_error("shell_exec", error))?;
     let truncate_limit = shell_output_truncate_limit(&context);
     let stdout =
         truncate_shell_output(provider.as_ref(), "stdout", &output.stdout, truncate_limit).await;
@@ -211,7 +211,7 @@ async fn shell_wait(
     let snapshot = provider
         .wait_process(&arguments.process_id, arguments.timeout_seconds)
         .await
-        .map_err(|error| tool_execution_error("shell_wait", error))?;
+        .map_err(|error| tool_environment_error("shell_wait", error))?;
     process_result(&context, &snapshot).await
 }
 
@@ -223,7 +223,7 @@ async fn shell_status(
     let processes = provider
         .list_processes()
         .await
-        .map_err(|error| tool_execution_error("shell_status", error))?;
+        .map_err(|error| tool_environment_error("shell_status", error))?;
     Ok(ToolResult::new(
         serde_json::json!({ "processes": processes }),
     ))
@@ -241,7 +241,7 @@ async fn shell_input(
             arguments.close_stdin,
         )
         .await
-        .map_err(|error| tool_execution_error("shell_input", error))?;
+        .map_err(|error| tool_environment_error("shell_input", error))?;
     process_result(&context, &snapshot).await
 }
 
@@ -253,7 +253,7 @@ async fn shell_signal(
     let snapshot = provider
         .signal_process(&arguments.process_id, arguments.signal)
         .await
-        .map_err(|error| tool_execution_error("shell_signal", error))?;
+        .map_err(|error| tool_environment_error("shell_signal", error))?;
     process_result(&context, &snapshot).await
 }
 
@@ -265,7 +265,7 @@ async fn shell_kill(
     let snapshot = provider
         .kill_process(&arguments.process_id)
         .await
-        .map_err(|error| tool_execution_error("shell_kill", error))?;
+        .map_err(|error| tool_environment_error("shell_kill", error))?;
     process_result(&context, &snapshot).await
 }
 
@@ -289,14 +289,12 @@ fn process_provider(
     tool: &str,
 ) -> Result<DynProcessShellProvider, ToolError> {
     let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
-        tool_execution_error(tool, "AgentContext dependency is missing from ToolContext")
+        tool_user_error(tool, "AgentContext dependency is missing from ToolContext")
     })?;
     let handle = agent_context
         .dependencies
         .get::<ProcessShellHandle>()
-        .ok_or_else(|| {
-            tool_execution_error(tool, "ProcessShellHandle is missing from AgentContext")
-        })?;
+        .ok_or_else(|| tool_user_error(tool, "ProcessShellHandle is missing from AgentContext"))?;
     Ok(handle.provider())
 }
 
