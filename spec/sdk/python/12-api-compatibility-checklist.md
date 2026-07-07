@@ -173,6 +173,8 @@ PUBLIC_API_GROUPS = {
         "StreamError",
         "OutputError",
         "InvalidArguments",
+        "Feedback",
+        "UserError",
         "ApprovalRequired",
         "CallDeferred",
         "Cancelled",

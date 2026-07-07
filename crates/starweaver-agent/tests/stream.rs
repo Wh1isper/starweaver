@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use starweaver_agent::{
     AgentBuilder, AgentCapability, AgentControlKind, AgentRunState, AgentRuntimePolicy,
-    AgentStreamDropPolicy, AgentStreamError, AgentStreamEvent, AgentStreamOptions,
-    AgentStreamRecord, AgentStreamRunStatus, AgentStreamSourceKind, CapabilityError,
-    CapabilityResult, FunctionTool, StaticCapabilityBundle, SubagentConfig, SubagentRegistry,
-    TestModel, ToolContext, ToolResult,
+    AgentStreamDropPolicy, AgentStreamError, AgentStreamEvent, AgentStreamHandle,
+    AgentStreamOptions, AgentStreamRecord, AgentStreamRunStatus, AgentStreamSourceKind, BusMessage,
+    CapabilityError, CapabilityResult, FunctionTool, StaticCapabilityBundle, SubagentConfig,
+    SubagentRegistry, TestModel, ToolContext, ToolResult,
 };
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
@@ -258,60 +258,76 @@ async fn live_stream_status_reports_running_and_cancelling() {
 }
 
 #[tokio::test]
-async fn live_control_steering_reaches_active_runtime_context() {
-    let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
-    let captured_model = Arc::clone(&captured);
-    let model = Arc::new(starweaver_agent::FunctionModel::new(
-        move |messages, _settings, _info| {
-            captured_model.lock().unwrap().push(messages.clone());
-            let has_tool_return = messages.iter().any(|message| {
-                matches!(
-                    message,
-                    ModelMessage::Request(request)
-                        if request
-                            .parts
-                            .iter()
-                            .any(|part| matches!(part, ModelRequestPart::ToolReturn(_)))
-                )
-            });
-            if has_tool_return {
-                Ok(ModelResponse::text("done"))
-            } else {
-                Ok(ModelResponse {
-                    parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
-                        id: "call_wait".to_string(),
-                        name: "wait".to_string(),
-                        arguments: serde_json::json!({}).into(),
-                    })],
-                    ..ModelResponse::text("")
-                })
-            }
-        },
-    ));
-    let wait = Arc::new(FunctionTool::new(
-        "wait",
-        Some("Wait before returning".to_string()),
-        serde_json::json!({"type": "object"}),
-        |_ctx: ToolContext, _args: serde_json::Value| async move {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            Ok(ToolResult::new(serde_json::json!({"ok": true})))
-        },
-    ));
-    let app = AgentBuilder::new(model)
-        .tool(wait)
-        .policy(AgentRuntimePolicy {
-            max_steps: 4,
-            ..AgentRuntimePolicy::default()
-        })
-        .build_app();
+async fn live_control_handle_reports_context_and_accepts_messages() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let app = live_control_test_app(&captured);
     let mut session = app.session();
     let session_id = stable_session_id(&session);
     let mut handle = session.stream("deploy");
-    while let Some(record) = handle.recv().await {
-        if matches!(record.event, AgentStreamEvent::ToolCall { .. }) {
-            break;
-        }
-    }
+    recv_until_tool_call(&mut handle).await;
+
+    assert_eq!(AgentControlKind::Message.as_str(), "message");
+    assert_eq!(AgentControlKind::Steering.as_str(), "steering");
+    assert_eq!(AgentControlKind::Interrupt.as_str(), "interrupt");
+
+    let controller = handle.controller();
+    assert!(!controller.cancel_requested());
+    let controller_state = controller.recoverable_state().await;
+    assert_recoverable_session(&controller_state, &session_id);
+    let control = controller.control_handle();
+    let control_state = control.recoverable_state().await;
+    assert_recoverable_session(&control_state, &session_id);
+    let handle_state = handle.recoverable_state().await;
+    assert_recoverable_session(&handle_state, &session_id);
+    assert_eq!(
+        handle
+            .latest_context()
+            .await
+            .session_id()
+            .map(starweaver_agent::SessionId::as_str),
+        Some(session_id.as_str())
+    );
+
+    let message_receipt = control
+        .send_message(BusMessage::text("Review note from UI.", "user").with_id("ui-msg-1"))
+        .await
+        .unwrap();
+    assert_eq!(message_receipt.id, "ui-msg-1");
+    assert_eq!(message_receipt.kind, AgentControlKind::Message);
+    assert!(message_receipt.queued);
+    assert_eq!(
+        message_receipt.session_id.as_deref(),
+        Some(session_id.as_str())
+    );
+
+    while handle.recv().await.is_some() {}
+    assert_eq!(handle.status().run_status, AgentStreamRunStatus::Finished);
+    let result = handle.join().await.unwrap();
+    assert!(matches!(
+        control
+            .send_message(BusMessage::text("too late", "user").with_id("ui-msg-late"))
+            .await,
+        Err(starweaver_agent::AgentControlError::TerminalRun)
+    ));
+
+    assert_eq!(result.result.output, "done");
+    assert!(result.events.iter().any(|record| {
+        matches!(
+            &record.event,
+            AgentStreamEvent::Custom { event } if event.kind == "message_submitted"
+        )
+    }));
+    assert_eq!(captured.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn live_control_steering_reaches_active_runtime_context() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let app = live_control_test_app(&captured);
+    let mut session = app.session();
+    let session_id = stable_session_id(&session);
+    let mut handle = session.stream("deploy");
+    recv_until_tool_call(&mut handle).await;
 
     let receipt = handle
         .control_handle()
@@ -359,6 +375,74 @@ async fn live_control_steering_reaches_active_runtime_context() {
             AgentStreamEvent::Custom { event } if event.kind == "steering_received"
         )
     }));
+}
+
+fn live_control_test_app(
+    captured: &Arc<Mutex<Vec<Vec<ModelMessage>>>>,
+) -> starweaver_agent::AgentApp {
+    let captured_model = Arc::clone(captured);
+    let model = Arc::new(starweaver_agent::FunctionModel::new(
+        move |messages, _settings, _info| {
+            captured_model.lock().unwrap().push(messages.clone());
+            let has_tool_return = messages.iter().any(|message| {
+                matches!(
+                    message,
+                    ModelMessage::Request(request)
+                        if request
+                            .parts
+                            .iter()
+                            .any(|part| matches!(part, ModelRequestPart::ToolReturn(_)))
+                )
+            });
+            if has_tool_return {
+                Ok(ModelResponse::text("done"))
+            } else {
+                Ok(ModelResponse {
+                    parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                        id: "call_wait".to_string(),
+                        name: "wait".to_string(),
+                        arguments: serde_json::json!({}).into(),
+                    })],
+                    ..ModelResponse::text("")
+                })
+            }
+        },
+    ));
+    let wait = Arc::new(FunctionTool::new(
+        "wait",
+        Some("Wait before returning".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, _args: serde_json::Value| async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            Ok(ToolResult::new(serde_json::json!({"ok": true})))
+        },
+    ));
+    AgentBuilder::new(model)
+        .tool(wait)
+        .policy(AgentRuntimePolicy {
+            max_steps: 4,
+            ..AgentRuntimePolicy::default()
+        })
+        .build_app()
+}
+
+async fn recv_until_tool_call(handle: &mut AgentStreamHandle) {
+    while let Some(record) = handle.recv().await {
+        if matches!(record.event, AgentStreamEvent::ToolCall { .. }) {
+            return;
+        }
+    }
+    panic!("expected tool call stream record");
+}
+
+fn assert_recoverable_session(state: &starweaver_agent::ResumableState, session_id: &str) {
+    assert_eq!(
+        state
+            .session_id
+            .as_ref()
+            .map(starweaver_agent::SessionId::as_str),
+        Some(session_id)
+    );
 }
 
 #[tokio::test]
