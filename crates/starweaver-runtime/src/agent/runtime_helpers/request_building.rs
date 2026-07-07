@@ -242,6 +242,12 @@ impl Agent {
                         ..OpenAiResponsesSettings::default()
                     });
                 }
+                if gateway_affinity_enabled(context) {
+                    provider_settings.gateway = Some(GatewaySettings {
+                        x_session_id: Some(affinity_id.to_string()),
+                        ..GatewaySettings::default()
+                    });
+                }
             }
             ProtocolFamily::GeminiGenerateContent | ProtocolFamily::BedrockConverse
                 if gateway_affinity_enabled(context) =>
