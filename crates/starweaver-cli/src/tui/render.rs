@@ -623,13 +623,14 @@ pub(super) fn composer_layout(
     let total_visual_lines = lines.len();
     let max_lines = max_lines.max(1);
     let max_start = total_visual_lines.saturating_sub(max_lines);
-    let visible_start = max_start.saturating_sub(scroll_from_bottom.min(max_start));
+    let (cursor_line, cursor_col) = composer_cursor_position_wrapped(input, cursor_byte, width);
+    let visible_start =
+        composer_visible_start(max_start, max_lines, scroll_from_bottom, cursor_line);
     let visible_lines = lines
         .into_iter()
         .skip(visible_start)
         .take(max_lines)
         .collect();
-    let (cursor_line, cursor_col) = composer_cursor_position_wrapped(input, cursor_byte, width);
     ComposerLayout {
         visible_lines,
         total_visual_lines,
@@ -637,6 +638,23 @@ pub(super) fn composer_layout(
         cursor_line,
         cursor_col,
     }
+}
+
+fn composer_visible_start(
+    max_start: usize,
+    max_lines: usize,
+    scroll_from_bottom: usize,
+    cursor_line: usize,
+) -> usize {
+    let mut visible_start = max_start.saturating_sub(scroll_from_bottom.min(max_start));
+    if scroll_from_bottom == 0 {
+        if cursor_line < visible_start {
+            visible_start = cursor_line;
+        } else if cursor_line >= visible_start.saturating_add(max_lines) {
+            visible_start = cursor_line.saturating_add(1).saturating_sub(max_lines);
+        }
+    }
+    visible_start.min(max_start)
 }
 
 fn logical_input_lines(input: &str) -> Vec<String> {

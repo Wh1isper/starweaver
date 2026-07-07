@@ -8,13 +8,77 @@ fn is_composer_word_char(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
 
+fn normalize_pasted_text(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                output.push('\n');
+            }
+            '\n' => output.push('\n'),
+            '\t' => output.push_str("    "),
+            '\u{1b}' => skip_ansi_escape_sequence(&mut chars),
+            ch if ch.is_control() => {}
+            ch => output.push(ch),
+        }
+    }
+    output
+}
+
+fn skip_ansi_escape_sequence(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
+    match chars.peek().copied() {
+        Some('[') => {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ('\u{40}'..='\u{7e}').contains(&ch) {
+                    break;
+                }
+            }
+        }
+        Some(']') => {
+            chars.next();
+            while let Some(ch) = chars.next() {
+                if ch == '\u{7}' {
+                    break;
+                }
+                if ch == '\u{1b}' && chars.peek() == Some(&'\\') {
+                    chars.next();
+                    break;
+                }
+            }
+        }
+        Some('(' | ')' | '*' | '+' | '-' | '.' | '/') => {
+            chars.next();
+            chars.next();
+        }
+        _ => {}
+    }
+}
+
+fn paste_contains_only_image_paths(text: &str, image_paths: &[String]) -> bool {
+    if image_paths.is_empty() {
+        return false;
+    }
+    let token_count = text
+        .split_whitespace()
+        .map(|part| part.trim_matches(['\'', '"']))
+        .filter(|part| !part.is_empty())
+        .count();
+    token_count == image_paths.len()
+}
+
 impl InteractiveTuiState {
     pub(in crate::tui) fn apply_paste(&mut self, text: &str) {
         self.footer_mode = FooterMode::Context;
-        let image_paths = pasted_image_paths(text);
-        if image_paths.is_empty() {
-            self.insert_composer_str(text);
-            self.input_status = Some(format!("pasted {} chars", text.chars().count()));
+        let normalized = normalize_pasted_text(text);
+        let image_paths = pasted_image_paths(&normalized);
+        if !paste_contains_only_image_paths(&normalized, &image_paths) {
+            self.insert_composer_str(&normalized);
+            self.input_status = Some(format!("pasted {} chars", normalized.chars().count()));
             return;
         }
 
