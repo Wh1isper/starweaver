@@ -5057,6 +5057,10 @@ fn composer_soft_wraps_long_input_and_tracks_visual_cursor() {
         vec!["efgh".to_string(), "ij".to_string()]
     );
     assert_eq!(
+        input_viewport_lines_wrapped(&state.input, 2, 1, input_width),
+        vec!["abcd".to_string(), "efgh".to_string()]
+    );
+    assert_eq!(
         composer_cursor_position_wrapped(&state.input, state.input.len(), input_width),
         (2, 2)
     );
@@ -5100,6 +5104,39 @@ fn composer_soft_wraps_wide_characters_by_display_width() {
         composer_cursor_position_wrapped(&state.input, state.input.len(), 4),
         (1, 3)
     );
+}
+
+#[test]
+fn composer_paste_normalizes_terminal_control_sequences_and_preserves_multiline_text() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_paste("first\r\nsecond\tthird\x1b[31m!\x1b[0m\x07");
+
+    assert_eq!(state.input, "first\nsecond    third!");
+    assert_eq!(state.composer_cursor_byte(), state.input.len());
+    let rendered = render_composer_lines(&state, 20);
+    let texts = line_texts(&rendered);
+    assert_eq!(texts[1], "> first");
+    assert_eq!(texts[2], "  second    third!");
+    assert!(rendered.iter().all(|line| line.visible_width() <= 20));
+}
+
+#[test]
+fn composer_paste_keeps_mixed_text_with_image_paths_as_text() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    let pasted = "Please inspect\n/tmp/screenshot.png\nthen summarize";
+    state.apply_paste(pasted);
+
+    assert_eq!(state.input, pasted);
+    assert_eq!(state.pasted_image_count(), 0);
+}
+
+#[test]
+fn composer_paste_keeps_image_only_path_paste_behavior() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_paste("'/tmp/screenshot.png' /tmp/second.webp");
+
+    assert_eq!(state.input, "/tmp/screenshot.png /tmp/second.webp");
+    assert_eq!(state.pasted_image_count(), 0);
 }
 
 #[test]

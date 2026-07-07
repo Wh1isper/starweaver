@@ -16,6 +16,22 @@ use starweaver_tools::{ToolContext, ToolRegistry};
 use starweaver_usage::pricing::estimate_pricing_for_model;
 
 const DEFAULT_MODEL_ERROR_RETRIES: usize = 2;
+const DURABLE_RUN_ID_METADATA_KEY: &str = "starweaver.durable_run_id";
+const CLI_RUN_ID_METADATA_KEY: &str = "cli.run_id";
+
+fn durable_run_id_from_context(context: &AgentContext) -> Option<RunId> {
+    if context.parent_run_id.is_some() {
+        return None;
+    }
+    context
+        .metadata
+        .get(DURABLE_RUN_ID_METADATA_KEY)
+        .or_else(|| context.metadata.get(CLI_RUN_ID_METADATA_KEY))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(RunId::from_string)
+}
 
 mod entrypoints;
 
@@ -505,8 +521,11 @@ impl Agent {
         }
 
         let initial_input = prompt.into();
+        let durable_run_id = durable_run_id_from_context(context);
         context.prepare_new_run();
-        let run_id = context.run_id.clone().unwrap_or_default();
+        let run_id = durable_run_id
+            .or_else(|| context.run_id.clone())
+            .unwrap_or_default();
         context.run_id = Some(run_id.clone());
         let conversation_id = context.conversation_id.clone();
         let agent_id = context.agent_id.as_str().to_string();
@@ -1715,5 +1734,42 @@ impl Agent {
         .await;
         model_session.close().await;
         run_result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use starweaver_core::{AgentId, RunId};
+
+    use super::*;
+
+    #[test]
+    fn durable_run_id_prefers_starweaver_metadata() {
+        let mut context = AgentContext::new(AgentId::from_string("agent"));
+        context.metadata.insert(
+            DURABLE_RUN_ID_METADATA_KEY.to_string(),
+            json!("run_durable"),
+        );
+        context
+            .metadata
+            .insert(CLI_RUN_ID_METADATA_KEY.to_string(), json!("run_cli"));
+
+        assert_eq!(
+            durable_run_id_from_context(&context),
+            Some(RunId::from_string("run_durable"))
+        );
+    }
+
+    #[test]
+    fn durable_run_id_does_not_apply_to_subagent_context() {
+        let mut context = AgentContext::new(AgentId::from_string("agent"));
+        context.parent_run_id = Some(RunId::from_string("run_parent"));
+        context.metadata.insert(
+            DURABLE_RUN_ID_METADATA_KEY.to_string(),
+            json!("run_durable"),
+        );
+
+        assert_eq!(durable_run_id_from_context(&context), None);
     }
 }
