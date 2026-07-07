@@ -15,8 +15,9 @@ use starweaver_model::{
     ModelError, ModelEventStream, ModelHttpClient, ModelMessage, ModelProfile, ModelRequest,
     ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelSettings,
     NativeToolDefinition, OpenAiChatSettings, OpenAiResponsesSettings, OutputMode, ProtocolFamily,
-    ProtocolModelClient, ProviderRequestAuditPolicy, ProviderSettings, ServiceTier,
-    StructuredOutputMode, ThinkingSettings, ToolChoice, ToolDefinition, get_model_settings,
+    ProtocolModelClient, ProviderRequestAuditPolicy, ProviderSettings, ResponseStreamTransport,
+    ServiceTier, StructuredOutputMode, ThinkingSettings, ToolChoice, ToolDefinition,
+    get_model_settings,
 };
 
 #[derive(Clone, Default)]
@@ -56,6 +57,21 @@ impl ModelHttpClient for CaptureHttpClient {
     }
 
     async fn send_event_stream_incremental(
+        &self,
+        request: HttpRequest,
+    ) -> Result<ModelEventStream, ModelError> {
+        self.requests.lock().unwrap().push(request);
+        let events = self.stream_events.lock().unwrap().clone();
+        let (sender, receiver) = tokio::sync::mpsc::channel(events.len().max(1));
+        tokio::spawn(async move {
+            for event in events {
+                let _ = sender.send(Ok(event)).await;
+            }
+        });
+        Ok(ModelEventStream::new(receiver))
+    }
+
+    async fn send_websocket_event_stream_incremental(
         &self,
         request: HttpRequest,
     ) -> Result<ModelEventStream, ModelError> {
@@ -1516,6 +1532,76 @@ async fn gateway_and_codex_typed_routing_settings_drive_headers_and_metadata() {
         request.metadata["provider.codex.thread_id"],
         "typed-codex-thread"
     );
+}
+
+#[tokio::test]
+async fn gateway_typed_header_is_forwarded_to_responses_websocket_requests() {
+    let http = CaptureHttpClient::with_stream_events(vec![json!({
+        "type": "response.completed",
+        "response": {
+            "id": "resp_gateway_ws",
+            "model": "gpt-5.5",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "content": [{"type": "output_text", "text": "ok"}]
+            }],
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+        }
+    })]);
+    let client = ProtocolModelClient::new(
+        "gateway-openai",
+        "gpt-5.5",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        HttpModelConfig::new("https://gateway.example.test/v1", "responses"),
+        Arc::new(http.clone()),
+    )
+    .with_default_settings(ModelSettings {
+        provider_settings: ProviderSettings {
+            openai_responses: Some(OpenAiResponsesSettings {
+                stream_transport: Some(ResponseStreamTransport::WebSocket),
+                ..OpenAiResponsesSettings::default()
+            }),
+            ..ProviderSettings::default()
+        },
+        ..ModelSettings::default()
+    });
+
+    let response = client
+        .request_stream_final(
+            history(),
+            Some(ModelSettings {
+                provider_settings: ProviderSettings {
+                    gateway: Some(GatewaySettings {
+                        x_session_id: Some("typed-sticky".to_string()),
+                        extra_headers: BTreeMap::from([(
+                            "x-gateway-route".to_string(),
+                            "route-a".to_string(),
+                        )]),
+                    }),
+                    ..ProviderSettings::default()
+                },
+                extra_headers: BTreeMap::from([(
+                    "x-extra-route".to_string(),
+                    "extra-route".to_string(),
+                )]),
+                ..ModelSettings::default()
+            }),
+            ModelRequestParameters::default(),
+            context(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.text_output(), "ok");
+    let request = http.last_request();
+    assert_eq!(
+        request.metadata["starweaver.response_stream_transport"],
+        "websocket"
+    );
+    assert_eq!(request.headers["x-session-id"], "typed-sticky");
+    assert_eq!(request.headers["x-gateway-route"], "route-a");
+    assert_eq!(request.headers["x-extra-route"], "extra-route");
 }
 
 #[tokio::test]

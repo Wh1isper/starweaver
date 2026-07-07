@@ -111,43 +111,46 @@ async fn codex_responses_session_affinity_injects_typed_routing_ids() {
 }
 
 #[tokio::test]
-async fn gateway_session_affinity_is_opt_in_for_gemini_and_bedrock_families() {
-    let captured = Arc::new(Mutex::new(Vec::<Option<ModelSettings>>::new()));
-    let model_captured = Arc::clone(&captured);
-    let inner = Arc::new(FunctionModel::new(
-        move |_messages, settings, _info: FunctionModelInfo| {
-            model_captured.lock().unwrap().push(settings);
-            Ok(ModelResponse::text("ok"))
-        },
-    ));
-    let model = ProfileOverrideModel::new(
-        inner,
-        ModelProfile::for_protocol(ProtocolFamily::GeminiGenerateContent),
-    )
-    .with_provider_name(Some("gateway".to_string()))
-    .with_model_name("gemini-2.5-pro");
-    let agent = Agent::new(Arc::new(model));
-    let mut context = AgentContext::default();
-    context.set_session_id(SessionId::from_string("session_affinity_gateway"));
-    context.metadata.insert(
-        "starweaver.gateway_session_affinity".to_string(),
-        serde_json::json!(true),
-    );
+async fn gateway_session_affinity_is_opt_in_for_openai_responses_gemini_and_bedrock_families() {
+    for protocol in [
+        ProtocolFamily::OpenAiResponses,
+        ProtocolFamily::GeminiGenerateContent,
+        ProtocolFamily::BedrockConverse,
+    ] {
+        let captured = Arc::new(Mutex::new(Vec::<Option<ModelSettings>>::new()));
+        let model_captured = Arc::clone(&captured);
+        let inner = Arc::new(FunctionModel::new(
+            move |_messages, settings, _info: FunctionModelInfo| {
+                model_captured.lock().unwrap().push(settings);
+                Ok(ModelResponse::text("ok"))
+            },
+        ));
+        let model = ProfileOverrideModel::new(inner, ModelProfile::for_protocol(protocol))
+            .with_provider_name(Some("gateway".to_string()))
+            .with_model_name("gpt-5.5");
+        let agent = Agent::new(Arc::new(model));
+        let mut context = AgentContext::default();
+        context.set_session_id(SessionId::from_string("session_affinity_gateway"));
+        context.metadata.insert(
+            "starweaver.gateway_session_affinity".to_string(),
+            serde_json::json!(true),
+        );
 
-    let result = agent.run_with_context("hello", &mut context).await.unwrap();
+        let result = agent.run_with_context("hello", &mut context).await.unwrap();
 
-    assert_eq!(result.output, "ok");
-    let gateway = captured.lock().unwrap()[0]
-        .clone()
-        .unwrap()
-        .provider_settings
-        .gateway
-        .unwrap();
-    assert_eq!(
-        gateway,
-        GatewaySettings {
-            x_session_id: Some("session_affinity_gateway".to_string()),
-            ..GatewaySettings::default()
-        }
-    );
+        assert_eq!(result.output, "ok");
+        let gateway = captured.lock().unwrap()[0]
+            .clone()
+            .unwrap()
+            .provider_settings
+            .gateway
+            .unwrap();
+        assert_eq!(
+            gateway,
+            GatewaySettings {
+                x_session_id: Some("session_affinity_gateway".to_string()),
+                ..GatewaySettings::default()
+            }
+        );
+    }
 }
