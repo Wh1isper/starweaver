@@ -886,7 +886,10 @@ async fn subagent_execution_hook_wraps_delegated_child_run() {
                 "phase": "before",
                 "name": metadata.name,
                 "task_id": metadata.task_id.as_str(),
+                "parent_run_id": metadata.parent_run_id.as_ref().map(RunId::as_str),
                 "child_agent_id": metadata.child_agent_id.as_str(),
+                "child_parent_run_id": child_context.parent_run_id.as_ref().map(RunId::as_str),
+                "child_parent_task_id": child_context.parent_task_id.as_ref().map(starweaver_core::TaskId::as_str),
             }));
             Ok(())
         }
@@ -931,7 +934,10 @@ async fn subagent_execution_hook_wraps_delegated_child_run() {
     );
     let registry = SubagentRegistry::new()
         .with_subagent(SubagentConfig::new("child", child).with_execution_hook(hook.clone()));
-    let mut context = AgentContext::default();
+    let mut context = AgentContext {
+        run_id: Some(RunId::from_string("run-parent")),
+        ..AgentContext::default()
+    };
 
     let result = registry
         .delegate("child", "wrap this task", &mut context)
@@ -943,6 +949,13 @@ async fn subagent_execution_hook_wraps_delegated_child_run() {
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0]["phase"], "before");
     assert_eq!(calls[0]["name"], "child");
+    assert_eq!(calls[0]["parent_run_id"], "run-parent");
+    assert_eq!(calls[0]["child_parent_run_id"], "run-parent");
+    assert!(
+        calls[0]["child_parent_task_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("task_"))
+    );
     assert_eq!(calls[1]["phase"], "after");
     assert_eq!(calls[1]["hook_before"], true);
     assert_eq!(calls[1]["output"], "child wrapped");

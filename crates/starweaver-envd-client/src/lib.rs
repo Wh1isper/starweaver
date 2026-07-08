@@ -13,12 +13,12 @@ use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use starweaver_envd_core::{
-    CommandRunRequest, CommandRunResult, EnvdError, EnvdErrorCode, EnvdResult, EnvdService,
-    EnvironmentContextRequest, EnvironmentContextResult, EnvironmentDescriptor, EnvironmentRequest,
-    EnvironmentStateSnapshot, FileCopyRequest, FileCreateDirRequest, FileDeleteRequest,
-    FileGlobMatch, FileGlobRequest, FileGrepMatch, FileGrepRequest, FileListRequest,
-    FileListResult, FileMoveRequest, FileReadRequest, FileReadResult, FileStat, FileStatRequest,
-    FileWriteRequest, FileWriteResult, FileWriteTmpRequest, FileWriteTmpResult,
+    CleanupIdleRequest, CommandRunRequest, CommandRunResult, EnvdError, EnvdErrorCode, EnvdResult,
+    EnvdService, EnvironmentContextRequest, EnvironmentContextResult, EnvironmentDescriptor,
+    EnvironmentRequest, EnvironmentStateSnapshot, FileCopyRequest, FileCreateDirRequest,
+    FileDeleteRequest, FileGlobMatch, FileGlobRequest, FileGrepMatch, FileGrepRequest,
+    FileListRequest, FileListResult, FileMoveRequest, FileReadRequest, FileReadResult, FileStat,
+    FileStatRequest, FileWriteRequest, FileWriteResult, FileWriteTmpRequest, FileWriteTmpResult,
     InitializeEnvdRequest, InitializeEnvdResult, MutationResult, OpenEnvironmentRequest,
     ProcessInputRequest, ProcessKillRequest, ProcessListResult, ProcessSignalRequest,
     ProcessSnapshot, ProcessStartRequest, ProcessWaitRequest, ShellReviewContextRequest,
@@ -198,6 +198,24 @@ impl EnvdService for EnvdRpcClient {
         request: EnvironmentRequest,
     ) -> EnvdResult<EnvironmentStateSnapshot> {
         self.request("environment.state", &request).await
+    }
+
+    async fn prepare_environment(
+        &self,
+        request: EnvironmentRequest,
+    ) -> EnvdResult<EnvironmentDescriptor> {
+        self.request("environment.prepare", &request).await
+    }
+
+    async fn stop_environment(
+        &self,
+        request: EnvironmentRequest,
+    ) -> EnvdResult<EnvironmentDescriptor> {
+        self.request("environment.stop", &request).await
+    }
+
+    async fn cleanup_idle(&self, request: CleanupIdleRequest) -> EnvdResult<EnvironmentDescriptor> {
+        self.request("environment.cleanup_idle", &request).await
     }
 
     async fn file_read(&self, request: FileReadRequest) -> EnvdResult<FileReadResult> {

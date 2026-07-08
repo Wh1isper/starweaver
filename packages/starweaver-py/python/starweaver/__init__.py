@@ -1,8 +1,5 @@
 """Python bindings for Starweaver."""
 
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _distribution_version
-
 from ._native import version
 from .agent import (
     Agent,
@@ -32,6 +29,7 @@ from .environment import (
     DockerEnvironmentProvider,
     EnvdEnvironment,
     Environment,
+    EnvironmentLifecycleSnapshot,
     EnvironmentProvider,
     FileOperator,
     LocalEnvironment,
@@ -139,18 +137,19 @@ from .toolset import (
     ToolsetLifecycleReport,
     ToolsetLifecycleState,
     ToolsetPreparation,
+    context_toolset,
+    core_toolsets,
     environment_toolsets,
     filesystem_toolset,
+    host_io_toolset,
     shell_toolset,
+    task_toolset,
     toolset_factory,
     validate_toolset_ids,
     validate_toolsets_for_durability,
 )
 
-try:
-    __version__ = _distribution_version("starweaver")
-except PackageNotFoundError:
-    __version__ = version()
+__version__ = version()
 
 __all__ = [
     "RESOURCE_REF_KIND_KEY",
@@ -177,6 +176,7 @@ __all__ = [
     "DockerEnvironmentProvider",
     "EnvdEnvironment",
     "Environment",
+    "EnvironmentLifecycleSnapshot",
     "EnvironmentProvider",
     "ExecutionStatus",
     "Feedback",
@@ -285,12 +285,16 @@ __all__ = [
     "VirtualPath",
     "WorkspaceBinding",
     "__version__",
+    "context_toolset",
+    "core_toolsets",
     "create_agent",
     "create_agent_runtime",
     "environment_toolsets",
     "filesystem_toolset",
+    "host_io_toolset",
     "output_validator",
     "shell_toolset",
+    "task_toolset",
     "tool",
     "toolset_factory",
     "validate_toolset_ids",

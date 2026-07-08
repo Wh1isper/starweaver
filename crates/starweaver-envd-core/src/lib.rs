@@ -8,15 +8,15 @@ mod types;
 
 pub use error::{EnvdError, EnvdErrorCode, EnvdResult};
 pub use request::{
-    CommandRunRequest, CommandRunResult, EnvironmentContextRequest, EnvironmentContextResult,
-    EnvironmentRequest, FileCopyRequest, FileCreateDirRequest, FileDeleteRequest, FileGlobMatch,
-    FileGlobOptions, FileGlobRequest, FileGrepMatch, FileGrepOptions, FileGrepRequest,
-    FileListOptions, FileListRequest, FileListResult, FileMoveRequest, FileReadRequest,
-    FileReadResult, FileStat, FileStatRequest, FileWriteRequest, FileWriteResult,
-    FileWriteTmpRequest, FileWriteTmpResult, InitializeEnvdRequest, InitializeEnvdResult,
-    MutationResult, OpenEnvironmentRequest, ProcessInputRequest, ProcessKillRequest,
-    ProcessListResult, ProcessSignalRequest, ProcessStartRequest, ProcessWaitRequest,
-    ShellReviewContextRequest, ShellReviewContextResult,
+    CleanupIdleRequest, CommandRunRequest, CommandRunResult, EnvironmentContextRequest,
+    EnvironmentContextResult, EnvironmentRequest, FileCopyRequest, FileCreateDirRequest,
+    FileDeleteRequest, FileGlobMatch, FileGlobOptions, FileGlobRequest, FileGrepMatch,
+    FileGrepOptions, FileGrepRequest, FileListOptions, FileListRequest, FileListResult,
+    FileMoveRequest, FileReadRequest, FileReadResult, FileStat, FileStatRequest, FileWriteRequest,
+    FileWriteResult, FileWriteTmpRequest, FileWriteTmpResult, InitializeEnvdRequest,
+    InitializeEnvdResult, MutationResult, OpenEnvironmentRequest, ProcessInputRequest,
+    ProcessKillRequest, ProcessListResult, ProcessSignalRequest, ProcessStartRequest,
+    ProcessWaitRequest, ShellReviewContextRequest, ShellReviewContextResult,
 };
 pub use rpc::{
     EnvdRpcError, INVALID_PARAMS, INVALID_REQUEST, JsonRpcRequest, METHOD_NOT_FOUND, PARSE_ERROR,

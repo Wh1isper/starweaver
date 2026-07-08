@@ -1029,6 +1029,11 @@ Resume previous background work only when you already have its agent ID.",
             }
         };
         let mut child_context = parent_context.subagent_context_with_agent_id(name, child_agent_id);
+        child_context.parent_task_id = Some(task.id.clone());
+        child_context.metadata.insert(
+            "parent_task_id".to_string(),
+            serde_json::json!(task.id.as_str()),
+        );
         if let Some(environment) = subagent.environment_provider() {
             attach_environment(&mut child_context, environment);
         }

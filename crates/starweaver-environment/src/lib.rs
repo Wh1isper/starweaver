@@ -65,9 +65,10 @@ pub use provider::{
 };
 pub use switchable_provider::{SwitchableEnvironmentProvider, SwitchableEnvironmentTarget};
 pub use types::{
-    EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions,
-    FileListOptions, FileListResult, FileStat, ResourceRef, ShellCommand, ShellOutput,
-    ShellProcessSnapshot, ShellProcessStatus, ShellReviewEnvironmentContext,
+    EnvironmentLifecycleCapabilities, EnvironmentLifecycleCategory, EnvironmentLifecycleSnapshot,
+    EnvironmentLifecycleState, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
+    FileGrepOptions, FileListOptions, FileListResult, FileStat, ResourceRef, ShellCommand,
+    ShellOutput, ShellProcessSnapshot, ShellProcessStatus, ShellReviewEnvironmentContext,
 };
 pub use virtual_provider::VirtualEnvironmentProvider;
 

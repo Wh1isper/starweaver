@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    CommandRunRequest, CommandRunResult, EnvdResult, EnvironmentContextRequest,
+    CleanupIdleRequest, CommandRunRequest, CommandRunResult, EnvdResult, EnvironmentContextRequest,
     EnvironmentContextResult, EnvironmentDescriptor, EnvironmentRequest, EnvironmentStateSnapshot,
     FileCopyRequest, FileCreateDirRequest, FileDeleteRequest, FileGlobMatch, FileGlobRequest,
     FileGrepMatch, FileGrepRequest, FileListRequest, FileListResult, FileMoveRequest,
@@ -31,6 +31,21 @@ pub trait EnvdService: Send + Sync {
         &self,
         request: EnvironmentRequest,
     ) -> EnvdResult<EnvironmentStateSnapshot>;
+
+    /// Prepare the environment where explicit lifecycle control is supported.
+    async fn prepare_environment(
+        &self,
+        request: EnvironmentRequest,
+    ) -> EnvdResult<EnvironmentDescriptor>;
+
+    /// Stop the environment where explicit lifecycle control is supported.
+    async fn stop_environment(
+        &self,
+        request: EnvironmentRequest,
+    ) -> EnvdResult<EnvironmentDescriptor>;
+
+    /// Clean up idle environment resources where supported.
+    async fn cleanup_idle(&self, request: CleanupIdleRequest) -> EnvdResult<EnvironmentDescriptor>;
 
     /// Read a file.
     async fn file_read(&self, request: FileReadRequest) -> EnvdResult<FileReadResult>;

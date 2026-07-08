@@ -14,6 +14,9 @@ pub enum EnvironmentError {
     /// Input was invalid for this provider.
     #[error("invalid environment request: {0}")]
     InvalidRequest(String),
+    /// Operation is not supported by this provider.
+    #[error("unsupported environment operation: {0}")]
+    Unsupported(String),
     /// Provider execution failed.
     #[error("environment provider failed: {0}")]
     Provider(String),

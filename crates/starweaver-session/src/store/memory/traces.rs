@@ -37,6 +37,8 @@ impl InMemorySessionStore {
             session_id: Some(session_id.clone()),
             run_id: Some(run_id.clone()),
             status: run.status,
+            parent_run_id: run.parent_run_id.clone(),
+            parent_task_id: run.parent_task_id.clone(),
             checkpoints: checkpoints
                 .iter()
                 .map(|checkpoint| checkpoint.checkpoint_id.clone())

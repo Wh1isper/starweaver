@@ -10,6 +10,7 @@ pub fn env_error_to_envd(error: EnvironmentError) -> EnvdError {
         EnvironmentError::AccessDenied(message) => EnvdError::access_denied(message),
         EnvironmentError::NotFound(message) => EnvdError::not_found(message),
         EnvironmentError::InvalidRequest(message) => EnvdError::invalid_request(message),
+        EnvironmentError::Unsupported(message) => EnvdError::unsupported(message),
         EnvironmentError::Provider(message) => EnvdError::provider(message),
     }
 }

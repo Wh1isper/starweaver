@@ -1,8 +1,10 @@
 //! Python context projections.
 
 use pyo3::{prelude::*, types::PyBool};
+use serde_json::Value;
 use starweaver_agent::EnvironmentHandle;
 use starweaver_context::{AgentContext, AgentContextHandle};
+use starweaver_core::Metadata;
 use starweaver_environment::{DynEnvironmentProvider, EnvironmentState};
 use starweaver_tools::ToolContext;
 
@@ -90,6 +92,15 @@ impl PyToolContext {
                 })
             })
     }
+
+    fn public_metadata(&self) -> Metadata {
+        self.inner
+            .metadata
+            .iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "tool_call_id" | "tool_name"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
 }
 
 #[pymethods]
@@ -133,7 +144,15 @@ impl PyToolContext {
 
     #[getter]
     fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        json_to_py(py, &serde_json::Value::Object(self.inner.metadata.clone()))
+        json_to_py(py, &Value::Object(self.public_metadata()))
+    }
+
+    #[getter]
+    fn run_attachments(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        json_to_py(
+            py,
+            &serde_json::Value::Object(self.inner.run_attachments.clone()),
+        )
     }
 
     #[getter]
@@ -293,6 +312,11 @@ impl PyToolsetContext {
     #[getter]
     fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         json_to_py(py, &serde_json::Value::Object(self.inner.metadata.clone()))
+    }
+
+    #[getter]
+    fn run_attachments(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.metadata(py)
     }
 
     #[getter]

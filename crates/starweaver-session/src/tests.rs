@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 use starweaver_context::AgentContext;
-use starweaver_core::{ConversationId, Metadata, RunId, TraceContext};
+use starweaver_core::{ConversationId, Metadata, RunId, TaskId, TraceContext};
 use starweaver_runtime::{
     AgentCheckpoint, AgentExecutionNode, AgentRunState, AgentStreamEvent, AgentStreamRecord,
 };
@@ -124,6 +124,7 @@ fn hitl_records_are_derived_from_tool_return_metadata() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     let store = InMemorySessionStore::new();
     let session_id = SessionId::from_string("session-1");
@@ -139,6 +140,8 @@ async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     let mut run = RunRecord::new(session_id.clone(), run_id.clone(), conversation_id.clone());
     run.input = vec![InputPart::text("hello")];
     run.trace_context = TraceContext::from_trace_id("trace-run");
+    run.parent_run_id = Some(RunId::from_string("run-parent"));
+    run.parent_task_id = Some(TaskId::from_string("task-parent"));
     store.append_run(run).await.unwrap();
     store
         .update_run_status(&session_id, &run_id, RunStatus::Running, None)
@@ -212,6 +215,14 @@ async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     assert_eq!(snapshot.stream_records[0].sequence, 1);
     assert_eq!(snapshot.approvals.len(), 1);
     assert_eq!(snapshot.deferred_tools.len(), 1);
+    assert_eq!(
+        snapshot.run.parent_run_id.as_ref().map(RunId::as_str),
+        Some("run-parent")
+    );
+    assert_eq!(
+        snapshot.run.parent_task_id.as_ref().map(TaskId::as_str),
+        Some("task-parent")
+    );
     assert!(
         snapshot
             .stream_cursors
@@ -223,6 +234,14 @@ async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     assert_eq!(trace.deferred_tools, 1);
     assert_eq!(trace.stream_cursor, Some(1));
     assert_eq!(trace.trace_context.trace_id.as_deref(), Some("trace-run"));
+    assert_eq!(
+        trace.parent_run_id.as_ref().map(RunId::as_str),
+        Some("run-parent")
+    );
+    assert_eq!(
+        trace.parent_task_id.as_ref().map(TaskId::as_str),
+        Some("task-parent")
+    );
     assert_eq!(session_trace.runs, 1);
     assert_eq!(session_trace.profile.as_deref(), Some("default"));
 }
@@ -335,12 +354,16 @@ async fn records_round_trip_through_json() {
     let mut run = RunRecord::new(session_id, run_id, ConversationId::from_string("conv-json"));
     run.input = vec![InputPart::text("hello")];
     run.structured_output = json!({"ok": true});
+    run.parent_run_id = Some(RunId::from_string("run-parent-json"));
+    run.parent_task_id = Some(TaskId::from_string("task-parent-json"));
     let mut metadata = Metadata::default();
     metadata.insert("source".to_string(), json!("test"));
     run.metadata = metadata;
 
     let value = serde_json::to_value(&run).unwrap();
     assert_eq!(value["status"], "queued");
+    assert_eq!(value["parent_run_id"], "run-parent-json");
+    assert_eq!(value["parent_task_id"], "task-parent-json");
     let decoded = serde_json::from_value::<RunRecord>(value).unwrap();
     assert_eq!(decoded, run);
 }

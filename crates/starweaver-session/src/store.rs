@@ -68,6 +68,8 @@ impl starweaver_runtime::AgentExecutor for SessionStoreExecutor {
                 );
                 run.status = checkpoint_status(checkpoint.resume.status);
                 run.trace_context = checkpoint.resume.trace_context.clone();
+                run.parent_run_id = checkpoint.state.parent_run_id.clone();
+                run.parent_task_id = checkpoint.state.parent_task_id.clone();
                 self.store.append_run(run).await?;
                 self.store
                     .append_checkpoint(&self.session_id, checkpoint)

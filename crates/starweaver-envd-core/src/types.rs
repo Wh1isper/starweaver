@@ -7,6 +7,20 @@ use starweaver_core::Metadata;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentStatus {
+    /// Environment has been requested but no preparation has started.
+    Pending,
+    /// Environment preparation is in progress.
+    Preparing,
+    /// Environment is prepared and ready to serve operations.
+    Ready,
+    /// Environment is actively serving an operation.
+    Running,
+    /// Environment is prepared but idle.
+    Idle,
+    /// Environment has been stopped.
+    Stopped,
+    /// Environment preparation or operation failed.
+    Failed,
     /// Environment is open and ready to serve operations.
     Open,
     /// Environment has been closed.
@@ -72,6 +86,14 @@ pub enum EnvironmentCapability {
     Snapshots,
     /// Model-facing context summaries are supported.
     ContextSummary,
+    /// Lifecycle inspection is supported.
+    LifecycleInspect,
+    /// Explicit preparation is supported.
+    LifecyclePrepare,
+    /// Explicit stop is supported.
+    LifecycleStop,
+    /// Explicit idle cleanup is supported.
+    LifecycleCleanupIdle,
 }
 
 /// Capabilities advertised by an envd environment.

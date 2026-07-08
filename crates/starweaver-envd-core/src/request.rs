@@ -50,6 +50,16 @@ pub struct EnvironmentRequest {
     pub environment_id: String,
 }
 
+/// Idle lifecycle cleanup request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CleanupIdleRequest {
+    /// Environment id.
+    pub environment_id: String,
+    /// Optional minimum idle age in seconds before cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub older_than_seconds: Option<u64>,
+}
+
 /// File read request.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FileReadRequest {

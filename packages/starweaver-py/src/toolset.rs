@@ -1017,6 +1017,15 @@ pub fn deferred_toolset(
     PyToolset::new(Arc::new(wrapper))
 }
 
+/// Build all currently implemented first-party core toolsets.
+#[pyfunction]
+pub fn core_toolsets() -> Vec<PyToolset> {
+    starweaver_agent::core_toolsets()
+        .into_iter()
+        .map(PyToolset::new)
+        .collect()
+}
+
 /// Build the first-party filesystem toolset backed by an attached environment.
 #[pyfunction]
 pub fn filesystem_toolset() -> PyToolset {
@@ -1036,6 +1045,24 @@ pub fn environment_toolsets() -> Vec<PyToolset> {
         .into_iter()
         .map(PyToolset::new)
         .collect()
+}
+
+/// Build the first-party host I/O toolset.
+#[pyfunction]
+pub fn host_io_toolset() -> PyToolset {
+    PyToolset::new(starweaver_agent::host_io_tools())
+}
+
+/// Build the first-party task-management toolset.
+#[pyfunction]
+pub fn task_toolset() -> PyToolset {
+    PyToolset::new(starweaver_agent::task_tools())
+}
+
+/// Build the first-party context-management toolset.
+#[pyfunction]
+pub fn context_toolset() -> PyToolset {
+    PyToolset::new(starweaver_agent::context_tools())
 }
 
 pub(crate) fn py_toolsets_to_dyn_toolsets(

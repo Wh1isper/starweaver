@@ -168,6 +168,96 @@ async fn session_run_stream_with_options_applies_all_option_builders() {
     assert!(format!("{:?}", captured[0].messages).contains("stream run instruction"));
 }
 
+#[test]
+fn hitl_errors_expose_stable_product_neutral_codes() {
+    let duplicate = starweaver_agent::AgentHitlError::DuplicateDecision("approval-1".to_string());
+    assert_eq!(
+        duplicate.code(),
+        starweaver_agent::AgentHitlErrorCode::DuplicateInteraction
+    );
+    assert_eq!(duplicate.code_str(), "duplicate_interaction");
+    let stale = starweaver_agent::AgentHitlError::NotWaiting {
+        run_id: "run-1".to_string(),
+        status: starweaver_agent::RunStatus::Completed,
+    };
+    assert_eq!(
+        stale.code(),
+        starweaver_agent::AgentHitlErrorCode::StaleInteraction
+    );
+    assert_eq!(stale.code_str(), "stale_interaction");
+}
+
+#[tokio::test]
+async fn session_run_context_metadata_reaches_tool_context_as_run_attachments() {
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observed_for_tool = observed.clone();
+    let tool = Arc::new(FunctionTool::new(
+        "inspect_attachments",
+        Some("Inspect run attachments".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |ctx: ToolContext, _args: serde_json::Value| {
+            let observed = observed_for_tool.clone();
+            async move {
+                observed.lock().unwrap().push(ctx.run_attachments.clone());
+                Ok(ToolResult::new(serde_json::json!({"ok": true})))
+            }
+        },
+    ));
+    let model = Arc::new(starweaver_agent::FunctionModel::new(
+        |messages, _settings, _info| {
+            let has_tool_return = messages.iter().any(|message| {
+                matches!(
+                    message,
+                    ModelMessage::Request(request)
+                        if request
+                            .parts
+                            .iter()
+                            .any(|part| matches!(part, starweaver_model::ModelRequestPart::ToolReturn(_)))
+                )
+            });
+            if has_tool_return {
+                Ok(ModelResponse::text("done"))
+            } else {
+                Ok(ModelResponse {
+                    parts: vec![starweaver_model::ModelResponsePart::ToolCall(
+                        starweaver_model::ToolCallPart {
+                            id: "call_inspect".to_string(),
+                            name: "inspect_attachments".to_string(),
+                            arguments: serde_json::json!({}).into(),
+                        },
+                    )],
+                    ..ModelResponse::text("")
+                })
+            }
+        },
+    ));
+    let mut session = AgentSession::new(AgentBuilder::new(model).tool(tool).build());
+    session.set_metadata("session_marker", serde_json::json!("session"));
+    let result = session
+        .run_with_options(
+            "inspect",
+            AgentRunOptions::new().context_metadata(
+                serde_json::json!({
+                    "run_marker": "run",
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, "done");
+    assert_eq!(result.state.metadata["run_marker"], "run");
+    assert_eq!(session.context().metadata["session_marker"], "session");
+    assert!(!session.context().metadata.contains_key("run_marker"));
+    let observed = observed.lock().unwrap().clone();
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0]["session_marker"], "session");
+    assert_eq!(observed[0]["run_marker"], "run");
+}
+
 #[tokio::test]
 async fn session_environment_helpers_attach_provider_dependency() {
     let provider = Arc::new(starweaver_environment::VirtualEnvironmentProvider::new(

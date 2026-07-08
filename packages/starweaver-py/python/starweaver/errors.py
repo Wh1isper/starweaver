@@ -88,6 +88,16 @@ class Timeout(ToolError):
 class StateError(StarweaverError):
     """Session state is invalid."""
 
+    code: str | None
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        self.code = code
+        super().__init__(message)
+
+    def with_code(self, code: str) -> StateError:
+        self.code = code
+        return self
+
 
 class StreamError(StarweaverError):
     """Stream execution failed."""

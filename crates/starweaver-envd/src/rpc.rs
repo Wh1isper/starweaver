@@ -62,6 +62,18 @@ impl EnvdRpcService {
                 self.call(params, |request| self.service.environment_state(request))
                     .await
             }
+            "environment.prepare" => {
+                self.call(params, |request| self.service.prepare_environment(request))
+                    .await
+            }
+            "environment.stop" => {
+                self.call(params, |request| self.service.stop_environment(request))
+                    .await
+            }
+            "environment.cleanup_idle" => {
+                self.call(params, |request| self.service.cleanup_idle(request))
+                    .await
+            }
             "file.read" => {
                 self.call(params, |request| self.service.file_read(request))
                     .await

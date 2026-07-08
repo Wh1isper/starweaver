@@ -53,16 +53,27 @@ class ControlReceipt:
 
     id: str
     kind: Literal["message", "steering", "interrupt"]
-    queued: bool
+    pending_delivery: bool
+    delivery_state: Literal["applied", "pending_delivery"]
     run_id: str | None = None
     session_id: str | None = None
 
     @classmethod
     def from_raw(cls, raw: Mapping[str, Any]) -> ControlReceipt:
+        pending_delivery = bool(raw.get("pending_delivery", False))
+        kind = str(raw["kind"])
+        if kind not in {"message", "steering", "interrupt"}:
+            raise ValueError(f"unknown control receipt kind: {kind}")
+        delivery_state = str(
+            raw.get("delivery_state") or ("pending_delivery" if pending_delivery else "applied")
+        )
+        if delivery_state not in {"applied", "pending_delivery"}:
+            raise ValueError(f"unknown control receipt delivery_state: {delivery_state}")
         return cls(
             id=str(raw["id"]),
-            kind=raw["kind"],  # type: ignore[arg-type]
-            queued=bool(raw.get("queued", False)),
+            kind=kind,  # type: ignore[arg-type]
+            pending_delivery=pending_delivery,
+            delivery_state=delivery_state,  # type: ignore[arg-type]
             run_id=_optional_str(raw.get("run_id")),
             session_id=_optional_str(raw.get("session_id")),
         )
@@ -136,8 +147,8 @@ class MessageDelivery:
         return self.receipt is not None
 
     @property
-    def queued(self) -> bool:
-        return bool(self.receipt and self.receipt.queued)
+    def pending_delivery(self) -> bool:
+        return bool(self.receipt and self.receipt.pending_delivery)
 
     @property
     def kind(self) -> Literal["message", "steering"]:
@@ -148,9 +159,10 @@ class MessageDelivery:
 
 @dataclass(frozen=True)
 class RunStatusSnapshot:
-    """Pollable run status snapshot."""
+    """Pollable live-run state snapshot."""
 
-    run_status: str
+    live_state: str
+    is_terminal: bool = False
     current_error: dict[str, Any] | None = None
     cancel_requested: bool = False
     dropped_events: int = 0
@@ -160,8 +172,10 @@ class RunStatusSnapshot:
 
     @classmethod
     def from_raw(cls, raw: Mapping[str, Any]) -> RunStatusSnapshot:
+        live_state = str(raw.get("live_state", "unknown"))
         return cls(
-            run_status=str(raw.get("run_status", "unknown")),
+            live_state=live_state,
+            is_terminal=bool(raw.get("is_terminal", live_state == "closed")),
             current_error=(
                 dict(raw["current_error"])
                 if isinstance(raw.get("current_error"), Mapping)
@@ -176,7 +190,8 @@ class RunStatusSnapshot:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "run_status": self.run_status,
+            "live_state": self.live_state,
+            "is_terminal": self.is_terminal,
             "current_error": self.current_error,
             "cancel_requested": self.cancel_requested,
             "dropped_events": self.dropped_events,
@@ -809,7 +824,7 @@ class MessageBus:
                 topic="steering",
                 source="user",
             )
-        raise StateError("no active run for session")
+        raise StateError("no active run for session", code="no_active_run")
 
     def peek(self, agent_id: str | None = None) -> list[BusMessage]:
         if self._run is not None:
@@ -1204,8 +1219,16 @@ class Agent:
 
     async def steer(self, text: str, **options: Any) -> ControlReceipt:
         active = [run for run in self._active_runs if not run.is_finished]
-        if len(active) != 1:
-            raise StateError("agent.steer requires exactly one direct active run")
+        if not active:
+            raise StateError(
+                "agent.steer requires exactly one direct active run; no active run for agent",
+                code="no_active_run",
+            )
+        if len(active) > 1:
+            raise StateError(
+                "agent.steer requires exactly one direct active run",
+                code="ambiguous_active_run",
+            )
         return await active[0].steer(text, **options)
 
     def _unregister_run(self, run: AgentRun) -> None:
@@ -1414,7 +1437,7 @@ class AgentSession:
             run_options = {"id": message_id} if message_id is not None else {}
             return await run.steer(text, **run_options)
         if when_idle != "queue":
-            raise StateError("no active run for session")
+            raise StateError("no active run for session", code="no_active_run")
         delivery = await self.messages.steer(
             text,
             when_idle="queue",
@@ -1424,14 +1447,15 @@ class AgentSession:
         return ControlReceipt(
             id=delivery.message.id,
             kind="steering",
-            queued=True,
+            pending_delivery=True,
+            delivery_state="pending_delivery",
             session_id=_optional_str(state.get("session_id")),
         )
 
     def interrupt(self, reason: str | None = None) -> None:
         run = self.active_run
         if run is None:
-            raise StateError("no active run for session")
+            raise StateError("no active run for session", code="no_active_run")
         run.interrupt(reason)
 
     @property
@@ -1512,9 +1536,12 @@ class AgentRun:
     def is_finished(self) -> bool:
         return self._finished
 
-    async def recv(self) -> StreamEvent | None:
+    def _ensure_attached(self) -> None:
         if self._detached:
-            raise StateError("agent run has been detached")
+            raise StateError("agent run has been detached", code="detached")
+
+    async def recv(self) -> StreamEvent | None:
+        self._ensure_attached()
         try:
             event = await self._native.recv()
         except asyncio.CancelledError:
@@ -1530,14 +1557,14 @@ class AgentRun:
         return wrapped
 
     def interrupt(self, reason: str | None = None) -> None:
+        self._ensure_attached()
         try:
             self._native.interrupt(reason)
         except TypeError:
             self._native.interrupt()
 
     def close_receiver(self) -> None:
-        if self._detached:
-            raise StateError("agent run has been detached")
+        self._ensure_attached()
         self._native.close_receiver()
 
     def detach(self) -> None:
@@ -1550,8 +1577,9 @@ class AgentRun:
             self._join_future.add_done_callback(self._finalize_join_future)
 
     async def steer(self, text: str, **options: Any) -> ControlReceipt:
+        self._ensure_attached()
         if self._joined is not None or self._finished or self._terminal_event_seen:
-            raise StateError("agent run has already completed")
+            raise StateError("agent run has already completed", code="already_finished")
         message_id = _optional_str(options.pop("id", None))
         if options:
             unknown = ", ".join(sorted(options))
@@ -1560,8 +1588,9 @@ class AgentRun:
         return ControlReceipt.from_raw(receipt)
 
     async def send_message(self, message: BusMessage | Mapping[str, Any]) -> ControlReceipt:
+        self._ensure_attached()
         if self._joined is not None or self._finished or self._terminal_event_seen:
-            raise StateError("agent run has already completed")
+            raise StateError("agent run has already completed", code="already_finished")
         bus_message = _ensure_bus_message(message)
         receipt = await self._native.send_message(bus_message.to_dict())
         return ControlReceipt.from_raw(receipt)
@@ -1574,19 +1603,18 @@ class AgentRun:
         return RunHitl(self)
 
     def status(self) -> RunStatusSnapshot:
+        self._ensure_attached()
         snapshot = RunStatusSnapshot.from_raw(self._native.status())
-        if snapshot.run_status == "finished":
+        if snapshot.live_state == "closed":
             self._terminal_event_seen = True
         return snapshot
 
     async def recoverable_state(self) -> dict[str, Any]:
-        if self._detached:
-            raise StateError("agent run has been detached")
+        self._ensure_attached()
         return await self._native.recoverable_state()
 
     async def join(self) -> StreamRunResult:
-        if self._detached:
-            raise StateError("agent run has been detached")
+        self._ensure_attached()
         if self._joined is not None:
             return self._joined
         if self._join_future is None:

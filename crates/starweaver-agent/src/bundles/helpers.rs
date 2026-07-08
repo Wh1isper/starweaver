@@ -133,6 +133,12 @@ pub fn tool_environment_error(tool: &str, error: EnvironmentError) -> ToolError 
             tool,
             format!("invalid environment request: {message}. Adjust the tool arguments and retry."),
         ),
+        EnvironmentError::Unsupported(message) => tool_feedback(
+            tool,
+            format!(
+                "unsupported environment operation: {message}. Use a provider that advertises this capability or choose a fallback workflow."
+            ),
+        ),
     }
 }
 

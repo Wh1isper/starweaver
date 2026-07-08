@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TraceContext};
+use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TaskId, TraceContext};
 use starweaver_model::{ContentPart, ModelMessage, ToolReturnPart};
 use starweaver_usage::{Usage, UsageSnapshotEntry};
 
@@ -108,6 +108,12 @@ pub struct ResumableState {
     /// Stable logical session affinity identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
+    /// Parent run identifier when this state belongs to a delegated child run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<RunId>,
+    /// Parent-scoped delegated task identifier when this state belongs to a lightweight task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
     /// Conversation identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<ConversationId>,

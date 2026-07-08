@@ -7,14 +7,17 @@ use std::{
 };
 
 use crate::{
-    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
-    EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
-    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand,
-    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
-    is_provider_visible_absolute_path, path_match_candidates as default_path_match_candidates,
+    DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError,
+    EnvironmentLifecycleCapabilities, EnvironmentLifecycleSnapshot, EnvironmentLifecycleState,
+    EnvironmentProvider, EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions,
+    FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FileStat,
+    ProcessShellProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
+    ShellReviewEnvironmentContext, is_provider_visible_absolute_path,
+    path_match_candidates as default_path_match_candidates,
     provider_visible_path_allowed_by_context, push_unique_candidate,
 };
 use async_trait::async_trait;
+use starweaver_core::Metadata;
 
 const RESERVED_ROOT: &str = "environment";
 const DEFAULT_COMPOSITE_ID: &str = "composite";
@@ -621,6 +624,96 @@ impl EnvironmentProvider for CompositeEnvironmentProvider {
         Ok(Some(format!(
             "{mount_summary}\n<default-environment-context>\n{default_context}\n</default-environment-context>"
         )))
+    }
+
+    async fn inspect_lifecycle(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        let mut state = EnvironmentLifecycleState::Ready;
+        let mut child_snapshots = Vec::with_capacity(self.mounts.len());
+        let mut stop = false;
+        let mut cleanup_idle = false;
+        for mount in &self.mounts {
+            let snapshot = mount.provider.inspect_lifecycle().await?;
+            if snapshot.state == EnvironmentLifecycleState::Failed {
+                state = EnvironmentLifecycleState::Failed;
+            } else if state != EnvironmentLifecycleState::Failed
+                && snapshot.state == EnvironmentLifecycleState::Preparing
+            {
+                state = EnvironmentLifecycleState::Preparing;
+            } else if state == EnvironmentLifecycleState::Ready
+                && matches!(
+                    snapshot.state,
+                    EnvironmentLifecycleState::Pending
+                        | EnvironmentLifecycleState::Running
+                        | EnvironmentLifecycleState::Idle
+                        | EnvironmentLifecycleState::Stopped
+                )
+            {
+                state = snapshot.state.clone();
+            }
+            stop |= snapshot.capabilities.stop;
+            cleanup_idle |= snapshot.capabilities.cleanup_idle;
+            child_snapshots.push(serde_json::to_value(snapshot).map_err(|error| {
+                EnvironmentError::Provider(format!(
+                    "failed to encode child lifecycle snapshot: {error}"
+                ))
+            })?);
+        }
+        let mut metadata = Metadata::default();
+        metadata.insert("mounts".to_string(), serde_json::json!(child_snapshots));
+        Ok(EnvironmentLifecycleSnapshot::ready(&self.id)
+            .with_capabilities(EnvironmentLifecycleCapabilities {
+                inspect: true,
+                prepare: true,
+                stop,
+                cleanup_idle,
+            })
+            .with_metadata(metadata)
+            .with_state(state))
+    }
+
+    async fn prepare(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        for mount in &self.mounts {
+            mount.provider.prepare().await?;
+        }
+        self.inspect_lifecycle().await
+    }
+
+    async fn stop(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        let mut stopped = false;
+        for mount in &self.mounts {
+            match mount.provider.stop().await {
+                Ok(_) => stopped = true,
+                Err(EnvironmentError::Unsupported(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if stopped {
+            self.inspect_lifecycle().await
+        } else {
+            Err(EnvironmentError::Unsupported(format!(
+                "provider {} does not support explicit stop",
+                self.id
+            )))
+        }
+    }
+
+    async fn cleanup_idle(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        let mut cleaned = false;
+        for mount in &self.mounts {
+            match mount.provider.cleanup_idle().await {
+                Ok(_) => cleaned = true,
+                Err(EnvironmentError::Unsupported(_)) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if cleaned {
+            self.inspect_lifecycle().await
+        } else {
+            Err(EnvironmentError::Unsupported(format!(
+                "provider {} does not support idle cleanup",
+                self.id
+            )))
+        }
     }
 
     async fn export_state(&self) -> EnvironmentResult<EnvironmentState> {

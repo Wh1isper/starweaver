@@ -4,9 +4,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    AgentBuilder, AgentCapability, AgentControlKind, AgentRunState, AgentRuntimePolicy,
+    AgentBuilder, AgentCapability, AgentControlDeliveryState, AgentControlError,
+    AgentControlErrorCode, AgentControlKind, AgentRunState, AgentRuntimePolicy,
     AgentStreamDropPolicy, AgentStreamError, AgentStreamEvent, AgentStreamHandle,
-    AgentStreamOptions, AgentStreamRecord, AgentStreamRunStatus, AgentStreamSourceKind, BusMessage,
+    AgentStreamLiveState, AgentStreamOptions, AgentStreamRecord, AgentStreamSourceKind, BusMessage,
     CapabilityError, CapabilityResult, FunctionTool, StaticCapabilityBundle, SubagentConfig,
     SubagentRegistry, TestModel, ToolContext, ToolResult,
 };
@@ -242,12 +243,12 @@ async fn live_stream_status_reports_running_and_cancelling() {
     }
 
     let running = handle.status();
-    assert_eq!(running.run_status, AgentStreamRunStatus::Running);
+    assert_eq!(running.live_state, AgentStreamLiveState::Active);
     assert!(!running.cancel_requested);
 
     handle.interrupt();
     let cancelling = handle.status();
-    assert_eq!(cancelling.run_status, AgentStreamRunStatus::Cancelling);
+    assert_eq!(cancelling.live_state, AgentStreamLiveState::Cancelling);
     assert!(cancelling.cancel_requested);
 
     let completion = handle.complete().await;
@@ -255,6 +256,111 @@ async fn live_stream_status_reports_running_and_cancelling() {
         completion.error,
         Some(AgentStreamError::Interrupted { .. })
     ));
+}
+
+#[tokio::test]
+async fn live_control_contract_exposes_stable_status_receipts_and_error_codes() {
+    let release = Arc::new(tokio::sync::Notify::new());
+    let model = Arc::new(starweaver_agent::FunctionModel::new(
+        |messages, _settings, _info| {
+            let has_tool_return = messages.iter().any(|message| {
+                matches!(
+                    message,
+                    ModelMessage::Request(request)
+                        if request
+                            .parts
+                            .iter()
+                            .any(|part| matches!(part, ModelRequestPart::ToolReturn(_)))
+                )
+            });
+            if has_tool_return {
+                Ok(ModelResponse::text("done"))
+            } else {
+                Ok(ModelResponse {
+                    parts: vec![ModelResponsePart::ToolCall(ToolCallPart {
+                        id: "call_wait".to_string(),
+                        name: "wait".to_string(),
+                        arguments: serde_json::json!({}).into(),
+                    })],
+                    ..ModelResponse::text("")
+                })
+            }
+        },
+    ));
+    let release_tool = Arc::clone(&release);
+    let wait = Arc::new(FunctionTool::new(
+        "wait",
+        Some("Wait before returning".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_ctx: ToolContext, _args: serde_json::Value| {
+            let release = Arc::clone(&release_tool);
+            async move {
+                release.notified().await;
+                Ok(ToolResult::new(serde_json::json!({"ok": true})))
+            }
+        },
+    ));
+    let app = AgentBuilder::new(model)
+        .tool(wait)
+        .policy(AgentRuntimePolicy {
+            max_steps: 4,
+            ..AgentRuntimePolicy::default()
+        })
+        .build_app();
+    let mut handle = app.stream("contract");
+    recv_until_tool_call(&mut handle).await;
+
+    let status = handle.status();
+    assert_eq!(status.live_state, AgentStreamLiveState::Active);
+    assert_eq!(status.live_state.as_str(), "active");
+    assert!(!status.live_state.is_terminal());
+    let status_json = serde_json::to_value(status).unwrap();
+    assert_eq!(status_json["live_state"], "active");
+    assert_eq!(status_json["is_terminal"], false);
+    assert_eq!(status_json["receiver_closed"], false);
+    assert!(status_json["buffer_size"].is_number());
+    assert_eq!(status_json["drop_policy"], "drop_newest");
+
+    let control = handle.control_handle();
+    let receipt = control
+        .send_message(BusMessage::text("active note", "user").with_id("active-note"))
+        .await
+        .unwrap();
+    assert_eq!(
+        receipt.delivery_state(),
+        AgentControlDeliveryState::PendingDelivery
+    );
+    assert_eq!(receipt.delivery_state_str(), "pending_delivery");
+    assert_eq!(receipt.kind.as_str(), "message");
+    assert!(receipt.pending_delivery);
+    let receipt_json = serde_json::to_value(&receipt).unwrap();
+    assert_eq!(receipt_json["kind"], "message");
+    assert_eq!(receipt_json["pending_delivery"], true);
+    assert_eq!(receipt_json["delivery_state"], "pending_delivery");
+
+    handle.close_receiver();
+    assert!(handle.status().receiver_closed);
+    let error = control
+        .send_message(BusMessage::text("too late", "user").with_id("after-close"))
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentControlError::ReceiverClosed));
+    assert_eq!(error.code(), AgentControlErrorCode::ReceiverClosed);
+    assert_eq!(error.code_str(), "receiver_closed");
+    assert_eq!(
+        serde_json::to_value(error.code()).unwrap(),
+        "receiver_closed"
+    );
+
+    release.notify_one();
+    let result = handle.join().await.unwrap();
+    assert_eq!(result.result.output, "done");
+    let terminal_error = control
+        .send_message(BusMessage::text("after terminal", "user").with_id("after-terminal"))
+        .await
+        .unwrap_err();
+    assert!(matches!(terminal_error, AgentControlError::TerminalRun));
+    assert_eq!(terminal_error.code_str(), "already_finished");
 }
 
 #[tokio::test]
@@ -294,14 +400,14 @@ async fn live_control_handle_reports_context_and_accepts_messages() {
         .unwrap();
     assert_eq!(message_receipt.id, "ui-msg-1");
     assert_eq!(message_receipt.kind, AgentControlKind::Message);
-    assert!(message_receipt.queued);
+    assert!(message_receipt.pending_delivery);
     assert_eq!(
         message_receipt.session_id.as_deref(),
         Some(session_id.as_str())
     );
 
     while handle.recv().await.is_some() {}
-    assert_eq!(handle.status().run_status, AgentStreamRunStatus::Finished);
+    assert_eq!(handle.status().live_state, AgentStreamLiveState::Closed);
     let result = handle.join().await.unwrap();
     assert!(matches!(
         control
@@ -336,7 +442,7 @@ async fn live_control_steering_reaches_active_runtime_context() {
         .unwrap();
     assert_eq!(receipt.id, "ui-1");
     assert_eq!(receipt.kind, AgentControlKind::Steering);
-    assert!(receipt.queued);
+    assert!(receipt.pending_delivery);
     assert!(
         receipt
             .run_id
@@ -486,7 +592,7 @@ async fn live_control_late_steering_reaches_output_guard() {
         .unwrap();
     assert_eq!(receipt.id, "late-1");
     assert_eq!(receipt.kind, AgentControlKind::Steering);
-    assert!(receipt.queued);
+    assert!(receipt.pending_delivery);
     release.notify_one();
 
     while handle.recv().await.is_some() {}

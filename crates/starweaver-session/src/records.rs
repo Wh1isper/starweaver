@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_context::ResumableState;
-use starweaver_core::{CheckpointId, ConversationId, Metadata, RunId, SessionId, TraceContext};
+use starweaver_core::{
+    CheckpointId, ConversationId, Metadata, RunId, SessionId, TaskId, TraceContext,
+};
 
 use crate::input::InputPart;
 
@@ -246,6 +248,12 @@ pub struct RunRecord {
     /// Run snapshot used as continuation source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restore_from_run_id: Option<RunId>,
+    /// Parent run identifier when this run is delegated from another run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<RunId>,
+    /// Parent-scoped delegated task identifier when this run executes a lightweight task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
     /// Trigger source such as cli, service, schedule, or delegated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_type: Option<String>,
@@ -280,6 +288,8 @@ impl RunRecord {
             trace_context: TraceContext::default(),
             sequence_no: 0,
             restore_from_run_id: None,
+            parent_run_id: None,
+            parent_task_id: None,
             trigger_type: None,
             profile: None,
             created_at: now,

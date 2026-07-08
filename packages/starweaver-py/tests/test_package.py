@@ -20,6 +20,7 @@ from starweaver import (
     Cancelled,
     CapabilityBundle,
     DockerEnvironmentProvider,
+    EnvironmentLifecycleSnapshot,
     EnvironmentProvider,
     ExecutionStatus,
     FunctionToolset,
@@ -75,11 +76,15 @@ from starweaver import (
     ToolsetLifecycleReport,
     ToolsetLifecycleState,
     ToolsetPreparation,
+    context_toolset,
+    core_toolsets,
     create_agent,
     create_agent_runtime,
     environment_toolsets,
     filesystem_toolset,
+    host_io_toolset,
     shell_toolset,
+    task_toolset,
     tool,
     toolset_factory,
     validate_toolset_ids,
@@ -882,6 +887,8 @@ def test_tool_context_exposes_run_context_and_run_overrides_without_persisting()
                 "agent_id": ctx.agent_id,
                 "session_id": ctx.session_id,
                 "workspace_root": ctx.workspace_root,
+                "metadata": dict(ctx.metadata),
+                "run_attachments": dict(ctx.run_attachments),
             }
         )
         return {"ok": True}
@@ -928,6 +935,11 @@ def test_tool_context_exposes_run_context_and_run_overrides_without_persisting()
 
     asyncio.run(run())
     assert observed
+    assert observed[0]["metadata"] == {}
+    assert observed[0]["run_attachments"] == {
+        "session_marker": "session",
+        "run_marker": "run",
+    }
 
 
 def test_runtime_config_can_carry_tool_and_security_config() -> None:
@@ -3479,6 +3491,15 @@ def test_named_environment_facades_wrap_native_providers(tmp_path: Path) -> None
         assert await envd.read_text("README.md") == "virtual"
         await envd.write_text("envd.txt", "via envd")
         assert await virtual.read_text("envd.txt") == "via envd"
+        lifecycle = await envd.inspect_lifecycle()
+        assert isinstance(lifecycle, EnvironmentLifecycleSnapshot)
+        assert lifecycle.provider_id == "named-envd-provider"
+        assert lifecycle.environment_id == "named-envd"
+        assert lifecycle.state == "ready"
+        assert lifecycle.category is None
+        assert lifecycle.capabilities["inspect"] is True
+        assert lifecycle.capabilities["prepare"] is True
+        assert (await envd.prepare()).state == "ready"
         state = await envd.export_state()
         assert state["metadata"]["envd_kind"] == "local"
         assert state["metadata"]["envd_environment_id"] == "named-envd"
@@ -3603,6 +3624,15 @@ def test_python_environment_provider_adapts_to_native_trait() -> None:
             await environment.render_context()
             == '<environment id="python-memory">memory context</environment>'
         )
+        lifecycle = await environment.inspect_lifecycle()
+        assert lifecycle.provider_id == "python-memory"
+        assert lifecycle.state == "ready"
+        assert lifecycle.ready is True
+        assert lifecycle.capabilities["prepare"] is True
+        assert (await environment.prepare()).state == "ready"
+        with pytest.raises(StateError) as stop_error:
+            await environment.stop()
+        assert stop_error.value.code == "unsupported"
         state = await environment.export_state()
         assert state["provider_id"] == "python-memory"
         assert state["files"]["notes/moved.txt"] == "item"
@@ -3731,13 +3761,46 @@ def test_first_party_environment_toolsets_are_exposed() -> None:
     filesystem = filesystem_toolset()
     shell = shell_toolset()
     bundled = environment_toolsets()
+    host_io = host_io_toolset()
+    task = task_toolset()
+    context = context_toolset()
+    core = core_toolsets()
 
     assert filesystem.name == "filesystem"
     assert shell.name == "shell"
+    assert host_io.name == "host_io"
+    assert task.name == "task"
+    assert context.name == "context"
     assert [toolset.name for toolset in bundled] == ["filesystem", "shell"]
-    definitions = filesystem.tool_definitions() + shell.tool_definitions()
+    assert [toolset.name for toolset in core] == [
+        "filesystem",
+        "shell",
+        "task",
+        "context",
+        "host_io",
+    ]
+    definitions = [
+        *filesystem.tool_definitions(),
+        *shell.tool_definitions(),
+        *host_io.tool_definitions(),
+        *task.tool_definitions(),
+        *context.tool_definitions(),
+    ]
     names = {definition["name"] for definition in definitions}
-    assert {"view", "ls", "shell_exec"}.issubset(names)
+    assert {
+        "view",
+        "ls",
+        "shell_exec",
+        "search",
+        "fetch",
+        "scrape",
+        "download",
+        "read_media",
+        "task_create",
+        "task_list",
+        "task_update",
+        "summarize",
+    }.issubset(names)
 
 
 def test_skill_registry_installs_model_facing_instructions() -> None:
@@ -5141,7 +5204,7 @@ def test_live_stream_yields_events_before_tool_finishes() -> None:
         first = await asyncio.wait_for(stream.recv(), timeout=1)
         assert first is not None
         assert first.kind == "run_start"
-        assert stream.status()["run_status"] == "running"
+        assert stream.status()["live_state"] == "active"
         assert stream.status()["drop_policy"] == "backpressure"
         release.set()
         result = await stream.result()
@@ -6435,7 +6498,7 @@ def test_idle_session_steer_can_queue_message_state() -> None:
 
             assert receipt.id == "idle-steer"
             assert receipt.kind == "steering"
-            assert receipt.queued
+            assert receipt.pending_delivery
             assert receipt.run_id is None
             assert receipt.session_id == session.export_state()["session_id"]
             messages = session.messages.consume()
@@ -6512,7 +6575,7 @@ def test_agent_steer_targets_exactly_one_direct_active_run() -> None:
                 )
                 assert receipt.id == "agent-steer"
                 assert receipt.kind == "steering"
-                assert receipt.queued
+                assert receipt.pending_delivery
                 assert receipt.run_id
                 assert receipt.session_id
                 release.set()
@@ -6594,7 +6657,7 @@ def test_active_run_steering_reaches_python_runtime_context() -> None:
                         )
                         assert receipt.id == "ui-1"
                         assert receipt.kind == "steering"
-                        assert receipt.queued
+                        assert receipt.pending_delivery
                         assert receipt.run_id
                         assert receipt.session_id
                         duplicate = await agent_run.steer(
@@ -6603,7 +6666,7 @@ def test_active_run_steering_reaches_python_runtime_context() -> None:
                         )
                         assert duplicate.id == "ui-1"
                         assert duplicate.kind == "steering"
-                        assert duplicate.queued
+                        assert duplicate.pending_delivery
                         assert duplicate.run_id == receipt.run_id
                         assert duplicate.session_id == receipt.session_id
                         receipts.extend([receipt, duplicate])
@@ -6689,7 +6752,7 @@ def test_active_message_send_preserves_fields_and_idempotency_without_steering()
         submitted = [
             event.sideband_payload for event in events if event.sideband_kind == "message_submitted"
         ]
-        assert submitted == [{"id": "active-note", "queued_id": "active-note", "topic": "note"}]
+        assert submitted == [{"id": "active-note", "message_id": "active-note", "topic": "note"}]
         assert "steering_received" not in {
             event.sideband_kind for event in events if event.kind == "custom"
         }
@@ -6789,7 +6852,7 @@ def test_late_steering_during_output_validation_reaches_guard() -> None:
             await asyncio.wait_for(entered_validator.wait(), timeout=2)
             receipt = await agent_run.steer("Use the safe rollout path.", id="late-1")
             assert receipt.id == "late-1"
-            assert receipt.queued
+            assert receipt.pending_delivery
             release_validator.set()
             stream_result = await join_task
         assert stream_result.result.output == "done"
@@ -6870,7 +6933,7 @@ def test_late_steering_during_output_function_validation_reaches_guard() -> None
             await asyncio.wait_for(entered_validator.wait(), timeout=2)
             receipt = await agent_run.steer("Use the safe rollout path.", id="late-output-fn")
             assert receipt.id == "late-output-fn"
-            assert receipt.queued
+            assert receipt.pending_delivery
             release_validator.set()
             stream_result = await join_task
         assert stream_result.result.structured_output == {"answer": "done"}
@@ -7381,5 +7444,102 @@ def test_claw_product_runtime_example_covers_service_state_machine(tmp_path: Pat
             assert collected.durable_session_id == "collected-product-session"
         finally:
             await recovered.shutdown()
+
+    asyncio.run(run())
+
+
+def test_live_run_control_contract_exposes_status_and_error_codes() -> None:
+    release = asyncio.Event()
+
+    @tool(parameters_schema={"type": "object", "properties": {}})
+    async def wait(args: dict[str, object]) -> dict[str, bool]:
+        await release.wait()
+        return {"ok": True}
+
+    def respond(messages: list[object], info: dict[str, object]) -> dict[str, object]:
+        if "ToolReturnPart" in str(messages) or "tool_return" in str(messages):
+            return {"text": "done"}
+        return {"tool_calls": [{"id": "call_wait", "name": "wait", "arguments": {}}]}
+
+    async def run() -> None:
+        async with create_agent(model=FunctionModel(respond), tools=[wait]) as agent:
+            agent_run = agent.run_stream("deploy")
+            while True:
+                event = await agent_run.recv()
+                assert event is not None
+                if event.kind == "tool_call":
+                    break
+
+            status = agent_run.status()
+            assert status.live_state == "active"
+            assert not status.is_terminal
+            assert status.to_dict()["is_terminal"] is False
+
+            receipt = await agent_run.steer("Use the safe path.", id="contract-steer")
+            assert receipt.id == "contract-steer"
+            assert receipt.kind == "steering"
+            assert receipt.pending_delivery
+            assert receipt.delivery_state == "pending_delivery"
+            assert receipt.run_id
+
+            release.set()
+            result = await agent_run.join()
+            assert result.result.output == "done"
+            terminal = agent_run.status()
+            assert terminal.is_terminal
+            assert terminal.live_state == "closed"
+            with pytest.raises(StateError) as finished_error:
+                await agent_run.steer("too late", id="after-terminal")
+            assert finished_error.value.code == "already_finished"
+
+            joined_again = await agent_run.join()
+            assert joined_again.result.output == "done"
+
+    asyncio.run(run())
+
+
+def test_live_run_detached_state_error_has_stable_code() -> None:
+    async def run() -> None:
+        agent = create_agent(model=StarweaverTestModel.text("done"))
+        agent_run = agent.run_stream("deploy")
+        agent_run.detach()
+        with pytest.raises(StateError) as recoverable_error:
+            await agent_run.recoverable_state()
+        assert recoverable_error.value.code == "detached"
+        with pytest.raises(StateError) as steer_error:
+            await agent_run.steer("too late")
+        assert steer_error.value.code == "detached"
+        with pytest.raises(StateError) as send_error:
+            await agent_run.send_message({"id": "late", "content": "late"})
+        assert send_error.value.code == "detached"
+        with pytest.raises(StateError) as interrupt_error:
+            agent_run.interrupt()
+        assert interrupt_error.value.code == "detached"
+        with pytest.raises(StateError) as status_error:
+            agent_run.status()
+        assert status_error.value.code == "detached"
+
+    asyncio.run(run())
+
+
+def test_live_run_no_active_state_errors_have_stable_code() -> None:
+    async def run() -> None:
+        async with create_agent(model=StarweaverTestModel.text("done")) as agent:
+            with pytest.raises(StateError) as agent_error:
+                await agent.steer("no active")
+            assert agent_error.value.code == "no_active_run"
+
+        session = create_agent(model=StarweaverTestModel.text("done")).session()
+        with pytest.raises(StateError) as interrupt_error:
+            session.interrupt()
+        assert interrupt_error.value.code == "no_active_run"
+
+        native_session = create_agent(model=StarweaverTestModel.text("done")).session()._native
+        with pytest.raises(StateError) as native_steer_error:
+            await native_session.steer("no active")
+        assert native_steer_error.value.code == "no_active_run"
+        with pytest.raises(StateError) as native_interrupt_error:
+            native_session.interrupt()
+        assert native_interrupt_error.value.code == "no_active_run"
 
     asyncio.run(run())

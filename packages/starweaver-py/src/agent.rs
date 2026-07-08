@@ -12,12 +12,11 @@ use pyo3::{
 };
 use serde_json::{Map, Value};
 use starweaver_agent::{
-    AgentBuilder, AgentControlError, AgentControlHandle, AgentControlKind, AgentControlReceipt,
-    AgentDurabilityError, AgentHitlError, AgentHitlResults, AgentLiveStreamResult, AgentRunOptions,
+    AgentBuilder, AgentControlError, AgentControlHandle, AgentControlReceipt, AgentDurabilityError,
+    AgentHitlError, AgentHitlResults, AgentLiveStreamResult, AgentRunOptions,
     AgentRuntime as SdkAgentRuntime, AgentRuntimeBuilder, AgentSession, AgentStreamController,
-    AgentStreamCurrentError, AgentStreamDropPolicy, AgentStreamError, AgentStreamHandle,
-    AgentStreamOptions, AgentStreamRunStatus, BusMessage, ModelConfig, ResumableState,
-    SecurityConfig, ToolConfig,
+    AgentStreamDropPolicy, AgentStreamError, AgentStreamHandle, AgentStreamOptions, BusMessage,
+    ModelConfig, ResumableState, SecurityConfig, ToolConfig,
 };
 use starweaver_core::{RunId, SessionId};
 use starweaver_model::ToolReturnPart;
@@ -922,8 +921,15 @@ impl PyAgentStream {
         let status = guard.as_ref().map_or_else(
             || {
                 serde_json::json!({
-                    "run_status": "finished",
+                    "live_state": "closed",
+                    "is_terminal": true,
+                    "current_error": null,
                     "cancel_requested": self.controller.cancel_requested(),
+                    "dropped_events": 0,
+                    "receiver_closed": true,
+                    "options": python_stream_options(),
+                    "buffer_size": python_stream_options().buffer_size,
+                    "drop_policy": python_stream_options().drop_policy,
                 })
             },
             stream_status_json,
@@ -1331,7 +1337,9 @@ impl PySession {
             .map_err(|_| PyRuntimeError::new_err("session active control lock poisoned"))?
             .as_ref()
             .map(|active| active.handle.clone())
-            .ok_or_else(|| PyRuntimeError::new_err("no active run for session"))?;
+            .ok_or_else(|| {
+                state_error_with_code(py, "no active run for session", "no_active_run")
+            })?;
         let id = id.unwrap_or_else(|| generated_control_id("steering"));
         spawn_py_future(
             py,
@@ -1341,14 +1349,16 @@ impl PySession {
     }
 
     #[pyo3(signature = (reason=None))]
-    fn interrupt(&self, reason: Option<String>) -> PyResult<()> {
+    fn interrupt(&self, py: Python<'_>, reason: Option<String>) -> PyResult<()> {
         let control = self
             .active_control
             .lock()
             .map_err(|_| PyRuntimeError::new_err("session active control lock poisoned"))?
             .as_ref()
             .map(|active| active.handle.clone())
-            .ok_or_else(|| PyRuntimeError::new_err("no active run for session"))?;
+            .ok_or_else(|| {
+                state_error_with_code(py, "no active run for session", "no_active_run")
+            })?;
         let _ = control.interrupt(reason);
         Ok(())
     }
@@ -1575,25 +1585,27 @@ fn parse_bus_message(py: Python<'_>, message: &Bound<'_, PyAny>) -> PyResult<Bus
 }
 
 fn control_receipt_to_py(py: Python<'_>, receipt: AgentControlReceipt) -> PyResult<Py<PyAny>> {
-    json_to_py(
-        py,
-        &serde_json::json!({
-            "id": receipt.id,
-            "kind": control_kind_name(receipt.kind),
-            "queued": receipt.queued,
-            "run_id": receipt.run_id,
-            "session_id": receipt.session_id,
-        }),
-    )
-}
-
-const fn control_kind_name(kind: AgentControlKind) -> &'static str {
-    kind.as_str()
+    serialize_to_py(py, &receipt.snapshot())
 }
 
 fn control_error_to_py(error: AgentControlError) -> PyFutureError {
-    match error {
-        AgentControlError::TerminalRun => PyFutureError::State(error.to_string()),
+    PyFutureError::StateWithCode {
+        code: error.code_str(),
+        message: error.to_string(),
+    }
+}
+
+fn state_error_with_code(py: Python<'_>, message: &str, code: &'static str) -> PyErr {
+    match py
+        .import("starweaver.errors")
+        .and_then(|module| module.getattr("StateError"))
+        .and_then(|error_class| {
+            error_class
+                .call1((message,))?
+                .call_method1("with_code", (code,))
+        }) {
+        Ok(error) => PyErr::from_value(error),
+        Err(_) => PyRuntimeError::new_err(message.to_string()),
     }
 }
 
@@ -1818,17 +1830,10 @@ fn stream_error_to_py(error: AgentStreamError) -> PyFutureError {
 fn hitl_error_to_py(error: AgentHitlError) -> PyFutureError {
     match error {
         AgentHitlError::Agent(error) => PyFutureError::from_agent_error(error),
-        AgentHitlError::NoWaitingRun
-        | AgentHitlError::NotWaiting { .. }
-        | AgentHitlError::NoPendingHitl
-        | AgentHitlError::UnknownApproval(_)
-        | AgentHitlError::UnknownDeferred(_)
-        | AgentHitlError::DuplicateDecision(_)
-        | AgentHitlError::MissingDecisions { .. }
-        | AgentHitlError::MissingToolCall(_)
-        | AgentHitlError::DeferredResultNotTerminal { .. } => {
-            PyFutureError::State(error.to_string())
-        }
+        error => PyFutureError::StateWithCode {
+            code: error.code_str(),
+            message: error.to_string(),
+        },
     }
 }
 
@@ -1845,43 +1850,6 @@ fn durability_error_to_py(error: AgentDurabilityError) -> PyFutureError {
 }
 
 fn stream_status_json(handle: &AgentStreamHandle) -> Value {
-    let status = handle.status();
-    serde_json::json!({
-        "run_status": stream_run_status_name(status.run_status),
-        "current_error": status.current_error.map(stream_current_error_json),
-        "cancel_requested": status.cancel_requested,
-        "dropped_events": status.dropped_events,
-        "receiver_closed": status.receiver_closed,
-        "buffer_size": status.options.buffer_size,
-        "drop_policy": stream_drop_policy_name(status.options.drop_policy),
-    })
-}
-
-const fn stream_run_status_name(status: AgentStreamRunStatus) -> &'static str {
-    match status {
-        AgentStreamRunStatus::Running => "running",
-        AgentStreamRunStatus::Cancelling => "cancelling",
-        AgentStreamRunStatus::Finished => "finished",
-    }
-}
-
-const fn stream_drop_policy_name(policy: AgentStreamDropPolicy) -> &'static str {
-    match policy {
-        AgentStreamDropPolicy::DropNewest => "drop_newest",
-        AgentStreamDropPolicy::Backpressure => "backpressure",
-    }
-}
-
-fn stream_current_error_json(error: AgentStreamCurrentError) -> Value {
-    match error {
-        AgentStreamCurrentError::Interrupted => {
-            serde_json::json!({"kind": "interrupted", "message": "stream interrupted"})
-        }
-        AgentStreamCurrentError::Agent(message) => {
-            serde_json::json!({"kind": "agent", "message": message})
-        }
-        AgentStreamCurrentError::Join(message) => {
-            serde_json::json!({"kind": "join", "message": message})
-        }
-    }
+    serde_json::to_value(handle.status().snapshot())
+        .expect("live stream status snapshot should be JSON serializable")
 }

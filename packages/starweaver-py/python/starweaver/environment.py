@@ -33,6 +33,56 @@ def _jsonify(value: Any) -> Any:
 
 
 @dataclass(frozen=True)
+class EnvironmentLifecycleSnapshot:
+    """Product-neutral environment lifecycle snapshot."""
+
+    raw: dict[str, Any]
+
+    @classmethod
+    def from_raw(cls, raw: Mapping[str, Any]) -> EnvironmentLifecycleSnapshot:
+        return cls(dict(raw))
+
+    @property
+    def provider_id(self) -> str:
+        return str(self.raw["provider_id"])
+
+    @property
+    def environment_id(self) -> str | None:
+        value = self.raw.get("environment_id")
+        return None if value is None else str(value)
+
+    @property
+    def category(self) -> str | None:
+        value = self.raw.get("category")
+        return None if value is None else str(value)
+
+    @property
+    def state(self) -> str:
+        return str(self.raw.get("state") or "ready")
+
+    @property
+    def capabilities(self) -> dict[str, Any]:
+        capabilities = self.raw.get("capabilities")
+        return dict(capabilities) if isinstance(capabilities, Mapping) else {}
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        metadata = self.raw.get("metadata")
+        return dict(metadata) if isinstance(metadata, Mapping) else {}
+
+    @property
+    def ready(self) -> bool:
+        return self.state == "ready"
+
+    @property
+    def terminal(self) -> bool:
+        return self.state in {"stopped", "failed"}
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.raw)
+
+
+@dataclass(frozen=True)
 class ShellProcess:
     """Snapshot handle for a provider-owned background shell process."""
 
@@ -222,6 +272,21 @@ class PythonEnvironmentProvider:
 
     async def render_context(self) -> str | None:
         return None
+
+    async def inspect_lifecycle(self) -> dict[str, Any]:
+        return {
+            "provider_id": self._provider_id(),
+            "state": "ready",
+            "capabilities": {
+                "inspect": True,
+                "prepare": True,
+                "stop": False,
+                "cleanup_idle": False,
+            },
+        }
+
+    async def prepare(self) -> dict[str, Any]:
+        return await self.inspect_lifecycle()
 
     async def export_state(self) -> dict[str, Any]:
         return {"provider_id": self._provider_id()}
@@ -725,6 +790,26 @@ class EnvironmentProvider:
         """Render provider-supplied model-facing environment context."""
 
         return cast(str | None, await self._native.render_context())
+
+    async def inspect_lifecycle(self) -> EnvironmentLifecycleSnapshot:
+        return EnvironmentLifecycleSnapshot.from_raw(
+            cast(dict[str, Any], await self._native.inspect_lifecycle())
+        )
+
+    async def prepare(self) -> EnvironmentLifecycleSnapshot:
+        return EnvironmentLifecycleSnapshot.from_raw(
+            cast(dict[str, Any], await self._native.prepare())
+        )
+
+    async def stop(self) -> EnvironmentLifecycleSnapshot:
+        return EnvironmentLifecycleSnapshot.from_raw(
+            cast(dict[str, Any], await self._native.stop())
+        )
+
+    async def cleanup_idle(self) -> EnvironmentLifecycleSnapshot:
+        return EnvironmentLifecycleSnapshot.from_raw(
+            cast(dict[str, Any], await self._native.cleanup_idle())
+        )
 
     async def run_shell(
         self,
