@@ -957,7 +957,7 @@ Available fileops-loaded skills:\n\
 2. Read each matching skill by opening the SKILL.md file at the shown path.\n\
 3. If the task has multiple phases or adjacent domains, identify and read additional skills for those phases before executing them.\n\
 4. Read any additional reference files, scripts, or examples named by the activated skills.\n\
-5. Use available file, shell, web, or other tools to execute the activated skills' workflows.\n\
+5. Execute the activated skills' workflows with the capabilities available in this agent.\n\
 6. Treat <available-skills> as an index only; the authoritative instructions live in SKILL.md.\n\
 </skill-activation-procedure>",
             lines.join("\n")

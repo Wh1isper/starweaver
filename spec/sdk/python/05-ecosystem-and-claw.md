@@ -73,7 +73,7 @@ Static surface:
 toolset = Toolset(
     "workspace",
     tools=[read_file, write_file],
-    instructions=["Use workspace paths exactly."],
+    instructions=["Preserve workspace paths exactly."],
 )
 
 agent = create_agent(model=model, toolsets=[toolset])
@@ -92,7 +92,7 @@ class ProductToolset(AbstractToolset):
     async def prepare(self, ctx: ToolsetContext) -> ToolsetPreparation:
         return ToolsetPreparation(
             tools=[list_sessions, submit_to_session],
-            instructions=["Use product tools through canonical API ids."],
+            instructions=["Preserve canonical product API ids in follow-up actions."],
         )
 ```
 

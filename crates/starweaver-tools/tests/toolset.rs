@@ -28,7 +28,10 @@ fn registry_collects_toolsets_and_deduplicates_instructions() {
     let toolset = StaticToolset::new("example")
         .with_tool(Arc::new(first))
         .with_tool(Arc::new(second))
-        .with_instruction(ToolInstruction::new("example", "Use example tools."))
+        .with_instruction(ToolInstruction::new(
+            "example",
+            "Prefer exact example lookup.",
+        ))
         .with_instruction(ToolInstruction::new("example", "Duplicate ignored."));
 
     let toolset: DynToolset = Arc::new(toolset);
@@ -38,13 +41,14 @@ fn registry_collects_toolsets_and_deduplicates_instructions() {
     assert_eq!(
         registry.get_instructions(),
         vec![
-            "<tool-instruction name=\"example\">Use example tools.</tool-instruction>".to_string()
+            "<tool-instruction name=\"example\">Prefer exact example lookup.</tool-instruction>"
+                .to_string()
         ]
     );
     let instructions = registry.instructions();
     assert_eq!(instructions.len(), 1);
     assert_eq!(instructions[0].group, "example");
-    assert_eq!(instructions[0].content, "Use example tools.");
+    assert_eq!(instructions[0].content, "Prefer exact example lookup.");
 }
 
 struct ContextPreparedToolset;

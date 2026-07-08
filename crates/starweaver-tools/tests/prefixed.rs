@@ -51,7 +51,10 @@ async fn prefixed_toolset_prefixes_tools_and_instruction_groups() {
     let toolset: DynToolset = Arc::new(
         StaticToolset::new("weather")
             .with_tool(Arc::new(inner_tool))
-            .with_instruction(ToolInstruction::new("weather", "Use weather tools.")),
+            .with_instruction(ToolInstruction::new(
+                "weather",
+                "Prefer canonical weather data.",
+            )),
     );
     let prefixed: DynToolset = Arc::new(PrefixedToolset::new("api", toolset));
     let registry = ToolRegistry::new().with_toolset(&prefixed);
@@ -61,12 +64,14 @@ async fn prefixed_toolset_prefixes_tools_and_instruction_groups() {
     assert_eq!(definitions[0].name, "api_conditions");
     assert_eq!(
         registry.get_instructions(),
-        vec!["<tool-instruction name=\"api_weather\">Use weather tools.</tool-instruction>"]
+        vec![
+            "<tool-instruction name=\"api_weather\">Prefer canonical weather data.</tool-instruction>"
+        ]
     );
     let instructions = registry.instructions();
     assert_eq!(instructions.len(), 1);
     assert_eq!(instructions[0].group, "api_weather");
-    assert_eq!(instructions[0].content, "Use weather tools.");
+    assert_eq!(instructions[0].content, "Prefer canonical weather data.");
     let call = starweaver_model::ToolCallPart {
         id: "call_1".to_string(),
         name: "api_conditions".to_string(),

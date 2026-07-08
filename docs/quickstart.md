@@ -71,7 +71,7 @@ let fetch_ticket = typed_tool::<TicketArgs, _, _>(
 );
 
 let agent = AgentBuilder::new(Arc::new(TestModel::with_text("high")))
-    .instruction("Use tools when useful.")
+    .instruction("Check available evidence before answering.")
     .tool(Arc::new(fetch_ticket))
     .build();
 

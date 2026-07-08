@@ -6,7 +6,7 @@
       "args": ["-y", "@example/docs-mcp"],
       "env": {},
       "include_instructions": true,
-      "instructions": "Use docs MCP tools for documentation lookup.",
+      "instructions": "Prefer documentation evidence for documentation questions.",
       "tools": [
         {
           "name": "lookup",

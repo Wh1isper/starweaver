@@ -904,19 +904,12 @@ impl Toolset for ToolSearchToolset {
             .index_tools_with_extra_hidden_names(&[self.search_tool_name.as_str()]);
         let mut lines = vec![
             format!(
-                "Use {} to search available tools by keyword, action, namespace, or parameter name.",
+                "Use {} before relying on tools that are not currently visible.",
                 self.search_tool_name
             ),
-            "Matching tools are loaded for the next model turn as direct callable tools."
-                .to_string(),
+            "Matching tools become directly callable on the next model turn.".to_string(),
             "Namespace matches load every tool in that namespace atomically.".to_string(),
         ];
-        let tool_count = index.tools.len();
-        if tool_count > 0 {
-            lines.push(format!(
-                "There are {tool_count} tools available through direct tool search."
-            ));
-        }
         if !index.namespace_tools.is_empty() {
             lines.push("Available tool namespaces:".to_string());
             for (namespace, tools) in index.namespace_tools {

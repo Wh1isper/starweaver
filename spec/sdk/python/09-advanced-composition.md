@@ -56,7 +56,7 @@ tool loop.
 workspace = Toolset(
     "workspace",
     tools=[read_file, write_file],
-    instructions=["Use workspace paths exactly."],
+    instructions=["Preserve workspace paths exactly."],
 )
 
 agent = create_agent(model=model, toolsets=[workspace])

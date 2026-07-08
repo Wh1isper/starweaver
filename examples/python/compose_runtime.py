@@ -28,7 +28,6 @@ async def main() -> None:
     workspace = Toolset(
         "workspace",
         tools=[summarize_source],
-        instructions=["Use workspace tools for local files."],
     )
     agent = create_agent(
         model=TestModel.text('{"status":"ok","source":"README.md"}'),

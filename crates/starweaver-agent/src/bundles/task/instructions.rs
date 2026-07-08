@@ -8,17 +8,6 @@ pub(super) fn task_manager_instructions() -> ToolInstruction {
         "task-manager",
         r#"<task-manager-guidelines>
 
-<overview>
-Task management tools track meaningful multi-step work, dependencies, and progress across turns. They are optional: use them when they make the work easier to coordinate or resume, not as a ritual for every request.
-</overview>
-
-<tools>
-- `task_create`: Create a new task (defaults to pending).
-- `task_get`: Get task details by ID.
-- `task_list`: List all tasks with status overview.
-- `task_update`: Update task status, content, or dependencies.
-</tools>
-
 <when-to-use-tasks>
 Use task tools when:
 - The request has multiple meaningful steps, files, modules, phases, or validation gates.
@@ -47,8 +36,6 @@ Status: pending -> in_progress -> completed.
 </workflow>
 
 <dependencies>
-- add_blocked_by: tasks that must complete before this one.
-- add_blocks: tasks this one will block.
 - Set up dependencies early when planning.
 - Add dependencies only for true blockers, not every sequential preference.
 </dependencies>

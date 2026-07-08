@@ -155,7 +155,7 @@ let echo = typed_tool::<EchoArgs, _, _>(
 
 let toolset = StaticToolset::new("basic")
     .with_tool(Arc::new(echo))
-    .with_instruction(ToolInstruction::new("basic", "Use tools for exact lookup."));
+    .with_instruction(ToolInstruction::new("basic", "Prefer exact lookup before answering."));
 
 assert_eq!(toolset.name(), "basic");
 assert_eq!(toolset.get_tools().len(), 1);
@@ -630,7 +630,7 @@ let provider = Arc::new(
 name: research
 description: Gather and cite sources
 ---
-Use search tools and cite sources.
+Prefer primary sources and cite evidence.
 ",
     ),
 );
@@ -638,7 +638,7 @@ let registry = SkillRegistry::scan(provider.clone(), &[SkillSourceScope::new("")
 let active = SkillRegistry::activate(provider, "skills/research/SKILL.md").await?;
 
 assert_eq!(registry.get("research").unwrap().description, "Gather and cite sources");
-assert_eq!(active.body.unwrap(), "Use search tools and cite sources.");
+assert_eq!(active.body.unwrap(), "Prefer primary sources and cite evidence.");
 # Ok(())
 # }
 ```
@@ -722,7 +722,7 @@ let provider = Arc::new(VirtualEnvironmentProvider::new("skills").with_file(
 name: research
 description: Gather sources
 ---
-Use search tools.
+Prefer primary sources.
 ",
 ));
 let registry = SkillRegistry::scan(provider.clone(), &[SkillSourceScope::new("")]).await?;
@@ -734,7 +734,7 @@ provider
 name: research
 description: Gather sources with citations
 ---
-Use search tools.
+Prefer primary sources.
 ",
     )
     .await?;

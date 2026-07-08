@@ -2,6 +2,6 @@
 
 Workspace tools operate through the active EnvironmentProvider.
 
-Use filesystem discovery before broad reads: `glob` finds candidate paths, `grep` finds matching text, `view` reads focused files, `write` performs intentional writes, and `resource_ref` creates durable provider references. Keep paths provider-scoped and relative to the active workspace.
+Narrow file scope before broad reads, keep paths provider-scoped and relative to the active workspace, and make edits precise enough to preserve unrelated user work. Return durable provider references only when a downstream component needs a handle rather than inline content.
 
-Use `shell_exec` for bounded one-shot commands and interpret status, stdout, and stderr together. Use `shell_exec` with `background=true` for long-running commands that need lifecycle control. Prefer filesystem tools for file inspection and edits so policy, tracing, and replay evidence stay precise.
+Use shell execution for bounded commands and interpret status, stdout, and stderr together. Run long-lived commands with explicit lifecycle control. Prefer structured file operations for file inspection and edits so policy, tracing, and replay evidence stay precise.
