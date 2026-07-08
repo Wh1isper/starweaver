@@ -547,7 +547,6 @@ impl InteractiveTuiState {
         self.tool_call_arguments.clear();
         self.subagent_states.clear();
         self.pending_hitl = None;
-        self.task_panel_items.clear();
         self.selection_mode = false;
         self.selection_index = None;
         self.pending_submission_display_prompt = None;

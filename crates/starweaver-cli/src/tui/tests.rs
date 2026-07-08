@@ -1817,6 +1817,31 @@ fn tool_duration_hitl_and_task_panels_render_runtime_metadata() {
 }
 
 #[test]
+fn begin_run_preserves_task_panel_items_for_next_prompt() {
+    let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
+    state.apply_stream_record(&AgentStreamRecord::new(
+        0,
+        AgentStreamEvent::Custom {
+            event: AgentEvent::new(
+                TASK_SNAPSHOT_EVENT_KIND,
+                json!({
+                    "tasks": [
+                        {"id": "1", "subject": "Existing task", "description": "", "status": "in_progress", "active_form": "Working"}
+                    ]
+                }),
+            ),
+        },
+    ));
+
+    state.begin_run("next prompt");
+
+    let footer = line_texts(&render_footer_lines(&state, 120)).join("\n");
+    assert!(footer.contains("Tasks"));
+    assert!(footer.contains("Existing task"));
+    assert!(footer.contains("Progress: 0/1 (1 in progress)"));
+}
+
+#[test]
 fn clear_command_clears_transcript_and_emits_context_event() {
     let mut state = InteractiveTuiState::welcome(Path::new("/tmp/config"));
     state.session_id = Some("session_clear".to_string());
