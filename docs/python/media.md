@@ -76,6 +76,10 @@ restored = ResourceRegistry.restore(
 )
 ```
 
+`ResourceRegistry.instructions()` only returns instruction strings from live
+resources. Product code must explicitly attach those strings to an agent,
+capability, or toolset when they should become model-facing.
+
 Use resource references in environment state, media upload responses, and
 application-level records. Do not treat them as live provider handles.
 `ResourceRegistryState` stores only serializable `ResourceRef` values; products

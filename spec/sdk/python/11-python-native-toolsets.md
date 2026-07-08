@@ -44,7 +44,7 @@ from starweaver import FunctionToolset, ToolContext, create_agent
 workspace = FunctionToolset(
     "workspace",
     id="workspace",
-    instructions="Use workspace paths exactly as provided.",
+    instructions="Preserve workspace paths exactly as provided.",
     max_retries=2,
 )
 
@@ -269,7 +269,7 @@ Toolset(
     "workspace",
     id="workspace",
     tools=[read_file, write_file],
-    instructions=["Use workspace paths exactly."],
+    instructions=["Preserve workspace paths exactly."],
     max_retries=2,
     timeout_ms=30_000,
 )

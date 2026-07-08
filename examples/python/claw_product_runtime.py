@@ -1920,7 +1920,6 @@ class ProductToolset(AbstractToolset):
                     sequential=True,
                 ),
             ],
-            instructions=[f"Use product runtime tools for session {ctx.session_id}."],
         )
 
     async def wait_for_operator(
@@ -2011,7 +2010,6 @@ class AsyncTaskToolset(AbstractToolset):
                     sequential=True,
                 ),
             ],
-            instructions=[f"Use durable async task tools for session {ctx.session_id}."],
         )
 
     async def spawn_async_task(self, ctx: ToolContext, args: dict[str, object]) -> JsonObject:
@@ -2087,7 +2085,6 @@ class SessionTraceToolset(AbstractToolset):
                     sequential=True,
                 ),
             ],
-            instructions=[f"Use session trace tools for session {ctx.session_id}."],
         )
 
     async def inspect_session(self, ctx: ToolContext, args: dict[str, object]) -> JsonObject:
@@ -2150,7 +2147,6 @@ class ScheduleWorkflowToolset(AbstractToolset):
                     sequential=True,
                 ),
             ],
-            instructions=[f"Use schedule and workflow tools for session {ctx.session_id}."],
         )
 
     async def inspect_schedule_fire(
@@ -2212,7 +2208,6 @@ class MemoryAgencyToolset(AbstractToolset):
                     sequential=True,
                 ),
             ],
-            instructions=[f"Use memory and agency tools for session {ctx.session_id}."],
         )
 
     async def inspect_memory_entry(

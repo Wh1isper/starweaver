@@ -28,58 +28,46 @@ pub use web::{
     ScrapeRequest, ScrapeResponse, SearchRequest, SearchResponse, SearchResultItem,
 };
 
-const SEARCH_GUIDELINES: &str = r"<search-tool>
-Search the web for information using search APIs.
-
+const SEARCH_GUIDELINES: &str = r"<search-guidelines>
 <best-practices>
-- Keep queries concise and specific for better results.
-- Refine broad queries by reducing keywords if results are not ideal.
+- Prefer primary or authoritative sources when the query has factual, legal, financial, medical, or product implications.
+- Start with specific queries and refine with entity names, dates, versions, or source types when results are noisy.
+- Cross-check important claims across independent sources before relying on them.
 </best-practices>
-</search-tool>";
+</search-guidelines>";
 
-const FETCH_GUIDELINES: &str = r"<fetch-tool>
-Read web files or check resource availability via HTTP.
-
+const FETCH_GUIDELINES: &str = r"<fetch-guidelines>
 <best-practices>
 - Use head_only=true to check existence without downloading content.
 - For large files, content is truncated; use `download` instead.
 - For PDF files, download first and then use a document conversion workflow when available.
-- Returns content_type, content_length, and status_code for HEAD requests.
 </best-practices>
-</fetch-tool>";
+</fetch-guidelines>";
 
-const SCRAPE_GUIDELINES: &str = r"<scrape-tool>
-Convert websites to Markdown format for content analysis.
-
+const SCRAPE_GUIDELINES: &str = r"<scrape-guidelines>
 <best-practices>
 - Always use full URLs: https://example.com (not example.com).
 - Content over the configured size limit is auto-truncated; use `download` to save full source.
-- Uses the configured host scrape adapter when available, otherwise falls back to direct HTTP text extraction.
 </best-practices>
-</scrape-tool>";
+</scrape-guidelines>";
 
-const DOWNLOAD_GUIDELINES: &str = r"<download-tool>
-Download files from URLs and save to the active environment.
-
+const DOWNLOAD_GUIDELINES: &str = r"<download-guidelines>
 <best-practices>
-- Downloads multiple URLs into save_dir.
 - Files are saved with generated names; use `move` to rename if needed.
 - For PDF content, download first and then use a document conversion workflow when available.
 - For web page content, use `scrape` instead.
 - For quick viewing without saving, use `fetch`.
 </best-practices>
-</download-tool>";
+</download-guidelines>";
 
-const READ_MEDIA_GUIDELINES: &str = r"<read-media-tool>
-Read an HTTP/HTTPS image, video, audio, or supported YouTube URL as model-consumable media.
-
+const READ_MEDIA_GUIDELINES: &str = r"<read-media-guidelines>
 <best-practices>
 - Use this when the user gives a direct media URL and asks about the media content.
 - Pass focused analysis instructions when the user wants a specific detail, timestamp, transcription, or comparison.
 - YouTube URLs are passed directly only when the active model advertises YouTube URL support; otherwise the configured fallback media understanding adapter is used.
 - Large files, unsupported formats, and documents should be downloaded first, then inspected with `view` or a document conversion workflow.
 </best-practices>
-</read-media-tool>";
+</read-media-guidelines>";
 
 /// Create host I/O tools for web access and downloads.
 #[must_use]
@@ -94,10 +82,6 @@ pub fn host_io_tools() -> DynToolset {
 
 fn host_io_tool_instructions() -> Vec<ToolInstruction> {
     vec![
-        ToolInstruction::new(
-            "host_io",
-            "These tools expose host-provided I/O capabilities such as web access and downloads.",
-        ),
         ToolInstruction::new("search", SEARCH_GUIDELINES),
         ToolInstruction::new("fetch", FETCH_GUIDELINES),
         ToolInstruction::new("scrape", SCRAPE_GUIDELINES),

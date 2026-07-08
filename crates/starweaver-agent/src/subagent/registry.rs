@@ -845,7 +845,7 @@ impl SubagentRegistry {
     ) -> Option<ToolInstruction> {
         let roster = self.roster_instruction(parent_tools)?;
         let content = format!(
-            "Use the delegate tool for bounded subtasks that can return compact results.\n\n\
+            "Delegate bounded subtasks that can return compact results.\n\n\
 <delegation-best-practices>\n\
 Plan first, then call multiple delegates in the same response for independent work.\n\
 Use named specialist subagents when a listed role matches the task.\n\
@@ -872,7 +872,7 @@ Sequential delegate calls across turns run serially.\n\
         let content = format!(
             "In this agent, delegate is asynchronous: it returns an agent ID immediately; the final result arrives via message bus.\n\
 After calling delegate, do not manually poll or loop. If the delegated result is required before you can answer or integrate the work, call wait_subagent once with a bounded timeout. Otherwise finish the current response and let the Starweaver host notify you when the result arrives.\n\
-Use subagent_name from the available subagents below. Pass agent_id to resume a previous background subagent.\n\n\
+Choose from the available subagents below. Resume previous background work only when you already have its agent ID.\n\n\
 {roster}"
         );
         Some(ToolInstruction::new("delegate", content))
@@ -884,11 +884,11 @@ Use subagent_name from the available subagents below. Pass agent_id to resume a 
         ToolInstruction::new(
             SPAWN_DELEGATE_TOOL_NAME,
             "Use this to run a subagent asynchronously when immediate results are not required.\n\
-Use the same subagent_name values listed for delegate.\n\
+Choose the same available subagents listed for delegate.\n\
 The call returns right away with an agent ID; do not manually poll or loop for the result.\n\
 If the delegated result is required before you can answer or integrate work, call wait_subagent once with a bounded timeout.\n\
 If no other immediate work remains after spawning, finish your current response; the Starweaver host will automatically notify you when the result arrives via message bus.\n\
-Pass agent_id to resume a previous background subagent.",
+Resume previous background work only when you already have its agent ID.",
         )
     }
 

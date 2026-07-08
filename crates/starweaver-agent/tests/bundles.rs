@@ -1979,7 +1979,7 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert_eq!(summarize_metadata["starweaver_context_management"], true);
 
     let filesystem_instructions = filesystem.get_instructions();
-    assert_eq!(filesystem_instructions.len(), 13);
+    assert_eq!(filesystem_instructions.len(), 9);
     assert!(filesystem_instructions.iter().any(|instruction| {
         instruction.group == "view"
             && instruction
@@ -2002,44 +2002,26 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
         filesystem_instructions
             .iter()
             .any(|instruction| instruction.group == "glob"
-                && instruction.content.contains("ripgrep-style glob semantics"))
+                && instruction.content.contains("Use specific patterns"))
     );
-    assert!(
-        filesystem_instructions
-            .iter()
-            .any(|instruction| instruction.group == "grep"
-                && instruction.content.contains("ripgrep-backed regex"))
-    );
-    assert!(
-        filesystem_instructions
-            .iter()
-            .any(|instruction| instruction.group == "mkdir"
-                && instruction.content.contains("parents=true"))
-    );
+    assert!(filesystem_instructions.iter().any(|instruction| {
+        instruction.group == "grep"
+            && instruction
+                .content
+                .contains("Use a specific `include` pattern")
+    }));
     assert!(filesystem_instructions.iter().any(|instruction| {
         instruction.group == "delete"
             && instruction
                 .content
                 .contains("Verify broad recursive targets")
     }));
-    assert!(
-        filesystem_instructions
-            .iter()
-            .any(|instruction| instruction.group == "move"
-                && instruction.content.contains("overwrite=true"))
-    );
-    assert!(
-        filesystem_instructions
-            .iter()
-            .any(|instruction| instruction.group == "copy"
-                && instruction.content.contains("multiple copies"))
-    );
-    assert!(
-        filesystem_instructions
-            .iter()
-            .any(|instruction| instruction.group == "resource_ref"
-                && instruction.content.contains("durable reference"))
-    );
+    assert!(filesystem_instructions.iter().any(|instruction| {
+        instruction.group == "resource_ref"
+            && instruction
+                .content
+                .contains("durable provider-scoped handle")
+    }));
     assert_eq!(shell.get_instructions().len(), 1);
     assert!(
         shell.get_instructions()[0]
@@ -2050,7 +2032,7 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert!(
         task.get_instructions()[0]
             .content
-            .contains("Task management tools track meaningful multi-step work")
+            .contains("multiple meaningful steps")
     );
     assert!(
         task.get_instructions()[0]
@@ -2072,8 +2054,8 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
             .content
             .contains("delegate tool's own execution model")
     );
-    assert_eq!(context.get_instructions().len(), 4);
-    assert_eq!(host_io.get_instructions().len(), 6);
+    assert_eq!(context.get_instructions().len(), 3);
+    assert_eq!(host_io.get_instructions().len(), 5);
 }
 
 #[test]

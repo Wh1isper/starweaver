@@ -376,7 +376,9 @@ fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
         };
         toolsets.push(policy_toolset(toolset, selected_approval));
     }
-    toolsets.push(policy_toolset(configured_skill_toolset(config), &approval));
+    if let Some(skill_toolset) = configured_skill_toolset(config) {
+        toolsets.push(policy_toolset(skill_toolset, &approval));
+    }
     if let Some(mcp_proxy) = configured_mcp_proxy_toolset(config) {
         toolsets.push(policy_toolset(mcp_proxy, &approval));
     }
@@ -454,8 +456,9 @@ fn configured_skill_registry(config: &CliConfig) -> SkillRegistry {
     registry
 }
 
-fn configured_skill_toolset(config: &CliConfig) -> DynToolset {
-    configured_skill_registry(config).toolset()
+fn configured_skill_toolset(config: &CliConfig) -> Option<DynToolset> {
+    let registry = configured_skill_registry(config);
+    (!registry.is_empty()).then(|| registry.toolset())
 }
 
 fn shell_review_adjusted_approval(config: &CliConfig, approval: &[String]) -> Vec<String> {

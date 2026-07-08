@@ -14,7 +14,7 @@ use super::{
 use super::{CallToolArgs, SearchToolsArgs};
 use super::{ToolSearchInitializationReport, ToolSearchNamespaceReport, ToolSearchNamespaceStatus};
 use super::{publish_tool_search_initialization_event, publish_tool_search_query_event};
-use crate::{DynToolset, ToolContext, ToolError, ToolResult, Toolset};
+use crate::{DynToolset, ToolContext, ToolError, ToolResult};
 
 #[derive(Clone)]
 pub(super) struct ToolProxyInner {
@@ -298,7 +298,7 @@ impl ToolProxyInner {
             {
                 search_entries.push(SearchEntry::namespace(
                     namespace,
-                    self.namespace_description(toolset.as_ref(), namespace),
+                    self.namespace_description(namespace),
                 ));
             }
         }
@@ -337,17 +337,10 @@ impl ToolProxyInner {
         });
     }
 
-    fn namespace_description(&self, toolset: &dyn Toolset, namespace: &str) -> String {
+    fn namespace_description(&self, namespace: &str) -> String {
         self.namespace_descriptions
             .get(namespace)
             .cloned()
-            .or_else(|| {
-                toolset
-                    .get_instructions()
-                    .into_iter()
-                    .map(|instruction| instruction.content)
-                    .find(|content| !content.trim().is_empty())
-            })
             .unwrap_or_else(|| format!("Toolset: {namespace}"))
     }
 
@@ -355,32 +348,19 @@ impl ToolProxyInner {
         let index = self.index_tools();
         let mut lines = vec![
             format!(
-                "Use {} to discover available tools by keyword, action, namespace, or parameter name.",
+                "Use {} before calling unfamiliar proxy tools.",
                 self.search_tool_name
             ),
             format!(
-                "Use {} with a discovered tool name and a JSON arguments object matching the returned schema.",
+                "Use {} directly only when the tool name and schema are already known.",
                 self.call_tool_name
             ),
-            format!(
-                "{} returns XML with tool names, descriptions, namespaces, and full JSON parameter schemas.",
-                self.search_tool_name
-            ),
-            format!(
-                "{} can be used directly when the tool name and schema are already known.",
-                self.call_tool_name
-            ),
-            "Search uses keyword matching over tool names, descriptions, namespaces, and parameter schemas.".to_string(),
         ];
 
-        let tool_count = index.tools.len();
-        if tool_count > 0 {
-            lines.push(format!(
-                "There are {tool_count} tools available through the proxy."
-            ));
-        }
         if !index.namespace_tools.is_empty() {
-            lines.push("Available tool namespaces:".to_string());
+            lines.push(
+                "Prefer namespace matches when related tools should be used together:".to_string(),
+            );
             for (namespace, tools) in index.namespace_tools {
                 let description = self
                     .namespace_descriptions

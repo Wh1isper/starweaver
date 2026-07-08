@@ -1336,7 +1336,7 @@ def test_static_toolset_contributes_tools_and_instructions() -> None:
         toolset = Toolset(
             "workspace",
             tools=[lookup],
-            instructions=["Use workspace paths exactly."],
+            instructions=["Preserve workspace paths exactly."],
         )
         assert toolset.tool_definitions()[0]["name"] == "lookup"
         result = await create_agent(
@@ -1344,7 +1344,7 @@ def test_static_toolset_contributes_tools_and_instructions() -> None:
             toolsets=[toolset],
         ).run("use workspace")
         assert result.output == "done"
-        assert "Use workspace paths exactly." in str(seen_messages[0])
+        assert "Preserve workspace paths exactly." in str(seen_messages[0])
 
     asyncio.run(run())
 
@@ -2039,7 +2039,7 @@ def test_function_toolset_decorators_defaults_and_dynamic_instructions() -> None
     toolset = FunctionToolset(
         "functions",
         id="functions",
-        instructions=["Use function tools when requested."],
+        instructions=["Return concise function results."],
         max_retries=2,
         timeout_ms=30_000,
         strict=True,
@@ -2105,7 +2105,7 @@ def test_function_toolset_decorators_defaults_and_dynamic_instructions() -> None
             toolsets=[toolset],
         ).run("use functions")
         assert result.output == "done"
-        assert "Use function tools when requested." in str(seen_messages[0])
+        assert "Return concise function results." in str(seen_messages[0])
         assert "Function toolset run:" in str(seen_messages[0])
         assert {tool["name"] for tool in seen_tools[0]} == {"lookup", "mode"}
 
@@ -2187,7 +2187,7 @@ def test_toolset_wrapper_methods_expose_native_combinators() -> None:
             "workspace",
             id="workspace",
             tools=[lookup, write_file],
-            instructions=["Use workspace tools."],
+            instructions=["Preserve workspace paths exactly."],
             max_retries=2,
             timeout_ms=30_000,
         )
@@ -2254,7 +2254,7 @@ def test_abstract_toolset_wrapper_methods_prepare_dynamic_inventory() -> None:
     toolset = FunctionToolset(
         "workspace",
         id="workspace",
-        instructions=["Use workspace tools."],
+        instructions=["Preserve workspace paths exactly."],
     )
 
     @toolset.tool
@@ -2298,7 +2298,7 @@ def test_abstract_toolset_wrapper_methods_prepare_dynamic_inventory() -> None:
         metadata = seen_tools[0][0]["metadata"]
         assert isinstance(metadata, dict)
         assert metadata["bundle"] == "workspace"
-        assert "Use workspace tools." in str(seen_messages[0])
+        assert "Preserve workspace paths exactly." in str(seen_messages[0])
         assert "Prepared workspace for" in str(seen_messages[0])
 
     asyncio.run(run())
@@ -2953,7 +2953,7 @@ def test_mcp_toolset_config_exposes_deferred_native_tools() -> None:
             headers={"authorization": "Bearer test"},
             tool_prefix="github",
             include_instructions=True,
-            instructions="Use GitHub MCP tools for repository tasks.",
+            instructions="Prefer repository-grounded evidence for repository tasks.",
             tools=[
                 McpToolSpec(
                     "search",
@@ -3000,7 +3000,7 @@ def test_mcp_toolset_config_exposes_deferred_native_tools() -> None:
         assert definitions[0]["metadata"]["scope"] == "repo"
         instructions = toolset.instruction_records()
         assert instructions[0]["group"] == "mcp:github"
-        assert "GitHub MCP" in instructions[0]["content"]
+        assert "repository-grounded evidence" in instructions[0]["content"]
 
         session = create_agent(
             model=StarweaverTestModel.responses(

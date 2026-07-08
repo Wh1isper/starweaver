@@ -23,7 +23,7 @@ async def lookup(value: str) -> dict[str, str]:
 workspace = Toolset(
     "workspace",
     tools=[lookup],
-    instructions=["Use workspace tools when the user asks for local facts."],
+    instructions=["Prefer exact local facts over assumptions."],
 )
 agent = create_agent(model=TestModel.text("ready"), toolsets=[workspace])
 ```
@@ -47,7 +47,7 @@ from starweaver.testing import TestModel
 functions = FunctionToolset(
     "functions",
     id="functions",
-    instructions=["Use function tools when requested."],
+    instructions=["Return concise lookup results."],
     max_retries=2,
     timeout_ms=30_000,
     metadata={"source": "functions"},
@@ -110,7 +110,7 @@ class WorkspaceToolset(AbstractToolset):
     async def prepare(self, ctx: ToolsetContext) -> ToolsetPreparation:
         return ToolsetPreparation(
             tools=[lookup],
-            instructions=[f"Use workspace tools for run {ctx.run_id}."],
+            instructions=[f"Preserve run id {ctx.run_id} in audit notes."],
         )
 
     async def exit(self, ctx: ToolsetContext) -> None:
@@ -390,7 +390,7 @@ github = McpToolset(
     headers={"authorization": "Bearer token"},
     tool_prefix="github",
     include_instructions=True,
-    instructions="Use GitHub MCP tools for repository tasks.",
+    instructions="Prefer repository-grounded evidence for repository tasks.",
     tools=[
         McpToolSpec(
             "search",

@@ -57,7 +57,7 @@ impl LiveMcpClient for FakeMcp {
         _transport: &McpTransport,
     ) -> Result<LiveMcpServerSnapshot, LiveMcpError> {
         Ok(LiveMcpServerSnapshot::new(id)
-            .with_instructions("Use docs tools for repository questions.")
+            .with_instructions("Prefer repository docs for repository questions.")
             .with_tool(McpToolSpec::new("lookup", serde_json::json!({"type": "object"})))
             .with_resource(McpResourceSpec::new("resource://docs/index"))
             .with_prompt(McpPromptSpec::new(

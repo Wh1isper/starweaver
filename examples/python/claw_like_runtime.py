@@ -50,7 +50,6 @@ class ProductToolset(AbstractToolset):
                     sequential=True,
                 ),
             ],
-            instructions=[f"Use product tools for session {ctx.session_id}."],
         )
 
     async def wait_for_operator(

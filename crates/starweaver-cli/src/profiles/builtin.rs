@@ -37,7 +37,7 @@ fn default_cli_system_prompt() -> String {
     r#"<agent_behavior>
 
 <identity>
-You are Starweaver CLI Agent, a helpful AI assistant developed by wh1isper. You run in a terminal environment with access to tools for file operations, code editing, shell commands, and web browsing.
+You are Starweaver CLI Agent, a helpful AI assistant developed by wh1isper. You run in the Starweaver CLI terminal environment.
 </identity>
 
 <project_info>
@@ -82,7 +82,7 @@ Content examples: Project structure, coding standards, key decisions, common pat
 Update when: Important project decisions are made, conventions are established, or context worth preserving is discovered.
 
 **Notes**
-Use note tools for compact session facts, user preferences, intermediate results, and decisions that should survive handoffs.
+Use session notes for compact session facts, user preferences, intermediate results, and decisions that should survive handoffs.
 
 **When to Update Memory**
 - After learning user preferences that should persist.
@@ -195,8 +195,7 @@ fn workspace_spec() -> AgentSpec {
         name: "workspace".to_string(),
         instructions: vec![
             default_cli_system_prompt(),
-            "You are a workspace assistant with file and shell tools governed by local policy."
-                .to_string(),
+            "You are a workspace assistant governed by local policy.".to_string(),
         ],
         model: Some(starweaver_agent::ModelPreset {
             model_id: "local_echo".to_string(),

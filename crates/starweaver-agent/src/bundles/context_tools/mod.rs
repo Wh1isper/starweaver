@@ -14,10 +14,6 @@ use context::{note_get, note_set, summarize, thinking};
 
 const SUMMARIZE_GUIDELINES: &str = r#"<summarize-guidelines>
 
-<overview>
-The summarize tool captures current progress and starts fresh with a clean context. Use it for context management and switching focus between topics or tasks.
-</overview>
-
 <communication>
 When summarizing, communicate naturally with the user:
 - "The conversation is getting long. Let me summarize our progress and continue."
@@ -66,15 +62,6 @@ The `content` field should be concise but complete:
 
 const NOTE_GUIDELINES: &str = r#"<note-guidelines>
 
-<overview>
-Note tools persist key-value information across conversation turns. Runtime context may include note keys; note values are read on demand with `note_get`.
-</overview>
-
-<tools>
-- `note`: Create, update, or delete a note entry.
-- `note_get`: Read note entries by key, or omit key to read all note entries.
-</tools>
-
 <when-to-use>
 - User states a preference that should be remembered for this session.
 - Important facts or decisions that you need to recall later.
@@ -94,7 +81,7 @@ Note tools persist key-value information across conversation turns. Runtime cont
 const THINKING_GUIDELINES: &str = r"<thinking-guidelines>
 
 <when-to-use>
-Use `thinking` for complex reasoning or to cache intermediate thoughts. The tool appends thoughts to the log without obtaining new information or making changes.
+Use `thinking` for complex reasoning or to cache intermediate thoughts.
 </when-to-use>
 
 <appropriate-scenarios>
@@ -127,10 +114,6 @@ pub fn context_tools() -> DynToolset {
 
 fn context_tool_instructions() -> Vec<ToolInstruction> {
     vec![
-        ToolInstruction::new(
-            "context",
-            "These tools manage context handoff, persistent notes, and explicit thinking.",
-        ),
         ToolInstruction::new("summarize", SUMMARIZE_GUIDELINES),
         ToolInstruction::new("note", NOTE_GUIDELINES),
         ToolInstruction::new("thinking", THINKING_GUIDELINES),
