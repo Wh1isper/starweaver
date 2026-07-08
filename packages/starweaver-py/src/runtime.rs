@@ -40,6 +40,7 @@ pub(crate) enum PyFutureError {
     Cancelled(String),
     Stream(String),
     State(String),
+    StateWithCode { code: &'static str, message: String },
 }
 
 impl PyFutureError {
@@ -52,7 +53,7 @@ impl PyFutureError {
             Self::Output(_) => "OutputError",
             Self::Cancelled(_) => "Cancelled",
             Self::Stream(_) => "StreamError",
-            Self::State(_) => "StateError",
+            Self::State(_) | Self::StateWithCode { .. } => "StateError",
         }
     }
 
@@ -65,7 +66,8 @@ impl PyFutureError {
             | Self::Output(message)
             | Self::Cancelled(message)
             | Self::Stream(message)
-            | Self::State(message) => message,
+            | Self::State(message)
+            | Self::StateWithCode { message, .. } => message,
         }
     }
 
@@ -203,7 +205,13 @@ fn schedule_future_exception(
         .import("starweaver.errors")
         .and_then(|module| module.getattr(error.class_name()))
     {
-        Ok(error_class) => error_class.call1((error.message(),))?.unbind(),
+        Ok(error_class) => match error {
+            PyFutureError::StateWithCode { code, .. } => error_class
+                .call1((error.message(),))?
+                .call_method1("with_code", (*code,))?
+                .unbind(),
+            _ => error_class.call1((error.message(),))?.unbind(),
+        },
         Err(_) => py
             .import("builtins")?
             .getattr("RuntimeError")?

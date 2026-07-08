@@ -9,7 +9,7 @@
 
 ## Method
 
-This directory records remaining behavior gaps, product decisions, and verification gates that still need work.
+This directory records remaining Starweaver Rust/Python SDK gaps, readiness findings, and validation gates. Product-specific Claw service specs live in `../claw/`.
 
 ```mermaid
 flowchart TD
@@ -34,6 +34,7 @@ flowchart TD
 | `05-models-output-provider-alignment.md`    | provider replay evidence, output exactness, usage, and media-output gaps |
 | `06-subagents-environments-skills-media.md` | subagent, environment/resource, and media workflow gaps                  |
 | `07-cli-concise-mode-ux.md`                 | CLI/TUI concise mode semantic-compression UX plan                        |
+| `08-starweaver-claw-sdk-additions.md`       | Starweaver Claw layering map and non-blocking Rust/Python SDK additions  |
 
 ## Remaining Theme
 

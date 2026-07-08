@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use starweaver_core::{CheckpointId, Metadata, RunId, SessionId, TraceContext};
+use starweaver_core::{CheckpointId, Metadata, RunId, SessionId, TaskId, TraceContext};
 
 use crate::records::{RunStatus, SessionStatus, StreamCursorRef};
 
@@ -18,6 +18,12 @@ pub struct CompactRunTrace {
     /// Durable run status.
     #[serde(default)]
     pub status: RunStatus,
+    /// Parent run identifier when this trace belongs to a delegated child run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<RunId>,
+    /// Parent-scoped delegated task identifier when this trace belongs to a lightweight task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
     /// Checkpoint ids in insertion order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checkpoints: Vec<CheckpointId>,

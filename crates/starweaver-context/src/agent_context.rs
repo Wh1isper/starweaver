@@ -2,7 +2,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use starweaver_core::{AgentId, ConversationId, Metadata, RunId, SessionId, TraceContext};
+use starweaver_core::{
+    AgentId, ConversationId, Metadata, RunAttachments, RunId, SessionId, TaskId, TraceContext,
+};
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponsePart, ToolReturnPart,
 };
@@ -30,9 +32,12 @@ pub struct AgentContext {
     /// Stable logical session affinity identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
-    /// Parent run identifier if this context belongs to a subagent.
+    /// Parent run identifier if this context belongs to a delegated child run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<RunId>,
+    /// Parent-scoped delegated task identifier if this context executes a lightweight task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
     /// Conversation identifier.
     pub conversation_id: ConversationId,
     /// Canonical message history.
@@ -170,6 +175,7 @@ impl AgentContext {
             run_id: None,
             session_id: None,
             parent_run_id: None,
+            parent_task_id: None,
             conversation_id: ConversationId::new(),
             message_history: Vec::new(),
             pending_tool_returns: Vec::new(),
@@ -222,6 +228,8 @@ impl AgentContext {
         let mut context = Self::new(state.agent_id.clone());
         context.run_id = state.run_id;
         context.session_id = state.session_id;
+        context.parent_run_id = state.parent_run_id;
+        context.parent_task_id = state.parent_task_id;
         context.conversation_id = state.conversation_id.unwrap_or_default();
         context.message_history = state.message_history;
         context.pending_tool_returns = state.pending_tool_returns;
@@ -271,8 +279,44 @@ impl AgentContext {
         self.export_state_with_options(ResumableExportOptions::full())
     }
 
+    /// Return JSON-compatible run attachments for this context.
+    ///
+    /// This is a typed view over context metadata. Generic SDK code keeps these
+    /// attachments local to Starweaver execution and does not forward them to
+    /// provider HTTP headers or provider-specific request fields.
+    #[must_use]
+    pub fn run_attachments(&self) -> RunAttachments {
+        RunAttachments::from_metadata(self.metadata.clone())
+    }
+
+    /// Return the underlying JSON-compatible run attachment values.
+    #[must_use]
+    pub const fn run_attachment_values(&self) -> &Metadata {
+        &self.metadata
+    }
+
+    /// Return mutable underlying JSON-compatible run attachment values.
+    pub const fn run_attachment_values_mut(&mut self) -> &mut Metadata {
+        &mut self.metadata
+    }
+
+    /// Insert or replace one run attachment value.
+    pub fn set_run_attachment(
+        &mut self,
+        key: impl Into<String>,
+        value: serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        self.metadata.insert(key.into(), value)
+    }
+
+    /// Merge run attachments into the context. Incoming keys replace existing values.
+    pub fn merge_run_attachments(&mut self, attachments: impl Into<Metadata>) {
+        self.metadata.extend(attachments.into());
+    }
+
     /// Export context state with explicit export options.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn export_state_with_options(&self, options: ResumableExportOptions) -> ResumableState {
         ResumableState {
             agent_id: self.agent_id.clone(),
@@ -281,6 +325,14 @@ impl AgentContext {
                 .then(|| self.run_id.clone())
                 .flatten(),
             session_id: self.session_id.clone(),
+            parent_run_id: options
+                .include_starweaver_extensions()
+                .then(|| self.parent_run_id.clone())
+                .flatten(),
+            parent_task_id: options
+                .include_starweaver_extensions()
+                .then(|| self.parent_task_id.clone())
+                .flatten(),
             conversation_id: options
                 .include_starweaver_extensions()
                 .then(|| self.conversation_id.clone()),
@@ -440,6 +492,7 @@ impl AgentContext {
         child.agent_id = agent_id.clone();
         child.run_id = None;
         child.parent_run_id.clone_from(&self.run_id);
+        child.parent_task_id = None;
         child.message_history = self
             .subagent_history
             .get(agent_id.as_str())
@@ -887,6 +940,12 @@ impl AgentContext {
             metadata.insert(
                 "parent_run_id".to_string(),
                 serde_json::json!(parent_run_id.as_str()),
+            );
+        }
+        if let Some(parent_task_id) = &self.parent_task_id {
+            metadata.insert(
+                "parent_task_id".to_string(),
+                serde_json::json!(parent_task_id.as_str()),
             );
         }
         metadata.insert(

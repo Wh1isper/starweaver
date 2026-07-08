@@ -405,6 +405,8 @@ impl SessionStore for LocalSessionStore {
             session_id: Some(session_id.clone()),
             run_id: Some(run_id.clone()),
             status: run.status,
+            parent_run_id: run.parent_run_id.clone(),
+            parent_task_id: run.parent_task_id.clone(),
             checkpoints: checkpoint_ids(&store, session_id.as_str(), run_id.as_str())?,
             approvals: pending_approval_count(&store, session_id.as_str(), run_id.as_str())?,
             deferred_tools: pending_deferred_count(&store, session_id.as_str(), run_id.as_str())?,

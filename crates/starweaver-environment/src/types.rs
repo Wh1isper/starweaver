@@ -177,6 +177,147 @@ pub struct ShellOutput {
     pub metadata: Metadata,
 }
 
+/// Product-neutral environment lifecycle category.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentLifecycleCategory {
+    /// Environment is scoped to a durable session.
+    Session,
+    /// Environment is scoped to one run.
+    Run,
+    /// Environment is temporary and not durable by itself.
+    Ephemeral,
+}
+
+/// Product-neutral environment lifecycle state.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentLifecycleState {
+    /// Environment has been requested but no preparation has started.
+    Pending,
+    /// Environment preparation is in progress.
+    Preparing,
+    /// Environment is prepared and ready to serve operations.
+    #[default]
+    Ready,
+    /// Environment is actively serving an operation.
+    Running,
+    /// Environment is prepared but idle.
+    Idle,
+    /// Environment was stopped by a lifecycle control.
+    Stopped,
+    /// Environment preparation or operation failed.
+    Failed,
+}
+
+/// Explicit lifecycle controls supported by an environment provider.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EnvironmentLifecycleCapabilities {
+    /// Lifecycle inspection is supported.
+    pub inspect: bool,
+    /// Explicit preparation is supported or safely handled as a no-op.
+    pub prepare: bool,
+    /// Explicit stop is supported.
+    pub stop: bool,
+    /// Explicit idle cleanup is supported.
+    pub cleanup_idle: bool,
+}
+
+impl EnvironmentLifecycleCapabilities {
+    /// Capabilities for providers that are already ready and require no
+    /// explicit lifecycle management.
+    #[must_use]
+    pub const fn passive_ready() -> Self {
+        Self {
+            inspect: true,
+            prepare: true,
+            stop: false,
+            cleanup_idle: false,
+        }
+    }
+}
+
+impl Default for EnvironmentLifecycleCapabilities {
+    fn default() -> Self {
+        Self::passive_ready()
+    }
+}
+
+/// Serializable, product-neutral environment lifecycle snapshot.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EnvironmentLifecycleSnapshot {
+    /// SDK provider identifier.
+    pub provider_id: String,
+    /// Optional provider-specific reusable environment id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    /// Optional lifecycle category.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<EnvironmentLifecycleCategory>,
+    /// Neutral lifecycle state.
+    pub state: EnvironmentLifecycleState,
+    /// Explicit lifecycle controls supported by this provider.
+    pub capabilities: EnvironmentLifecycleCapabilities,
+    /// Provider metadata safe to store with session evidence.
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub metadata: Metadata,
+}
+
+impl EnvironmentLifecycleSnapshot {
+    /// Build a ready lifecycle snapshot for a provider that does not need
+    /// explicit lifecycle control.
+    #[must_use]
+    pub fn ready(provider_id: impl Into<String>) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            environment_id: None,
+            category: None,
+            state: EnvironmentLifecycleState::Ready,
+            capabilities: EnvironmentLifecycleCapabilities::passive_ready(),
+            metadata: Metadata::default(),
+        }
+    }
+
+    /// Attach a provider-specific reusable environment id.
+    #[must_use]
+    pub fn with_environment_id(mut self, environment_id: impl Into<String>) -> Self {
+        self.environment_id = Some(environment_id.into());
+        self
+    }
+
+    /// Attach a lifecycle category.
+    #[must_use]
+    pub const fn with_category(mut self, category: EnvironmentLifecycleCategory) -> Self {
+        self.category = Some(category);
+        self
+    }
+
+    /// Replace lifecycle state.
+    #[must_use]
+    pub const fn with_state(mut self, state: EnvironmentLifecycleState) -> Self {
+        self.state = state;
+        self
+    }
+
+    /// Replace lifecycle capabilities.
+    #[must_use]
+    pub const fn with_capabilities(
+        mut self,
+        capabilities: EnvironmentLifecycleCapabilities,
+    ) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    /// Attach metadata.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
+        self.metadata = metadata;
+        self
+    }
+}
+
 /// Serializable environment state snapshot.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EnvironmentState {

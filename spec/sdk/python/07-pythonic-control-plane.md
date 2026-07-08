@@ -223,14 +223,15 @@ contract grows a first-class topic field.
 class ControlReceipt:
     id: str
     kind: Literal["message", "steering", "interrupt"]
-    queued: bool
+    pending_delivery: bool
+    delivery_state: Literal["applied", "pending_delivery"]
     run_id: str | None
     session_id: str | None
 ```
 
 The receipt means the control input was accepted. It does not mean the runtime
 has consumed it into a model request. Terminal, suspended, and finalizing runs
-must reject new control messages instead of returning `queued=True`.
+must reject new control messages instead of returning `pending_delivery=True`.
 
 Stream evidence should show later consumption:
 

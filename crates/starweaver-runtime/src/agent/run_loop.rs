@@ -210,6 +210,7 @@ impl Agent {
         )
         .with_dependencies(tool_dependencies)
         .with_trace_context(tool_span.context().clone())
+        .with_run_attachments(context.run_attachment_values().clone())
         .with_retry_budget(tool_retry, tool_max_retries);
         if let Some(token) = self.cancellation_token.as_ref() {
             tool_context = tool_context.with_cancellation_token(token.clone());
@@ -560,6 +561,8 @@ impl Agent {
         state.message_history.clone_from(&context.message_history);
         state.usage = context.usage.clone();
         state.pending_tool_returns = std::mem::take(&mut context.pending_tool_returns);
+        state.parent_run_id.clone_from(&context.parent_run_id);
+        state.parent_task_id.clone_from(&context.parent_task_id);
         state.status = RunStatus::Running;
         Self::sync_compact_context_metadata(context, &mut state);
         let mut context_event_cursor = context.events.len();

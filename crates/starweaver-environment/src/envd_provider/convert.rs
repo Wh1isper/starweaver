@@ -12,9 +12,8 @@ pub(super) fn envd_error_to_environment(error: EnvdError) -> EnvironmentError {
         EnvdErrorCode::InvalidRequest => EnvironmentError::InvalidRequest(error.message),
         EnvdErrorCode::AccessDenied => EnvironmentError::AccessDenied(error.message),
         EnvdErrorCode::NotFound => EnvironmentError::NotFound(error.message),
-        EnvdErrorCode::Unsupported | EnvdErrorCode::Provider => {
-            EnvironmentError::Provider(error.message)
-        }
+        EnvdErrorCode::Unsupported => EnvironmentError::Unsupported(error.message),
+        EnvdErrorCode::Provider => EnvironmentError::Provider(error.message),
     }
 }
 

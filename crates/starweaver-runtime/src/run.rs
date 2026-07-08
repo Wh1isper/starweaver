@@ -3,7 +3,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_core::{ConversationId, Metadata, RunId};
+use starweaver_core::{ConversationId, Metadata, RunId, TaskId};
 use starweaver_model::{ModelMessage, ModelResponse, ToolCallPart, ToolReturnPart};
 use starweaver_usage::Usage;
 
@@ -64,6 +64,12 @@ pub struct AgentRunState {
     /// Idle messages ready to redirect finalization.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idle_messages: Vec<String>,
+    /// Parent run identifier when this run is delegated from another run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run_id: Option<RunId>,
+    /// Parent-scoped delegated task identifier when this run executes a lightweight task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<TaskId>,
     /// Run metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
@@ -88,6 +94,8 @@ impl AgentRunState {
             pending_approval_tool_returns: Vec::new(),
             deferred_tool_returns: Vec::new(),
             idle_messages: Vec::new(),
+            parent_run_id: None,
+            parent_task_id: None,
             metadata: Metadata::default(),
         }
     }

@@ -8,18 +8,20 @@ use async_trait::async_trait;
 use serde_json::json;
 use starweaver_core::Metadata;
 use starweaver_envd_core::{
-    CommandRunRequest, EnvdService, EnvironmentContextRequest, EnvironmentRequest, FileCopyRequest,
-    FileCreateDirRequest, FileDeleteRequest, FileGlobRequest, FileGrepRequest, FileListRequest,
-    FileMoveRequest, FileReadMode, FileReadRequest, FileStatRequest, FileWriteRequest,
-    FileWriteTmpRequest, ProcessInputRequest, ProcessKillRequest, ProcessSignalRequest,
-    ProcessStartRequest, ProcessWaitRequest,
+    CleanupIdleRequest, CommandRunRequest, EnvdService, EnvironmentContextRequest,
+    EnvironmentRequest, FileCopyRequest, FileCreateDirRequest, FileDeleteRequest, FileGlobRequest,
+    FileGrepRequest, FileListRequest, FileMoveRequest, FileReadMode, FileReadRequest,
+    FileStatRequest, FileWriteRequest, FileWriteTmpRequest, ProcessInputRequest,
+    ProcessKillRequest, ProcessSignalRequest, ProcessStartRequest, ProcessWaitRequest,
 };
 
 use crate::{
-    EnvironmentError, EnvironmentProvider, EnvironmentResult, EnvironmentState, FileGlobMatch,
-    FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FileStat,
-    ProcessShellProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
-    ShellReviewEnvironmentContext, path_match_candidates as default_path_match_candidates,
+    EnvironmentError, EnvironmentLifecycleCapabilities, EnvironmentLifecycleSnapshot,
+    EnvironmentLifecycleState, EnvironmentProvider, EnvironmentResult, EnvironmentState,
+    FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions,
+    FileListResult, FileStat, ProcessShellProvider, ShellCommand, ShellOutput,
+    ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    path_match_candidates as default_path_match_candidates,
     push_shell_review_context_path_candidates,
 };
 
@@ -48,6 +50,41 @@ pub struct EnvdEnvironmentProvider {
     environment_id: String,
     service: Arc<dyn EnvdService>,
     shell_review_context: ShellReviewEnvironmentContext,
+}
+
+const fn envd_status_to_lifecycle_state(
+    status: &starweaver_envd_core::EnvironmentStatus,
+) -> EnvironmentLifecycleState {
+    match status {
+        starweaver_envd_core::EnvironmentStatus::Pending => EnvironmentLifecycleState::Pending,
+        starweaver_envd_core::EnvironmentStatus::Preparing => EnvironmentLifecycleState::Preparing,
+        starweaver_envd_core::EnvironmentStatus::Ready
+        | starweaver_envd_core::EnvironmentStatus::Open => EnvironmentLifecycleState::Ready,
+        starweaver_envd_core::EnvironmentStatus::Running => EnvironmentLifecycleState::Running,
+        starweaver_envd_core::EnvironmentStatus::Idle => EnvironmentLifecycleState::Idle,
+        starweaver_envd_core::EnvironmentStatus::Stopped
+        | starweaver_envd_core::EnvironmentStatus::Closed => EnvironmentLifecycleState::Stopped,
+        starweaver_envd_core::EnvironmentStatus::Failed => EnvironmentLifecycleState::Failed,
+    }
+}
+
+fn envd_capabilities_to_lifecycle(
+    capabilities: &starweaver_envd_core::EnvironmentCapabilities,
+) -> EnvironmentLifecycleCapabilities {
+    EnvironmentLifecycleCapabilities {
+        inspect: capabilities
+            .features
+            .contains(&starweaver_envd_core::EnvironmentCapability::LifecycleInspect),
+        prepare: capabilities
+            .features
+            .contains(&starweaver_envd_core::EnvironmentCapability::LifecyclePrepare),
+        stop: capabilities
+            .features
+            .contains(&starweaver_envd_core::EnvironmentCapability::LifecycleStop),
+        cleanup_idle: capabilities
+            .features
+            .contains(&starweaver_envd_core::EnvironmentCapability::LifecycleCleanupIdle),
+    }
 }
 
 impl EnvdEnvironmentProvider {
@@ -93,6 +130,28 @@ impl EnvdEnvironmentProvider {
         EnvironmentRequest {
             environment_id: self.environment_id.clone(),
         }
+    }
+
+    fn lifecycle_snapshot_from_descriptor(
+        &self,
+        descriptor: starweaver_envd_core::EnvironmentDescriptor,
+    ) -> EnvironmentLifecycleSnapshot {
+        let mut metadata = descriptor.metadata;
+        metadata.insert("envd_kind".to_string(), json!(descriptor.kind));
+        metadata.insert("envd_store".to_string(), json!(descriptor.store));
+        metadata.insert(
+            "envd_state_version".to_string(),
+            json!(descriptor.state_version),
+        );
+        metadata.insert(
+            "envd_policy_revision".to_string(),
+            json!(descriptor.policy_revision),
+        );
+        EnvironmentLifecycleSnapshot::ready(&self.id)
+            .with_environment_id(descriptor.environment_id)
+            .with_state(envd_status_to_lifecycle_state(&descriptor.status))
+            .with_capabilities(envd_capabilities_to_lifecycle(&descriptor.capabilities))
+            .with_metadata(metadata)
     }
 }
 
@@ -340,6 +399,41 @@ impl EnvironmentProvider for EnvdEnvironmentProvider {
             })
             .await
             .map(|result| result.text)
+            .map_err(envd_error_to_environment)
+    }
+
+    async fn inspect_lifecycle(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        self.service
+            .environment_state(self.environment_request())
+            .await
+            .map(|snapshot| self.lifecycle_snapshot_from_descriptor(snapshot.descriptor))
+            .map_err(envd_error_to_environment)
+    }
+
+    async fn prepare(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        self.service
+            .prepare_environment(self.environment_request())
+            .await
+            .map(|descriptor| self.lifecycle_snapshot_from_descriptor(descriptor))
+            .map_err(envd_error_to_environment)
+    }
+
+    async fn stop(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        self.service
+            .stop_environment(self.environment_request())
+            .await
+            .map(|descriptor| self.lifecycle_snapshot_from_descriptor(descriptor))
+            .map_err(envd_error_to_environment)
+    }
+
+    async fn cleanup_idle(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        self.service
+            .cleanup_idle(CleanupIdleRequest {
+                environment_id: self.environment_id.clone(),
+                older_than_seconds: None,
+            })
+            .await
+            .map(|descriptor| self.lifecycle_snapshot_from_descriptor(descriptor))
             .map_err(envd_error_to_environment)
     }
 

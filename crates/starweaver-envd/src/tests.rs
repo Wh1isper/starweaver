@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use starweaver_core::Metadata;
 use starweaver_envd_core::{
-    DEFAULT_ENVIRONMENT_ID, EnvdService, EnvironmentRequest, FileReadMode, FileReadRequest,
-    FileWriteRequest, OpenEnvironmentRequest,
+    CleanupIdleRequest, DEFAULT_ENVIRONMENT_ID, EnvdErrorCode, EnvdService, EnvironmentCapability,
+    EnvironmentRequest, EnvironmentStatus, FileReadMode, FileReadRequest, FileWriteRequest,
+    OpenEnvironmentRequest,
 };
 use starweaver_environment::{ShellOutput, VirtualEnvironmentProvider};
 
@@ -34,6 +35,47 @@ async fn local_envd_wraps_existing_provider_behavior() {
         .unwrap();
     assert_eq!(descriptor.environment_id, DEFAULT_ENVIRONMENT_ID);
     assert_eq!(descriptor.store, "ephemeral");
+    assert_eq!(descriptor.status, EnvironmentStatus::Ready);
+    assert!(
+        descriptor
+            .capabilities
+            .features
+            .contains(&EnvironmentCapability::LifecycleInspect)
+    );
+    assert!(
+        descriptor
+            .capabilities
+            .features
+            .contains(&EnvironmentCapability::LifecyclePrepare)
+    );
+    assert_eq!(
+        envd.prepare_environment(EnvironmentRequest {
+            environment_id: DEFAULT_ENVIRONMENT_ID.to_string(),
+        })
+        .await
+        .unwrap()
+        .status,
+        EnvironmentStatus::Ready
+    );
+    assert_eq!(
+        envd.stop_environment(EnvironmentRequest {
+            environment_id: DEFAULT_ENVIRONMENT_ID.to_string(),
+        })
+        .await
+        .unwrap_err()
+        .code,
+        EnvdErrorCode::Unsupported
+    );
+    assert_eq!(
+        envd.cleanup_idle(CleanupIdleRequest {
+            environment_id: DEFAULT_ENVIRONMENT_ID.to_string(),
+            older_than_seconds: Some(60),
+        })
+        .await
+        .unwrap_err()
+        .code,
+        EnvdErrorCode::Unsupported
+    );
 
     let read = envd
         .file_read(FileReadRequest {

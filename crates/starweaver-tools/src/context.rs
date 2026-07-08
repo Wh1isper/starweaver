@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use starweaver_context::DependencyStore;
-use starweaver_core::{CancellationToken, ConversationId, Metadata, RunId, TraceContext};
+use starweaver_core::{
+    CancellationToken, ConversationId, Metadata, RunAttachments, RunId, TraceContext,
+};
 
 /// Inline approval state attached by runtime capability hooks.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -49,6 +51,13 @@ pub struct ToolContext {
     /// Tool call metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
+    /// JSON-compatible run attachments visible to this tool call.
+    ///
+    /// These values are copied from the active [`AgentContext`](starweaver_context::AgentContext)
+    /// metadata by the runtime. They are process-local SDK context for tools/toolsets and are not
+    /// provider headers.
+    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
+    pub run_attachments: Metadata,
     /// Inline approval decision set by runtime capability hooks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ToolApprovalState>,
@@ -75,6 +84,7 @@ impl ToolContext {
             max_retries: 0,
             trace_context: TraceContext::default(),
             metadata: Metadata::default(),
+            run_attachments: Metadata::default(),
             approval: None,
             deferred_result: None,
             cancellation_token: CancellationToken::default(),
@@ -102,6 +112,25 @@ impl ToolContext {
         self.retry = retry;
         self.max_retries = max_retries;
         self
+    }
+
+    /// Attach JSON-compatible run attachments.
+    #[must_use]
+    pub fn with_run_attachments(mut self, attachments: impl Into<Metadata>) -> Self {
+        self.run_attachments = attachments.into();
+        self
+    }
+
+    /// Return run attachments as a typed wrapper.
+    #[must_use]
+    pub fn run_attachments(&self) -> RunAttachments {
+        RunAttachments::from_metadata(self.run_attachments.clone())
+    }
+
+    /// Return one run attachment value.
+    #[must_use]
+    pub fn run_attachment(&self, key: &str) -> Option<&serde_json::Value> {
+        self.run_attachments.get(key)
     }
 
     /// Attach inline approval state.

@@ -85,7 +85,7 @@ impl LocalEnvd {
             environment_id: self.environment_id.clone(),
             kind: "local".to_string(),
             store: self.store_kind.clone(),
-            status: EnvironmentStatus::Open,
+            status: EnvironmentStatus::Ready,
             state_version: self.state_version.load(Ordering::SeqCst),
             policy_revision: 1,
             capabilities: EnvironmentCapabilities {
@@ -101,6 +101,8 @@ impl LocalEnvd {
             EnvironmentCapability::Shell,
             EnvironmentCapability::Snapshots,
             EnvironmentCapability::ContextSummary,
+            EnvironmentCapability::LifecycleInspect,
+            EnvironmentCapability::LifecyclePrepare,
         ];
         if self.provider.clone().process_shell_provider().is_some() {
             capabilities.push(EnvironmentCapability::Processes);

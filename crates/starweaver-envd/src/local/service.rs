@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use starweaver_core::Metadata;
 use starweaver_envd_core::{
-    CommandRunRequest, CommandRunResult, ENVD_PROTOCOL, ENVD_PROTOCOL_VERSION, EnvdError,
-    EnvdResult, EnvdService, EnvironmentContextRequest, EnvironmentContextResult,
+    CleanupIdleRequest, CommandRunRequest, CommandRunResult, ENVD_PROTOCOL, ENVD_PROTOCOL_VERSION,
+    EnvdError, EnvdResult, EnvdService, EnvironmentContextRequest, EnvironmentContextResult,
     EnvironmentDescriptor, EnvironmentRequest, EnvironmentStateSnapshot, FileCopyRequest,
     FileCreateDirRequest, FileDeleteRequest, FileGlobMatch, FileGlobRequest, FileGrepMatch,
     FileGrepRequest, FileListRequest, FileListResult, FileMoveRequest, FileReadMode,
@@ -53,6 +53,31 @@ impl EnvdService for LocalEnvd {
     ) -> EnvdResult<EnvironmentStateSnapshot> {
         self.ensure_environment(&request.environment_id)?;
         self.snapshot().await
+    }
+
+    async fn prepare_environment(
+        &self,
+        request: EnvironmentRequest,
+    ) -> EnvdResult<EnvironmentDescriptor> {
+        self.ensure_environment(&request.environment_id)?;
+        Ok(self.descriptor())
+    }
+
+    async fn stop_environment(
+        &self,
+        request: EnvironmentRequest,
+    ) -> EnvdResult<EnvironmentDescriptor> {
+        self.ensure_environment(&request.environment_id)?;
+        Err(EnvdError::unsupported(
+            "local envd does not support explicit stop",
+        ))
+    }
+
+    async fn cleanup_idle(&self, request: CleanupIdleRequest) -> EnvdResult<EnvironmentDescriptor> {
+        self.ensure_environment(&request.environment_id)?;
+        Err(EnvdError::unsupported(
+            "local envd does not support idle cleanup",
+        ))
     }
 
     async fn file_read(&self, request: FileReadRequest) -> EnvdResult<FileReadResult> {

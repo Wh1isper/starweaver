@@ -677,6 +677,12 @@ class McpToolset(Toolset):
         return dict(self.config)
 
 
+def core_toolsets() -> list[Toolset]:
+    """Return all currently implemented first-party core toolsets."""
+
+    return [Toolset.from_native(toolset) for toolset in _native.core_toolsets()]
+
+
 def filesystem_toolset() -> Toolset:
     """Return the first-party filesystem toolset for attached environments."""
 
@@ -693,6 +699,24 @@ def environment_toolsets() -> list[Toolset]:
     """Return first-party filesystem and shell toolsets."""
 
     return [Toolset.from_native(toolset) for toolset in _native.environment_toolsets()]
+
+
+def host_io_toolset() -> Toolset:
+    """Return the first-party host I/O toolset."""
+
+    return Toolset.from_native(_native.host_io_toolset())
+
+
+def task_toolset() -> Toolset:
+    """Return the first-party task-management toolset."""
+
+    return Toolset.from_native(_native.task_toolset())
+
+
+def context_toolset() -> Toolset:
+    """Return the first-party context-management toolset."""
+
+    return Toolset.from_native(_native.context_toolset())
 
 
 @dataclass(frozen=True)

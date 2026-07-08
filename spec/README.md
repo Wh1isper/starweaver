@@ -42,13 +42,21 @@ Envd service protocol:
 
 Readiness review:
 
-- `alignment/README.md` — review source snapshot, document map, and high-level findings
+- `alignment/README.md` — review source snapshot, document map, and high-level SDK findings
 - `alignment/01-agent-core-abstractions.md` — core agent abstraction inventory
 - `alignment/02-agent-sdk-surface-parity.md` — application SDK surface parity against Starweaver SDK surfaces
 - `alignment/03-runtime-context-session-streaming.md` — runtime, context, state, message bus, durable session, and streaming alignment
 - `alignment/04-tools-toolsets-hitl.md` — tools, toolsets, hooks, dynamic discovery, MCP, approval, and deferred execution
 - `alignment/05-models-output-provider-alignment.md` — model settings, profiles, provider mapping, output modes, usage, and replay gates
 - `alignment/06-subagents-environments-skills-media.md` — subagents, environments, resources, skills, media, tasks, notes, and host adapters
+- `alignment/08-starweaver-claw-sdk-additions.md` — Starweaver Claw layering map and non-blocking Rust/Python SDK additions
+
+Claw product specs:
+
+- `claw/README.md` — Starweaver Claw product spec map and boundary
+- `claw/01-reference-module-review.md` — module-by-module review of the Claw reference product runtime
+- `claw/02-python-implementation-plan.md` — feasible product implementation plan for Starweaver Claw on `starweaver-python`
+- `claw/03-parity-matrix.md` — capability-by-capability parity matrix and ownership split
 
 Operations and products:
 

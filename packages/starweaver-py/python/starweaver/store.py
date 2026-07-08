@@ -331,23 +331,27 @@ class RunRecord:
         conversation_id = raw_state.get("conversation_id")
         if run_id is None or conversation_id is None:
             raise StateError("run state must include run_id and conversation_id")
-        now = _now()
-        return cls(
-            {
-                "session_id": session_id,
-                "run_id": str(run_id),
-                "conversation_id": str(conversation_id),
-                "input": [_input_part_dict(part) for part in input_parts],
-                "status": _run_status_value(getattr(result, "status", RunStatus.COMPLETED)),
-                "output_preview": getattr(result, "output", None),
-                "structured_output": getattr(result, "structured_output", None),
-                "stream_cursors": [],
-                "sequence_no": sequence_no,
-                "created_at": now,
-                "updated_at": now,
-                "metadata": dict(metadata or {}),
-            }
-        )
+        raw: JsonObject = {
+            "session_id": session_id,
+            "run_id": str(run_id),
+            "conversation_id": str(conversation_id),
+            "input": [_input_part_dict(part) for part in input_parts],
+            "status": _run_status_value(getattr(result, "status", RunStatus.COMPLETED)),
+            "output_preview": getattr(result, "output", None),
+            "structured_output": getattr(result, "structured_output", None),
+            "stream_cursors": [],
+            "sequence_no": sequence_no,
+            "created_at": _now(),
+            "updated_at": _now(),
+            "metadata": dict(metadata or {}),
+        }
+        parent_run_id = raw_state.get("parent_run_id")
+        if parent_run_id is not None:
+            raw["parent_run_id"] = str(parent_run_id)
+        parent_task_id = raw_state.get("parent_task_id")
+        if parent_task_id is not None:
+            raw["parent_task_id"] = str(parent_task_id)
+        return cls(raw)
 
     @property
     def session_id(self) -> str:

@@ -56,16 +56,16 @@ pub use presets::{
 };
 pub use runtime::{AgentDurabilityError, AgentRuntime, AgentRuntimeBuilder, agent_runtime};
 pub use session::{
-    AgentHitlError, AgentHitlResults, AgentHitlUserInteraction, AgentRunOptions, AgentSession,
-    HITL_DECISION_DIAGNOSTIC_EVENT_KIND, ResolvedHitlToolReturns,
+    AgentHitlError, AgentHitlErrorCode, AgentHitlResults, AgentHitlUserInteraction,
+    AgentRunOptions, AgentSession, HITL_DECISION_DIAGNOSTIC_EVENT_KIND, ResolvedHitlToolReturns,
 };
 pub use starweaver_context::{
     AgentContext, AgentContextHandle, BusMessage, MessageBus, ModelCapability, ModelConfig,
     PerThousandRatio, ResumableState, SecurityConfig, ToolAvailabilityPolicy, ToolConfig,
 };
 pub use starweaver_core::{
-    AgentId, CheckpointId, ConversationId, RunId, SessionId, SubagentLifecycleEvent,
-    SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext,
+    AgentId, CheckpointId, ConversationId, RunAttachments, RunId, SessionId,
+    SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec, TaskId, TraceContext,
 };
 pub use starweaver_environment::{
     DynEnvironmentProviderFactory, DynProcessShellProvider, DynResourceRestoreFactory,
@@ -149,10 +149,12 @@ pub use starweaver_usage::{
     UsageSnapshotEntry, UsageTokenKind, pricing::CostBudget,
 };
 pub use streaming::{
-    AgentControlError, AgentControlHandle, AgentControlKind, AgentControlReceipt,
-    AgentLiveStreamResult, AgentStreamCompletion, AgentStreamController, AgentStreamCurrentError,
-    AgentStreamDropPolicy, AgentStreamError, AgentStreamHandle, AgentStreamOptions,
-    AgentStreamRunStatus, AgentStreamStatus,
+    AgentControlDeliveryState, AgentControlError, AgentControlErrorCode, AgentControlHandle,
+    AgentControlKind, AgentControlReceipt, AgentControlReceiptSnapshot, AgentLiveStreamResult,
+    AgentStreamCompletion, AgentStreamController, AgentStreamCurrentError,
+    AgentStreamCurrentErrorKind, AgentStreamCurrentErrorSnapshot, AgentStreamDropPolicy,
+    AgentStreamError, AgentStreamHandle, AgentStreamLiveState, AgentStreamOptions,
+    AgentStreamStatus, AgentStreamStatusSnapshot,
 };
 pub use subagent::{
     AgentApp, BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,

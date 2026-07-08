@@ -11,6 +11,7 @@ use starweaver_core::Metadata;
 use super::*;
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn virtual_provider_reads_lists_shells_and_exports_state() {
     let output = ShellOutput {
         status: 0,
@@ -97,6 +98,18 @@ async fn virtual_provider_reads_lists_shells_and_exports_state() {
             .unwrap(),
         output
     );
+    let lifecycle = provider.inspect_lifecycle().await.unwrap();
+    assert_eq!(lifecycle.provider_id, "test");
+    assert_eq!(lifecycle.state, EnvironmentLifecycleState::Ready);
+    assert!(lifecycle.capabilities.inspect);
+    assert!(lifecycle.capabilities.prepare);
+    assert!(!lifecycle.capabilities.stop);
+    assert_eq!(provider.prepare().await.unwrap(), lifecycle);
+    assert!(matches!(
+        provider.stop().await,
+        Err(EnvironmentError::Unsupported(_))
+    ));
+
     let state = provider.export_state().await.unwrap();
     assert_eq!(state.provider_id, "test");
     assert_eq!(environment_provider_kind(&state), Some("virtual"));

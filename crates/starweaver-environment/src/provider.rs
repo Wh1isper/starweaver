@@ -6,10 +6,11 @@ use async_trait::async_trait;
 use grep_regex::RegexMatcher;
 
 use crate::{
-    EnvironmentError, EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions,
-    FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FileStat, PathGlob,
-    ShellCommand, ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext, include_path,
-    list_ignore_match, path_match_candidates, search_text,
+    EnvironmentError, EnvironmentLifecycleSnapshot, EnvironmentResult, EnvironmentState,
+    FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions,
+    FileListResult, FileStat, PathGlob, ShellCommand, ShellOutput, ShellProcessSnapshot,
+    ShellReviewEnvironmentContext, include_path, list_ignore_match, path_match_candidates,
+    search_text,
 };
 
 /// Shared environment provider reference.
@@ -214,6 +215,39 @@ pub trait EnvironmentProvider: Send + Sync {
     /// Render model-facing environment context.
     async fn render_environment_context(&self) -> EnvironmentResult<Option<String>> {
         Ok(None)
+    }
+
+    /// Inspect provider lifecycle state.
+    ///
+    /// The default implementation describes providers that are already ready
+    /// and do not require explicit lifecycle management. Providers with
+    /// reusable backing resources can override this with richer state and
+    /// capability metadata.
+    async fn inspect_lifecycle(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        Ok(EnvironmentLifecycleSnapshot::ready(self.id()))
+    }
+
+    /// Prepare the provider for file, shell, or resource operations.
+    ///
+    /// Providers that are always ready may safely rely on this default no-op.
+    async fn prepare(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        self.inspect_lifecycle().await
+    }
+
+    /// Stop reusable provider resources where supported.
+    async fn stop(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        Err(EnvironmentError::Unsupported(format!(
+            "provider {} does not support explicit stop",
+            self.id()
+        )))
+    }
+
+    /// Clean up idle reusable provider resources where supported.
+    async fn cleanup_idle(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        Err(EnvironmentError::Unsupported(format!(
+            "provider {} does not support idle cleanup",
+            self.id()
+        )))
     }
 
     /// Export provider state for resume.

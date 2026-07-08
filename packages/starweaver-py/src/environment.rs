@@ -15,9 +15,9 @@ use starweaver_envd_client::{EnvdClientError, EnvdRpcClient};
 use starweaver_envd_core::DEFAULT_ENVIRONMENT_ID;
 use starweaver_environment::{
     CompositeEnvironmentProvider, DynEnvironmentProvider, EnvdEnvironmentProvider,
-    EnvironmentError, EnvironmentMount, EnvironmentMountMode, EnvironmentPolicy,
-    EnvironmentProvider as EnvironmentProviderTrait, EnvironmentResult, EnvironmentState,
-    FileGlobOptions, FileGrepOptions, FileListOptions, FilePolicy, FileStat,
+    EnvironmentError, EnvironmentLifecycleSnapshot, EnvironmentMount, EnvironmentMountMode,
+    EnvironmentPolicy, EnvironmentProvider as EnvironmentProviderTrait, EnvironmentResult,
+    EnvironmentState, FileGlobOptions, FileGrepOptions, FileListOptions, FilePolicy, FileStat,
     LocalEnvironmentProvider, ResourceRef, ShellCommand, ShellOutput, ShellPolicy,
     VirtualEnvironmentProvider,
 };
@@ -295,6 +295,52 @@ impl EnvironmentProviderTrait for PythonEnvironmentProvider {
             .await?;
         Python::attach(|py| value.extract::<Option<String>>(py))
             .map_err(|error| py_err_to_environment_error("render_context", error))
+    }
+
+    async fn inspect_lifecycle(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        if !python_provider_has_method(&self.provider, "inspect_lifecycle")? {
+            return Ok(EnvironmentLifecycleSnapshot::ready(self.id()));
+        }
+        self.call_json("inspect_lifecycle", move |py, provider| {
+            provider.call_method0(py, "inspect_lifecycle")
+        })
+        .await
+    }
+
+    async fn prepare(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        if !python_provider_has_method(&self.provider, "prepare")? {
+            return self.inspect_lifecycle().await;
+        }
+        self.call_json("prepare", move |py, provider| {
+            provider.call_method0(py, "prepare")
+        })
+        .await
+    }
+
+    async fn stop(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        if !python_provider_has_method(&self.provider, "stop")? {
+            return Err(EnvironmentError::Unsupported(format!(
+                "provider {} does not support explicit stop",
+                self.id()
+            )));
+        }
+        self.call_json("stop", move |py, provider| {
+            provider.call_method0(py, "stop")
+        })
+        .await
+    }
+
+    async fn cleanup_idle(&self) -> EnvironmentResult<EnvironmentLifecycleSnapshot> {
+        if !python_provider_has_method(&self.provider, "cleanup_idle")? {
+            return Err(EnvironmentError::Unsupported(format!(
+                "provider {} does not support idle cleanup",
+                self.id()
+            )));
+        }
+        self.call_json("cleanup_idle", move |py, provider| {
+            provider.call_method0(py, "cleanup_idle")
+        })
+        .await
     }
 
     async fn export_state(&self) -> EnvironmentResult<EnvironmentState> {
@@ -852,6 +898,52 @@ impl PyEnvironmentProvider {
         )
     }
 
+    fn inspect_lifecycle(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let provider = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                provider
+                    .inspect_lifecycle()
+                    .await
+                    .map_err(environment_error_to_py)
+            },
+            |py, snapshot| serialize_to_py(py, &snapshot),
+        )
+    }
+
+    fn prepare(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let provider = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move { provider.prepare().await.map_err(environment_error_to_py) },
+            |py, snapshot| serialize_to_py(py, &snapshot),
+        )
+    }
+
+    fn stop(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let provider = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move { provider.stop().await.map_err(environment_error_to_py) },
+            |py, snapshot| serialize_to_py(py, &snapshot),
+        )
+    }
+
+    fn cleanup_idle(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let provider = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                provider
+                    .cleanup_idle()
+                    .await
+                    .map_err(environment_error_to_py)
+            },
+            |py, snapshot| serialize_to_py(py, &snapshot),
+        )
+    }
+
     #[pyo3(signature = (command, timeout_seconds=None, cwd=None, environment=None))]
     fn start_process(
         &self,
@@ -1080,6 +1172,11 @@ fn extract_bytes(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     Err(PyValueError::new_err("content must be bytes or string"))
 }
 
+fn python_provider_has_method(provider: &Py<PyAny>, method: &str) -> EnvironmentResult<bool> {
+    Python::attach(|py| provider.bind(py).hasattr(method))
+        .map_err(|error| py_err_to_environment_error(method, error))
+}
+
 fn process_provider(
     provider: &DynEnvironmentProvider,
 ) -> PyResult<starweaver_environment::DynProcessShellProvider> {
@@ -1159,7 +1256,13 @@ fn environment_error_to_py_value(error: starweaver_environment::EnvironmentError
 }
 
 fn environment_error_to_py(error: starweaver_environment::EnvironmentError) -> PyFutureError {
-    PyFutureError::State(error.to_string())
+    match error {
+        EnvironmentError::Unsupported(message) => PyFutureError::StateWithCode {
+            code: "unsupported",
+            message: format!("unsupported environment operation: {message}"),
+        },
+        other => PyFutureError::State(other.to_string()),
+    }
 }
 
 fn py_err_to_environment_error(operation: &str, error: PyErr) -> EnvironmentError {
@@ -1172,6 +1275,8 @@ fn py_err_to_environment_error(operation: &str, error: PyErr) -> EnvironmentErro
         EnvironmentError::NotFound(message)
     } else if lowered.contains("denied") || lowered.contains("permission") {
         EnvironmentError::AccessDenied(message)
+    } else if lowered.contains("unsupported") || lowered.contains("notimplemented") {
+        EnvironmentError::Unsupported(message)
     } else if lowered.contains("invalid") {
         EnvironmentError::InvalidRequest(message)
     } else {

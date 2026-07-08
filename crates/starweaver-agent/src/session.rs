@@ -372,6 +372,48 @@ impl ResolvedHitlToolReturns {
     }
 }
 
+/// Stable error taxonomy for SDK HITL resolution APIs.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentHitlErrorCode {
+    /// No waiting run state is available.
+    NoWaitingRun,
+    /// The supplied run state is stale or not waiting on HITL.
+    StaleInteraction,
+    /// The waiting run has no pending HITL records.
+    NoPendingHitl,
+    /// A supplied approval or deferred id is not compatible with the waiting state.
+    IncompatibleInteraction,
+    /// The same approval or deferred id was supplied more than once.
+    DuplicateInteraction,
+    /// One or more pending interactions were not resolved.
+    MissingInteraction,
+    /// Original model tool-call evidence is missing.
+    MissingToolCall,
+    /// A deferred result was not terminal.
+    DeferredResultNotTerminal,
+    /// Runtime execution failed after HITL resolution.
+    Agent,
+}
+
+impl AgentHitlErrorCode {
+    /// Return the stable service/API name for this HITL error code.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoWaitingRun => "no_waiting_run",
+            Self::StaleInteraction => "stale_interaction",
+            Self::NoPendingHitl => "no_pending_hitl",
+            Self::IncompatibleInteraction => "incompatible_interaction",
+            Self::DuplicateInteraction => "duplicate_interaction",
+            Self::MissingInteraction => "missing_interaction",
+            Self::MissingToolCall => "missing_tool_call",
+            Self::DeferredResultNotTerminal => "deferred_result_not_terminal",
+            Self::Agent => "agent_error",
+        }
+    }
+}
+
 /// Errors returned by SDK HITL resolution APIs.
 #[derive(Debug, Error)]
 pub enum AgentHitlError {
@@ -420,6 +462,32 @@ pub enum AgentHitlError {
     /// Runtime execution failed while executing an approved tool or resumed run.
     #[error(transparent)]
     Agent(#[from] AgentError),
+}
+
+impl AgentHitlError {
+    /// Return the stable service/API error code for this HITL error.
+    #[must_use]
+    pub const fn code(&self) -> AgentHitlErrorCode {
+        match self {
+            Self::NoWaitingRun => AgentHitlErrorCode::NoWaitingRun,
+            Self::NotWaiting { .. } => AgentHitlErrorCode::StaleInteraction,
+            Self::NoPendingHitl => AgentHitlErrorCode::NoPendingHitl,
+            Self::UnknownApproval(_) | Self::UnknownDeferred(_) => {
+                AgentHitlErrorCode::IncompatibleInteraction
+            }
+            Self::DuplicateDecision(_) => AgentHitlErrorCode::DuplicateInteraction,
+            Self::MissingDecisions { .. } => AgentHitlErrorCode::MissingInteraction,
+            Self::MissingToolCall(_) => AgentHitlErrorCode::MissingToolCall,
+            Self::DeferredResultNotTerminal { .. } => AgentHitlErrorCode::DeferredResultNotTerminal,
+            Self::Agent(_) => AgentHitlErrorCode::Agent,
+        }
+    }
+
+    /// Return the stable service/API error code string for this HITL error.
+    #[must_use]
+    pub const fn code_str(&self) -> &'static str {
+        self.code().as_str()
+    }
 }
 
 impl AgentSession {
@@ -1028,6 +1096,7 @@ impl AgentSession {
         )
         .with_dependencies(tool_dependencies)
         .with_trace_context(self.context.trace_context.clone())
+        .with_run_attachments(self.context.run_attachment_values().clone())
         .with_retry_budget(0, tools.max_retries_for(&call.name));
         tool_context.metadata = metadata;
         let result = tool.preprocess_user_input(tool_context, user_input).await;
@@ -1072,6 +1141,7 @@ impl AgentSession {
         )
         .with_dependencies(tool_dependencies)
         .with_trace_context(self.context.trace_context.clone())
+        .with_run_attachments(self.context.run_attachment_values().clone())
         .with_retry_budget(0, tools.max_retries_for(&call.name))
         .with_approval(approval);
         let started_at = std::time::Instant::now();

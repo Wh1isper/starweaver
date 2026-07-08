@@ -4,7 +4,7 @@ use starweaver_context::{
     AgentContext, AgentEvent, AgentId, BusMessage, ModelConfig, PerThousandRatio, ResumableState,
     TaskStatus,
 };
-use starweaver_core::{SessionId, TraceContext};
+use starweaver_core::{RunId, SessionId, TaskId, TraceContext};
 use starweaver_model::{
     ContentPart, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse, ModelResponsePart,
     ToolCallPart,
@@ -194,7 +194,7 @@ fn dependencies_are_not_serialized_in_resumable_state() {
 #[test]
 fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
     let mut context = AgentContext::new(AgentId::from_string("parent"));
-    context.run_id = Some(starweaver_core::RunId::from_string("run-parent"));
+    context.run_id = Some(RunId::from_string("run-parent"));
     context.push_message(ModelMessage::Request(ModelRequest::user_text(
         "parent history",
     )));
@@ -233,6 +233,11 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
     let child = context.subagent_context("researcher");
 
     assert_eq!(child.agent_id.as_str(), "researcher");
+    assert_eq!(
+        child.parent_run_id.as_ref().map(RunId::as_str),
+        Some("run-parent")
+    );
+    assert!(child.parent_task_id.is_none());
     assert_eq!(child.metadata["parent_agent_id"], "parent");
     assert_eq!(child.metadata["parent_run_id"], "run-parent");
     assert_eq!(child.conversation_id, context.conversation_id);
@@ -248,6 +253,46 @@ fn subagent_context_inherits_long_lived_state_and_resets_run_queues() {
     assert!(child.steering_messages.is_empty());
     assert_eq!(child.messages.len(), context.messages.len());
     assert!(child.events.events().is_empty());
+}
+
+#[test]
+fn full_state_preserves_parent_run_and_task_linkage() {
+    let mut context = AgentContext::new(AgentId::from_string("child"));
+    context.run_id = Some(RunId::from_string("run-child"));
+    context.parent_run_id = Some(RunId::from_string("run-parent"));
+    context.parent_task_id = Some(TaskId::from_string("task-parent"));
+
+    let full = context.export_full_state();
+    assert_eq!(
+        full.parent_run_id.as_ref().map(RunId::as_str),
+        Some("run-parent")
+    );
+    assert_eq!(
+        full.parent_task_id.as_ref().map(TaskId::as_str),
+        Some("task-parent")
+    );
+
+    let curated = context.export_state();
+    assert!(curated.parent_run_id.is_none());
+    assert!(curated.parent_task_id.is_none());
+
+    let restored = AgentContext::from_state(full);
+    assert_eq!(
+        restored.parent_run_id.as_ref().map(RunId::as_str),
+        Some("run-parent")
+    );
+    assert_eq!(
+        restored.parent_task_id.as_ref().map(TaskId::as_str),
+        Some("task-parent")
+    );
+    assert_eq!(
+        restored.get_wrapper_metadata()["parent_run_id"],
+        "run-parent"
+    );
+    assert_eq!(
+        restored.get_wrapper_metadata()["parent_task_id"],
+        "task-parent"
+    );
 }
 
 #[test]

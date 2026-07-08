@@ -71,9 +71,13 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<tool::PyToolResult>()?;
     m.add_class::<toolset::PyToolsetLifecyclePolicy>()?;
     m.add_class::<toolset::PyToolset>()?;
+    m.add_function(wrap_pyfunction!(toolset::core_toolsets, m)?)?;
     m.add_function(wrap_pyfunction!(toolset::environment_toolsets, m)?)?;
     m.add_function(wrap_pyfunction!(toolset::filesystem_toolset, m)?)?;
     m.add_function(wrap_pyfunction!(toolset::shell_toolset, m)?)?;
+    m.add_function(wrap_pyfunction!(toolset::host_io_toolset, m)?)?;
+    m.add_function(wrap_pyfunction!(toolset::task_toolset, m)?)?;
+    m.add_function(wrap_pyfunction!(toolset::context_toolset, m)?)?;
     m.add_function(wrap_pyfunction!(toolset::tool_search_toolset, m)?)?;
     m.add_function(wrap_pyfunction!(toolset::tool_proxy_toolset, m)?)?;
     m.add_function(wrap_pyfunction!(toolset::combined_toolset, m)?)?;

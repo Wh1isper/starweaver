@@ -940,6 +940,8 @@ impl AgentRuntime {
             .unwrap_or(serde_json::Value::Null);
         run.trace_context = self.session.context().trace_context.clone();
         run.restore_from_run_id = restore_from_run_id;
+        run.parent_run_id = result.state.parent_run_id.clone();
+        run.parent_task_id = result.state.parent_task_id.clone();
         run.metadata.insert(
             "run_step".to_string(),
             serde_json::json!(result.state.run_step),
@@ -1007,6 +1009,8 @@ impl AgentRuntime {
         run.status = session_run_status(status);
         run.structured_output = serde_json::Value::Null;
         run.trace_context = self.session.context().trace_context.clone();
+        run.parent_run_id = completion.state.parent_run_id.clone();
+        run.parent_task_id = completion.state.parent_task_id.clone();
         if let Some(error) = completion.error.as_ref() {
             run.metadata.insert(
                 "live_stream_error".to_string(),

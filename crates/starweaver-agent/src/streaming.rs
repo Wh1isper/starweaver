@@ -10,6 +10,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_context::{AgentContext, AgentEvent, BusMessage, ResumableState};
 use starweaver_core::{CancellationToken, Metadata};
@@ -32,7 +33,8 @@ const CONTROL_DRAIN_CAPABILITY_ID: &str = "starweaver.agent.active_control.drain
 const TRACE_METADATA_STATE_KEY: &str = "starweaver.trace_metadata";
 
 /// Backpressure behavior for live SDK streams.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentStreamDropPolicy {
     /// Drop the newest event when the receiver falls behind.
     #[default]
@@ -42,7 +44,7 @@ pub enum AgentStreamDropPolicy {
 }
 
 /// Options controlling live SDK stream delivery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentStreamOptions {
     /// Number of stream records buffered between producer and receiver.
     pub buffer_size: usize,
@@ -137,15 +139,34 @@ impl AgentStreamCompletion {
     }
 }
 
-/// High-level live stream run status for polling UIs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AgentStreamRunStatus {
-    /// Producer task is still running.
-    Running,
-    /// Cooperative cancellation has been requested and the producer has not finished.
+/// High-level in-process producer state for polling live stream handles.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStreamLiveState {
+    /// Producer task is still active.
+    Active,
+    /// Cooperative cancellation has been requested and the producer has not closed.
     Cancelling,
-    /// Producer task has finished.
-    Finished,
+    /// Producer task has closed from the live-handle perspective.
+    Closed,
+}
+
+impl AgentStreamLiveState {
+    /// Return the stable live-handle state name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Cancelling => "cancelling",
+            Self::Closed => "closed",
+        }
+    }
+
+    /// Return whether this live-handle state is terminal.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Closed)
+    }
 }
 
 /// Cloneable current error snapshot for a live stream.
@@ -159,6 +180,82 @@ pub enum AgentStreamCurrentError {
     Join(String),
 }
 
+impl AgentStreamCurrentError {
+    /// Return the stable serializable current-error snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> AgentStreamCurrentErrorSnapshot {
+        AgentStreamCurrentErrorSnapshot::from(self)
+    }
+}
+
+/// Stable current-error category for pollable live stream status snapshots.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStreamCurrentErrorKind {
+    /// The caller deliberately interrupted the live stream.
+    Interrupted,
+    /// The underlying agent run failed.
+    Agent,
+    /// The runtime task failed before returning an agent result.
+    Join,
+}
+
+impl AgentStreamCurrentErrorKind {
+    /// Return the stable service/API name for this current-error kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Interrupted => "interrupted",
+            Self::Agent => "agent",
+            Self::Join => "join",
+        }
+    }
+}
+
+/// Stable serializable current-error snapshot for pollable live stream status.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentStreamCurrentErrorSnapshot {
+    /// Stable current-error category.
+    pub kind: AgentStreamCurrentErrorKind,
+    /// Human-readable error message.
+    pub message: String,
+}
+
+impl From<&AgentStreamCurrentError> for AgentStreamCurrentErrorSnapshot {
+    fn from(error: &AgentStreamCurrentError) -> Self {
+        match error {
+            AgentStreamCurrentError::Interrupted => Self {
+                kind: AgentStreamCurrentErrorKind::Interrupted,
+                message: "stream interrupted".to_string(),
+            },
+            AgentStreamCurrentError::Agent(message) => Self {
+                kind: AgentStreamCurrentErrorKind::Agent,
+                message: message.clone(),
+            },
+            AgentStreamCurrentError::Join(message) => Self {
+                kind: AgentStreamCurrentErrorKind::Join,
+                message: message.clone(),
+            },
+        }
+    }
+}
+
+impl From<AgentStreamCurrentError> for AgentStreamCurrentErrorSnapshot {
+    fn from(error: AgentStreamCurrentError) -> Self {
+        Self::from(&error)
+    }
+}
+
+impl From<AgentStreamCurrentErrorSnapshot> for AgentStreamCurrentError {
+    fn from(snapshot: AgentStreamCurrentErrorSnapshot) -> Self {
+        match snapshot.kind {
+            AgentStreamCurrentErrorKind::Interrupted => Self::Interrupted,
+            AgentStreamCurrentErrorKind::Agent => Self::Agent(snapshot.message),
+            AgentStreamCurrentErrorKind::Join => Self::Join(snapshot.message),
+        }
+    }
+}
+
 /// Accepted live-run control input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentControlReceipt {
@@ -166,16 +263,128 @@ pub struct AgentControlReceipt {
     pub id: String,
     /// Accepted control kind.
     pub kind: AgentControlKind,
-    /// Whether the input was queued for active-run delivery.
-    pub queued: bool,
+    /// Whether the input is waiting for the active run to observe it.
+    pub pending_delivery: bool,
     /// Active run id when known at enqueue time.
     pub run_id: Option<String>,
     /// Active session id when known at enqueue time.
     pub session_id: Option<String>,
 }
 
+impl AgentControlReceipt {
+    /// Return the in-process delivery state for this accepted control input.
+    #[must_use]
+    pub const fn delivery_state(&self) -> AgentControlDeliveryState {
+        if self.pending_delivery {
+            AgentControlDeliveryState::PendingDelivery
+        } else {
+            AgentControlDeliveryState::Applied
+        }
+    }
+
+    /// Return the in-process delivery state name for this accepted control input.
+    #[must_use]
+    pub const fn delivery_state_str(&self) -> &'static str {
+        self.delivery_state().as_str()
+    }
+
+    /// Return the stable serializable control receipt snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> AgentControlReceiptSnapshot {
+        AgentControlReceiptSnapshot::from(self)
+    }
+}
+
+impl Serialize for AgentControlReceipt {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.snapshot().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentControlReceipt {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        AgentControlReceiptSnapshot::deserialize(deserializer).map(Into::into)
+    }
+}
+
+/// In-process delivery state for an accepted live-run control input.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentControlDeliveryState {
+    /// The control input was applied to the live handle immediately.
+    Applied,
+    /// The control input is waiting for the active run to observe it.
+    PendingDelivery,
+}
+
+impl AgentControlDeliveryState {
+    /// Return the stable live-handle delivery state name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::PendingDelivery => "pending_delivery",
+        }
+    }
+}
+
+/// Stable serializable control receipt snapshot.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentControlReceiptSnapshot {
+    /// Accepted control id.
+    pub id: String,
+    /// Accepted control kind.
+    pub kind: AgentControlKind,
+    /// Whether the input is waiting for the active run to observe it.
+    pub pending_delivery: bool,
+    /// In-process delivery state.
+    pub delivery_state: AgentControlDeliveryState,
+    /// Active run id when known at enqueue time.
+    pub run_id: Option<String>,
+    /// Active session id when known at enqueue time.
+    pub session_id: Option<String>,
+}
+
+impl From<&AgentControlReceipt> for AgentControlReceiptSnapshot {
+    fn from(receipt: &AgentControlReceipt) -> Self {
+        Self {
+            id: receipt.id.clone(),
+            kind: receipt.kind,
+            pending_delivery: receipt.pending_delivery,
+            delivery_state: receipt.delivery_state(),
+            run_id: receipt.run_id.clone(),
+            session_id: receipt.session_id.clone(),
+        }
+    }
+}
+
+impl From<AgentControlReceipt> for AgentControlReceiptSnapshot {
+    fn from(receipt: AgentControlReceipt) -> Self {
+        Self::from(&receipt)
+    }
+}
+
+impl From<AgentControlReceiptSnapshot> for AgentControlReceipt {
+    fn from(snapshot: AgentControlReceiptSnapshot) -> Self {
+        Self {
+            id: snapshot.id,
+            kind: snapshot.kind,
+            pending_delivery: snapshot.pending_delivery,
+            run_id: snapshot.run_id,
+            session_id: snapshot.session_id,
+        }
+    }
+}
+
 /// Kind of accepted live-run control input.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentControlKind {
     /// Generic message-bus write.
     Message,
@@ -206,6 +415,7 @@ pub struct AgentControlHandle {
     latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
     pending_messages: Arc<tokio::sync::Mutex<VecDeque<BusMessage>>>,
     finished: Arc<AtomicBool>,
+    receiver_closed: Arc<AtomicBool>,
 }
 
 impl AgentControlHandle {
@@ -222,7 +432,7 @@ impl AgentControlHandle {
         AgentControlReceipt {
             id: "interrupt".to_string(),
             kind: AgentControlKind::Interrupt,
-            queued: false,
+            pending_delivery: false,
             run_id: None,
             session_id: None,
         }
@@ -239,6 +449,9 @@ impl AgentControlHandle {
     ) -> Result<AgentControlReceipt, AgentControlError> {
         if self.finished.load(Ordering::SeqCst) || self.interrupted.load(Ordering::SeqCst) {
             return Err(AgentControlError::TerminalRun);
+        }
+        if self.receiver_closed.load(Ordering::SeqCst) {
+            return Err(AgentControlError::ReceiverClosed);
         }
         let kind = control_kind_for_message(&message);
         let (run_id, session_id) = {
@@ -257,7 +470,7 @@ impl AgentControlHandle {
         let receipt = AgentControlReceipt {
             id: message.id.clone(),
             kind,
-            queued: true,
+            pending_delivery: true,
             run_id,
             session_id,
         };
@@ -265,6 +478,9 @@ impl AgentControlHandle {
             let mut pending = self.pending_messages.lock().await;
             if self.finished.load(Ordering::SeqCst) || self.interrupted.load(Ordering::SeqCst) {
                 return Err(AgentControlError::TerminalRun);
+            }
+            if self.receiver_closed.load(Ordering::SeqCst) {
+                return Err(AgentControlError::ReceiverClosed);
             }
             pending.push_back(message);
         }
@@ -319,6 +535,7 @@ fn new_control_handle(
     interrupt_reason: Arc<Mutex<Option<String>>>,
     cancellation_token: CancellationToken,
     latest_context: Arc<tokio::sync::Mutex<AgentContext>>,
+    receiver_closed: Arc<AtomicBool>,
 ) -> AgentControlHandle {
     AgentControlHandle {
         interrupted,
@@ -327,6 +544,7 @@ fn new_control_handle(
         latest_context,
         pending_messages: Arc::new(tokio::sync::Mutex::new(VecDeque::new())),
         finished: Arc::new(AtomicBool::new(false)),
+        receiver_closed,
     }
 }
 
@@ -349,6 +567,68 @@ pub enum AgentControlError {
     /// The control input targeted a run that has already terminated.
     #[error("agent run has already completed")]
     TerminalRun,
+    /// The live handle was detached from this process-local receiver.
+    #[error("agent run has been detached")]
+    Detached,
+    /// The control input did not have an active run target.
+    #[error("no active agent run")]
+    NoActiveRun,
+    /// The live receiver was closed, so no further active-run control input is accepted.
+    #[error("agent run receiver is closed")]
+    ReceiverClosed,
+    /// The live handle does not support this control operation.
+    #[error("unsupported live-run control operation: {0}")]
+    UnsupportedControl(String),
+}
+
+impl AgentControlError {
+    /// Return the stable service/API error code for this control error.
+    #[must_use]
+    pub const fn code(&self) -> AgentControlErrorCode {
+        match self {
+            Self::TerminalRun => AgentControlErrorCode::AlreadyFinished,
+            Self::Detached => AgentControlErrorCode::Detached,
+            Self::NoActiveRun => AgentControlErrorCode::NoActiveRun,
+            Self::ReceiverClosed => AgentControlErrorCode::ReceiverClosed,
+            Self::UnsupportedControl(_) => AgentControlErrorCode::UnsupportedControl,
+        }
+    }
+
+    /// Return the stable service/API error code string for this control error.
+    #[must_use]
+    pub const fn code_str(&self) -> &'static str {
+        self.code().as_str()
+    }
+}
+
+/// Stable error taxonomy for live-run control operations.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentControlErrorCode {
+    /// The target run has already reached a terminal state.
+    AlreadyFinished,
+    /// The process-local live handle has been detached.
+    Detached,
+    /// No active run exists for the requested control operation.
+    NoActiveRun,
+    /// The live stream receiver is closed.
+    ReceiverClosed,
+    /// The requested operation is not supported by this handle.
+    UnsupportedControl,
+}
+
+impl AgentControlErrorCode {
+    /// Return the stable service/API name for this control error code.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AlreadyFinished => "already_finished",
+            Self::Detached => "detached",
+            Self::NoActiveRun => "no_active_run",
+            Self::ReceiverClosed => "receiver_closed",
+            Self::UnsupportedControl => "unsupported_control",
+        }
+    }
 }
 
 struct AgentControlDrainCapability {
@@ -435,7 +715,7 @@ fn drain_pending_control_messages(pending: &mut VecDeque<BusMessage>, context: &
             serde_json::json!({
                 "id": accepted.id,
                 "topic": topic,
-                "queued_id": id,
+                "message_id": id,
             }),
         ));
     }
@@ -460,18 +740,106 @@ fn is_runtime_steering_message(message: &BusMessage) -> bool {
 /// Pollable live stream status snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentStreamStatus {
-    /// High-level run status.
-    pub run_status: AgentStreamRunStatus,
+    /// High-level in-process producer state.
+    pub live_state: AgentStreamLiveState,
     /// Latest observed error when the producer has reached an error boundary.
     pub current_error: Option<AgentStreamCurrentError>,
     /// Whether cooperative cancellation has been requested.
     pub cancel_requested: bool,
     /// Number of live records dropped because the receiver lagged.
     pub dropped_events: usize,
-    /// Whether the producer observed that the receiver was closed.
+    /// Whether the receiver is closed or the producer observed that it was closed.
     pub receiver_closed: bool,
     /// Stream delivery options used by this handle.
     pub options: AgentStreamOptions,
+}
+
+impl AgentStreamStatus {
+    /// Return the stable serializable live stream status snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> AgentStreamStatusSnapshot {
+        AgentStreamStatusSnapshot::from(self)
+    }
+}
+
+impl Serialize for AgentStreamStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.snapshot().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentStreamStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        AgentStreamStatusSnapshot::deserialize(deserializer).map(Into::into)
+    }
+}
+
+/// Stable serializable live stream status snapshot.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AgentStreamStatusSnapshot {
+    /// High-level in-process producer state.
+    pub live_state: AgentStreamLiveState,
+    /// Whether the live run has reached a terminal state.
+    pub is_terminal: bool,
+    /// Latest observed error when the producer has reached an error boundary.
+    pub current_error: Option<AgentStreamCurrentErrorSnapshot>,
+    /// Whether cooperative cancellation has been requested.
+    pub cancel_requested: bool,
+    /// Number of live records dropped because the receiver lagged.
+    pub dropped_events: usize,
+    /// Whether the receiver is closed or the producer observed that it was closed.
+    pub receiver_closed: bool,
+    /// Stream delivery options used by this handle.
+    pub options: AgentStreamOptions,
+    /// Flattened stream buffer size for lightweight service projections.
+    pub buffer_size: usize,
+    /// Flattened drop/backpressure policy for lightweight service projections.
+    pub drop_policy: AgentStreamDropPolicy,
+}
+
+impl From<&AgentStreamStatus> for AgentStreamStatusSnapshot {
+    fn from(status: &AgentStreamStatus) -> Self {
+        Self {
+            live_state: status.live_state,
+            is_terminal: status.live_state.is_terminal(),
+            current_error: status
+                .current_error
+                .as_ref()
+                .map(AgentStreamCurrentError::snapshot),
+            cancel_requested: status.cancel_requested,
+            dropped_events: status.dropped_events,
+            receiver_closed: status.receiver_closed,
+            options: status.options,
+            buffer_size: status.options.buffer_size,
+            drop_policy: status.options.drop_policy,
+        }
+    }
+}
+
+impl From<AgentStreamStatus> for AgentStreamStatusSnapshot {
+    fn from(status: AgentStreamStatus) -> Self {
+        Self::from(&status)
+    }
+}
+
+impl From<AgentStreamStatusSnapshot> for AgentStreamStatus {
+    fn from(snapshot: AgentStreamStatusSnapshot) -> Self {
+        let current_error = snapshot.current_error.map(Into::into);
+        Self {
+            live_state: snapshot.live_state,
+            current_error,
+            cancel_requested: snapshot.cancel_requested,
+            dropped_events: snapshot.dropped_events,
+            receiver_closed: snapshot.receiver_closed,
+            options: snapshot.options,
+        }
+    }
 }
 
 /// Cloneable control handle for a live SDK stream run.
@@ -622,6 +990,7 @@ impl AgentStreamHandle {
     /// Close the receiver side while allowing the producer run to finish.
     pub fn close_receiver(&mut self) {
         self.receiver.close();
+        self.receiver_closed.store(true, Ordering::SeqCst);
     }
 
     /// Return whether the producer task has finished.
@@ -652,15 +1021,15 @@ impl AgentStreamHandle {
     #[must_use]
     pub fn status(&self) -> AgentStreamStatus {
         let cancel_requested = self.cancel_requested();
-        let run_status = if self.is_finished() {
-            AgentStreamRunStatus::Finished
+        let live_state = if self.is_finished() {
+            AgentStreamLiveState::Closed
         } else if cancel_requested {
-            AgentStreamRunStatus::Cancelling
+            AgentStreamLiveState::Cancelling
         } else {
-            AgentStreamRunStatus::Running
+            AgentStreamLiveState::Active
         };
         AgentStreamStatus {
-            run_status,
+            live_state,
             current_error: match self.current_error.lock() {
                 Ok(error) => error.clone(),
                 Err(error) => error.into_inner().clone(),
@@ -883,6 +1252,7 @@ pub(crate) fn start_session_stream_with_options(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn try_start_session_stream_with_options(
     agent: starweaver_runtime::Agent,
     context: AgentContext,
@@ -906,6 +1276,7 @@ pub(crate) fn try_start_session_stream_with_options(
         interrupt_reason.clone(),
         cancellation_token.clone(),
         latest_context.clone(),
+        receiver_closed.clone(),
     );
     let observer = Arc::new(LiveStreamObserver {
         sender,

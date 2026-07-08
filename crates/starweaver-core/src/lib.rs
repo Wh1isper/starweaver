@@ -5,12 +5,14 @@ use serde_json::{Map, Value};
 /// Serializable metadata object shared by Starweaver crates.
 pub type Metadata = Map<String, Value>;
 
+mod attachments;
 mod cancellation;
 mod ids;
 mod subagent;
 mod trace;
 mod xml;
 
+pub use attachments::RunAttachments;
 pub use cancellation::CancellationToken;
 pub use ids::{AgentId, CheckpointId, ConversationId, RunId, SessionId, TaskId};
 pub use subagent::{SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec};
@@ -58,6 +60,21 @@ mod tests {
         );
         assert!(TaskId::new().as_str().starts_with("task_"));
         assert_eq!(TaskId::from_string("task-fixed").as_str(), "task-fixed");
+    }
+
+    #[test]
+    fn run_attachments_wrap_metadata() {
+        let mut attachments = RunAttachments::new();
+        assert!(attachments.is_empty());
+        attachments.insert("tenant", Value::String("alpha".to_string()));
+        assert_eq!(
+            attachments.get("tenant"),
+            Some(&Value::String("alpha".to_string()))
+        );
+        assert_eq!(attachments.len(), 1);
+        let metadata: Metadata = attachments.clone().into();
+        assert_eq!(metadata["tenant"], "alpha");
+        assert_eq!(RunAttachments::from(metadata).values["tenant"], "alpha");
     }
 
     #[test]
