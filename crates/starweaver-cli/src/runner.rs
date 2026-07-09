@@ -4,6 +4,7 @@ use std::{
     collections::{HashSet, VecDeque},
     sync::{Arc, Mutex, mpsc},
     thread,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -11,11 +12,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use starweaver_agent::{
-    AgentSession, AgentStreamRecord, ResumableState, attach_process_shell,
+    AgentError, AgentSession, AgentStreamRecord, ResumableState, attach_process_shell,
     attach_shell_review_handle,
 };
 use starweaver_context::{AgentContext, BusMessage};
-use starweaver_core::SessionId;
+use starweaver_core::{CancellationToken, SessionId};
 use starweaver_environment::{DynEnvironmentProvider, DynProcessShellProvider};
 use starweaver_model::{
     ContentPart, FinishReason, INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_METADATA,
@@ -147,6 +148,7 @@ pub fn execute_agent_session_with_channels(
     cancel_receiver: Option<mpsc::Receiver<()>>,
 ) -> CliResult<CliRunExecution> {
     let mut agent = profile.build_agent()?;
+    let cancellation_token = cancel_receiver.as_ref().map(|_| CancellationToken::new());
     if let Some(goal) = policy.goal.as_ref() {
         let options = GoalRunOptions::new(goal.objective.clone(), goal.max_iterations);
         let retry_budget = options.max_iterations().saturating_add(5);
@@ -173,6 +175,9 @@ pub fn execute_agent_session_with_channels(
     if let Some(pending) = pending_steering {
         agent = agent.with_capability(Arc::new(CliSteeringAdapter { pending }));
     }
+    if let Some(token) = cancellation_token.as_ref() {
+        agent = agent.with_cancellation_token(token.clone());
+    }
     let mut session = restore_state.map_or_else(
         || AgentSession::new(agent.clone()),
         |state| AgentSession::from_state(agent.clone(), state),
@@ -195,7 +200,13 @@ pub fn execute_agent_session_with_channels(
     session.set_metadata("cli.run_id", json!(run.run_id.as_str()));
     let runtime =
         tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?;
-    let run_outcome = run_session_stream(&runtime, &mut session, prompt_text, cancel_receiver)?;
+    let run_outcome = run_session_stream(
+        &runtime,
+        &mut session,
+        prompt_text,
+        cancel_receiver,
+        cancellation_token,
+    )?;
     let environment_state = runtime
         .block_on(environment.export_state())
         .map_err(|error| CliError::Run(error.to_string()))?;
@@ -298,6 +309,16 @@ enum SessionRunOutcome {
     Failed(String),
 }
 
+fn session_run_outcome(
+    result: Result<starweaver_agent::AgentStreamResult, AgentError>,
+) -> SessionRunOutcome {
+    match result {
+        Ok(stream) => SessionRunOutcome::Completed(Box::new(stream)),
+        Err(AgentError::Cancelled { .. }) => SessionRunOutcome::Cancelled,
+        Err(error) => SessionRunOutcome::Failed(error.to_string()),
+    }
+}
+
 fn sync_run_request_metadata(session: &mut AgentSession, run: &RunRecord) {
     session.set_metadata(
         "starweaver.durable_session_id",
@@ -326,35 +347,57 @@ fn run_session_stream(
     session: &mut AgentSession,
     prompt: String,
     cancel_receiver: Option<mpsc::Receiver<()>>,
+    cancellation_token: Option<CancellationToken>,
 ) -> CliResult<SessionRunOutcome> {
     let run_future = session.run_stream(prompt);
     if let Some(cancel_receiver) = cancel_receiver {
+        let cancellation_token = cancellation_token.unwrap_or_default();
+        let cancel_watcher = spawn_cancel_watcher(cancel_receiver, cancellation_token.clone());
         runtime.block_on(async move {
-            tokio::select! {
-                result = run_future => Ok(match result {
-                    Ok(stream) => SessionRunOutcome::Completed(Box::new(stream)),
-                    Err(error) => SessionRunOutcome::Failed(error.to_string()),
-                }),
-                () = wait_for_cancel(cancel_receiver) => Ok(SessionRunOutcome::Cancelled),
-            }
+            tokio::pin!(run_future);
+            let outcome = tokio::select! {
+                result = &mut run_future => session_run_outcome(result),
+                () = cancellation_token.cancelled() => SessionRunOutcome::Cancelled,
+            };
+            cancel_watcher.complete();
+            Ok(outcome)
         })
     } else {
-        Ok(match runtime.block_on(run_future) {
-            Ok(stream) => SessionRunOutcome::Completed(Box::new(stream)),
-            Err(error) => SessionRunOutcome::Failed(error.to_string()),
-        })
+        Ok(session_run_outcome(runtime.block_on(run_future)))
     }
 }
 
-async fn wait_for_cancel(cancel_receiver: mpsc::Receiver<()>) {
-    loop {
-        match cancel_receiver.try_recv() {
-            Ok(()) | Err(mpsc::TryRecvError::Disconnected) => return,
-            Err(mpsc::TryRecvError::Empty) => {
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+struct CancelWatcher {
+    completion_sender: mpsc::Sender<()>,
+}
+
+impl CancelWatcher {
+    fn complete(self) {
+        let _ = self.completion_sender.send(());
+    }
+}
+
+fn spawn_cancel_watcher(
+    cancel_receiver: mpsc::Receiver<()>,
+    cancellation_token: CancellationToken,
+) -> CancelWatcher {
+    let (completion_sender, completion_receiver) = mpsc::channel();
+    thread::spawn(move || {
+        loop {
+            if completion_receiver.try_recv().is_ok() {
+                return;
+            }
+            match cancel_receiver.recv_timeout(Duration::from_millis(25)) {
+                Ok(()) => {
+                    cancellation_token.cancel();
+                    return;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
         }
-    }
+    });
+    CancelWatcher { completion_sender }
 }
 
 fn start_steering_collector(receiver: mpsc::Receiver<CliSteeringMessage>) -> Arc<PendingSteering> {
@@ -698,12 +741,13 @@ mod tests {
 
     use starweaver_agent::{AgentBuilder, AgentSession, FunctionModel, FunctionModelInfo};
     use starweaver_context::AgentContext;
-    use starweaver_core::{ConversationId, RunId, SessionId};
+    use starweaver_core::{CancellationToken, ConversationId, RunId, SessionId};
     use starweaver_model::{
         CONTEXT_ORIGIN_METADATA, CONTEXT_ORIGIN_RUNTIME_CONTEXT, ContentPart,
-        INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_METADATA, ModelMessage, ModelRequest,
-        ModelRequestPart, ModelResponse, ModelResponsePart, ModelResponseStreamEvent,
-        ModelSettings, PartDelta, PartEnd, PartStart,
+        INSTRUCTION_DYNAMIC_METADATA, INSTRUCTION_ORIGIN_METADATA, ModelAdapter, ModelError,
+        ModelMessage, ModelProfile, ModelRequest, ModelRequestContext, ModelRequestParameters,
+        ModelRequestPart, ModelResponse, ModelResponseEventStream, ModelResponsePart,
+        ModelResponseStreamEvent, ModelSettings, PartDelta, PartEnd, PartStart, ProtocolFamily,
         providers::openai_responses::OpenAiResponsesAdapter,
     };
     use starweaver_runtime::{AgentCapability, AgentRunState, AgentStreamEvent, AgentStreamRecord};
@@ -712,9 +756,10 @@ mod tests {
 
     use super::{
         CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN, CliGuidanceAdapter,
-        CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage, cancelled_display_projection,
-        cli_guidance_key, interrupted_partial_response, start_steering_collector,
-        sync_run_request_metadata, sync_run_session_affinity,
+        CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage, SessionRunOutcome,
+        cancelled_display_projection, cli_guidance_key, interrupted_partial_response,
+        run_session_stream, start_steering_collector, sync_run_request_metadata,
+        sync_run_session_affinity,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
 
@@ -1528,6 +1573,108 @@ mod tests {
                 .unwrap()
                 .contains("unfinished reasoning")
         );
+    }
+
+    #[test]
+    fn run_session_stream_returns_cancelled_when_cancel_receiver_fires() {
+        let (cancel_sender, cancel_receiver) = mpsc::channel::<()>();
+        let (result_sender, result_receiver) = mpsc::channel::<Result<(), String>>();
+        let worker = thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime should start");
+            let agent = AgentBuilder::new(Arc::new(NeverEndingStreamModel::new())).build();
+            let mut session = AgentSession::new(agent);
+            let result = match run_session_stream(
+                &runtime,
+                &mut session,
+                "hello".to_string(),
+                Some(cancel_receiver),
+                Some(CancellationToken::new()),
+            ) {
+                Ok(SessionRunOutcome::Cancelled) => Ok(()),
+                Ok(SessionRunOutcome::Completed(_)) => {
+                    Err("run completed instead of cancelling".to_string())
+                }
+                Ok(SessionRunOutcome::Failed(error)) => {
+                    Err(format!("run failed instead of cancelling: {error}"))
+                }
+                Err(error) => Err(format!("runner returned error: {error}")),
+            };
+            result_sender
+                .send(result)
+                .expect("test result receiver should remain open");
+        });
+
+        thread::sleep(Duration::from_millis(50));
+        cancel_sender
+            .send(())
+            .expect("cancel receiver should remain open");
+        result_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("cancelled run should return quickly")
+            .expect("run should be cancelled");
+        worker.join().expect("runner worker should not panic");
+    }
+
+    struct NeverEndingStreamModel {
+        profile: ModelProfile,
+        senders:
+            Mutex<Vec<tokio::sync::mpsc::Sender<Result<ModelResponseStreamEvent, ModelError>>>>,
+    }
+
+    impl NeverEndingStreamModel {
+        fn new() -> Self {
+            Self {
+                profile: ModelProfile::for_protocol(ProtocolFamily::OpenAiChatCompletions),
+                senders: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ModelAdapter for NeverEndingStreamModel {
+        fn model_name(&self) -> &'static str {
+            "never-ending"
+        }
+
+        fn provider_name(&self) -> Option<&str> {
+            Some("test")
+        }
+
+        fn profile(&self) -> &ModelProfile {
+            &self.profile
+        }
+
+        fn default_settings(&self) -> Option<&ModelSettings> {
+            None
+        }
+
+        async fn request(
+            &self,
+            _messages: Vec<ModelMessage>,
+            _settings: Option<ModelSettings>,
+            _params: ModelRequestParameters,
+            _context: ModelRequestContext,
+        ) -> Result<ModelResponse, ModelError> {
+            Ok(ModelResponse::text("unexpected"))
+        }
+
+        async fn request_stream_incremental(
+            &self,
+            _messages: Vec<ModelMessage>,
+            _settings: Option<ModelSettings>,
+            _params: ModelRequestParameters,
+            context: ModelRequestContext,
+        ) -> Result<ModelResponseEventStream, ModelError> {
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
+            self.senders
+                .lock()
+                .expect("model sender lock should be available")
+                .push(sender);
+            Ok(ModelResponseEventStream::new_with_cancellation(
+                receiver,
+                context.cancellation_token(),
+            ))
+        }
     }
 
     #[test]

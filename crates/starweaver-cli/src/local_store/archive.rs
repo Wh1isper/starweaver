@@ -11,8 +11,9 @@ use starweaver_stream::{
 };
 
 use super::{
-    DisplayReplayWindow, LocalStore, db::insert_display_messages_tx,
+    DisplayReplayWindow, LocalStore,
     db::insert_raw_stream_records_tx,
+    db::{insert_display_messages_for_run_tx, insert_display_messages_tx},
 };
 use crate::{CliResult, config::CliConfig};
 
@@ -25,6 +26,11 @@ pub struct LocalStreamArchive {
 enum ParsedReplayScope<'a> {
     Run(&'a str),
     Session(&'a str),
+}
+
+enum DisplayAppendTarget {
+    Run((SessionId, RunId)),
+    Session,
 }
 
 impl LocalStreamArchive {
@@ -111,15 +117,42 @@ impl StreamArchive for LocalStreamArchive {
 
     async fn append_display_messages(
         &self,
-        _scope: ReplayScope,
+        scope: ReplayScope,
         messages: Vec<DisplayMessage>,
     ) -> ReplayResult<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
         let mut store = self.open_store()?;
+        let append_target = match parse_scope(&scope)? {
+            ParsedReplayScope::Run(run_id) => {
+                let storage_run_ref = storage_run_ref_for_scope(&store, run_id)?;
+                validate_run_scoped_display_messages(&storage_run_ref.0, &messages)?;
+                DisplayAppendTarget::Run(storage_run_ref)
+            }
+            ParsedReplayScope::Session(session_id) => {
+                validate_session_scoped_display_messages(&store, session_id, &messages)?;
+                DisplayAppendTarget::Session
+            }
+        };
         let tx = store
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(replay_failed)?;
-        insert_display_messages_tx(&tx, &messages).map_err(replay_failed)?;
+        match append_target {
+            DisplayAppendTarget::Run((storage_session_id, storage_run_id)) => {
+                insert_display_messages_for_run_tx(
+                    &tx,
+                    &storage_session_id,
+                    &storage_run_id,
+                    &messages,
+                )
+                .map_err(replay_failed)?;
+            }
+            DisplayAppendTarget::Session => {
+                insert_display_messages_tx(&tx, &messages).map_err(replay_failed)?;
+            }
+        }
         tx.commit().map_err(replay_failed)
     }
 
@@ -133,7 +166,10 @@ impl StreamArchive for LocalStreamArchive {
         }
         let store = self.open_store()?;
         match parse_scope(scope)? {
-            ParsedReplayScope::Run(run_id) => replay_run_display(&store, run_id, cursor.as_ref()),
+            ParsedReplayScope::Run(run_id) => {
+                let (session_id, run_id) = storage_run_ref_for_scope(&store, run_id)?;
+                replay_run_display(&store, &session_id, &run_id, cursor.as_ref())
+            }
             ParsedReplayScope::Session(session_id) => {
                 replay_session_display(&store, session_id, cursor.as_ref())
             }
@@ -182,7 +218,10 @@ impl StreamArchive for LocalStreamArchive {
     ) -> ReplayResult<Option<(ReplayCursor, ReplayCursor)>> {
         let store = self.open_store()?;
         match parse_scope(scope)? {
-            ParsedReplayScope::Run(run_id) => run_cursor_range(&store, scope, run_id),
+            ParsedReplayScope::Run(run_id) => {
+                let (session_id, run_id) = storage_run_ref_for_scope(&store, run_id)?;
+                run_cursor_range(&store, scope, &session_id, &run_id)
+            }
             ParsedReplayScope::Session(session_id) => {
                 session_cursor_range(&store, scope, session_id)
             }
@@ -190,9 +229,79 @@ impl StreamArchive for LocalStreamArchive {
     }
 }
 
+fn storage_run_ref_for_scope(store: &LocalStore, run_id: &str) -> ReplayResult<(SessionId, RunId)> {
+    let mut stmt = store
+        .conn
+        .prepare("SELECT session_id FROM runs WHERE run_id = ?1 ORDER BY updated_at DESC LIMIT 2")
+        .map_err(replay_failed)?;
+    let session_ids = stmt
+        .query_map(params![run_id], |row| row.get::<_, String>(0))
+        .map_err(replay_failed)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(replay_failed)?;
+    match session_ids.as_slice() {
+        [] => Err(ReplayError::NotFound(format!("run:{run_id}"))),
+        [session_id] => Ok((
+            SessionId::from_string(session_id.clone()),
+            RunId::from_string(run_id.to_string()),
+        )),
+        _ => Err(ReplayError::Failed(format!(
+            "run scope run:{run_id} is ambiguous across multiple sessions"
+        ))),
+    }
+}
+
+fn validate_run_scoped_display_messages(
+    storage_session_id: &SessionId,
+    messages: &[DisplayMessage],
+) -> ReplayResult<()> {
+    for (index, message) in messages.iter().enumerate() {
+        if message.session_id.as_str() != storage_session_id.as_str() {
+            return Err(ReplayError::Failed(format!(
+                "display message at index {index} has session_id {}, but run scope belongs to session_id {}",
+                message.session_id.as_str(),
+                storage_session_id.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_session_scoped_display_messages(
+    store: &LocalStore,
+    session_id: &str,
+    messages: &[DisplayMessage],
+) -> ReplayResult<()> {
+    for (index, message) in messages.iter().enumerate() {
+        if message.session_id.as_str() != session_id {
+            return Err(ReplayError::Failed(format!(
+                "display message at index {index} has session_id {}, but session scope is session:{session_id}",
+                message.session_id.as_str()
+            )));
+        }
+        let run_exists = store
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM runs WHERE session_id = ?1 AND run_id = ?2)",
+                params![session_id, message.run_id.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(replay_failed)?
+            != 0;
+        if !run_exists {
+            return Err(ReplayError::Failed(format!(
+                "display message at index {index} has run_id {}, which is not a run in session scope session:{session_id}",
+                message.run_id.as_str()
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn replay_run_display(
     store: &LocalStore,
-    run_id: &str,
+    session_id: &SessionId,
+    run_id: &RunId,
     cursor: Option<&ReplayCursor>,
 ) -> ReplayResult<Vec<DisplayMessage>> {
     let after = cursor.map_or(0, |cursor| cursor.sequence.saturating_add(1));
@@ -202,14 +311,18 @@ fn replay_run_display(
             r"
             SELECT message_json
             FROM display_messages
-            WHERE run_id = ?1 AND sequence_no >= ?2
+            WHERE session_id = ?1 AND run_id = ?2 AND sequence_no >= ?3
             ORDER BY sequence_no ASC
             ",
         )
         .map_err(replay_failed)?;
     let rows = stmt
         .query_map(
-            params![run_id, i64::try_from(after).map_err(replay_failed)?],
+            params![
+                session_id.as_str(),
+                run_id.as_str(),
+                i64::try_from(after).map_err(replay_failed)?
+            ],
             |row| row.get::<_, String>(0),
         )
         .map_err(replay_failed)?;
@@ -258,13 +371,14 @@ fn collect_display_messages(
 fn run_cursor_range(
     store: &LocalStore,
     scope: &ReplayScope,
-    run_id: &str,
+    session_id: &SessionId,
+    run_id: &RunId,
 ) -> ReplayResult<Option<(ReplayCursor, ReplayCursor)>> {
     let range = store
         .conn
         .query_row(
-            "SELECT MIN(sequence_no), MAX(sequence_no) FROM display_messages WHERE run_id = ?1",
-            params![run_id],
+            "SELECT MIN(sequence_no), MAX(sequence_no) FROM display_messages WHERE session_id = ?1 AND run_id = ?2",
+            params![session_id.as_str(), run_id.as_str()],
             |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?)),
         )
         .map_err(replay_failed)?;

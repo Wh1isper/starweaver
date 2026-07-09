@@ -60,6 +60,16 @@ pub fn openai_responses_http_config(api_key: impl Into<String>) -> HttpModelConf
     config
 }
 
+/// Build an xAI Responses HTTP model config from an API key.
+#[must_use]
+pub fn xai_responses_http_config(api_key: impl Into<String>) -> HttpModelConfig {
+    let mut config = HttpModelConfig::provider_endpoint("https://api.x.ai/v1", "v1", "responses");
+    config.auth = Some(AuthConfig::Bearer {
+        token: api_key.into(),
+    });
+    config
+}
+
 /// Build a Gemini HTTP model config from an API key and model name.
 #[must_use]
 pub fn gemini_http_config(

@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc, thread, time::Duration};
 
 use starweaver_context::{AgentContext, ToolConfig};
 use starweaver_environment::{
-    DynProcessShellProvider, EnvironmentProvider, ShellCommand, ShellProcessSnapshot,
-    ShellReviewEnvironmentContext,
+    DynProcessShellProvider, EnvironmentProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
+    ShellProcessStatus, ShellReviewEnvironmentContext,
 };
 use starweaver_tools::{
     DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
@@ -145,20 +145,87 @@ async fn shell_exec(
     {
         return Ok(blocked);
     }
+    if foreground_process_shell_supported(provider.as_ref())
+        && let Some(process_provider) = maybe_process_provider(&context)
+    {
+        return shell_exec_foreground_process(
+            &context,
+            provider.as_ref(),
+            process_provider,
+            &arguments,
+            shell_command,
+            &environment,
+        )
+        .await;
+    }
     let output = provider
         .run_shell(shell_command)
         .await
         .map_err(|error| tool_environment_error("shell_exec", error))?;
-    let truncate_limit = shell_output_truncate_limit(&context);
-    let stdout =
-        truncate_shell_output(provider.as_ref(), "stdout", &output.stdout, truncate_limit).await;
-    let stderr =
-        truncate_shell_output(provider.as_ref(), "stderr", &output.stderr, truncate_limit).await;
+    shell_exec_output_result(
+        &context,
+        provider.as_ref(),
+        &arguments,
+        &environment,
+        output,
+    )
+    .await
+}
+
+fn foreground_process_shell_supported(provider: &dyn EnvironmentProvider) -> bool {
+    provider.shell_review_context().shell_platform.as_deref() != Some("virtual")
+}
+
+async fn shell_exec_foreground_process(
+    context: &ToolContext,
+    environment_provider: &dyn EnvironmentProvider,
+    process_provider: DynProcessShellProvider,
+    arguments: &ShellExecArgs,
+    shell_command: ShellCommand,
+    environment: &BTreeMap<String, String>,
+) -> Result<ToolResult, ToolError> {
+    let started = process_provider
+        .start_process(shell_command)
+        .await
+        .map_err(|error| tool_environment_error("shell_exec", error))?;
+    let mut process_guard =
+        ForegroundProcessGuard::new(process_provider.clone(), started.process_id.clone());
+    let snapshot = wait_process_polling(
+        context,
+        process_provider.clone(),
+        "shell_exec",
+        &started.process_id,
+        arguments.timeout_seconds,
+        true,
+    )
+    .await?;
+    process_guard.disarm();
+    let output = shell_output_from_snapshot(&snapshot);
+    shell_exec_output_result(
+        context,
+        environment_provider,
+        arguments,
+        environment,
+        output,
+    )
+    .await
+}
+
+async fn shell_exec_output_result(
+    context: &ToolContext,
+    provider: &dyn EnvironmentProvider,
+    arguments: &ShellExecArgs,
+    environment: &BTreeMap<String, String>,
+    output: ShellOutput,
+) -> Result<ToolResult, ToolError> {
+    let truncate_limit = shell_output_truncate_limit(context);
+    let stdout = truncate_shell_output(provider, "stdout", &output.stdout, truncate_limit).await;
+    let stderr = truncate_shell_output(provider, "stderr", &output.stderr, truncate_limit).await;
     let mut result = serde_json::json!({
-        "command": arguments.command,
+        "command": &arguments.command,
         "timeout_seconds": arguments.timeout_seconds,
         "environment": environment,
-        "cwd": arguments.cwd,
+        "cwd": &arguments.cwd,
         "return_code": output.status,
         "stdout": stdout.content,
         "stderr": stderr.content,
@@ -169,15 +236,151 @@ async fn shell_exec(
     if let Some(path) = stderr.file_path {
         result["stderr_file_path"] = serde_json::json!(path);
     }
+    if !output.metadata.is_empty() {
+        result["metadata"] = serde_json::json!(output.metadata);
+    }
     Ok(ToolResult::new(
-        guard_shell_result(&context, Some(provider.as_ref()), result, "shell-exec").await,
+        guard_shell_result(context, Some(provider), result, "shell-exec").await,
     ))
+}
+
+struct ForegroundProcessGuard {
+    provider: Option<DynProcessShellProvider>,
+    process_id: String,
+}
+
+impl ForegroundProcessGuard {
+    fn new(provider: DynProcessShellProvider, process_id: String) -> Self {
+        Self {
+            provider: Some(provider),
+            process_id,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.provider = None;
+    }
+}
+
+impl Drop for ForegroundProcessGuard {
+    fn drop(&mut self) {
+        let Some(provider) = self.provider.take() else {
+            return;
+        };
+        let process_id = self.process_id.clone();
+        std::mem::drop(thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            let _ = runtime.block_on(provider.kill_process(&process_id));
+        }));
+    }
+}
+
+async fn wait_process_polling(
+    context: &ToolContext,
+    provider: DynProcessShellProvider,
+    tool: &str,
+    process_id: &str,
+    timeout_seconds: u64,
+    kill_on_timeout: bool,
+) -> Result<ShellProcessSnapshot, ToolError> {
+    let cancellation_token = context.cancellation_token();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_seconds);
+    loop {
+        if cancellation_token.is_cancelled() {
+            let _ = provider.kill_process(process_id).await;
+            return Err(ToolError::Cancelled {
+                tool: tool.to_string(),
+                reason: "agent run cancellation requested".to_string(),
+            });
+        }
+        let snapshot = provider
+            .wait_process(process_id, 0)
+            .await
+            .map_err(|error| tool_environment_error(tool, error))?;
+        if snapshot.status != ShellProcessStatus::Running {
+            return Ok(snapshot);
+        }
+        if timeout_seconds == 0 {
+            if kill_on_timeout {
+                let mut snapshot = provider
+                    .kill_process(process_id)
+                    .await
+                    .map_err(|error| tool_environment_error(tool, error))?;
+                mark_process_timed_out(&mut snapshot, timeout_seconds);
+                return Ok(snapshot);
+            }
+            return Ok(snapshot);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            if kill_on_timeout {
+                let mut snapshot = provider
+                    .kill_process(process_id)
+                    .await
+                    .map_err(|error| tool_environment_error(tool, error))?;
+                mark_process_timed_out(&mut snapshot, timeout_seconds);
+                return Ok(snapshot);
+            }
+            return Ok(snapshot);
+        }
+        tokio::select! {
+            () = cancellation_token.cancelled() => {
+                let _ = provider.kill_process(process_id).await;
+                return Err(ToolError::Cancelled {
+                    tool: tool.to_string(),
+                    reason: "agent run cancellation requested".to_string(),
+                });
+            }
+            () = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+    }
+}
+
+fn shell_output_from_snapshot(snapshot: &ShellProcessSnapshot) -> ShellOutput {
+    let mut metadata = snapshot.metadata.clone();
+    metadata.insert(
+        "process_id".to_string(),
+        serde_json::json!(&snapshot.process_id),
+    );
+    metadata.insert(
+        "process_status".to_string(),
+        serde_json::json!(&snapshot.status),
+    );
+    ShellOutput {
+        status: snapshot.return_code.unwrap_or(match &snapshot.status {
+            ShellProcessStatus::Completed => 0,
+            ShellProcessStatus::Running
+            | ShellProcessStatus::Failed
+            | ShellProcessStatus::Killed => -1,
+        }),
+        stdout: snapshot.stdout.clone(),
+        stderr: snapshot.stderr.clone(),
+        metadata,
+    }
+}
+
+fn mark_process_timed_out(snapshot: &mut ShellProcessSnapshot, timeout_seconds: u64) {
+    snapshot
+        .metadata
+        .insert("timed_out".to_string(), serde_json::json!(true));
+    snapshot.metadata.insert(
+        "timeout_seconds".to_string(),
+        serde_json::json!(timeout_seconds),
+    );
+    if !snapshot.stderr.is_empty() && !snapshot.stderr.ends_with('\n') {
+        snapshot.stderr.push('\n');
+    }
+    snapshot.stderr.push_str("shell command timed out");
 }
 
 fn merged_shell_environment(
     context: &ToolContext,
-    per_call: Option<std::collections::BTreeMap<String, String>>,
-) -> std::collections::BTreeMap<String, String> {
+    per_call: Option<BTreeMap<String, String>>,
+) -> BTreeMap<String, String> {
     let mut environment = context
         .dependency::<AgentContext>()
         .map_or_else(std::collections::BTreeMap::new, |agent_context| {
@@ -194,10 +397,15 @@ async fn shell_wait(
     arguments: ShellWaitArgs,
 ) -> Result<ToolResult, ToolError> {
     let provider = process_provider(&context, "shell_wait")?;
-    let snapshot = provider
-        .wait_process(&arguments.process_id, arguments.timeout_seconds)
-        .await
-        .map_err(|error| tool_environment_error("shell_wait", error))?;
+    let snapshot = wait_process_polling(
+        &context,
+        provider,
+        "shell_wait",
+        &arguments.process_id,
+        arguments.timeout_seconds,
+        false,
+    )
+    .await?;
     process_result(&context, &snapshot).await
 }
 
@@ -274,14 +482,16 @@ fn process_provider(
     context: &ToolContext,
     tool: &str,
 ) -> Result<DynProcessShellProvider, ToolError> {
-    let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
-        tool_user_error(tool, "AgentContext dependency is missing from ToolContext")
-    })?;
-    let handle = agent_context
+    maybe_process_provider(context)
+        .ok_or_else(|| tool_user_error(tool, "ProcessShellHandle is missing from AgentContext"))
+}
+
+fn maybe_process_provider(context: &ToolContext) -> Option<DynProcessShellProvider> {
+    let agent_context = context.dependency::<AgentContext>()?;
+    agent_context
         .dependencies
         .get::<ProcessShellHandle>()
-        .ok_or_else(|| tool_user_error(tool, "ProcessShellHandle is missing from AgentContext"))?;
-    Ok(handle.provider())
+        .map(|handle| handle.provider())
 }
 
 async fn process_result(

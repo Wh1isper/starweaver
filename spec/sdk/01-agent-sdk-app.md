@@ -75,8 +75,8 @@ SDK policy presets configure common app behavior while runtime semantics remain 
 
 Model presets live in `starweaver-model` and are re-exported by `starweaver-agent`. The model preset surface provides:
 
-- settings presets such as `anthropic_high`, `openai_responses_high`, `gemini_thinking_level_low`, and provider aliases such as `anthropic` or `gemini`
-- config presets such as `claude_1m`, `gpt5_270k`, `deepseek_v4_1m`, and `gemini_200k`
+- settings presets such as `anthropic_high`, `openai_responses_high`, `grok_4_5_high`, `gemini_thinking_level_low`, and provider aliases such as `anthropic`, `grok`, or `gemini`
+- config presets such as `claude_1m`, `gpt5_270k`, `grok_4_5_500k`, `deepseek_v4_1m`, and `gemini_200k`
 - runtime presets that combine model id, provider name, model name, settings preset, config preset, and a caller-supplied `HttpModelConfig`
 - `AgentSpec.model.settings_preset` with inline `settings` as an overlay
 

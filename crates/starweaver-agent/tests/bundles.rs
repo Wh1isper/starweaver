@@ -1,6 +1,9 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use starweaver_agent::{
@@ -13,10 +16,10 @@ use starweaver_agent::{
     json_tool, namespaced_toolset, shell_tools, task_tools,
 };
 use starweaver_context::{AgentContextHandle, DependencyStore, ToolConfig};
-use starweaver_core::{ConversationId, Metadata, RunId};
+use starweaver_core::{CancellationToken, ConversationId, Metadata, RunId};
 use starweaver_environment::{
-    EnvironmentPolicy, EnvironmentProvider, FilePolicy, LocalEnvironmentProvider, ShellOutput,
-    ShellPolicy, VirtualEnvironmentProvider,
+    EnvironmentPolicy, EnvironmentProvider, FilePolicy, LocalEnvironmentProvider,
+    ProcessShellProvider, ShellOutput, ShellPolicy, ShellProcessStatus, VirtualEnvironmentProvider,
 };
 use starweaver_model::{
     CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_METADATA, ContentPart, ModelMessage,
@@ -1472,6 +1475,104 @@ async fn read_media_rejects_non_media_http_url_with_actionable_retry() {
             .unwrap()
             .contains("Use `scrape`")
     );
+}
+
+#[tokio::test]
+async fn local_shell_exec_foreground_cancels_running_process_quickly() {
+    let root = unique_agent_test_dir();
+    let provider = Arc::new(
+        LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        }),
+    );
+    let mut registry = ToolRegistry::new();
+    registry.insert_toolset(&shell_tools());
+    let mut agent_context = AgentContext::default();
+    attach_environment(&mut agent_context, provider.clone());
+    let mut dependencies = agent_context.dependencies.clone();
+    dependencies.insert(agent_context);
+    let cancellation_token = CancellationToken::new();
+    let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+        .with_dependencies(dependencies)
+        .with_cancellation_token(cancellation_token.clone());
+    let registry = Arc::new(registry);
+    let command = "exec sleep 5";
+    let started_at = Instant::now();
+    let handle = tokio::spawn({
+        let registry = Arc::clone(&registry);
+        async move {
+            execute_tool_call(
+                &registry,
+                context,
+                "cancel-shell",
+                "shell_exec",
+                serde_json::json!({"command": command, "timeout_seconds": 30}),
+            )
+            .await
+        }
+    });
+
+    assert!(
+        wait_for_local_process_status(
+            provider.as_ref(),
+            command,
+            ShellProcessStatus::Running,
+            Duration::from_secs(2),
+        )
+        .await,
+        "foreground shell process should start"
+    );
+    cancellation_token.cancel();
+    let result = match tokio::time::timeout(Duration::from_secs(2), handle).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => panic!("shell task should not panic: {error}"),
+        Err(error) => panic!("cancelled shell tool should return quickly: {error}"),
+    };
+
+    assert!(
+        started_at.elapsed() < Duration::from_secs(2),
+        "foreground shell cancellation took {:?}",
+        started_at.elapsed()
+    );
+    assert!(result.is_error, "expected cancellation error: {result:?}");
+    assert_eq!(result.content["kind"], "cancelled");
+    assert_eq!(result.metadata["error_kind"], "cancelled");
+    assert!(
+        wait_for_local_process_status(
+            provider.as_ref(),
+            command,
+            ShellProcessStatus::Killed,
+            Duration::from_secs(2),
+        )
+        .await,
+        "foreground shell process should be killed after cancellation: {:?}",
+        provider.list_processes().await.unwrap()
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+async fn wait_for_local_process_status(
+    provider: &LocalEnvironmentProvider,
+    command: &str,
+    status: ShellProcessStatus,
+    timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let processes = provider.list_processes().await.unwrap();
+        if processes
+            .iter()
+            .any(|process| process.command == command && process.status == status)
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 #[tokio::test]

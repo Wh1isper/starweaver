@@ -85,6 +85,7 @@ pub use starweaver_model::{
     ModelSettingsPreset, anthropic_http_config, gemini_http_config, get_model_config,
     get_model_settings, list_model_config_presets, list_model_settings_presets,
     model_runtime_preset, openai_chat_http_config, openai_responses_http_config,
+    xai_responses_http_config,
 };
 pub use starweaver_runtime::{
     AdapterTraceRecorder, AgentCapability, AgentCheckpoint, AgentEndStrategy, AgentError,

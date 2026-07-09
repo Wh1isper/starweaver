@@ -31,7 +31,7 @@ pub use archive::LocalStreamArchive;
 use db::{
     atomic_write_json, cheap_checksum, checkpoint_refs, i64_to_usize, insert_approval_records_tx,
     insert_checkpoint_refs_tx, insert_context_state_tx, insert_deferred_tool_records_tx,
-    insert_display_messages_tx, insert_environment_state_tx, insert_file_ref_tx,
+    insert_display_messages_for_run_tx, insert_environment_state_tx, insert_file_ref_tx,
     insert_raw_stream_records_tx, insert_stream_cursor_tx, load_session_tx, next_sequence_tx,
     upsert_run_tx, upsert_session_tx, usize_to_i64,
 };
@@ -378,7 +378,12 @@ impl LocalStore {
         upsert_run_tx(&tx, run)?;
         upsert_session_tx(&tx, &session)?;
         insert_raw_stream_records_tx(&tx, run, &artifacts.raw_records)?;
-        insert_display_messages_tx(&tx, &artifacts.display_messages)?;
+        insert_display_messages_for_run_tx(
+            &tx,
+            &run.session_id,
+            &run.run_id,
+            &artifacts.display_messages,
+        )?;
         insert_file_ref_tx(&tx, run, &raw_ref)?;
         insert_file_ref_tx(&tx, run, &display_ref)?;
         insert_file_ref_tx(&tx, run, &state_ref)?;
@@ -449,7 +454,7 @@ impl LocalStore {
         session.updated_at = run.updated_at;
         upsert_run_tx(&tx, run)?;
         upsert_session_tx(&tx, &session)?;
-        insert_display_messages_tx(&tx, messages)?;
+        insert_display_messages_for_run_tx(&tx, &run.session_id, &run.run_id, messages)?;
         insert_file_ref_tx(&tx, run, &display_ref)?;
         tx.commit()?;
         Ok(())

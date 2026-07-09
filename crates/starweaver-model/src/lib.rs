@@ -40,7 +40,7 @@ pub use presets::{
     ModelSettingsPreset, anthropic_http_config, gemini_http_config, get_model_config,
     get_model_settings, google_cloud_http_config, google_cloud_project_http_config,
     list_model_config_presets, list_model_settings_presets, model_runtime_preset,
-    openai_chat_http_config, openai_responses_http_config,
+    openai_chat_http_config, openai_responses_http_config, xai_responses_http_config,
 };
 pub use profile::{
     JsonSchemaTransformer, MessageNormalization, ModelProfile, NativeToolKind, ProtocolFamily,

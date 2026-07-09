@@ -83,7 +83,7 @@ assert!(stream.events().iter().any(|record| matches!(
 
 ## Built-in model presets
 
-`starweaver-model` includes built-in presets for common provider settings and model capability profiles. The preset names mirror the SDK-facing Starweaver style: provider defaults such as `anthropic`, effort presets such as `openai_responses_high`, and capability presets such as `claude_1m` or `gpt5_270k`.
+`starweaver-model` includes built-in presets for common provider settings and model capability profiles. The preset names mirror the SDK-facing Starweaver style: provider defaults such as `anthropic`, effort presets such as `openai_responses_high` or `grok_4_5_high`, and capability presets such as `claude_1m`, `gpt5_270k`, or `grok_4_5_500k`.
 
 ```rust
 use starweaver_agent::{get_model_config, get_model_settings};
@@ -94,6 +94,9 @@ assert_eq!(settings.max_tokens, Some(32 * 1024));
 
 let config = get_model_config("claude")?;
 assert_eq!(config.context_window, 1_000_000);
+
+let grok = get_model_config("grok-4.5")?;
+assert_eq!(grok.context_window, 500_000);
 # Ok(())
 # }
 ```
@@ -112,7 +115,9 @@ model:
 For production aliases, combine a runtime preset with a provider HTTP config:
 
 ```rust
-use starweaver_agent::{anthropic_http_config, model_runtime_preset};
+use starweaver_agent::{
+    anthropic_http_config, model_runtime_preset, xai_responses_http_config,
+};
 
 # fn example() -> Result<(), starweaver_agent::ModelPresetError> {
 let preset = model_runtime_preset(
@@ -124,6 +129,10 @@ let preset = model_runtime_preset(
 )?;
 let alias = preset.provider_alias(anthropic_http_config("api-key"));
 assert_eq!(alias.alias, "claude-sonnet");
+
+let grok = model_runtime_preset("grok", "xai", "grok-4.5", "grok", "grok-4.5")?;
+let alias = grok.provider_alias(xai_responses_http_config("api-key"));
+assert_eq!(alias.model_name, "grok-4.5");
 # Ok(())
 # }
 ```

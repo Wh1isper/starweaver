@@ -39,6 +39,7 @@ pub(super) fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
         "openai_responses_xhigh" => {
             Some(openai_responses("xhigh", "detailed", 64 * K_TOKENS, None))
         }
+        "openai_responses_max" => Some(openai_responses("max", "detailed", 128 * K_TOKENS, None)),
         "openai_responses_high" => Some(openai_responses("high", "detailed", 32 * K_TOKENS, None)),
         "openai_responses_medium" => Some(openai_responses("medium", "auto", 16 * K_TOKENS, None)),
         "openai_responses_low" => Some(openai_responses("low", "concise", 8 * K_TOKENS, None)),
@@ -52,6 +53,12 @@ pub(super) fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
             "xhigh",
             "detailed",
             64 * K_TOKENS,
+            Some(ServiceTier::Priority),
+        )),
+        "openai_responses_max_fast" => Some(openai_responses(
+            "max",
+            "detailed",
+            128 * K_TOKENS,
             Some(ServiceTier::Priority),
         )),
         "openai_responses_high_fast" => Some(openai_responses(
@@ -81,6 +88,9 @@ pub(super) fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
             Some(128 * K_TOKENS),
             false,
         )),
+        "grok_4_5_default" | "grok_4_5_high" => Some(xai_responses("high", 32 * K_TOKENS)),
+        "grok_4_5_medium" => Some(xai_responses("medium", 16 * K_TOKENS)),
+        "grok_4_5_low" => Some(xai_responses("low", 8 * K_TOKENS)),
         "mimo_v2_5" | "mimo_v2_5_pro" => Some(mimo_v2_5()),
         "gemini_thinking_budget_default" | "gemini_thinking_budget_medium" => {
             Some(gemini_budget(16 * K_TOKENS, 16 * K_TOKENS))
@@ -342,6 +352,20 @@ fn openai_responses(
         }),
         service_tier,
         provider_options: Some(json!({"store": false})),
+        ..ModelSettings::default()
+    }
+}
+
+fn xai_responses(effort: &str, max_tokens: u32) -> ModelSettings {
+    ModelSettings {
+        max_tokens: Some(max_tokens),
+        thinking: Some(ThinkingSettings {
+            effort: effort.to_string(),
+            budget_tokens: None,
+            mode: None,
+            include_thoughts: None,
+            summary: None,
+        }),
         ..ModelSettings::default()
     }
 }
