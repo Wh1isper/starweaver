@@ -76,11 +76,13 @@ fn preset_enums_match_registries_and_serde_names() {
         ModelSettingsPreset::OpenAiLow,
         ModelSettingsPreset::OpenAiResponsesDefault,
         ModelSettingsPreset::OpenAiResponsesXhigh,
+        ModelSettingsPreset::OpenAiResponsesMax,
         ModelSettingsPreset::OpenAiResponsesHigh,
         ModelSettingsPreset::OpenAiResponsesMedium,
         ModelSettingsPreset::OpenAiResponsesLow,
         ModelSettingsPreset::OpenAiResponsesDefaultFast,
         ModelSettingsPreset::OpenAiResponsesXhighFast,
+        ModelSettingsPreset::OpenAiResponsesMaxFast,
         ModelSettingsPreset::OpenAiResponsesHighFast,
         ModelSettingsPreset::OpenAiResponsesMediumFast,
         ModelSettingsPreset::OpenAiResponsesLowFast,
@@ -88,6 +90,10 @@ fn preset_enums_match_registries_and_serde_names() {
         ModelSettingsPreset::DeepSeekV4High,
         ModelSettingsPreset::DeepSeekV4Max,
         ModelSettingsPreset::DeepSeekV4Off,
+        ModelSettingsPreset::Grok45Default,
+        ModelSettingsPreset::Grok45High,
+        ModelSettingsPreset::Grok45Medium,
+        ModelSettingsPreset::Grok45Low,
         ModelSettingsPreset::MimoV25,
         ModelSettingsPreset::MimoV25Pro,
         ModelSettingsPreset::GeminiThinkingBudgetDefault,
@@ -123,6 +129,7 @@ fn preset_enums_match_registries_and_serde_names() {
         ModelConfigPreset::Gpt5_1m,
         ModelConfigPreset::DeepSeekV4_400k,
         ModelConfigPreset::DeepSeekV4_1m,
+        ModelConfigPreset::Grok45_500k,
         ModelConfigPreset::MimoV25_1m,
         ModelConfigPreset::MimoV25Pro1m,
         ModelConfigPreset::Gemini200k,
@@ -156,6 +163,14 @@ fn resolves_model_settings_presets_and_aliases() {
     assert_eq!(fast.service_tier, Some(ServiceTier::Priority));
     assert_eq!(fast.thinking.unwrap().summary.as_deref(), Some("detailed"));
 
+    let max = get_model_settings("openai_responses_max").unwrap();
+    assert_eq!(max.max_tokens, Some(128 * K_TOKENS));
+    assert_eq!(max.thinking.unwrap().effort, "max");
+
+    let grok = get_model_settings("grok").unwrap();
+    assert_eq!(grok.max_tokens, Some(32 * K_TOKENS));
+    assert_eq!(grok.thinking.unwrap().effort, "high");
+
     let gemini = get_model_settings("gemini_thinking_level_minimal").unwrap();
     assert_eq!(gemini.thinking.unwrap().effort, "MINIMAL");
 }
@@ -165,6 +180,12 @@ fn resolves_model_config_presets_and_aliases() {
     let claude = get_model_config("claude").unwrap();
     assert_eq!(claude.context_window, 1_000_000);
     assert!(claude.profile.supports_document_input);
+
+    let grok = get_model_config("grok-4.5").unwrap();
+    assert_eq!(grok.context_window, 500_000);
+    assert_eq!(grok.max_images, 20);
+    assert!(grok.profile.supports_image_input);
+    assert!(grok.profile.thinking_always_enabled);
 
     let gemini = get_model_config("gemini").unwrap();
     assert_eq!(gemini.max_videos, 1);
@@ -186,4 +207,13 @@ fn builds_runtime_preset_provider_alias() {
     assert_eq!(alias.model_name, "claude-sonnet-4-5");
     assert!(alias.default_settings.unwrap().thinking.is_some());
     assert!(alias.profile.unwrap().supports_document_input);
+
+    let grok = model_runtime_preset("grok", "xai", "grok-4.5", "grok", "grok-4.5").unwrap();
+    let alias = grok.provider_alias(xai_responses_http_config("test-key"));
+    assert_eq!(alias.alias, "grok");
+    assert_eq!(alias.provider_name, "xai");
+    assert_eq!(alias.model_name, "grok-4.5");
+    assert_eq!(alias.http.endpoint_url(), "https://api.x.ai/v1/responses");
+    assert!(alias.default_settings.unwrap().thinking.is_some());
+    assert!(alias.profile.unwrap().thinking_always_enabled);
 }

@@ -1,7 +1,7 @@
 //! Optional USD pricing helpers for usage accounting.
 //!
 //! Built-in model prices are best-effort snapshots of public standard direct API
-//! pricing checked on 2026-06-16. They intentionally exclude batch discounts,
+//! pricing checked when catalog rows are added or updated. They intentionally exclude batch discounts,
 //! priority/flex tiers, regional multipliers, audio/image modality surcharges,
 //! cache storage charges, taxes, promotions, and enterprise contracts unless the
 //! price can be represented by per-token input, cache-write, cache-read, output,
@@ -277,6 +277,10 @@ mod tests {
                 ),
             ),
             ("claude-sonnet-4", ModelPricing::new(3_000_000, 15_000_000)),
+            ("grok-4.5", ModelPricing::new(2_000_000, 6_000_000)),
+            ("gpt-5.6-sol", ModelPricing::new(5_000_000, 30_000_000)),
+            ("gpt-5.6-terra", ModelPricing::new(2_500_000, 15_000_000)),
+            ("gpt-5.6-luna", ModelPricing::new(1_000_000, 6_000_000)),
             ("gpt-4.1", ModelPricing::new(2_000_000, 8_000_000)),
             ("gemini-2.5-flash", ModelPricing::new(300_000, 2_500_000)),
             (
@@ -374,6 +378,35 @@ mod tests {
             estimate_pricing_for_model("gpt-4.1", &usage)
                 .map(|estimate| estimate.amount_micros_usd),
             Some(9_625_000)
+        );
+        assert_eq!(
+            estimate_pricing_for_model("xai:grok-4.5-latest", &usage)
+                .map(|estimate| estimate.amount_micros_usd),
+            Some(7_625_000)
+        );
+    }
+
+    #[test]
+    fn gpt_5_6_pricing_uses_published_cache_write_and_read_rates() {
+        let usage = Usage {
+            requests: 1,
+            input_tokens: 1_000_000,
+            cache_write_tokens: 200_000,
+            cache_read_tokens: 300_000,
+            output_tokens: 1_000_000,
+            total_tokens: 2_000_000,
+            tool_calls: 0,
+        };
+
+        assert_eq!(
+            estimate_pricing_for_model("gpt-5.6-sol", &usage)
+                .map(|estimate| estimate.amount_micros_usd),
+            Some(33_900_000)
+        );
+        assert_eq!(
+            estimate_pricing_for_model("openai:gpt-5-6-luna", &usage)
+                .map(|estimate| estimate.amount_micros_usd),
+            Some(6_780_000)
         );
     }
 

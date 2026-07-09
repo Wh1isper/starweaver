@@ -204,6 +204,9 @@ pub enum ModelSettingsPreset {
     /// `openai_responses_xhigh` model settings preset.
     #[serde(rename = "openai_responses_xhigh")]
     OpenAiResponsesXhigh,
+    /// `openai_responses_max` model settings preset.
+    #[serde(rename = "openai_responses_max")]
+    OpenAiResponsesMax,
     /// `openai_responses_high` model settings preset.
     #[serde(rename = "openai_responses_high")]
     OpenAiResponsesHigh,
@@ -219,6 +222,9 @@ pub enum ModelSettingsPreset {
     /// `openai_responses_xhigh_fast` model settings preset.
     #[serde(rename = "openai_responses_xhigh_fast")]
     OpenAiResponsesXhighFast,
+    /// `openai_responses_max_fast` model settings preset.
+    #[serde(rename = "openai_responses_max_fast")]
+    OpenAiResponsesMaxFast,
     /// `openai_responses_high_fast` model settings preset.
     #[serde(rename = "openai_responses_high_fast")]
     OpenAiResponsesHighFast,
@@ -240,6 +246,18 @@ pub enum ModelSettingsPreset {
     /// `deepseek_v4_off` model settings preset.
     #[serde(rename = "deepseek_v4_off")]
     DeepSeekV4Off,
+    /// `grok_4_5_default` model settings preset.
+    #[serde(rename = "grok_4_5_default")]
+    Grok45Default,
+    /// `grok_4_5_high` model settings preset.
+    #[serde(rename = "grok_4_5_high")]
+    Grok45High,
+    /// `grok_4_5_medium` model settings preset.
+    #[serde(rename = "grok_4_5_medium")]
+    Grok45Medium,
+    /// `grok_4_5_low` model settings preset.
+    #[serde(rename = "grok_4_5_low")]
+    Grok45Low,
     /// `mimo_v2_5` model settings preset.
     #[serde(rename = "mimo_v2_5")]
     MimoV25,
@@ -362,11 +380,13 @@ impl ModelSettingsPreset {
             Self::OpenAiLow => "openai_low",
             Self::OpenAiResponsesDefault => "openai_responses_default",
             Self::OpenAiResponsesXhigh => "openai_responses_xhigh",
+            Self::OpenAiResponsesMax => "openai_responses_max",
             Self::OpenAiResponsesHigh => "openai_responses_high",
             Self::OpenAiResponsesMedium => "openai_responses_medium",
             Self::OpenAiResponsesLow => "openai_responses_low",
             Self::OpenAiResponsesDefaultFast => "openai_responses_default_fast",
             Self::OpenAiResponsesXhighFast => "openai_responses_xhigh_fast",
+            Self::OpenAiResponsesMaxFast => "openai_responses_max_fast",
             Self::OpenAiResponsesHighFast => "openai_responses_high_fast",
             Self::OpenAiResponsesMediumFast => "openai_responses_medium_fast",
             Self::OpenAiResponsesLowFast => "openai_responses_low_fast",
@@ -374,6 +394,10 @@ impl ModelSettingsPreset {
             Self::DeepSeekV4High => "deepseek_v4_high",
             Self::DeepSeekV4Max => "deepseek_v4_max",
             Self::DeepSeekV4Off => "deepseek_v4_off",
+            Self::Grok45Default => "grok_4_5_default",
+            Self::Grok45High => "grok_4_5_high",
+            Self::Grok45Medium => "grok_4_5_medium",
+            Self::Grok45Low => "grok_4_5_low",
             Self::MimoV25 => "mimo_v2_5",
             Self::MimoV25Pro => "mimo_v2_5_pro",
             Self::GeminiThinkingBudgetDefault => "gemini_thinking_budget_default",

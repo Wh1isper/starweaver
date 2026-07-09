@@ -45,6 +45,14 @@ const fn with_cache(
         .with_cache_read_micros_per_million_tokens(cache_read_micros)
 }
 
+const fn openai_gpt56_pricing(input_micros: u64, output_micros: u64) -> ModelPricingDetails {
+    with_cache(
+        ModelPricingDetails::new(input_micros, output_micros),
+        scale_rate(input_micros, 125, 100),
+        scale_rate(input_micros, 10, 100),
+    )
+}
+
 const fn qwen_pricing(input_cny_millis: u64, output_cny_millis: u64) -> ModelPricingDetails {
     let input = cny_millis_to_usd_micros(input_cny_millis);
     ModelPricingDetails::new(input, cny_millis_to_usd_micros(output_cny_millis))
@@ -163,12 +171,12 @@ const QWEN_FLASH_TIERS: &[ModelPricingTier] = &[
     qwen_tier(None, 1_200, 12_000),
 ];
 
-// OpenAI GPT-5.4/5.5 long-context surcharges are intentionally left as fixed
-// standard rows until a clear public context threshold can be represented.
+// OpenAI GPT-5.4/5.5/5.6 long-context surcharges are intentionally left as
+// fixed standard rows until a clear public context threshold can be represented.
 
 // Built-in catalog of standard model prices.
 //
-// Source pages checked 2026-06-16:
+// Source pages checked when rows are added or updated:
 // - OpenAI: <https://developers.openai.com/api/docs/pricing>
 // - Anthropic: <https://platform.claude.com/docs/en/about-claude/pricing>
 // - Google Gemini: <https://ai.google.dev/gemini-api/docs/pricing>
@@ -178,8 +186,39 @@ const QWEN_FLASH_TIERS: &[ModelPricingTier] = &[
 // - Moonshot Kimi: <https://platform.kimi.ai/docs/pricing/chat>
 // - Xiaomi MiMo: <https://platform.xiaomimimo.com/docs/en-US/price/pay-as-you-go>
 // - DeepSeek: <https://api-docs.deepseek.com/quick_start/pricing>
+// - xAI Grok: <https://docs.x.ai/developers/models/grok-4.5>
 const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
+    // xAI Grok. Cached input is represented as cache-read pricing.
+    PricingRecord::new(
+        &[
+            "grok-4.5",
+            "grok-4-5",
+            "grok-4.5-latest",
+            "grok-4-5-latest",
+            "grok-build-latest",
+        ],
+        with_cache_read(ModelPricingDetails::new(2_000_000, 6_000_000), 500_000),
+    ),
     // OpenAI GPT and o-series. Cached input is represented as cache-read pricing.
+    PricingRecord::new(
+        &[
+            "gpt-5.6",
+            "gpt-5-6",
+            "gpt-5.6-sol",
+            "gpt-5-6-sol",
+            "gpt-5.6-sol-ultra",
+            "gpt-5-6-sol-ultra",
+        ],
+        openai_gpt56_pricing(5_000_000, 30_000_000),
+    ),
+    PricingRecord::new(
+        &["gpt-5.6-terra", "gpt-5-6-terra"],
+        openai_gpt56_pricing(2_500_000, 15_000_000),
+    ),
+    PricingRecord::new(
+        &["gpt-5.6-luna", "gpt-5-6-luna"],
+        openai_gpt56_pricing(1_000_000, 6_000_000),
+    ),
     PricingRecord::new(
         &[
             "gpt-5.5",

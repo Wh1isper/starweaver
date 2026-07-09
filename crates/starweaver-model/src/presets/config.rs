@@ -70,6 +70,15 @@ pub(super) fn model_config_by_name(name: &str) -> Option<ModelConfigPresetData> 
             false,
             false,
         )),
+        "grok_4_5_500k" => Some(config_data(
+            name,
+            ProtocolFamily::OpenAiResponses,
+            500_000,
+            20,
+            0,
+            false,
+            true,
+        )),
         "mimo_v2_5_1m" => Some(config_data(
             name,
             ProtocolFamily::OpenAiChatCompletions,
@@ -123,6 +132,7 @@ fn config_data(
     profile.supports_image_input = max_images > 0;
     profile.supports_image_output =
         matches!(protocol, ProtocolFamily::OpenAiResponses) && name.starts_with("gpt5_");
+    profile.thinking_always_enabled = name.starts_with("grok_4_5_");
     profile.supports_video_input = max_videos > 0;
     profile.supports_audio_input = matches!(protocol, ProtocolFamily::GeminiGenerateContent);
     profile.supports_document_input = matches!(

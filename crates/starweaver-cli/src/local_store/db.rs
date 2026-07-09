@@ -4,7 +4,7 @@ use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use starweaver_agent::ResumableState;
-use starweaver_core::{CheckpointId, RunId};
+use starweaver_core::{CheckpointId, RunId, SessionId};
 use starweaver_environment::EnvironmentState;
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
 use starweaver_session::{
@@ -154,21 +154,57 @@ pub(super) fn insert_display_messages_tx(
     messages: &[DisplayMessage],
 ) -> CliResult<()> {
     for message in messages {
-        tx.execute(
-            r"
-            INSERT OR REPLACE INTO display_messages (session_id, run_id, sequence_no, kind, created_at, message_json)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ",
-            params![
-                message.session_id.as_str(),
-                message.run_id.as_str(),
-                usize_to_i64(message.sequence)?,
-                format!("{:?}", message.kind).to_lowercase(),
-                message.timestamp.to_rfc3339(),
-                serde_json::to_string(message)?,
-            ],
-        )?;
+        insert_display_message_row_tx(tx, &message.session_id, &message.run_id, message)?;
     }
+    Ok(())
+}
+
+/// Persist display messages under an explicit storage/replay run scope.
+///
+/// `DisplayMessage::run_id` may intentionally point at a nested/source run for
+/// attribution. The `SQLite` row `(session_id, run_id)` must reference the parent
+/// run that owns the replay scope so source-only child runs do not violate the
+/// `display_messages -> runs` foreign key. The session id is not source-scoped
+/// and must still match the storage session.
+pub(super) fn insert_display_messages_for_run_tx(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &SessionId,
+    run_id: &RunId,
+    messages: &[DisplayMessage],
+) -> CliResult<()> {
+    for message in messages {
+        if message.session_id.as_str() != session_id.as_str() {
+            return Err(CliError::Storage(format!(
+                "display message session_id {} does not match storage session_id {}",
+                message.session_id.as_str(),
+                session_id.as_str()
+            )));
+        }
+        insert_display_message_row_tx(tx, session_id, run_id, message)?;
+    }
+    Ok(())
+}
+
+fn insert_display_message_row_tx(
+    tx: &rusqlite::Transaction<'_>,
+    storage_session_id: &SessionId,
+    storage_run_id: &RunId,
+    message: &DisplayMessage,
+) -> CliResult<()> {
+    tx.execute(
+        r"
+        INSERT OR REPLACE INTO display_messages (session_id, run_id, sequence_no, kind, created_at, message_json)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ",
+        params![
+            storage_session_id.as_str(),
+            storage_run_id.as_str(),
+            usize_to_i64(message.sequence)?,
+            format!("{:?}", message.kind).to_lowercase(),
+            message.timestamp.to_rfc3339(),
+            serde_json::to_string(message)?,
+        ],
+    )?;
     Ok(())
 }
 

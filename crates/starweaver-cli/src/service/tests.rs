@@ -2,9 +2,13 @@
 
 use chrono::Utc;
 use serde_json::json;
-use starweaver_core::{RunId, SessionId};
+use starweaver_core::{AgentId, RunId, SessionId, TaskId};
+use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, AgentStreamSource};
 use starweaver_session::{ApprovalRecord, DeferredToolRecord, ExecutionStatus, RunStatus};
-use starweaver_stream::DisplayMessageKind;
+use starweaver_stream::{
+    DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind,
+    DisplayMessageProjector as _, DisplayProjectionContext, ReplayScope, StreamArchive as _,
+};
 
 use crate::local_store::{RunSummary, SessionSummary, TrimReport};
 
@@ -363,6 +367,283 @@ fn failed_run_complete_persists_restore_state_for_continuation() {
         .unwrap()
         .unwrap();
     assert_eq!(restored.message_history.len(), 1);
+}
+
+#[test]
+fn complete_run_stores_source_attributed_display_messages_under_parent_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("Source display".to_string()))
+        .unwrap();
+    let session_id = session.session_id.as_str().to_string();
+    let mut run = store
+        .append_run(&session_id, "delegate".to_string(), None, "general")
+        .unwrap();
+    let parent_run_id = run.run_id.as_str().to_string();
+    let child_run_id = RunId::from_string("run_child_model_transport_fallback");
+    let message = DisplayMessage::new(
+        0,
+        run.session_id.clone(),
+        child_run_id.clone(),
+        DisplayMessageKind::HostEvent,
+    )
+    .with_payload(json!({
+        "from": "websocket",
+        "to": "http",
+        "reason": "websocket_transport_error",
+        "detail": "websocket closed before response.completed",
+        "message": "model transport: websocket -> http fallback (websocket_transport_error)"
+    }))
+    .with_preview("model transport: websocket -> http fallback (websocket_transport_error)");
+
+    store
+        .complete_run(
+            &mut run,
+            "done".to_string(),
+            crate::local_store::RunArtifacts {
+                state: starweaver_context::ResumableState::default(),
+                environment_state: None,
+                raw_records: Vec::new(),
+                display_messages: vec![message],
+                display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                approvals: Vec::new(),
+                deferred_tools: Vec::new(),
+                status: RunStatus::Completed,
+            },
+        )
+        .unwrap();
+
+    let messages = store
+        .replay_display(&session_id, Some(&parent_run_id), None)
+        .unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].run_id, child_run_id);
+    assert_eq!(messages[0].payload["reason"], "websocket_transport_error");
+}
+
+#[test]
+fn complete_run_persists_default_projector_source_records_under_parent_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("Projected source display".to_string()))
+        .unwrap();
+    let session_id = session.session_id.as_str().to_string();
+    let mut run = store
+        .append_run(&session_id, "delegate".to_string(), None, "general")
+        .unwrap();
+    let parent_run_id = run.run_id.clone();
+    let child_run_id = RunId::from_string("run_child_projected_transport_fallback");
+    let raw_record = AgentStreamRecord::new(
+        10,
+        AgentStreamEvent::Custom {
+            event: starweaver_context::AgentEvent::new(
+                "model_transport_fallback",
+                json!({
+                    "from": "websocket",
+                    "to": "http",
+                    "reason": "websocket_transport_error",
+                    "message": "model transport: websocket -> http fallback (websocket_transport_error)"
+                }),
+            ),
+        },
+    )
+    .with_source(AgentStreamSource::subagent(
+        AgentId::from_string("child-agent"),
+        "child",
+        TaskId::from_string("task-child"),
+        Some(child_run_id.clone()),
+        Some(parent_run_id.clone()),
+        3,
+    ));
+    let projector = DefaultDisplayMessageProjector;
+    let context = DisplayProjectionContext::new(run.session_id.clone(), parent_run_id.clone());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let projected = runtime.block_on(projector.project(&context, &raw_record));
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].kind, DisplayMessageKind::HostEvent);
+    assert_eq!(projected[0].session_id.as_str(), session_id);
+    assert_eq!(projected[0].run_id, child_run_id);
+
+    store
+        .complete_run(
+            &mut run,
+            "done".to_string(),
+            crate::local_store::RunArtifacts {
+                state: starweaver_context::ResumableState::default(),
+                environment_state: None,
+                raw_records: vec![raw_record],
+                display_messages: projected,
+                display_snapshot: starweaver_stream::ReplaySnapshot::default(),
+                approvals: Vec::new(),
+                deferred_tools: Vec::new(),
+                status: RunStatus::Completed,
+            },
+        )
+        .unwrap();
+
+    let conn = rusqlite::Connection::open(&config.database_path).unwrap();
+    let (storage_run_id, message_json): (String, String) = conn
+        .query_row(
+            "SELECT run_id, message_json FROM display_messages WHERE session_id = ?1 ORDER BY sequence_no LIMIT 1",
+            rusqlite::params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let stored_message: DisplayMessage = serde_json::from_str(&message_json).unwrap();
+    assert_eq!(storage_run_id, parent_run_id.as_str());
+    assert_eq!(stored_message.run_id, child_run_id);
+    assert_eq!(
+        stored_message.metadata["source_task_id"],
+        json!("task-child")
+    );
+
+    let replayed = store
+        .replay_display(&session_id, Some(parent_run_id.as_str()), None)
+        .unwrap();
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].run_id, child_run_id);
+    assert_eq!(replayed[0].payload["reason"], "websocket_transport_error");
+}
+
+#[test]
+fn local_stream_archive_stores_run_scoped_source_messages_under_scope_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("Archive source display".to_string()))
+        .unwrap();
+    let session_id = session.session_id;
+    let run = store
+        .append_run(session_id.as_str(), "delegate".to_string(), None, "general")
+        .unwrap();
+    let parent_run_id = run.run_id;
+    drop(store);
+
+    let child_run_id = RunId::from_string("run_child_archive_transport_fallback");
+    let message = DisplayMessage::new(
+        0,
+        session_id.clone(),
+        child_run_id.clone(),
+        DisplayMessageKind::HostEvent,
+    )
+    .with_payload(json!({
+        "from": "websocket",
+        "to": "http",
+        "reason": "websocket_transport_error",
+        "message": "model transport: websocket -> http fallback (websocket_transport_error)"
+    }));
+    let archive = crate::LocalStreamArchive::new(config);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let scope = ReplayScope::run(parent_run_id.as_str());
+
+    runtime
+        .block_on(archive.append_display_messages(scope.clone(), vec![message]))
+        .unwrap();
+    let messages = runtime
+        .block_on(archive.replay_display_after(&scope, None))
+        .unwrap();
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].run_id, child_run_id);
+    assert_eq!(messages[0].payload["reason"], "websocket_transport_error");
+}
+
+#[test]
+fn local_stream_archive_empty_run_scoped_append_is_noop() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let archive = crate::LocalStreamArchive::new(config);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    runtime
+        .block_on(
+            archive.append_display_messages(
+                ReplayScope::run("missing_run_with_no_messages"),
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+}
+
+#[test]
+fn local_stream_archive_rejects_run_scope_session_mismatch_before_sqlite_fk() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("Archive mismatch".to_string()))
+        .unwrap();
+    let parent_run = store
+        .append_run(
+            session.session_id.as_str(),
+            "delegate".to_string(),
+            None,
+            "general",
+        )
+        .unwrap();
+    drop(store);
+
+    let other_session_id = SessionId::from_string("session_other_source");
+    let message = DisplayMessage::new(
+        0,
+        other_session_id,
+        RunId::from_string("run_child_wrong_session"),
+        DisplayMessageKind::HostEvent,
+    )
+    .with_payload(json!({"reason": "websocket_transport_error"}));
+    let archive = crate::LocalStreamArchive::new(config);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let error =
+        runtime
+            .block_on(archive.append_display_messages(
+                ReplayScope::run(parent_run.run_id.as_str()),
+                vec![message],
+            ))
+            .unwrap_err();
+    let error = error.to_string();
+
+    assert!(error.contains("run scope belongs to session_id"));
+    assert!(!error.contains("FOREIGN KEY"));
+}
+
+#[test]
+fn local_stream_archive_rejects_session_scope_source_run_without_fk_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = test_config(temp.path());
+    let mut store = LocalStore::open(&config).unwrap();
+    let session = store
+        .create_session("general", Some("Session source reject".to_string()))
+        .unwrap();
+    let session_id = session.session_id;
+    store
+        .append_run(session_id.as_str(), "delegate".to_string(), None, "general")
+        .unwrap();
+    drop(store);
+
+    let message = DisplayMessage::new(
+        0,
+        session_id.clone(),
+        RunId::from_string("run_child_session_scope_missing"),
+        DisplayMessageKind::HostEvent,
+    )
+    .with_payload(json!({"reason": "websocket_transport_error"}));
+    let archive = crate::LocalStreamArchive::new(config);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let error = runtime
+        .block_on(
+            archive
+                .append_display_messages(ReplayScope::session(session_id.as_str()), vec![message]),
+        )
+        .unwrap_err();
+    let error = error.to_string();
+
+    assert!(error.contains("not a run in session scope"));
+    assert!(!error.contains("FOREIGN KEY"));
 }
 
 #[test]

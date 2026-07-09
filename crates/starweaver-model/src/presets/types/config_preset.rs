@@ -24,6 +24,9 @@ pub enum ModelConfigPreset {
     /// `DeepSeek` V4 1M context profile.
     #[serde(rename = "deepseek_v4_1m")]
     DeepSeekV4_1m,
+    /// Grok 4.5 500K context profile.
+    #[serde(rename = "grok_4_5_500k")]
+    Grok45_500k,
     /// `MiMo` V2.5 1M context profile.
     #[serde(rename = "mimo_v2_5_1m")]
     MimoV25_1m,
@@ -50,6 +53,7 @@ impl ModelConfigPreset {
             Self::Gpt5_1m => "gpt5_1m",
             Self::DeepSeekV4_400k => "deepseek_v4_400k",
             Self::DeepSeekV4_1m => "deepseek_v4_1m",
+            Self::Grok45_500k => "grok_4_5_500k",
             Self::MimoV25_1m => "mimo_v2_5_1m",
             Self::MimoV25Pro1m => "mimo_v2_5_pro_1m",
             Self::Gemini200k => "gemini_200k",
