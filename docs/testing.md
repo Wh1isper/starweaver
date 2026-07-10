@@ -67,7 +67,7 @@ make coverage-ci
 make coverage
 ```
 
-Default acceptance gates are 95% for core contract paths, 90% for agent SDK contract paths, and 80% for CLI/service paths. Core and agent gates also enforce measured coverage floors over their full package groups. The dedicated coverage workflow installs `cargo-llvm-cov`, runs the grouped gates, generates `target/llvm-cov/lcov.info`, and uploads the LCOV artifact.
+Default acceptance gates are 95% for core contract paths, 90% for agent SDK contract paths, and 80% for CLI/service paths. Core and agent gates also enforce measured coverage floors over their full package groups. `make coverage-ci` cleans and collects one workspace profile set before generating the three package-scoped gate reports. The dedicated coverage workflow reuses that collection to generate `target/llvm-cov/lcov.info` and upload the LCOV artifact.
 
 ## Automation validation
 

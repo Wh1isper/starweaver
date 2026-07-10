@@ -54,10 +54,17 @@ test: ## Run workspace tests
 	@cargo test --workspace --all-targets --all-features --locked
 
 .PHONY: coverage
-coverage: ## Generate workspace LCOV coverage report
+coverage: ## Collect workspace coverage and generate an LCOV report
+	@echo "Collecting workspace coverage"
+	@cargo llvm-cov clean --workspace
+	@cargo llvm-cov --workspace --all-features --locked --no-report
+	@$(MAKE) --no-print-directory coverage-report
+
+.PHONY: coverage-report
+coverage-report: ## Generate LCOV from previously collected coverage profiles
 	@echo "Generating workspace LCOV coverage"
 	@mkdir -p target/llvm-cov
-	@cargo llvm-cov --workspace --all-features --locked --lcov --output-path target/llvm-cov/lcov.info
+	@cargo llvm-cov report --failure-mode all --lcov --output-path target/llvm-cov/lcov.info
 
 .PHONY: coverage-core
 coverage-core: ## Run core/model/runtime/tools 95% coverage gate
@@ -75,7 +82,16 @@ coverage-service: ## Run CLI/service 80% coverage gate
 	@$(XTASK) coverage-gate service --threshold $(SERVICE_COVERAGE_MIN_LINES)
 
 .PHONY: coverage-ci
-coverage-ci: coverage-core coverage-agent coverage-service ## Run grouped CI coverage gates
+coverage-ci: ## Collect coverage once and run all grouped CI gates
+	@echo "Collecting workspace coverage for grouped gates"
+	@cargo llvm-cov clean --workspace
+	@cargo llvm-cov --workspace --all-features --locked --no-report
+	@echo "Running core coverage gate ($(CORE_COVERAGE_MIN_LINES)% lines)"
+	@$(XTASK) coverage-gate core --threshold $(CORE_COVERAGE_MIN_LINES) --report-only
+	@echo "Running agent SDK coverage gate ($(AGENT_COVERAGE_MIN_LINES)% lines)"
+	@$(XTASK) coverage-gate agent --threshold $(AGENT_COVERAGE_MIN_LINES) --report-only
+	@echo "Running CLI/service coverage gate ($(SERVICE_COVERAGE_MIN_LINES)% lines)"
+	@$(XTASK) coverage-gate service --threshold $(SERVICE_COVERAGE_MIN_LINES) --report-only
 
 .PHONY: build
 build: ## Build the workspace

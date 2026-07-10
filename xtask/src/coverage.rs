@@ -111,11 +111,12 @@ fn coverage_group(name: &str) -> Option<CoverageGroup> {
 }
 
 pub fn coverage_gate(args: &[String]) -> Result<(), String> {
-    let group_name = args
-        .first()
-        .ok_or_else(|| "usage: coverage-gate <core|agent|service> [--threshold N]".to_string())?;
+    const USAGE: &str = "usage: coverage-gate <core|agent|service> [--threshold N] [--report-only]";
+
+    let group_name = args.first().ok_or_else(|| USAGE.to_string())?;
     let group = coverage_group(group_name).ok_or_else(|| "unknown coverage group".to_string())?;
     let mut threshold = group.default_threshold;
+    let mut report_only = false;
     let mut index = 1;
     while index < args.len() {
         if args[index] == "--threshold" && index + 1 < args.len() {
@@ -123,21 +124,34 @@ pub fn coverage_gate(args: &[String]) -> Result<(), String> {
                 .parse::<f64>()
                 .map_err(|error| error.to_string())?;
             index += 2;
+        } else if args[index] == "--report-only" {
+            report_only = true;
+            index += 1;
         } else {
-            return Err("usage: coverage-gate <core|agent|service> [--threshold N]".to_string());
+            return Err(USAGE.to_string());
         }
     }
     let root = root()?;
     let mut command = Command::new("cargo");
-    command.arg("llvm-cov").arg("--workspace");
-    for package in WORKSPACE_PACKAGES {
-        if !group.report_packages.contains(package) {
-            command.arg("--exclude-from-report").arg(package);
+    command.arg("llvm-cov");
+    if report_only {
+        command.arg("report");
+        for package in group.report_packages {
+            command.arg("--package").arg(package);
         }
+    } else {
+        command.arg("--workspace");
+        for package in WORKSPACE_PACKAGES {
+            if !group.report_packages.contains(package) {
+                command.arg("--exclude-from-report").arg(package);
+            }
+        }
+        command.args(["--all-features", "--locked"]);
     }
     command
-        .arg("--all-features")
-        .arg("--locked")
+        // Instrumented subprocesses can leave a partial profile if they are interrupted.
+        // Merge every valid profile; the acceptance gate below still rejects material loss.
+        .args(["--failure-mode", "all"])
         .arg("--summary-only")
         .current_dir(&root);
     let output = run_capture(&mut command)?;
