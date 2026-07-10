@@ -116,7 +116,7 @@ max_requests = 1000
 label = "Codex OAuth"
 model = "oauth@codex:gpt-5"
 model_settings = "openai_responses_high"
-model_cfg = "gpt5_270k"
+model_cfg = "gpt5_350k"
 ```
 
 OAuth-backed Codex profiles use the `oauth@codex:<model>` model id and read credentials from `~/.starweaver/auth.json` by default. Use `STARWEAVER_OAUTH_AUTH_FILE` or `--auth-file` on auth commands for an alternate file.
@@ -274,7 +274,7 @@ Codex OAuth profiles use `oauth@codex:<model>` and the OpenAI Responses protocol
 label = "Codex OAuth"
 model = "oauth@codex:gpt-5"
 model_settings = "openai_responses_high"
-model_cfg = "gpt5_270k"
+model_cfg = "gpt5_350k"
 ```
 
 The OAuth transport attaches Codex request headers, adds session and thread metadata, sets Responses `store=false`, and refreshes the access token once after a `401` response when a refresh token is present. `[providers.codex]` controls the Codex base URL, endpoint path, and max-token parameter mapping.

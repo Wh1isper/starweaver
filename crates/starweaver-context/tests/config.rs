@@ -11,6 +11,7 @@ fn agent_context_has_default_model_and_tool_config() {
 
     assert_eq!(context.model_config.compact_threshold.per_thousand(), 900);
     assert_eq!(context.model_config.max_images, 20);
+    assert_eq!(context.model_config.max_image_dimension, 8000);
     assert_eq!(
         context.tool_config.view_max_text_file_size,
         10 * 1024 * 1024
@@ -96,6 +97,7 @@ fn merge_model_and_tool_config_updates_context_defaults() {
     let model_config = ModelConfig {
         context_window: Some(123_000),
         compact_threshold: PerThousandRatio::from_per_thousand(875),
+        max_image_dimension: 4096,
         ..ModelConfig::default()
     };
     let tool_config = ToolConfig {
@@ -109,6 +111,7 @@ fn merge_model_and_tool_config_updates_context_defaults() {
 
     assert_eq!(context.model_config.context_window, Some(123_000));
     assert_eq!(context.model_config.compact_threshold.per_thousand(), 875);
+    assert_eq!(context.model_config.max_image_dimension, 4096);
     assert_eq!(context.tool_config.download_max_concurrency, 1);
     assert_eq!(
         context.tool_config.view_relaxed_text_patterns,

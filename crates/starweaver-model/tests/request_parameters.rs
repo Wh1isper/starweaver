@@ -14,10 +14,10 @@ use starweaver_model::{
     HttpResponse, InMemoryProviderRequestAuditRecorder, MessageNormalization, ModelAdapter,
     ModelError, ModelEventStream, ModelHttpClient, ModelMessage, ModelProfile, ModelRequest,
     ModelRequestContext, ModelRequestParameters, ModelRequestPart, ModelSettings,
-    NativeToolDefinition, OpenAiChatSettings, OpenAiResponsesSettings, OutputMode, ProtocolFamily,
-    ProtocolModelClient, ProviderRequestAuditPolicy, ProviderSettings, ResponseStreamTransport,
-    ServiceTier, StructuredOutputMode, ThinkingSettings, ToolChoice, ToolDefinition,
-    get_model_settings,
+    NativeToolDefinition, OpenAiChatSettings, OpenAiPromptCacheMode, OpenAiPromptCacheOptions,
+    OpenAiPromptCacheTtl, OpenAiResponsesSettings, OutputMode, ProtocolFamily, ProtocolModelClient,
+    ProviderRequestAuditPolicy, ProviderSettings, ResponseStreamTransport, ServiceTier,
+    StructuredOutputMode, ThinkingSettings, ToolChoice, ToolDefinition, get_model_settings,
 };
 
 #[derive(Clone, Default)]
@@ -494,6 +494,49 @@ async fn protocol_client_adds_openai_prompt_cache_routing_from_explicit_affinity
     );
     assert_eq!(request.body["prompt_cache_retention"], "24h");
     assert_eq!(request.body["store"], false);
+}
+
+#[tokio::test]
+async fn protocol_client_rejects_final_gpt_5_6_cache_field_conflict() {
+    let http = CaptureHttpClient::with_response(text_response(json!({})));
+    let client = ProtocolModelClient::new(
+        "openai",
+        "gpt-5.6",
+        ModelProfile::for_protocol(ProtocolFamily::OpenAiResponses),
+        HttpModelConfig::new("https://api.openai.test/v1", "responses"),
+        Arc::new(http.clone()),
+    );
+    let settings = ModelSettings {
+        provider_settings: ProviderSettings {
+            openai_responses: Some(OpenAiResponsesSettings {
+                prompt_cache_options: Some(OpenAiPromptCacheOptions {
+                    mode: OpenAiPromptCacheMode::Explicit,
+                    ttl: Some(OpenAiPromptCacheTtl::ThirtyMinutes),
+                }),
+                ..OpenAiResponsesSettings::default()
+            }),
+            ..ProviderSettings::default()
+        },
+        ..ModelSettings::default()
+    };
+
+    let error = client
+        .request(
+            history(),
+            Some(settings),
+            ModelRequestParameters::default(),
+            context_with_metadata(Map::from_iter([(
+                "starweaver.prompt_cache_retention".to_string(),
+                json!("24h"),
+            )])),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ModelError::MessageMapping(message) if message.contains("cannot both be sent"))
+    );
+    assert!(http.requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1372,6 +1415,7 @@ async fn openai_responses_maps_typed_settings_and_preserves_raw_override() {
                         include: vec!["reasoning.encrypted_content".to_string()],
                         prompt_cache_key: Some("typed-resp-cache".to_string()),
                         prompt_cache_retention: Some("24h".to_string()),
+                        prompt_cache_options: None,
                         stream_transport: None,
                     }),
                     ..ProviderSettings::default()

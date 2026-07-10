@@ -27,8 +27,9 @@ pub use media::{
     is_video_media_type, parse_data_url, raw_budget_from_base64_limit,
 };
 pub use message::{
-    ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ProviderInfo, ProviderPartInfo, ToolArguments, ToolCallPart, ToolReturnPart,
+    CachePointTtl, ContentPart, FinishReason, ModelMessage, ModelRequest, ModelRequestPart,
+    ModelResponse, ModelResponsePart, ProviderInfo, ProviderPartInfo, ToolArguments, ToolCallPart,
+    ToolReturnPart,
 };
 pub use oauth::{
     CODEX_ORIGINATOR, CodexOAuthResponsesModel, OAuthBearerHttpClient, build_codex_headers,
@@ -58,10 +59,11 @@ pub use request::{
 };
 pub use settings::{
     AnthropicSettings, BedrockSettings, CodexSettings, GatewaySettings, GoogleCloudServiceTier,
-    GoogleSettings, ModelSettings, OpenAiChatSettings, OpenAiResponsesSettings,
+    GoogleSettings, ModelSettings, OpenAiChatSettings, OpenAiPromptCacheMode,
+    OpenAiPromptCacheOptions, OpenAiPromptCacheTtl, OpenAiResponsesSettings,
     ProviderReplaySettings, ProviderSettings, ResponseStreamTransport, ServiceTier,
     ThinkingSettings, ToolChoice, format_openai_prompt_cache_key,
-    supports_automatic_openai_prompt_cache_key,
+    supports_automatic_openai_prompt_cache_key, supports_openai_prompt_cache_breakpoints,
 };
 pub use stream::{
     ModelResponseStreamEvent, ModelStreamState, PartDelta, PartEnd, PartStart, StreamDelta,

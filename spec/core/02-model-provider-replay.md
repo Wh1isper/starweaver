@@ -59,7 +59,7 @@ The model protocol uses a typed conversation AST defined in `06-message-request-
 - `ModelMessage` separates request history from response history.
 - `ModelRequestPart` owns system prompts, structured instructions, user prompts, tool returns, and retry prompts.
 - `ModelResponsePart` owns text, thinking, function tool calls, native tool calls/returns, generated files, and compaction summaries.
-- `ContentPart` owns text, URL media, inline binary media, data URLs, and resource references.
+- `ContentPart` owns text, URL media, inline binary media, data URLs, resource references, and provider-neutral cache-point markers. A cache point attaches provider cache metadata to the preceding mapped user-content block: Anthropic uses per-point `5m`/`1h` `cache_control`, while GPT-5.6 uses explicit block breakpoints plus a request-wide `30m` cache policy. Anthropic lowering enforces the four-point budget, orders all `1h` points before `5m` points, and validates automatic-cache TTL compatibility with the final cacheable block. GPT-5.6 lowering rejects the legacy retention field when request-wide cache options are present, including after final HTTP overrides are merged. Unsupported provider/model mappings remove markers instead of emitting model-visible content.
 - `ToolCallPart` should evolve from raw `serde_json::Value` arguments toward a typed argument state that preserves parsed objects, raw JSON strings, and invalid-marker evidence.
 
 `ModelRequestParameters` is the single per-call negotiation object for function tools, native tools, output mode/schema, instruction parts, thinking, HTTP overrides, provider extra body fields, and replay/audit metadata. Provider adapters receive prepared parameters after model profile capability resolution.

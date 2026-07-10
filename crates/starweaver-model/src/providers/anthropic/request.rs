@@ -13,10 +13,12 @@ use super::{
     content::{anthropic_content_from_content, anthropic_tool_result},
     settings::{
         anthropic_cache_control, anthropic_cache_ttl, append_anthropic_tools,
-        apply_anthropic_settings,
+        apply_anthropic_message_cache, apply_anthropic_settings, limit_anthropic_cache_points,
+        validate_anthropic_cache_points,
     },
 };
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn build_request(
     model: &str,
     messages: &[ModelMessage],
@@ -122,8 +124,11 @@ pub(super) fn build_request(
     if let Some(system) = anthropic_system_value(&system, settings) {
         request.insert("system".to_string(), system);
     }
-    apply_anthropic_settings(&mut request, settings);
+    apply_anthropic_settings(&mut request, settings)?;
     append_anthropic_tools(&mut request, tools, settings);
+    apply_anthropic_message_cache(&mut request, settings)?;
+    limit_anthropic_cache_points(&mut request)?;
+    validate_anthropic_cache_points(&request)?;
     Ok(Value::Object(request))
 }
 

@@ -134,7 +134,8 @@ async fn upload_content_part(
             }
             Err(error) => UploadOutcome::Failed(error),
         },
-        ContentPart::Text { .. }
+        ContentPart::CachePoint { .. }
+        | ContentPart::Text { .. }
         | ContentPart::ImageUrl { .. }
         | ContentPart::FileUrl { .. }
         | ContentPart::ResourceRef { .. } => UploadOutcome::Skipped,

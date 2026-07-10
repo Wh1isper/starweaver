@@ -1,6 +1,7 @@
 use serde_json::{Map, Value, json};
 
 use crate::{
+    ModelError,
     adapter::{ModelRequestContext, ModelRequestParameters},
     profile::ProtocolFamily,
     settings::{
@@ -85,29 +86,54 @@ impl ProtocolModelClient {
         options
     }
 
-    pub(super) fn finalize_http_request(&self, request: &mut HttpRequest) {
+    pub(super) fn finalize_http_request(
+        &self,
+        request: &mut HttpRequest,
+    ) -> Result<(), ModelError> {
         let metadata = &request.metadata;
         let Some(body) = request.body.as_object_mut() else {
-            return;
+            return Ok(());
         };
-        if self.provider_name != "codex"
-            && matches!(
-                self.profile.protocol,
-                ProtocolFamily::OpenAiResponses | ProtocolFamily::OpenAiChatCompletions
-            )
-        {
-            apply_openai_prompt_cache_metadata(
-                metadata,
-                body,
-                supports_automatic_openai_prompt_cache_key(&self.model_name),
-            );
+        if matches!(
+            self.profile.protocol,
+            ProtocolFamily::OpenAiResponses | ProtocolFamily::OpenAiChatCompletions
+        ) {
+            if self.provider_name != "codex" {
+                apply_openai_prompt_cache_metadata(
+                    metadata,
+                    body,
+                    supports_automatic_openai_prompt_cache_key(&self.model_name),
+                );
+            }
+            validate_openai_prompt_cache_fields(&self.model_name, body)?;
         }
         if self.provider_name == "google-cloud"
             && matches!(self.profile.protocol, ProtocolFamily::GeminiGenerateContent)
         {
             body.remove("serviceTier");
         }
+        Ok(())
     }
+}
+
+fn validate_openai_prompt_cache_fields(
+    model: &str,
+    body: &Map<String, Value>,
+) -> Result<(), ModelError> {
+    if body.contains_key("prompt_cache_retention") && body.contains_key("prompt_cache_options") {
+        return Err(ModelError::MessageMapping(
+            "OpenAI prompt_cache_retention and prompt_cache_options cannot both be sent"
+                .to_string(),
+        ));
+    }
+    if body.contains_key("prompt_cache_options")
+        && !crate::settings::supports_openai_prompt_cache_breakpoints(model)
+    {
+        return Err(ModelError::MessageMapping(format!(
+            "model {model} does not support OpenAI prompt_cache_options"
+        )));
+    }
+    Ok(())
 }
 
 fn google_cloud_service_tier_headers(settings: &ModelSettings) -> Vec<(String, String)> {

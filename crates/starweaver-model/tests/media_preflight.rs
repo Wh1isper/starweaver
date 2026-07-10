@@ -81,6 +81,34 @@ fn computes_base64_raw_budget_and_over_budget_flag() {
 }
 
 #[test]
+fn reports_independent_image_dimension_limits() {
+    let policy = MediaPolicy {
+        max_inline_base64_bytes: None,
+        max_image_dimension: Some(8000),
+        ..MediaPolicy::default()
+    };
+    let oversized =
+        MediaPreflight::inspect_with_policy(&png_bytes(8100, 81), Some("image/png"), &policy);
+    assert!(oversized.over_dimension_limit);
+    assert!(!oversized.over_base64_budget);
+
+    let boundary =
+        MediaPreflight::inspect_with_policy(&png_bytes(8000, 81), Some("image/png"), &policy);
+    assert!(!boundary.over_dimension_limit);
+
+    let disabled = MediaPolicy {
+        max_inline_base64_bytes: Some(0),
+        max_image_dimension: Some(0),
+        ..MediaPolicy::default()
+    };
+    let disabled_preflight =
+        MediaPreflight::inspect_with_policy(&png_bytes(8100, 81), Some("image/png"), &disabled);
+    assert!(!disabled_preflight.over_base64_budget);
+    assert!(!disabled_preflight.over_dimension_limit);
+    assert_eq!(disabled_preflight.budget_raw_bytes, None);
+}
+
+#[test]
 fn parses_data_url_and_image_dimensions() -> Result<(), String> {
     let parsed = parse_data_url("data:image/png;base64,iVBORw0KGgo=")?;
     assert_eq!(parsed.media_type, "image/png");

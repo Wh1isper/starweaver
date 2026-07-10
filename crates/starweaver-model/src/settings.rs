@@ -37,6 +37,13 @@ pub fn supports_automatic_openai_prompt_cache_key(model_name: &str) -> bool {
         || model.starts_with("o4")
 }
 
+/// Return whether a model supports `OpenAI`'s GPT-5.6 explicit cache-breakpoint protocol.
+#[must_use]
+pub fn supports_openai_prompt_cache_breakpoints(model_name: &str) -> bool {
+    let model_name = model_name.trim().to_ascii_lowercase();
+    model_name.starts_with("gpt-5.6") || model_name.starts_with("gpt-5-6")
+}
+
 /// Per-request generation configuration.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct ModelSettings {
@@ -273,6 +280,10 @@ fn merge_openai_chat(
             .prompt_cache_retention
             .clone()
             .or_else(|| base.prompt_cache_retention.clone()),
+        prompt_cache_options: overlay
+            .prompt_cache_options
+            .clone()
+            .or_else(|| base.prompt_cache_options.clone()),
     })
 }
 
@@ -304,6 +315,10 @@ fn merge_openai_responses(
             .prompt_cache_retention
             .clone()
             .or_else(|| base.prompt_cache_retention.clone()),
+        prompt_cache_options: overlay
+            .prompt_cache_options
+            .clone()
+            .or_else(|| base.prompt_cache_options.clone()),
         stream_transport: overlay.stream_transport.or(base.stream_transport),
     })
 }
@@ -419,6 +434,34 @@ fn merge_gateway(
     })
 }
 
+/// GPT-5.6 prompt-cache breakpoint placement mode.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiPromptCacheMode {
+    /// Keep the implicit breakpoint on the latest message and honor explicit points.
+    Implicit,
+    /// Use only explicit cache points.
+    Explicit,
+}
+
+/// GPT-5.6 request-wide prompt-cache lifetime.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum OpenAiPromptCacheTtl {
+    /// Keep cache entries for at least thirty minutes.
+    #[serde(rename = "30m")]
+    ThirtyMinutes,
+}
+
+/// Request-wide GPT-5.6 prompt-cache policy.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OpenAiPromptCacheOptions {
+    /// Breakpoint placement mode.
+    pub mode: OpenAiPromptCacheMode,
+    /// Minimum cache lifetime. `OpenAI` currently accepts only `30m`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<OpenAiPromptCacheTtl>,
+}
+
 /// `OpenAI` Chat Completions typed settings.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OpenAiChatSettings {
@@ -440,9 +483,12 @@ pub struct OpenAiChatSettings {
     /// Prompt cache key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
-    /// Prompt cache retention setting.
+    /// Legacy prompt cache retention setting for models before GPT-5.6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<String>,
+    /// GPT-5.6 request-wide prompt cache options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_options: Option<OpenAiPromptCacheOptions>,
 }
 
 /// Streaming transport policy for Responses-compatible providers.
@@ -481,9 +527,12 @@ pub struct OpenAiResponsesSettings {
     /// Prompt cache key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
-    /// Prompt cache retention setting.
+    /// Legacy prompt cache retention setting for models before GPT-5.6.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_retention: Option<String>,
+    /// GPT-5.6 request-wide prompt cache options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_options: Option<OpenAiPromptCacheOptions>,
     /// Streaming transport policy for Responses-compatible providers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_transport: Option<ResponseStreamTransport>,
@@ -655,7 +704,7 @@ pub struct ThinkingSettings {
     /// Optional token budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_tokens: Option<u32>,
-    /// Provider-specific thinking mode, such as enabled, adaptive, or disabled.
+    /// Provider-specific thinking mode, such as enabled, adaptive, disabled, standard, or pro.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     /// Whether provider should include thought summaries or thinking traces when supported.

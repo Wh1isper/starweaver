@@ -6,7 +6,8 @@ use crate::{
     ModelError, ModelSettings,
     adapter::{NativeToolDefinition, ToolDefinition},
     message::{ModelMessage, ModelRequestPart},
-    providers::{apply_common_settings_without_seed, openai_responses_content},
+    providers::{apply_common_settings_without_seed, openai_responses_content_with_cache_points},
+    settings::supports_openai_prompt_cache_breakpoints,
     transport::MaxTokensParameter,
 };
 
@@ -31,6 +32,7 @@ pub(super) fn build_request_with_options(
     native_tools: &[NativeToolDefinition],
     max_tokens_parameter: MaxTokensParameter,
 ) -> Result<Value, ModelError> {
+    let supports_cache_points = supports_openai_prompt_cache_breakpoints(model);
     let replay = OpenAiReplayOptions::from_settings(settings);
     let instructions = collect_openai_instructions(messages);
     let (previous_response_id, conversation_id, messages) =
@@ -46,7 +48,10 @@ pub(super) fn build_request_with_options(
                         | ModelRequestPart::Instruction { .. } => {}
                         ModelRequestPart::UserPrompt { content, .. } => input.push(json!({
                             "role": "user",
-                            "content": openai_responses_content(content)
+                            "content": openai_responses_content_with_cache_points(
+                                content,
+                                supports_cache_points,
+                            )?
                         })),
                         ModelRequestPart::ToolReturn(tool_return) => input.push(json!({
                             "type": "function_call_output",
@@ -94,10 +99,33 @@ pub(super) fn build_request_with_options(
         if let Some(prompt_cache_key) = &openai_settings.prompt_cache_key {
             request.insert("prompt_cache_key".to_string(), json!(prompt_cache_key));
         }
+        if openai_settings.prompt_cache_retention.is_some()
+            && openai_settings.prompt_cache_options.is_some()
+        {
+            return Err(ModelError::MessageMapping(
+                "OpenAI prompt_cache_retention and prompt_cache_options cannot both be configured"
+                    .to_string(),
+            ));
+        }
         if let Some(prompt_cache_retention) = &openai_settings.prompt_cache_retention {
             request.insert(
                 "prompt_cache_retention".to_string(),
                 json!(prompt_cache_retention),
+            );
+        }
+        if let Some(prompt_cache_options) = &openai_settings.prompt_cache_options {
+            if !supports_cache_points {
+                return Err(ModelError::MessageMapping(format!(
+                    "model {model} does not support OpenAI prompt_cache_options"
+                )));
+            }
+            request.insert(
+                "prompt_cache_options".to_string(),
+                serde_json::to_value(prompt_cache_options).map_err(|error| {
+                    ModelError::MessageMapping(format!(
+                        "invalid OpenAI prompt cache options: {error}"
+                    ))
+                })?,
             );
         }
         for include in &openai_settings.include {
@@ -127,6 +155,9 @@ pub(super) fn build_request_with_options(
     if let Some(thinking) = settings.and_then(|settings| settings.thinking.as_ref()) {
         let mut reasoning = serde_json::Map::new();
         reasoning.insert("effort".to_string(), json!(thinking.effort));
+        if let Some(mode) = &thinking.mode {
+            reasoning.insert("mode".to_string(), json!(mode));
+        }
         if let Some(summary) = &thinking.summary {
             reasoning.insert("summary".to_string(), json!(summary));
         }

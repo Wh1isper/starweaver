@@ -55,13 +55,17 @@ fn mixed_content() -> Vec<ContentPart> {
 fn content_mappers_cover_text_binary_resource_and_data_url_variants() {
     assert_eq!(text_from_content(&mixed_content()), "hello");
     assert_eq!(
-        openai_chat_content(&[ContentPart::Text {
-            text: "solo".to_string()
-        }]),
+        openai_chat_content_with_cache_points(
+            &[ContentPart::Text {
+                text: "solo".to_string(),
+            }],
+            false,
+        )
+        .unwrap(),
         json!("solo")
     );
 
-    let chat = openai_chat_content(&mixed_content());
+    let chat = openai_chat_content_with_cache_points(&mixed_content(), false).unwrap();
     assert_eq!(chat[0]["type"], "text");
     assert_eq!(chat[1]["type"], "image_url");
     assert_eq!(chat[2]["type"], "file");
@@ -85,7 +89,7 @@ fn content_mappers_cover_text_binary_resource_and_data_url_variants() {
         "data:application/pdf;base64,abc="
     );
 
-    let responses = openai_responses_content(&mixed_content());
+    let responses = openai_responses_content_with_cache_points(&mixed_content(), false).unwrap();
     assert_eq!(responses[0]["type"], "input_text");
     assert_eq!(responses[1]["type"], "input_image");
     assert_eq!(responses[2]["type"], "input_file");
@@ -220,15 +224,19 @@ fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
     );
 
     let openai_usage = usage_from_openai(&json!({"usage": {
-        "prompt_tokens": 1,
+        "prompt_tokens": 10,
         "completion_tokens": 2,
-        "total_tokens": 3,
-        "prompt_tokens_details": {"cached_tokens": 4}
+        "total_tokens": 12,
+        "prompt_tokens_details": {
+            "cached_tokens": 4,
+            "cache_write_tokens": 3
+        }
     }}));
-    assert_eq!(openai_usage.input_tokens, 1);
+    assert_eq!(openai_usage.input_tokens, 10);
+    assert_eq!(openai_usage.cache_write_tokens, 3);
     assert_eq!(openai_usage.cache_read_tokens, 4);
     assert_eq!(openai_usage.output_tokens, 2);
-    assert_eq!(openai_usage.total_tokens, 3);
+    assert_eq!(openai_usage.total_tokens, 12);
     let openai_usage_without_total = usage_from_openai(&json!({"usage": {
         "prompt_tokens": 3,
         "completion_tokens": 4
@@ -238,8 +246,12 @@ fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
         "input_tokens": 10,
         "output_tokens": 3,
         "total_tokens": 13,
-        "input_tokens_details": {"cached_tokens": 6}
+        "input_tokens_details": {
+            "cached_tokens": 6,
+            "cache_write_tokens": 2
+        }
     }}));
+    assert_eq!(responses_usage.cache_write_tokens, 2);
     assert_eq!(responses_usage.cache_read_tokens, 6);
     let named_usage = usage_from_named(
         &json!({"usageMetadata": {

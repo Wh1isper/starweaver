@@ -222,7 +222,10 @@ fn responses_parse_preserves_provider_replay_metadata() {
         "service_tier": "default",
         "usage": {
             "input_tokens": 10,
-            "input_tokens_details": {"cached_tokens": 6},
+            "input_tokens_details": {
+                "cached_tokens": 6,
+                "cache_write_tokens": 3
+            },
             "output_tokens": 4,
             "output_tokens_details": {"reasoning_tokens": 2},
             "total_tokens": 14
@@ -259,7 +262,11 @@ fn responses_parse_preserves_provider_replay_metadata() {
     }))
     .unwrap();
 
+    assert_eq!(response.usage.input_tokens, 10);
+    assert_eq!(response.usage.cache_write_tokens, 3);
     assert_eq!(response.usage.cache_read_tokens, 6);
+    assert_eq!(response.usage.output_tokens, 4);
+    assert_eq!(response.usage.total_tokens, 14);
     assert_eq!(
         response
             .provider
@@ -669,20 +676,11 @@ fn responses_server_side_state_rejects_previous_response_and_conversation_confli
 }
 
 #[test]
-fn responses_request_includes_encrypted_reasoning_when_thinking_is_enabled() {
-    let settings = ModelSettings {
-        thinking: Some(ThinkingSettings {
-            effort: "high".to_string(),
-            budget_tokens: None,
-            mode: None,
-            include_thoughts: None,
-            summary: Some("auto".to_string()),
-        }),
-        ..ModelSettings::default()
-    };
+fn responses_request_includes_pro_preset_mode_and_encrypted_reasoning() {
+    let settings = crate::get_model_settings("openai_responses_pro").unwrap();
 
     let request = OpenAiResponsesAdapter::build_request(
-        "gpt-5.5",
+        "gpt-5.6",
         &[ModelMessage::Request(ModelRequest::user_text("think"))],
         Some(&settings),
         &[],
@@ -691,7 +689,8 @@ fn responses_request_includes_encrypted_reasoning_when_thinking_is_enabled() {
     .unwrap();
 
     assert_eq!(request["include"], json!(["reasoning.encrypted_content"]));
-    assert_eq!(request["reasoning"]["effort"], "high");
+    assert_eq!(request["reasoning"]["mode"], "pro");
+    assert_eq!(request["reasoning"]["effort"], "medium");
     assert_eq!(request["reasoning"]["summary"], "auto");
 }
 
@@ -780,6 +779,7 @@ fn responses_send_item_ids_false_does_not_default_encrypted_reasoning_include() 
     .unwrap();
 
     assert!(request.get("include").is_none());
+    assert!(request["reasoning"].get("mode").is_none());
     assert_eq!(request["reasoning"]["effort"], "high");
 }
 

@@ -1076,7 +1076,8 @@ fn input_parts_from_agent_input(input: &starweaver_runtime::AgentInput) -> Vec<I
             ContentPart::ImageUrl { url } | ContentPart::FileUrl { url, .. } => {
                 InputPart::url(url.clone())
             }
-            ContentPart::Binary { .. }
+            ContentPart::CachePoint { .. }
+            | ContentPart::Binary { .. }
             | ContentPart::ResourceRef { .. }
             | ContentPart::DataUrl { .. } => InputPart::Mode {
                 mode: "content_part".to_string(),

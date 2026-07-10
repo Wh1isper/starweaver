@@ -37,6 +37,9 @@ pub struct MediaPreflight {
     pub corruption_reason: Option<String>,
     /// True when inline base64 representation exceeds the configured budget.
     pub over_base64_budget: bool,
+    /// True when image width or height exceeds the configured limit, or image
+    /// dimensions cannot be validated while that limit is active.
+    pub over_dimension_limit: bool,
     /// Raw byte budget derived from the base64 limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_raw_bytes: Option<usize>,
@@ -75,10 +78,19 @@ impl MediaPreflight {
         let base64_bytes = base64_encoded_len(bytes.len());
         let budget_raw_bytes = policy
             .max_inline_base64_bytes
+            .filter(|limit| *limit > 0)
             .map(raw_budget_from_base64_limit);
         let over_base64_budget = policy
             .max_inline_base64_bytes
-            .is_some_and(|limit| base64_bytes > limit);
+            .is_some_and(|limit| limit > 0 && base64_bytes > limit);
+        let is_image =
+            detected_kind.is_image() || declared_media_type.is_some_and(super::is_image_media_type);
+        let over_dimension_limit = policy.max_image_dimension.is_some_and(|limit| {
+            limit > 0
+                && is_image
+                && dimensions
+                    .is_none_or(|dimensions| dimensions.width > limit || dimensions.height > limit)
+        });
         let policy_reason = media_policy_reason(detected_kind, declared_media_type, policy);
         Self {
             detected_kind,
@@ -92,6 +104,7 @@ impl MediaPreflight {
             corrupt: corruption_reason.is_some(),
             corruption_reason,
             over_base64_budget,
+            over_dimension_limit,
             budget_raw_bytes,
             allowed_by_policy: policy_reason.is_none(),
             policy_reason,

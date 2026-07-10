@@ -16,8 +16,8 @@ mod usage;
 #[cfg(test)]
 pub(crate) use content::text_from_content;
 pub(crate) use content::{
-    bedrock_content_from_content, gemini_parts_from_content, openai_chat_content,
-    openai_responses_content,
+    bedrock_content_from_content, gemini_parts_from_content, openai_chat_content_with_cache_points,
+    openai_responses_content_with_cache_points,
 };
 pub(crate) use openai_common::{
     finish_reason_openai, openai_chat_tool_choice, openai_responses_tool_choice,

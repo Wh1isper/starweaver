@@ -52,12 +52,13 @@ pub fn latest_user_text(messages: &[ModelMessage]) -> Option<String> {
 fn text_from_content(content: &[ContentPart]) -> String {
     content
         .iter()
-        .map(|part| match part {
-            ContentPart::Text { text } => text.as_str(),
-            ContentPart::ImageUrl { url } | ContentPart::FileUrl { url, .. } => url.as_str(),
+        .filter_map(|part| match part {
+            ContentPart::CachePoint { .. } => None,
+            ContentPart::Text { text } => Some(text.as_str()),
+            ContentPart::ImageUrl { url } | ContentPart::FileUrl { url, .. } => Some(url.as_str()),
             ContentPart::Binary { media_type, .. }
             | ContentPart::ResourceRef { media_type, .. }
-            | ContentPart::DataUrl { media_type, .. } => media_type.as_str(),
+            | ContentPart::DataUrl { media_type, .. } => Some(media_type.as_str()),
         })
         .collect::<Vec<_>>()
         .join("\n")

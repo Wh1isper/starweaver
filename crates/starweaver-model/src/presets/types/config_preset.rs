@@ -15,6 +15,9 @@ pub enum ModelConfigPreset {
     /// GPT-5 270K context profile.
     #[serde(rename = "gpt5_270k")]
     Gpt5_270k,
+    /// GPT-5 350K context profile.
+    #[serde(rename = "gpt5_350k")]
+    Gpt5_350k,
     /// GPT-5 1M class context profile.
     #[serde(rename = "gpt5_1m")]
     Gpt5_1m,
@@ -50,6 +53,7 @@ impl ModelConfigPreset {
             Self::Claude400k => "claude_400k",
             Self::Claude1m => "claude_1m",
             Self::Gpt5_270k => "gpt5_270k",
+            Self::Gpt5_350k => "gpt5_350k",
             Self::Gpt5_1m => "gpt5_1m",
             Self::DeepSeekV4_400k => "deepseek_v4_400k",
             Self::DeepSeekV4_1m => "deepseek_v4_1m",

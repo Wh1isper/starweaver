@@ -154,6 +154,7 @@ from starweaver import RuntimeConfig
 runtime_config = RuntimeConfig(
     max_images=4,
     max_image_bytes=4_000_000,
+    max_image_dimension=8000,
     split_large_images=True,
     image_split_max_height=1800,
     image_split_overlap=120,
@@ -162,4 +163,13 @@ runtime_config = RuntimeConfig(
 ```
 
 Attach it at agent construction so the same media policy is applied before
-every model request.
+every model request. `max_image_bytes` is the base64-encoded API budget, while
+`max_image_dimension` limits either image axis in pixels. The limits are
+independent: set one to `0` to disable only that limit, or set both to `0` to
+disable image compression. Local `view`, remote `read_media`, fetched images,
+inline user attachments, and nested inline tool-return images all use these
+limits. External image URLs and resource references remain provider- or
+host-owned and are not downloaded by the history filter. Inline images whose
+dimensions cannot be validated or that cannot be brought within the active
+limits are rejected rather than forwarded unchanged to the active or fallback
+model.

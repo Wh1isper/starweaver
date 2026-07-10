@@ -59,9 +59,18 @@ pub struct ModelConfig {
     /// Whether GIF input is supported.
     #[serde(default = "default_true")]
     pub support_gif: bool,
-    /// Maximum image bytes before image compression/splitting policy applies.
+    /// Maximum image bytes after base64 encoding before compression applies.
+    ///
+    /// A value of `0` disables the byte limit without disabling the independent
+    /// image dimension limit.
     #[serde(default = "default_model_max_image_bytes")]
     pub max_image_bytes: usize,
+    /// Maximum width or height accepted for model image input.
+    ///
+    /// A value of `0` disables the dimension limit without disabling the
+    /// independent encoded-byte limit.
+    #[serde(default = "default_model_max_image_dimension")]
+    pub max_image_dimension: usize,
     /// Whether large images should be split where supported.
     #[serde(default = "default_true")]
     pub split_large_images: bool,
@@ -91,6 +100,7 @@ impl Default for ModelConfig {
             max_videos: default_model_max_videos(),
             support_gif: true,
             max_image_bytes: default_model_max_image_bytes(),
+            max_image_dimension: default_model_max_image_dimension(),
             split_large_images: true,
             image_split_max_height: default_image_split_max_height(),
             image_split_overlap: default_image_split_overlap(),
@@ -159,6 +169,7 @@ impl ModelConfig {
         self.max_videos = other.max_videos;
         self.support_gif = other.support_gif;
         self.max_image_bytes = other.max_image_bytes;
+        self.max_image_dimension = other.max_image_dimension;
         self.split_large_images = other.split_large_images;
         self.image_split_max_height = other.image_split_max_height;
         self.image_split_overlap = other.image_split_overlap;
@@ -199,6 +210,10 @@ const fn default_model_max_videos() -> usize {
 
 const fn default_model_max_image_bytes() -> usize {
     5 * 1024 * 1024
+}
+
+const fn default_model_max_image_dimension() -> usize {
+    8000
 }
 
 const fn default_image_split_max_height() -> usize {

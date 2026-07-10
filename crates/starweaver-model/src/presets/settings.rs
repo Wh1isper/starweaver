@@ -43,6 +43,7 @@ pub(super) fn model_settings_by_name(name: &str) -> Option<ModelSettings> {
         "openai_responses_high" => Some(openai_responses("high", "detailed", 32 * K_TOKENS, None)),
         "openai_responses_medium" => Some(openai_responses("medium", "auto", 16 * K_TOKENS, None)),
         "openai_responses_low" => Some(openai_responses("low", "concise", 8 * K_TOKENS, None)),
+        "openai_responses_pro" => Some(openai_responses_pro()),
         "openai_responses_default_fast" => Some(openai_responses(
             "medium",
             "auto",
@@ -236,7 +237,6 @@ fn anthropic_adaptive(
             "anthropic_effort": effort,
             "anthropic_cache_instructions": true,
             "anthropic_cache_tool_definitions": true,
-            "anthropic_cache_response": true,
             "anthropic_cache_messages": true,
         })),
         ..ModelSettings::default()
@@ -272,7 +272,6 @@ fn anthropic_off(
         provider_options: Some(json!({
             "anthropic_cache_instructions": true,
             "anthropic_cache_tool_definitions": true,
-            "anthropic_cache_response": true,
             "anthropic_cache_messages": true,
         })),
         ..ModelSettings::default()
@@ -354,6 +353,14 @@ fn openai_responses(
         provider_options: Some(json!({"store": false})),
         ..ModelSettings::default()
     }
+}
+
+fn openai_responses_pro() -> ModelSettings {
+    let mut settings = openai_responses("medium", "auto", 16 * K_TOKENS, None);
+    if let Some(thinking) = settings.thinking.as_mut() {
+        thinking.mode = Some("pro".to_string());
+    }
+    settings
 }
 
 fn xai_responses(effort: &str, max_tokens: u32) -> ModelSettings {

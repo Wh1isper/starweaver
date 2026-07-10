@@ -3,12 +3,18 @@
 use std::io::Cursor;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use image::{DynamicImage, ImageFormat, RgbImage, codecs::jpeg::JpegEncoder, imageops::FilterType};
+use image::{
+    AnimationDecoder, DynamicImage, ImageFormat, RgbImage, codecs::gif::GifDecoder,
+    codecs::jpeg::JpegEncoder, codecs::webp::WebPDecoder, imageops::FilterType,
+};
 use serde_json::{Value, json};
-use starweaver_model::{MediaKind, detect_media_kind, raw_budget_from_base64_limit};
+use starweaver_model::{
+    MediaKind, detect_image_dimensions, detect_media_kind, raw_budget_from_base64_limit,
+};
 
 const JPEG_QUALITIES: &[u8] = &[95, 85, 75, 60, 45, 30, 20];
 const RESIZE_PASSES: usize = 5;
+const MAX_IMAGE_PROCESSING_PIXELS: u64 = 80_000_000;
 
 /// Result of an image split segment.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,6 +46,42 @@ pub fn data_url(media_type: &str, data: &[u8]) -> String {
     format!("data:{media_type};base64,{}", STANDARD.encode(data))
 }
 
+/// Return whether image bytes exceed either active model input limit.
+///
+/// `max_encoded_bytes` is the base64-encoded API budget. A zero value disables
+/// that limit. `max_dimension` is the maximum width or height in pixels and is
+/// independently disabled by zero. Unreadable dimensions fail closed whenever
+/// the dimension limit is active.
+#[must_use]
+pub fn image_exceeds_model_limits(
+    image_bytes: &[u8],
+    max_encoded_bytes: usize,
+    max_dimension: usize,
+) -> bool {
+    if max_encoded_bytes > 0 && image_bytes.len() > raw_budget_for_encoded_limit(max_encoded_bytes)
+    {
+        return true;
+    }
+    if max_dimension == 0 {
+        return false;
+    }
+    let kind = detect_media_kind(image_bytes);
+    detect_image_dimensions(image_bytes, kind).is_none_or(|dimensions| {
+        usize::try_from(dimensions.width).unwrap_or(usize::MAX) > max_dimension
+            || usize::try_from(dimensions.height).unwrap_or(usize::MAX) > max_dimension
+    })
+}
+
+/// Return whether image bytes satisfy both active model input limits.
+#[must_use]
+pub fn image_within_model_limits(
+    image_bytes: &[u8],
+    max_encoded_bytes: usize,
+    max_dimension: usize,
+) -> bool {
+    !image_exceeds_model_limits(image_bytes, max_encoded_bytes, max_dimension)
+}
+
 /// Split a tall image into vertical segments with overlap.
 pub fn split_image_data(
     image_bytes: &[u8],
@@ -47,17 +89,28 @@ pub fn split_image_data(
     overlap: usize,
     media_type: &str,
 ) -> Result<Vec<ImageSegment>, String> {
-    let image = image::load_from_memory(image_bytes)
-        .map_err(|error| format!("failed to decode image for splitting: {error}"))?;
-    let width = image.width();
-    let height = usize::try_from(image.height()).unwrap_or(usize::MAX);
     let normalized_media_type = normalized_image_media_type(image_bytes, media_type);
+    let kind = detect_media_kind(image_bytes);
+    let dimensions = detect_image_dimensions(image_bytes, kind);
+    let height = dimensions.map_or(usize::MAX, |dimensions| {
+        usize::try_from(dimensions.height).unwrap_or(usize::MAX)
+    });
     if max_height == 0 || height <= max_height {
         return Ok(vec![ImageSegment {
             data: image_bytes.to_vec(),
             media_type: normalized_media_type,
         }]);
     }
+    safe_processing_dimensions(dimensions)?;
+    if image_is_animated(image_bytes, kind)? {
+        return Ok(vec![ImageSegment {
+            data: image_bytes.to_vec(),
+            media_type: normalized_media_type,
+        }]);
+    }
+    let image = image::load_from_memory(image_bytes)
+        .map_err(|error| format!("failed to decode image for splitting: {error}"))?;
+    let width = image.width();
 
     let format = image_format_for_media_type(&normalized_media_type).unwrap_or(ImageFormat::Png);
     let output_media_type = media_type_for_image_format(format).to_string();
@@ -86,19 +139,30 @@ pub fn split_image_data(
     Ok(segments)
 }
 
-/// Compress image bytes so the raw payload fits the provided byte budget.
+/// Process image bytes so they fit optional raw-byte and per-axis limits.
 ///
-/// Small images are passed through with corrected
-/// media type, oversized images are converted to JPEG, JPEG quality is reduced
-/// progressively, and dimensions are halved when quality reduction alone is not
-/// enough. Alpha images are composited onto a white background before JPEG output.
+/// Images already satisfying both limits are passed through with a corrected
+/// media type. Images requiring processing are resized proportionally when a
+/// dimension is over the limit, converted to JPEG, reduced in quality, and
+/// finally reduced in dimensions when needed. Alpha is composited onto white.
+/// Animated GIF/WebP payloads are returned unchanged so callers can reject an
+/// over-limit result without silently dropping animation frames.
 pub fn compress_image_data(
     image_bytes: &[u8],
-    max_bytes: usize,
+    max_bytes: Option<usize>,
+    max_dimension: usize,
     media_type: &str,
 ) -> Result<CompressedImage, String> {
     let normalized_media_type = normalized_image_media_type(image_bytes, media_type);
-    if max_bytes == 0 || image_bytes.len() <= max_bytes {
+    let kind = detect_media_kind(image_bytes);
+    let dimensions = detect_image_dimensions(image_bytes, kind);
+    let exceeds_bytes = max_bytes.is_some_and(|limit| image_bytes.len() > limit);
+    let exceeds_dimensions = max_dimension > 0
+        && dimensions.is_none_or(|dimensions| {
+            usize::try_from(dimensions.width).unwrap_or(usize::MAX) > max_dimension
+                || usize::try_from(dimensions.height).unwrap_or(usize::MAX) > max_dimension
+        });
+    if !exceeds_bytes && !exceeds_dimensions {
         return Ok(CompressedImage {
             data: image_bytes.to_vec(),
             media_type: normalized_media_type,
@@ -106,7 +170,9 @@ pub fn compress_image_data(
         });
     }
 
-    if detect_media_kind(image_bytes) == MediaKind::Gif {
+    safe_processing_dimensions(dimensions)?;
+
+    if image_is_animated(image_bytes, kind)? {
         return Ok(CompressedImage {
             data: image_bytes.to_vec(),
             media_type: normalized_media_type,
@@ -114,12 +180,18 @@ pub fn compress_image_data(
         });
     }
 
-    let mut rgb = decode_image_as_white_composited_rgb(image_bytes)?;
+    let mut image = image::load_from_memory(image_bytes)
+        .map_err(|error| format!("failed to decode image for compression: {error}"))?;
+    if exceeds_dimensions {
+        let maximum = u32::try_from(max_dimension).unwrap_or(u32::MAX);
+        image = image.resize(maximum, maximum, FilterType::Lanczos3);
+    }
+    let mut rgb = white_composited_rgb(&image);
     let mut smallest = encode_jpeg(&rgb, 20)?;
     for _resize_pass in 0..RESIZE_PASSES {
         for quality in JPEG_QUALITIES {
             let encoded = encode_jpeg(&rgb, *quality)?;
-            if encoded.len() <= max_bytes {
+            if max_bytes.is_none_or(|limit| encoded.len() <= limit) {
                 return Ok(CompressedImage {
                     data: encoded,
                     media_type: "image/jpeg".to_string(),
@@ -151,55 +223,62 @@ pub fn compress_image_data(
     })
 }
 
-/// Compress image bytes to fit a base64 encoded API image limit.
+/// Process image bytes to fit base64 encoded API and per-axis limits.
 pub fn compress_image_to_model_limit(
     image_bytes: &[u8],
     max_encoded_bytes: usize,
+    max_dimension: usize,
     media_type: &str,
 ) -> Result<CompressedImage, String> {
-    if max_encoded_bytes == 0 {
-        return Ok(CompressedImage {
-            data: image_bytes.to_vec(),
-            media_type: normalized_image_media_type(image_bytes, media_type),
-            compressed: false,
-        });
-    }
-    compress_image_data(
-        image_bytes,
-        raw_budget_for_encoded_limit(max_encoded_bytes),
-        media_type,
-    )
+    let max_bytes =
+        (max_encoded_bytes > 0).then(|| raw_budget_for_encoded_limit(max_encoded_bytes));
+    compress_image_data(image_bytes, max_bytes, max_dimension, media_type)
 }
 
-/// Build the standard model-limit error for still-oversized compressed images.
+/// Build the standard model-limit error for still-oversized processed images.
 pub fn oversized_after_compression_message(
     original_size: usize,
     max_encoded_bytes: usize,
+    max_dimension: usize,
 ) -> String {
+    let mut limits = Vec::with_capacity(2);
+    if max_encoded_bytes > 0 {
+        limits.push(format!(
+            "the {max_encoded_bytes} byte API limit after accounting for base64 encoding"
+        ));
+    }
+    if max_dimension > 0 {
+        limits.push(format!("the {max_dimension} pixel maximum image dimension"));
+    }
+    let limits = if limits.is_empty() {
+        "the configured model image limits".to_string()
+    } else {
+        limits.join(" and ")
+    };
     format!(
-        "<system-reminder>An image ({original_size} bytes) was removed because it could not be compressed below the {max_encoded_bytes} byte API limit (accounting for base64 encoding). If you need this image, try resizing or converting it to a smaller format first, then use the view tool again.</system-reminder>"
+        "<system-reminder>An image ({original_size} bytes) was removed because it could not be processed within {limits}. If you need this image, try resizing or converting it to a smaller format first, then use the view tool again.</system-reminder>"
     )
 }
 
-/// Build the standard compression failure message.
+/// Build the standard image processing failure message.
 pub fn compression_failed_message() -> String {
-    "<system-reminder>An image was removed because compression failed. If the image is needed, try compressing it to a smaller size before viewing.</system-reminder>".to_string()
+    "<system-reminder>An image was removed because model-limit processing failed. If the image is needed, try resizing or converting it to a smaller supported format before viewing.</system-reminder>".to_string()
 }
 
-/// Compress a JSON object containing `data_url` and optional `media_type` fields.
+/// Process a JSON object containing `data_url` and optional `media_type` fields.
 pub fn compress_data_url_object(
     object: &mut serde_json::Map<String, Value>,
     max_encoded_bytes: usize,
+    max_dimension: usize,
 ) -> Result<bool, String> {
     let Some(data_url_value) = object.get("data_url").and_then(Value::as_str) else {
         return Ok(false);
     };
     let parsed = starweaver_model::parse_data_url(data_url_value)?;
-    if !parsed.media_type.starts_with("image/") {
+    if !(parsed.media_type.starts_with("image/") || detect_media_kind(&parsed.data).is_image()) {
         return Ok(false);
     }
-    let max_raw_bytes = raw_budget_for_encoded_limit(max_encoded_bytes);
-    if parsed.data.len() <= max_raw_bytes {
+    if image_within_model_limits(&parsed.data, max_encoded_bytes, max_dimension) {
         object.insert(
             "media_type".to_string(),
             json!(normalized_image_media_type(
@@ -210,11 +289,17 @@ pub fn compress_data_url_object(
         return Ok(false);
     }
     let original_size = parsed.data.len();
-    let compressed = compress_image_data(&parsed.data, max_raw_bytes, &parsed.media_type)?;
-    if compressed.data.len() > max_raw_bytes {
+    let compressed = compress_image_to_model_limit(
+        &parsed.data,
+        max_encoded_bytes,
+        max_dimension,
+        &parsed.media_type,
+    )?;
+    if !image_within_model_limits(&compressed.data, max_encoded_bytes, max_dimension) {
         return Err(oversized_after_compression_message(
             original_size,
             max_encoded_bytes,
+            max_dimension,
         ));
     }
     object.insert(
@@ -266,9 +351,62 @@ fn encode_segment(segment: &DynamicImage, format: ImageFormat) -> Result<Vec<u8>
     Ok(output.into_inner())
 }
 
-fn decode_image_as_white_composited_rgb(image_bytes: &[u8]) -> Result<RgbImage, String> {
-    let image = image::load_from_memory(image_bytes)
-        .map_err(|error| format!("failed to decode image for compression: {error}"))?;
+fn safe_processing_dimensions(
+    dimensions: Option<starweaver_model::ImageDimensions>,
+) -> Result<starweaver_model::ImageDimensions, String> {
+    let dimensions = dimensions.ok_or_else(|| {
+        "image dimensions could not be validated for model-limit processing".to_string()
+    })?;
+    let pixel_count = u64::from(dimensions.width)
+        .checked_mul(u64::from(dimensions.height))
+        .ok_or_else(|| "image pixel count overflowed during safety validation".to_string())?;
+    if pixel_count > MAX_IMAGE_PROCESSING_PIXELS {
+        return Err(format!(
+            "image has {pixel_count} pixels, exceeding the safe processing limit of {MAX_IMAGE_PROCESSING_PIXELS} pixels"
+        ));
+    }
+    Ok(dimensions)
+}
+
+fn image_is_animated(image_bytes: &[u8], kind: MediaKind) -> Result<bool, String> {
+    match kind {
+        MediaKind::Gif => {
+            let decoder = GifDecoder::new(Cursor::new(image_bytes))
+                .map_err(|error| format!("failed to inspect gif animation frames: {error}"))?;
+            let mut frames = decoder.into_frames();
+            let _first = frames
+                .next()
+                .transpose()
+                .map_err(|error| format!("failed to inspect gif animation frames: {error}"))?;
+            frames
+                .next()
+                .transpose()
+                .map(|frame| frame.is_some())
+                .map_err(|error| format!("failed to inspect gif animation frames: {error}"))
+        }
+        MediaKind::Webp => {
+            let decoder = WebPDecoder::new(Cursor::new(image_bytes))
+                .map_err(|error| format!("failed to inspect webp animation frames: {error}"))?;
+            let mut frames = decoder.into_frames();
+            let _first = frames
+                .next()
+                .transpose()
+                .map_err(|error| format!("failed to inspect webp animation frames: {error}"))?;
+            frames
+                .next()
+                .transpose()
+                .map(|frame| frame.is_some())
+                .map_err(|error| format!("failed to inspect webp animation frames: {error}"))
+        }
+        MediaKind::Png
+        | MediaKind::Jpeg
+        | MediaKind::Mp4
+        | MediaKind::Webm
+        | MediaKind::Unknown => Ok(false),
+    }
+}
+
+fn white_composited_rgb(image: &DynamicImage) -> RgbImage {
     let rgba = image.to_rgba8();
     let mut rgb = RgbImage::new(rgba.width(), rgba.height());
     for (x, y, pixel) in rgba.enumerate_pixels() {
@@ -287,7 +425,7 @@ fn decode_image_as_white_composited_rgb(image_bytes: &[u8]) -> Result<RgbImage, 
             ]),
         );
     }
-    Ok(rgb)
+    rgb
 }
 
 fn encode_jpeg(image: &RgbImage, quality: u8) -> Result<Vec<u8>, String> {
@@ -302,4 +440,37 @@ fn encode_jpeg(image: &RgbImage, quality: u8) -> Result<Vec<u8>, String> {
         )
         .map_err(|error| format!("failed to encode jpeg: {error}"))?;
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_preserves_animated_gif_instead_of_staticizing_frames() -> Result<(), String> {
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            let first = image::Frame::new(image::RgbaImage::from_pixel(
+                2,
+                4,
+                image::Rgba([255, 0, 0, 255]),
+            ));
+            let second = image::Frame::new(image::RgbaImage::from_pixel(
+                2,
+                4,
+                image::Rgba([0, 0, 255, 255]),
+            ));
+            encoder
+                .encode_frames([first, second])
+                .map_err(|error| format!("failed to encode animated gif: {error}"))?;
+        }
+
+        let segments = split_image_data(&gif, 2, 0, "image/gif")?;
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].data, gif);
+        assert_eq!(segments[0].media_type, "image/gif");
+        Ok(())
+    }
 }

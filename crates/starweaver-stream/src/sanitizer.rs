@@ -180,7 +180,8 @@ fn sanitize_content_parts(
             let url = match &part {
                 ContentPart::ImageUrl { url } | ContentPart::FileUrl { url, .. } => Some(url),
                 ContentPart::ResourceRef { uri, .. } => Some(uri),
-                ContentPart::Text { .. }
+                ContentPart::CachePoint { .. }
+                | ContentPart::Text { .. }
                 | ContentPart::Binary { .. }
                 | ContentPart::DataUrl { .. } => None,
             };
