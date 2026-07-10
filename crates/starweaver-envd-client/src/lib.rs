@@ -148,11 +148,29 @@ impl EnvdRpcClient {
 
     /// Request graceful shutdown from the remote envd service.
     ///
+    /// An owned stdio child is also awaited and reaped before this method returns.
+    ///
     /// # Errors
     ///
-    /// Returns an envd error when the transport fails or the remote service rejects shutdown.
+    /// Returns an envd error when the transport fails, the remote service rejects shutdown, or an
+    /// owned stdio child exits unsuccessfully.
     pub async fn shutdown(&self) -> EnvdResult<Value> {
-        self.request("shutdown", &json!({})).await
+        let result = self.request("shutdown", &json!({})).await?;
+        if let EnvdRpcTransport::Stdio(state) = &self.inner.transport {
+            let status = state
+                .lock()
+                .await
+                .child
+                .wait()
+                .await
+                .map_err(envd_provider_error)?;
+            if !status.success() {
+                return Err(EnvdError::provider(format!(
+                    "envd stdio child exited with {status}"
+                )));
+            }
+        }
+        Ok(result)
     }
 
     async fn request<Request, Response>(
