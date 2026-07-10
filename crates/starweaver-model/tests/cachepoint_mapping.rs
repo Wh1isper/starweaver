@@ -66,7 +66,7 @@ fn gpt_5_6_chat_maps_explicit_breakpoint_and_request_policy() {
         ..ModelSettings::default()
     };
     let request = OpenAiChatAdapter::build_request(
-        "gpt-5-6",
+        "openrouter:openai/gpt-5-6",
         &[user_message(cache_content(None))],
         Some(&settings),
         &[],

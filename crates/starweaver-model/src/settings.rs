@@ -26,10 +26,21 @@ pub fn format_openai_prompt_cache_key(affinity_id: &str) -> Option<String> {
     (key.len() > "sw_".len()).then_some(key)
 }
 
+fn normalized_openai_model_name(model_name: &str) -> String {
+    let model_name = model_name.trim().to_ascii_lowercase();
+    let after_namespace = model_name
+        .rsplit_once(':')
+        .map_or(model_name.as_str(), |(_, model)| model);
+    after_namespace
+        .rsplit_once('/')
+        .map_or(after_namespace, |(_, model)| model)
+        .to_string()
+}
+
 /// Return whether Starweaver may auto-derive `OpenAI` prompt-cache keys for a model name.
 #[must_use]
 pub fn supports_automatic_openai_prompt_cache_key(model_name: &str) -> bool {
-    let model = model_name.trim().to_ascii_lowercase();
+    let model = normalized_openai_model_name(model_name);
     model.starts_with("gpt-")
         || model.starts_with("chatgpt-")
         || model.starts_with("o1")
@@ -40,7 +51,7 @@ pub fn supports_automatic_openai_prompt_cache_key(model_name: &str) -> bool {
 /// Return whether a model supports `OpenAI`'s GPT-5.6 explicit cache-breakpoint protocol.
 #[must_use]
 pub fn supports_openai_prompt_cache_breakpoints(model_name: &str) -> bool {
-    let model_name = model_name.trim().to_ascii_lowercase();
+    let model_name = normalized_openai_model_name(model_name);
     model_name.starts_with("gpt-5.6") || model_name.starts_with("gpt-5-6")
 }
 

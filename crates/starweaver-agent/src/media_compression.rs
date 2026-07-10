@@ -4,8 +4,9 @@ use std::io::Cursor;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{
-    AnimationDecoder, DynamicImage, ImageFormat, RgbImage, codecs::gif::GifDecoder,
-    codecs::jpeg::JpegEncoder, codecs::webp::WebPDecoder, imageops::FilterType,
+    AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbImage,
+    codecs::gif::GifDecoder, codecs::jpeg::JpegEncoder, codecs::webp::WebPDecoder,
+    imageops::FilterType,
 };
 use serde_json::{Value, json};
 use starweaver_model::{
@@ -14,7 +15,8 @@ use starweaver_model::{
 
 const JPEG_QUALITIES: &[u8] = &[95, 85, 75, 60, 45, 30, 20];
 const RESIZE_PASSES: usize = 5;
-const MAX_IMAGE_PROCESSING_PIXELS: u64 = 80_000_000;
+const MAX_IMAGE_PROCESSING_PIXELS: u64 = 8_000_000;
+const MAX_IMAGE_DECODER_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Result of an image split segment.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,8 +110,7 @@ pub fn split_image_data(
             media_type: normalized_media_type,
         }]);
     }
-    let image = image::load_from_memory(image_bytes)
-        .map_err(|error| format!("failed to decode image for splitting: {error}"))?;
+    let image = decode_image_for_processing(image_bytes, "splitting")?;
     let width = image.width();
 
     let format = image_format_for_media_type(&normalized_media_type).unwrap_or(ImageFormat::Png);
@@ -180,13 +181,12 @@ pub fn compress_image_data(
         });
     }
 
-    let mut image = image::load_from_memory(image_bytes)
-        .map_err(|error| format!("failed to decode image for compression: {error}"))?;
+    let mut image = decode_image_for_processing(image_bytes, "compression")?;
     if exceeds_dimensions {
         let maximum = u32::try_from(max_dimension).unwrap_or(u32::MAX);
         image = image.resize(maximum, maximum, FilterType::Lanczos3);
     }
-    let mut rgb = white_composited_rgb(&image);
+    let mut rgb = white_composited_rgb(image);
     let mut smallest = encode_jpeg(&rgb, 20)?;
     for _resize_pass in 0..RESIZE_PASSES {
         for quality in JPEG_QUALITIES {
@@ -368,16 +368,39 @@ fn safe_processing_dimensions(
     Ok(dimensions)
 }
 
+fn image_decoder_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_IMAGE_DECODER_ALLOC_BYTES);
+    limits
+}
+
+fn decode_image_for_processing(
+    image_bytes: &[u8],
+    operation: &str,
+) -> Result<DynamicImage, String> {
+    let mut reader = ImageReader::new(Cursor::new(image_bytes))
+        .with_guessed_format()
+        .map_err(|error| format!("failed to inspect image format for {operation}: {error}"))?;
+    reader.limits(image_decoder_limits());
+    reader
+        .decode()
+        .map_err(|error| format!("failed to decode image for {operation}: {error}"))
+}
+
 fn image_is_animated(image_bytes: &[u8], kind: MediaKind) -> Result<bool, String> {
     match kind {
         MediaKind::Gif => {
-            let decoder = GifDecoder::new(Cursor::new(image_bytes))
+            let mut decoder = GifDecoder::new(Cursor::new(image_bytes))
                 .map_err(|error| format!("failed to inspect gif animation frames: {error}"))?;
+            decoder
+                .set_limits(image_decoder_limits())
+                .map_err(|error| format!("gif animation exceeds decoder limits: {error}"))?;
             let mut frames = decoder.into_frames();
-            let _first = frames
+            let first = frames
                 .next()
                 .transpose()
                 .map_err(|error| format!("failed to inspect gif animation frames: {error}"))?;
+            drop(first);
             frames
                 .next()
                 .transpose()
@@ -386,17 +409,8 @@ fn image_is_animated(image_bytes: &[u8], kind: MediaKind) -> Result<bool, String
         }
         MediaKind::Webp => {
             let decoder = WebPDecoder::new(Cursor::new(image_bytes))
-                .map_err(|error| format!("failed to inspect webp animation frames: {error}"))?;
-            let mut frames = decoder.into_frames();
-            let _first = frames
-                .next()
-                .transpose()
-                .map_err(|error| format!("failed to inspect webp animation frames: {error}"))?;
-            frames
-                .next()
-                .transpose()
-                .map(|frame| frame.is_some())
-                .map_err(|error| format!("failed to inspect webp animation frames: {error}"))
+                .map_err(|error| format!("failed to inspect webp animation metadata: {error}"))?;
+            Ok(decoder.has_animation())
         }
         MediaKind::Png
         | MediaKind::Jpeg
@@ -406,8 +420,8 @@ fn image_is_animated(image_bytes: &[u8], kind: MediaKind) -> Result<bool, String
     }
 }
 
-fn white_composited_rgb(image: &DynamicImage) -> RgbImage {
-    let rgba = image.to_rgba8();
+fn white_composited_rgb(image: DynamicImage) -> RgbImage {
+    let rgba = image.into_rgba8();
     let mut rgb = RgbImage::new(rgba.width(), rgba.height());
     for (x, y, pixel) in rgba.enumerate_pixels() {
         let alpha = u16::from(pixel[3]);
@@ -472,5 +486,19 @@ mod tests {
         assert_eq!(segments[0].data, gif);
         assert_eq!(segments[0].media_type, "image/gif");
         Ok(())
+    }
+
+    #[test]
+    fn processing_rejects_oversized_pixel_count_before_decode() {
+        let mut png = vec![0; 24];
+        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        png[12..16].copy_from_slice(b"IHDR");
+        png[16..20].copy_from_slice(&3_000u32.to_be_bytes());
+        png[20..24].copy_from_slice(&3_000u32.to_be_bytes());
+
+        let result = compress_image_data(&png, Some(1), 0, "image/png");
+        let expected = format!("safe processing limit of {MAX_IMAGE_PROCESSING_PIXELS}");
+
+        assert!(matches!(result, Err(error) if error.contains(&expected)));
     }
 }
