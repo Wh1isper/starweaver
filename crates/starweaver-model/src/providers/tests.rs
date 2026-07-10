@@ -6,7 +6,7 @@ use crate::message::{
     ToolReturnPart,
 };
 use crate::transport::MaxTokensParameter;
-use crate::{ModelSettings, ServiceTier, ThinkingSettings, ToolChoice};
+use crate::{ModelError, ModelSettings, ServiceTier, ThinkingSettings, ToolChoice};
 
 fn mixed_content() -> Vec<ContentPart> {
     vec![
@@ -123,6 +123,79 @@ fn content_mappers_cover_text_binary_resource_and_data_url_variants() {
     assert_eq!(bedrock[3]["image"]["format"], "png");
     assert_eq!(bedrock[4]["document"]["format"], "json");
     assert_eq!(bedrock[5]["image"]["source"]["bytes"], "resource://image/1");
+}
+
+#[test]
+fn content_mappers_validate_and_filter_cache_points() {
+    let content = vec![
+        ContentPart::text("stable"),
+        ContentPart::cache_point(),
+        ContentPart::text("dynamic"),
+    ];
+
+    let chat = openai_chat_content_with_cache_points(&content, false).unwrap();
+    assert_eq!(chat.as_array().unwrap().len(), 2);
+    assert!(chat[0].get("prompt_cache_breakpoint").is_none());
+
+    let responses = openai_responses_content_with_cache_points(&content, false).unwrap();
+    assert_eq!(responses.len(), 2);
+    assert!(responses[0].get("prompt_cache_breakpoint").is_none());
+
+    let leading = [ContentPart::cache_point(), ContentPart::text("dynamic")];
+    let chat_error = openai_chat_content_with_cache_points(&leading, true).unwrap_err();
+    assert!(
+        matches!(chat_error, ModelError::MessageMapping(message) if message.contains("cannot be the first"))
+    );
+    let responses_error = openai_responses_content_with_cache_points(&leading, true).unwrap_err();
+    assert!(
+        matches!(responses_error, ModelError::MessageMapping(message) if message.contains("cannot be the first"))
+    );
+
+    let ttl = [
+        ContentPart::text("stable"),
+        ContentPart::cache_point_with_ttl(crate::CachePointTtl::OneHour),
+    ];
+    let ttl_error = openai_chat_content_with_cache_points(&ttl, true).unwrap_err();
+    assert!(
+        matches!(ttl_error, ModelError::MessageMapping(message) if message.contains("request-wide 30m"))
+    );
+
+    assert_eq!(gemini_parts_from_content(&content).len(), 2);
+    assert_eq!(bedrock_content_from_content(&content).len(), 2);
+}
+
+#[test]
+fn content_mappers_fall_back_for_invalid_data_urls() {
+    let content = [
+        ContentPart::DataUrl {
+            data_url: "not-an-image-data-url".to_string(),
+            media_type: "image/png".to_string(),
+        },
+        ContentPart::DataUrl {
+            data_url: "not-a-document-data-url".to_string(),
+            media_type: "application/pdf".to_string(),
+        },
+    ];
+
+    let gemini = gemini_parts_from_content(&content);
+    assert_eq!(
+        gemini[0]["fileData"],
+        json!({"fileUri": "not-an-image-data-url", "mimeType": "image/png"})
+    );
+    assert_eq!(
+        gemini[1]["fileData"],
+        json!({"fileUri": "not-a-document-data-url", "mimeType": "application/pdf"})
+    );
+
+    let bedrock = bedrock_content_from_content(&content);
+    assert_eq!(
+        bedrock[0]["image"],
+        json!({"format": "png", "source": {"bytes": "not-an-image-data-url"}})
+    );
+    assert_eq!(
+        bedrock[1]["document"],
+        json!({"format": "pdf", "source": {"bytes": "not-a-document-data-url"}})
+    );
 }
 
 #[test]
