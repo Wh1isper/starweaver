@@ -175,10 +175,11 @@ settings = ModelSettings(
 )
 ```
 
-Use `ModelSettings.preset(...)` for Rust model settings presets:
+Use `ModelSettings.preset(...)` for built-in model settings presets. For example,
+`openai_responses_pro` selects GPT-5.6 Pro reasoning mode with medium effort:
 
 ```python
-settings = ModelSettings.preset("openai_responses_high")
+settings = ModelSettings.preset("openai_responses_pro")
 ```
 
 ## Request Params

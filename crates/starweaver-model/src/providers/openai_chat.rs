@@ -11,9 +11,10 @@ use crate::{
     },
     providers::{
         apply_common_settings_with_max_tokens, collect_system_parts_and_non_system,
-        finish_reason_openai, insert_nonempty_description, openai_chat_content,
+        finish_reason_openai, insert_nonempty_description, openai_chat_content_with_cache_points,
         parse_tool_call_arguments, provider_tool_schema_without_meta, usage_from_openai,
     },
+    settings::supports_openai_prompt_cache_breakpoints,
     transport::MaxTokensParameter,
 };
 
@@ -55,6 +56,7 @@ impl OpenAiChatAdapter {
         tools: &[ToolDefinition],
         max_tokens_parameter: MaxTokensParameter,
     ) -> Result<Value, ModelError> {
+        let supports_cache_points = supports_openai_prompt_cache_breakpoints(model);
         let (system, rest) = collect_system_parts_and_non_system(messages);
         let mut system_messages = system
             .into_iter()
@@ -69,9 +71,13 @@ impl OpenAiChatAdapter {
                             ModelRequestPart::SystemPrompt { .. }
                             | ModelRequestPart::Instruction { .. } => {}
                             ModelRequestPart::UserPrompt { content, .. } => {
-                                wire_messages.push(
-                                    json!({"role": "user", "content": openai_chat_content(content)}),
-                                );
+                                wire_messages.push(json!({
+                                    "role": "user",
+                                    "content": openai_chat_content_with_cache_points(
+                                        content,
+                                        supports_cache_points,
+                                    )?
+                                }));
                             }
                             ModelRequestPart::ToolReturn(tool_return) => {
                                 wire_messages.push(json!({
@@ -156,10 +162,33 @@ impl OpenAiChatAdapter {
             if let Some(prompt_cache_key) = &openai_settings.prompt_cache_key {
                 request.insert("prompt_cache_key".to_string(), json!(prompt_cache_key));
             }
+            if openai_settings.prompt_cache_retention.is_some()
+                && openai_settings.prompt_cache_options.is_some()
+            {
+                return Err(ModelError::MessageMapping(
+                    "OpenAI prompt_cache_retention and prompt_cache_options cannot both be configured"
+                        .to_string(),
+                ));
+            }
             if let Some(prompt_cache_retention) = &openai_settings.prompt_cache_retention {
                 request.insert(
                     "prompt_cache_retention".to_string(),
                     json!(prompt_cache_retention),
+                );
+            }
+            if let Some(prompt_cache_options) = &openai_settings.prompt_cache_options {
+                if !supports_cache_points {
+                    return Err(ModelError::MessageMapping(format!(
+                        "model {model} does not support OpenAI prompt_cache_options"
+                    )));
+                }
+                request.insert(
+                    "prompt_cache_options".to_string(),
+                    serde_json::to_value(prompt_cache_options).map_err(|error| {
+                        ModelError::MessageMapping(format!(
+                            "invalid OpenAI prompt cache options: {error}"
+                        ))
+                    })?,
                 );
             }
         }

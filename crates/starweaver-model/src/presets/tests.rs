@@ -80,6 +80,7 @@ fn preset_enums_match_registries_and_serde_names() {
         ModelSettingsPreset::OpenAiResponsesHigh,
         ModelSettingsPreset::OpenAiResponsesMedium,
         ModelSettingsPreset::OpenAiResponsesLow,
+        ModelSettingsPreset::OpenAiResponsesPro,
         ModelSettingsPreset::OpenAiResponsesDefaultFast,
         ModelSettingsPreset::OpenAiResponsesXhighFast,
         ModelSettingsPreset::OpenAiResponsesMaxFast,
@@ -126,6 +127,7 @@ fn preset_enums_match_registries_and_serde_names() {
         ModelConfigPreset::Claude400k,
         ModelConfigPreset::Claude1m,
         ModelConfigPreset::Gpt5_270k,
+        ModelConfigPreset::Gpt5_350k,
         ModelConfigPreset::Gpt5_1m,
         ModelConfigPreset::DeepSeekV4_400k,
         ModelConfigPreset::DeepSeekV4_1m,
@@ -161,11 +163,20 @@ fn resolves_model_settings_presets_and_aliases() {
 
     let fast = get_model_settings("openai_responses_high_fast").unwrap();
     assert_eq!(fast.service_tier, Some(ServiceTier::Priority));
-    assert_eq!(fast.thinking.unwrap().summary.as_deref(), Some("detailed"));
+    let fast_thinking = fast.thinking.unwrap();
+    assert_eq!(fast_thinking.summary.as_deref(), Some("detailed"));
+    assert!(fast_thinking.mode.is_none());
 
     let max = get_model_settings("openai_responses_max").unwrap();
     assert_eq!(max.max_tokens, Some(128 * K_TOKENS));
     assert_eq!(max.thinking.unwrap().effort, "max");
+
+    let pro = get_model_settings("openai_responses_pro").unwrap();
+    assert_eq!(pro.max_tokens, Some(16 * K_TOKENS));
+    let pro_thinking = pro.thinking.unwrap();
+    assert_eq!(pro_thinking.mode.as_deref(), Some("pro"));
+    assert_eq!(pro_thinking.effort, "medium");
+    assert_eq!(pro_thinking.summary.as_deref(), Some("auto"));
 
     let grok = get_model_settings("grok").unwrap();
     assert_eq!(grok.max_tokens, Some(32 * K_TOKENS));
@@ -180,6 +191,12 @@ fn resolves_model_config_presets_and_aliases() {
     let claude = get_model_config("claude").unwrap();
     assert_eq!(claude.context_window, 1_000_000);
     assert!(claude.profile.supports_document_input);
+
+    let gpt5_350k = get_model_config("gpt5_350k").unwrap();
+    assert_eq!(gpt5_350k.context_window, 350_000);
+    assert_eq!(gpt5_350k.max_images, 20);
+    assert!(gpt5_350k.profile.supports_image_input);
+    assert!(gpt5_350k.profile.supports_image_output);
 
     let grok = get_model_config("grok-4.5").unwrap();
     assert_eq!(grok.context_window, 500_000);

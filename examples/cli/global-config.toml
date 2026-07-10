@@ -20,7 +20,7 @@ model_cfg = "gpt5_270k"
 label = "Codex OAuth"
 model = "oauth@codex:gpt-5"
 model_settings = "openai_responses_high"
-model_cfg = "gpt5_270k"
+model_cfg = "gpt5_350k"
 
 [model_profiles.gateway]
 label = "Gateway OpenAI Responses"

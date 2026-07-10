@@ -234,6 +234,7 @@ pub(super) fn trim_message_for_compact(
 
 fn trim_content_for_compact(content: ContentPart, injected_tags: &[String]) -> Option<ContentPart> {
     match content {
+        ContentPart::CachePoint { .. } => None,
         ContentPart::Text { text } => {
             strip_injected_context_text(&text, injected_tags).map(|text| ContentPart::Text { text })
         }

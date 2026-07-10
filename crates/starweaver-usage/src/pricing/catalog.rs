@@ -53,6 +53,20 @@ const fn openai_gpt56_pricing(input_micros: u64, output_micros: u64) -> ModelPri
     )
 }
 
+const OPENAI_GPT56_SOL_TIERS: &[ModelPricingTier] = &[
+    ModelPricingTier::new(Some(272_000), openai_gpt56_pricing(5_000_000, 30_000_000)),
+    ModelPricingTier::new(None, openai_gpt56_pricing(10_000_000, 45_000_000)),
+];
+
+const OPENAI_GPT56_TERRA_TIERS: &[ModelPricingTier] = &[
+    ModelPricingTier::new(Some(272_000), openai_gpt56_pricing(2_500_000, 15_000_000)),
+    ModelPricingTier::new(None, openai_gpt56_pricing(5_000_000, 22_500_000)),
+];
+
+const OPENAI_GPT56_LUNA_TIERS: &[ModelPricingTier] = &[
+    ModelPricingTier::new(Some(272_000), openai_gpt56_pricing(1_000_000, 6_000_000)),
+    ModelPricingTier::new(None, openai_gpt56_pricing(2_000_000, 9_000_000)),
+];
 const fn qwen_pricing(input_cny_millis: u64, output_cny_millis: u64) -> ModelPricingDetails {
     let input = cny_millis_to_usd_micros(input_cny_millis);
     ModelPricingDetails::new(input, cny_millis_to_usd_micros(output_cny_millis))
@@ -171,8 +185,9 @@ const QWEN_FLASH_TIERS: &[ModelPricingTier] = &[
     qwen_tier(None, 1_200, 12_000),
 ];
 
-// OpenAI GPT-5.4/5.5/5.6 long-context surcharges are intentionally left as
-// fixed standard rows until a clear public context threshold can be represented.
+// OpenAI GPT-5.6 standard direct API prices, checked 2026-07-10. Requests
+// over 272K input tokens use 2x input/cache rates and 1.5x output rates.
+// Source: <https://developers.openai.com/api/docs/pricing>
 
 // Built-in catalog of standard model prices.
 //
@@ -200,7 +215,7 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
         with_cache_read(ModelPricingDetails::new(2_000_000, 6_000_000), 500_000),
     ),
     // OpenAI GPT and o-series. Cached input is represented as cache-read pricing.
-    PricingRecord::new(
+    PricingRecord::tiered(
         &[
             "gpt-5.6",
             "gpt-5-6",
@@ -209,16 +224,13 @@ const MODEL_PRICING_CATALOG: &[PricingRecord] = &[
             "gpt-5.6-sol-ultra",
             "gpt-5-6-sol-ultra",
         ],
-        openai_gpt56_pricing(5_000_000, 30_000_000),
+        OPENAI_GPT56_SOL_TIERS,
     ),
-    PricingRecord::new(
+    PricingRecord::tiered(
         &["gpt-5.6-terra", "gpt-5-6-terra"],
-        openai_gpt56_pricing(2_500_000, 15_000_000),
+        OPENAI_GPT56_TERRA_TIERS,
     ),
-    PricingRecord::new(
-        &["gpt-5.6-luna", "gpt-5-6-luna"],
-        openai_gpt56_pricing(1_000_000, 6_000_000),
-    ),
+    PricingRecord::tiered(&["gpt-5.6-luna", "gpt-5-6-luna"], OPENAI_GPT56_LUNA_TIERS),
     PricingRecord::new(
         &[
             "gpt-5.5",

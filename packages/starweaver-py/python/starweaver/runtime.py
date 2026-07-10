@@ -104,6 +104,7 @@ class RuntimeConfig:
     max_videos: int | None = None
     support_gif: bool | None = None
     max_image_bytes: int | None = None
+    max_image_dimension: int | None = None
     split_large_images: bool | None = None
     image_split_max_height: int | None = None
     image_split_overlap: int | None = None
@@ -156,6 +157,7 @@ class RuntimeConfig:
             ("max_videos", self.max_videos),
             ("support_gif", self.support_gif),
             ("max_image_bytes", self.max_image_bytes),
+            ("max_image_dimension", self.max_image_dimension),
             ("split_large_images", self.split_large_images),
             ("image_split_max_height", self.image_split_max_height),
             ("image_split_overlap", self.image_split_overlap),

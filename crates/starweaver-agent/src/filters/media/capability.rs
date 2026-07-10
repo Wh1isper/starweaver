@@ -160,7 +160,7 @@ fn content_part_media_kind(item: &ContentPart) -> Option<FilteredMediaKind> {
         | ContentPart::DataUrl { media_type, .. }
         | ContentPart::FileUrl { media_type, .. }
         | ContentPart::ResourceRef { media_type, .. } => media_type_kind(media_type),
-        ContentPart::Text { .. } => None,
+        ContentPart::CachePoint { .. } | ContentPart::Text { .. } => None,
     }
 }
 

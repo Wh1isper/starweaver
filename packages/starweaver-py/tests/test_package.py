@@ -945,11 +945,15 @@ def test_tool_context_exposes_run_context_and_run_overrides_without_persisting()
 def test_runtime_config_can_carry_tool_and_security_config() -> None:
     runtime_config = RuntimeConfig(
         context_window=42,
+        max_image_bytes=4_000_000,
+        max_image_dimension=8000,
         tool_config=ToolConfig(view_relaxed_text_patterns=["*.md"]),
         security=SecurityConfig(shell_review={"enabled": True, "risk_threshold": "low"}),
     )
     payload = runtime_config.to_dict()
     assert payload["model_config"]["context_window"] == 42
+    assert payload["model_config"]["max_image_bytes"] == 4_000_000
+    assert payload["model_config"]["max_image_dimension"] == 8000
     assert payload["tool_config"]["view_relaxed_text_patterns"] == ["*.md"]
     assert payload["security"]["shell_review"]["risk_threshold"] == "low"
 

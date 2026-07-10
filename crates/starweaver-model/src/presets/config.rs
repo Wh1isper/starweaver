@@ -43,6 +43,15 @@ pub(super) fn model_config_by_name(name: &str) -> Option<ModelConfigPresetData> 
             false,
             true,
         )),
+        "gpt5_350k" => Some(config_data(
+            name,
+            ProtocolFamily::OpenAiResponses,
+            350_000,
+            20,
+            0,
+            false,
+            true,
+        )),
         "gpt5_1m" => Some(config_data(
             name,
             ProtocolFamily::OpenAiResponses,

@@ -9,27 +9,53 @@ use crate::{
     message::{ContentPart, ToolReturnPart},
 };
 
+use super::settings::anthropic_block_is_cacheable;
+
 pub(super) fn anthropic_content_from_content(
     content: &[ContentPart],
 ) -> Result<Vec<Value>, ModelError> {
-    content
-        .iter()
-        .map(|part| match part {
-            ContentPart::Text { text } => Ok(json!({"type": "text", "text": text})),
-            ContentPart::ImageUrl { url } => Ok(anthropic_image_url(url)),
-            ContentPart::FileUrl { url, media_type } => anthropic_url_content(url, media_type),
-            ContentPart::Binary { data, media_type } => anthropic_binary_content(data, media_type),
+    let mut blocks: Vec<Value> = Vec::new();
+    for part in content {
+        if let ContentPart::CachePoint { ttl } = part {
+            let previous = blocks.last_mut().ok_or_else(|| {
+                ModelError::MessageMapping(
+                    "cache point cannot be the first content in an Anthropic user message; use anthropic_cache_instructions or anthropic_cache_tool_definitions for earlier prefixes"
+                        .to_string(),
+                )
+            })?;
+            if !anthropic_block_is_cacheable(previous) {
+                return Err(ModelError::MessageMapping(format!(
+                    "Anthropic cache point cannot follow a non-cacheable {} content block",
+                    previous
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                )));
+            }
+            previous["cache_control"] = json!({
+                "type": "ephemeral",
+                "ttl": ttl.map_or("5m", crate::message::CachePointTtl::as_str),
+            });
+            continue;
+        }
+        blocks.push(match part {
+            ContentPart::CachePoint { .. } => unreachable!(),
+            ContentPart::Text { text } => json!({"type": "text", "text": text}),
+            ContentPart::ImageUrl { url } => anthropic_image_url(url),
+            ContentPart::FileUrl { url, media_type } => anthropic_url_content(url, media_type)?,
+            ContentPart::Binary { data, media_type } => anthropic_binary_content(data, media_type)?,
             ContentPart::ResourceRef {
                 uri, media_type, ..
-            } => anthropic_url_content(uri, media_type),
+            } => anthropic_url_content(uri, media_type)?,
             ContentPart::DataUrl { data_url, .. } => {
                 let parsed = parse_data_url(data_url).map_err(|error| {
                     ModelError::MessageMapping(format!("invalid Anthropic data URL: {error}"))
                 })?;
-                anthropic_binary_content(&parsed.data, &parsed.media_type)
+                anthropic_binary_content(&parsed.data, &parsed.media_type)?
             }
-        })
-        .collect()
+        });
+    }
+    Ok(blocks)
 }
 
 pub(super) fn anthropic_tool_result(tool_return: &ToolReturnPart) -> Value {

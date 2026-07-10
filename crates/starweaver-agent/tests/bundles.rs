@@ -704,7 +704,7 @@ async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
             .with_file("paged.txt", "line 1\nline 2\n")
             .with_file("long.txt", "abcdef\n")
             .with_bytes("binary.dat", vec![b'a', 0, b'b'])
-            .with_bytes("image.png", b"\x89PNG\r\n\x1a\nsmall".to_vec()),
+            .with_bytes("image.png", test_png(1, 1)),
     );
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&filesystem_tools());
@@ -946,10 +946,8 @@ async fn skill_registry_registers_markdown_relaxed_view_patterns() {
 
 #[tokio::test]
 async fn filesystem_view_native_media_returns_provider_backed_content_parts() {
-    let provider = Arc::new(
-        VirtualEnvironmentProvider::new("test")
-            .with_bytes("image.png", b"\x89PNG\r\n\x1a\nsmall".to_vec()),
-    );
+    let provider =
+        Arc::new(VirtualEnvironmentProvider::new("test").with_bytes("image.png", test_png(1, 1)));
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&filesystem_tools());
     let mut agent_context = AgentContext::default();
@@ -1262,7 +1260,7 @@ async fn read_media_native_image_url_returns_provider_backed_content_parts() {
         axum::routing::get(|| async {
             (
                 [(axum::http::header::CONTENT_TYPE, "image/png")],
-                b"\x89PNG\r\n\x1a\nsmall".to_vec(),
+                test_png(1, 1),
             )
         }),
     );
@@ -1723,10 +1721,8 @@ async fn host_io_and_view_media_failures_return_actionable_tool_errors() {
     registry.insert_toolset(&host_io_tools());
     registry.insert_toolset(&filesystem_tools());
 
-    let provider = Arc::new(
-        VirtualEnvironmentProvider::new("test")
-            .with_bytes("image.png", b"\x89PNG\r\n\x1a\nsmall".to_vec()),
-    );
+    let provider =
+        Arc::new(VirtualEnvironmentProvider::new("test").with_bytes("image.png", test_png(1, 1)));
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider);
     let mut dependencies = agent_context.dependencies.clone();
@@ -2582,6 +2578,15 @@ impl HostScrapeClient for LargeScrapeClient {
             handoff: None,
         })
     }
+}
+
+fn test_png(width: u32, height: u32) -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(width, height, image::Rgba([255, 0, 0, 255]));
+    let mut output = std::io::Cursor::new(Vec::new());
+    let result =
+        image::DynamicImage::ImageRgba8(image).write_to(&mut output, image::ImageFormat::Png);
+    assert!(result.is_ok(), "failed to encode test png: {result:?}");
+    output.into_inner()
 }
 
 fn large_markdown() -> String {

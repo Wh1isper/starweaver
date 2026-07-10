@@ -4,7 +4,10 @@ use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use crate::{
     bundles::helpers::tool_feedback,
-    media_compression::{compress_image_to_model_limit, data_url, raw_budget_for_encoded_limit},
+    media_compression::{
+        compress_image_to_model_limit, data_url, image_exceeds_model_limits,
+        image_within_model_limits,
+    },
 };
 
 pub(super) fn fetch_image_result(
@@ -29,14 +32,24 @@ pub(super) fn fetch_image_result(
     let mut compressed_for_model = false;
     if let Some(agent_context) = context.dependency::<AgentContext>() {
         let max_image_bytes = agent_context.model_config.max_image_bytes;
-        if max_image_bytes > 0 && body.len() > raw_budget_for_encoded_limit(max_image_bytes) {
-            match compress_image_to_model_limit(&body, max_image_bytes, &media_type) {
+        let max_image_dimension = agent_context.model_config.max_image_dimension;
+        if image_exceeds_model_limits(&body, max_image_bytes, max_image_dimension) {
+            match compress_image_to_model_limit(
+                &body,
+                max_image_bytes,
+                max_image_dimension,
+                &media_type,
+            ) {
                 Ok(compressed) => {
-                    if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
+                    if !image_within_model_limits(
+                        &compressed.data,
+                        max_image_bytes,
+                        max_image_dimension,
+                    ) {
                         return Err(tool_feedback(
                             "fetch",
                             format!(
-                                "Fetched image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Download the image and resize or convert it to a smaller format before retrying."
+                                "Fetched image could not be processed within the configured model limits (max_image_bytes={max_image_bytes}, max_image_dimension={max_image_dimension}). Download the image and resize or convert it to a smaller supported format before retrying."
                             ),
                         ));
                     }
@@ -48,7 +61,7 @@ pub(super) fn fetch_image_result(
                     return Err(tool_feedback(
                         "fetch",
                         format!(
-                            "Fetched image could not be compressed for inline model input: {error}. Download the image and resize or convert it to a supported smaller format before retrying."
+                            "Fetched image could not be processed for inline model input: {error}. Download the image and resize or convert it to a supported smaller format before retrying."
                         ),
                     ));
                 }

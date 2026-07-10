@@ -13,7 +13,7 @@ use starweaver_model::{
     transport::{RetryPolicy, should_retry_error},
 };
 use starweaver_tools::{ToolContext, ToolRegistry};
-use starweaver_usage::pricing::estimate_pricing_for_model;
+use starweaver_usage::pricing::known_model_pricing_profile;
 
 const DEFAULT_MODEL_ERROR_RETRIES: usize = 2;
 const DURABLE_RUN_ID_METADATA_KEY: &str = "starweaver.durable_run_id";
@@ -1027,10 +1027,14 @@ impl Agent {
             if !response_usage.is_empty() {
                 let agent_id = context.agent_id.as_str().to_string();
                 let ledger_key = agent_id.clone();
-                let agent_usage = context.usage_snapshot_entries.get(&ledger_key).map_or_else(
+                let previous_entry = context
+                    .usage_snapshot_entries
+                    .get(&ledger_key)
+                    .map(|entry| (entry.usage.clone(), entry.estimate_pricing.clone()));
+                let agent_usage = previous_entry.as_ref().map_or_else(
                     || state.usage.clone(),
-                    |entry| {
-                        let mut usage = entry.usage.clone();
+                    |(entry_usage, _)| {
+                        let mut usage = entry_usage.clone();
                         usage.add_assign(&response_usage);
                         usage
                     },
@@ -1040,7 +1044,20 @@ impl Agent {
                     .usage_limits
                     .as_ref()
                     .and_then(|limits| limits.estimate_pricing(&agent_usage))
-                    .or_else(|| estimate_pricing_for_model(&model_id, &agent_usage));
+                    .or_else(|| {
+                        known_model_pricing_profile(&model_id).map(|profile| {
+                            if profile.is_tiered() {
+                                let mut estimate = previous_entry
+                                    .as_ref()
+                                    .and_then(|(_, estimate)| estimate.clone())
+                                    .unwrap_or_default();
+                                estimate.add_assign(&profile.estimate(&response_usage));
+                                estimate
+                            } else {
+                                profile.estimate(&agent_usage)
+                            }
+                        })
+                    });
                 let mut snapshot = context.update_usage_snapshot_entry(
                     agent_id.clone(),
                     agent_id.clone(),

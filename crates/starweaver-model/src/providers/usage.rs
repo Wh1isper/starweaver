@@ -99,7 +99,7 @@ fn usage_from_named_with_options(
 }
 
 fn usage_cache_write_tokens(usage: &Value) -> u64 {
-    usage_u64(
+    let direct = usage_u64(
         usage,
         &[
             "cache_write_tokens",
@@ -107,6 +107,17 @@ fn usage_cache_write_tokens(usage: &Value) -> u64 {
             "cacheCreationInputTokens",
             "cacheWriteInputTokens",
             "cache_write_input_tokens",
+        ],
+    );
+    if direct > 0 {
+        return direct;
+    }
+    usage_nested_u64(
+        usage,
+        &[
+            &["prompt_tokens_details", "cache_write_tokens"],
+            &["input_tokens_details", "cache_write_tokens"],
+            &["input_token_details", "cache_write_tokens"],
         ],
     )
 }

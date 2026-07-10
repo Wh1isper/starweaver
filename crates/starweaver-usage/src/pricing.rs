@@ -390,23 +390,64 @@ mod tests {
     fn gpt_5_6_pricing_uses_published_cache_write_and_read_rates() {
         let usage = Usage {
             requests: 1,
-            input_tokens: 1_000_000,
-            cache_write_tokens: 200_000,
-            cache_read_tokens: 300_000,
-            output_tokens: 1_000_000,
-            total_tokens: 2_000_000,
+            input_tokens: 200_000,
+            cache_write_tokens: 40_000,
+            cache_read_tokens: 60_000,
+            output_tokens: 200_000,
+            total_tokens: 400_000,
             tool_calls: 0,
         };
 
         assert_eq!(
             estimate_pricing_for_model("gpt-5.6-sol", &usage)
                 .map(|estimate| estimate.amount_micros_usd),
-            Some(33_900_000)
+            Some(6_780_000)
         );
         assert_eq!(
             estimate_pricing_for_model("openai:gpt-5-6-luna", &usage)
                 .map(|estimate| estimate.amount_micros_usd),
-            Some(6_780_000)
+            Some(1_356_000)
+        );
+    }
+
+    #[test]
+    fn gpt_5_6_pricing_switches_to_long_context_rates_above_272k() {
+        let Some(profile) = known_model_pricing_profile("gpt-5.6-terra") else {
+            panic!("gpt-5.6-terra pricing profile should exist");
+        };
+
+        assert!(profile.is_tiered());
+        assert_eq!(
+            profile.details_for_input_tokens(272_000).standard_pricing(),
+            ModelPricing::new(2_500_000, 15_000_000)
+        );
+        let long_context = profile.details_for_input_tokens(272_001);
+        assert_eq!(
+            long_context.standard_pricing(),
+            ModelPricing::new(5_000_000, 22_500_000)
+        );
+        assert_eq!(
+            long_context.cache_write_micros_per_million_tokens,
+            Some(6_250_000)
+        );
+        assert_eq!(
+            long_context.cache_read_micros_per_million_tokens,
+            Some(500_000)
+        );
+
+        let usage = Usage {
+            requests: 1,
+            input_tokens: 272_001,
+            cache_write_tokens: 50_000,
+            cache_read_tokens: 100_000,
+            output_tokens: 100_000,
+            total_tokens: 372_001,
+            tool_calls: 0,
+        };
+        assert_eq!(
+            estimate_pricing_for_model("openai:gpt-5-6-terra", &usage)
+                .map(|estimate| estimate.amount_micros_usd),
+            Some(3_222_505)
         );
     }
 

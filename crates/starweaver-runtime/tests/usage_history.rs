@@ -440,6 +440,72 @@ async fn run_stream_emits_cumulative_usage_snapshot_events() {
 }
 
 #[tokio::test]
+async fn tiered_model_pricing_accumulates_per_request_estimates() {
+    let short_usage = Usage {
+        requests: 1,
+        input_tokens: 200_000,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        output_tokens: 100_000,
+        total_tokens: 300_000,
+        tool_calls: 0,
+    };
+    let long_usage = Usage {
+        requests: 1,
+        input_tokens: 300_000,
+        cache_write_tokens: 0,
+        cache_read_tokens: 0,
+        output_tokens: 100_000,
+        total_tokens: 400_000,
+        tool_calls: 0,
+    };
+    let mut first = tool_call_response("call_1", "echo");
+    first.usage = short_usage.clone();
+    let mut second = tool_call_response("call_2", "echo");
+    second.usage = short_usage;
+    let model = Arc::new(
+        TestModel::with_responses(vec![first, second, response_with_usage("done", long_usage)])
+            .with_model_name("gpt-5.6-terra"),
+    );
+
+    let result = Agent::new(model)
+        .with_tools(echo_registry())
+        .run_stream("hello")
+        .await
+        .unwrap();
+    let snapshots = result
+        .events()
+        .iter()
+        .filter_map(|record| match &record.event {
+            AgentStreamEvent::Custom { event } if event.kind == "usage_snapshot" => Some(
+                serde_json::from_value::<starweaver_usage::UsageSnapshot>(event.payload.clone())
+                    .unwrap(),
+            ),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(snapshots.len(), 3);
+    assert_eq!(
+        snapshots[1]
+            .estimate_pricing
+            .as_ref()
+            .unwrap()
+            .amount_micros_usd,
+        4_000_000
+    );
+    assert_eq!(snapshots[2].total_usage.input_tokens, 700_000);
+    assert_eq!(
+        snapshots[2]
+            .estimate_pricing
+            .as_ref()
+            .unwrap()
+            .amount_micros_usd,
+        7_750_000
+    );
+}
+
+#[tokio::test]
 async fn message_prepare_capability_filters_messages_sent_to_model() {
     let captured = Arc::new(Mutex::new(Vec::<Vec<ModelMessage>>::new()));
     let captured_clone = captured.clone();

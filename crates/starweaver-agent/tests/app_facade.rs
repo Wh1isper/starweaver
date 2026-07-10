@@ -196,11 +196,12 @@ async fn app_run_accepts_multimodal_agent_input() {
         .model_config(model_config)
         .build_app();
 
+    let image = test_png();
     let input = AgentInput::parts(vec![
         ContentPart::text("Describe these assets."),
         ContentPart::image_url("https://example.test/image.png"),
         ContentPart::file_url("https://example.test/spec.pdf", "application/pdf"),
-        ContentPart::image_bytes([1_u8, 2, 3], "image/png"),
+        ContentPart::image_bytes(image.clone(), "image/png"),
         ContentPart::resource_ref("resource://workspace/doc-1", "application/pdf", "document"),
     ]);
 
@@ -213,7 +214,7 @@ async fn app_run_accepts_multimodal_agent_input() {
             ContentPart::text("Describe these assets."),
             ContentPart::image_url("https://example.test/image.png"),
             ContentPart::file_url("https://example.test/spec.pdf", "application/pdf"),
-            ContentPart::image_bytes([1_u8, 2, 3], "image/png"),
+            ContentPart::image_bytes(image, "image/png"),
             ContentPart::resource_ref("resource://workspace/doc-1", "application/pdf", "document"),
         ]
     );
@@ -319,4 +320,13 @@ async fn runtime_builder_owns_session_state_environment_and_streaming() {
         .unwrap();
     assert_eq!(live.result.output, "ok");
     assert_eq!(restored.session().context().usage.requests, 3);
+}
+
+fn test_png() -> Vec<u8> {
+    let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+    let mut output = std::io::Cursor::new(Vec::new());
+    let result =
+        image::DynamicImage::ImageRgba8(image).write_to(&mut output, image::ImageFormat::Png);
+    assert!(result.is_ok(), "failed to encode test png: {result:?}");
+    output.into_inner()
 }

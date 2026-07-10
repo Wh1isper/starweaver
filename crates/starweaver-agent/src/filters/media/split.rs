@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 use starweaver_context::AgentContext;
-use starweaver_model::{ContentPart, ModelMessage, ModelRequestPart};
+use starweaver_model::{ContentPart, ModelMessage, ModelRequestPart, detect_media_kind};
 use starweaver_runtime::AgentRunState;
 
 use crate::{
@@ -67,7 +67,9 @@ fn split_content_parts(
     let mut processed = Vec::with_capacity(content.len());
     for item in std::mem::take(content) {
         match item {
-            ContentPart::Binary { data, media_type } if media_type.starts_with("image/") => {
+            ContentPart::Binary { data, media_type }
+                if media_type.starts_with("image/") || detect_media_kind(&data).is_image() =>
+            {
                 match split_image_data(&data, max_height, overlap, &media_type) {
                     Ok(segments) if segments.len() > 1 => {
                         outcome.split_images += 1;

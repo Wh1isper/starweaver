@@ -73,7 +73,7 @@ fn preflight_content_part(item: &mut ContentPart, policy: &MediaPolicy) -> Prefl
             if let Some(corrected) = preflight.corrected_media_type.clone() {
                 *media_type = corrected;
             }
-            if preflight.corrupt || !preflight.allowed_by_policy {
+            if should_replace_preflight(&preflight) {
                 *item = ContentPart::Text {
                     text: replacement_text(&preflight),
                 };
@@ -99,7 +99,7 @@ fn preflight_content_part(item: &mut ContentPart, policy: &MediaPolicy) -> Prefl
                     }
                     *media_type = corrected;
                 }
-                if preflight.corrupt || !preflight.allowed_by_policy {
+                if should_replace_preflight(&preflight) {
                     *item = ContentPart::Text {
                         text: replacement_text(&preflight),
                     };
@@ -115,7 +115,8 @@ fn preflight_content_part(item: &mut ContentPart, policy: &MediaPolicy) -> Prefl
                 PreflightOutcome::replaced(json!({ "error": error }))
             }
         },
-        ContentPart::ImageUrl { .. }
+        ContentPart::CachePoint { .. }
+        | ContentPart::ImageUrl { .. }
         | ContentPart::FileUrl { .. }
         | ContentPart::ResourceRef { .. }
         | ContentPart::Text { .. } => PreflightOutcome::default(),
@@ -156,7 +157,7 @@ fn preflight_tool_value(value: &mut Value, policy: &MediaPolicy) -> PreflightOut
                             }
                             object.insert("media_type".to_string(), json!(media_type));
                         }
-                        if preflight.corrupt || !preflight.allowed_by_policy {
+                        if should_replace_preflight(&preflight) {
                             *value = json!({ "type": "system_reminder", "text": replacement_text(&preflight) });
                             outcome.replaced = true;
                         }
@@ -227,6 +228,13 @@ fn video_count_limit_message(limit: usize) -> String {
     )
 }
 
+const fn should_replace_preflight(preflight: &MediaPreflight) -> bool {
+    preflight.corrupt
+        || !preflight.allowed_by_policy
+        || preflight.over_base64_budget
+        || preflight.over_dimension_limit
+}
+
 fn preflight_report(preflight: &MediaPreflight) -> Value {
     serde_json::to_value(preflight).unwrap_or_else(|_| json!({}))
 }
@@ -235,7 +243,7 @@ fn replacement_text(preflight: &MediaPreflight) -> String {
     preflight.corruption_reason.as_ref().map_or_else(
         || {
             preflight.policy_reason.as_ref().map_or_else(
-                || "System reminder: media payload was removed by media preflight.".to_string(),
+                || "System reminder: media payload was removed because it still exceeded the configured model limits after processing.".to_string(),
                 |reason| {
                     format!("System reminder: media payload was removed by media policy: {reason}.")
                 },

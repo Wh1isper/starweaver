@@ -72,6 +72,9 @@ pub struct MediaPolicy {
     /// Optional maximum base64 encoded bytes accepted inline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_inline_base64_bytes: Option<usize>,
+    /// Optional maximum width or height accepted for image input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_image_dimension: Option<u32>,
     /// Maximum image parts to retain, preserving newest media first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_images: Option<usize>,
@@ -94,6 +97,7 @@ impl Default for MediaPolicy {
     fn default() -> Self {
         Self {
             max_inline_base64_bytes: None,
+            max_image_dimension: None,
             max_images: None,
             max_videos: None,
             allow_gif: true,

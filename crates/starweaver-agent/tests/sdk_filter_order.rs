@@ -656,6 +656,90 @@ async fn media_compress_reduces_oversized_binary_image() -> starweaver_agent::Ca
 }
 
 #[tokio::test]
+async fn media_compress_resizes_images_that_only_exceed_dimension_limit()
+-> starweaver_agent::CapabilityResult<()> {
+    let image = valid_noisy_png(810, 81);
+    let mut agent_context = AgentContext::default();
+    agent_context.model_config.max_image_bytes = 0;
+    agent_context.model_config.max_image_dimension = 800;
+    let request = user_request(vec![ContentPart::Binary {
+        data: image,
+        media_type: "application/octet-stream".to_string(),
+    }]);
+
+    let messages = NamedFilterCapability::new("media_compress")
+        .prepare_model_messages_with_context(
+            &mut AgentRunState::new(
+                RunId::from_string("run_media_dimension"),
+                ConversationId::new(),
+            ),
+            &mut agent_context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+
+    let compressed_content = latest_user_content(&messages);
+    let ContentPart::Binary { data, media_type } = &compressed_content[0] else {
+        panic!("expected processed binary image");
+    };
+    assert_eq!(media_type, "image/jpeg");
+    assert_eq!(
+        starweaver_model::detect_image_dimensions(data, starweaver_model::MediaKind::Jpeg),
+        Some(starweaver_model::ImageDimensions {
+            width: 800,
+            height: 80,
+        })
+    );
+    assert_eq!(
+        latest_request_metadata(&messages)["starweaver_media_compressed"],
+        serde_json::json!(1)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn media_compress_fails_closed_before_decoding_unsafe_pixel_counts()
+-> starweaver_agent::CapabilityResult<()> {
+    let mut agent_context = AgentContext::default();
+    agent_context.model_config.max_image_bytes = 0;
+    agent_context.model_config.max_image_dimension = 8000;
+    let request = user_request(vec![ContentPart::Binary {
+        data: png_header_bytes(9000, 9000),
+        media_type: "image/png".to_string(),
+    }]);
+
+    let messages = NamedFilterCapability::new("media_compress")
+        .prepare_model_messages_with_context(
+            &mut AgentRunState::new(
+                RunId::from_string("run_media_pixel_guard"),
+                ConversationId::new(),
+            ),
+            &mut agent_context,
+            vec![ModelMessage::Request(request)],
+        )
+        .await?;
+
+    assert!(matches!(
+        &latest_user_content(&messages)[0],
+        ContentPart::Text { text } if text.contains("processing failed")
+    ));
+    assert_eq!(
+        latest_request_metadata(&messages)["starweaver_media_compression_replacements"],
+        serde_json::json!(1)
+    );
+    let metadata = latest_request_metadata(&messages);
+    let failures = metadata["starweaver_media_compression_failures"]
+        .as_array()
+        .expect("compression failures");
+    assert!(
+        failures[0]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("safe processing limit"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn media_compress_updates_nested_tool_data_url() -> starweaver_agent::CapabilityResult<()> {
     let image = valid_noisy_png(220, 220);
     let mut agent_context = AgentContext::default();
@@ -2460,6 +2544,18 @@ fn latest_request_metadata(
             ModelMessage::Response(_) => None,
         })
         .expect("request metadata")
+}
+
+fn png_header_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+    bytes.extend_from_slice(&13u32.to_be_bytes());
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[8, 2, 0, 0, 0]);
+    bytes.extend_from_slice(&0u32.to_be_bytes());
+    bytes
 }
 
 fn valid_noisy_png(width: u32, height: u32) -> Vec<u8> {

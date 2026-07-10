@@ -64,7 +64,8 @@ fn user_prompt_text(content: &[ContentPart]) -> Option<String> {
         .iter()
         .filter_map(|part| match part {
             ContentPart::Text { text } => Some(text.trim()),
-            ContentPart::ImageUrl { .. }
+            ContentPart::CachePoint { .. }
+            | ContentPart::ImageUrl { .. }
             | ContentPart::FileUrl { .. }
             | ContentPart::Binary { .. }
             | ContentPart::ResourceRef { .. }

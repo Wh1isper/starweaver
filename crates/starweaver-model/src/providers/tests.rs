@@ -6,7 +6,7 @@ use crate::message::{
     ToolReturnPart,
 };
 use crate::transport::MaxTokensParameter;
-use crate::{ModelSettings, ServiceTier, ThinkingSettings, ToolChoice};
+use crate::{ModelError, ModelSettings, ServiceTier, ThinkingSettings, ToolChoice};
 
 fn mixed_content() -> Vec<ContentPart> {
     vec![
@@ -55,13 +55,17 @@ fn mixed_content() -> Vec<ContentPart> {
 fn content_mappers_cover_text_binary_resource_and_data_url_variants() {
     assert_eq!(text_from_content(&mixed_content()), "hello");
     assert_eq!(
-        openai_chat_content(&[ContentPart::Text {
-            text: "solo".to_string()
-        }]),
+        openai_chat_content_with_cache_points(
+            &[ContentPart::Text {
+                text: "solo".to_string(),
+            }],
+            false,
+        )
+        .unwrap(),
         json!("solo")
     );
 
-    let chat = openai_chat_content(&mixed_content());
+    let chat = openai_chat_content_with_cache_points(&mixed_content(), false).unwrap();
     assert_eq!(chat[0]["type"], "text");
     assert_eq!(chat[1]["type"], "image_url");
     assert_eq!(chat[2]["type"], "file");
@@ -85,7 +89,7 @@ fn content_mappers_cover_text_binary_resource_and_data_url_variants() {
         "data:application/pdf;base64,abc="
     );
 
-    let responses = openai_responses_content(&mixed_content());
+    let responses = openai_responses_content_with_cache_points(&mixed_content(), false).unwrap();
     assert_eq!(responses[0]["type"], "input_text");
     assert_eq!(responses[1]["type"], "input_image");
     assert_eq!(responses[2]["type"], "input_file");
@@ -119,6 +123,79 @@ fn content_mappers_cover_text_binary_resource_and_data_url_variants() {
     assert_eq!(bedrock[3]["image"]["format"], "png");
     assert_eq!(bedrock[4]["document"]["format"], "json");
     assert_eq!(bedrock[5]["image"]["source"]["bytes"], "resource://image/1");
+}
+
+#[test]
+fn content_mappers_validate_and_filter_cache_points() {
+    let content = vec![
+        ContentPart::text("stable"),
+        ContentPart::cache_point(),
+        ContentPart::text("dynamic"),
+    ];
+
+    let chat = openai_chat_content_with_cache_points(&content, false).unwrap();
+    assert_eq!(chat.as_array().unwrap().len(), 2);
+    assert!(chat[0].get("prompt_cache_breakpoint").is_none());
+
+    let responses = openai_responses_content_with_cache_points(&content, false).unwrap();
+    assert_eq!(responses.len(), 2);
+    assert!(responses[0].get("prompt_cache_breakpoint").is_none());
+
+    let leading = [ContentPart::cache_point(), ContentPart::text("dynamic")];
+    let chat_error = openai_chat_content_with_cache_points(&leading, true).unwrap_err();
+    assert!(
+        matches!(chat_error, ModelError::MessageMapping(message) if message.contains("cannot be the first"))
+    );
+    let responses_error = openai_responses_content_with_cache_points(&leading, true).unwrap_err();
+    assert!(
+        matches!(responses_error, ModelError::MessageMapping(message) if message.contains("cannot be the first"))
+    );
+
+    let ttl = [
+        ContentPart::text("stable"),
+        ContentPart::cache_point_with_ttl(crate::CachePointTtl::OneHour),
+    ];
+    let ttl_error = openai_chat_content_with_cache_points(&ttl, true).unwrap_err();
+    assert!(
+        matches!(ttl_error, ModelError::MessageMapping(message) if message.contains("request-wide 30m"))
+    );
+
+    assert_eq!(gemini_parts_from_content(&content).len(), 2);
+    assert_eq!(bedrock_content_from_content(&content).len(), 2);
+}
+
+#[test]
+fn content_mappers_fall_back_for_invalid_data_urls() {
+    let content = [
+        ContentPart::DataUrl {
+            data_url: "not-an-image-data-url".to_string(),
+            media_type: "image/png".to_string(),
+        },
+        ContentPart::DataUrl {
+            data_url: "not-a-document-data-url".to_string(),
+            media_type: "application/pdf".to_string(),
+        },
+    ];
+
+    let gemini = gemini_parts_from_content(&content);
+    assert_eq!(
+        gemini[0]["fileData"],
+        json!({"fileUri": "not-an-image-data-url", "mimeType": "image/png"})
+    );
+    assert_eq!(
+        gemini[1]["fileData"],
+        json!({"fileUri": "not-a-document-data-url", "mimeType": "application/pdf"})
+    );
+
+    let bedrock = bedrock_content_from_content(&content);
+    assert_eq!(
+        bedrock[0]["image"],
+        json!({"format": "png", "source": {"bytes": "not-an-image-data-url"}})
+    );
+    assert_eq!(
+        bedrock[1]["document"],
+        json!({"format": "pdf", "source": {"bytes": "not-a-document-data-url"}})
+    );
 }
 
 #[test]
@@ -220,15 +297,19 @@ fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
     );
 
     let openai_usage = usage_from_openai(&json!({"usage": {
-        "prompt_tokens": 1,
+        "prompt_tokens": 10,
         "completion_tokens": 2,
-        "total_tokens": 3,
-        "prompt_tokens_details": {"cached_tokens": 4}
+        "total_tokens": 12,
+        "prompt_tokens_details": {
+            "cached_tokens": 4,
+            "cache_write_tokens": 3
+        }
     }}));
-    assert_eq!(openai_usage.input_tokens, 1);
+    assert_eq!(openai_usage.input_tokens, 10);
+    assert_eq!(openai_usage.cache_write_tokens, 3);
     assert_eq!(openai_usage.cache_read_tokens, 4);
     assert_eq!(openai_usage.output_tokens, 2);
-    assert_eq!(openai_usage.total_tokens, 3);
+    assert_eq!(openai_usage.total_tokens, 12);
     let openai_usage_without_total = usage_from_openai(&json!({"usage": {
         "prompt_tokens": 3,
         "completion_tokens": 4
@@ -238,8 +319,12 @@ fn provider_tool_choice_usage_finish_and_arguments_are_mapped() {
         "input_tokens": 10,
         "output_tokens": 3,
         "total_tokens": 13,
-        "input_tokens_details": {"cached_tokens": 6}
+        "input_tokens_details": {
+            "cached_tokens": 6,
+            "cache_write_tokens": 2
+        }
     }}));
+    assert_eq!(responses_usage.cache_write_tokens, 2);
     assert_eq!(responses_usage.cache_read_tokens, 6);
     let named_usage = usage_from_named(
         &json!({"usageMetadata": {

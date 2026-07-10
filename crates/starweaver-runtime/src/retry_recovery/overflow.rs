@@ -146,7 +146,7 @@ fn is_image_or_video_content_part(part: &ContentPart) -> bool {
         | ContentPart::Binary { media_type, .. }
         | ContentPart::ResourceRef { media_type, .. }
         | ContentPart::DataUrl { media_type, .. } => is_image_or_video_media_type(media_type),
-        ContentPart::Text { .. } => false,
+        ContentPart::CachePoint { .. } | ContentPart::Text { .. } => false,
     }
 }
 

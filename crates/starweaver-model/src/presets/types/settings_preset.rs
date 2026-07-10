@@ -216,6 +216,9 @@ pub enum ModelSettingsPreset {
     /// `openai_responses_low` model settings preset.
     #[serde(rename = "openai_responses_low")]
     OpenAiResponsesLow,
+    /// `openai_responses_pro` model settings preset.
+    #[serde(rename = "openai_responses_pro")]
+    OpenAiResponsesPro,
     /// `openai_responses_default_fast` model settings preset.
     #[serde(rename = "openai_responses_default_fast")]
     OpenAiResponsesDefaultFast,
@@ -384,6 +387,7 @@ impl ModelSettingsPreset {
             Self::OpenAiResponsesHigh => "openai_responses_high",
             Self::OpenAiResponsesMedium => "openai_responses_medium",
             Self::OpenAiResponsesLow => "openai_responses_low",
+            Self::OpenAiResponsesPro => "openai_responses_pro",
             Self::OpenAiResponsesDefaultFast => "openai_responses_default_fast",
             Self::OpenAiResponsesXhighFast => "openai_responses_xhigh_fast",
             Self::OpenAiResponsesMaxFast => "openai_responses_max_fast",

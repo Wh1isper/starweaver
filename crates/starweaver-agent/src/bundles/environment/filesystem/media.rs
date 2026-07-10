@@ -10,7 +10,9 @@ use crate::{
     bundles::{
         HostMediaCapabilities, HostMediaUnderstandingClientHandle, MediaUnderstandingRequest,
     },
-    media_compression::{compress_image_to_model_limit, raw_budget_for_encoded_limit},
+    media_compression::{
+        compress_image_to_model_limit, image_exceeds_model_limits, image_within_model_limits,
+    },
 };
 
 use super::{ViewArgs, format_size, tool_execution_error};
@@ -69,14 +71,24 @@ pub(super) async fn read_media_file(
         && let Some(agent_context) = context.dependency::<AgentContext>()
     {
         let max_image_bytes = agent_context.model_config.max_image_bytes;
-        if max_image_bytes > 0 {
-            match compress_image_to_model_limit(&data, max_image_bytes, &media_type) {
+        let max_image_dimension = agent_context.model_config.max_image_dimension;
+        if image_exceeds_model_limits(&data, max_image_bytes, max_image_dimension) {
+            match compress_image_to_model_limit(
+                &data,
+                max_image_bytes,
+                max_image_dimension,
+                &media_type,
+            ) {
                 Ok(compressed) => {
-                    if compressed.data.len() > raw_budget_for_encoded_limit(max_image_bytes) {
+                    if !image_within_model_limits(
+                        &compressed.data,
+                        max_image_bytes,
+                        max_image_dimension,
+                    ) {
                         return Err(tool_feedback(
                             "view",
                             format!(
-                                "Image could not be compressed below the {max_image_bytes} byte API limit after accounting for base64 encoding. Resize or convert it to a smaller supported format before retrying."
+                                "Image could not be processed within the configured model limits (max_image_bytes={max_image_bytes}, max_image_dimension={max_image_dimension}). Resize or convert it to a smaller supported format before retrying."
                             ),
                         ));
                     }
@@ -88,7 +100,7 @@ pub(super) async fn read_media_file(
                     return Err(tool_feedback(
                         "view",
                         format!(
-                            "Image could not be compressed for inline model input: {error}. Resize or convert it to a smaller supported format before retrying."
+                            "Image could not be processed for inline model input: {error}. Resize or convert it to a smaller supported format before retrying."
                         ),
                     ));
                 }

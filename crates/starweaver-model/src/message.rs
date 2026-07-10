@@ -13,6 +13,6 @@ mod tool;
 
 pub use history::{ModelMessage, ModelRequest, ModelResponse};
 pub use provider::{FinishReason, ProviderInfo, ProviderPartInfo};
-pub use request_parts::{ContentPart, ModelRequestPart};
+pub use request_parts::{CachePointTtl, ContentPart, ModelRequestPart};
 pub use response_parts::ModelResponsePart;
 pub use tool::{ToolArguments, ToolCallPart, ToolReturnPart};

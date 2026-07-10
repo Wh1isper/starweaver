@@ -74,7 +74,7 @@ impl ModelAdapter for ProtocolModelClient {
         let options = self.request_options(&context, prepared.settings.as_ref(), &prepared.params);
         let mut request = build_http_request(&self.http_config, &options, wire_body);
         request.cancellation_token = context.cancellation_token();
-        self.finalize_http_request(&mut request);
+        self.finalize_http_request(&mut request)?;
         if let Some(audit) = self.request_audit.as_ref() {
             audit.record(&self.provider_name, &self.model_name, false, &request);
         }
@@ -381,7 +381,7 @@ impl ModelRunSession for ProtocolModelClientRunSession<'_> {
                     &options,
                     cancellation_token,
                     ResponseStreamRequestKind::HttpSse,
-                );
+                )?;
                 ProtocolModelClient::ensure_real_model_request_allowed(&http_request)?;
                 self.client
                     .openai_response_stream_from_request(
@@ -396,7 +396,7 @@ impl ModelRunSession for ProtocolModelClientRunSession<'_> {
                     &options,
                     cancellation_token,
                     ResponseStreamRequestKind::WebSocket,
-                );
+                )?;
                 self.request_websocket_stream(
                     websocket_request,
                     None,
@@ -411,13 +411,13 @@ impl ModelRunSession for ProtocolModelClientRunSession<'_> {
                     &options,
                     cancellation_token.clone(),
                     ResponseStreamRequestKind::WebSocket,
-                );
+                )?;
                 let http_request = self.client.build_response_stream_request(
                     wire_body,
                     &options,
                     cancellation_token,
                     ResponseStreamRequestKind::HttpSse,
-                );
+                )?;
                 self.request_websocket_stream(
                     websocket_request,
                     Some(http_request),
@@ -474,7 +474,7 @@ impl ProtocolModelClient {
         options: &crate::transport::HttpRequestOptions,
         cancellation_token: starweaver_core::CancellationToken,
         kind: ResponseStreamRequestKind,
-    ) -> HttpRequest {
+    ) -> Result<HttpRequest, ModelError> {
         let body = match kind {
             ResponseStreamRequestKind::HttpSse => response_http_sse_body(wire_body),
             ResponseStreamRequestKind::WebSocket => response_websocket_body(wire_body),
@@ -495,8 +495,8 @@ impl ProtocolModelClient {
                 );
             }
         }
-        self.finalize_http_request(&mut request);
-        request
+        self.finalize_http_request(&mut request)?;
+        Ok(request)
     }
 
     fn ensure_real_model_request_allowed(request: &HttpRequest) -> Result<(), ModelError> {

@@ -52,7 +52,8 @@ impl AgentInput {
             .iter()
             .filter_map(|part| match part {
                 ContentPart::Text { text } => Some(text.as_str()),
-                ContentPart::ImageUrl { .. }
+                ContentPart::CachePoint { .. }
+                | ContentPart::ImageUrl { .. }
                 | ContentPart::FileUrl { .. }
                 | ContentPart::Binary { .. }
                 | ContentPart::ResourceRef { .. }
