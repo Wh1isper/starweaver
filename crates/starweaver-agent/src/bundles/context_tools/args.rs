@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 pub(super) struct SummarizeArgs {
     /// Context summary to preserve across context handoff.
     pub(super) content: String,
-    /// File paths to auto-load after summary.
+    /// File paths the resumed agent may need to inspect after summary.
+    ///
+    /// Only the paths are added to a reminder; file contents are not loaded into context.
     #[serde(default)]
     pub(super) auto_load_files: Option<Vec<String>>,
 }

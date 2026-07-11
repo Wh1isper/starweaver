@@ -1892,6 +1892,15 @@ async fn summarize_sets_context_handoff_and_auto_load_files() {
         .into_iter()
         .find(|tool| tool.name() == "summarize")
         .unwrap();
+    let schema = summarize_tool.parameters_schema();
+    assert!(
+        schema["properties"]["auto_load_files"]["description"]
+            .as_str()
+            .is_some_and(|description| {
+                description.contains("file contents are not loaded into context")
+            })
+    );
+
     let mut agent_context = AgentContext {
         auto_load_files: vec!["AGENTS.md".to_string()],
         ..AgentContext::default()
@@ -2152,6 +2161,16 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
             .contains("delegate tool's own execution model")
     );
     assert_eq!(context.get_instructions().len(), 3);
+    assert!(
+        context.get_instructions()[0]
+            .content
+            .contains("<files-to-inspect>")
+    );
+    assert!(
+        context.get_instructions()[0]
+            .content
+            .contains("their contents will not be loaded into context")
+    );
     assert_eq!(host_io.get_instructions().len(), 5);
 }
 

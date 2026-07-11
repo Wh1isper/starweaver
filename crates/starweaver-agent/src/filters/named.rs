@@ -72,6 +72,9 @@ pub(super) fn default_filter_capabilities_with_media_uploader(
                     capability = capability.with_trace_recorder(recorder);
                 }
                 Arc::new(capability) as Arc<dyn AgentCapability>
+            } else if *name == "auto_load_files" {
+                Arc::new(NamedFilterCapability::auto_load_files_before_compact())
+                    as Arc<dyn AgentCapability>
             } else if *name == "media_upload" {
                 media_uploader.map_or_else(
                     || Arc::new(NamedFilterCapability::new(name)) as Arc<dyn AgentCapability>,

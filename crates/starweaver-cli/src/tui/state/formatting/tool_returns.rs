@@ -570,7 +570,7 @@ fn format_summarize_tool_lines(result: &Value, arguments: Option<&Value>) -> Vec
     }
     if !auto_load_files.is_empty() {
         lines.push(format!(
-            "  Auto-load files: {}",
+            "  Files to inspect: {}",
             auto_load_files
                 .iter()
                 .map(String::as_str)

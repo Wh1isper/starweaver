@@ -164,6 +164,7 @@ fn curated_export_keeps_portable_fields_and_omits_runtime_extensions() {
         .set("domain", serde_json::json!({"value": true}));
     context.enqueue_message(BusMessage::text("queued", "system"));
     context.handoff_message = Some("handoff".to_string());
+    context.auto_load_files = vec!["src/lib.rs".to_string()];
     context
         .shell_env
         .insert("KEY".to_string(), "VALUE".to_string());
@@ -182,6 +183,7 @@ fn curated_export_keeps_portable_fields_and_omits_runtime_extensions() {
     assert!(exported.state.get("domain").is_none());
     assert!(exported.message_bus.is_empty());
     assert_eq!(exported.handoff_message.as_deref(), Some("handoff"));
+    assert_eq!(exported.auto_load_files, vec!["src/lib.rs".to_string()]);
     assert_eq!(exported.shell_env["KEY"], "VALUE");
     assert_eq!(exported.notes.get("language"), Some(&"Chinese".to_string()));
     assert_eq!(exported.tasks.len(), 1);
@@ -192,6 +194,9 @@ fn curated_export_keeps_portable_fields_and_omits_runtime_extensions() {
     assert!(value.get("message_history").is_none());
     assert!(value.get("message_bus").is_none());
     assert_eq!(value["notes"]["language"], "Chinese");
+    assert_eq!(value["auto_load_files"], serde_json::json!(["src/lib.rs"]));
+    let restored = AgentContext::from_state(serde_json::from_value(value.clone()).unwrap());
+    assert_eq!(restored.auto_load_files, vec!["src/lib.rs".to_string()]);
     assert_eq!(value["tasks"].as_object().unwrap().len(), 1);
     assert!(value["tasks"]["1"].get("subject").is_some());
     assert!(value["tasks"]["1"].get("tasks").is_none());
