@@ -22,9 +22,10 @@ use starweaver_environment::VirtualEnvironmentProvider;
 use starweaver_model::{
     CONTEXT_ORIGIN_ENVIRONMENT_CONTEXT, CONTEXT_ORIGIN_HANDOFF, CONTEXT_ORIGIN_METADATA,
     CONTEXT_ORIGIN_RUNTIME_CONTEXT, CONTEXT_ORIGIN_TOOL_RETURN_MEDIA, ContentPart, MediaPolicy,
-    ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart, ModelResponse,
-    ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderInfo, ProviderPartInfo,
-    ProviderReplaySettings, ToolArguments, ToolCallPart, ToolDefinition, ToolReturnPart,
+    ModelAdapter, ModelMessage, ModelRequest, ModelRequestParameters, ModelRequestPart,
+    ModelResponse, ModelResponsePart, ModelResponseStreamEvent, ModelSettings, ProviderInfo,
+    ProviderPartInfo, ProviderReplaySettings, ToolArguments, ToolCallPart, ToolDefinition,
+    ToolReturnPart,
 };
 
 #[tokio::test]
@@ -60,7 +61,7 @@ async fn default_filter_capabilities_record_order() -> starweaver_agent::Capabil
 }
 
 #[tokio::test]
-async fn default_filter_capabilities_do_not_duplicate_metadata_auto_loaded_files()
+async fn default_filter_capabilities_inject_metadata_file_hints_once_without_contents()
 -> starweaver_agent::CapabilityResult<()> {
     let request = user_request(vec![ContentPart::Text {
         text: "hello".to_string(),
@@ -72,7 +73,7 @@ async fn default_filter_capabilities_do_not_duplicate_metadata_auto_loaded_files
     );
     state.metadata.insert(
         "starweaver_auto_load_files".to_string(),
-        serde_json::json!([{ "path": "README.md", "content": "Loaded evidence" }]),
+        serde_json::json!([{ "path": "README.md", "content": "secret loaded evidence" }]),
     );
     let mut context = AgentContext::default();
 
@@ -83,16 +84,129 @@ async fn default_filter_capabilities_do_not_duplicate_metadata_auto_loaded_files
     }
 
     let text_parts = request_text_parts(messages.last().expect("latest request"));
-    let auto_loaded_blocks = text_parts
+    let inspection_blocks = text_parts
         .iter()
-        .filter(|text| text.contains("<auto-loaded-files>"))
+        .filter(|text| text.contains("<files-to-inspect"))
         .collect::<Vec<_>>();
-    assert_eq!(auto_loaded_blocks.len(), 1);
-    assert_eq!(auto_loaded_blocks[0].matches("Loaded evidence").count(), 1);
+    assert_eq!(inspection_blocks.len(), 1);
+    assert!(inspection_blocks[0].contains("contents-loaded=\"false\""));
+    assert!(inspection_blocks[0].contains("path=\"README.md\""));
+    assert!(inspection_blocks[0].contains("untrusted inert data"));
+    assert!(!inspection_blocks[0].contains("secret loaded evidence"));
     assert_eq!(
         latest_request_metadata(&messages)["starweaver_auto_load_state_metadata_injected"],
         serde_json::json!(true)
     );
+    assert!(state.metadata.get("starweaver_auto_load_files").is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn auto_load_files_filter_escapes_prompt_only_paths_and_preserves_pending_state()
+-> starweaver_agent::CapabilityResult<()> {
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_file_inspection_hints"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_auto_load_files".to_string(),
+        serde_json::json!([{"path": "legacy.rs", "content": "legacy secret"}]),
+    );
+    let unsafe_path = "src/<unsafe>&\"'file.rs";
+    let mut context = AgentContext {
+        auto_load_files: vec![unsafe_path.to_string(), "missing.txt".to_string()],
+        ..AgentContext::default()
+    };
+
+    let messages = NamedFilterCapability::new("auto_load_files")
+        .prepare_model_messages_with_context(
+            &mut state,
+            &mut context,
+            vec![ModelMessage::Request(user_request(vec![
+                ContentPart::Text {
+                    text: "continue".to_string(),
+                },
+            ]))],
+        )
+        .await?;
+    let inspection = request_text_parts(messages.last().expect("latest request")).join("\n");
+    assert!(inspection.contains("path=\"src/&lt;unsafe&gt;&amp;&quot;&apos;file.rs\""));
+    assert!(inspection.contains("path=\"missing.txt\""));
+    assert!(inspection.contains("path=\"legacy.rs\""));
+    assert!(!inspection.contains("legacy secret"));
+    assert_eq!(inspection.matches("<files-to-inspect").count(), 1);
+    assert!(context.auto_load_files.is_empty());
+    assert!(state.metadata.get("starweaver_auto_load_files").is_none());
+
+    context
+        .auto_load_files
+        .push("still-pending.txt".to_string());
+    let messages = NamedFilterCapability::new("auto_load_files")
+        .prepare_model_messages_with_context(&mut state, &mut context, Vec::new())
+        .await?;
+    assert!(
+        messages
+            .iter()
+            .flat_map(request_text_parts)
+            .all(|text| !text.contains("<files-to-inspect"))
+    );
+    assert_eq!(
+        context.auto_load_files,
+        vec!["still-pending.txt".to_string()]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_filters_normalize_file_hints_after_manual_compact()
+-> starweaver_agent::CapabilityResult<()> {
+    let mut state = AgentRunState::new(
+        RunId::from_string("run_file_hints_manual_compact"),
+        ConversationId::new(),
+    );
+    state.metadata.insert(
+        "starweaver_auto_load_files".to_string(),
+        serde_json::json!([
+            {"path": "shared.rs", "content": "legacy secret"},
+            "metadata-only.rs"
+        ]),
+    );
+    state.metadata.insert(
+        "starweaver_compact_keep_messages".to_string(),
+        serde_json::json!(1),
+    );
+    let mut context = AgentContext {
+        auto_load_files: vec!["shared.rs".to_string(), "context-only.rs".to_string()],
+        ..AgentContext::default()
+    };
+    let mut messages = vec![
+        ModelMessage::Request(user_request(vec![ContentPart::Text {
+            text: "old request".to_string(),
+        }])),
+        ModelMessage::Response(ModelResponse::text("old response")),
+        ModelMessage::Request(user_request(vec![ContentPart::Text {
+            text: "continue".to_string(),
+        }])),
+    ];
+
+    for processor in default_filter_capabilities(None) {
+        messages = processor
+            .prepare_model_messages_with_context(&mut state, &mut context, messages)
+            .await?;
+    }
+
+    let text = messages
+        .iter()
+        .flat_map(request_text_parts)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(text.matches("<files-to-inspect").count(), 1);
+    assert_eq!(text.matches("path=\"shared.rs\"").count(), 1);
+    assert!(text.contains("path=\"metadata-only.rs\""));
+    assert!(text.contains("path=\"context-only.rs\""));
+    assert!(!text.contains("legacy secret"));
+    assert!(context.auto_load_files.is_empty());
+    assert!(state.metadata.get("starweaver_auto_load_files").is_none());
     Ok(())
 }
 
@@ -1028,7 +1142,13 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
         total_tokens: 95,
         ..Usage::default()
     };
-    state.message_history = vec![request.clone(), ModelMessage::Response(response)];
+    state.message_history = vec![
+        request.clone(),
+        ModelMessage::Response(response),
+        ModelMessage::Request(user_request(vec![ContentPart::Text {
+            text: "continue after compact".to_string(),
+        }])),
+    ];
     let mut context = AgentContext {
         model_config: ModelConfig {
             context_window: Some(100),
@@ -1042,17 +1162,21 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
         previous_assistant_response_reference: Some(
             "1. first option\n2. second option".to_string(),
         ),
+        auto_load_files: vec!["src/continue.rs".to_string()],
         ..AgentContext::default()
     };
 
-    let input_messages = context.message_history.clone();
-    let output = CacheFriendlyCompactCapability::new(Some(Arc::new(compact_model)))
-        .prepare_model_messages_with_context(&mut state, &mut context, input_messages)
-        .await?;
+    let compact_model: Arc<dyn ModelAdapter> = Arc::new(compact_model);
+    let mut output = context.message_history.clone();
+    for processor in default_filter_capabilities(Some(&compact_model)) {
+        output = processor
+            .prepare_model_messages_with_context(&mut state, &mut context, output)
+            .await?;
+    }
 
     assert_eq!(output.len(), 3);
-    assert_eq!(state.message_history, output);
-    assert_eq!(context.message_history, output);
+    assert_eq!(state.message_history.len(), 3);
+    assert_eq!(context.message_history.len(), 3);
     assert!(matches!(
         &output[0],
         ModelMessage::Request(request) if request.parts.iter().any(|part| matches!(
@@ -1081,6 +1205,14 @@ async fn compact_capability_auto_triggers_from_context_threshold_and_rewrites_hi
             .any(|event| event.kind == "compact_complete")
     );
     assert_eq!(context.usage.total_tokens, 15);
+    let text = output
+        .iter()
+        .flat_map(request_text_parts)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(text.matches("<files-to-inspect").count(), 1);
+    assert!(text.contains("path=\"src/continue.rs\""));
+    assert!(context.auto_load_files.is_empty());
     Ok(())
 }
 
@@ -1806,7 +1938,7 @@ async fn concrete_filters_inject_runtime_context_and_repair_tool_args()
         }),
         ModelMessage::Response(_) => false,
     }));
-    assert!(output.iter().any(|message| match message {
+    assert!(!output.iter().any(|message| match message {
         ModelMessage::Request(request) => request.parts.iter().any(|part| match part {
             ModelRequestPart::UserPrompt { content, .. } => content.iter().any(|part| match part {
                 ContentPart::Text { text } => text.contains("Loaded evidence"),
@@ -2341,6 +2473,7 @@ async fn handoff_filter_consumes_prebuilt_context_restored_message()
     );
     let mut context = AgentContext {
         handoff_message: Some("<context-restored>already restored</context-restored>".to_string()),
+        auto_load_files: vec!["src/important<&.rs".to_string()],
         ..AgentContext::default()
     };
 
@@ -2351,10 +2484,16 @@ async fn handoff_filter_consumes_prebuilt_context_restored_message()
             vec![ModelMessage::Request(request)],
         )
         .await?;
+    let messages = NamedFilterCapability::new("auto_load_files")
+        .prepare_model_messages_with_context(&mut state, &mut context, messages)
+        .await?;
 
     let text = request_text_parts(messages.last().expect("request")).join("\n");
     assert!(text.contains("already restored"));
+    assert!(text.contains("<files-to-inspect contents-loaded=\"false\">"));
+    assert!(text.contains("path=\"src/important&lt;&amp;.rs\""));
     assert!(context.handoff_message.is_none());
+    assert!(context.auto_load_files.is_empty());
     assert!(context.force_inject_context);
     Ok(())
 }

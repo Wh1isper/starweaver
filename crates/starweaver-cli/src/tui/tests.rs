@@ -1005,7 +1005,7 @@ fn summarize_tool_return_renders_summary_handoff() {
     ));
     assert!(body_has_line(
         &state,
-        "  Auto-load files: AGENTS.md, crates/starweaver-cli/src/tui/state.rs"
+        "  Files to inspect: AGENTS.md, crates/starweaver-cli/src/tui/state.rs"
     ));
 
     let rendered = render_transcript_lines(&state.body, 100);

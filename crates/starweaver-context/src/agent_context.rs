@@ -79,7 +79,9 @@ pub struct AgentContext {
     /// MCP server names requiring approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approval_required_mcp_servers: Vec<String>,
-    /// Files to auto-load on next request.
+    /// File paths to mention for on-demand inspection on the next request.
+    ///
+    /// The legacy field name is retained for serialized-state compatibility.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auto_load_files: Vec<String>,
     /// Typed task manager.

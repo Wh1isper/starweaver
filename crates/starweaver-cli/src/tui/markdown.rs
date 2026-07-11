@@ -301,7 +301,7 @@ fn render_file_metadata_lines(line: &str, width: usize) -> Option<Vec<StyledLine
         ("  Status: ", SegmentStyle::blockquote()),
         ("  Result: ", SegmentStyle::dim()),
         ("  Duration: ", SegmentStyle::dim()),
-        ("  Auto-load files: ", SegmentStyle::code()),
+        ("  Files to inspect: ", SegmentStyle::code()),
         ("  Task ID: ", SegmentStyle::code()),
         ("  Subject: ", SegmentStyle::default()),
         ("  Description: ", SegmentStyle::default()),

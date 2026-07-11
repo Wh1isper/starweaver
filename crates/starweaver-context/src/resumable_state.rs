@@ -156,7 +156,9 @@ pub struct ResumableState {
     /// Security-related runtime configuration.
     #[serde(default, skip_serializing_if = "SecurityConfig::is_default")]
     pub security: SecurityConfig,
-    /// Files to auto-load on next request.
+    /// File paths to mention for on-demand inspection on the next request.
+    ///
+    /// The legacy field name is retained for serialized-state compatibility.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub auto_load_files: Vec<String>,
     /// Serialized tasks from the typed task manager, keyed by task id.

@@ -64,7 +64,7 @@ The first SDK filter capability slice is landed in `crates/starweaver-agent/src/
 - capability/media support filtering
 - compact keep-message behavior
 - handoff metadata support
-- auto-load/background/bus metadata injection, environment/runtime context injection, and true instruction metadata injection
+- prompt-only file-inspection reminders, background/bus metadata injection, environment/runtime context injection, and true instruction metadata injection
 - system prompt reinjection composition
 - tool-call argument repair
 - reasoning normalization
@@ -72,14 +72,14 @@ The first SDK filter capability slice is landed in `crates/starweaver-agent/src/
 Current order:
 
 ```text
-cold_start -> capability -> media_preflight -> media_compress -> media_upload -> compact -> handoff -> auto_load_files -> background_shell -> bus_message -> environment_context -> runtime_context -> system_prompt -> tool_args -> reasoning_normalize
+reasoning_normalize -> media_split -> media_compress -> media_preflight -> media_upload -> tool_args -> handoff -> auto_load_files -> capability -> bus_message -> background_shell -> compact -> cold_start -> environment_context -> auto_load_files_after_compact -> runtime_context -> system_prompt
 ```
 
 Remaining filter depth:
 
 | Filter family       | Current state                          | Remaining work                                                                                    |
 | ------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| auto-load files     | metadata-driven injection slice        | provider-backed reads, truncation files, focused request parts, local/virtual tests               |
+| auto-load files     | escaped path reminders only            | focused request parts and restore-path fixtures                                                   |
 | background shell    | process provider substrate exists      | completed process injection, output spill files, lifecycle UI evidence                            |
 | bus messages        | context message bus exists             | consume-once request pipeline behavior and retry safety tests                                     |
 | cold start          | tool-return trimming slice             | idle-window heuristics and cache-friendly compaction evidence                                     |

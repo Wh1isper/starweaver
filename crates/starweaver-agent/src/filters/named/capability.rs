@@ -31,6 +31,7 @@ use super::{
 pub struct NamedFilterCapability {
     name: &'static str,
     uploader: Option<Arc<dyn MediaUploader>>,
+    defer_auto_load_consumption: bool,
 }
 
 impl std::fmt::Debug for NamedFilterCapability {
@@ -39,6 +40,10 @@ impl std::fmt::Debug for NamedFilterCapability {
             .debug_struct("NamedFilterCapability")
             .field("name", &self.name)
             .field("has_uploader", &self.uploader.is_some())
+            .field(
+                "defer_auto_load_consumption",
+                &self.defer_auto_load_consumption,
+            )
             .finish()
     }
 }
@@ -50,6 +55,16 @@ impl NamedFilterCapability {
         Self {
             name,
             uploader: None,
+            defer_auto_load_consumption: false,
+        }
+    }
+
+    /// Create the default pipeline's pre-compaction file reminder phase.
+    pub(super) const fn auto_load_files_before_compact() -> Self {
+        Self {
+            name: "auto_load_files",
+            uploader: None,
+            defer_auto_load_consumption: true,
         }
     }
 
@@ -59,6 +74,7 @@ impl NamedFilterCapability {
         Self {
             name: "media_upload",
             uploader: Some(uploader),
+            defer_auto_load_consumption: false,
         }
     }
 
@@ -92,8 +108,12 @@ impl AgentCapability for NamedFilterCapability {
                 media_upload_filter(state, context, messages, self.uploader.as_ref()).await
             }
             "handoff" => handoff_filter(state, context, messages),
-            "auto_load_files" | "auto_load_files_after_compact" => {
-                auto_load_files_filter(state, context, messages).await
+            "auto_load_files" => {
+                auto_load_files_filter(state, context, messages, !self.defer_auto_load_consumption)
+                    .await
+            }
+            "auto_load_files_after_compact" => {
+                auto_load_files_filter(state, context, messages, true).await
             }
             "background_shell" => background_shell_filter(state, context, messages).await,
             "bus_message" => bus_message_filter(state, context, messages),

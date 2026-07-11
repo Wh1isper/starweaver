@@ -33,7 +33,7 @@ Do NOT use technical jargon like "context reset", "context window", or "token li
 <before-summarizing>
 1. Capture remaining work as tasks if applicable.
 2. Organize notes before summarizing if note tools are available.
-3. Identify key files being actively edited or referenced.
+3. Identify key files the resumed agent may need to inspect on demand.
 4. Note important decisions, architecture choices, and user preferences.
 </before-summarizing>
 
@@ -57,6 +57,10 @@ The `content` field should be concise but complete:
 [Immediate action to take after summary]
 ```
 </content-structure>
+
+<files-to-inspect>
+List only files that may need to be inspected immediately after summary. Their paths will be added to a reminder, but their contents will not be loaded into context. The resumed agent should inspect them on demand with filesystem tools. Avoid temporary files and files already described sufficiently in the summary.
+</files-to-inspect>
 
 </summarize-guidelines>"#;
 
