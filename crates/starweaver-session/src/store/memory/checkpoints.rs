@@ -1,6 +1,6 @@
 use chrono::Utc;
+use starweaver_context::AgentCheckpoint;
 use starweaver_core::{RunId, SessionId};
-use starweaver_runtime::AgentCheckpoint;
 
 use crate::{
     error::{SessionStoreError, SessionStoreResult},
@@ -23,11 +23,22 @@ impl InMemorySessionStore {
                 &checkpoint.run_id,
             )));
         }
-        inner
-            .checkpoints
-            .entry(key.clone())
-            .or_default()
-            .push(checkpoint.clone());
+        let checkpoints = inner.checkpoints.entry(key.clone()).or_default();
+        if let Some(existing) = checkpoints
+            .iter()
+            .find(|existing| existing.checkpoint_id == checkpoint.checkpoint_id)
+        {
+            if existing == &checkpoint {
+                return Ok(());
+            }
+            return Err(SessionStoreError::Failed(format!(
+                "checkpoint conflict for session {} run {} checkpoint {}",
+                session_id.as_str(),
+                checkpoint.run_id.as_str(),
+                checkpoint.checkpoint_id.as_str()
+            )));
+        }
+        checkpoints.push(checkpoint.clone());
         if let Some(run) = inner.runs.get_mut(&key) {
             run.latest_checkpoint = Some(CheckpointRef {
                 checkpoint_id: checkpoint.checkpoint_id,

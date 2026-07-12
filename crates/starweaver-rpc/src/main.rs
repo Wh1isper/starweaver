@@ -3,16 +3,13 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use starweaver_cli::{RpcCommand, RpcTransport, run_rpc_server};
+use starweaver_rpc::{RpcConfig, RpcTransport, run};
 
 fn main() -> ExitCode {
     let cli = StandaloneRpcCli::parse();
-    let command = RpcCommand {
-        transport: cli.transport,
-        host: cli.host,
-        port: cli.port,
-    };
-    match run_rpc_server(&command, cli.store) {
+    let result = RpcConfig::resolve(cli.store)
+        .and_then(|config| run(&config, cli.transport, &cli.host, cli.port));
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");

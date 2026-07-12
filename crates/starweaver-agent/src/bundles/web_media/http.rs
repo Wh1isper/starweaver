@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use reqwest::{Method, Url, header, redirect::Policy};
-use starweaver_context::AgentContext;
+use starweaver_context::ToolRuntimeSnapshot;
 use starweaver_tools::{ToolContext, ToolError};
 
 use crate::bundles::helpers::{tool_execution_error, tool_feedback};
@@ -91,9 +91,9 @@ async fn read_limited_body(
     max_bytes: u64,
 ) -> Result<Vec<u8>, ToolError> {
     let chunk_size = context
-        .dependency::<AgentContext>()
-        .map_or(64 * 1024, |context| {
-            context.tool_config.fetch_stream_chunk_size
+        .dependency::<ToolRuntimeSnapshot>()
+        .map_or(64 * 1024, |runtime| {
+            runtime.tool_config().fetch_stream_chunk_size
         })
         .max(1);
     let mut body = Vec::new();

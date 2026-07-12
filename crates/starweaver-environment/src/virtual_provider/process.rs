@@ -4,46 +4,27 @@ use async_trait::async_trait;
 use starweaver_core::Metadata;
 
 use crate::{
-    EnvironmentError, EnvironmentResult, ProcessShellProvider, ShellCommand, ShellProcessSnapshot,
-    ShellProcessStatus,
+    EnvironmentError, EnvironmentResult, ProcessShellProvider, ProgramCommand, ShellCommand,
+    ShellProcessSnapshot, ShellProcessStatus, program_process_metadata, shell_process_metadata,
 };
 
 use super::VirtualEnvironmentProvider;
 
-#[async_trait]
-impl ProcessShellProvider for VirtualEnvironmentProvider {
-    async fn start_process(
+impl VirtualEnvironmentProvider {
+    fn insert_virtual_process(
         &self,
-        command: ShellCommand,
+        command: String,
+        metadata: Metadata,
     ) -> EnvironmentResult<ShellProcessSnapshot> {
-        if !self.policy.shell.permits(&command.command) {
-            return Err(EnvironmentError::AccessDenied(command.command));
-        }
         let process_id = format!(
             "process_{}",
             self.processes
                 .lock()
                 .map_or(0, |processes| processes.len() + 1)
         );
-        let mut metadata = Metadata::default();
-        if let Some(timeout_seconds) = command.timeout_seconds {
-            metadata.insert(
-                "timeout_seconds".to_string(),
-                serde_json::json!(timeout_seconds),
-            );
-        }
-        if let Some(cwd) = &command.cwd {
-            metadata.insert("cwd".to_string(), serde_json::json!(cwd));
-        }
-        if !command.environment.is_empty() {
-            metadata.insert(
-                "environment".to_string(),
-                serde_json::json!(command.environment),
-            );
-        }
         let snapshot = ShellProcessSnapshot {
             process_id: process_id.clone(),
-            command: command.command,
+            command,
             status: ShellProcessStatus::Running,
             stdout: String::new(),
             stderr: String::new(),
@@ -55,6 +36,39 @@ impl ProcessShellProvider for VirtualEnvironmentProvider {
             .map_err(|error| EnvironmentError::Provider(error.to_string()))?
             .insert(process_id, snapshot.clone());
         Ok(snapshot)
+    }
+}
+
+#[async_trait]
+impl ProcessShellProvider for VirtualEnvironmentProvider {
+    async fn start_process(
+        &self,
+        command: ShellCommand,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        if !self.policy.shell.permits_shell() {
+            return Err(EnvironmentError::AccessDenied(command.command));
+        }
+        self.insert_virtual_process(command.command.clone(), shell_process_metadata(&command))
+    }
+
+    async fn start_program(
+        &self,
+        command: ProgramCommand,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        if !self.policy.shell.permits_program(&command.program) {
+            return Err(EnvironmentError::AccessDenied(command.display_command()));
+        }
+        if !command.environment.is_empty()
+            && !self.policy.shell.permits_program_environment_overrides()
+        {
+            return Err(EnvironmentError::InvalidRequest(
+                "environment overrides are not allowed for allowlisted direct programs".to_string(),
+            ));
+        }
+        self.insert_virtual_process(
+            command.display_command(),
+            program_process_metadata(&command),
+        )
     }
 
     async fn wait_process(

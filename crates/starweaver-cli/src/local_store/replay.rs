@@ -1,6 +1,8 @@
 //! Local display replay windows over shared stream cursor contracts.
 
-use starweaver_stream::{DisplayMessage, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayScope};
+use starweaver_stream::{
+    DisplayMessage, ReplayCursor, ReplayCursorFamily, ReplayEvent, ReplayEventKind, ReplayScope,
+};
 
 use super::LocalStore;
 use crate::{CliError, CliResult};
@@ -27,7 +29,7 @@ impl LocalStore {
         let scope = run_id.map_or_else(|| ReplayScope::session(session_id), ReplayScope::run);
         if let Some(cursor) = cursor {
             cursor
-                .validate_scope(&scope)
+                .validate(ReplayCursorFamily::Display, &scope)
                 .map_err(|error| CliError::Usage(error.to_string()))?;
         }
         let messages = self.replay_display(session_id, run_id, None)?;

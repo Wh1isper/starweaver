@@ -18,14 +18,13 @@ impl LocalEnvironmentProvider {
     }
 
     pub(super) fn shell_tmp_dir_path(&self) -> EnvironmentResult<Option<PathBuf>> {
-        let Some(tmp_dir) = self.tmp_dir_path() else {
+        if self.tmp_dir_path().is_none() {
             return Ok(None);
-        };
-        let path = self.tmp_namespace.as_deref().map_or_else(
-            || tmp_dir.to_path_buf(),
-            |namespace| tmp_dir.join(namespace),
-        );
+        }
+        let relative_path = self.tmp_namespace.as_deref().unwrap_or_default();
+        let path = self.resolve_tmp_relative_path(relative_path, true)?;
         std::fs::create_dir_all(&path).map_err(|error| map_io_error(&path, &error))?;
+        let path = self.resolve_tmp_relative_path(relative_path, true)?;
         Ok(Some(path))
     }
 

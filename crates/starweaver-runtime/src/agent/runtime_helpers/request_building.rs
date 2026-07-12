@@ -51,6 +51,7 @@ impl Agent {
         state: &AgentRunState,
         prompt: &str,
         initial_content: &[ContentPart],
+        is_initial_request: bool,
         run_id: &RunId,
         conversation_id: &ConversationId,
     ) -> ModelRequest {
@@ -62,7 +63,7 @@ impl Agent {
                     parts.push(media_prompt);
                 }
             }
-        } else if state.run_step == 0 {
+        } else if is_initial_request {
             parts.push(ModelRequestPart::UserPrompt {
                 content: if initial_content.is_empty() {
                     vec![ContentPart::text(prompt)]

@@ -301,3 +301,53 @@ __all__ = [
     "validate_toolsets_for_durability",
     "version",
 ]
+
+# Compatibility classification for the intentionally broad 0.x top-level facade. New stable
+# applications should prefer this compact set; all other exported symbols remain provisional and
+# are available for compatibility while their owning modules mature.
+STABLE_API = frozenset(
+    {
+        "Agent",
+        "AgentError",
+        "AgentRun",
+        "AgentRuntime",
+        "AgentSession",
+        "AgentStream",
+        "FunctionModel",
+        "ModelSettings",
+        "OutputSchema",
+        "OutputValue",
+        "RunResult",
+        "StarweaverError",
+        "StreamAdapter",
+        "TestModel",
+        "Tool",
+        "ToolContext",
+        "ToolError",
+        "ToolResult",
+        "__version__",
+        "create_agent",
+        "create_agent_runtime",
+        "output_validator",
+        "tool",
+        "version",
+        "API_STABILITY",
+        "PROVISIONAL_API",
+        "STABLE_API",
+        "api_stability",
+    }
+)
+PROVISIONAL_API = frozenset(__all__) - STABLE_API
+API_STABILITY = {
+    **dict.fromkeys(STABLE_API, "stable"),
+    **dict.fromkeys(PROVISIONAL_API, "provisional"),
+}
+
+
+def api_stability(name: str) -> str:
+    """Return ``stable``, ``provisional``, or ``internal`` for a Python API name."""
+
+    return API_STABILITY.get(name, "internal")
+
+
+__all__.extend(["API_STABILITY", "PROVISIONAL_API", "STABLE_API", "api_stability"])

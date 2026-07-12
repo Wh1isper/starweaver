@@ -1,12 +1,14 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::sync::Arc;
 
 use serde_json::json;
-use starweaver_context::AgentContext;
-use starweaver_core::{ConversationId, Metadata, RunId, TaskId, TraceContext};
-use starweaver_runtime::{
-    AgentCheckpoint, AgentExecutionNode, AgentRunState, AgentStreamEvent, AgentStreamRecord,
+use starweaver_context::{
+    AgentCheckpoint, AgentContext, AgentExecutor, AgentRunState, ResumableState,
+};
+use starweaver_core::{AgentExecutionNode, ConversationId, Metadata, RunId, TaskId, TraceContext};
+use starweaver_stream::{
+    AgentStreamEvent, AgentStreamRecord, ReplayCursor, ReplayCursorFamily, ReplayScope,
 };
 
 use super::*;
@@ -27,6 +29,21 @@ async fn input_parts_are_stable_json_contracts() {
         serde_json::from_value::<Vec<InputPart>>(value).unwrap(),
         input
     );
+}
+
+#[test]
+fn legacy_content_part_mode_is_not_a_runtime_content_escape_hatch() {
+    let input = InputPart::Mode {
+        mode: "content_part".to_string(),
+        config: json!({"kind": "text", "text": "must not decode"}),
+        metadata: Metadata::default(),
+    };
+    let error = starweaver_model::ContentPart::try_from(input)
+        .expect_err("legacy product mode must remain outside runtime content");
+    assert!(matches!(
+        error,
+        InputConversionError::ProductMode(mode) if mode == "content_part"
+    ));
 }
 
 #[test]
@@ -124,6 +141,42 @@ fn hitl_records_are_derived_from_tool_return_metadata() {
 }
 
 #[tokio::test]
+async fn in_memory_store_clears_active_run_for_every_terminal_status() {
+    for (suffix, status) in [
+        ("completed", RunStatus::Completed),
+        ("failed", RunStatus::Failed),
+        ("cancelled", RunStatus::Cancelled),
+    ] {
+        let store = InMemorySessionStore::new();
+        let session_id = SessionId::from_string(format!("session-{suffix}"));
+        let run_id = RunId::from_string(format!("run-{suffix}"));
+        store
+            .save_session(SessionRecord::new(session_id.clone()))
+            .await
+            .unwrap();
+        let mut run = RunRecord::new(
+            session_id.clone(),
+            run_id.clone(),
+            ConversationId::from_string(format!("conversation-{suffix}")),
+        );
+        store.append_run(run.clone()).await.unwrap();
+        assert_eq!(
+            store.load_session(&session_id).await.unwrap().active_run_id,
+            Some(run_id.clone())
+        );
+
+        run.status = status;
+        store.append_run(run).await.unwrap();
+        let session = store.load_session(&session_id).await.unwrap();
+        assert_eq!(session.active_run_id, None);
+        assert_eq!(
+            session.head_success_run_id,
+            (status == RunStatus::Completed).then_some(run_id)
+        );
+    }
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
     let store = InMemorySessionStore::new();
@@ -198,7 +251,7 @@ async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
         .save_stream_cursor(
             &session_id,
             &run_id,
-            StreamCursorRef::new("display", "run:run-1", 7),
+            StreamCursorRef::new(ReplayCursor::display(ReplayScope::run("run-1"), 7)),
         )
         .await
         .unwrap();
@@ -227,7 +280,7 @@ async fn in_memory_store_saves_session_runs_and_resume_snapshot() {
         snapshot
             .stream_cursors
             .iter()
-            .any(|cursor| cursor.family == "display")
+            .any(|cursor| cursor.family() == ReplayCursorFamily::Display)
     );
     assert_eq!(trace.checkpoints, vec![checkpoint_id]);
     assert_eq!(trace.approvals, 1);
@@ -316,6 +369,79 @@ async fn append_stream_records_is_idempotent_by_sequence() {
         .unwrap();
     assert_eq!(replay.len(), 1);
     assert_eq!(replay[0].sequence, 1);
+
+    let error = store
+        .append_stream_records(
+            &session_id,
+            &run_id,
+            vec![AgentStreamRecord::new(
+                1,
+                AgentStreamEvent::ModelRequest { step: 99 },
+            )],
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("stream record conflict"));
+    let replay = store
+        .replay_stream_records(&session_id, &run_id)
+        .await
+        .unwrap();
+    assert_eq!(replay.len(), 2);
+    assert!(matches!(
+        &replay[1].event,
+        AgentStreamEvent::ModelRequest { step: 1 }
+    ));
+}
+
+#[tokio::test]
+async fn in_memory_resume_snapshot_uses_requested_run_context_not_session_head() {
+    let store = InMemorySessionStore::new();
+    let session_id = SessionId::from_string("session-per-run-context");
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .unwrap();
+
+    let run_a = RunRecord::new(
+        session_id.clone(),
+        RunId::from_string("run-context-a"),
+        ConversationId::from_string("conversation-context-a"),
+    );
+    let mut state_a = ResumableState {
+        session_id: Some(session_id.clone()),
+        run_id: Some(run_a.run_id.clone()),
+        conversation_id: Some(run_a.conversation_id.clone()),
+        ..ResumableState::default()
+    };
+    state_a.extra.insert("marker".to_string(), json!("run-a"));
+    store
+        .commit_run_evidence(RunEvidenceCommit::new(run_a.clone(), state_a.clone()))
+        .await
+        .unwrap();
+
+    let run_b = RunRecord::new(
+        session_id.clone(),
+        RunId::from_string("run-context-b"),
+        ConversationId::from_string("conversation-context-b"),
+    );
+    let mut state_b = ResumableState {
+        session_id: Some(session_id.clone()),
+        run_id: Some(run_b.run_id.clone()),
+        conversation_id: Some(run_b.conversation_id.clone()),
+        ..ResumableState::default()
+    };
+    state_b.extra.insert("marker".to_string(), json!("run-b"));
+    store
+        .commit_run_evidence(RunEvidenceCommit::new(run_b, state_b))
+        .await
+        .unwrap();
+
+    let snapshot = store
+        .resume_snapshot(&session_id, &run_a.run_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.state, state_a);
+    assert_eq!(snapshot.state.extra["marker"], "run-a");
 }
 
 #[tokio::test]
@@ -369,6 +495,38 @@ async fn records_round_trip_through_json() {
 }
 
 #[tokio::test]
+async fn session_store_executor_maps_starting_checkpoint_to_running_fallback_run() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = SessionId::from_string("session-executor-fallback");
+    let executor = SessionStoreExecutor::new(store.clone(), session_id.clone());
+    let run_id = RunId::from_string("run-executor-fallback");
+    let state = AgentRunState::new(
+        run_id.clone(),
+        ConversationId::from_string("conv-executor-fallback"),
+    );
+
+    AgentExecutor::checkpoint(
+        &executor,
+        AgentCheckpoint::new(AgentExecutionNode::RunStart, &state),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        store.load_run(&session_id, &run_id).await.unwrap().status,
+        RunStatus::Running
+    );
+    assert_eq!(
+        store
+            .load_checkpoints(&session_id, &run_id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn session_store_executor_persists_runtime_checkpoints() {
     let store = Arc::new(InMemorySessionStore::new());
     let session_id = SessionId::from_string("session-executor");
@@ -388,7 +546,7 @@ async fn session_store_executor_persists_runtime_checkpoints() {
 
     let mut state = AgentRunState::new(run_id.clone(), conversation_id);
     state.run_step = 2;
-    starweaver_runtime::AgentExecutor::checkpoint(
+    AgentExecutor::checkpoint(
         executor.as_ref(),
         AgentCheckpoint::new(AgentExecutionNode::ToolReturn, &state),
     )

@@ -1,7 +1,8 @@
 //! `EnvD` JSON-RPC client.
 
 use std::{
-    path::Path,
+    ffi::OsString,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         Arc,
@@ -22,7 +23,7 @@ use starweaver_envd_core::{
     InitializeEnvdRequest, InitializeEnvdResult, MutationResult, OpenEnvironmentRequest,
     ProcessInputRequest, ProcessKillRequest, ProcessListResult, ProcessSignalRequest,
     ProcessSnapshot, ProcessStartRequest, ProcessWaitRequest, ShellReviewContextRequest,
-    ShellReviewContextResult,
+    ShellReviewContextResult, envd_protocol_identity, validate_envd_protocol,
 };
 use thiserror::Error;
 use tokio::{
@@ -120,6 +121,32 @@ impl EnvdRpcClient {
         Self::http_with_optional_token(endpoint, None)
     }
 
+    /// Connect to a local envd endpoint reference used by host products.
+    ///
+    /// HTTP endpoint refs must target loopback and carry a non-empty bearer token. Stdio endpoint
+    /// refs use `stdio://<percent-encoded-program>?arg=<percent-encoded-argument>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the endpoint ref violates the local transport security profile or
+    /// when a stdio child cannot be spawned.
+    pub fn from_local_endpoint_ref(
+        endpoint_ref: &str,
+        auth_token: Option<&str>,
+    ) -> Result<Self, EnvdClientError> {
+        validate_local_endpoint_ref(endpoint_ref, auth_token)?;
+        if endpoint_ref.starts_with("http://") {
+            let auth_token = auth_token.ok_or_else(|| {
+                EnvdClientError::InvalidEndpoint(
+                    "envd HTTP attachment requires authToken".to_string(),
+                )
+            })?;
+            return Self::http_with_token(endpoint_ref, auth_token);
+        }
+        let (program, args) = parse_stdio_endpoint_ref(endpoint_ref)?;
+        Self::spawn_stdio(program, args)
+    }
+
     /// Connect to an authenticated envd HTTP endpoint.
     ///
     /// # Errors
@@ -200,8 +227,14 @@ impl EnvdRpcClient {
 
 #[async_trait]
 impl EnvdService for EnvdRpcClient {
-    async fn initialize(&self, request: InitializeEnvdRequest) -> EnvdResult<InitializeEnvdResult> {
-        self.request("initialize", &request).await
+    async fn initialize(
+        &self,
+        mut request: InitializeEnvdRequest,
+    ) -> EnvdResult<InitializeEnvdResult> {
+        request.protocol.get_or_insert_with(envd_protocol_identity);
+        let result: InitializeEnvdResult = self.request("initialize", &request).await?;
+        validate_envd_protocol(&result.protocol)?;
+        Ok(result)
     }
 
     async fn open_environment(
@@ -443,6 +476,165 @@ fn rpc_error_to_envd(code: i64, message: String) -> EnvdError {
     EnvdError::new(kind, message)
 }
 
+/// Validate an envd endpoint ref against the local host transport security profile.
+///
+/// # Errors
+///
+/// Returns an error for unsupported schemes, non-loopback HTTP endpoints, unsafe HTTP URL
+/// components, missing or malformed HTTP auth tokens, and malformed stdio endpoint refs.
+pub fn validate_local_endpoint_ref(
+    endpoint_ref: &str,
+    auth_token: Option<&str>,
+) -> Result<(), EnvdClientError> {
+    if endpoint_ref.starts_with("http://") {
+        validate_local_http_endpoint(endpoint_ref)?;
+        let auth_token = auth_token.ok_or_else(|| {
+            EnvdClientError::InvalidEndpoint("envd HTTP attachment requires authToken".to_string())
+        })?;
+        validate_http_auth_token(auth_token.to_string())?;
+        return Ok(());
+    }
+    if endpoint_ref.starts_with("stdio://") {
+        parse_stdio_endpoint_ref(endpoint_ref)?;
+        return Ok(());
+    }
+    Err(EnvdClientError::InvalidEndpoint(
+        "envd attachment supports http:// and stdio:// endpoint refs".to_string(),
+    ))
+}
+
+/// Return a safe endpoint ref suitable for diagnostics and lease projections.
+#[must_use]
+pub fn redacted_endpoint_ref(endpoint_ref: &str) -> Option<String> {
+    if endpoint_ref.starts_with("stdio://") {
+        return Some("stdio://<redacted>".to_string());
+    }
+    endpoint_ref
+        .starts_with("http://")
+        .then(|| endpoint_ref.to_string())
+}
+
+fn validate_local_http_endpoint(endpoint: &str) -> Result<(), EnvdClientError> {
+    let rest = endpoint.strip_prefix("http://").ok_or_else(|| {
+        EnvdClientError::InvalidEndpoint("envd HTTP endpoint must start with http://".to_string())
+    })?;
+    if rest.is_empty() {
+        return Err(EnvdClientError::InvalidEndpoint(
+            "envd HTTP endpoint host cannot be empty".to_string(),
+        ));
+    }
+    if endpoint.contains('?') || endpoint.contains('#') {
+        return Err(EnvdClientError::InvalidEndpoint(
+            "envd HTTP endpoint cannot contain query strings or fragments".to_string(),
+        ));
+    }
+    let authority = rest.split('/').next().unwrap_or(rest);
+    if authority.contains('@') {
+        return Err(EnvdClientError::InvalidEndpoint(
+            "envd HTTP endpoint cannot contain userinfo".to_string(),
+        ));
+    }
+    let host = http_authority_host(authority)?;
+    if is_loopback_http_host(host) {
+        Ok(())
+    } else {
+        Err(EnvdClientError::InvalidEndpoint(
+            "envd HTTP endpoint must be loopback unless configured by a future host policy"
+                .to_string(),
+        ))
+    }
+}
+
+fn http_authority_host(authority: &str) -> Result<&str, EnvdClientError> {
+    if authority.is_empty() {
+        return Err(EnvdClientError::InvalidEndpoint(
+            "envd HTTP endpoint host cannot be empty".to_string(),
+        ));
+    }
+    if let Some(rest) = authority.strip_prefix('[') {
+        let Some((host, _)) = rest.split_once(']') else {
+            return Err(EnvdClientError::InvalidEndpoint(
+                "envd HTTP endpoint has invalid IPv6 host".to_string(),
+            ));
+        };
+        return Ok(host);
+    }
+    Ok(authority
+        .split_once(':')
+        .map_or(authority, |(host, _)| host))
+}
+
+fn is_loopback_http_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost") || host == "::1" || host.starts_with("127.")
+}
+
+fn parse_stdio_endpoint_ref(
+    endpoint_ref: &str,
+) -> Result<(PathBuf, Vec<OsString>), EnvdClientError> {
+    let rest = endpoint_ref.strip_prefix("stdio://").ok_or_else(|| {
+        EnvdClientError::InvalidEndpoint("envd stdio endpoint must start with stdio://".to_string())
+    })?;
+    let (program, query) = rest.split_once('?').unwrap_or((rest, ""));
+    if program.trim().is_empty() {
+        return Err(EnvdClientError::InvalidEndpoint(
+            "envd stdio endpoint program cannot be empty".to_string(),
+        ));
+    }
+    let mut args = Vec::new();
+    if !query.is_empty() {
+        for part in query.split('&').filter(|part| !part.is_empty()) {
+            let Some(value) = part.strip_prefix("arg=") else {
+                return Err(EnvdClientError::InvalidEndpoint(
+                    "envd stdio endpoint query supports only repeated arg= values".to_string(),
+                ));
+            };
+            args.push(OsString::from(percent_decode_component(value)?));
+        }
+    }
+    Ok((PathBuf::from(percent_decode_component(program)?), args))
+}
+
+fn percent_decode_component(value: &str) -> Result<String, EnvdClientError> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let high = hex_value(bytes[index + 1])?;
+                let low = hex_value(bytes[index + 2])?;
+                decoded.push((high << 4) | low);
+                index += 3;
+            }
+            b'%' => {
+                return Err(EnvdClientError::InvalidEndpoint(
+                    "envd stdio endpoint has incomplete percent escape".to_string(),
+                ));
+            }
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_err(|error| EnvdClientError::InvalidEndpoint(error.to_string()))
+}
+
+fn hex_value(byte: u8) -> Result<u8, EnvdClientError> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(EnvdClientError::InvalidEndpoint(
+            "envd stdio endpoint has invalid percent escape".to_string(),
+        )),
+    }
+}
+
 fn parse_http_endpoint(endpoint: &str) -> Result<HttpEndpoint, EnvdClientError> {
     let rest = endpoint.strip_prefix("http://").ok_or_else(|| {
         EnvdClientError::InvalidEndpoint("envd HTTP endpoint must start with http://".to_string())
@@ -485,4 +677,50 @@ fn validate_http_auth_token(token: String) -> Result<String, EnvdClientError> {
 
 fn envd_provider_error(error: impl std::error::Error) -> EnvdError {
     EnvdError::provider(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{redacted_endpoint_ref, validate_local_endpoint_ref};
+
+    #[test]
+    fn local_endpoint_profile_accepts_loopback_http_and_stdio() {
+        assert!(validate_local_endpoint_ref("http://127.0.0.1:8766/rpc", Some("secret")).is_ok());
+        assert!(
+            validate_local_endpoint_ref(
+                "stdio://%2Fusr%2Fbin%2Fenvd?arg=--stdio&arg=value+with+spaces",
+                None,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn local_endpoint_profile_rejects_unsafe_http_components() {
+        for endpoint in [
+            "http://example.com:8766/rpc",
+            "http://user:pass@127.0.0.1:8766/rpc",
+            "http://127.0.0.1:8766/rpc?token=secret",
+            "http://127.0.0.1:8766/rpc#fragment",
+        ] {
+            assert!(validate_local_endpoint_ref(endpoint, Some("secret")).is_err());
+        }
+        assert!(validate_local_endpoint_ref("http://127.0.0.1:8766/rpc", None).is_err());
+        assert!(
+            validate_local_endpoint_ref("http://127.0.0.1:8766/rpc", Some("line\nbreak")).is_err()
+        );
+    }
+
+    #[test]
+    fn endpoint_ref_redaction_hides_stdio_command_and_arguments() {
+        assert_eq!(
+            redacted_endpoint_ref("stdio:///tmp/envd?arg=--token&arg=secret").as_deref(),
+            Some("stdio://<redacted>")
+        );
+        assert_eq!(
+            redacted_endpoint_ref("http://127.0.0.1:8766/rpc").as_deref(),
+            Some("http://127.0.0.1:8766/rpc")
+        );
+        assert_eq!(redacted_endpoint_ref("https://example.com"), None);
+    }
 }

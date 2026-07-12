@@ -1,0 +1,5 @@
+{
+  "schema": "starweaver.stream.replay_event",
+  "version": 2,
+  "payload": {}
+}

@@ -1,5 +1,6 @@
 //! Environment provider abstractions for filesystem, shell, and resource access.
 
+mod blocking;
 mod composite_provider;
 mod context_xml;
 mod envd_provider;
@@ -27,21 +28,25 @@ pub(crate) use local_io::{
     copy_local_dir, create_local_tmp_dir, map_io_error, prepare_local_destination,
 };
 pub(crate) use path::{
-    DEFAULT_TMP_DIR, LOCAL_TMP_DIR_PREFIX, PathGlob, display_local_path, include_path,
-    is_absolute_request_path, is_provider_visible_absolute_path, is_tmp_path, join_logical_path,
-    logical_ancestors, normalize_absolute_request_path, normalize_local_config_path,
-    normalize_path, normalize_requested_path, normalize_str_path, normalize_tmp_filename,
-    normalize_tmp_namespace, parent_path, path_contains, provider_visible_path_allowed_by_context,
-    push_shell_review_context_path_candidates, push_unique_candidate, push_unique_path,
-    replace_logical_prefix, strip_path_prefix,
+    DEFAULT_TMP_DIR, LOCAL_TMP_DIR_PREFIX, PathGlob, absolute_request_path, display_local_path,
+    include_path, is_absolute_request_path, is_provider_visible_absolute_path, is_tmp_path,
+    join_logical_path, logical_ancestors, normalize_absolute_request_path,
+    normalize_local_config_path, normalize_path, normalize_requested_path, normalize_str_path,
+    normalize_tmp_filename, normalize_tmp_namespace, parent_path, path_contains,
+    provider_visible_path_allowed_by_context, push_shell_review_context_path_candidates,
+    push_unique_candidate, push_unique_path, replace_logical_prefix, strip_path_prefix,
 };
 pub use path::{matches_path_pattern, normalize_match_path, path_match_candidates};
 pub(crate) use search::{
     LocalGrepSink, local_grep_file_match_limit, local_search_walk_builder, search_text,
 };
+#[cfg(unix)]
+pub(crate) use shell::signal_process_group;
 pub(crate) use shell::{
-    local_shell_command, read_child_pipe, refresh_local_shell_process, run_local_shell_command,
-    shell_process_metadata,
+    CapturedPipe, LocalExecutionLimiter, LocalExecutionPermit, checked_timeout_deadline,
+    kill_remaining_process_group, local_program_command, local_shell_command,
+    program_process_metadata, read_child_pipe, refresh_local_shell_process, shell_process_metadata,
+    spawn_group,
 };
 
 pub use composite_provider::{
@@ -58,17 +63,22 @@ pub use factory::{
     ResourceRestoreFactory, ResourceRestoreFactoryRegistry, TrustedLocalEnvironmentProviderFactory,
     VirtualEnvironmentProviderFactory, environment_provider_kind, resource_ref_kind,
 };
-pub use local_provider::LocalEnvironmentProvider;
+pub use local_provider::{DEFAULT_LOCAL_READ_BYTES, LocalEnvironmentProvider};
 pub use policy::{EnvironmentPolicy, FilePolicy, ShellPolicy};
 pub use provider::{
     DynEnvironmentProvider, DynProcessShellProvider, EnvironmentProvider, ProcessShellProvider,
+};
+pub use shell::{
+    DEFAULT_LOCAL_COMPLETED_PROCESS_RETENTION, DEFAULT_LOCAL_OUTPUT_BYTES,
+    DEFAULT_LOCAL_PROCESS_CONCURRENCY,
 };
 pub use switchable_provider::{SwitchableEnvironmentProvider, SwitchableEnvironmentTarget};
 pub use types::{
     EnvironmentLifecycleCapabilities, EnvironmentLifecycleCategory, EnvironmentLifecycleSnapshot,
     EnvironmentLifecycleState, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
-    FileGrepOptions, FileListOptions, FileListResult, FileStat, ResourceRef, ShellCommand,
-    ShellOutput, ShellProcessSnapshot, ShellProcessStatus, ShellReviewEnvironmentContext,
+    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProgramCommand, ResourceRef,
+    ShellCommand, ShellOutput, ShellProcessSnapshot, ShellProcessStatus,
+    ShellReviewEnvironmentContext,
 };
 pub use virtual_provider::VirtualEnvironmentProvider;
 

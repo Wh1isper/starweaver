@@ -1,6 +1,6 @@
 # Agent Foundation Feature Map
 
-This map tracks Starweaver foundation coverage against agent runtime concepts. Product surfaces consume these foundations through `starweaver-agent`, `starweaver-session`, `starweaver-stream`, `starweaver-storage`, and `starweaver-cli`.
+This non-normative map characterizes design coverage against agent runtime concepts. Product surfaces consume these foundations through `starweaver-agent`, `starweaver-session`, `starweaver-stream`, `starweaver-storage`, and `starweaver-cli`. Current implementation status is generated from `../capabilities.toml` into [`../capability-status.md`](../capability-status.md); when wording here differs, the generated registry view is authoritative.
 
 ## Scope
 
@@ -16,26 +16,26 @@ This map tracks Starweaver foundation coverage against agent runtime concepts. P
 
 ## Coverage Matrix
 
-| Area                     | Crates                                                                                | Status            | Planning source                            |
-| ------------------------ | ------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------ |
-| Agent builder            | `starweaver-agent`, `starweaver-runtime`                                              | landed            | core/spec docs                             |
-| Agent app/session        | `starweaver-agent`, `starweaver-context`                                              | landed            | SDK/spec docs                              |
-| Model protocol           | `starweaver-model`                                                                    | landed            | core/spec docs                             |
-| Model wrappers           | `starweaver-model`                                                                    | landed            | core/spec docs                             |
-| Request preparation      | `starweaver-model`, `starweaver-runtime`                                              | landed            | core/spec docs                             |
-| Streaming parts          | `starweaver-model`, `starweaver-runtime`, `starweaver-stream`                         | landed            | core/ops specs                             |
-| Tool schema              | `starweaver-tools`, `starweaver-runtime`                                              | landed            | core/spec docs                             |
-| Toolsets and combinators | `starweaver-tools`                                                                    | landed            | core/spec docs                             |
-| Deferred tools           | `starweaver-tools`, `starweaver-runtime`, `starweaver-session`                        | landed            | core/ops specs                             |
-| Prepare-tools hooks      | `starweaver-runtime`                                                                  | landed            | core/spec docs                             |
-| Structured output        | `starweaver-runtime`, `starweaver-agent`                                              | landed            | core/spec docs                             |
-| Output functions         | `starweaver-runtime`                                                                  | landed            | core/spec docs                             |
-| Capability middleware    | `starweaver-runtime`, `starweaver-agent`                                              | landed            | core/spec docs                             |
-| Context state            | `starweaver-context`, `starweaver-session`                                            | landed            | core/ops specs                             |
-| Durable execution        | `starweaver-runtime`, `starweaver-session`, `starweaver-stream`, `starweaver-storage` | landed foundation | core/ops specs                             |
-| Observability seams      | `starweaver-runtime`, `starweaver-core`                                               | partial           | `../ops/05-observability.md`               |
-| UI adapters              | `starweaver-stream`                                                                   | landed            | `../ops/02-shared-execution-components.md` |
-| Testing                  | all foundation crates                                                                 | landed            | `../ops/01-ci-readiness.md`                |
+| Area                     | Crates                                                                                | Registry capability                       | Planning source                            |
+| ------------------------ | ------------------------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------ |
+| Agent builder            | `starweaver-agent`, `starweaver-runtime`                                              | `runtime.agent_loop`                      | core/spec docs                             |
+| Agent app/session        | `starweaver-agent`, `starweaver-context`                                              | —                                         | SDK/spec docs                              |
+| Model protocol           | `starweaver-model`                                                                    | `model.canonical_content`                 | core/spec docs                             |
+| Model wrappers           | `starweaver-model`                                                                    | `model.wrappers`                          | core/spec docs                             |
+| Request preparation      | `starweaver-model`, `starweaver-runtime`                                              | `runtime.agent_loop`                      | core/spec docs                             |
+| Streaming parts          | `starweaver-model`, `starweaver-runtime`, `starweaver-stream`                         | `stream.versioned_records`                | core/ops specs                             |
+| Tool schema              | `starweaver-tools`, `starweaver-runtime`                                              | —                                         | core/spec docs                             |
+| Toolsets and combinators | `starweaver-tools`                                                                    | —                                         | core/spec docs                             |
+| Deferred tools           | `starweaver-tools`, `starweaver-runtime`, `starweaver-session`                        | —                                         | core/ops specs                             |
+| Prepare-tools hooks      | `starweaver-runtime`                                                                  | `runtime.capability_middleware`           | core/spec docs                             |
+| Structured output        | `starweaver-runtime`, `starweaver-agent`                                              | —                                         | core/spec docs                             |
+| Output functions         | `starweaver-runtime`                                                                  | —                                         | core/spec docs                             |
+| Capability middleware    | `starweaver-runtime`, `starweaver-agent`                                              | `runtime.capability_middleware`           | core/spec docs                             |
+| Context state            | `starweaver-context`, `starweaver-session`                                            | `context.versioned_checkpoints`           | core/ops specs                             |
+| Durable execution        | `starweaver-runtime`, `starweaver-session`, `starweaver-stream`, `starweaver-storage` | `session.atomic_storage`, `stream.replay` | core/ops specs                             |
+| Observability seams      | `starweaver-runtime`, `starweaver-core`                                               | —                                         | `../ops/05-observability.md`               |
+| UI projection            | `starweaver-stream`                                                                   | `stream.ui_projection`                    | `../ops/02-shared-execution-components.md` |
+| Testing                  | all foundation crates                                                                 | —                                         | `../ops/01-ci-readiness.md`                |
 
 ## Foundation Acceptance Gates
 
@@ -50,5 +50,4 @@ make docs-check
 
 ## Planning Source
 
-This file records feature coverage only. Follow-up work should live in the spec
-that owns the changed contract.
+This file records non-normative design coverage only. Follow-up work should live in the spec that owns the changed contract, while current implementation status belongs exclusively to the generated capability status view.

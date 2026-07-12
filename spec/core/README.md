@@ -4,9 +4,7 @@ The core layer is the Rust-native foundation for model-driven agent execution. I
 
 The core layer is designed for library authors and runtime implementers. It defines durable contracts while application tools and product policy live in SDK and operations layers.
 
-The coverage matrix remains in `05-agent-foundation-feature-map.md`; native
-boundary rules and usage extraction are tracked in
-`08-boundaries-and-usage.md`.
+The coverage matrix remains in `05-agent-foundation-feature-map.md`; versioned durable and local protocol contracts are normative in `07-versioned-protocol-contracts.md`; native boundary rules and usage extraction are tracked in `08-boundaries-and-usage.md`.
 
 ## Crate Ownership
 
@@ -33,11 +31,11 @@ flowchart TD
     context --> core
 ```
 
-- `starweaver-core`: shared identifiers, metadata, trace context, cooperative cancellation token, subagent specs, and XML helpers.
+- `starweaver-core`: shared identifiers, metadata, trace context, cooperative cancellation token, protocol identity, versioned durable-record codecs, lifecycle vocabulary, subagent specs, and XML helpers.
 - `starweaver-model`: canonical message/request/response ASTs, model request preparation, settings, profiles, provider mappers, transport, replay fixtures, test models, request guard.
 - `starweaver-tools`: tool definitions, dynamic tool execution, toolsets, MCP foundations, metadata, retry and control-flow envelopes.
-- `starweaver-context`: `AgentContext`, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, notes, usage ledger, resumable state.
-- `starweaver-runtime`: deterministic run loop, tool loop, output loop, hooks, usage-limit enforcement, usage snapshot publication, stream records, checkpoints.
+- `starweaver-context`: `AgentContext`, checkpointable `AgentRunState`, versioned checkpoint/resume records, the `AgentExecutor` callback contract, typed dependencies, `StateStore`, `EventBus`, `MessageBus`, notes, usage ledger, and resumable state.
+- `starweaver-runtime`: deterministic run loop, tool loop, output loop, hooks, usage-limit enforcement, usage snapshot publication, stream/checkpoint emission, direct executor behavior, and compatibility re-exports.
 - `starweaver-usage`: usage data, usage limits, snapshot contracts, and optional USD pricing helpers.
 
 ## Feature Coverage Contract
@@ -57,7 +55,7 @@ Core Starweaver should cover these feature families before broader SDK expansion
 | Streaming              | run events, part events, tool events                                  | stream tests                                       |
 | Usage                  | accounting, limits, snapshot events, optional pricing estimates       | usage, runtime, context, and CLI cost tests        |
 | Testing                | deterministic models and request guard                                | model and runtime test suites                      |
-| Durability seam        | context export and checkpoints                                        | executor/context tests                             |
+| Durability seam        | context export, versioned records, lifecycle, and checkpoints         | cross-release fixtures plus executor/context tests |
 
 ## Core Run Flow
 
@@ -108,8 +106,9 @@ Durability belongs above the core runtime, while the runtime emits stable eviden
 ## Acceptance Gates
 
 - `make replay-check`
+- `make capability-check`
 - `make fmt-check`
 - `make check`
 - `make test`
 - targeted docs example checks when user-facing docs change
-- implementation status updated in the spec that owns the changed contract
+- registered capability status or evidence updated in `spec/capabilities.toml`, with `spec/capability-status.md` regenerated

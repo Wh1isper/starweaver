@@ -1,0 +1,22 @@
+{
+  "schema": "starweaver.runtime.stream_record",
+  "version": 1,
+  "payload": {
+    "sequence": 7,
+    "source": {
+      "kind": "subagent",
+      "agent_id": "agent-fixture",
+      "agent_name": "fixture-agent",
+      "task_id": "task-fixture",
+      "run_id": "child-run-fixture",
+      "parent_run_id": "parent-run-fixture",
+      "source_sequence": 2
+    },
+    "event": {
+      "kind": "node_start",
+      "node": "prepare_model_request",
+      "step": 3,
+      "status": "running"
+    }
+  }
+}

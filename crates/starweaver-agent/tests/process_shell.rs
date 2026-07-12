@@ -30,8 +30,7 @@ async fn process_shell_tools_use_process_capable_provider() {
             .get::<ProcessShellHandle>()
             .is_some()
     );
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
     let mut tools = ToolRegistry::new();

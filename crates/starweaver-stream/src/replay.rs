@@ -1,7 +1,7 @@
 //! Replay event log contracts and in-memory implementation.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -47,9 +47,35 @@ impl ReplayScope {
     }
 }
 
-/// Replay cursor.
+/// Replay cursor family.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayCursorFamily {
+    /// Raw runtime stream records.
+    RawRuntime,
+    /// Projected display messages.
+    Display,
+    /// Typed replay event log entries.
+    ReplayEvent,
+}
+
+impl ReplayCursorFamily {
+    /// Return the stable wire name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RawRuntime => "raw_runtime",
+            Self::Display => "display",
+            Self::ReplayEvent => "replay_event",
+        }
+    }
+}
+
+/// Family-aware replay cursor.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ReplayCursor {
+    /// Stream family. This prevents a raw-runtime cursor from entering a display or event API.
+    pub family: ReplayCursorFamily,
     /// Replay scope.
     pub scope: ReplayScope,
     /// Last delivered sequence.
@@ -60,31 +86,60 @@ pub struct ReplayCursor {
 }
 
 impl ReplayCursor {
-    /// Build a replay cursor.
+    /// Build a raw-runtime cursor.
     #[must_use]
-    pub const fn new(scope: ReplayScope, sequence: usize) -> Self {
+    pub const fn raw_runtime(scope: ReplayScope, sequence: usize) -> Self {
+        Self::for_family(ReplayCursorFamily::RawRuntime, scope, sequence)
+    }
+
+    /// Build a projected-display cursor.
+    #[must_use]
+    pub const fn display(scope: ReplayScope, sequence: usize) -> Self {
+        Self::for_family(ReplayCursorFamily::Display, scope, sequence)
+    }
+
+    /// Build a typed replay-event cursor.
+    #[must_use]
+    pub const fn replay_event(scope: ReplayScope, sequence: usize) -> Self {
+        Self::for_family(ReplayCursorFamily::ReplayEvent, scope, sequence)
+    }
+
+    /// Build a cursor for an explicit family.
+    #[must_use]
+    pub const fn for_family(
+        family: ReplayCursorFamily,
+        scope: ReplayScope,
+        sequence: usize,
+    ) -> Self {
         Self {
+            family,
             scope,
             sequence,
             backend_cursor: None,
         }
     }
 
-    /// Validate this cursor against a requested replay scope.
+    /// Validate this cursor against a requested family and scope.
     ///
     /// # Errors
     ///
-    /// Returns `ReplayError::InvalidCursor` when the cursor belongs to another scope.
-    pub fn validate_scope(&self, scope: &ReplayScope) -> ReplayResult<()> {
-        if &self.scope == scope {
-            Ok(())
-        } else {
-            Err(ReplayError::InvalidCursor(format!(
+    /// Returns `ReplayError::InvalidCursor` when the cursor belongs to another family or scope.
+    pub fn validate(&self, family: ReplayCursorFamily, scope: &ReplayScope) -> ReplayResult<()> {
+        if self.family != family {
+            return Err(ReplayError::InvalidCursor(format!(
+                "cursor family {} does not match requested family {}",
+                self.family.as_str(),
+                family.as_str()
+            )));
+        }
+        if &self.scope != scope {
+            return Err(ReplayError::InvalidCursor(format!(
                 "cursor scope {} does not match requested scope {}",
                 self.scope.as_str(),
                 scope.as_str()
-            )))
+            )));
         }
+        Ok(())
     }
 }
 
@@ -206,6 +261,11 @@ pub struct ReplayEvent {
     pub metadata: Metadata,
 }
 
+impl starweaver_core::VersionedRecord for ReplayEvent {
+    const SCHEMA: &'static str = "starweaver.stream.replay_event";
+    const ALLOW_BARE_V0: bool = true;
+}
+
 impl ReplayEvent {
     /// Build a replay event from a kind.
     #[must_use]
@@ -219,14 +279,23 @@ impl ReplayEvent {
         }
     }
 
-    /// Build a replay event from a display message.
+    /// Build a replay event from a display message whose display and event sequences align.
     #[must_use]
     pub fn display(scope: ReplayScope, message: DisplayMessage) -> Self {
-        Self::new(
+        Self::display_at(scope, message.sequence, message)
+    }
+
+    /// Build a replay event with an event-family sequence independent from display sequencing.
+    #[must_use]
+    pub fn display_at(scope: ReplayScope, event_sequence: usize, message: DisplayMessage) -> Self {
+        let timestamp = message.timestamp;
+        let mut event = Self::new(
             scope,
-            message.sequence,
+            event_sequence,
             ReplayEventKind::DisplayMessage(Box::new(message)),
-        )
+        );
+        event.timestamp = timestamp;
+        event
     }
 }
 
@@ -249,11 +318,53 @@ pub struct ReplaySnapshot {
     pub metadata: Metadata,
 }
 
+impl starweaver_core::VersionedRecord for ReplaySnapshot {
+    const SCHEMA: &'static str = "starweaver.stream.replay_snapshot";
+    const ALLOW_BARE_V0: bool = true;
+
+    fn decode_bare_v0(mut payload: Value) -> Result<Self, starweaver_core::VersionedRecordError> {
+        if let Some(cursor) = payload
+            .as_object_mut()
+            .and_then(|object| object.get_mut("cursor"))
+            .and_then(Value::as_object_mut)
+            && !cursor.contains_key("family")
+        {
+            cursor.insert("family".to_string(), Value::String("display".to_string()));
+        }
+        serde_json::from_value(payload).map_err(starweaver_core::VersionedRecordError::Json)
+    }
+}
+
+impl ReplaySnapshot {
+    /// Validate a snapshot against its persistence family and scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-cursor error when the snapshot or its cursor belongs
+    /// to another scope or stream family.
+    pub fn validate(&self, family: ReplayCursorFamily, scope: &ReplayScope) -> ReplayResult<()> {
+        if self.scope.as_ref() != Some(scope) {
+            return Err(ReplayError::InvalidCursor(format!(
+                "snapshot scope {} does not match requested scope {}",
+                self.scope.as_ref().map_or("<missing>", ReplayScope::as_str),
+                scope.as_str()
+            )));
+        }
+        if let Some(cursor) = self.cursor.as_ref() {
+            cursor.validate(family, scope)?;
+        }
+        Ok(())
+    }
+}
+
 /// Replay subscription that yields live events after replay.
 pub struct ReplaySubscription {
     receiver: broadcast::Receiver<ReplayEvent>,
     scope: ReplayScope,
     cursor: Option<ReplayCursor>,
+    backlog: VecDeque<ReplayEvent>,
+    catchup: Option<Arc<dyn ReplayCatchupSource>>,
+    baseline_initialized: bool,
 }
 
 impl ReplaySubscription {
@@ -264,22 +375,100 @@ impl ReplaySubscription {
     /// Returns an error if the live subscription channel is closed or lagged.
     pub async fn recv(&mut self) -> ReplayResult<ReplayEvent> {
         loop {
-            let event = self
-                .receiver
-                .recv()
-                .await
-                .map_err(|error| ReplayError::Failed(error.to_string()))?;
-            if event.scope == self.scope
-                && self
+            if !self.baseline_initialized && !self.backlog.is_empty() {
+                self.refill_from_durable().await?;
+                if self.catchup.is_none() {
+                    self.baseline_initialized = true;
+                }
+            }
+            if let Some(event) = self.backlog.pop_front() {
+                let expected = self
                     .cursor
                     .as_ref()
-                    .is_none_or(|cursor| event.sequence > cursor.sequence)
-            {
-                self.cursor = Some(ReplayCursor::new(event.scope.clone(), event.sequence));
-                return Ok(event);
+                    .map_or(event.sequence, |cursor| cursor.sequence.saturating_add(1));
+                if event.scope != self.scope || event.sequence < expected {
+                    continue;
+                }
+                if event.sequence == expected {
+                    self.cursor = Some(ReplayCursor::replay_event(
+                        event.scope.clone(),
+                        event.sequence,
+                    ));
+                    return Ok(event);
+                }
+                self.backlog.push_front(event);
+            }
+
+            match self.receiver.recv().await {
+                Ok(event) => {
+                    if event.scope == self.scope {
+                        self.prepend_backlog(vec![event]);
+                        self.refill_from_durable().await?;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    self.refill_from_durable().await?;
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    self.refill_from_durable().await?;
+                    if self.backlog.is_empty() {
+                        return Err(ReplayError::Failed(
+                            "replay subscription channel closed".to_string(),
+                        ));
+                    }
+                }
             }
         }
     }
+
+    async fn refill_from_durable(&mut self) -> ReplayResult<()> {
+        let Some(catchup) = self.catchup.clone() else {
+            return Ok(());
+        };
+        let events = catchup
+            .catch_up_after(&self.scope, self.cursor.clone(), None)
+            .await?;
+        self.prepend_backlog(events);
+        if self.cursor.is_some() || !self.backlog.is_empty() {
+            self.baseline_initialized = true;
+        }
+        Ok(())
+    }
+
+    /// Prepend a durable catch-up batch captured after the live receiver was established.
+    pub fn prepend_backlog(&mut self, events: Vec<ReplayEvent>) {
+        let after = self.cursor.as_ref().map(|cursor| cursor.sequence);
+        let mut merged = BTreeMap::new();
+        for event in events.into_iter().chain(self.backlog.drain(..)) {
+            if event.scope == self.scope && after.is_none_or(|sequence| event.sequence > sequence) {
+                merged.entry(event.sequence).or_insert(event);
+            }
+        }
+        self.backlog = merged.into_values().collect();
+    }
+
+    /// Initialize the durable backlog captured after the live receiver was established.
+    pub fn initialize_backlog(&mut self, events: Vec<ReplayEvent>) {
+        self.prepend_backlog(events);
+        self.baseline_initialized = true;
+    }
+
+    /// Replace the durable source used to refill sequence gaps and broadcast lag.
+    pub fn set_catchup_source(&mut self, catchup: Arc<dyn ReplayCatchupSource>) {
+        self.catchup = Some(catchup);
+    }
+}
+
+/// Durable replay reader used by subscriptions to refill gaps and channel lag.
+#[async_trait]
+pub trait ReplayCatchupSource: Send + Sync {
+    /// Replay events after an optional cursor.
+    async fn catch_up_after(
+        &self,
+        scope: &ReplayScope,
+        cursor: Option<ReplayCursor>,
+        limit: Option<usize>,
+    ) -> ReplayResult<Vec<ReplayEvent>>;
 }
 
 /// Replay event-log contract.
@@ -351,6 +540,28 @@ impl ReplayEventLog for InMemoryReplayEventLog {
         let should_send = {
             let mut inner = self.inner.lock().map_err(failed)?;
             if inner.seen.contains(&(scope.clone(), event.sequence)) {
+                let persisted = inner
+                    .events
+                    .get(&scope)
+                    .and_then(|events| {
+                        events
+                            .iter()
+                            .find(|persisted| persisted.sequence == event.sequence)
+                    })
+                    .ok_or_else(|| {
+                        ReplayError::Failed(format!(
+                            "replay event index is inconsistent for scope {} at sequence {}",
+                            scope.as_str(),
+                            event.sequence
+                        ))
+                    })?;
+                if persisted != &event {
+                    return Err(ReplayError::Failed(format!(
+                        "replay event conflict for scope {} at sequence {}",
+                        scope.as_str(),
+                        event.sequence
+                    )));
+                }
                 false
             } else {
                 inner.seen.insert((scope.clone(), event.sequence));
@@ -373,7 +584,7 @@ impl ReplayEventLog for InMemoryReplayEventLog {
         limit: Option<usize>,
     ) -> ReplayResult<Vec<ReplayEvent>> {
         if let Some(cursor) = cursor.as_ref() {
-            cursor.validate_scope(scope)?;
+            cursor.validate(ReplayCursorFamily::ReplayEvent, scope)?;
         }
         let inner = self.inner.lock().map_err(failed)?;
         let after = cursor.map_or(0, |cursor| cursor.sequence.saturating_add(1));
@@ -398,13 +609,22 @@ impl ReplayEventLog for InMemoryReplayEventLog {
         cursor: Option<ReplayCursor>,
     ) -> ReplayResult<ReplaySubscription> {
         if let Some(cursor) = cursor.as_ref() {
-            cursor.validate_scope(&scope)?;
+            cursor.validate(ReplayCursorFamily::ReplayEvent, &scope)?;
         }
-        Ok(ReplaySubscription {
+        let baseline_initialized = cursor.is_some();
+        let mut subscription = ReplaySubscription {
             receiver: self.sender.subscribe(),
-            scope,
-            cursor,
-        })
+            scope: scope.clone(),
+            cursor: cursor.clone(),
+            backlog: VecDeque::new(),
+            catchup: Some(Arc::new(self.clone())),
+            baseline_initialized,
+        };
+        let backlog = <Self as ReplayEventLog>::replay_after(self, &scope, cursor, None).await?;
+        if !backlog.is_empty() {
+            subscription.initialize_backlog(backlog);
+        }
+        Ok(subscription)
     }
 
     async fn compact_snapshot(&self, scope: &ReplayScope) -> ReplayResult<ReplaySnapshot> {
@@ -422,7 +642,7 @@ impl ReplayEventLog for InMemoryReplayEventLog {
             .collect::<Vec<_>>();
         let cursor = events
             .last()
-            .map(|event| ReplayCursor::new(scope.clone(), event.sequence));
+            .map(|event| ReplayCursor::replay_event(scope.clone(), event.sequence));
         Ok(ReplaySnapshot {
             scope: Some(scope.clone()),
             revision: events.len(),
@@ -433,6 +653,18 @@ impl ReplayEventLog for InMemoryReplayEventLog {
     }
 }
 
+#[async_trait]
+impl ReplayCatchupSource for InMemoryReplayEventLog {
+    async fn catch_up_after(
+        &self,
+        scope: &ReplayScope,
+        cursor: Option<ReplayCursor>,
+        limit: Option<usize>,
+    ) -> ReplayResult<Vec<ReplayEvent>> {
+        <Self as ReplayEventLog>::replay_after(self, scope, cursor, limit).await
+    }
+}
+
 impl InMemoryReplayEventLog {
     /// Save a compact snapshot for later replay views.
     ///
@@ -440,6 +672,7 @@ impl InMemoryReplayEventLog {
     ///
     /// Returns an error when the in-memory lock is poisoned.
     pub fn save_snapshot(&self, scope: ReplayScope, snapshot: ReplaySnapshot) -> ReplayResult<()> {
+        snapshot.validate(ReplayCursorFamily::ReplayEvent, &scope)?;
         let mut inner = self.inner.lock().map_err(failed)?;
         inner.snapshots.insert(scope, snapshot);
         Ok(())

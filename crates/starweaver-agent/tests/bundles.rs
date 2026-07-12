@@ -15,7 +15,7 @@ use starweaver_agent::{
     attach_environment, context_tools, dynamic_tool_proxy, filesystem_tools, host_io_tools,
     json_tool, namespaced_toolset, shell_tools, task_tools,
 };
-use starweaver_context::{AgentContextHandle, DependencyStore, ToolConfig};
+use starweaver_context::{ContextHandoffHandle, DependencyStore, ToolConfig};
 use starweaver_core::{CancellationToken, ConversationId, Metadata, RunId};
 use starweaver_environment::{
     EnvironmentPolicy, EnvironmentProvider, FilePolicy, LocalEnvironmentProvider,
@@ -132,7 +132,7 @@ async fn environment_context_capability_force_reinjects_unchanged_context() {
         )
         .await
         .unwrap();
-    context.force_inject_context = true;
+    context.runtime.force_inject_context = true;
     messages.push(starweaver_model::ModelMessage::Response(
         ModelResponse::text("ok"),
     ));
@@ -302,22 +302,22 @@ fn filesystem_shell_registry() -> ToolRegistry {
 fn filesystem_shell_tool_context(provider: Arc<VirtualEnvironmentProvider>) -> ToolContext {
     let mut agent_context = AgentContext::default();
     agent_context
-        .shell_env
+        .tools
+        .shell_environment
         .insert("STARWEAVER_CONTEXT_ENV".to_string(), "ctx".to_string());
     agent_context
-        .shell_env
+        .tools
+        .shell_environment
         .insert("STARWEAVER_OVERRIDE_ENV".to_string(), "ctx".to_string());
     attach_environment(&mut agent_context, provider);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context.clone());
+    let dependencies = agent_context.tool_dependency_store();
     ToolContext::new(RunId::default(), ConversationId::default(), 0).with_dependencies(dependencies)
 }
 
 fn process_tool_context(provider: Arc<VirtualEnvironmentProvider>) -> ToolContext {
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     ToolContext::new(RunId::default(), ConversationId::default(), 0).with_dependencies(dependencies)
 }
 
@@ -584,8 +584,13 @@ async fn assert_background_shell(
     assert_eq!(background_shell.content["metadata"]["cwd"], "src");
     assert_eq!(background_shell.content["metadata"]["timeout_seconds"], 42);
     assert_eq!(
-        background_shell.content["metadata"]["environment"]["STARWEAVER_BACKGROUND"],
-        "yes"
+        background_shell.content["metadata"]["environment_variables"],
+        serde_json::json!(["STARWEAVER_BACKGROUND"])
+    );
+    assert!(
+        background_shell.content["metadata"]
+            .get("environment")
+            .is_none()
     );
 }
 
@@ -611,8 +616,7 @@ async fn filesystem_mutation_tools_execute_through_environment_provider() {
     registry.insert_toolset(&filesystem_tools());
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider.clone());
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -710,8 +714,7 @@ async fn filesystem_view_handles_text_metadata_binary_and_local_media() {
     registry.insert_toolset(&filesystem_tools());
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider.clone());
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context.clone());
+    let mut dependencies = agent_context.tool_dependency_store();
     dependencies.insert(HostMediaUnderstandingClientHandle::new(Arc::new(
         FakeMediaUnderstandingClient,
     )));
@@ -820,8 +823,7 @@ async fn filesystem_view_uses_relaxed_text_limits_for_configured_paths() {
     agent_context.tool_config.view_relaxed_text_patterns =
         vec!["/AGENTS.md".to_string(), "re:^binary\\.md$".to_string()];
     attach_environment(&mut agent_context, provider);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -923,8 +925,7 @@ async fn skill_registry_registers_markdown_relaxed_view_patterns() {
     let mut agent_context = AgentContext::default();
     skills.register_relaxed_view_patterns(&mut agent_context);
     attach_environment(&mut agent_context, provider);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context.clone());
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -952,8 +953,7 @@ async fn filesystem_view_native_media_returns_provider_backed_content_parts() {
     registry.insert_toolset(&filesystem_tools());
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let mut dependencies = agent_context.tool_dependency_store();
     dependencies.insert(HostMediaCapabilities {
         model_id: Some("vision-model".to_string()),
         supports_image_url: true,
@@ -1014,8 +1014,7 @@ async fn glob_grep_ls_and_shell_large_outputs_are_bounded_or_saved_to_tmp_files(
     registry.insert_toolset(&shell_tools());
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider.clone());
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -1143,8 +1142,7 @@ async fn host_io_large_outputs_are_bounded_and_saved_to_tmp_files() {
         .unwrap();
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider.clone());
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let mut dependencies = agent_context.tool_dependency_store();
     dependencies.insert(HostSearchClientHandle::new(Arc::new(LargeSearchClient)));
     dependencies.insert(HostScrapeClientHandle::new(Arc::new(LargeScrapeClient)));
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
@@ -1227,8 +1225,7 @@ async fn fetch_large_text_output_is_bounded_and_saved_to_tmp_file() {
         .unwrap();
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider.clone());
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -1278,8 +1275,7 @@ async fn read_media_native_image_url_returns_provider_backed_content_parts() {
         .find(|tool| tool.name() == "read_media")
         .unwrap();
     let agent_context = AgentContext::default();
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let mut dependencies = agent_context.tool_dependency_store();
     dependencies.insert(HostMediaCapabilities {
         model_id: Some("vision-model".to_string()),
         supports_image_url: true,
@@ -1352,8 +1348,7 @@ async fn read_media_uses_fallback_adapter_when_native_media_is_unavailable() {
         .into_iter()
         .find(|tool| tool.name() == "read_media")
         .unwrap();
-    let mut dependencies = DependencyStore::new();
-    dependencies.insert(AgentContext::default());
+    let mut dependencies = AgentContext::default().tool_dependency_store();
     dependencies.insert(HostMediaUnderstandingClientHandle::new(Arc::new(
         FakeMediaUnderstandingClient,
     )));
@@ -1451,8 +1446,7 @@ async fn read_media_rejects_non_media_http_url_with_actionable_retry() {
 
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&host_io_tools());
-    let mut dependencies = DependencyStore::new();
-    dependencies.insert(AgentContext::default());
+    let dependencies = AgentContext::default().tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -1488,8 +1482,7 @@ async fn local_shell_exec_foreground_cancels_running_process_quickly() {
     registry.insert_toolset(&shell_tools());
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider.clone());
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let cancellation_token = CancellationToken::new();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies)
@@ -1593,8 +1586,7 @@ async fn local_shell_tmp_output_path_can_be_viewed() {
         ..AgentContext::default()
     };
     attach_environment(&mut agent_context, provider);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -1725,8 +1717,7 @@ async fn host_io_and_view_media_failures_return_actionable_tool_errors() {
         Arc::new(VirtualEnvironmentProvider::new("test").with_bytes("image.png", test_png(1, 1)));
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
         .with_dependencies(dependencies);
 
@@ -1834,7 +1825,7 @@ async fn summarize_tool_handoff_replaces_history_on_next_request() {
     assert!(restored_text.contains("Continue implementation."));
     assert!(!restored_text.contains("tool_call_id"));
     assert!(session.context().handoff_message.is_none());
-    assert!(session.context().force_inject_context);
+    assert!(session.context().runtime.force_inject_context);
 }
 
 #[tokio::test]
@@ -1902,10 +1893,13 @@ async fn summarize_sets_context_handoff_and_auto_load_files() {
     );
 
     let mut agent_context = AgentContext {
-        auto_load_files: vec!["AGENTS.md".to_string()],
+        tools: starweaver_context::AgentToolState {
+            auto_load_files: vec!["AGENTS.md".to_string()],
+            ..starweaver_context::AgentToolState::default()
+        },
         ..AgentContext::default()
     };
-    let handle = AgentContextHandle::new(agent_context.clone());
+    let handle = ContextHandoffHandle::from_context(&agent_context);
     let mut dependencies = DependencyStore::new();
     dependencies.insert(handle.clone());
     let tool_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
@@ -1921,7 +1915,7 @@ async fn summarize_sets_context_handoff_and_auto_load_files() {
         )
         .await
         .unwrap();
-    agent_context = handle.snapshot();
+    handle.apply_to(&mut agent_context);
 
     assert_eq!(result.content["operation"], "summarize");
     assert_eq!(
@@ -1933,7 +1927,7 @@ async fn summarize_sets_context_handoff_and_auto_load_files() {
         Some("# Context Summary\n\n## Current State\nImplemented handoff.")
     );
     assert_eq!(
-        agent_context.auto_load_files,
+        agent_context.tools.auto_load_files,
         vec![
             "AGENTS.md".to_string(),
             "crates/starweaver-agent/src/bundles/context_tools/context.rs".to_string(),
@@ -2083,6 +2077,32 @@ fn bundle_toolsets_export_stable_tool_names_and_instructions() {
     assert_eq!(note_metadata["auto_inherit"], true);
     assert_eq!(summarize_metadata["bundle"], "context");
     assert_eq!(summarize_metadata["starweaver_context_management"], true);
+    assert_eq!(
+        task_metadata["starweaver_tool_dependencies"]["profile"],
+        "filtered"
+    );
+    assert_eq!(
+        task_metadata["starweaver_tool_dependencies"]["context_capabilities"],
+        serde_json::json!(["starweaver.context.tasks"])
+    );
+    assert_eq!(
+        summarize_metadata["starweaver_tool_dependencies"]["context_capabilities"],
+        serde_json::json!(["starweaver.context.handoff"])
+    );
+    assert_eq!(
+        shell_metadata["starweaver_tool_dependencies"]["shell_environment"],
+        true
+    );
+    for toolset in [&filesystem, &shell, &task, &context, &host_io] {
+        for tool in toolset.get_tools() {
+            assert_eq!(
+                tool.definition().metadata["starweaver_tool_dependencies"]["profile"],
+                "filtered",
+                "first-party tool {} must use filtered dependencies",
+                tool.name()
+            );
+        }
+    }
 
     let filesystem_instructions = filesystem.get_instructions();
     assert_eq!(filesystem_instructions.len(), 9);
@@ -2352,8 +2372,7 @@ async fn tool_proxy_searches_and_calls_namespaced_toolsets() {
 
     let mut agent_context = AgentContext::default();
     attach_environment(&mut agent_context, provider);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let call_tool = proxy_tools
         .iter()
         .find(|tool| tool.name() == "call_tool")

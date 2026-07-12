@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use chrono::Utc;
 use serde_json::json;
@@ -485,27 +485,12 @@ fn complete_run_persists_default_projector_source_records_under_parent_run() {
         )
         .unwrap();
 
-    let conn = rusqlite::Connection::open(&config.database_path).unwrap();
-    let (storage_run_id, message_json): (String, String) = conn
-        .query_row(
-            "SELECT run_id, message_json FROM display_messages WHERE session_id = ?1 ORDER BY sequence_no LIMIT 1",
-            rusqlite::params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    let stored_message: DisplayMessage = serde_json::from_str(&message_json).unwrap();
-    assert_eq!(storage_run_id, parent_run_id.as_str());
-    assert_eq!(stored_message.run_id, child_run_id);
-    assert_eq!(
-        stored_message.metadata["source_task_id"],
-        json!("task-child")
-    );
-
     let replayed = store
         .replay_display(&session_id, Some(parent_run_id.as_str()), None)
         .unwrap();
     assert_eq!(replayed.len(), 1);
     assert_eq!(replayed[0].run_id, child_run_id);
+    assert_eq!(replayed[0].metadata["source_task_id"], json!("task-child"));
     assert_eq!(replayed[0].payload["reason"], "websocket_transport_error");
 }
 
@@ -537,7 +522,7 @@ fn local_stream_archive_stores_run_scoped_source_messages_under_scope_run() {
         "reason": "websocket_transport_error",
         "message": "model transport: websocket -> http fallback (websocket_transport_error)"
     }));
-    let archive = crate::LocalStreamArchive::new(config);
+    let archive = crate::LocalStreamArchive::new(config).expect("open CLI stream archive");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let scope = ReplayScope::run(parent_run_id.as_str());
 
@@ -557,7 +542,7 @@ fn local_stream_archive_stores_run_scoped_source_messages_under_scope_run() {
 fn local_stream_archive_empty_run_scoped_append_is_noop() {
     let temp = tempfile::tempdir().unwrap();
     let config = test_config(temp.path());
-    let archive = crate::LocalStreamArchive::new(config);
+    let archive = crate::LocalStreamArchive::new(config).expect("open CLI stream archive");
     let runtime = tokio::runtime::Runtime::new().unwrap();
 
     runtime
@@ -596,7 +581,7 @@ fn local_stream_archive_rejects_run_scope_session_mismatch_before_sqlite_fk() {
         DisplayMessageKind::HostEvent,
     )
     .with_payload(json!({"reason": "websocket_transport_error"}));
-    let archive = crate::LocalStreamArchive::new(config);
+    let archive = crate::LocalStreamArchive::new(config).expect("open CLI stream archive");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let error =
         runtime
@@ -632,7 +617,7 @@ fn local_stream_archive_rejects_session_scope_source_run_without_fk_failure() {
         DisplayMessageKind::HostEvent,
     )
     .with_payload(json!({"reason": "websocket_transport_error"}));
-    let archive = crate::LocalStreamArchive::new(config);
+    let archive = crate::LocalStreamArchive::new(config).expect("open CLI stream archive");
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let error = runtime
         .block_on(

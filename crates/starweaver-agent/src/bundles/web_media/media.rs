@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use starweaver_context::{AgentContext, ToolConfig};
+use starweaver_context::{ToolConfig, ToolRuntimeSnapshot};
 use starweaver_model::{ContentPart, ModelProfile, ProtocolFamily, detect_media_kind};
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
@@ -293,9 +293,9 @@ pub(super) async fn read_media(
                 ),
             ));
         }
-        if let Some(agent_context) = context.dependency::<AgentContext>() {
-            let max_image_bytes = agent_context.model_config.max_image_bytes;
-            let max_image_dimension = agent_context.model_config.max_image_dimension;
+        if let Some(runtime) = context.dependency::<ToolRuntimeSnapshot>() {
+            let max_image_bytes = runtime.model_config().max_image_bytes;
+            let max_image_dimension = runtime.model_config().max_image_dimension;
             if image_exceeds_model_limits(&body, max_image_bytes, max_image_dimension) {
                 match compress_image_to_model_limit(
                     &body,
@@ -584,8 +584,8 @@ fn is_supported_inline_image(media_type: &str) -> bool {
 
 fn tool_config(context: &ToolContext) -> ToolConfig {
     context
-        .dependency::<AgentContext>()
-        .map_or_else(ToolConfig::default, |context| context.tool_config.clone())
+        .dependency::<ToolRuntimeSnapshot>()
+        .map_or_else(ToolConfig::default, |runtime| runtime.tool_config().clone())
 }
 
 fn media_fetch_limit(tool_config: &ToolConfig) -> u64 {

@@ -4,16 +4,16 @@ use async_trait::async_trait;
 use serde_json::json;
 use starweaver_core::Metadata;
 use starweaver_envd_core::{
-    CleanupIdleRequest, CommandRunRequest, CommandRunResult, ENVD_PROTOCOL, ENVD_PROTOCOL_VERSION,
-    EnvdError, EnvdResult, EnvdService, EnvironmentContextRequest, EnvironmentContextResult,
-    EnvironmentDescriptor, EnvironmentRequest, EnvironmentStateSnapshot, FileCopyRequest,
-    FileCreateDirRequest, FileDeleteRequest, FileGlobMatch, FileGlobRequest, FileGrepMatch,
-    FileGrepRequest, FileListRequest, FileListResult, FileMoveRequest, FileReadMode,
-    FileReadRequest, FileReadResult, FileStatRequest, FileWriteRequest, FileWriteResult,
-    FileWriteTmpRequest, FileWriteTmpResult, InitializeEnvdRequest, InitializeEnvdResult,
-    MutationResult, OpenEnvironmentRequest, ProcessInputRequest, ProcessKillRequest,
-    ProcessListResult, ProcessSignalRequest, ProcessSnapshot, ProcessStartRequest,
-    ProcessWaitRequest, ShellReviewContextRequest, ShellReviewContextResult,
+    CleanupIdleRequest, CommandRunRequest, CommandRunResult, EnvdError, EnvdResult, EnvdService,
+    EnvironmentContextRequest, EnvironmentContextResult, EnvironmentDescriptor, EnvironmentRequest,
+    EnvironmentStateSnapshot, FileCopyRequest, FileCreateDirRequest, FileDeleteRequest,
+    FileGlobMatch, FileGlobRequest, FileGrepMatch, FileGrepRequest, FileListRequest,
+    FileListResult, FileMoveRequest, FileReadMode, FileReadRequest, FileReadResult,
+    FileStatRequest, FileWriteRequest, FileWriteResult, FileWriteTmpRequest, FileWriteTmpResult,
+    InitializeEnvdRequest, InitializeEnvdResult, MutationResult, OpenEnvironmentRequest,
+    ProcessInputRequest, ProcessKillRequest, ProcessListResult, ProcessSignalRequest,
+    ProcessSnapshot, ProcessStartRequest, ProcessWaitRequest, ShellReviewContextRequest,
+    ShellReviewContextResult, envd_protocol_identity, validate_envd_initialize,
 };
 use starweaver_environment::ShellCommand;
 
@@ -25,13 +25,10 @@ use crate::convert::{
 
 #[async_trait]
 impl EnvdService for LocalEnvd {
-    async fn initialize(
-        &self,
-        _request: InitializeEnvdRequest,
-    ) -> EnvdResult<InitializeEnvdResult> {
+    async fn initialize(&self, request: InitializeEnvdRequest) -> EnvdResult<InitializeEnvdResult> {
+        validate_envd_initialize(&request)?;
         Ok(InitializeEnvdResult {
-            protocol: ENVD_PROTOCOL.to_string(),
-            protocol_version: ENVD_PROTOCOL_VERSION.to_string(),
+            protocol: envd_protocol_identity(),
             service_name: "LocalEnvd".to_string(),
             metadata: Metadata::default(),
         })
@@ -246,10 +243,10 @@ impl EnvdService for LocalEnvd {
         let output = self
             .provider
             .run_shell(ShellCommand {
-                command: request.command.clone(),
                 timeout_seconds: request.timeout_seconds,
                 cwd: request.cwd,
                 environment: request.environment,
+                ..ShellCommand::shell(request.command.clone())
             })
             .await
             .map_err(env_error_to_envd)?;
@@ -271,10 +268,10 @@ impl EnvdService for LocalEnvd {
         self.ensure_environment(&request.environment_id)?;
         self.process_provider()?
             .start_process(ShellCommand {
-                command: request.command,
                 timeout_seconds: request.timeout_seconds,
                 cwd: request.cwd,
                 environment: request.environment,
+                ..ShellCommand::shell(request.command)
             })
             .await
             .map(process_to_envd)

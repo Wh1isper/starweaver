@@ -149,14 +149,15 @@ impl CacheFriendlyCompactCapability {
         context
             .metadata
             .insert(COMPACT_DEPTH_METADATA.to_string(), json!(1));
-        context.lifecycle.compact_depth = context.lifecycle.compact_depth.saturating_add(1);
+        context.runtime.lifecycle.compact_depth =
+            context.runtime.lifecycle.compact_depth.saturating_add(1);
         let event_id = format!("{}-{}", state.run_id.as_str(), state.run_step);
         context.publish_event(AgentEvent::new(
             "compact_start",
             json!({"event_id": event_id, "message_count": messages.len()}),
         ));
         let compact_messages =
-            build_compact_summary_request(messages, &context.injected_context_tags);
+            build_compact_summary_request(messages, &context.runtime.injected_context_tags);
         let response = match self
             .request_compact_summary(
                 model.as_ref(),
@@ -177,7 +178,8 @@ impl CacheFriendlyCompactCapability {
                     },
                 );
                 context.metadata.remove(COMPACT_DEPTH_METADATA);
-                context.lifecycle.compact_depth = context.lifecycle.compact_depth.saturating_sub(1);
+                context.runtime.lifecycle.compact_depth =
+                    context.runtime.lifecycle.compact_depth.saturating_sub(1);
                 context.trace_context = previous_trace_context;
                 context.publish_event(AgentEvent::new(
                     "compact_failed",
@@ -187,12 +189,13 @@ impl CacheFriendlyCompactCapability {
             }
         };
         context.metadata.remove(COMPACT_DEPTH_METADATA);
-        context.lifecycle.compact_depth = context.lifecycle.compact_depth.saturating_sub(1);
+        context.runtime.lifecycle.compact_depth =
+            context.runtime.lifecycle.compact_depth.saturating_sub(1);
         context.trace_context = previous_trace_context;
         context.add_usage(&response.usage);
         let summary = response.text_output();
         let compacted = build_cache_friendly_compacted_messages(state, context, messages, &summary);
-        context.force_inject_context = true;
+        context.runtime.force_inject_context = true;
         context.publish_event(AgentEvent::new(
             "compact_complete",
             json!({

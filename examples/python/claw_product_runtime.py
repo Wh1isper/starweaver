@@ -3028,12 +3028,20 @@ class ClawProductRuntime:
         if self.store is None or self.runtime_builder is None:
             raise RuntimeError("runtime is not started")
         native_session_id = str(run["native_session_id"])
+        native_run_id = run["native_run_id"]
+        if not isinstance(native_run_id, str) or not native_run_id:
+            raise RuntimeError("run does not have a durable native run id")
         session_record = await self.store.load_session(native_session_id)
         last_run_state = _decode(run["last_run_state_json"], None)
         if not isinstance(last_run_state, Mapping):
             raise TypeError("run does not have restorable HITL state")
+        restored_state = dict(session_record.state)
+        restored_metadata = restored_state.get("metadata")
+        metadata = dict(restored_metadata) if isinstance(restored_metadata, Mapping) else {}
+        metadata["starweaver.durable_run_id"] = native_run_id
+        restored_state["metadata"] = metadata
         archive = SessionArchive.from_state(
-            session_record.state,
+            restored_state,
             mode="full",
             last_run_state=last_run_state,
         )
@@ -3189,9 +3197,13 @@ class ClawProductRuntime:
         run_record = RunRecord.from_result(
             session_record.session_id,
             stream_result.result,
-            sequence_no=1,
+            sequence_no=0,
         )
-        await self._append_native_records(session_record.session_id, run_record, stream_result)
+        run_record = await self._append_native_records(
+            session_record.session_id,
+            run_record,
+            stream_result,
+        )
         pending_hitl = {
             "approvals": stream_result.result.pending_approvals,
             "deferred": stream_result.result.pending_deferred,
@@ -3223,9 +3235,13 @@ class ClawProductRuntime:
         run_record = RunRecord.from_result(
             session_record.session_id,
             stream_result.result,
-            sequence_no=1,
+            sequence_no=0,
         )
-        await self._append_native_records(session_record.session_id, run_record, stream_result)
+        run_record = await self._append_native_records(
+            session_record.session_id,
+            run_record,
+            stream_result,
+        )
         existing = self.database.run(run_id)
         mapped_run_id = (
             run_record.run_id
@@ -3253,11 +3269,11 @@ class ClawProductRuntime:
         native_session_id: str,
         run_record: RunRecord,
         stream_result: Any,
-    ) -> None:
+    ) -> RunRecord:
         if self.store is None or self.archive is None or self.replay is None:
             raise RuntimeError("runtime is not started")
         events = list(stream_result.events)
-        await self.store.append_run(run_record)
+        run_record = await self.store.append_run_allocated(run_record)
         if events:
             raw_records = [event.raw for event in events]
             await self.store.append_stream_records(
@@ -3294,6 +3310,7 @@ class ClawProductRuntime:
                 "event": {"kind": "heartbeat", "source": "product_runtime"},
             },
         )
+        return run_record
 
 
 class ProductDispatcher:
@@ -3728,6 +3745,47 @@ class ProductBridge:
         }
 
 
+async def _suspended_native_sequence(
+    runtime: ClawProductRuntime,
+    suspended: ProductRunView,
+) -> int:
+    native_session_id = suspended.native_session_id
+    native_run_id = suspended.native_run_id
+    if native_session_id is None or native_run_id is None:
+        raise RuntimeError("suspended run did not persist native identity")
+    if runtime.store is None:
+        raise RuntimeError("runtime store is not started")
+    native_run = await runtime.store.load_run(native_session_id, native_run_id)
+    return int(native_run.to_dict()["sequence_no"])
+
+
+async def _native_hitl_continuation_state(
+    runtime: ClawProductRuntime,
+    suspended: ProductRunView,
+    completed: JsonObject,
+    suspended_sequence: int,
+) -> tuple[bool, bool]:
+    native_session_id = suspended.native_session_id
+    native_run_id = suspended.native_run_id
+    if native_session_id is None or native_run_id is None:
+        raise RuntimeError("suspended run did not persist native identity")
+    if runtime.store is None:
+        raise RuntimeError("restarted runtime store is not started")
+    completed_native_run = await runtime.store.load_run(native_session_id, native_run_id)
+    native_runs = await runtime.store.list_runs(native_session_id)
+    completed_native_record = completed_native_run.to_dict()
+    identity_preserved = (
+        completed["native_run_id"] == native_run_id
+        and len(native_runs) == 1
+        and native_runs[0].run_id == native_run_id
+    )
+    sequence_preserved = (
+        completed_native_record["status"] == "completed"
+        and int(completed_native_record["sequence_no"]) == suspended_sequence
+    )
+    return identity_preserved, sequence_preserved
+
+
 async def run_product_runtime_smoke(database_path: str | Path) -> JsonObject:
     runtime = ClawProductRuntime(database_path)
     await runtime.start()
@@ -3740,6 +3798,7 @@ async def run_product_runtime_smoke(database_path: str | Path) -> JsonObject:
         suspended = await run_task
         if suspended is None:
             raise RuntimeError("run did not execute")
+        suspended_native_sequence = await _suspended_native_sequence(runtime, suspended)
         await runtime.shutdown()
 
         restarted = ClawProductRuntime(database_path)
@@ -3750,6 +3809,15 @@ async def run_product_runtime_smoke(database_path: str | Path) -> JsonObject:
                 str(bridge_hitl["message"]["message_id"])
             )
             completed = bridge_approval["run"]
+            (
+                native_run_identity_preserved,
+                native_sequence_preserved,
+            ) = await _native_hitl_continuation_state(
+                restarted,
+                suspended,
+                completed,
+                suspended_native_sequence,
+            )
             ui_state = await restarted.replay_ui_state(queued.run_id)
             details = restarted.run_details(queued.run_id)
             workspace_snapshot = details["workspace_snapshot"]
@@ -3859,6 +3927,8 @@ async def run_product_runtime_smoke(database_path: str | Path) -> JsonObject:
                 "steered_behavior": steered.behavior,
                 "suspended_status": suspended.status,
                 "completed_status": completed["status"],
+                "native_run_identity_preserved_after_hitl": native_run_identity_preserved,
+                "native_sequence_preserved_after_hitl": native_sequence_preserved,
                 "output": completed["output"],
                 "bridge_hitl_message_status": bridge_approval["message"]["status"],
                 "bridge_hitl_approval_id_preserved": (

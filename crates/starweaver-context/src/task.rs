@@ -7,9 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_core::Metadata;
 
-/// Custom event kind emitted with a full task board snapshot.
-pub const TASK_SNAPSHOT_EVENT_KIND: &str = "task_snapshot";
-
 /// Task execution status.
 #[derive(Clone, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]

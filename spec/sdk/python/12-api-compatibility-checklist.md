@@ -12,8 +12,8 @@ or migration notes in the same change.
 
 Rules:
 
-- Names listed here are stable top-level imports unless a migration note says
-  otherwise.
+- Names listed here are supported top-level compatibility imports. Their stability tier is
+  defined by `starweaver.API_STABILITY` and the checked API snapshot.
 - Compatibility aliases such as `AgentStream` stay listed while supported.
 - Raw evidence helpers stay listed when downstream product code may need them
   for forward compatibility.
@@ -190,6 +190,12 @@ PUBLIC_API_GROUPS = {
         "__version__",
         "version",
     ],
+    "api_stability": [
+        "API_STABILITY",
+        "PROVISIONAL_API",
+        "STABLE_API",
+        "api_stability",
+    ],
 }
 ```
 
@@ -199,9 +205,9 @@ PUBLIC_API_GROUPS = {
 
 Before release:
 
-1. Run `uv run pytest packages/starweaver-py/tests`.
+1. Run `make py-api-check` and `uv run pytest packages/starweaver-py/tests`.
 2. Confirm `test_public_api_compatibility_checklist_matches_starweaver_exports`
-   passes.
+   passes and every export has an explicit stable or provisional classification.
 3. Confirm each added public name is documented in the relevant Python docs
    page before it is added to this checklist.
 4. Keep migration notes in `docs/python/stability.md` when a supported alias or

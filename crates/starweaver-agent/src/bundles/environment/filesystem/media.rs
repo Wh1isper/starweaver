@@ -2,7 +2,7 @@
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::Map;
-use starweaver_context::{AgentContext, ToolConfig};
+use starweaver_context::{ToolConfig, ToolRuntimeSnapshot};
 use starweaver_environment::{EnvironmentProvider, FileStat};
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
@@ -68,10 +68,10 @@ pub(super) async fn read_media_file(
     let original_bytes = data.len();
     let mut compressed_for_model = false;
     if media_kind == MediaKind::Image
-        && let Some(agent_context) = context.dependency::<AgentContext>()
+        && let Some(runtime) = context.dependency::<ToolRuntimeSnapshot>()
     {
-        let max_image_bytes = agent_context.model_config.max_image_bytes;
-        let max_image_dimension = agent_context.model_config.max_image_dimension;
+        let max_image_bytes = runtime.model_config().max_image_bytes;
+        let max_image_dimension = runtime.model_config().max_image_dimension;
         if image_exceeds_model_limits(&data, max_image_bytes, max_image_dimension) {
             match compress_image_to_model_limit(
                 &data,

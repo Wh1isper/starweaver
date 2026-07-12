@@ -1,0 +1,41 @@
+[
+  {
+    "kind": "url",
+    "url": "https://example.test/legacy.png"
+  },
+  {
+    "kind": "file",
+    "file": {
+      "uri": "provider://file/fixture",
+      "media_type": "application/pdf",
+      "name": "fixture.pdf"
+    }
+  },
+  {
+    "kind": "binary",
+    "binary": {
+      "uri": "object://binary/fixture",
+      "media_type": "application/octet-stream",
+      "bytes": 3
+    }
+  },
+  {
+    "kind": "mode",
+    "mode": "content_part",
+    "config": {
+      "kind": "file_url",
+      "url": "https://example.test/legacy.pdf",
+      "media_type": "application/pdf"
+    }
+  },
+  {
+    "kind": "mode",
+    "mode": "plan",
+    "config": {}
+  },
+  {
+    "kind": "command",
+    "command": "review",
+    "args": ["--strict"]
+  }
+]

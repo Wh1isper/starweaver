@@ -1,6 +1,6 @@
 //! Agent capability hook dispatch helpers.
 
-use starweaver_context::AgentContext;
+use starweaver_context::{AgentContext, AgentContextHandle};
 use starweaver_model::{ModelRequest, ModelResponse, ModelSettings, ToolDefinition};
 
 use crate::{
@@ -105,6 +105,15 @@ impl Agent {
                 .before_tool_execution_with_context(state, context, tool_context, call)
                 .await
                 .map_err(Self::capability_error)?;
+            tool_context
+                .dependencies
+                .insert(context.host_capabilities());
+            tool_context
+                .dependencies
+                .insert(context.tool_runtime_snapshot());
+            if let Some(handle) = tool_context.dependency::<AgentContextHandle>() {
+                handle.replace(context.clone());
+            }
         }
         Ok(())
     }

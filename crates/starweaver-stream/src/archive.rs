@@ -10,12 +10,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_core::{Metadata, RunId, SessionId};
-use starweaver_runtime::AgentStreamRecord;
 
 use crate::{
+    AgentStreamRecord,
     display::DisplayMessage,
     error::{ReplayError, ReplayResult},
-    replay::{ReplayCursor, ReplayScope, ReplaySnapshot},
+    replay::{ReplayCursor, ReplayCursorFamily, ReplayScope, ReplaySnapshot},
 };
 
 /// Archived stream record.
@@ -129,6 +129,24 @@ impl StreamArchive for InMemoryStreamArchive {
     ) -> ReplayResult<()> {
         let mut inner = self.inner.lock().map_err(failed)?;
         let raw = inner.raw.entry(raw_key(session_id, run_id)).or_default();
+        for (index, record) in records.iter().enumerate() {
+            let existing = raw
+                .iter()
+                .find(|existing| existing.sequence == record.sequence)
+                .or_else(|| {
+                    records[..index]
+                        .iter()
+                        .find(|existing| existing.sequence == record.sequence)
+                });
+            if existing.is_some_and(|existing| existing != record) {
+                return Err(ReplayError::Failed(format!(
+                    "raw stream conflict for session {} run {} at sequence {}",
+                    session_id.as_str(),
+                    run_id.as_str(),
+                    record.sequence
+                )));
+            }
+        }
         for record in records {
             if raw
                 .iter()
@@ -149,7 +167,7 @@ impl StreamArchive for InMemoryStreamArchive {
     ) -> ReplayResult<Vec<AgentStreamRecord>> {
         if let Some(cursor) = cursor.as_ref() {
             let scope = ReplayScope::run(run_id.as_str());
-            cursor.validate_scope(&scope)?;
+            cursor.validate(ReplayCursorFamily::RawRuntime, &scope)?;
         }
         let inner = self.inner.lock().map_err(failed)?;
         let after = cursor.map_or(0, |cursor| cursor.sequence.saturating_add(1));
@@ -169,7 +187,24 @@ impl StreamArchive for InMemoryStreamArchive {
         messages: Vec<DisplayMessage>,
     ) -> ReplayResult<()> {
         let mut inner = self.inner.lock().map_err(failed)?;
-        let display = inner.display.entry(scope).or_default();
+        let display = inner.display.entry(scope.clone()).or_default();
+        for (index, message) in messages.iter().enumerate() {
+            let existing = display
+                .iter()
+                .find(|existing| existing.sequence == message.sequence)
+                .or_else(|| {
+                    messages[..index]
+                        .iter()
+                        .find(|existing| existing.sequence == message.sequence)
+                });
+            if existing.is_some_and(|existing| existing != message) {
+                return Err(ReplayError::Failed(format!(
+                    "display message conflict for scope {} at sequence {}",
+                    scope.as_str(),
+                    message.sequence
+                )));
+            }
+        }
         for message in messages {
             if display
                 .iter()
@@ -188,7 +223,7 @@ impl StreamArchive for InMemoryStreamArchive {
         cursor: Option<ReplayCursor>,
     ) -> ReplayResult<Vec<DisplayMessage>> {
         if let Some(cursor) = cursor.as_ref() {
-            cursor.validate_scope(scope)?;
+            cursor.validate(ReplayCursorFamily::Display, scope)?;
         }
         let inner = self.inner.lock().map_err(failed)?;
         let after = cursor.map_or(0, |cursor| cursor.sequence.saturating_add(1));
@@ -207,6 +242,7 @@ impl StreamArchive for InMemoryStreamArchive {
         scope: ReplayScope,
         snapshot: ReplaySnapshot,
     ) -> ReplayResult<()> {
+        snapshot.validate(ReplayCursorFamily::Display, &scope)?;
         let mut inner = self.inner.lock().map_err(failed)?;
         inner.snapshots.insert(scope, snapshot);
         Ok(())
@@ -232,8 +268,8 @@ impl StreamArchive for InMemoryStreamArchive {
             return Ok(None);
         };
         Ok(Some((
-            ReplayCursor::new(scope.clone(), first.sequence),
-            ReplayCursor::new(scope.clone(), last.sequence),
+            ReplayCursor::display(scope.clone(), first.sequence),
+            ReplayCursor::display(scope.clone(), last.sequence),
         )))
     }
 }

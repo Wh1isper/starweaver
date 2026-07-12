@@ -1,0 +1,8 @@
+{
+  "schema": "starweaver.context.resumable_state",
+  "version": 1,
+  "payload": {
+    "agent_id": "main",
+    "started_at": "2026-07-11T00:00:00Z"
+  }
+}

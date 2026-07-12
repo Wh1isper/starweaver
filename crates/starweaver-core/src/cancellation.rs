@@ -70,7 +70,7 @@ impl Default for CancellationToken {
 
 impl PartialEq for CancellationToken {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner) || self.is_cancelled() == other.is_cancelled()
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 }
 
@@ -81,6 +81,32 @@ mod tests {
     use std::time::Duration;
 
     use super::CancellationToken;
+
+    #[test]
+    fn cancellation_token_equality_uses_cancellation_domain_identity() {
+        let token = CancellationToken::new();
+        let clone = token.clone();
+        let independent = CancellationToken::new();
+
+        assert_eq!(token, clone);
+        assert_ne!(token, independent);
+        assert_eq!(token.is_cancelled(), independent.is_cancelled());
+    }
+
+    #[test]
+    fn cancellation_state_changes_do_not_change_token_identity() {
+        let token = CancellationToken::new();
+        let clone = token.clone();
+        let independent = CancellationToken::new();
+
+        token.cancel();
+        assert_eq!(token, clone);
+        assert_ne!(token, independent);
+
+        independent.cancel();
+        assert_eq!(token.is_cancelled(), independent.is_cancelled());
+        assert_ne!(token, independent);
+    }
 
     #[tokio::test]
     async fn cancellation_token_notifies_waiters() {

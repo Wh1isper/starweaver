@@ -1,18 +1,24 @@
 # Agent SDK
 
-`starweaver-agent` is the application-facing SDK crate. It re-exports the stable pieces most
-applications need while keeping lower-level crates available for advanced integrations.
+`starweaver-agent` is the application-facing SDK crate. New applications should import common
+contracts from `starweaver_agent::prelude`; lower-level protocols live under explicit
+`starweaver_agent::advanced::{context, model, runtime, session, stream, tools}` namespaces. Root
+re-exports remain as a 0.x compatibility facade and are not the boundary for new stable API growth.
+
+```rust
+use starweaver_agent::prelude::*;
+```
 
 ## Main types
 
-| Type                  | Purpose                                                                                    |
-| --------------------- | ------------------------------------------------------------------------------------------ |
-| `AgentBuilder`        | Configure model, instructions, tools, output, policy, capabilities, and subagents.         |
-| `AgentApp`            | Application wrapper for sessions, subagent registry, and app-level helpers.                |
-| `AgentSession`        | Multi-turn object that owns `AgentContext` next to a runtime agent.                        |
-| `AgentContext`        | Run/session evidence: ids, history, dependencies, notes, state, usage, events, and config. |
-| `AgentRuntimeBuilder` | Durable runtime builder for session stores, stream archives, and environment restore.      |
-| `SubagentRegistry`    | Application-owned delegation registry for named child agents.                              |
+| Type                  | Purpose                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| `AgentBuilder`        | Configure model, instructions, tools, output, policy, capabilities, and subagents.    |
+| `AgentApp`            | Application wrapper for sessions, subagent registry, and app-level helpers.           |
+| `AgentSession`        | Multi-turn object that owns `AgentContext` next to a runtime agent.                   |
+| `AgentContext`        | Run/session evidence with explicit `runtime` and `tools` state components.            |
+| `AgentRuntimeBuilder` | Durable runtime builder for session stores, stream archives, and environment restore. |
+| `SubagentRegistry`    | Application-owned delegation registry for named child agents.                         |
 
 ## SDK layers
 

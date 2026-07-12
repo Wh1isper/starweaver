@@ -4,9 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_context::{
-    AgentContext, AgentContextHandle, BusMessage, ResumableState, SecurityConfig, ToolConfig,
-};
+use starweaver_context::{AgentContext, BusMessage, ResumableState, SecurityConfig, ToolConfig};
 use starweaver_core::{Metadata, SessionId, TraceContext};
 use starweaver_environment::{DynEnvironmentProvider, EnvironmentError, EnvironmentState};
 use starweaver_model::{ModelRequestParameters, ModelSettings, ToolCallPart, ToolReturnPart};
@@ -28,7 +26,8 @@ use crate::streaming::{
 use crate::{EnvironmentHandle, attach_environment};
 use starweaver_runtime::{
     Agent as RuntimeAgent, AgentError, AgentInput, AgentIterResult, AgentResult, AgentRunState,
-    AgentStreamRecord, AgentStreamResult, OutputPolicy, RunStatus,
+    AgentStreamRecord, AgentStreamResult, OutputPolicy, RunStatus, ToolDependencyAssembly,
+    assemble_tool_dependencies_for_name,
 };
 
 /// Context event emitted when HITL decisions cannot be applied to a waiting run.
@@ -601,9 +600,52 @@ impl AgentSession {
             .map(|tool_return| tool_return.tool_call_id.clone())
             .collect::<BTreeSet<_>>();
         let tool_calls = pending_tool_calls_by_id(state);
-        let tools = self.agent.tools();
-        let mut results = AgentHitlResults::new();
+        let needs_tool_preparation = interactions
+            .iter()
+            .any(|interaction| interaction.approved && interaction.user_input.is_some());
+        let tools = if needs_tool_preparation {
+            match self
+                .agent
+                .prepare_tools_for_context(&mut self.context)
+                .await
+            {
+                Ok(tools) => Some(tools),
+                Err(error) => {
+                    self.agent
+                        .close_toolsets_for_context(&mut self.context)
+                        .await;
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
+        let processing_result = self
+            .preprocess_hitl_interactions_with_tools(
+                state,
+                interactions,
+                &approval_ids,
+                &tool_calls,
+                tools.as_ref(),
+            )
+            .await;
+        if needs_tool_preparation {
+            self.agent
+                .close_toolsets_for_context(&mut self.context)
+                .await;
+        }
+        processing_result
+    }
 
+    async fn preprocess_hitl_interactions_with_tools(
+        &mut self,
+        state: &AgentRunState,
+        interactions: Vec<AgentHitlUserInteraction>,
+        approval_ids: &BTreeSet<String>,
+        tool_calls: &BTreeMap<String, ToolCallPart>,
+        tools: Option<&ToolRegistry>,
+    ) -> Result<AgentHitlResults, AgentHitlError> {
+        let mut results = AgentHitlResults::new();
         for interaction in interactions {
             let canonical_id = self.canonical_approval_id(state, &interaction.tool_call_id);
             if !approval_ids.contains(&canonical_id) {
@@ -615,8 +657,13 @@ impl AgentSession {
                     let call = tool_calls
                         .get(&canonical_id)
                         .ok_or_else(|| AgentHitlError::MissingToolCall(canonical_id.clone()))?;
+                    let tools = tools.ok_or_else(|| {
+                        AgentHitlError::Agent(AgentError::Capability(
+                            "approved user input requires a prepared tool registry".to_string(),
+                        ))
+                    })?;
                     match self
-                        .preprocess_approved_hitl_user_input(state, &tools, call, user_input)
+                        .preprocess_approved_hitl_user_input(state, tools, call, user_input)
                         .await
                     {
                         Ok(preprocessed) => {
@@ -658,12 +705,25 @@ impl AgentSession {
             };
             results.try_insert_approval(canonical_id, decision)?;
         }
-
         Ok(results)
     }
 
     pub(crate) fn record_result(&mut self, result: &AgentResult) {
         self.last_run_state = Some(result.state.clone());
+    }
+
+    pub(crate) fn pending_hitl_tool_returns(&self) -> Vec<ToolReturnPart> {
+        if !self.context.pending_tool_returns.is_empty() {
+            return self.context.pending_tool_returns.clone();
+        }
+        self.last_run_state.as_ref().map_or_else(Vec::new, |state| {
+            state
+                .pending_approval_tool_returns
+                .iter()
+                .chain(state.deferred_tool_returns.iter())
+                .cloned()
+                .collect()
+        })
     }
 
     /// Export curated portable session state for later restoration.
@@ -761,6 +821,84 @@ impl AgentSession {
             .clone()
             .ok_or(AgentHitlError::NoWaitingRun)?;
         self.inject_hitl_results_for_state(&state, results).await
+    }
+
+    /// Validate HITL decisions without invoking preprocessing hooks or executing tools.
+    ///
+    /// This is the durable preflight boundary used before a resume claim is marked started.
+    pub(crate) fn validate_hitl_results_for_state(
+        &self,
+        state: &AgentRunState,
+        results: &AgentHitlResults,
+    ) -> Result<(), AgentHitlError> {
+        if state.status != RunStatus::Waiting {
+            return Err(AgentHitlError::NotWaiting {
+                run_id: state.run_id.as_str().to_string(),
+                status: state.status,
+            });
+        }
+        if state.pending_approval_tool_returns.is_empty() && state.deferred_tool_returns.is_empty()
+        {
+            return Err(AgentHitlError::NoPendingHitl);
+        }
+        let approvals = self.canonical_approval_decisions(state, results.approvals.clone())?;
+        let deferred_results =
+            self.collect_deferred_results(state, results.deferred_results.clone())?;
+        let approval_ids = state
+            .pending_approval_tool_returns
+            .iter()
+            .map(|tool_return| tool_return.tool_call_id.clone())
+            .collect::<BTreeSet<_>>();
+        let deferred_ids = self.pending_deferred_ids(state)?;
+        if let Some(unknown) = approvals
+            .keys()
+            .find(|approval_id| !approval_ids.contains(*approval_id))
+        {
+            return Err(AgentHitlError::UnknownApproval(unknown.clone()));
+        }
+        if let Some(unknown) = deferred_results
+            .keys()
+            .find(|deferred_id| !deferred_ids.contains_key(*deferred_id))
+        {
+            return Err(AgentHitlError::UnknownDeferred(unknown.clone()));
+        }
+        let missing_approvals = approval_ids
+            .iter()
+            .filter(|id| !approvals.contains_key(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_approvals.is_empty() {
+            return Err(AgentHitlError::MissingDecisions {
+                kind: "approvals",
+                ids: missing_approvals,
+            });
+        }
+        let missing_deferred = deferred_ids
+            .keys()
+            .filter(|id| !deferred_results.contains_key(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_deferred.is_empty() {
+            return Err(AgentHitlError::MissingDecisions {
+                kind: "deferred_tools",
+                ids: missing_deferred,
+            });
+        }
+        let tool_calls = pending_tool_calls_by_id(state);
+        for (approval_id, decision) in &approvals {
+            if matches!(decision, ToolApprovalDecision::Approved { .. })
+                && !tool_calls.contains_key(approval_id)
+            {
+                return Err(AgentHitlError::MissingToolCall(approval_id.clone()));
+            }
+        }
+        for (deferred_id, result) in deferred_results {
+            let pending = deferred_ids
+                .get(&deferred_id)
+                .ok_or_else(|| AgentHitlError::UnknownDeferred(deferred_id.clone()))?;
+            deferred_result_tool_return(pending, result)?;
+        }
+        Ok(())
     }
 
     /// Inject HITL decisions for an explicitly supplied waiting run state.
@@ -1059,11 +1197,26 @@ impl AgentSession {
 
     fn canonical_tool_call_id(&self, tool_call_id: &str) -> String {
         self.context
+            .runtime
             .tool_id_wrapper
             .tool_call_maps
             .get(tool_call_id)
             .cloned()
             .unwrap_or_else(|| tool_call_id.to_string())
+    }
+
+    fn tool_dependency_assembly(
+        &self,
+        tools: &ToolRegistry,
+        tool_name: &str,
+    ) -> ToolDependencyAssembly {
+        let requirements = tools.dependency_requirements_for(tool_name);
+        assemble_tool_dependencies_for_name(
+            &self.context,
+            tool_name,
+            &requirements,
+            &self.context.tool_capability_grant(tool_name),
+        )
     }
 
     async fn preprocess_approved_hitl_user_input(
@@ -1076,10 +1229,8 @@ impl AgentSession {
         let Some(tool) = tools.get(&call.name) else {
             return Err(ToolError::NotFound(call.name.clone()));
         };
-        let context_handle = AgentContextHandle::new(self.context.clone());
-        let mut tool_dependencies = self.context.dependencies.clone();
-        tool_dependencies.insert(self.context.clone());
-        tool_dependencies.insert(context_handle.clone());
+        let dependency_assembly = self.tool_dependency_assembly(tools, &call.name);
+        let tool_dependencies = dependency_assembly.dependencies.clone();
         let mut metadata = Metadata::default();
         metadata.insert(
             "tool_call_id".to_string(),
@@ -1100,7 +1251,7 @@ impl AgentSession {
         .with_retry_budget(0, tools.max_retries_for(&call.name));
         tool_context.metadata = metadata;
         let result = tool.preprocess_user_input(tool_context, user_input).await;
-        self.absorb_tool_context_handle(&context_handle);
+        dependency_assembly.apply_to(&mut self.context);
         result
     }
 
@@ -1110,7 +1261,7 @@ impl AgentSession {
         call: &ToolCallPart,
         approval: ToolApprovalState,
     ) -> ToolReturnPart {
-        self.context.current_run_step = state.run_step;
+        self.context.runtime.current_run_step = state.run_step;
         let tools = match self
             .agent
             .prepare_tools_for_context(&mut self.context)
@@ -1130,10 +1281,8 @@ impl AgentSession {
                 );
             }
         };
-        let context_handle = AgentContextHandle::new(self.context.clone());
-        let mut tool_dependencies = self.context.dependencies.clone();
-        tool_dependencies.insert(self.context.clone());
-        tool_dependencies.insert(context_handle.clone());
+        let dependency_assembly = self.tool_dependency_assembly(&tools, &call.name);
+        let tool_dependencies = dependency_assembly.dependencies.clone();
         let tool_context = ToolContext::new(
             state.run_id.clone(),
             state.conversation_id.clone(),
@@ -1146,7 +1295,7 @@ impl AgentSession {
         .with_approval(approval);
         let started_at = std::time::Instant::now();
         let mut tool_return = tools.execute_call(tool_context, call).await;
-        self.absorb_tool_context_handle(&context_handle);
+        dependency_assembly.apply_to(&mut self.context);
         self.agent
             .close_toolsets_for_context(&mut self.context)
             .await;
@@ -1163,28 +1312,6 @@ impl AgentSession {
             serde_json::json!(duration.as_secs_f64()),
         );
         tool_return
-    }
-
-    fn absorb_tool_context_handle(&mut self, handle: &AgentContextHandle) {
-        let snapshot = handle.snapshot();
-        self.context.usage = snapshot.usage;
-        self.context.notes = snapshot.notes;
-        self.context.state = snapshot.state;
-        self.context.task_manager = snapshot.task_manager;
-        self.context.events = snapshot.events;
-        self.context.messages = snapshot.messages;
-        self.context.metadata = snapshot.metadata;
-        self.context.deferred_tool_metadata = snapshot.deferred_tool_metadata;
-        self.context.agent_registry = snapshot.agent_registry;
-        self.context.subagent_history = snapshot.subagent_history;
-        self.context.auto_load_files = snapshot.auto_load_files;
-        self.context.approval_required_tools = snapshot.approval_required_tools;
-        self.context.approval_required_mcp_servers = snapshot.approval_required_mcp_servers;
-        self.context.tool_search_loaded_tools = snapshot.tool_search_loaded_tools;
-        self.context.tool_search_loaded_namespaces = snapshot.tool_search_loaded_namespaces;
-        self.context.context_manage_tool_names = snapshot.context_manage_tool_names;
-        self.context.tool_tags = snapshot.tool_tags;
-        self.context.wrapper_metadata = snapshot.wrapper_metadata;
     }
 
     fn pending_deferred_ids(

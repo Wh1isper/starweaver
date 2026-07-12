@@ -1,8 +1,8 @@
 //! Resume snapshots assembled from durable session state.
 
 use serde::{Deserialize, Serialize};
-use starweaver_context::ResumableState;
-use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
+use starweaver_context::{AgentCheckpoint, ResumableState};
+use starweaver_stream::AgentStreamRecord;
 
 use crate::{
     approval::{ApprovalRecord, DeferredToolRecord},

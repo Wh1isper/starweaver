@@ -142,6 +142,11 @@ pub struct ApprovalRecord {
     pub metadata: Metadata,
 }
 
+impl starweaver_core::VersionedRecord for ApprovalRecord {
+    const SCHEMA: &'static str = "starweaver.session.approval_record";
+    const ALLOW_BARE_V0: bool = true;
+}
+
 impl ApprovalRecord {
     /// Build a pending approval record.
     #[must_use]
@@ -339,6 +344,11 @@ pub struct DeferredToolRecord {
     /// Deferred metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
+}
+
+impl starweaver_core::VersionedRecord for DeferredToolRecord {
+    const SCHEMA: &'static str = "starweaver.session.deferred_tool_record";
+    const ALLOW_BARE_V0: bool = true;
 }
 
 impl DeferredToolRecord {

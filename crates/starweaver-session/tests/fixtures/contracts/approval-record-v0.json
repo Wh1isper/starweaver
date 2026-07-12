@@ -1,0 +1,9 @@
+{
+  "approval_id": "approval-fixture",
+  "session_id": "session-fixture",
+  "run_id": "run-fixture",
+  "action_id": "tool-call-fixture",
+  "action_name": "fixture_tool",
+  "created_at": "2026-07-11T00:00:00Z",
+  "updated_at": "2026-07-11T00:00:00Z"
+}

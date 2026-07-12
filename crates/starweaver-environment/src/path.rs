@@ -291,7 +291,7 @@ fn canonicalize_existing_path_prefix(path: &Path) -> PathBuf {
     original
 }
 
-pub fn normalize_absolute_request_path(path: &Path) -> EnvironmentResult<PathBuf> {
+pub fn absolute_request_path(path: &Path) -> EnvironmentResult<PathBuf> {
     let normalized_path = normalize_absolute_request_path_input(path);
     if !normalized_path.is_absolute()
         || normalized_path
@@ -300,7 +300,11 @@ pub fn normalize_absolute_request_path(path: &Path) -> EnvironmentResult<PathBuf
     {
         return Err(EnvironmentError::InvalidRequest(path.display().to_string()));
     }
-    Ok(normalize_local_config_path(normalized_path))
+    Ok(normalized_path)
+}
+
+pub fn normalize_absolute_request_path(path: &Path) -> EnvironmentResult<PathBuf> {
+    Ok(normalize_local_config_path(absolute_request_path(path)?))
 }
 
 pub fn is_absolute_request_path(path: &Path) -> bool {

@@ -16,23 +16,26 @@ is still young. Treat them as refactor candidates, not as product polish.
 
 ## Stable Top-Level Imports
 
-The names below are the stable top-level imports for application code. This
-index is checked against `spec/sdk/python/12-api-compatibility-checklist.md` and
-`starweaver.__all__`, so docs, tests, and package exports move together.
+The compact set below is the stable top-level surface for application code. The broader
+compatibility facade remains importable but is classified as provisional. Use
+`starweaver.api_stability(name)`, `starweaver.STABLE_API`, and
+`starweaver.PROVISIONAL_API` to inspect the tier. `make py-api-check` compares every top-level
+export and tier with a checked snapshot.
 
 <!-- stable-public-api:start -->
 
-| Area                                 | Stable imports                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agent_session_runtime`              | `create_agent`, `create_agent_runtime`, `Agent`, `AgentRuntime`, `AgentSession`, `AgentRun`, `AgentStream`, `RunResult`, `StreamRunResult`, `RunStatusSnapshot`, `StreamEvent`, `SessionArchive`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `active_control_message_hitl`        | `BusMessage`, `MessageBus`, `MessageDelivery`, `ControlReceipt`, `HitlSnapshot`, `PendingApproval`, `PendingDeferred`, `ApprovalDecision`, `DeferredResult`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `tools_toolsets_mcp`                 | `tool`, `Tool`, `BaseTool`, `ToolContext`, `ToolConfig`, `ToolResult`, `Toolset`, `ToolsetContext`, `ToolsetPreparation`, `AbstractToolset`, `PythonDynamicToolset`, `FunctionToolset`, `ToolsetFactory`, `toolset_factory`, `ToolLibrary`, `ToolSearchToolset`, `ToolProxyToolset`, `ToolsetIdentity`, `ToolsetIdIssue`, `ToolsetIdValidation`, `validate_toolset_ids`, `validate_toolsets_for_durability`, `ToolsetLifecyclePolicy`, `ToolsetLifecycleReport`, `ToolsetLifecycleState`, `core_toolsets`, `filesystem_toolset`, `shell_toolset`, `environment_toolsets`, `host_io_toolset`, `task_toolset`, `context_toolset`, `McpTransport`, `McpToolset`, `McpToolSpec`, `McpResourceSpec`, `McpPromptSpec`, `McpSamplingSpec`, `McpSubscriptionSpec` |
-| `models_output_runtime_composition`  | `ProviderModel`, `ProviderAuth`, `ModelSettings`, `RequestParams`, `RuntimeConfig`, `SecurityConfig`, `ShellReviewConfig`, `CapabilityBundle`, `PythonCapability`, `OutputSchema`, `OutputPolicy`, `OutputContext`, `OutputFunction`, `OutputValidator`, `OutputValue`, `output_validator`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `environment_resources_skills_media` | `Environment`, `EnvironmentLifecycleSnapshot`, `EnvironmentProvider`, `EnvdEnvironment`, `DockerEnvironmentProvider`, `PythonEnvironmentProvider`, `LocalEnvironment`, `VirtualEnvironment`, `FileOperator`, `Shell`, `ShellProcess`, `WorkspaceBinding`, `VirtualMount`, `VirtualPath`, `BaseResource`, `ResumableResource`, `InstructableResource`, `ResourceRef`, `ResourceRegistry`, `ResourceRegistryState`, `RESOURCE_REF_KIND_KEY`, `SkillRegistry`, `SkillPackage`, `SkillSourceScope`, `MediaUploader`, `MediaUploadRequest`                                                                                                                                                                                                                     |
-| `storage_stream_observability`       | `SessionStore`, `InMemorySessionStore`, `JsonSessionStore`, `SqliteSessionStore`, `SqliteReplayEventLog`, `SqliteStreamArchive`, `InputPart`, `SessionStatus`, `RunStatus`, `ExecutionStatus`, `SessionRecord`, `RunRecord`, `StreamRecord`, `CheckpointRef`, `ApprovalRecord`, `DeferredToolRecord`, `SessionResumeSnapshot`, `StreamAdapter`, `Usage`, `UsageAgentTotal`, `UsageSnapshot`, `UsageSnapshotEntry`, `PricingEstimate`, `TraceMetadata`                                                                                                                                                                                                                                                                                                     |
-| `subagents_testing_errors_version`   | `Subagent`, `TestModel`, `FunctionModel`, `StarweaverError`, `AgentError`, `ToolError`, `ModelError`, `StateError`, `StreamError`, `OutputError`, `InvalidArguments`, `Feedback`, `UserError`, `ApprovalRequired`, `CallDeferred`, `Cancelled`, `Timeout`, `ModelRetry`, `OutputRetry`, `OutputValidationFailed`, `__version__`, `version`                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Area                    | Stable imports                                                                                                          |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `agent_runtime`         | `create_agent`, `create_agent_runtime`, `Agent`, `AgentRuntime`, `AgentSession`, `AgentRun`, `AgentStream`, `RunResult` |
+| `models_output`         | `FunctionModel`, `TestModel`, `ModelSettings`, `OutputSchema`, `OutputValue`, `output_validator`                        |
+| `tools`                 | `tool`, `Tool`, `ToolContext`, `ToolResult`                                                                             |
+| `stream_errors_version` | `StreamAdapter`, `StarweaverError`, `AgentError`, `ToolError`, `__version__`, `version`                                 |
+| `api_stability`         | `API_STABILITY`, `PROVISIONAL_API`, `STABLE_API`, `api_stability`                                                       |
 
 <!-- stable-public-api:end -->
+
+All other names in `starweaver.__all__` are provisional compatibility exports. Prefer their
+owning modules for advanced use, and review release notes before upgrading across minor versions.
 
 ## Current Facades
 
@@ -69,8 +72,9 @@ is intentionally frozen for Python.
   mutation hooks need typed Python contracts before becoming public API.
 - `MediaUploader` adapts a callback into the native filter, but the host still
   owns resource lifecycle, storage, and access control.
-- `StreamAdapter` projects collected or replayed records only. It is not a
-  stream owner and cannot interrupt, steer, resume, or continue a run.
+- `StreamAdapter` projects canonical records through the Rust
+  `DefaultDisplayMessageProjector`; its Python fallback is limited to unknown extension records.
+  It is not a stream owner and cannot interrupt, steer, resume, or continue a run.
 
 ## UX Rules For New Python APIs
 

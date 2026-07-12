@@ -9,15 +9,15 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_agent::{
-    AgentBuilder, AgentCapability, AgentContext, AgentRunState, AgentSession, CapabilityOrdering,
-    CapabilityResult, CapabilitySpec, DEFAULT_FILTER_ORDER, DynToolset, FunctionDynamicInstruction,
-    FunctionModel, FunctionModelInfo, FunctionOutputFunction, FunctionOutputValidator,
-    FunctionTool, MediaUploadRequest, MediaUploader, ModelCapability, ModelConfig,
-    OutputFunctionDefinition, OutputSchema, OutputValue, PerThousandRatio, StaticCapabilityBundle,
-    StaticToolset, TOOLSET_CLOSED_EVENT_KIND, TOOLSET_INITIALIZED_EVENT_KIND, TestModel,
-    ToolContext, ToolExecutionHook, ToolInstruction, ToolRegistry, ToolResult, Toolset,
-    ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetPreparation, Usage, UsageLimits,
-    attach_environment, context_tools,
+    AgentBuilder, AgentCapability, AgentContext, AgentRunState, AgentSession, CapabilityError,
+    CapabilityOrdering, CapabilityResult, CapabilitySpec, DEFAULT_FILTER_ORDER, DynToolset,
+    FunctionDynamicInstruction, FunctionModel, FunctionModelInfo, FunctionOutputFunction,
+    FunctionOutputValidator, FunctionTool, MediaUploadRequest, MediaUploader, ModelCapability,
+    ModelConfig, OutputFunctionDefinition, OutputSchema, OutputValue, PerThousandRatio,
+    StaticCapabilityBundle, StaticToolset, TOOLSET_CLOSED_EVENT_KIND,
+    TOOLSET_INITIALIZED_EVENT_KIND, TestModel, ToolContext, ToolExecutionHook, ToolInstruction,
+    ToolRegistry, ToolResult, Toolset, ToolsetLifecycleError, ToolsetLifecyclePolicy,
+    ToolsetPreparation, Usage, UsageLimits, attach_environment, context_tools,
 };
 use starweaver_environment::{
     EnvironmentPolicy, FilePolicy, ShellPolicy, VirtualEnvironmentProvider,
@@ -36,6 +36,7 @@ struct CaptureModel {
 }
 
 struct CustomFilterCapability;
+struct FailingRunCompleteCapability;
 
 #[derive(Clone)]
 struct MessageCaptureModel {
@@ -234,6 +235,19 @@ impl AgentCapability for InlineImageCapability {
             metadata: serde_json::Map::new(),
         });
         Ok(messages)
+    }
+}
+
+#[async_trait]
+impl AgentCapability for FailingRunCompleteCapability {
+    fn spec(&self) -> CapabilitySpec {
+        CapabilitySpec::new("test.failing_run_complete")
+    }
+
+    async fn on_run_complete(&self, _state: &mut AgentRunState) -> CapabilityResult<()> {
+        Err(CapabilityError::Failed(
+            "run-complete hook failed".to_string(),
+        ))
     }
 }
 
@@ -1154,6 +1168,8 @@ async fn builder_closes_lifecycle_toolsets_before_run_exit() {
         .expect("toolset close event");
     assert_eq!(closed_event.payload["name"], "run_lifecycle_tools");
     assert_eq!(closed_event.payload["state"], "closed");
+    assert!(!context.runtime.lifecycle.entered);
+    assert!(context.ended_at.is_some());
 }
 
 #[tokio::test]
@@ -1196,6 +1212,41 @@ async fn builder_closes_lifecycle_toolsets_after_model_failure() {
             .iter()
             .any(|event| event.kind == "run_failed")
     );
+    assert!(!context.runtime.lifecycle.entered);
+    assert!(context.ended_at.is_some());
+}
+
+#[tokio::test]
+async fn builder_fallback_cleanup_closes_toolsets_after_run_complete_hook_failure() {
+    let lifecycle_calls = Arc::new(Mutex::new(Vec::new()));
+    let toolset: DynToolset = Arc::new(RunLifecycleToolset {
+        calls: lifecycle_calls.clone(),
+    });
+    let mut context = AgentContext::default();
+
+    let result = AgentBuilder::new(Arc::new(TestModel::with_text("done")))
+        .toolset(&toolset)
+        .capability(Arc::new(FailingRunCompleteCapability))
+        .build()
+        .run_with_context("hello", &mut context)
+        .await;
+
+    assert!(result.is_err());
+    assert_eq!(
+        *lifecycle_calls.lock().unwrap(),
+        vec![
+            "enter".to_string(),
+            "prepare".to_string(),
+            "exit".to_string()
+        ]
+    );
+    assert!(!context.runtime.lifecycle.entered);
+    assert!(context.ended_at.is_some());
+    assert!(context.events.events().iter().any(|event| {
+        event.kind == "run_failed"
+            && event.payload["error_kind"] == "capability_error"
+            && event.payload["message"] == "capability error: run-complete hook failed"
+    }));
 }
 
 #[test]

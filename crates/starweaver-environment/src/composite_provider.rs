@@ -11,7 +11,7 @@ use crate::{
     EnvironmentLifecycleCapabilities, EnvironmentLifecycleSnapshot, EnvironmentLifecycleState,
     EnvironmentProvider, EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions,
     FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FileStat,
-    ProcessShellProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
+    ProcessShellProvider, ProgramCommand, ShellCommand, ShellOutput, ShellProcessSnapshot,
     ShellReviewEnvironmentContext, is_provider_visible_absolute_path,
     path_match_candidates as default_path_match_candidates,
     provider_visible_path_allowed_by_context, push_unique_candidate,
@@ -610,6 +610,13 @@ impl EnvironmentProvider for CompositeEnvironmentProvider {
         route.provider.run_shell(child_command).await
     }
 
+    async fn run_program(&self, command: ProgramCommand) -> EnvironmentResult<ShellOutput> {
+        let route = self.route_shell(command.cwd.as_deref())?;
+        ensure_write(&route, "run program")?;
+        let child_command = child_program_command(command, &route);
+        route.provider.run_program(child_command).await
+    }
+
     async fn render_environment_context(&self) -> EnvironmentResult<Option<String>> {
         let mount_summary = render_mount_summary(&self.mounts);
         let default_context = self
@@ -781,6 +788,40 @@ impl ProcessShellProvider for CompositeEnvironmentProvider {
         Ok(snapshot)
     }
 
+    async fn start_program(
+        &self,
+        command: ProgramCommand,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        let route = self.route_shell(command.cwd.as_deref())?;
+        ensure_write(&route, "start program")?;
+        let process_provider =
+            route
+                .provider
+                .clone()
+                .process_shell_provider()
+                .ok_or_else(|| {
+                    EnvironmentError::InvalidRequest(format!(
+                        "environment mount does not support background processes: {}",
+                        route.id
+                    ))
+                })?;
+        let child_command = child_program_command(command, &route);
+        let snapshot = process_provider.start_program(child_command).await?;
+        let child_process_id = snapshot.process_id.clone();
+        let snapshot = rebase_process_snapshot(&route, snapshot);
+        self.process_routes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+            .insert(
+                snapshot.process_id.clone(),
+                ProcessRoute {
+                    mount_id: route.id,
+                    child_process_id,
+                },
+            );
+        Ok(snapshot)
+    }
+
     async fn wait_process(
         &self,
         process_id: &str,
@@ -911,6 +952,13 @@ fn route_from_mount(mount: &EnvironmentMount) -> RoutedProvider {
 }
 
 fn child_shell_command(mut command: ShellCommand, route: &RoutedProvider) -> ShellCommand {
+    if command.cwd.is_some() {
+        command.cwd = Some(route.child_path.clone());
+    }
+    command
+}
+
+fn child_program_command(mut command: ProgramCommand, route: &RoutedProvider) -> ProgramCommand {
     if command.cwd.is_some() {
         command.cwd = Some(route.child_path.clone());
     }

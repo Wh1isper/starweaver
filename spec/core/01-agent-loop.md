@@ -50,7 +50,31 @@ The runtime assembles each model request in this order:
 8. Hand canonical messages, settings, request parameters, and `ModelRequestContext` to `starweaver-model` for profile-driven preparation and message normalization.
 9. Emit pre-request events, prepared request evidence, and checkpoint records.
 
+Canonical request assembly produces a typed phase result. Its transition is exhaustive:
+
+- `CallModel` continues into provider-facing message preparation and model execution.
+- `ClassifyResponse` carries a synthetic response supplied by a capability and bypasses provider preparation and the model call.
+
+Both transitions commit the canonical request, publish the model-request stream boundary, clear consumed tool returns, and pass the same before-model checkpoint before their paths diverge. A skip transition short-circuits later before-model hooks.
+
+Model-call preparation has an explicit ownership boundary before inference. `CallModelPreparation` performs request-limit enforcement, canonical history processing, tool-ID normalization, static/prepared instruction attachment, metadata filling, and request-parameter construction, then transitions exhaustively to `ApplySteering { request_index }` or `PrepareProvider`. The caller applies steering and flushes its sideband events before canonical history commit. `PreparedProviderRequest` then owns the transient provider-only messages, effective settings, and request parameters; provider rewrites are validated but never copied back into canonical history.
+
+Provider transport progression is a private typed state machine in `agent/run_loop/provider_invocation.rs`. `ProviderInvocation` owns the complete prepared provider request, `ModelRequestContext`, incremental/final mode, active event stream, and one resume budget shared by request-start failures, midstream failures, and clean closes without a final result. It yields one `ProviderInvocationStep` at a time: stream event, resume, attempt end, completion, model error, or exhausted missing-final failure. The run-loop caller still owns inference spans, request/stream/response trace events, raw stream publication and observers, diagnostic projection, tool-ID normalization, semantic recovery, terminal failure, and canonical response commit, so extraction does not buffer or reorder observable events. Durable and client-visible resume evidence uses `ModelError::public_message`; raw provider bodies and free-form transport diagnostics are not published.
+
+Initial-request identity is tracked independently from `run_step`. A recoverable model error therefore re-enters request preparation at the same successful-response step while appending the built-in resume prompt instead of repeating the original user input. In contrast, provider stream resume retries the same complete prepared provider input and request context without publishing a second model request, checkpoint, or inference span. Cancellation is never classified as provider resume.
+
+Response classification is a third typed phase boundary. The caller first normalizes and publishes the raw response, whether provider- or capability-supplied, accounts usage, commits the model-response checkpoint, and enforces response-side usage limits. The phase then runs ordered after-model hooks, commits the mutated canonical response to state and history, and transitions exhaustively to `PrepareTools { tool_calls }` or `ValidateOutput`. Raw response stream evidence and usage therefore continue to describe the pre-hook response, while subsequent execution uses the canonical hook-mutated response.
+
 ## Tool Boundary
+
+Tool-batch preparation is a fourth typed phase boundary and is distinct from the request-side prepare-tools hooks that filter model-visible definitions. It evaluates output-function calls, applies the end strategy, validates the executable registry and projected tool-call usage, records the pending batch, and transitions exhaustively to:
+
+- `ExecuteTools`, carrying ordinary calls and any final output held until exhaustive tool execution finishes;
+- `PrepareRequestForOutputRetry`, carrying the next retry prompt and retry count;
+- `PrepareRequestForSteering`, carrying the steering guard prompt;
+- `Finalize`, carrying a completed output-function result.
+
+The caller retains retry/steering stream publication, retry-hook dispatch, span status, terminal commit, and every tool-call checkpoint and stream event. A projected usage failure therefore occurs after the model-response checkpoint but before the first tool-call boundary.
 
 ```mermaid
 sequenceDiagram
@@ -172,7 +196,7 @@ A checkpoint includes:
 
 ## Streaming Checkpoints
 
-A streaming run has two durable cursors: canonical message cursor and stream cursor. The runtime emits ordered `AgentStreamRecord` values for run start, model request, model deltas, tool calls, tool returns, checkpoints, suspensions, retries, and completion. A service runtime persists stream records incrementally and stores the latest persisted sequence in checkpoint resume evidence.
+A streaming run has two durable cursors: canonical message cursor and stream cursor. `starweaver-stream` owns the typed `AgentStreamEvent` and `AgentStreamRecord` protocol, while the runtime emits those records in order for run start, model request, model deltas, tool calls, tool returns, checkpoints, suspensions, retries, and completion. A service runtime persists stream records incrementally and stores the latest persisted sequence in checkpoint resume evidence.
 
 Resume uses this lifecycle:
 

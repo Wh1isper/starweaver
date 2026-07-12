@@ -52,10 +52,11 @@ The CLI and future service adapters share session storage, stream replay, displa
 
 Current landed durable foundations:
 
-- `starweaver-session` records and `SessionStore` traits
-- `starweaver-stream` display messages, replay event log contracts, transports, compaction, UI adapters, and stream archive contracts
+- `starweaver-context` checkpointable run state, versioned checkpoint records, and executor callback contracts
+- `starweaver-session` records, `SessionStore` traits, and the session-store executor adapter
+- `starweaver-stream` typed raw records, display messages, replay event log contracts, transports, compaction, UI adapters, and stream archive contracts
 - `starweaver-storage` SQLite migrations, `SqliteSessionStore`, `SqliteReplayEventLog`, `SqliteStreamArchive`, and migration status reporting
-- `starweaver-runtime` executor checkpoints and stream records
+- `starweaver-runtime` checkpoint and raw stream emission, direct executor behavior, compatibility re-exports, and collection-based `AgentStreamResult`
 - `starweaver-agent` app/session helpers and SDK facade
 - `starweaver-cli` local `SessionStore` and `StreamArchive` adapters over CLI persistence while product storage converges on the shared storage crate
 
@@ -86,7 +87,7 @@ Required operations:
 - get compact run and session trace projections
 - compact or archive session evidence
 
-The store owns durable session state. The core runtime owns deterministic state transitions, checkpoint emission, and runtime stream records; those runtime checkpoint and stream types are the upstream durable evidence consumed by session stores, stream archives, replay logs, and product hosts. Starweaver does not introduce a separate runtime-contract/evidence layer for these records.
+The store owns durable session state. `starweaver-context` owns checkpointable run state, versioned checkpoint/resume records, and the executor callback contract. The core runtime owns deterministic state transitions, checkpoint emission, direct executor behavior, raw stream emission, and collection-based `AgentStreamResult`, while preserving compatibility re-exports for the lower-owned checkpoint contracts. `starweaver-stream` owns typed raw events, records, source attribution, and sinks that runtime consumes and compatibility-re-exports. Runtime checkpoint records and stream-owned protocol records are upstream durable evidence consumed by session stores, stream archives, replay logs, and product hosts. Starweaver does not introduce a separate runtime-contract/evidence crate.
 
 ## StreamArchive Contract
 

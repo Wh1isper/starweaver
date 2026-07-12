@@ -1,12 +1,13 @@
 //! Durable session and run records.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::Value;
 use starweaver_context::ResumableState;
 use starweaver_core::{
-    CheckpointId, ConversationId, Metadata, RunId, SessionId, TaskId, TraceContext,
+    CheckpointId, ConversationId, Metadata, RunId, RunLifecycle, SessionId, TaskId, TraceContext,
 };
+use starweaver_stream::{ReplayCursor, ReplayCursorFamily, ReplayScope};
 
 use crate::input::InputPart;
 
@@ -23,24 +24,116 @@ pub enum SessionStatus {
     Failed,
 }
 
-/// Durable run status at the session layer.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunStatus {
-    /// Run is accepted and awaiting execution.
-    #[default]
-    Queued,
-    /// Run is actively executing.
-    Running,
-    /// Run is waiting on approval, deferred work, or resume.
-    Waiting,
-    /// Run completed successfully.
-    Completed,
-    /// Run failed.
-    Failed,
-    /// Run was cancelled or interrupted.
-    Cancelled,
+/// Durable run status composed from admission state and the shared runtime lifecycle.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DurableRunStatus(Option<RunLifecycle>);
+
+/// Backward-compatible public name for the durable run status.
+pub type RunStatus = DurableRunStatus;
+
+#[allow(non_upper_case_globals)]
+impl DurableRunStatus {
+    /// Run is accepted and awaiting runtime admission.
+    pub const Queued: Self = Self(None);
+    /// Runtime initialization is in progress.
+    pub const Starting: Self = Self(Some(RunLifecycle::Starting));
+    /// Runtime is actively executing.
+    pub const Running: Self = Self(Some(RunLifecycle::Running));
+    /// Runtime is waiting for external work.
+    pub const Waiting: Self = Self(Some(RunLifecycle::Waiting));
+    /// Runtime completed successfully.
+    pub const Completed: Self = Self(Some(RunLifecycle::Completed));
+    /// Runtime failed.
+    pub const Failed: Self = Self(Some(RunLifecycle::Failed));
+    /// Runtime was cancelled or interrupted.
+    pub const Cancelled: Self = Self(Some(RunLifecycle::Cancelled));
+
+    /// Return the admitted runtime lifecycle, or `None` while queued.
+    #[must_use]
+    pub const fn lifecycle(self) -> Option<RunLifecycle> {
+        self.0
+    }
+
+    /// Return the stable flat wire name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self.0 {
+            None => "queued",
+            Some(lifecycle) => lifecycle.as_str(),
+        }
+    }
+
+    /// Return whether the run owns the active session slot.
+    #[must_use]
+    pub const fn is_active(self) -> bool {
+        matches!(
+            self.0,
+            None | Some(RunLifecycle::Starting | RunLifecycle::Running | RunLifecycle::Waiting)
+        )
+    }
+
+    /// Return whether the run reached a terminal lifecycle.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        match self.0 {
+            Some(lifecycle) => lifecycle.is_terminal(),
+            None => false,
+        }
+    }
 }
+
+impl From<RunLifecycle> for DurableRunStatus {
+    fn from(value: RunLifecycle) -> Self {
+        Self(Some(value))
+    }
+}
+
+impl TryFrom<DurableRunStatus> for RunLifecycle {
+    type Error = QueuedRunStatus;
+
+    fn try_from(value: DurableRunStatus) -> Result<Self, Self::Error> {
+        value.0.ok_or(QueuedRunStatus)
+    }
+}
+
+impl Serialize for DurableRunStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DurableRunStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match String::deserialize(deserializer)?.as_str() {
+            "queued" => Ok(Self::Queued),
+            "starting" => Ok(Self::Starting),
+            "running" => Ok(Self::Running),
+            "waiting" => Ok(Self::Waiting),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(D::Error::custom(format!("unknown run status: {other}"))),
+        }
+    }
+}
+
+/// A queued durable run has not entered an executable runtime lifecycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueuedRunStatus;
+
+impl std::fmt::Display for QueuedRunStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("queued run has no runtime lifecycle")
+    }
+}
+
+impl std::error::Error for QueuedRunStatus {}
 
 /// Generic execution status for approval, deferred, checkpoint, and archive workflows.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -99,18 +192,11 @@ pub struct CheckpointRef {
     pub metadata: Metadata,
 }
 
-/// Stable reference to a stream replay position.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// Stable durable reference to a family-aware stream replay position.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct StreamCursorRef {
-    /// Cursor family such as `raw_runtime`, `display`, or `replay_event`.
-    pub family: String,
-    /// Stream scope string.
-    pub scope: String,
-    /// Last observed sequence.
-    pub sequence: usize,
-    /// Optional provider cursor string for non-numeric logs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<String>,
+    /// Canonical stream cursor. Family, scope, sequence, and backend position live here once.
+    pub position: ReplayCursor,
     /// Creation time.
     pub created_at: DateTime<Utc>,
     /// Cursor metadata.
@@ -119,16 +205,190 @@ pub struct StreamCursorRef {
 }
 
 impl StreamCursorRef {
-    /// Build a cursor reference.
+    /// Build a durable reference from a canonical cursor.
     #[must_use]
-    pub fn new(family: impl Into<String>, scope: impl Into<String>, sequence: usize) -> Self {
+    pub fn new(position: ReplayCursor) -> Self {
         Self {
-            family: family.into(),
-            scope: scope.into(),
-            sequence,
-            cursor: None,
+            position,
             created_at: Utc::now(),
             metadata: Metadata::default(),
+        }
+    }
+
+    /// Return the cursor family.
+    #[must_use]
+    pub const fn family(&self) -> ReplayCursorFamily {
+        self.position.family
+    }
+
+    /// Return the cursor scope.
+    #[must_use]
+    pub const fn scope(&self) -> &ReplayScope {
+        &self.position.scope
+    }
+
+    /// Return the last observed sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> usize {
+        self.position.sequence
+    }
+
+    /// Return whether two references address the same stream family and scope.
+    #[must_use]
+    pub fn same_stream(&self, other: &Self) -> bool {
+        self.family() == other.family() && self.scope() == other.scope()
+    }
+
+    /// Validate that this cursor belongs to the supplied run scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the cursor addresses another run or a non-run scope.
+    pub fn validate_for_run(&self, run_id: &RunId) -> Result<(), StreamCursorRefError> {
+        let expected = ReplayScope::run(run_id.as_str());
+        if self.scope() != &expected {
+            return Err(StreamCursorRefError::WrongScope {
+                expected: expected.as_str().to_string(),
+                actual: self.scope().as_str().to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Validate that replacing an existing same-stream cursor does not regress.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the proposed sequence is behind the current sequence.
+    pub fn validate_progression(&self, current: &Self) -> Result<(), StreamCursorRefError> {
+        if self.same_stream(current) && self.sequence() < current.sequence() {
+            return Err(StreamCursorRefError::SequenceRegression {
+                family: self.family(),
+                scope: self.scope().as_str().to_string(),
+                current: current.sequence(),
+                proposed: self.sequence(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Invalid durable stream-cursor update.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StreamCursorRefError {
+    /// Cursor scope does not identify the run being updated.
+    WrongScope {
+        /// Expected run scope.
+        expected: String,
+        /// Supplied scope.
+        actual: String,
+    },
+    /// Cursor sequence would move durable replay progress backwards.
+    SequenceRegression {
+        /// Cursor family.
+        family: ReplayCursorFamily,
+        /// Cursor scope.
+        scope: String,
+        /// Current sequence.
+        current: usize,
+        /// Proposed older sequence.
+        proposed: usize,
+    },
+}
+
+impl std::fmt::Display for StreamCursorRefError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongScope { expected, actual } => {
+                write!(
+                    formatter,
+                    "expected cursor scope {expected}, received {actual}"
+                )
+            }
+            Self::SequenceRegression {
+                family,
+                scope,
+                current,
+                proposed,
+            } => write!(
+                formatter,
+                "{} cursor for {scope} regressed from {current} to {proposed}",
+                family.as_str()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StreamCursorRefError {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentStreamCursorRefWire {
+    position: ReplayCursor,
+    created_at: DateTime<Utc>,
+    #[serde(default)]
+    metadata: Metadata,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyStreamCursorRefWire {
+    family: String,
+    scope: String,
+    sequence: usize,
+    #[serde(default)]
+    cursor: Option<String>,
+    created_at: DateTime<Utc>,
+    #[serde(default)]
+    metadata: Metadata,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StreamCursorRefWire {
+    Current(CurrentStreamCursorRefWire),
+    Legacy(LegacyStreamCursorRefWire),
+}
+
+impl<'de> Deserialize<'de> for StreamCursorRef {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match StreamCursorRefWire::deserialize(deserializer)? {
+            StreamCursorRefWire::Current(current) => Ok(Self {
+                position: current.position,
+                created_at: current.created_at,
+                metadata: current.metadata,
+            }),
+            StreamCursorRefWire::Legacy(legacy) => {
+                let LegacyStreamCursorRefWire {
+                    family,
+                    scope,
+                    sequence,
+                    cursor,
+                    created_at,
+                    metadata,
+                } = legacy;
+                let family = match family.as_str() {
+                    "raw_runtime" => ReplayCursorFamily::RawRuntime,
+                    "display" => ReplayCursorFamily::Display,
+                    "replay_event" => ReplayCursorFamily::ReplayEvent,
+                    other => {
+                        return Err(D::Error::custom(format!(
+                            "unknown stream cursor family: {other}"
+                        )));
+                    }
+                };
+                let mut position =
+                    ReplayCursor::for_family(family, ReplayScope::from_string(scope), sequence);
+                position.backend_cursor = cursor;
+                Ok(Self {
+                    position,
+                    created_at,
+                    metadata,
+                })
+            }
         }
     }
 }
@@ -181,6 +441,11 @@ pub struct SessionRecord {
     /// Metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
+}
+
+impl starweaver_core::VersionedRecord for SessionRecord {
+    const SCHEMA: &'static str = "starweaver.session.session_record";
+    const ALLOW_BARE_V0: bool = true;
 }
 
 impl SessionRecord {
@@ -267,6 +532,11 @@ pub struct RunRecord {
     /// Metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
+}
+
+impl starweaver_core::VersionedRecord for RunRecord {
+    const SCHEMA: &'static str = "starweaver.session.run_record";
+    const ALLOW_BARE_V0: bool = true;
 }
 
 impl RunRecord {

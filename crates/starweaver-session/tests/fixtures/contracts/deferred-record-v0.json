@@ -1,0 +1,10 @@
+{
+  "deferred_id": "deferred-fixture",
+  "session_id": "session-fixture",
+  "run_id": "run-fixture",
+  "tool_call_id": "tool-call-fixture",
+  "tool_name": "fixture_tool",
+  "status": "pending",
+  "created_at": "2026-07-11T00:00:00Z",
+  "updated_at": "2026-07-11T00:00:00Z"
+}

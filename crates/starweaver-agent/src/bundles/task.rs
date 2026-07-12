@@ -10,10 +10,12 @@ mod tests;
 
 use std::sync::Arc;
 
-use starweaver_tools::{DynToolset, StaticToolset};
+use starweaver_context::CONTEXT_TASKS_CAPABILITY;
+use starweaver_tools::{DynToolset, StaticToolset, ToolDependencyRequirements};
 
 use super::helpers::{
-    static_sequential_tool_with_metadata, static_tool_with_metadata, tool_metadata,
+    static_sequential_tool_with_metadata, static_tool_with_metadata,
+    tool_metadata_with_dependencies,
 };
 use instructions::task_manager_instructions;
 use operations::{task_create, task_get, task_list, task_update};
@@ -21,6 +23,13 @@ use operations::{task_create, task_get, task_list, task_update};
 /// Create task operation tools.
 #[must_use]
 pub fn task_tools() -> DynToolset {
+    let metadata = tool_metadata_with_dependencies(
+        "task",
+        true,
+        false,
+        &ToolDependencyRequirements::filtered(Vec::<String>::new(), false)
+            .with_context_capabilities([CONTEXT_TASKS_CAPABILITY]),
+    );
     Arc::new(
         StaticToolset::new("task")
             .with_id("task")
@@ -29,25 +38,25 @@ pub fn task_tools() -> DynToolset {
                 static_sequential_tool_with_metadata(
                     "task_create",
                     "Create a new task. Task status defaults to pending.",
-                    tool_metadata("task", true, false),
+                    metadata.clone(),
                     task_create,
                 ),
                 static_tool_with_metadata(
                     "task_get",
                     "Get task details by ID.",
-                    tool_metadata("task", true, false),
+                    metadata.clone(),
                     task_get,
                 ),
                 static_sequential_tool_with_metadata(
                     "task_update",
                     "Update task status, content, or dependencies.",
-                    tool_metadata("task", true, false),
+                    metadata.clone(),
                     task_update,
                 ),
                 static_tool_with_metadata(
                     "task_list",
                     "List all tasks and their status.",
-                    tool_metadata("task", true, false),
+                    metadata,
                     task_list,
                 ),
             ]),

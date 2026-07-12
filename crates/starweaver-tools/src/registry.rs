@@ -568,6 +568,16 @@ impl ToolRegistry {
         }
     }
 
+    /// Return dependency projection requirements for a registered tool.
+    #[must_use]
+    pub fn dependency_requirements_for(&self, name: &str) -> crate::ToolDependencyRequirements {
+        self.tools
+            .get(name)
+            .map_or_else(crate::ToolDependencyRequirements::default, |tool| {
+                crate::tool_dependency_requirements(&tool.metadata())
+            })
+    }
+
     /// Return the effective retry limit for a registered tool.
     #[must_use]
     pub fn max_retries_for(&self, name: &str) -> usize {

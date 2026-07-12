@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use starweaver_context::AgentContext;
 use starweaver_core::{AgentId, TraceContext};
 use starweaver_model::{
-    FinishReason, ModelResponse, ModelResponsePart, ToolCallPart, tool_call_response,
+    FinishReason, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
+    ToolReturnPart, tool_call_response,
 };
 use starweaver_runtime::{
     AdapterTraceRecorder, Agent, AgentCapability, AgentRunState, CapabilityError, CapabilityResult,
@@ -340,6 +341,11 @@ async fn run_start_error_closes_agent_span_and_restores_trace_context() {
         .with_capability(Arc::new(FailingRunStartCapability))
         .with_trace_recorder(recorder.clone());
     let mut context = agent.new_context().with_trace_context(root.clone());
+    context.pending_tool_returns.push(ToolReturnPart::new(
+        "pending-call",
+        "pending-tool",
+        serde_json::json!({"preserve": true}),
+    ));
 
     let error = agent
         .run_with_context("hello", &mut context)
@@ -348,6 +354,18 @@ async fn run_start_error_closes_agent_span_and_restores_trace_context() {
 
     assert!(error.to_string().contains("run start failed"));
     assert_eq!(context.trace_context, root);
+    assert!(!context.runtime.lifecycle.entered);
+    assert!(context.message_history.iter().any(|message| {
+        matches!(
+            message,
+            ModelMessage::Request(request)
+                if request.parts.iter().any(|part| matches!(
+                    part,
+                    ModelRequestPart::ToolReturn(tool_return)
+                        if tool_return.tool_call_id == "pending-call"
+                ))
+        )
+    }));
     let spans = recorder.spans();
     assert!(
         spans

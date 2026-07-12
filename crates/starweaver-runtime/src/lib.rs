@@ -2,6 +2,7 @@
 
 pub mod agent;
 pub mod capability;
+pub mod dependency_assembly;
 pub mod direct;
 pub mod executor;
 pub mod goal;
@@ -23,6 +24,7 @@ pub use capability::{
     CapabilityOrdering, CapabilityResult, CapabilitySpec, RUNTIME_CONTEXT_CAPABILITY_ID,
     RetryEventKind, StaticCapabilityBundle, resolve_capability_order,
 };
+pub use dependency_assembly::{ToolDependencyAssembly, assemble_tool_dependencies_for_name};
 pub use direct::{DirectModelRequest, model_request, model_request_stream, tool_call};
 pub use executor::{
     AgentCheckpoint, AgentExecutionDecision, AgentExecutionNode, AgentExecutor, AgentExecutorError,

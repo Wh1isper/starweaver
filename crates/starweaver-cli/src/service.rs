@@ -9,7 +9,7 @@ use starweaver_core::sdk_name;
 use starweaver_oauth_provider::create_oauth_refresh_supervisor_for_models_with_options;
 use starweaver_runtime::AgentStreamRecord;
 use starweaver_session::{ApprovalStatus, RunRecord, RunStatus};
-use starweaver_stream::{DisplayMessage, RealtimeCompactionBuffer, ReplayScope};
+use starweaver_stream::DisplayMessage;
 
 use crate::{
     CliError, CliResult,
@@ -78,32 +78,6 @@ pub(super) struct ExecutedPromptRun {
     run: RunRecord,
     output_mode: OutputMode,
     execution: crate::runner::CliRunExecution,
-}
-
-impl ExecutedPromptRun {
-    pub(super) fn merge_display_message_inserts(
-        &mut self,
-        mut inserts: Vec<(usize, DisplayMessage)>,
-    ) {
-        if inserts.is_empty() {
-            return;
-        }
-        inserts.sort_by_key(|(index, message)| (*index, message.sequence));
-        let mut messages = self.execution.artifacts.display_messages.clone();
-        for (offset, (index, message)) in inserts.into_iter().enumerate() {
-            let position = index.saturating_add(offset).min(messages.len());
-            messages.insert(position, message);
-        }
-        for (sequence, message) in messages.iter_mut().enumerate() {
-            message.sequence = sequence;
-        }
-        let mut buffer = RealtimeCompactionBuffer::new(ReplayScope::run(self.run.run_id.as_str()));
-        for message in messages.clone() {
-            buffer.push(message);
-        }
-        self.execution.artifacts.display_snapshot = buffer.snapshot();
-        self.execution.artifacts.display_messages = messages;
-    }
 }
 
 const PROJECT_GUIDANCE_TAG: &str = "project-guidance";
@@ -229,9 +203,6 @@ impl CliService {
             }
             CliCommand::Update(command) => Self::update(&command),
             CliCommand::Run(command) => self.run_prompt(&command),
-            CliCommand::Rpc(_) => Err(CliError::Usage(
-                "rpc owns stdin/stdout and must be run through run_from_env".to_string(),
-            )),
             CliCommand::Session { command } => self.session(command),
             CliCommand::Profile { command } => self.profile(command),
             CliCommand::Setup(command) => self.setup(&command),
@@ -850,14 +821,7 @@ fn render_json_lines<T: serde::Serialize>(items: &[T]) -> CliResult<String> {
 }
 
 const fn run_status_name(status: starweaver_session::RunStatus) -> &'static str {
-    match status {
-        starweaver_session::RunStatus::Queued => "queued",
-        starweaver_session::RunStatus::Running => "running",
-        starweaver_session::RunStatus::Waiting => "waiting",
-        starweaver_session::RunStatus::Completed => "completed",
-        starweaver_session::RunStatus::Failed => "failed",
-        starweaver_session::RunStatus::Cancelled => "cancelled",
-    }
+    status.as_str()
 }
 
 fn parse_duration(value: &str) -> CliResult<chrono::Duration> {

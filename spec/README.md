@@ -11,8 +11,9 @@ Core foundation:
 - `core/02-model-provider-replay.md` — provider-neutral model protocol, replay fixtures, transport, settings, profiles, and CI gates
 - `core/03-tools-output-capabilities.md` — tool schema, tool loop, structured output, output functions, validators, hooks, and capability bundles
 - `core/04-context-state-executor.md` — AgentContext, StateStore, events, messages, notes, usage, checkpoints, and executor preparation
-- `core/05-agent-foundation-feature-map.md` — Agent foundation feature coverage map across agents, providers, tools, output, streaming, and testing
+- `core/05-agent-foundation-feature-map.md` — non-normative Agent foundation design-coverage map across agents, providers, tools, output, streaming, and testing
 - `core/06-message-request-abstractions.md` — Starweaver-native message AST, model request envelope, preparation pipeline, streaming parts, and provider boundary
+- `core/07-versioned-protocol-contracts.md` — normative versioned durable envelopes, canonical input/lifecycle/cursor vocabularies, protocol identities, and fixture gates
 - `core/08-boundaries-and-usage.md` — runtime/context/SDK/usage boundaries, usage snapshot pricing contract, and cleanup acceptance gates
 
 SDK layer:
@@ -49,7 +50,9 @@ Readiness review:
 - `alignment/04-tools-toolsets-hitl.md` — tools, toolsets, hooks, dynamic discovery, MCP, approval, and deferred execution
 - `alignment/05-models-output-provider-alignment.md` — model settings, profiles, provider mapping, output modes, usage, and replay gates
 - `alignment/06-subagents-environments-skills-media.md` — subagents, environments, resources, skills, media, tasks, notes, and host adapters
+- `alignment/07-cli-concise-mode-ux.md` — CLI/TUI concise-mode semantic compression and rendering plan
 - `alignment/08-starweaver-claw-sdk-additions.md` — Starweaver Claw layering map and non-blocking Rust/Python SDK additions
+- `alignment/09-architecture-review.md` — cross-workspace architecture, security, durability, API, and improvement review baseline
 
 Claw product specs:
 
@@ -61,12 +64,15 @@ Claw product specs:
 Operations and products:
 
 - `ops/README.md` — operational layer scope and readiness model
+- `ops/00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, and envd
 - `ops/01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `ops/02-shared-execution-components.md` — shared session storage and stream protocol contracts
 - `ops/03-durable-service-runtime.md` — durable sessions, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
 - `ops/04-cli-product.md` — CLI-first product surface, display-message rendering, launcher dispatch, and GitHub install/update flow
 - `ops/05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
 - `ops/06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP transport profiles, typed method/event/error contracts, replay subscriptions, projections, and idempotency
+
+`capabilities.toml` is the single source for current capability implementation status. `capability-status.md` is generated from it and is the normative human-readable status view. Feature maps, roadmaps, and backlogs are non-normative design views and must defer current status to that generated file. Implemented registry entries must name an owning workspace crate, normative spec, implementation paths, and contract-test evidence; `make capability-check` validates the registry, verifies those references, and rejects a stale generated status view.
 
 ## Architecture Shape
 
@@ -127,10 +133,11 @@ flowchart TD
     session --> storage
     stream --> storage
     agent --> cli
-    storage -. future storage convergence .-> cli
+    storage --> cli
     stream --> rpc_core
-    rpc_core --> cli
-    cli --> rpc
+    rpc_core --> rpc
+    agent --> rpc
+    storage --> rpc
     session --> platform
     stream --> platform
     agent --> platform
@@ -153,8 +160,9 @@ flowchart TD
   it resolves host refs into run environment bindings without making envd a
   Starweaver-only protocol.
 - Durable state is split between `starweaver-session`, `starweaver-stream`, and `starweaver-storage`.
-- CLI is the current product surface and stays focused on local/headless execution.
-- `starweaver-rpc-core` owns shared JSON-RPC frame parsing, standard request/error envelopes, replay cursor helpers, and stream payload projection; `starweaver-rpc` is the standalone local host process and calls the shared RPC server API while deeper method-handler extraction continues.
+- CLI/TUI and standalone RPC are independent product surfaces. Neither depends on, hosts, or routes execution through the other; both may independently consume shared storage, stream, environment, and envd abstractions.
+- `starweaver-cli` owns local/headless command and TUI coordination.
+- `starweaver-rpc-core` owns typed JSON-RPC protocol contracts; `starweaver-rpc` owns the standalone server, handlers, authorization, subscriptions, coordination, and transports.
 - Platform adapters graduate from specs after responsibilities, call sites, and validation commands are clear.
 
 ## Current Priorities

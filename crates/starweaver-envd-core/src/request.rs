@@ -3,13 +3,16 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use starweaver_core::Metadata;
+use starweaver_core::{Metadata, ProtocolIdentity};
 
 use crate::{FileReadMode, ProcessSnapshot};
 
 /// Initialize request.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitializeEnvdRequest {
+    /// Protocol identity requested by the caller. Omitted only by legacy clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<ProtocolIdentity>,
     /// Caller name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_name: Option<String>,
@@ -21,10 +24,8 @@ pub struct InitializeEnvdRequest {
 /// Initialize result.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitializeEnvdResult {
-    /// Protocol name.
-    pub protocol: String,
-    /// Protocol version.
-    pub protocol_version: String,
+    /// Negotiated protocol identity.
+    pub protocol: ProtocolIdentity,
     /// Service name.
     pub service_name: String,
     /// Service metadata.

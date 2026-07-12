@@ -1,18 +1,15 @@
 //! Agent run loop entrypoints.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
-use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
+use starweaver_context::{AgentContext, AgentEvent};
 use starweaver_core::{ConversationId, RunId, TraceContext};
 use starweaver_model::{
-    ModelMessage, ModelRequest, ModelRequestContext, ModelRequestPart, ModelResponseStreamEvent,
-    ToolCallPart, ToolReturnPart,
-    transport::{RetryPolicy, should_retry_error},
+    ContentPart, ModelMessage, ModelRequest, ModelRequestContext, ModelRequestParameters,
+    ModelRequestPart, ModelResponse, ModelResponseStreamEvent, ModelSettings, ToolCallPart,
+    ToolReturnPart,
 };
-use starweaver_tools::{ToolContext, ToolRegistry};
+use starweaver_tools::{ToolContext, ToolDependencyProfile, ToolRegistry};
 use starweaver_usage::pricing::known_model_pricing_profile;
 
 const DEFAULT_MODEL_ERROR_RETRIES: usize = 2;
@@ -34,6 +31,9 @@ fn durable_run_id_from_context(context: &AgentContext) -> Option<RunId> {
 }
 
 mod entrypoints;
+mod provider_invocation;
+
+use provider_invocation::{ProviderInvocation, ProviderInvocationMode, ProviderInvocationStep};
 
 use crate::{
     agent::{
@@ -42,10 +42,13 @@ use crate::{
             has_pending_tool_control_flow, is_successful_tool_return, is_tool_retry_return,
             mark_tool_retry_return, record_tool_control_flow, tool_return_control_flow,
         },
-        run_loop_helpers::{agent_error_kind, preserve_pending_tool_returns_for_resume},
+        run_loop_helpers::{
+            agent_error_kind, agent_error_public_message, preserve_pending_tool_returns_for_resume,
+        },
         runtime_helpers::{request_instruction_insert_index, tool_return_media_prompt},
     },
     capability::{CapabilityError, RetryEventKind},
+    dependency_assembly::{ToolDependencyAssembly, assemble_tool_dependencies_for_name},
     executor::{AgentExecutionDecision, AgentExecutionNode},
     retry_recovery::{DEFAULT_MODEL_ERROR_RESUME_PROMPT, recover_retry_message_history},
     run::{AgentRunState, RunStatus},
@@ -117,36 +120,434 @@ impl Drop for ActiveSpan {
     }
 }
 
+struct PrepareRequestInput<'a> {
+    prompt: &'a str,
+    initial_content: &'a [ContentPart],
+    is_initial_request: bool,
+    run_id: &'a RunId,
+    conversation_id: &'a ConversationId,
+}
+
+struct PrepareRequestResult {
+    request: ModelRequest,
+    settings: Option<ModelSettings>,
+    transition: PrepareRequestTransition,
+}
+
+enum PrepareRequestTransition {
+    CallModel,
+    ClassifyResponse { response: Box<ModelResponse> },
+}
+
+struct CallModelPreparation {
+    messages: Vec<ModelMessage>,
+    params: ModelRequestParameters,
+    transition: CallModelPreparationTransition,
+}
+
+enum CallModelPreparationTransition {
+    ApplySteering { request_index: usize },
+    PrepareProvider,
+}
+
+struct PreparedProviderRequest {
+    messages: Vec<ModelMessage>,
+    settings: Option<ModelSettings>,
+    params: ModelRequestParameters,
+}
+
+struct ClassifyResponseResult {
+    response: ModelResponse,
+    transition: ClassifyResponseTransition,
+}
+
+enum ClassifyResponseTransition {
+    PrepareTools { tool_calls: Vec<ToolCallPart> },
+    ValidateOutput,
+}
+
+enum PrepareToolsTransition {
+    ExecuteTools {
+        tool_calls: Vec<ToolCallPart>,
+        final_output_after_tools: Option<(String, Option<serde_json::Value>)>,
+    },
+    PrepareRequestForOutputRetry {
+        prompt: String,
+        retries: usize,
+    },
+    PrepareRequestForSteering {
+        prompt: String,
+    },
+    Finalize {
+        output: String,
+        structured_output: Option<serde_json::Value>,
+    },
+}
+
+enum ExecuteToolsTransition {
+    AwaitExternal,
+    PrepareRequest {
+        prompt: String,
+    },
+    Finalize {
+        output: String,
+        structured_output: Option<serde_json::Value>,
+    },
+}
+
+enum AwaitExternalTransition {
+    Suspend {
+        node: AgentExecutionNode,
+        reason: String,
+    },
+}
+
+enum FinalizeTransition {
+    Complete { output: String },
+}
+
+enum FailOrCancelTransition {
+    Cancelled { reason: String },
+    Failed { error_kind: String, message: String },
+}
+
+enum RunLoopExit {
+    Completed { output: String },
+    Waiting,
+}
+
 struct PreparedToolExecution {
     index: usize,
     call: ToolCallPart,
     tool_context: ToolContext,
-    context_handle: AgentContextHandle,
+    dependency_assembly: ToolDependencyAssembly,
     stream_sink: Option<AgentStreamSink>,
     tool_span: ActiveSpan,
     started_at: std::time::Instant,
 }
 
-#[inline(never)]
-fn shared_context_dependency(context: &AgentContext) -> Arc<AgentContext> {
-    Arc::new(context.clone())
-}
-
-#[inline(never)]
-fn context_handle_snapshot(context: &AgentContext) -> AgentContextHandle {
-    AgentContextHandle::new(context.clone())
-}
-
-#[inline(never)]
-fn replace_context_handle_snapshot(handle: &AgentContextHandle, context: &AgentContext) {
-    handle.replace(context.clone());
-}
-
-fn should_resume_provider_stream(error: &starweaver_model::ModelError) -> bool {
-    should_retry_error(error, &RetryPolicy::default())
-}
-
 impl Agent {
+    async fn prepare_request_phase(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        input: PrepareRequestInput<'_>,
+    ) -> Result<PrepareRequestResult, AgentError> {
+        let dynamic_instruction_parts = self.dynamic_instruction_parts(state).await?;
+        let mut request = self.prepare_request(
+            state,
+            input.prompt,
+            input.initial_content,
+            input.is_initial_request,
+            input.run_id,
+            input.conversation_id,
+        );
+        if !dynamic_instruction_parts.is_empty() {
+            let insert_at = request_instruction_insert_index(&request);
+            request
+                .parts
+                .splice(insert_at..insert_at, dynamic_instruction_parts);
+        }
+        let mut settings = self.effective_settings(context);
+        let transition = self
+            .call_before_model_request(state, context, &mut request, &mut settings)
+            .await?
+            .map_or(PrepareRequestTransition::CallModel, |response| {
+                PrepareRequestTransition::ClassifyResponse {
+                    response: Box::new(response),
+                }
+            });
+        Ok(PrepareRequestResult {
+            request,
+            settings,
+            transition,
+        })
+    }
+
+    async fn prepare_model_call_phase(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        run_tools: &ToolRegistry,
+        run_id: &RunId,
+        conversation_id: &ConversationId,
+    ) -> Result<CallModelPreparation, AgentError> {
+        self.check_before_request(state)?;
+        let mut messages = self.prepare_model_messages(state, context).await?;
+        context.runtime.tool_id_wrapper.wrap_messages(&mut messages);
+        Self::validate_model_request_messages(&messages)?;
+        self.inject_missing_static_instructions(run_id, conversation_id, &mut messages);
+        let params = self
+            .effective_request_params(state, context, run_tools)
+            .await?;
+        messages = Self::attach_prepared_request_instructions(messages, &params);
+        for message in &mut messages {
+            Self::fill_message_metadata(message, run_id, conversation_id);
+        }
+        let transition = if Self::has_pending_steering_messages(context) {
+            messages
+                .iter()
+                .rposition(|message| matches!(message, ModelMessage::Request(_)))
+                .map_or(
+                    CallModelPreparationTransition::PrepareProvider,
+                    |request_index| CallModelPreparationTransition::ApplySteering { request_index },
+                )
+        } else {
+            CallModelPreparationTransition::PrepareProvider
+        };
+        Ok(CallModelPreparation {
+            messages,
+            params,
+            transition,
+        })
+    }
+
+    async fn prepare_provider_request_phase(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        messages: Vec<ModelMessage>,
+        settings: Option<ModelSettings>,
+        params: ModelRequestParameters,
+    ) -> Result<PreparedProviderRequest, AgentError> {
+        let messages = self
+            .prepare_provider_messages(state, context, messages)
+            .await?;
+        Self::validate_model_request_messages(&messages)?;
+        Ok(PreparedProviderRequest {
+            messages,
+            settings,
+            params,
+        })
+    }
+
+    async fn classify_response_phase(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+    ) -> Result<ClassifyResponseResult, AgentError> {
+        let mut response = state
+            .latest_response
+            .clone()
+            .ok_or_else(|| AgentError::Capability("missing latest response".to_string()))?;
+        self.call_after_model_response(state, context, &mut response)
+            .await?;
+        state.replace_latest_response(response.clone());
+        context.message_history.clone_from(&state.message_history);
+        let tool_calls = response.tool_calls();
+        let transition = if tool_calls.is_empty() {
+            ClassifyResponseTransition::ValidateOutput
+        } else {
+            ClassifyResponseTransition::PrepareTools { tool_calls }
+        };
+        Ok(ClassifyResponseResult {
+            response,
+            transition,
+        })
+    }
+
+    async fn prepare_tools_phase(
+        &self,
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        mut tool_calls: Vec<ToolCallPart>,
+        run_tools: &ToolRegistry,
+        output_retries_used: usize,
+    ) -> Result<PrepareToolsTransition, AgentError> {
+        let mut final_output_after_tools = None;
+        match self
+            .try_call_output_function(state, context, &tool_calls)
+            .await
+        {
+            Ok(Some((output, structured_output))) => {
+                let ordinary_tool_calls = tool_calls
+                    .iter()
+                    .filter(|call| {
+                        !self
+                            .output_functions
+                            .iter()
+                            .any(|function| function.definition().name == call.name)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if self.policy.end_strategy != AgentEndStrategy::Early
+                    && !ordinary_tool_calls.is_empty()
+                {
+                    final_output_after_tools = Some((output, structured_output));
+                    tool_calls = ordinary_tool_calls;
+                } else if Self::has_pending_steering_messages(context) {
+                    let Some(prompt) = Self::pending_steering_guard_message(context) else {
+                        unreachable!("pending steering guard message must exist");
+                    };
+                    return Ok(PrepareToolsTransition::PrepareRequestForSteering { prompt });
+                } else {
+                    return Ok(PrepareToolsTransition::Finalize {
+                        output,
+                        structured_output,
+                    });
+                }
+            }
+            Ok(None) => {}
+            Err(CapabilityError::ModelRetry(prompt)) => {
+                if output_retries_used >= self.policy.output_retries {
+                    return Err(AgentError::OutputRetryLimitExceeded {
+                        retries: output_retries_used,
+                    });
+                }
+                return Ok(PrepareToolsTransition::PrepareRequestForOutputRetry {
+                    prompt,
+                    retries: output_retries_used.saturating_add(1),
+                });
+            }
+            Err(error) => return Err(Self::capability_error(error)),
+        }
+        if run_tools.is_empty() {
+            return Err(AgentError::ToolCallsRequireTools);
+        }
+        state.pending_tool_calls.clone_from(&tool_calls);
+        let projected_successful_tool_calls = tool_calls
+            .iter()
+            .filter(|call| run_tools.get(&call.name).is_some())
+            .count() as u64;
+        self.check_tool_calls(state, projected_successful_tool_calls)?;
+        Ok(PrepareToolsTransition::ExecuteTools {
+            tool_calls,
+            final_output_after_tools,
+        })
+    }
+
+    fn execute_tools_phase(
+        state: &mut AgentRunState,
+        context: &AgentContext,
+        final_output_after_tools: Option<(String, Option<serde_json::Value>)>,
+        run_id: &RunId,
+        conversation_id: &ConversationId,
+    ) -> ExecuteToolsTransition {
+        if has_pending_tool_control_flow(state) {
+            Self::append_pending_tool_returns_request(
+                state,
+                run_id,
+                conversation_id,
+                false,
+                "starweaver.waiting.non_control_flow_tool_returns",
+            );
+            state.pending_tool_returns.clear();
+            return ExecuteToolsTransition::AwaitExternal;
+        }
+        if let Some((output, structured_output)) = final_output_after_tools {
+            Self::append_pending_tool_returns_request(
+                state,
+                run_id,
+                conversation_id,
+                true,
+                "starweaver.final_output_tool_returns",
+            );
+            state.pending_tool_returns.clear();
+            if Self::has_pending_steering_messages(context) {
+                let Some(prompt) = Self::pending_steering_guard_message(context) else {
+                    unreachable!("pending steering guard message must exist");
+                };
+                ExecuteToolsTransition::PrepareRequest { prompt }
+            } else {
+                ExecuteToolsTransition::Finalize {
+                    output,
+                    structured_output,
+                }
+            }
+        } else {
+            ExecuteToolsTransition::PrepareRequest {
+                prompt: String::new(),
+            }
+        }
+    }
+
+    fn append_pending_tool_returns_request(
+        state: &mut AgentRunState,
+        run_id: &RunId,
+        conversation_id: &ConversationId,
+        include_control_flow: bool,
+        metadata_key: &str,
+    ) {
+        let tool_returns = state
+            .pending_tool_returns
+            .iter()
+            .filter(|tool_return| {
+                include_control_flow || tool_return_control_flow(tool_return).is_none()
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if tool_returns.is_empty() {
+            return;
+        }
+        let mut parts = Vec::new();
+        for tool_return in tool_returns {
+            parts.push(ModelRequestPart::ToolReturn(tool_return.clone()));
+            if let Some(media_prompt) = tool_return_media_prompt(&tool_return) {
+                parts.push(media_prompt);
+            }
+        }
+        state
+            .message_history
+            .push(ModelMessage::Request(ModelRequest {
+                parts,
+                timestamp: Some(chrono::Utc::now()),
+                instructions: None,
+                run_id: Some(run_id.clone()),
+                conversation_id: Some(conversation_id.clone()),
+                metadata: serde_json::json!({(metadata_key): true})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            }));
+    }
+
+    fn await_external_phase(
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+    ) -> AwaitExternalTransition {
+        state.status = RunStatus::Waiting;
+        context.message_history.clone_from(&state.message_history);
+        AwaitExternalTransition::Suspend {
+            node: AgentExecutionNode::ToolReturn,
+            reason: "hitl_control_flow".to_string(),
+        }
+    }
+
+    fn finalize_phase(
+        state: &mut AgentRunState,
+        output: String,
+        structured_output: Option<serde_json::Value>,
+    ) -> FinalizeTransition {
+        state.output = Some(output.clone());
+        state.structured_output = structured_output;
+        state.status = RunStatus::Completed;
+        FinalizeTransition::Complete { output }
+    }
+
+    fn fail_or_cancel_phase(
+        state: &mut AgentRunState,
+        context: &mut AgentContext,
+        error: &AgentError,
+    ) -> FailOrCancelTransition {
+        state.status = if matches!(error, AgentError::Cancelled { .. }) {
+            RunStatus::Cancelled
+        } else {
+            RunStatus::Failed
+        };
+        preserve_pending_tool_returns_for_resume(state);
+        context.message_history.clone_from(&state.message_history);
+        context.usage.clone_from(&state.usage);
+        match error {
+            AgentError::Cancelled { reason } => FailOrCancelTransition::Cancelled {
+                reason: reason.clone(),
+            },
+            error => FailOrCancelTransition::Failed {
+                error_kind: agent_error_kind(error).to_string(),
+                message: agent_error_public_message(error),
+            },
+        }
+    }
+
     fn should_execute_tool_calls_sequentially(
         &self,
         run_tools: &ToolRegistry,
@@ -155,13 +556,21 @@ impl Agent {
         if self.policy.tool_execution == AgentToolExecutionMode::Sequential {
             return true;
         }
+        for call in tool_calls {
+            let requirements = run_tools.dependency_requirements_for(&call.name);
+            if requirements.profile == ToolDependencyProfile::Legacy
+                || !requirements.context_capabilities.is_empty()
+            {
+                return true;
+            }
+        }
         let mut seen_tool_names = BTreeSet::new();
         tool_calls.iter().any(|call| {
             run_tools.sequential_for(&call.name) || !seen_tool_names.insert(call.name.as_str())
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn prepare_tool_execution(
         &self,
         index: usize,
@@ -194,10 +603,14 @@ impl Agent {
             step_trace_context,
             "tool_execution_dropped",
         );
-        let context_handle = context_handle_snapshot(context);
-        let mut tool_dependencies = context.dependencies.clone();
-        tool_dependencies.insert_arc(shared_context_dependency(context));
-        tool_dependencies.insert(context_handle.clone());
+        let dependency_requirements = run_tools.dependency_requirements_for(&call.name);
+        let initial_assembly = assemble_tool_dependencies_for_name(
+            context,
+            &call.name,
+            &dependency_requirements,
+            &context.tool_capability_grant(&call.name),
+        );
+        let mut tool_dependencies = initial_assembly.dependencies.clone();
         tool_dependencies.insert(TraceRecorderHandle::new(self.trace_recorder.clone()));
         let stream_sink = stream_enabled.then(AgentStreamSink::default);
         if let Some(stream_sink) = &stream_sink {
@@ -217,10 +630,16 @@ impl Agent {
         }
         self.call_before_tool_execution(state, context, &mut tool_context, call)
             .await?;
-        replace_context_handle_snapshot(&context_handle, context);
+        initial_assembly.apply_to(context);
+        let dependency_assembly = assemble_tool_dependencies_for_name(
+            context,
+            &call.name,
+            &dependency_requirements,
+            &context.tool_capability_grant(&call.name),
+        );
         tool_context
             .dependencies
-            .insert_arc(shared_context_dependency(context));
+            .extend(dependency_assembly.dependencies.clone());
         self.trace_recorder.record_event(
             &tool_span,
             SpanEvent::new("starweaver.tool.call").with_attribute(
@@ -233,7 +652,7 @@ impl Agent {
             index,
             call: call.clone(),
             tool_context,
-            context_handle,
+            dependency_assembly,
             stream_sink,
             tool_span,
             started_at: std::time::Instant::now(),
@@ -257,9 +676,55 @@ impl Agent {
         stream_events: Option<&mut Vec<AgentStreamRecord>>,
     ) -> Result<AgentResult, AgentError> {
         let previous_trace_context = context.trace_context.clone();
+        let mut stream_events = stream_events;
         let result = self
-            .run_with_context_inner_impl(prompt, context, stream_events)
+            .run_with_context_inner_impl(prompt, context, stream_events.as_deref_mut())
             .await;
+        if let Err(error) = &result
+            && context.runtime.lifecycle.entered
+        {
+            let run_id = context.run_id.clone().unwrap_or_default();
+            let error_kind = agent_error_kind(error).to_string();
+            let message = agent_error_public_message(error);
+            if !context.runtime.run_toolsets_closed {
+                self.close_run_toolsets(context).await;
+                context.runtime.run_toolsets_closed = true;
+            }
+            context.finish_run();
+            if let AgentError::Cancelled { reason } = error {
+                context.publish_event(AgentEvent::new(
+                    "run_cancelled",
+                    serde_json::json!({
+                        "run_id": run_id.as_str(),
+                        "reason": reason,
+                    }),
+                ));
+                push_stream_event(
+                    &mut stream_events,
+                    AgentStreamEvent::RunCancelled {
+                        run_id,
+                        reason: reason.clone(),
+                    },
+                );
+            } else {
+                context.publish_event(AgentEvent::new(
+                    "run_failed",
+                    serde_json::json!({
+                        "run_id": run_id.as_str(),
+                        "error_kind": error_kind.clone(),
+                        "message": message.clone(),
+                    }),
+                ));
+                push_stream_event(
+                    &mut stream_events,
+                    AgentStreamEvent::RunFailed {
+                        run_id,
+                        error_kind,
+                        message,
+                    },
+                );
+            }
+        }
         context.trace_context = previous_trace_context;
         result
     }
@@ -316,40 +781,61 @@ impl Agent {
 
         macro_rules! close_run_toolsets {
             ($state:expr, $cursor:expr) => {{
-                self.close_run_toolsets(context).await;
+                if !context.runtime.run_toolsets_closed {
+                    self.close_run_toolsets(context).await;
+                    context.runtime.run_toolsets_closed = true;
+                }
                 stream_context_events!($state, $cursor);
             }};
         }
 
         macro_rules! fail_run {
-            ($state:expr, $run_id:expr, $event_cursor:expr, $previous_trace_context:expr, $error:expr) => {{
+            ($state:expr, $run_id:expr, $event_cursor:expr, $error:expr) => {{
                 let error = $error;
-                let error_kind = agent_error_kind(&error).to_string();
-                let message = error.to_string();
-                $state.status = RunStatus::Failed;
-                preserve_pending_tool_returns_for_resume($state);
-                context.message_history.clone_from(&$state.message_history);
-                context.usage.clone_from(&$state.usage);
+                let transition = Self::fail_or_cancel_phase($state, context, &error);
                 close_run_toolsets!($state, $event_cursor);
                 context.finish_run();
-                context.publish_event(AgentEvent::new(
-                    "run_failed",
-                    serde_json::json!({
-                        "run_id": $run_id.as_str(),
-                        "error_kind": error_kind.clone(),
-                        "message": message.clone(),
-                    }),
-                ));
-                stream_context_events!($state, $event_cursor);
-                stream_event!(
-                    $state,
-                    AgentStreamEvent::RunFailed {
-                        run_id: $run_id.clone(),
+                match transition {
+                    FailOrCancelTransition::Cancelled { reason } => {
+                        context.publish_event(AgentEvent::new(
+                            "run_cancelled",
+                            serde_json::json!({
+                                "run_id": $run_id.as_str(),
+                                "reason": reason,
+                            }),
+                        ));
+                        stream_context_events!($state, $event_cursor);
+                        stream_event!(
+                            $state,
+                            AgentStreamEvent::RunCancelled {
+                                run_id: $run_id.clone(),
+                                reason,
+                            }
+                        );
+                    }
+                    FailOrCancelTransition::Failed {
                         error_kind,
                         message,
+                    } => {
+                        context.publish_event(AgentEvent::new(
+                            "run_failed",
+                            serde_json::json!({
+                                "run_id": $run_id.as_str(),
+                                "error_kind": error_kind.clone(),
+                                "message": message.clone(),
+                            }),
+                        ));
+                        stream_context_events!($state, $event_cursor);
+                        stream_event!(
+                            $state,
+                            AgentStreamEvent::RunFailed {
+                                run_id: $run_id.clone(),
+                                error_kind,
+                                message,
+                            }
+                        );
                     }
-                );
-                context.trace_context = $previous_trace_context;
+                }
                 return Err(error);
             }};
         }
@@ -410,8 +896,54 @@ impl Agent {
             }};
         }
 
+        macro_rules! complete_run {
+            ($state:ident, $output:expr, $run_id:expr, $event_cursor:ident, $step_span:ident, $run_span:ident, $history_len:expr) => {{
+                let output = $output;
+                self.call_run_complete(&mut $state, context).await?;
+                checkpoint!(
+                    AgentExecutionNode::RunComplete,
+                    &$state,
+                    $event_cursor
+                );
+                context.message_history.clone_from(&$state.message_history);
+                close_run_toolsets!(&$state, $event_cursor);
+                context.publish_event(AgentEvent::new(
+                    "run_complete",
+                    serde_json::json!({"run_id": $run_id.as_str()}),
+                ));
+                stream_context_events!(&$state, $event_cursor);
+                let terminal_record = stream_events.as_deref().map(|events| {
+                    AgentStreamRecord::new(
+                        events.len(),
+                        AgentStreamEvent::RunComplete {
+                            run_id: $run_id.clone(),
+                            output: output.clone(),
+                        },
+                    )
+                });
+                if let Some(record) = terminal_record {
+                    push_stream_record(&mut stream_events, record.clone());
+                    if let Err(error) = self.call_stream_observers(&$state, context, &record).await {
+                        context.publish_event(AgentEvent::new(
+                            "terminal_stream_observer_failed",
+                            serde_json::json!({
+                                "run_id": $run_id.as_str(),
+                                "terminal_kind": "run_complete",
+                                "error_kind": agent_error_kind(&error),
+                                "message": agent_error_public_message(&error),
+                            }),
+                        ));
+                    }
+                }
+                $step_span.close(SpanStatus::Ok);
+                $run_span.close(SpanStatus::Ok);
+                context.finish_run();
+                return Ok(RunLoopExit::Completed { output });
+            }};
+        }
+
         macro_rules! apply_tool_return {
-            ($state:ident, $context:ident, $tool_retries:ident, $run_tools:expr, $step_span:ident, $run_span:ident, $run_id:expr, $context_event_cursor:ident, $previous_trace_context:expr, $call:expr, $tool_return:expr, $tool_span:expr, $context_handle:expr, $tool_duration:expr) => {{
+            ($state:ident, $context:ident, $tool_retries:ident, $run_tools:expr, $step_span:ident, $run_span:ident, $run_id:expr, $context_event_cursor:ident, $call:expr, $tool_return:expr, $tool_span:expr, $dependency_assembly:expr, $tool_duration:expr) => {{
                 let call = $call;
                 let mut tool_return = $tool_return;
                 let mut tool_span = $tool_span;
@@ -457,7 +989,9 @@ impl Agent {
                 } else {
                     tool_span.close(SpanStatus::Ok);
                 }
-                self.absorb_tool_context_handle(&mut $state, $context, $context_handle)?;
+                $dependency_assembly.apply_to($context);
+                $state.usage.clone_from(&$context.usage);
+                self.check_usage(&$state)?;
                 self.call_after_tool_result(&mut $state, $context, call, &mut tool_return)
                     .await?;
                 tool_return
@@ -484,7 +1018,6 @@ impl Agent {
                             &mut $state,
                             $run_id,
                             $context_event_cursor,
-                            $previous_trace_context.clone(),
                             AgentError::ToolRetryLimitExceeded {
                                 tool: call.name.clone(),
                                 max_retries: tool_max_retries,
@@ -548,7 +1081,6 @@ impl Agent {
             &context.trace_context,
             "agent_run_dropped",
         );
-        let previous_trace_context = context.trace_context.clone();
         context.trace_context = run_span.context().clone();
         if let Some(model_config) = self.model_config.clone() {
             context.merge_model_config(model_config);
@@ -566,6 +1098,8 @@ impl Agent {
         state.status = RunStatus::Running;
         Self::sync_compact_context_metadata(context, &mut state);
         let mut context_event_cursor = context.events.len();
+        let mut model_session = self.model.start_run_session();
+        let run_result = Box::pin(async {
         context.publish_event(AgentEvent::new(
             "run_start",
             serde_json::json!({"run_id": run_id.as_str()}),
@@ -583,13 +1117,7 @@ impl Agent {
         {
             Ok(input) => input,
             Err(error) => {
-                fail_run!(
-                    &mut state,
-                    &run_id,
-                    context_event_cursor,
-                    previous_trace_context.clone(),
-                    error
-                );
+                fail_run!(&mut state, &run_id, context_event_cursor, error);
             }
         };
         let initial_prompt = initial_input.text_projection();
@@ -608,28 +1136,21 @@ impl Agent {
             Self::previous_assistant_response_reference(&context.message_history);
         Self::sync_compact_context_metadata(context, &mut state);
         self.call_run_start(&mut state, context).await?;
-        context.current_run_step = state.run_step;
+        context.runtime.current_run_step = state.run_step;
         let mut run_tools = match self.prepare_run_tools(context, true).await {
             Ok(tools) => tools,
             Err(error) => {
-                fail_run!(
-                    &mut state,
-                    &run_id,
-                    context_event_cursor,
-                    previous_trace_context.clone(),
-                    error
-                );
+                fail_run!(&mut state, &run_id, context_event_cursor, error);
             }
         };
         stream_context_events!(&state, context_event_cursor);
         checkpoint!(AgentExecutionNode::RunStart, &state, context_event_cursor);
 
         let mut next_prompt = initial_prompt;
+        let mut is_initial_request = true;
         let mut output_retries_used = 0;
         let mut model_error_retries_used = 0usize;
         let mut tool_retries = BTreeMap::<String, usize>::new();
-        let mut model_session = self.model.start_run_session();
-        let run_result = async {
             'agent_loop: loop {
             let mut step_span = ActiveSpan::start(
                 &self.trace_recorder,
@@ -649,14 +1170,13 @@ impl Agent {
                     &mut state,
                     &run_id,
                     context_event_cursor,
-                    previous_trace_context.clone(),
                     AgentError::StepLimitExceeded {
                         steps: state.run_step,
                     }
                 );
             }
 
-            context.current_run_step = state.run_step;
+            context.runtime.current_run_step = state.run_step;
             if state.run_step > 0 {
                 run_tools = match self.prepare_run_tools(context, false).await {
                     Ok(tools) => tools,
@@ -671,7 +1191,6 @@ impl Agent {
                             &mut state,
                             &run_id,
                             context_event_cursor,
-                            previous_trace_context.clone(),
                             error
                         );
                     }
@@ -684,29 +1203,33 @@ impl Agent {
                 &state,
                 context_event_cursor
             );
-            let dynamic_instruction_parts = self.dynamic_instruction_parts(&state).await?;
-            let mut request = self.prepare_request(
-                &state,
-                &next_prompt,
-                &initial_content,
-                &run_id,
-                &conversation_id,
-            );
-            if !dynamic_instruction_parts.is_empty() {
-                let insert_at = request_instruction_insert_index(&request);
-                request
-                    .parts
-                    .splice(insert_at..insert_at, dynamic_instruction_parts);
-            }
-            let mut settings = self.effective_settings(context);
-            let skipped_response = self
-                .call_before_model_request(&mut state, context, &mut request, &mut settings)
+            let PrepareRequestResult {
+                request,
+                settings,
+                transition,
+            } = self
+                .prepare_request_phase(
+                    &mut state,
+                    context,
+                    PrepareRequestInput {
+                        prompt: &next_prompt,
+                        initial_content: &initial_content,
+                        is_initial_request,
+                        run_id: &run_id,
+                        conversation_id: &conversation_id,
+                    },
+                )
                 .await?;
+            is_initial_request = false;
+            let response_was_skipped = matches!(
+                &transition,
+                PrepareRequestTransition::ClassifyResponse { .. }
+            );
             if state.run_step == 0 {
                 Self::capture_effective_user_prompt_for_compact_restore(context, &request);
                 Self::sync_compact_context_metadata(context, &mut state);
             }
-            if skipped_response.is_none() {
+            if !response_was_skipped {
                 Self::sync_compact_context_metadata(context, &mut state);
                 stream_context_events!(&state, context_event_cursor);
             }
@@ -726,39 +1249,51 @@ impl Agent {
                 context_event_cursor
             );
 
-            let response_was_skipped = skipped_response.is_some();
+            let skipped_response = match transition {
+                PrepareRequestTransition::ClassifyResponse { response } => Some(*response),
+                PrepareRequestTransition::CallModel => None,
+            };
             let response = if let Some(response) = skipped_response {
                 response
             } else {
-                self.check_before_request(&state)?;
-                let mut messages = self.prepare_model_messages(&mut state, context).await?;
-                context.tool_id_wrapper.wrap_messages(&mut messages);
-                Self::validate_model_request_messages(&messages)?;
-                self.inject_missing_static_instructions(&run_id, &conversation_id, &mut messages);
-                let params = self
-                    .effective_request_params(&state, context, &run_tools)
+                let CallModelPreparation {
+                    mut messages,
+                    params,
+                    transition: call_model_transition,
+                } = self
+                    .prepare_model_call_phase(
+                        &mut state,
+                        context,
+                        &run_tools,
+                        &run_id,
+                        &conversation_id,
+                    )
                     .await?;
-                messages = Self::attach_prepared_request_instructions(messages, &params);
-                for message in &mut messages {
-                    Self::fill_message_metadata(message, &run_id, &conversation_id);
-                }
-                if Self::has_pending_steering_messages(context)
-                    && let Some(ModelMessage::Request(request)) = messages
-                        .iter_mut()
-                        .rev()
-                        .find(|message| matches!(message, ModelMessage::Request(_)))
-                    {
+                match call_model_transition {
+                    CallModelPreparationTransition::ApplySteering { request_index } => {
+                        let Some(ModelMessage::Request(request)) =
+                            messages.get_mut(request_index)
+                        else {
+                            unreachable!("steering target must remain a model request");
+                        };
                         Self::apply_runtime_steering_messages(context, request);
                         Self::sync_compact_context_metadata(context, &mut state);
                         stream_context_events!(&state, context_event_cursor);
                     }
+                    CallModelPreparationTransition::PrepareProvider => {}
+                }
                 Self::validate_model_request_messages(&messages)?;
                 state.message_history.clone_from(&messages);
                 context.message_history.clone_from(&state.message_history);
-                messages = self
-                    .prepare_provider_messages(&mut state, context, messages)
+                let prepared_provider_request = self
+                    .prepare_provider_request_phase(
+                        &mut state,
+                        context,
+                        messages,
+                        settings,
+                        params,
+                    )
                     .await?;
-                Self::validate_model_request_messages(&messages)?;
                 let mut model_spec = SpanSpec::new("gen_ai.inference")
                     .with_kind(SpanKind::Client)
                     .with_attribute("gen_ai.operation.name", serde_json::json!("chat"))
@@ -785,7 +1320,12 @@ impl Agent {
                     step_span.context(),
                     "model_request_dropped",
                 );
-                self.record_model_request_event(&model_span, &messages, settings.as_ref(), &params);
+                self.record_model_request_event(
+                    &model_span,
+                    &prepared_provider_request.messages,
+                    prepared_provider_request.settings.as_ref(),
+                    &prepared_provider_request.params,
+                );
                 let request_context =
                     ModelRequestContext::new(run_id.clone(), conversation_id.clone())
                         .with_trace_context(model_span.context().clone())
@@ -813,7 +1353,6 @@ impl Agent {
                                     &mut state,
                                     &run_id,
                                     context_event_cursor,
-                                    previous_trace_context.clone(),
                                     AgentError::Cancelled { reason }
                                 );
                             }
@@ -832,7 +1371,12 @@ impl Agent {
                                     run_span.close(SpanStatus::Error {
                                         error_type: "model_error".to_string(),
                                     });
-                                    fail_run!(&mut state, &run_id, context_event_cursor, previous_trace_context.clone(), AgentError::Model(error));
+                                    fail_run!(
+                                        &mut state,
+                                        &run_id,
+                                        context_event_cursor,
+                                        AgentError::Model(error)
+                                    );
                                 }
                                 model_error_retries_used =
                                     model_error_retries_used.saturating_add(1);
@@ -848,7 +1392,7 @@ impl Agent {
                                         "run_id": run_id.as_str(),
                                         "retry": model_error_retries_used,
                                         "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
-                                        "error": error.to_string(),
+                                        "error": error.public_message(),
                                         "recovery_changed": recovery_changed,
                                         "recovery_reasons": recovery_reasons,
                                     }),
@@ -861,68 +1405,31 @@ impl Agent {
                         }
                     }};
                 }
-                if stream_events.is_some() {
-                    let mut stream_resume_retries_used = 0usize;
-                    let response = 'model_stream_resume: loop {
-                        let mut response = None;
-                        let mut model_stream = match model_session
-                            .request_stream_incremental(
-                                messages.clone(),
-                                settings.clone(),
-                                params.clone(),
-                                request_context.clone(),
-                            )
-                            .await
-                        {
-                            Ok(stream) => stream,
-                            Err(error)
-                                if stream_resume_retries_used < DEFAULT_MODEL_ERROR_RETRIES
-                                    && should_resume_provider_stream(&error) =>
-                            {
-                                stream_resume_retries_used =
-                                    stream_resume_retries_used.saturating_add(1);
-                                context.publish_event(AgentEvent::new(
-                                    "model_stream_resume",
-                                    serde_json::json!({
-                                        "run_id": run_id.as_str(),
-                                        "retry": stream_resume_retries_used,
-                                        "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
-                                        "error": error.to_string(),
-                                    }),
-                                ));
-                                stream_context_events!(&state, context_event_cursor);
-                                continue 'model_stream_resume;
-                            }
-                            Err(error) => recover_model_error!(error),
-                        };
-                        while let Some(model_event) = model_stream.recv().await {
-                            let mut model_event = match model_event {
-                                Ok(event) => event,
-                                Err(error)
-                                    if stream_resume_retries_used < DEFAULT_MODEL_ERROR_RETRIES
-                                        && should_resume_provider_stream(&error) =>
-                                {
-                                    stream_resume_retries_used =
-                                        stream_resume_retries_used.saturating_add(1);
-                                    context.publish_event(AgentEvent::new(
-                                        "model_stream_resume",
-                                        serde_json::json!({
-                                            "run_id": run_id.as_str(),
-                                            "retry": stream_resume_retries_used,
-                                            "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
-                                            "error": error.to_string(),
-                                        }),
-                                    ));
-                                    stream_context_events!(&state, context_event_cursor);
-                                    continue 'model_stream_resume;
-                                }
-                                Err(error) => recover_model_error!(error),
-                            };
+                let invocation_mode = if stream_events.is_some() {
+                    ProviderInvocationMode::Incremental
+                } else {
+                    ProviderInvocationMode::FinalOnly
+                };
+                let mut provider_invocation = ProviderInvocation::new(
+                    prepared_provider_request,
+                    request_context,
+                    invocation_mode,
+                );
+                let mut response_for_attempt = None;
+                let response = loop {
+                    let invocation_step = provider_invocation.next(&mut *model_session).await;
+                    let invocation_step = match invocation_step {
+                        ProviderInvocationStep::StreamAttemptEnded => provider_invocation
+                            .finish_stream_attempt(response_for_attempt.take()),
+                        step => step,
+                    };
+                    match invocation_step {
+                        ProviderInvocationStep::StreamEvent(mut model_event) => {
                             if let ModelResponseStreamEvent::FinalResult(final_response) =
                                 &mut model_event
                             {
                                 for part in &mut final_response.parts {
-                                    context.tool_id_wrapper.wrap_response_part(part);
+                                    context.runtime.tool_id_wrapper.wrap_response_part(part);
                                 }
                             }
                             if let ModelResponseStreamEvent::Diagnostic(diagnostic) = &model_event {
@@ -946,62 +1453,54 @@ impl Agent {
                                 if let ModelResponseStreamEvent::FinalResult(final_response) =
                                     model_event
                                 {
-                                    response = Some(*final_response);
+                                    response_for_attempt = Some(*final_response);
                                 }
                             }
                         }
-                        if let Some(response) = response {
-                            break response;
-                        }
-                        if stream_resume_retries_used < DEFAULT_MODEL_ERROR_RETRIES {
-                            stream_resume_retries_used =
-                                stream_resume_retries_used.saturating_add(1);
+                        ProviderInvocationStep::StreamResume(resume) => {
+                            response_for_attempt = None;
                             context.publish_event(AgentEvent::new(
                                 "model_stream_resume",
                                 serde_json::json!({
                                     "run_id": run_id.as_str(),
-                                    "retry": stream_resume_retries_used,
-                                    "max_retries": DEFAULT_MODEL_ERROR_RETRIES,
-                                    "error": "model stream ended before final result",
+                                    "retry": resume.retry,
+                                    "max_retries": resume.max_retries,
+                                    "error": resume.cause.public_message(),
                                 }),
                             ));
                             stream_context_events!(&state, context_event_cursor);
-                            continue 'model_stream_resume;
                         }
-                        model_span.close(SpanStatus::Error {
-                            error_type: "missing_final_result".to_string(),
-                        });
-                        step_span.close(SpanStatus::Error {
-                            error_type: "missing_final_result".to_string(),
-                        });
-                        run_span.close(SpanStatus::Error {
-                            error_type: "missing_final_result".to_string(),
-                        });
-                        fail_run!(
-                            &mut state,
-                            &run_id,
-                            context_event_cursor,
-                            previous_trace_context.clone(),
-                            AgentError::Capability(
-                                "model stream did not produce a final result".to_string(),
-                            )
-                        );
-                    };
-                    self.record_model_response_event(&model_span, &response);
-                    model_span.close(SpanStatus::Ok);
-                    response
-                } else {
-                    let response = match model_session
-                        .request_stream_final(messages, settings, params, request_context)
-                        .await
-                    {
-                        Ok(response) => response,
-                        Err(error) => recover_model_error!(error),
-                    };
-                    self.record_model_response_event(&model_span, &response);
-                    model_span.close(SpanStatus::Ok);
-                    response
-                }
+                        ProviderInvocationStep::Complete(response) => break response,
+                        ProviderInvocationStep::ModelError(error) => {
+                            recover_model_error!(error);
+                        }
+                        ProviderInvocationStep::MissingFinalResult => {
+                            model_span.close(SpanStatus::Error {
+                                error_type: "missing_final_result".to_string(),
+                            });
+                            step_span.close(SpanStatus::Error {
+                                error_type: "missing_final_result".to_string(),
+                            });
+                            run_span.close(SpanStatus::Error {
+                                error_type: "missing_final_result".to_string(),
+                            });
+                            fail_run!(
+                                &mut state,
+                                &run_id,
+                                context_event_cursor,
+                                AgentError::Capability(
+                                    "model stream did not produce a final result".to_string(),
+                                )
+                            );
+                        }
+                        ProviderInvocationStep::StreamAttemptEnded => {
+                            unreachable!("stream attempt end must be classified before dispatch");
+                        }
+                    }
+                };
+                self.record_model_response_event(&model_span, &response);
+                model_span.close(SpanStatus::Ok);
+                response
             };
             let mut response = response;
             response.run_id.get_or_insert_with(|| run_id.clone());
@@ -1010,10 +1509,10 @@ impl Agent {
                 .get_or_insert_with(|| conversation_id.clone());
             response.timestamp.get_or_insert_with(chrono::Utc::now);
             for part in &mut response.parts {
-                context.tool_id_wrapper.wrap_response_part(part);
+                context.runtime.tool_id_wrapper.wrap_response_part(part);
             }
             state.run_step += 1;
-            context.current_run_step = state.run_step;
+            context.runtime.current_run_step = state.run_step;
             let response_usage = response.usage.clone();
             stream_event!(
                 &state,
@@ -1091,185 +1590,105 @@ impl Agent {
                     &mut state,
                     &run_id,
                     context_event_cursor,
-                    previous_trace_context.clone(),
                     error
                 );
             }
             context.message_history.clone_from(&state.message_history);
 
-            let mut response = state
-                .latest_response
-                .clone()
-                .ok_or_else(|| AgentError::Capability("missing latest response".to_string()))?;
-            self.call_after_model_response(&mut state, context, &mut response)
-                .await?;
-            state.replace_latest_response(response.clone());
-            context.message_history.clone_from(&state.message_history);
+            let ClassifyResponseResult {
+                response,
+                transition: response_transition,
+            } = self.classify_response_phase(&mut state, context).await?;
 
-            let mut tool_calls = response.tool_calls();
-            if !tool_calls.is_empty() {
-                let mut final_output_after_tools = None;
-                match self
-                    .try_call_output_function(&mut state, context, &tool_calls)
+            let tool_calls = match response_transition {
+                ClassifyResponseTransition::PrepareTools { tool_calls } => Some(tool_calls),
+                ClassifyResponseTransition::ValidateOutput => None,
+            };
+            if let Some(tool_calls) = tool_calls {
+                let tools_transition = match self
+                    .prepare_tools_phase(
+                        &mut state,
+                        context,
+                        tool_calls,
+                        &run_tools,
+                        output_retries_used,
+                    )
                     .await
                 {
-                    Ok(Some((output, structured_output))) => {
-                        let ordinary_tool_calls = tool_calls
-                            .iter()
-                            .filter(|call| {
-                                !self
-                                    .output_functions
-                                    .iter()
-                                    .any(|function| function.definition().name == call.name)
-                            })
-                            .cloned()
-                            .collect::<Vec<_>>();
-                        if self.policy.end_strategy != AgentEndStrategy::Early
-                            && !ordinary_tool_calls.is_empty()
-                        {
-                            final_output_after_tools = Some((output, structured_output));
-                            tool_calls = ordinary_tool_calls;
-                        } else if !Self::has_pending_steering_messages(context) {
-                            state.output = Some(output.clone());
-                            state.structured_output = structured_output;
-                            state.status = RunStatus::Completed;
-                            self.call_run_complete(&mut state, context).await?;
-                            checkpoint!(
-                                AgentExecutionNode::RunComplete,
-                                &state,
-                                context_event_cursor
-                            );
-                            context.message_history.clone_from(&state.message_history);
-                            close_run_toolsets!(&state, context_event_cursor);
-                            context.publish_event(AgentEvent::new(
-                                "run_complete",
-                                serde_json::json!({"run_id": run_id.as_str()}),
-                            ));
-                            stream_context_events!(&state, context_event_cursor);
-                            stream_event!(
-                                &state,
-                                AgentStreamEvent::RunComplete {
-                                    run_id: run_id.clone(),
-                                    output: output.clone(),
-                                }
-                            );
-                            step_span.close(SpanStatus::Ok);
-                            run_span.close(SpanStatus::Ok);
-                            context.finish_run();
-                            context.trace_context = previous_trace_context;
-                            return Ok(AgentResult {
-                                output,
-                                structured_output: state.structured_output.clone(),
-                                messages: state.message_history.clone(),
-                                state,
-                                history_len,
-                            });
-                        } else {
-                            let Some(message) = Self::pending_steering_guard_message(context) else {
-                                unreachable!("pending steering guard message must exist");
-                            };
-                            stream_event!(
-                                &state,
-                                AgentStreamEvent::SteeringGuard {
-                                    step: state.run_step,
-                                    prompt: message.clone(),
-                                }
-                            );
-                            next_prompt = message;
-                            step_span.close(SpanStatus::Ok);
-                            continue;
-                        }
+                    Ok(transition) => transition,
+                    Err(error) => {
+                        let error_type = match &error {
+                            AgentError::OutputRetryLimitExceeded { .. } => {
+                                "output_retry_limit_exceeded"
+                            }
+                            AgentError::ToolCallsRequireTools => "tool_calls_require_tools",
+                            AgentError::UsageLimit(_) => "usage_limit",
+                            _ => "capability_error",
+                        };
+                        step_span.close(SpanStatus::Error {
+                            error_type: error_type.to_string(),
+                        });
+                        run_span.close(SpanStatus::Error {
+                            error_type: error_type.to_string(),
+                        });
+                        fail_run!(&mut state, &run_id, context_event_cursor, error);
                     }
-                    Ok(None) => {}
-                    Err(CapabilityError::ModelRetry(message)) => {
-                        if output_retries_used >= self.policy.output_retries {
-                            step_span.close(SpanStatus::Error {
-                                error_type: "output_retry_limit_exceeded".to_string(),
-                            });
-                            run_span.close(SpanStatus::Error {
-                                error_type: "output_retry_limit_exceeded".to_string(),
-                            });
-                            fail_run!(
-                                &mut state,
-                                &run_id,
-                                context_event_cursor,
-                                previous_trace_context.clone(),
-                                AgentError::OutputRetryLimitExceeded {
-                                    retries: output_retries_used,
-                                }
-                            );
-                        }
-                        output_retries_used += 1;
+                };
+                let (tool_calls, final_output_after_tools) = match tools_transition {
+                    PrepareToolsTransition::ExecuteTools {
+                        tool_calls,
+                        final_output_after_tools,
+                    } => (tool_calls, final_output_after_tools),
+                    PrepareToolsTransition::PrepareRequestForOutputRetry { prompt, retries } => {
+                        output_retries_used = retries;
                         self.call_retry(
                             &mut state,
                             context,
                             RetryEventKind::Output,
                             output_retries_used,
-                            &message,
+                            &prompt,
                         )
                         .await?;
                         stream_event!(
                             &state,
                             AgentStreamEvent::OutputRetry {
                                 retries: output_retries_used,
-                                prompt: message.clone(),
+                                prompt: prompt.clone(),
                             }
                         );
-                        next_prompt = message;
+                        next_prompt = prompt;
                         step_span.close(SpanStatus::Ok);
                         continue;
                     }
-                    Err(error) => {
-                        step_span.close(SpanStatus::Error {
-                            error_type: "capability_error".to_string(),
-                        });
-                        run_span.close(SpanStatus::Error {
-                            error_type: "capability_error".to_string(),
-                        });
-                        fail_run!(
-                            &mut state,
+                    PrepareToolsTransition::PrepareRequestForSteering { prompt } => {
+                        stream_event!(
+                            &state,
+                            AgentStreamEvent::SteeringGuard {
+                                step: state.run_step,
+                                prompt: prompt.clone(),
+                            }
+                        );
+                        next_prompt = prompt;
+                        step_span.close(SpanStatus::Ok);
+                        continue;
+                    }
+                    PrepareToolsTransition::Finalize {
+                        output,
+                        structured_output,
+                    } => {
+                        let FinalizeTransition::Complete { output } =
+                            Self::finalize_phase(&mut state, output, structured_output);
+                        complete_run!(
+                            state,
+                            output,
                             &run_id,
                             context_event_cursor,
-                            previous_trace_context.clone(),
-                            Self::capability_error(error)
+                            step_span,
+                            run_span,
+                            history_len
                         );
                     }
-                }
-                if run_tools.is_empty() {
-                    step_span.close(SpanStatus::Error {
-                        error_type: "tool_calls_require_tools".to_string(),
-                    });
-                    run_span.close(SpanStatus::Error {
-                        error_type: "tool_calls_require_tools".to_string(),
-                    });
-                    fail_run!(
-                        &mut state,
-                        &run_id,
-                        context_event_cursor,
-                        previous_trace_context.clone(),
-                        AgentError::ToolCallsRequireTools
-                    );
-                }
-                state.pending_tool_calls.clone_from(&tool_calls);
-                let projected_successful_tool_calls = tool_calls
-                    .iter()
-                    .filter(|call| run_tools.get(&call.name).is_some())
-                    .count() as u64;
-                if let Err(error) = self.check_tool_calls(&state, projected_successful_tool_calls) {
-                    step_span.close(SpanStatus::Error {
-                        error_type: "usage_limit".to_string(),
-                    });
-                    run_span.close(SpanStatus::Error {
-                        error_type: "usage_limit".to_string(),
-                    });
-                    fail_run!(
-                        &mut state,
-                        &run_id,
-                        context_event_cursor,
-                        previous_trace_context.clone(),
-                        error
-                    );
-                }
+                };
                 if self.should_execute_tool_calls_sequentially(&run_tools, &tool_calls) {
                     for call in &tool_calls {
                         checkpoint!(AgentExecutionNode::ToolCall, &state, context_event_cursor);
@@ -1284,7 +1703,7 @@ impl Agent {
                             index: _,
                             call,
                             tool_context,
-                            context_handle,
+                            dependency_assembly,
                             stream_sink,
                             tool_span,
                             started_at,
@@ -1337,11 +1756,10 @@ impl Agent {
                             run_span,
                             &run_id,
                             context_event_cursor,
-                            previous_trace_context,
                             &call,
                             tool_return,
                             tool_span,
-                            &context_handle,
+                            &dependency_assembly,
                             tool_duration
                         );
                     }
@@ -1412,7 +1830,6 @@ impl Agent {
                                             &mut state,
                                             &run_id,
                                             context_event_cursor,
-                                            previous_trace_context.clone(),
                                             AgentError::Capability(format!(
                                                 "tool execution task failed: {error}"
                                             ))
@@ -1452,7 +1869,7 @@ impl Agent {
                             index,
                             call,
                             tool_context: _,
-                            context_handle,
+                            dependency_assembly,
                             stream_sink: _,
                             tool_span,
                             started_at,
@@ -1468,7 +1885,6 @@ impl Agent {
                                 &mut state,
                                 &run_id,
                                 context_event_cursor,
-                                previous_trace_context.clone(),
                                 AgentError::Capability(
                                     "tool execution task ended without a return".to_string()
                                 )
@@ -1484,158 +1900,78 @@ impl Agent {
                             run_span,
                             &run_id,
                             context_event_cursor,
-                            previous_trace_context,
                             &call,
                             tool_return,
                             tool_span,
-                            &context_handle,
+                            &dependency_assembly,
                             tool_duration
                         );
                     }
                 }
-                if has_pending_tool_control_flow(&state) {
-                    let non_control_flow_tool_returns = state
-                        .pending_tool_returns
-                        .iter()
-                        .filter(|tool_return| tool_return_control_flow(tool_return).is_none())
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    if !non_control_flow_tool_returns.is_empty() {
-                        let mut parts = Vec::new();
-                        for tool_return in non_control_flow_tool_returns {
-                            parts.push(ModelRequestPart::ToolReturn(tool_return.clone()));
-                            if let Some(media_prompt) = tool_return_media_prompt(&tool_return) {
-                                parts.push(media_prompt);
-                            }
-                        }
-                        state
-                            .message_history
-                            .push(ModelMessage::Request(ModelRequest {
-                                parts,
-                                timestamp: Some(chrono::Utc::now()),
-                                instructions: None,
-                                run_id: Some(run_id.clone()),
-                                conversation_id: Some(conversation_id.clone()),
-                                metadata: serde_json::json!({
-                                    "starweaver.waiting.non_control_flow_tool_returns": true,
-                                })
-                                .as_object()
-                                .cloned()
-                                .unwrap_or_default(),
-                            }));
-                    }
-                    state.pending_tool_returns.clear();
-                    state.status = RunStatus::Waiting;
-                    context.message_history.clone_from(&state.message_history);
-                    context.publish_event(AgentEvent::new(
-                        "run_waiting",
-                        serde_json::json!({
-                            "run_id": run_id.as_str(),
-                            "pending_approvals": state.pending_approval_tool_returns.len(),
-                            "deferred_tools": state.deferred_tool_returns.len(),
-                        }),
-                    ));
-                    stream_context_events!(&state, context_event_cursor);
-                    stream_event!(
-                        &state,
-                        AgentStreamEvent::Suspended {
-                            node: AgentExecutionNode::ToolReturn,
-                            reason: "hitl_control_flow".to_string(),
-                        }
-                    );
-                    checkpoint!(AgentExecutionNode::ToolReturn, &state, context_event_cursor);
-                    close_run_toolsets!(&state, context_event_cursor);
-                    step_span.close(SpanStatus::Ok);
-                    run_span.close(SpanStatus::Ok);
-                    context.finish_run();
-                    context.trace_context = previous_trace_context;
-                    return Ok(AgentResult {
-                        output: String::new(),
-                        structured_output: None,
-                        messages: state.message_history.clone(),
-                        state,
-                        history_len,
-                    });
-                }
-                if let Some((output, structured_output)) = final_output_after_tools {
-                    if !state.pending_tool_returns.is_empty() {
-                        let mut parts = Vec::new();
-                        for tool_return in &state.pending_tool_returns {
-                            parts.push(ModelRequestPart::ToolReturn(tool_return.clone()));
-                            if let Some(media_prompt) = tool_return_media_prompt(tool_return) {
-                                parts.push(media_prompt);
-                            }
-                        }
-                        state
-                            .message_history
-                            .push(ModelMessage::Request(ModelRequest {
-                                parts,
-                                timestamp: Some(chrono::Utc::now()),
-                                instructions: None,
-                                run_id: Some(run_id.clone()),
-                                conversation_id: Some(conversation_id.clone()),
-                                metadata: serde_json::json!({
-                                    "starweaver.final_output_tool_returns": true,
-                                })
-                                .as_object()
-                                .cloned()
-                                .unwrap_or_default(),
-                            }));
-                    }
-                    state.pending_tool_returns.clear();
-                    if Self::has_pending_steering_messages(context) {
-                        let Some(message) = Self::pending_steering_guard_message(context) else {
-                            unreachable!("pending steering guard message must exist");
-                        };
+                match Self::execute_tools_phase(
+                    &mut state,
+                    context,
+                    final_output_after_tools,
+                    &run_id,
+                    &conversation_id,
+                ) {
+                    ExecuteToolsTransition::AwaitExternal => {
+                        let AwaitExternalTransition::Suspend { node, reason } =
+                            Self::await_external_phase(&mut state, context);
+                        context.publish_event(AgentEvent::new(
+                            "run_waiting",
+                            serde_json::json!({
+                                "run_id": run_id.as_str(),
+                                "pending_approvals": state.pending_approval_tool_returns.len(),
+                                "deferred_tools": state.deferred_tool_returns.len(),
+                            }),
+                        ));
+                        stream_context_events!(&state, context_event_cursor);
                         stream_event!(
                             &state,
-                            AgentStreamEvent::SteeringGuard {
-                                step: state.run_step,
-                                prompt: message.clone(),
+                            AgentStreamEvent::Suspended {
+                                node,
+                                reason,
                             }
                         );
-                        next_prompt = message;
+                        checkpoint!(node, &state, context_event_cursor);
+                        close_run_toolsets!(&state, context_event_cursor);
+                        step_span.close(SpanStatus::Ok);
+                        run_span.close(SpanStatus::Ok);
+                        context.finish_run();
+                        return Ok(RunLoopExit::Waiting);
+                    }
+                    ExecuteToolsTransition::PrepareRequest { prompt } => {
+                        if !prompt.is_empty() {
+                            stream_event!(
+                                &state,
+                                AgentStreamEvent::SteeringGuard {
+                                    step: state.run_step,
+                                    prompt: prompt.clone(),
+                                }
+                            );
+                        }
+                        next_prompt = prompt;
                         step_span.close(SpanStatus::Ok);
                         continue;
                     }
-                    state.output = Some(output.clone());
-                    state.structured_output = structured_output;
-                    state.status = RunStatus::Completed;
-                    self.call_run_complete(&mut state, context).await?;
-                    checkpoint!(
-                        AgentExecutionNode::RunComplete,
-                        &state,
-                        context_event_cursor
-                    );
-                    context.message_history.clone_from(&state.message_history);
-                    close_run_toolsets!(&state, context_event_cursor);
-                    context.publish_event(AgentEvent::new(
-                        "run_complete",
-                        serde_json::json!({"run_id": run_id.as_str()}),
-                    ));
-                    stream_context_events!(&state, context_event_cursor);
-                    stream_event!(
-                        &state,
-                        AgentStreamEvent::RunComplete {
-                            run_id: run_id.clone(),
-                            output: output.clone(),
-                        }
-                    );
-                    step_span.close(SpanStatus::Ok);
-                    run_span.close(SpanStatus::Ok);
-                    context.finish_run();
-                    context.trace_context = previous_trace_context;
-                    return Ok(AgentResult {
+                    ExecuteToolsTransition::Finalize {
                         output,
-                        structured_output: state.structured_output.clone(),
-                        messages: state.message_history.clone(),
-                        state,
-                        history_len,
-                    });
+                        structured_output,
+                    } => {
+                        let FinalizeTransition::Complete { output } =
+                            Self::finalize_phase(&mut state, output, structured_output);
+                        complete_run!(
+                            state,
+                            output,
+                            &run_id,
+                            context_event_cursor,
+                            step_span,
+                            run_span,
+                            history_len
+                        );
+                    }
                 }
-                next_prompt.clear();
-                step_span.close(SpanStatus::Ok);
-                continue;
             }
 
             let output = response.text_output();
@@ -1663,38 +1999,18 @@ impl Agent {
                     step_span.close(SpanStatus::Ok);
                 }
                 Ok(()) => {
-                    state.output = Some(output.clone());
-                    state.status = RunStatus::Completed;
-                    self.call_run_complete(&mut state, context).await?;
-                    checkpoint!(
-                        AgentExecutionNode::RunComplete,
-                        &state,
-                        context_event_cursor
-                    );
-                    context.message_history.clone_from(&state.message_history);
-                    close_run_toolsets!(&state, context_event_cursor);
-                    context.publish_event(AgentEvent::new(
-                        "run_complete",
-                        serde_json::json!({"run_id": run_id.as_str()}),
-                    ));
-                    stream_event!(
-                        &state,
-                        AgentStreamEvent::RunComplete {
-                            run_id: run_id.clone(),
-                            output: output.clone(),
-                        }
-                    );
-                    step_span.close(SpanStatus::Ok);
-                    run_span.close(SpanStatus::Ok);
-                    context.finish_run();
-                    context.trace_context = previous_trace_context;
-                    return Ok(AgentResult {
-                        output,
-                        structured_output: state.structured_output.clone(),
-                        messages: state.message_history.clone(),
+                    let structured_output = state.structured_output.clone();
+                    let FinalizeTransition::Complete { output } =
+                        Self::finalize_phase(&mut state, output, structured_output);
+                    complete_run!(
                         state,
-                        history_len,
-                    });
+                        output,
+                        &run_id,
+                        context_event_cursor,
+                        step_span,
+                        run_span,
+                        history_len
+                    );
                 }
                 Err(CapabilityError::ModelRetry(message)) => {
                     if output_retries_used >= self.policy.output_retries {
@@ -1708,7 +2024,6 @@ impl Agent {
                             &mut state,
                             &run_id,
                             context_event_cursor,
-                            previous_trace_context.clone(),
                             AgentError::OutputRetryLimitExceeded {
                                 retries: output_retries_used,
                             }
@@ -1744,25 +2059,154 @@ impl Agent {
                         &mut state,
                         &run_id,
                         context_event_cursor,
-                        previous_trace_context.clone(),
                         Self::capability_error(error)
                     );
                 }
             }
         }
-        }
+        })
         .await;
         model_session.close().await;
-        run_result
+        match run_result {
+            Ok(exit) => {
+                let (output, structured_output) = match exit {
+                    RunLoopExit::Completed { output } => (output, state.structured_output.clone()),
+                    RunLoopExit::Waiting => (String::new(), None),
+                };
+                Ok(AgentResult {
+                    output,
+                    structured_output,
+                    messages: state.message_history.clone(),
+                    state,
+                    history_len,
+                })
+            }
+            Err(error) if context.runtime.lifecycle.entered => {
+                run_span.close(SpanStatus::Error {
+                    error_type: agent_error_kind(&error).to_string(),
+                });
+                fail_run!(&mut state, &run_id, context_event_cursor, error);
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use starweaver_core::{AgentId, RunId};
+    use starweaver_core::{AgentId, ConversationId, RunId};
 
     use super::*;
+
+    fn test_state() -> AgentRunState {
+        AgentRunState::new(
+            RunId::from_string("run-phase"),
+            ConversationId::from_string("conversation-phase"),
+        )
+    }
+
+    #[test]
+    fn execute_tools_routes_hitl_before_held_final_output() {
+        let mut state = test_state();
+        let mut approval = ToolReturnPart::new("call-1", "review", json!({"pending": true}));
+        approval
+            .metadata
+            .insert("control_flow".to_string(), json!("approval_required"));
+        state.pending_tool_returns.push(approval.clone());
+        state.pending_approval_tool_returns.push(approval);
+        let context = AgentContext::new(AgentId::from_string("agent"));
+        let run_id = state.run_id.clone();
+        let conversation_id = state.conversation_id.clone();
+
+        let transition = Agent::execute_tools_phase(
+            &mut state,
+            &context,
+            Some(("held".to_string(), Some(json!({"ok": true})))),
+            &run_id,
+            &conversation_id,
+        );
+
+        assert!(matches!(transition, ExecuteToolsTransition::AwaitExternal));
+        assert!(state.pending_tool_returns.is_empty());
+        assert!(state.message_history.is_empty());
+    }
+
+    #[test]
+    fn execute_tools_routes_normal_and_held_outputs_explicitly() {
+        let context = AgentContext::new(AgentId::from_string("agent"));
+        let mut state = test_state();
+        let run_id = state.run_id.clone();
+        let conversation_id = state.conversation_id.clone();
+        assert!(matches!(
+            Agent::execute_tools_phase(
+                &mut state,
+                &context,
+                None,
+                &run_id,
+                &conversation_id,
+            ),
+            ExecuteToolsTransition::PrepareRequest { prompt } if prompt.is_empty()
+        ));
+
+        state.pending_tool_returns.push(ToolReturnPart::new(
+            "call-2",
+            "ordinary",
+            json!({"ok": true}),
+        ));
+        let transition = Agent::execute_tools_phase(
+            &mut state,
+            &context,
+            Some(("held".to_string(), Some(json!({"ok": true})))),
+            &run_id,
+            &conversation_id,
+        );
+        assert!(matches!(
+            transition,
+            ExecuteToolsTransition::Finalize {
+                output,
+                structured_output: Some(value),
+            } if output == "held" && value == json!({"ok": true})
+        ));
+        assert!(state.pending_tool_returns.is_empty());
+        assert_eq!(state.message_history.len(), 1);
+    }
+
+    #[test]
+    fn terminal_phases_classify_status_and_finalize_state() {
+        let mut context = AgentContext::new(AgentId::from_string("agent"));
+        let mut state = test_state();
+        let cancelled = Agent::fail_or_cancel_phase(
+            &mut state,
+            &mut context,
+            &AgentError::Cancelled {
+                reason: "stop".to_string(),
+            },
+        );
+        assert!(matches!(
+            cancelled,
+            FailOrCancelTransition::Cancelled { reason } if reason == "stop"
+        ));
+        assert_eq!(state.status, RunStatus::Cancelled);
+
+        let completed =
+            Agent::finalize_phase(&mut state, "done".to_string(), Some(json!({"answer": 42})));
+        assert!(matches!(
+            completed,
+            FinalizeTransition::Complete { output } if output == "done"
+        ));
+        assert_eq!(state.status, RunStatus::Completed);
+        assert_eq!(state.output.as_deref(), Some("done"));
+        assert_eq!(state.structured_output, Some(json!({"answer": 42})));
+
+        let failed = Agent::fail_or_cancel_phase(
+            &mut state,
+            &mut context,
+            &AgentError::Capability("internal detail".to_string()),
+        );
+        assert!(matches!(failed, FailOrCancelTransition::Failed { .. }));
+        assert_eq!(state.status, RunStatus::Failed);
+    }
 
     #[test]
     fn durable_run_id_prefers_starweaver_metadata() {

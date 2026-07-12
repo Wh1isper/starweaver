@@ -38,10 +38,7 @@ pub trait EnvdService: Send + Sync {
 }
 ```
 
-The important decision is that direct CLI mode and RPC mode call this same
-interface. New envd capabilities should be added here first, then exposed over
-RPC and through adapters only when a concrete implementation or caller needs
-them.
+The important decision is that the independent CLI/TUI and RPC products can each call this service interface directly through shared adapters. They do not route envd operations through each other or share product attachment state. New envd capabilities should be added here first, then exposed through product-owned integrations only when a concrete implementation or caller needs them.
 
 ## Environment Identity
 

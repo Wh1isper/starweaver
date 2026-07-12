@@ -1,12 +1,16 @@
 use std::{collections::BTreeMap, sync::Arc, thread, time::Duration};
 
-use starweaver_context::{AgentContext, ToolConfig};
+use starweaver_context::{
+    AgentContext, CONTEXT_USAGE_CAPABILITY, HostCapabilities, ShellEnvironmentSnapshot, ToolConfig,
+    ToolRuntimeSnapshot,
+};
 use starweaver_environment::{
     DynProcessShellProvider, EnvironmentProvider, ShellCommand, ShellOutput, ShellProcessSnapshot,
     ShellProcessStatus, ShellReviewEnvironmentContext,
 };
 use starweaver_tools::{
-    DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolError, ToolInstruction, ToolResult,
+    DynToolset, EmptyToolArgs, StaticToolset, ToolContext, ToolDependencyRequirements, ToolError,
+    ToolInstruction, ToolResult,
 };
 use uuid::Uuid;
 
@@ -16,8 +20,8 @@ use super::{
     shell_review::{ShellReviewContextSnapshot, review_shell_command_or_block},
 };
 use crate::bundles::helpers::{
-    static_sequential_tool, static_sequential_tool_with_metadata, static_tool,
-    tool_environment_error, tool_invalid_arguments, tool_metadata, tool_user_error,
+    static_sequential_tool_with_metadata, static_tool_with_metadata, tool_environment_error,
+    tool_invalid_arguments, tool_metadata_with_dependencies, tool_user_error,
 };
 use crate::bundles::output::{
     DEFAULT_TOOL_OUTPUT_TRUNCATE_LIMIT, append_guidance, dump_tool_output,
@@ -55,7 +59,12 @@ pub fn attach_process_shell(context: &mut AgentContext, provider: DynProcessShel
 #[must_use]
 #[allow(clippy::needless_raw_string_hashes)]
 pub fn shell_tools() -> DynToolset {
-    let approval_metadata = tool_metadata("shell", false, true);
+    let shell_requirements = ToolDependencyRequirements::filtered(Vec::<String>::new(), true)
+        .with_context_capabilities([CONTEXT_USAGE_CAPABILITY]);
+    let approval_metadata =
+        tool_metadata_with_dependencies("shell", false, true, &shell_requirements);
+    let shell_metadata =
+        tool_metadata_with_dependencies("shell", false, false, &shell_requirements);
 
     Arc::new(
         StaticToolset::new("shell")
@@ -84,11 +93,36 @@ Avoid:
                     approval_metadata,
                     shell_exec,
                 ),
-                static_sequential_tool("shell_wait", "Wait for or poll a background shell process.", shell_wait),
-                static_tool("shell_status", "List background shell process status.", shell_status),
-                static_sequential_tool("shell_input", "Write text to a background process stdin.", shell_input),
-                static_sequential_tool("shell_signal", "Send a Unix signal to a background process.", shell_signal),
-                static_sequential_tool("shell_kill", "Terminate and clean up a background shell process.", shell_kill),
+                static_sequential_tool_with_metadata(
+                    "shell_wait",
+                    "Wait for or poll a background shell process.",
+                    shell_metadata.clone(),
+                    shell_wait,
+                ),
+                static_tool_with_metadata(
+                    "shell_status",
+                    "List background shell process status.",
+                    shell_metadata.clone(),
+                    shell_status,
+                ),
+                static_sequential_tool_with_metadata(
+                    "shell_input",
+                    "Write text to a background process stdin.",
+                    shell_metadata.clone(),
+                    shell_input,
+                ),
+                static_sequential_tool_with_metadata(
+                    "shell_signal",
+                    "Send a Unix signal to a background process.",
+                    shell_metadata.clone(),
+                    shell_signal,
+                ),
+                static_sequential_tool_with_metadata(
+                    "shell_kill",
+                    "Terminate and clean up a background shell process.",
+                    shell_metadata,
+                    shell_kill,
+                ),
             ]),
     )
 }
@@ -382,10 +416,15 @@ fn merged_shell_environment(
     per_call: Option<BTreeMap<String, String>>,
 ) -> BTreeMap<String, String> {
     let mut environment = context
-        .dependency::<AgentContext>()
-        .map_or_else(std::collections::BTreeMap::new, |agent_context| {
-            agent_context.shell_env.clone()
-        });
+        .dependency::<ShellEnvironmentSnapshot>()
+        .map_or_else(
+            || {
+                context
+                    .dependency::<ToolRuntimeSnapshot>()
+                    .map_or_else(BTreeMap::new, |runtime| runtime.shell_environment().clone())
+            },
+            |snapshot| snapshot.environment().clone(),
+        );
     if let Some(per_call) = per_call {
         environment.extend(per_call);
     }
@@ -482,15 +521,19 @@ fn process_provider(
     context: &ToolContext,
     tool: &str,
 ) -> Result<DynProcessShellProvider, ToolError> {
-    maybe_process_provider(context)
-        .ok_or_else(|| tool_user_error(tool, "ProcessShellHandle is missing from AgentContext"))
+    maybe_process_provider(context).ok_or_else(|| {
+        tool_user_error(
+            tool,
+            "ProcessShellHandle dependency is missing from ToolContext",
+        )
+    })
 }
 
 fn maybe_process_provider(context: &ToolContext) -> Option<DynProcessShellProvider> {
-    let agent_context = context.dependency::<AgentContext>()?;
-    agent_context
-        .dependencies
-        .get::<ProcessShellHandle>()
+    context
+        .dependency::<HostCapabilities>()
+        .and_then(|capabilities| capabilities.get::<ProcessShellHandle>())
+        .or_else(|| context.dependency::<ProcessShellHandle>())
         .map(|handle| handle.provider())
 }
 
@@ -638,9 +681,9 @@ struct TruncatedOutput {
 }
 
 fn shell_output_truncate_limit(context: &ToolContext) -> usize {
-    context.dependency::<AgentContext>().map_or_else(
+    context.dependency::<ToolRuntimeSnapshot>().map_or_else(
         || ToolConfig::default().shell_output_truncate_limit,
-        |context| context.tool_config.shell_output_truncate_limit,
+        |runtime| runtime.tool_config().shell_output_truncate_limit,
     )
 }
 
@@ -685,5 +728,52 @@ fn truncate_shell_output_without_file(content: &str, truncate_limit: usize) -> T
             content.chars().take(truncate_limit).collect::<String>()
         ),
         file_path: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use starweaver_context::DependencyStore;
+    use starweaver_core::{ConversationId, RunId};
+
+    use super::*;
+
+    #[test]
+    fn shell_environment_prefers_dedicated_projection_and_keeps_legacy_fallback() {
+        let mut agent_context = AgentContext::default();
+        agent_context
+            .tools
+            .shell_environment
+            .insert("SOURCE".to_string(), "legacy".to_string());
+        let legacy_runtime = agent_context.tool_runtime_snapshot();
+
+        let mut legacy_dependencies = DependencyStore::new();
+        legacy_dependencies.insert(legacy_runtime.clone());
+        let legacy_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+            .with_dependencies(legacy_dependencies);
+        assert_eq!(
+            merged_shell_environment(&legacy_context, None)["SOURCE"],
+            "legacy"
+        );
+
+        agent_context
+            .tools
+            .shell_environment
+            .insert("SOURCE".to_string(), "dedicated".to_string());
+        let mut filtered_dependencies = DependencyStore::new();
+        filtered_dependencies.insert(legacy_runtime);
+        filtered_dependencies.insert(agent_context.shell_environment_snapshot());
+        let filtered_context = ToolContext::new(RunId::default(), ConversationId::default(), 0)
+            .with_dependencies(filtered_dependencies);
+        let environment = merged_shell_environment(
+            &filtered_context,
+            Some(BTreeMap::from([(
+                "PER_CALL".to_string(),
+                "override".to_string(),
+            )])),
+        );
+
+        assert_eq!(environment["SOURCE"], "dedicated");
+        assert_eq!(environment["PER_CALL"], "override");
     }
 }

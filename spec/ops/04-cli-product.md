@@ -1,6 +1,8 @@
 # CLI Product
 
-The CLI Product is the first product surface for Starweaver durable execution. It makes the SDK self-hosting path concrete: a local user can run an agent, stream display-protocol events through stdio, persist display messages for session restore, and later attach richer renderers such as TUI or service-backed clients to the same event feed.
+The CLI product is an independent local product surface for Starweaver durable execution. It embeds the Agent SDK, owns its command and TUI application coordination, can connect directly to envd, streams display-protocol events through stdio, and persists display messages for session restore.
+
+The normative product/process boundary is `00-product-boundaries.md`. The CLI/TUI product is not an RPC frontend and does not share product coordination, handlers, configuration, or lifecycle state with `starweaver-rpc`.
 
 ## Product Direction
 
@@ -8,15 +10,14 @@ Prioritize the CLI as the bootstrap product for Starweaver:
 
 - headless agent runs through stdio
 - shared configuration rooted at `~/.starweaver/config.toml`
-- client UI state rooted at `~/.starweaver/tui` and `~/.starweaver/desktop`
-- Starweaver JSON-RPC host protocol with stdio and HTTP local management and execution transports
-- environment attachment and active-mount controls shared by RPC, TUI, and Desktop
-- CLI commands as a shell-friendly subset over the same runtime/service handlers
-- TUI as the terminal client over the runtime surface
-- Desktop as the desktop client over the runtime surface
+- TUI client state rooted at `~/.starweaver/tui`
+- CLI-owned environment attachment and active-mount controls
+- CLI commands and TUI interactions over CLI-owned application coordination
+- direct local and remote envd connectivity through shared environment abstractions
+- TUI as the terminal interface of the CLI product
 - display-protocol-first rendering
 - persisted `DisplayMessage` records as the session restore source
-- TUI renderers, Desktop renderers, and CLI JSONL over the same Starweaver `DisplayMessage` stream
+- TUI renderers and CLI JSONL over the same Starweaver `DisplayMessage` stream
 - protocol adapters for Starweaver/AGUI event projection
 - launcher-based command dispatch through `starweaver`
 - short alias through `sw`
@@ -50,7 +51,6 @@ starweaver update --dry-run
 starweaver update --force
 starweaver cli -p "summarize this repository"
 starweaver rpc stdio
-starweaver cli rpc
 starweaver cli session show <session-id>
 starweaver cli session replay <session-id> --output display-jsonl
 ```
@@ -85,17 +85,14 @@ Current landed CLI foundations:
 - `clap` command surface, launcher dispatch, `sw` alias, installer/update paths, diagnostics, setup templates, auth status/logout, profile and catalog commands
 - headless prompt runs, local SQLite sessions/runs, display JSONL replay, approval/deferred commands, resume, trim, current-session pointer, and retained TUI renderer
 - config parser for global/project roots, model profiles, selected environment values, tools/MCP metadata, skill/subagent directories, and unmapped metadata
-- global config bootstrap under `~/.starweaver`, including `skills`, `subagents`, `tui`, and `desktop` state directories
+- global config bootstrap under `~/.starweaver`, including `skills`, `subagents`, and `tui` state directories
 - TUI state/render/terminal modules, active-run steering, `/help`, `/clear`, `/cost`, `/model`, `/goal`, shell passthrough, streamed tool-call rendering, process-level provider session affinity, and model choice persistence under `~/.starweaver/tui/state.json`
-- JSON-RPC stdio/HTTP service with `initialize`, `shutdown`, `profile.*`, `model.*`, `config.get`, `diagnostics.get`, session management, `stream.replay`, stdio live `stream.subscribe` / `stream.unsubscribe`, non-blocking `run.start`, blocking `run.prompt`, product-shaped replay aliases, `run.await`, cancellation, steering, approvals, and deferred calls
-- shared RPC protocol helpers in `starweaver-rpc-core` for JSON-RPC frame parsing, request validation, request/error envelopes, replay cursor parsing, replay results, and stream payload projection
 - partial worktree parsing and run metadata support
 
 Current implementation shape for headless execution:
 
 - one-shot `run_prompt` renders stored `DisplayMessage` records after run completion
-- RPC and TUI active runs share `CliRuntimeCoordinator`, which owns active-run registration, live display projection, raw runtime forwarding for TUI, native replay-event subscriptions, cancellation senders, and steering senders
-- RPC owns protocol payload projection: the coordinator publishes scoped Starweaver replay events, while RPC maps those events to AGUI or native `DisplayMessage` payloads at the transport edge
+- CLI and TUI active runs use `CliRuntimeCoordinator`, which is private to the CLI product and owns active-run registration, live display projection, raw runtime forwarding for TUI, cancellation senders, and steering senders
 - `LocalStore` persists sessions, runs, raw stream records, display messages, approvals, deferred calls, context state, environment state, checkpoints, replay snapshots, and current-session state; `LocalSessionStore` and `LocalStreamArchive` adapt that store to the shared `SessionStore` and `StreamArchive` contracts while exposing persisted display output as `ReplayScope` / `ReplayCursor` windows during storage convergence
 
 Primary postponed migration gaps:
@@ -146,11 +143,9 @@ Headless output modes:
 
 `display-jsonl` is the Starweaver-native automation format for live output. `json` is the compact command-result format for hosts that only need the final run summary. `DisplayMessage` is the durable Starweaver wire event used by CLI output, replay archives, and restore views. `agui-jsonl` is the adapter format for consumers that expect Starweaver/AGUI top-level event objects.
 
-The Starweaver JSON-RPC host protocol is the complete local host-control API. The CLI product exposes it through stdio and HTTP transport modes. CLI commands are the shell-friendly subset over the same service handlers. TUI is a terminal client over the same in-process runtime coordinator and local store, while Desktop applications can use the JSON-RPC host protocol as a desktop client.
+Model choice is CLI/TUI client state. `~/.starweaver/config.toml` defines available model profiles, envd profiles, and provider settings, while `~/.starweaver/tui/state.json` stores the selected TUI model profile. Headless CLI runs can pass `--profile`. RPC configuration and client state are owned separately by the RPC product.
 
-Model choice is client state. `~/.starweaver/config.toml` defines shared model profiles, envd profiles, and provider settings, while `~/.starweaver/tui/state.json` and `~/.starweaver/desktop/state.json` store the selected model profile for each frontend. Headless CLI runs can still pass `--profile`; RPC `run.start` can pass an explicit `profile`/`modelProfile` or fall back to the selected profile for the supplied `client`. TUI envd attachments come from config-backed `[envd_profiles.*]` entries rather than TUI-specific argv.
-
-Environment mount choice is run state. `local` is the reserved mount id for the configured local Starweaver workspace. Interactive TUI startup materializes `local` plus every enabled envd profile so the first run can see several environments at once. RPC startup uses the same attachment contract: omitted attachments mean the reserved local environment only, while an explicit `environmentAttachments` list is authoritative and must include `{"id": "local", "kind": "local"}` when local workspace access is desired alongside envd mounts. After `environment.active_mounts` lands, RPC, TUI, and Desktop active runs use the same host-control mutation path for active mount, active unmount, and active list instead of frontend-specific environment wiring.
+Environment mount choice is CLI run state. `local` is the reserved mount id for the configured local Starweaver workspace. Interactive TUI startup can materialize `local` plus enabled envd profiles so the run can see several environments. CLI/TUI resolves these providers directly through shared environment and envd client abstractions; it does not route attachment operations through the Starweaver host RPC product.
 
 ## Session Affinity and Durable Sessions
 
@@ -164,312 +159,58 @@ The CLI separates durable local sessions from provider-routing affinity:
 - Headless CLI runs set `AgentContext.session_id` from explicit `starweaver.session_affinity_id` metadata when present. If no explicit affinity exists and no restored context affinity exists, the durable session id is used only as the runtime context affinity, not as generic provider HTTP metadata.
 - Provider-specific routing is resolved through typed `ModelSettings` overlays: OpenAI prompt-cache keys, Codex OAuth session/thread headers, and opt-in Gateway `x-session-id`.
 
-## JSON-RPC CLI Adapter
+## CLI and TUI Application Coordination
 
-The target host-control wire contract is `06-json-rpc-host-protocol.md`. This section records how the current local product exposes standalone, CLI, stdio, and HTTP adapters and how they are wired into the CLI runtime.
-
-The local adapter is a JSON-RPC 2.0 service with stdio and HTTP transport modes:
-
-```bash
-starweaver rpc stdio
-starweaver-rpc stdio
-starweaver-rpc http --host 127.0.0.1 --port 8765
-starweaver cli rpc
-starweaver-cli rpc
-starweaver-cli rpc stdio
-starweaver-cli rpc http --host 127.0.0.1 --port 8765
-```
-
-The standalone `starweaver-rpc` process owns its argv parser and starts one transport mode through the shared RPC server API. `starweaver-cli rpc` exposes the same server for CLI-managed installs and launcher compatibility. Stdio sends JSON-RPC requests on stdin, receives responses and notifications on stdout, and reads diagnostics from stderr. HTTP accepts JSON-RPC request/response calls at `POST /rpc`; live server notifications remain a stdio and future long-connection profile concern. Both transports use the same local config, profiles, tool policy, workspace binding, client state directories, runtime coordinator, and durable SQLite store as CLI commands.
-
-Local state roots:
-
-| Path                               | Owner                     | Purpose                                                                                                           |
-| ---------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `~/.starweaver/config.toml`        | shared CLI/runtime config | default profile, provider settings, config-backed model/envd profiles, environment defaults, output/HITL defaults |
-| `~/.starweaver/tools.toml`         | shared CLI/runtime config | tool policy metadata                                                                                              |
-| `~/.starweaver/mcp.json`           | shared CLI/runtime config | MCP server metadata                                                                                               |
-| `~/.starweaver/skills`             | shared catalog            | global skill definitions                                                                                          |
-| `~/.starweaver/subagents`          | shared catalog            | global subagent definitions                                                                                       |
-| `~/.starweaver/tui/state.json`     | TUI client                | selected profile and durable terminal UI state; process-level affinity is generated at startup                    |
-| `~/.starweaver/desktop/state.json` | Desktop client            | selected profile and future desktop UI state                                                                      |
-| `.starweaver/config.toml`          | project config            | workspace-specific environment, trim, provider, and profile overrides                                             |
-| `.starweaver/state.json`           | project runtime state     | current session pointer                                                                                           |
-
-The target protocol treats JSON-RPC as the semantic protocol and stdio/HTTP as transport profiles. The current CLI adapter is the first local server implementation:
-
-| Surface        | Role                       | Coverage                                                                                                                                        |
-| -------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| JSON-RPC stdio | local runtime API          | session management, run lifecycle, live notifications, cancellation, steering, approvals, deferred calls, replay, profiles, config, diagnostics |
-| JSON-RPC HTTP  | local request/response API | session management, run lifecycle, cancellation, steering, approvals, deferred calls, replay, profiles, config, diagnostics                     |
-| CLI commands   | shell-friendly subset      | scripted prompt runs, session listing/show/replay, approval/deferred decisions, diagnostics, setup, config, update                              |
-| TUI            | terminal client            | interactive renderer and controls backed by the same runtime coordinator and display stream                                                     |
-| Desktop        | desktop client             | graphical renderer and controls backed by the same runtime coordinator and display stream                                                       |
-
-Current stdio framing:
-
-- UTF-8 JSON-RPC 2.0 messages are newline-delimited; each line is one complete JSON object.
-- stdout is reserved for protocol frames.
-- stderr carries human-readable diagnostics, tracing setup messages, and crash reports.
-- requests use standard `id`, `method`, and `params` fields.
-- responses use standard `result` or `error` fields.
-- notifications carry live stream events and have no `id` field.
-- protocol version is returned by `initialize` and stored as a date-like string such as `2026-06-08`.
-
-Current HTTP framing:
-
-- `POST /rpc` carries one JSON-RPC 2.0 request object as the HTTP request body.
-- Successful JSON-RPC responses use HTTP `200 OK` with an `application/json` body.
-- JSON-RPC notifications without response ids use HTTP `204 No Content`.
-- `GET /health` and `GET /healthz` return a lightweight health response.
-- HTTP `shutdown` returns a JSON-RPC response, then stops the local HTTP accept loop.
-- The unary HTTP endpoint does not stream live server notifications; HTTP clients use `run.await`, `run.status`, or `stream.replay` for progress.
-
-The target host protocol standardizes protocol identity, features, typed params/results, structured errors, idempotency, stream subscriptions, and event projections in `06-json-rpc-host-protocol.md`.
-
-Runtime topology:
+CLI commands and TUI interactions execute through CLI-owned application coordination. `CliRuntimeCoordinator` is a private product implementation detail; it is not a shared host service and is not consumed by `starweaver-rpc`.
 
 ```mermaid
 flowchart TD
-    rpc[JSON-RPC service]
-    stdio[stdio transport]
-    http[HTTP transport]
-    cli[CLI command subset]
-    tui[TUI terminal client]
-    desktop[Desktop client]
-    service[CliService command handlers]
-    coordinator[CliRuntimeCoordinator]
-    store[LocalStore]
-    session_store[LocalSessionStore]
-    archive[LocalStreamArchive]
-    replay[ReplayScope and ReplayCursor windows]
-    runtime[Agent runtime]
-    display[DisplayMessage stream]
-    protocol[RPC payload adapter]
+    command[CLI command]
+    tui[TUI]
+    coordinator[CLI-owned coordinator]
+    agent[Agent SDK]
+    storage[Shared storage implementation]
+    environment[Shared environment provider]
+    envd_client[Envd client]
+    envd[Envd service]
 
-    stdio --> rpc
-    http --> rpc
-    rpc --> coordinator
-    cli --> service
+    command --> coordinator
     tui --> coordinator
-    desktop --> rpc
-    service --> runtime
-    service --> store
-    runtime --> session_store
-    service --> display
-    coordinator --> runtime
-    coordinator --> session_store
-    coordinator --> archive
-    runtime --> coordinator
-    coordinator --> display
-    session_store --> store
-    archive --> store
-    archive --> replay
-    coordinator --> replay
-    replay --> protocol
-    protocol --> rpc
-    display --> rpc
-    display --> cli
-    display --> tui
-    display --> desktop
-    store --> rpc
-    store --> cli
-    store --> tui
-    store --> desktop
+    coordinator --> agent
+    coordinator --> storage
+    coordinator --> environment
+    environment --> envd_client
+    envd_client --> envd
 ```
 
-Lifecycle:
+The CLI product may share these lower-level abstractions with the standalone RPC product:
 
-```mermaid
-sequenceDiagram
-    participant Client as TUI/Desktop/Host
-    participant RPC as sw cli rpc
-    participant Coordinator as Runtime coordinator
-    participant Store as SQLite store
-    participant Runtime as Agent runtime
+- Agent SDK construction and run lifecycle helpers;
+- session, stream, replay, and atomic storage contracts;
+- display and AGUI projection helpers;
+- environment providers, run bindings, and envd clients;
+- protocol-neutral conformance fixtures.
 
-    Client->>RPC: initialize
-    RPC-->>Client: capabilities
-    Client->>RPC: session.create or session.list
-    RPC->>Store: read/write session records
-    RPC-->>Client: session result
-    Client->>RPC: run.start
-    RPC->>Coordinator: create active run
-    Coordinator->>Store: append run, mark running
-    Coordinator->>Runtime: execute AgentSession
-    RPC-->>Client: run started result
-    Runtime-->>Coordinator: runtime stream records
-    Coordinator->>Store: persist raw/display evidence
-    Coordinator-->>RPC: display/status events
-    RPC-->>Client: run.output notifications
-    Client->>RPC: run.cancel or run.steer
-    RPC->>Coordinator: send cancel/steering channel message
-    Coordinator->>Runtime: observe control at runtime boundary
-    Coordinator-->>RPC: terminal run status
-    RPC-->>Client: run.status notification
-```
+It must not share product command dispatch, active-run registries, client state, authorization, or transport lifecycle with RPC. Shared helpers that currently carry CLI or RPC names must move to the lower owning crate before reuse.
 
-Current implemented RPC methods:
+### Envd Connectivity
 
-The current CLI adapter implements canonical stream replay and subscription methods and still exposes product-shaped replay aliases while the router split continues.
+CLI/TUI resolves local, virtual, composite, and envd-backed providers directly. Envd may run in-process through `LocalEnvd`, as a child stdio service, or at an authenticated HTTP endpoint. Selection and mount state belong to the CLI run and are translated into one SDK-facing environment provider.
 
-| Method                | Purpose                                                                                     | Primary params                                                                             | Result                                                                   |
-| --------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
-| `initialize`          | handshake and capability discovery                                                          | `clientInfo`, optional `workspaceRoot`                                                     | `protocolVersion`, `serverInfo`, `capabilities`, selected config summary |
-| `shutdown`            | graceful server shutdown                                                                    | optional `timeoutMs`                                                                       | terminal status                                                          |
-| `session.create`      | create a durable local session                                                              | `profile`, `title`, `metadata`, optional `workspaceRoot`                                   | session summary                                                          |
-| `session.list`        | list sessions                                                                               | `profile`, `workspace`, `status`, `limit`                                                  | session summaries                                                        |
-| `session.get`         | load one session and recent runs                                                            | `sessionId`, `runs`                                                                        | session summary plus run summaries                                       |
-| `session.current.get` | read current project session pointer                                                        | empty params                                                                               | current session id or null                                               |
-| `session.current.set` | update current project session pointer                                                      | `sessionId`                                                                                | updated pointer                                                          |
-| `session.delete`      | delete a session and retained evidence                                                      | `sessionId`                                                                                | deletion summary                                                         |
-| `session.replay`      | replay persisted display messages                                                           | `sessionId`, optional `runId`, optional `cursor` or `after`                                | display messages, replay events, latest cursor, and next sequence        |
-| `session.output`      | replay session output and live-tail when the transport supports notifications               | `sessionId`, optional `runId`, optional `cursor` or `after`, optional `payloadFormat`      | output events plus active subscription state                             |
-| `stream.replay`       | replay persisted stream output                                                              | `sessionId`, optional `runId`, optional `cursor` or `after`                                | replay events, display messages, latest cursor, and next sequence        |
-| `stream.subscribe`    | replay then subscribe to active stream output on notification-capable transports            | `sessionId`, optional `runId`, optional `cursor` or `after`, optional `subscriptionId`     | subscription id, output events, active subscription state                |
-| `stream.unsubscribe`  | cancel an active stream subscription                                                        | `subscriptionId`                                                                           | unsubscribe acknowledgement                                              |
-| `run.start`           | append and start a non-blocking agent run                                                   | `prompt`, session selection, `profile`/`modelProfile`, `client`, `hitl`, streaming options | `sessionId`, `runId`, `status`, `payloadFormat`                          |
-| `run.prompt`          | append and run a blocking prompt                                                            | `prompt`, session selection, `profile`/`modelProfile`, `client`, `hitl`                    | compact final JSON run summary                                           |
-| `run.attach`          | replay then live-tail an active or historical run when the transport supports notifications | `sessionId`, `runId`, optional `cursor` or `after`, optional `payloadFormat`               | output events plus active subscription state                             |
-| `run.status`          | inspect one run                                                                             | `sessionId`, `runId`                                                                       | run summary                                                              |
-| `run.cancel`          | request cancellation for an active run                                                      | `runId`, optional `reason`                                                                 | cancellation acknowledgement                                             |
-| `run.steer`           | enqueue steering text for an active run                                                     | `runId`, `text`, optional `steeringId`                                                     | steering acknowledgement                                                 |
-| `session.steer`       | enqueue steering text for the active run in a session                                       | `sessionId`, `text`, optional `steeringId`                                                 | steering acknowledgement with resolved `runId`                           |
-| `run.await`           | wait for terminal status                                                                    | `sessionId`, `runId`, optional `timeoutMs`                                                 | terminal run summary                                                     |
-| `approval.list`       | list approval records                                                                       | optional `sessionId`, optional `runId`                                                     | approval records                                                         |
-| `approval.decide`     | approve or deny a pending approval                                                          | `approvalId`, `status`, optional `reason`                                                  | updated approval record                                                  |
-| `deferred.list`       | list deferred tool calls                                                                    | optional `sessionId`, optional `runId`                                                     | deferred records                                                         |
-| `deferred.complete`   | complete a deferred tool call                                                               | `deferredId`, JSON `result`                                                                | updated deferred record                                                  |
-| `deferred.fail`       | fail a deferred tool call                                                                   | `deferredId`, `error`                                                                      | updated deferred record                                                  |
-| `profile.list`        | list available profiles                                                                     | optional `client`                                                                          | profile summaries plus current client selection                          |
-| `profile.get`         | load one profile                                                                            | `name`                                                                                     | profile details safe for clients                                         |
-| `model.list`          | list model profiles for a client                                                            | optional `client` (`tui` or `desktop`)                                                     | profile summaries plus current selected profile                          |
-| `model.current`       | read selected model profile for a client                                                    | optional `client`                                                                          | `selectedProfile`, `modelId`, client scope                               |
-| `model.select`        | persist selected model profile for a client                                                 | `client`, `profile`                                                                        | updated selected profile and model id                                    |
-| `config.get`          | read selected resolved config values                                                        | `key` or `keys`                                                                            | key/value map                                                            |
-| `diagnostics.get`     | read runtime diagnostics                                                                    | optional sections                                                                          | diagnostics object                                                       |
+The standalone RPC product performs the same kind of resolution independently. The products may use the same `EnvironmentProvider` factories and `EnvdRpcClient`, but they do not share attachment registries or active-run mount state.
 
-Run session selection mirrors existing CLI flags:
+### Standalone RPC Packaging
 
-| RPC field          | CLI equivalent           | Behavior                                                   |
-| ------------------ | ------------------------ | ---------------------------------------------------------- |
-| `sessionId`        | `--session <id>`         | append a run to the selected session                       |
-| `continueLatest`   | `--continue`             | use the current project session, then latest local session |
-| `newSession`       | `--new-session`          | create a fresh session before appending the run            |
-| `restoreFromRunId` | `--run <run-id>`         | restore from a selected run before appending the run       |
-| `branchFromRunId`  | `--branch-from <run-id>` | branch from a historical run snapshot                      |
+The `starweaver` launcher may dispatch `starweaver rpc ...` to the separately installed `starweaver-rpc` binary. This is process dispatch only and must not introduce a Rust dependency from CLI to RPC or from RPC to CLI.
 
-Run model selection priority:
+Legacy `starweaver-cli rpc` and `starweaver cli rpc` forms may exist only during a deprecation window as external-process launchers. They must not host RPC handlers in the CLI process and should be removed after standalone migration is complete.
 
-| Source                                                  | Scope                 | Priority | Notes                                                                           |
-| ------------------------------------------------------- | --------------------- | -------- | ------------------------------------------------------------------------------- |
-| `profile` / `modelProfile` in `run.start` params        | one run               | 1        | explicit host override, equivalent to CLI `--profile`                           |
-| selected profile in `~/.starweaver/<client>/state.json` | TUI or Desktop client | 2        | used when `client` is supplied and no explicit profile is passed                |
-| `general.default_profile` from resolved config          | shared config         | 3        | fallback from `~/.starweaver/config.toml`, project config, env, or CLI defaults |
+### CLI/TUI Acceptance
 
-`model.select` validates the profile against `profile.list` before writing frontend state. It never mutates `~/.starweaver/config.toml`; shared config owns available profiles, client state owns the current selected profile.
-
-Live notifications:
-
-| Method        | Params                                                              | When emitted                                           |
-| ------------- | ------------------------------------------------------------------- | ------------------------------------------------------ |
-| `run.started` | `sessionId`, `runId`, `status`                                      | after durable run creation and active-run registration |
-| `run.output`  | `sessionId`, `runId`, `cursor`, `payloadFormat`, `payload`          | each projected display message                         |
-| `run.status`  | `sessionId`, `runId`, `status`, optional `outputPreview` or `error` | running, completed, failed, cancelled                  |
-
-The current CLI adapter defaults stream payloads to `agui`, where `payload` is a Starweaver/AGUI top-level event object mapped from the durable `DisplayMessage`. The target host protocol keeps canonical `ReplayEvent` data primary and treats AGUI as an optional projection. Payload formatting is owned by the RPC protocol edge, not by `CliRuntimeCoordinator`.
-
-Replay cursor semantics are scope-local. `run.attach` and `session.replay` with a `runId` use `ReplayScope::run(runId)`, where event sequence values match the run-local `DisplayMessage.sequence`. `session.output` without a `runId` and `session.replay` without a `runId` use `ReplayScope::session(sessionId)`, where sequence values are assigned over the ordered session display feed. The numeric `after` parameter is a shorthand for a `ReplayCursor` in the requested scope; clients that need explicit reconnect state should send the full `cursor` object returned by `run.output` or `session.replay.latestCursor`.
-
-Current live semantics: `run.start` returns after durable run creation and active-run registration. The final result arrives through `run.status` / `stream.status` and can also be awaited with `run.await`. Active cancellation and steering use the in-memory active-run registry, while durable run output is replayed from SQLite through `stream.replay`, `session.replay`, `session.output`, and `run.attach`. Stdio is the current notification-capable transport: its `initialize` response advertises `liveDisplay: true` and `streamSubscribe: true`, `stream.subscribe` owns explicit subscription ids, and `stream.unsubscribe` cancels active RPC forwarding threads. Unary HTTP advertises `liveDisplay: false` and `streamSubscribe: false`; HTTP clients use `run.await`, `run.status`, and `stream.replay` instead of live subscriptions. `run.prompt` remains a blocking method and returns the same compact JSON summary as `--output json` after completion.
-
-Example stdio handshake:
-
-```json
-{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"desktop","version":"X.Y.Z"}}}
-```
-
-```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2026-06-08","serverInfo":{"name":"starweaver-cli","version":"X.Y.Z"},"capabilities":{"sessions":true,"runs":true,"management":true,"profiles":true,"clientModelSelection":true,"blockingRunStart":false,"blockingRunPrompt":true,"nonBlockingRunStart":true,"liveDisplay":true,"streamReplay":true,"streamSubscribe":true,"cancel":true,"steering":true,"attach":true,"defaultStreamPayload":"agui","approvals":true,"deferred":true},"config":{"globalDir":"/home/user/.starweaver","tuiStateDir":"/home/user/.starweaver/tui","desktopStateDir":"/home/user/.starweaver/desktop","defaultProfile":"general"}}}
-```
-
-Unary HTTP returns the same method surface for request/response calls but sets `liveDisplay` and `streamSubscribe` to `false` in `initialize`.
-
-Example model selection:
-
-```json
-{"jsonrpc":"2.0","id":2,"method":"model.select","params":{"client":"tui","profile":"coding"}}
-```
-
-```json
-{"jsonrpc":"2.0","id":2,"result":{"client":"tui","selectedProfile":"coding","modelId":"openai:gpt-5"}}
-```
-
-Example run start:
-
-```json
-{"jsonrpc":"2.0","id":3,"method":"run.start","params":{"prompt":"summarize this repository","newSession":true,"client":"tui","stream":{"payloadFormat":"agui"}}}
-```
-
-```json
-{"jsonrpc":"2.0","id":3,"result":{"sessionId":"session_...","runId":"run_...","status":"running","payloadFormat":"agui"}}
-```
-
-Example live event:
-
-```json
-{"jsonrpc":"2.0","method":"run.output","params":{"sessionId":"session_...","runId":"run_...","cursor":{"scope":"run:run_...","sequence":3},"payloadFormat":"agui","payload":{"type":"TEXT_MESSAGE_CONTENT","messageId":"run_...","delta":"Hello"}}}
-```
-
-CLI commands remain a subset/facade over the same handlers:
-
-| CLI command                             | RPC equivalent                           | Purpose                          |
-| --------------------------------------- | ---------------------------------------- | -------------------------------- |
-| `run -p ... --output display-jsonl`     | shared prompt run and display projection | shell-friendly foreground run    |
-| `run --output json`                     | shared prompt run with compact summary   | compact final run summary        |
-| `session list --output json`            | `session.list`                           | scripted session discovery       |
-| `session show --output json`            | `session.get`                            | scripted session inspection      |
-| `session replay --output display-jsonl` | `session.replay`                         | scripted replay export           |
-| `approval * --output json`              | `approval.*`                             | scripted HITL decisions          |
-| `deferred * --output json`              | `deferred.*`                             | scripted deferred-tool decisions |
-
-TUI is the terminal client over the runtime coordinator. It calls the coordinator in-process, receives raw `AgentStreamRecord` values for terminal state updates, and shares the same session store, run lifecycle preparation, cancellation, and steering infrastructure as RPC without launching through the JSON-RPC stdio server.
-
-Implementation impact on the current CLI:
-
-- add `CliCommand::Rpc(RpcCommand)` and route it through `run_from_env` so the RPC server can own stdin/stdout directly
-- keep `command_output` for shell-friendly one-shot commands and tests
-- introduce `starweaver-rpc-core` for JSON-RPC frame parsing/request validation plus a `rpc` module with request dispatch, model selection methods, local transport handling, and stderr diagnostics
-- introduce a `CliRuntimeCoordinator` shared by RPC and TUI active runs
-- split prompt execution into prepare, run, complete, and fail steps so product surfaces can share run lifecycle code without routing through each other
-- project live runtime records into `DisplayMessage` values, wrap them in scoped replay events, and preserve raw runtime records for TUI state updates
-- keep raw `AgentStreamRecord` capture for debugging, replay evidence, and TUI state updates
-- maintain an active-run registry keyed by `runId` with cancellation sender, steering sender, status, live display messages, and stream subscribers
-- maintain run-local environment binding state with monotonic `bindingVersion`,
-  active mount mutation serialization, and environment lifecycle replay events
-- expose management methods through RPC first, then map CLI command subset onto the same service handlers
-- reuse `LocalStore` methods for session/approval/deferred management, expose shared lifecycle and replay through `LocalSessionStore`, `LocalStreamArchive`, and `ReplayScope` / `ReplayCursor` windows, then converge concrete storage calls onto `starweaver-storage` adapters when the CLI persistence migration lands
-
-Implemented build slices:
-
-1. Protocol shell: `sw cli rpc`, `initialize`, `shutdown`, newline JSON-RPC framing tests, stderr diagnostics contract.
-2. Management API: `session.create`, `session.list`, `session.get`, current-session pointer methods, `session.replay`, `profile.*`, `model.*`, `config.get`, `diagnostics.get`.
-3. Run lifecycle: shared prompt preparation/execution/completion, blocking `run.prompt`, non-blocking `run.start`, session selection, and client-state model selection.
-4. Live display: shared runtime coordinator, non-blocking active-run registry, `run.output`, terminal `run.status` notification, AGUI/default payload projection, `session.output`, and `run.attach`.
-5. Active control: `run.cancel`, `run.steer`, `session.steer`, `approval.*`, `deferred.*`, `run.await`.
-
-Target cleanup slices:
-
-1. Environment attachments: `environment.attach`, `environment.detach`,
-   `environment.list`, `environment.health`, run-start `environmentAttachments`,
-   `environment_info`, and config-backed TUI envd profile materialization.
-2. Active environment mounts: `environment.active_mount`,
-   `environment.active_unmount`, `environment.active_list`, binding-version
-   conflict handling, lease-scope checks, lifecycle replay projection, and
-   append-only steering context injection.
-3. CLI facade: normalize `--output json`, keep `display-jsonl` run/replay streams, and map command handlers onto the same runtime service methods.
-4. TUI client migration: route TUI active runs through the in-process coordinator while preserving the retained terminal renderer.
-5. Desktop client: consume the standardized host protocol, display stream, and replay/subscription semantics from `06-json-rpc-host-protocol.md`.
+- Headless CLI and TUI tests link no `starweaver-rpc` implementation.
+- CLI/TUI can run against local providers and authenticated envd endpoints without starting the Starweaver host RPC server.
+- CLI/TUI sessions, replay, cancellation, steering, and approval behavior use shared contracts while retaining CLI-owned application state.
+- The CLI manifest does not depend on `starweaver-rpc`; any optional use of `starweaver-rpc-core` is limited to product-neutral projection or client contracts.
 
 ## Display Protocol as the UI Boundary
 

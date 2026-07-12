@@ -4,6 +4,7 @@ use std::future::Future;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use starweaver_core::ProtocolIdentity;
 use starweaver_stream::{
     DisplayMessage, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayScope, display_to_agui_event,
 };
@@ -33,6 +34,8 @@ pub const METHOD_NOT_FOUND: i64 = -32_601;
 pub const INVALID_PARAMS: i64 = -32_602;
 /// JSON-RPC server error code.
 pub const SERVER_ERROR: i64 = -32_000;
+/// Starweaver host error code for a method called before protocol initialization.
+pub const NOT_INITIALIZED: i64 = -32_001;
 /// Starweaver host error code for a feature unavailable on this connection.
 pub const UNSUPPORTED_FEATURE: i64 = -32_002;
 /// Starweaver host error code for a create conflict with an existing record.
@@ -46,10 +49,67 @@ pub const ENVIRONMENT_UNAVAILABLE: i64 = -32_031;
 /// Starweaver host error code for configuration or profile resolution failures.
 pub const CONFIGURATION_FAILED: i64 = -32_050;
 
+/// Stable host-control protocol family name.
+pub const HOST_PROTOCOL_NAME: &str = "starweaver.host";
+/// Supported breaking host-control protocol generation.
+pub const HOST_PROTOCOL_MAJOR: u32 = 1;
+/// Current host-control protocol documentation and fixture revision.
+pub const HOST_PROTOCOL_REVISION: &str = "2026-07-11";
+/// Implemented host-control feature vocabulary.
+pub const HOST_PROTOCOL_FEATURES: &[&str] = &[
+    "sessions",
+    "runs",
+    "stream.replay",
+    "environment.attachments",
+    "environment.active_mounts",
+    "hitl",
+];
+
+/// Return the current typed host-control protocol identity.
+#[must_use]
+pub fn host_protocol_identity() -> ProtocolIdentity {
+    ProtocolIdentity::new(
+        HOST_PROTOCOL_NAME,
+        HOST_PROTOCOL_MAJOR,
+        HOST_PROTOCOL_REVISION,
+    )
+    .with_features(HOST_PROTOCOL_FEATURES.iter().copied())
+}
+
+/// Optional initialize negotiation fields accepted from host clients.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInitializeParams {
+    /// Requested host protocol identity. Omitted only by legacy clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<ProtocolIdentity>,
+}
+
+/// Structured durable input accepted by run-start methods.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct RunInput {
+    /// Ordered durable input parts.
+    pub parts: Vec<starweaver_session::InputPart>,
+}
+
+/// Validate a client's requested host identity when present.
+///
+/// # Errors
+///
+/// Returns invalid params for an unexpected protocol family or unsupported major.
+pub fn validate_host_initialize(params: &HostInitializeParams) -> Result<(), RpcError> {
+    if let Some(protocol) = params.protocol.as_ref() {
+        protocol
+            .validate(HOST_PROTOCOL_NAME, HOST_PROTOCOL_MAJOR)
+            .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// JSON-RPC 2.0 request object accepted by Starweaver host transports.
 #[derive(Debug, Deserialize)]
 pub struct JsonRpcRequest {
-    /// JSON-RPC protocol version. Must be `2.0` when present.
+    /// JSON-RPC protocol version. Must be `2.0`.
     #[serde(default)]
     pub jsonrpc: Option<String>,
     /// Request id. Missing ids are JSON-RPC notifications.
@@ -57,8 +117,8 @@ pub struct JsonRpcRequest {
     pub id: Option<Value>,
     /// RPC method.
     pub method: String,
-    /// Method params.
-    #[serde(default)]
+    /// Method params. Host v1 accepts named object params only.
+    #[serde(default = "empty_params")]
     pub params: Value,
 }
 
@@ -196,6 +256,10 @@ where
     }
 }
 
+fn empty_params() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
 fn request_from_value(value: Value) -> Result<JsonRpcRequest, Value> {
     if value.is_array() {
         return Err(error_response(
@@ -211,15 +275,42 @@ fn request_from_value(value: Value) -> Result<JsonRpcRequest, Value> {
             "invalid request: expected object",
         ));
     };
-    let id = object.get("id").cloned().unwrap_or(Value::Null);
-    let request = serde_json::from_value::<JsonRpcRequest>(value).map_err(|error| {
-        error_response(&id, INVALID_REQUEST, &format!("invalid request: {error}"))
+    let response_id = object.get("id").cloned().unwrap_or(Value::Null);
+    let request_id = match object.get("id") {
+        None => None,
+        Some(Value::Null) => Some(Value::Null),
+        Some(Value::String(value)) => Some(Value::String(value.clone())),
+        Some(Value::Number(value)) if value.as_i64().is_some() || value.as_u64().is_some() => {
+            Some(Value::Number(value.clone()))
+        }
+        Some(_) => {
+            return Err(error_response(
+                &Value::Null,
+                INVALID_REQUEST,
+                "invalid request: id must be a string, integer, or null",
+            ));
+        }
+    };
+    let mut request = serde_json::from_value::<JsonRpcRequest>(value).map_err(|error| {
+        error_response(
+            &response_id,
+            INVALID_REQUEST,
+            &format!("invalid request: {error}"),
+        )
     })?;
+    request.id = request_id;
     if request.jsonrpc.as_deref() != Some("2.0") {
         return Err(error_response(
-            &id,
+            &response_id,
             INVALID_REQUEST,
             "invalid request: jsonrpc must be 2.0",
+        ));
+    }
+    if !request.params.is_object() {
+        return Err(error_response(
+            &response_id,
+            INVALID_REQUEST,
+            "invalid request: params must be an object when present",
         ));
     }
     Ok(request)
@@ -343,11 +434,15 @@ pub fn replay_cursor_from_params(
         let cursor = serde_json::from_value::<ReplayCursor>(cursor.clone())
             .map_err(|error| RpcError::new(INVALID_PARAMS, format!("invalid cursor: {error}")))?;
         cursor
-            .validate_scope(&default_scope)
+            .validate(
+                starweaver_stream::ReplayCursorFamily::ReplayEvent,
+                &default_scope,
+            )
             .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
         return Ok(Some(cursor));
     }
-    Ok(optional_usize(params, "after").map(|sequence| ReplayCursor::new(default_scope, sequence)))
+    Ok(optional_usize(params, "after")
+        .map(|sequence| ReplayCursor::replay_event(default_scope, sequence)))
 }
 
 /// Build a run/session attachment result from replay events.
@@ -385,7 +480,7 @@ pub fn replay_result(
     let messages = display_messages(events);
     let latest_cursor = events
         .last()
-        .map(|event| ReplayCursor::new(event.scope.clone(), event.sequence))
+        .map(|event| ReplayCursor::replay_event(event.scope.clone(), event.sequence))
         .or_else(|| requested_cursor.cloned());
     json!({
         "sessionId": session_id,
@@ -417,7 +512,7 @@ pub fn output_item(event: &ReplayEvent, format: StreamPayloadFormat) -> Option<R
     Some(RunOutputItem {
         session_id: display_message.session_id.as_str().to_string(),
         run_id: display_message.run_id.as_str().to_string(),
-        cursor: ReplayCursor::new(event.scope.clone(), event.sequence),
+        cursor: ReplayCursor::replay_event(event.scope.clone(), event.sequence),
         event: event.clone(),
         projections: vec![RunOutputProjection {
             payload_format: format,

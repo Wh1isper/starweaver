@@ -1,8 +1,9 @@
 //! Run lifecycle display projection.
 
 use serde_json::json;
-use starweaver_core::RunId;
-use starweaver_runtime::{AgentExecutionNode, AgentStreamRecord};
+use starweaver_core::{AgentExecutionNode, RunId};
+
+use crate::AgentStreamRecord;
 
 use super::super::{DisplayMessage, DisplayMessageKind, DisplayProjectionContext};
 
@@ -87,6 +88,22 @@ pub(super) fn project_run_completed(
     )
     .with_payload(json!({"output": output}))
     .with_preview(output.to_string())
+}
+
+pub(super) fn project_run_terminal_cancelled(
+    context: &DisplayProjectionContext,
+    sequence: usize,
+    run_id: RunId,
+    reason: &str,
+) -> DisplayMessage {
+    DisplayMessage::new(
+        sequence,
+        context.session_id.clone(),
+        run_id,
+        DisplayMessageKind::RunCancelled,
+    )
+    .with_payload(json!({"reason": reason}))
+    .with_preview(reason.to_string())
 }
 
 pub(super) fn project_run_cancelled(

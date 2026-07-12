@@ -1,7 +1,7 @@
 //! Shell command review execution flow.
 
 use serde_json::{Map, Value};
-use starweaver_context::{AgentContext, AgentContextHandle};
+use starweaver_context::{HostCapabilities, UsageContextHandle};
 use starweaver_model::{
     ContentPart, ModelAdapter, ModelMessage, ModelRequest, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, OutputMode,
@@ -31,10 +31,11 @@ pub async fn review_shell_command_or_block(
     timeout_seconds: u64,
     mut snapshot: ShellReviewContextSnapshot,
 ) -> Result<Option<ToolResult>, ToolError> {
-    let Some(agent_context) = context.dependency::<AgentContext>() else {
-        return Ok(None);
-    };
-    let Some(handle) = agent_context.dependencies.get::<ShellReviewHandle>() else {
+    let Some(handle) = context
+        .dependency::<HostCapabilities>()
+        .and_then(|capabilities| capabilities.get::<ShellReviewHandle>())
+        .or_else(|| context.dependency::<ShellReviewHandle>())
+    else {
         return Ok(None);
     };
     let tool_call_id = tool_call_id(context);
@@ -340,10 +341,8 @@ fn record_shell_review_usage(context: &ToolContext, response: &ModelResponse) {
     if response.usage == Usage::default() {
         return;
     }
-    if let Some(handle) = context.dependency::<AgentContextHandle>() {
-        let mut snapshot = handle.snapshot();
-        snapshot.add_usage(&response.usage);
-        handle.replace(snapshot);
+    if let Some(handle) = context.dependency::<UsageContextHandle>() {
+        handle.add_usage(&response.usage);
     }
 }
 

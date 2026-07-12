@@ -2,8 +2,12 @@
 
 use pyo3::prelude::*;
 use serde_json::Value;
+use starweaver_core::RunId;
 use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord};
-use starweaver_stream::{DisplayMessage, display_to_agui_event, display_to_agui_jsonl};
+use starweaver_stream::{
+    DefaultDisplayMessageProjector, DisplayMessage, DisplayProjectionContext, SessionId,
+    display_to_agui_event, display_to_agui_jsonl,
+};
 
 use crate::conversion::{json_to_py, py_to_json};
 
@@ -26,6 +30,33 @@ impl PyStreamEvent {
             })?,
         })
     }
+}
+
+/// Project canonical raw stream records into canonical display messages.
+#[pyfunction]
+pub fn project_stream_records_to_display(
+    records: &Bound<'_, PyAny>,
+    session_id: &str,
+    run_id: &str,
+) -> PyResult<Py<PyAny>> {
+    let py = records.py();
+    let records: Vec<AgentStreamRecord> = serde_json::from_value(py_to_json(py, records)?)
+        .map_err(|error| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid stream records: {error}"))
+        })?;
+    let context = DisplayProjectionContext::new(
+        SessionId::from_string(session_id),
+        RunId::from_string(run_id),
+    );
+    let messages = DefaultDisplayMessageProjector.project_records(&context, &records);
+    json_to_py(
+        py,
+        &serde_json::to_value(messages).map_err(|error| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "failed to serialize display messages: {error}"
+            ))
+        })?,
+    )
 }
 
 /// Convert one canonical display message into an AGUI event.
@@ -91,6 +122,7 @@ fn event_kind(event: &AgentStreamEvent) -> &'static str {
         AgentStreamEvent::OutputRetry { .. } => "output_retry",
         AgentStreamEvent::SteeringGuard { .. } => "steering_guard",
         AgentStreamEvent::RunComplete { .. } => "run_complete",
+        AgentStreamEvent::RunCancelled { .. } => "run_cancelled",
         AgentStreamEvent::RunFailed { .. } => "run_failed",
     }
 }

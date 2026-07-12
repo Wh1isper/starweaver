@@ -853,10 +853,10 @@ impl PyEnvironmentProvider {
             None => BTreeMap::new(),
         };
         let command = ShellCommand {
-            command,
             timeout_seconds,
             cwd,
             environment,
+            ..ShellCommand::shell(command)
         };
         spawn_py_future(
             py,
@@ -959,10 +959,10 @@ impl PyEnvironmentProvider {
             None => BTreeMap::new(),
         };
         let command = ShellCommand {
-            command,
             timeout_seconds,
             cwd,
             environment,
+            ..ShellCommand::shell(command)
         };
         spawn_py_future(
             py,

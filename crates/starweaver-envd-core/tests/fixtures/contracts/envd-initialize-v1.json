@@ -1,0 +1,51 @@
+{
+  "identity": {
+    "name": "starweaver.envd",
+    "major": 1,
+    "revision": "2026-07-11",
+    "features": [
+      "environment.lifecycle",
+      "files",
+      "commands",
+      "processes"
+    ]
+  },
+  "legacy_request": {},
+  "current_request": {
+    "protocol": {
+      "name": "starweaver.envd",
+      "major": 1,
+      "revision": "client-fixture",
+      "features": ["files"]
+    },
+    "client_name": "fixture-client"
+  },
+  "current_result": {
+    "protocol": {
+      "name": "starweaver.envd",
+      "major": 1,
+      "revision": "2026-07-11",
+      "features": [
+        "environment.lifecycle",
+        "files",
+        "commands",
+        "processes"
+      ]
+    },
+    "service_name": "FixtureEnvd"
+  },
+  "wrong_name": {
+    "protocol": {
+      "name": "starweaver.other",
+      "major": 1,
+      "revision": "client-fixture"
+    }
+  },
+  "wrong_major": {
+    "protocol": {
+      "name": "starweaver.envd",
+      "major": 2,
+      "revision": "client-fixture"
+    }
+  }
+}

@@ -8,9 +8,9 @@ use grep_regex::RegexMatcher;
 use crate::{
     EnvironmentError, EnvironmentLifecycleSnapshot, EnvironmentResult, EnvironmentState,
     FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions,
-    FileListResult, FileStat, PathGlob, ShellCommand, ShellOutput, ShellProcessSnapshot,
-    ShellReviewEnvironmentContext, include_path, list_ignore_match, path_match_candidates,
-    search_text,
+    FileListResult, FileStat, PathGlob, ProgramCommand, ShellCommand, ShellOutput,
+    ShellProcessSnapshot, ShellReviewEnvironmentContext, include_path, list_ignore_match,
+    path_match_candidates, search_text,
 };
 
 /// Shared environment provider reference.
@@ -19,9 +19,20 @@ pub type DynEnvironmentProvider = Arc<dyn EnvironmentProvider>;
 /// Process-capable shell provider extension.
 #[async_trait]
 pub trait ProcessShellProvider: EnvironmentProvider {
-    /// Start a background process and return its first snapshot.
+    /// Start a background shell process and return its first snapshot.
     async fn start_process(&self, command: ShellCommand)
     -> EnvironmentResult<ShellProcessSnapshot>;
+
+    /// Start a structured direct program as a background process.
+    async fn start_program(
+        &self,
+        _command: ProgramCommand,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        Err(EnvironmentError::Unsupported(format!(
+            "provider {} does not support direct background programs",
+            self.id()
+        )))
+    }
 
     /// Wait for or poll a process by id.
     async fn wait_process(
@@ -198,6 +209,14 @@ pub trait EnvironmentProvider: Send + Sync {
 
     /// Execute a foreground shell command through the provider boundary.
     async fn run_shell(&self, command: ShellCommand) -> EnvironmentResult<ShellOutput>;
+
+    /// Execute a structured foreground program without invoking a shell.
+    async fn run_program(&self, _command: ProgramCommand) -> EnvironmentResult<ShellOutput> {
+        Err(EnvironmentError::Unsupported(format!(
+            "provider {} does not support direct programs",
+            self.id()
+        )))
+    }
 
     /// Return this provider as a process-capable shell provider when supported.
     ///

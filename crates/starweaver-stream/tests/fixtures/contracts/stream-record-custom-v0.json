@@ -1,0 +1,15 @@
+{
+  "sequence": 8,
+  "event": {
+    "kind": "custom",
+    "event": {
+      "kind": "tool_progress",
+      "payload": {
+        "status": "working"
+      },
+      "metadata": {
+        "origin": "fixture"
+      }
+    }
+  }
+}

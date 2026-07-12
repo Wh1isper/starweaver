@@ -190,8 +190,7 @@ pub fn execute_agent_session_with_channels(
     if let Some(shell_review) = profile.shell_review.as_ref() {
         attach_shell_review_handle(session.context_mut(), shell_review.clone());
     }
-    sync_run_request_metadata(&mut session, run);
-    sync_run_session_affinity(&mut session, run);
+    sync_run_execution_identity(&mut session, run);
     session.set_metadata("cli.profile", json!(profile.name));
     session.set_metadata("cli.profile_source", json!(profile.source.kind()));
     if let Some(path) = profile.source.path() {
@@ -317,6 +316,12 @@ fn session_run_outcome(
         Err(AgentError::Cancelled { .. }) => SessionRunOutcome::Cancelled,
         Err(error) => SessionRunOutcome::Failed(error.to_string()),
     }
+}
+
+fn sync_run_execution_identity(session: &mut AgentSession, run: &RunRecord) {
+    sync_run_request_metadata(session, run);
+    sync_run_session_affinity(session, run);
+    session.context_mut().conversation_id = run.conversation_id.clone();
 }
 
 fn sync_run_request_metadata(session: &mut AgentSession, run: &RunRecord) {
@@ -758,10 +763,34 @@ mod tests {
         CLI_GUIDANCE_KEY_METADATA, CLI_GUIDANCE_ORIGIN, CliGuidanceAdapter,
         CliPromptContentAdapter, CliRunPolicy, CliSteeringMessage, SessionRunOutcome,
         cancelled_display_projection, cli_guidance_key, interrupted_partial_response,
-        run_session_stream, start_steering_collector, sync_run_request_metadata,
-        sync_run_session_affinity,
+        run_session_stream, start_steering_collector, sync_run_execution_identity,
+        sync_run_request_metadata, sync_run_session_affinity,
     };
     use crate::{args::HitlPolicy, prompt_input::PromptAttachment};
+
+    #[test]
+    fn sync_run_execution_identity_adopts_durable_conversation() {
+        let agent = AgentBuilder::new(Arc::new(FunctionModel::new(
+            |_messages: Vec<ModelMessage>,
+             _settings: Option<ModelSettings>,
+             _info: FunctionModelInfo| { Ok(ModelResponse::text("ok")) },
+        )))
+        .build();
+        let mut session = AgentSession::new(agent);
+        let run = RunRecord::new(
+            SessionId::from_string("session_execution_identity"),
+            RunId::from_string("run_execution_identity"),
+            ConversationId::from_string("conversation_execution_identity"),
+        );
+
+        sync_run_execution_identity(&mut session, &run);
+
+        assert_eq!(session.context().conversation_id, run.conversation_id);
+        assert_eq!(
+            session.context().metadata["starweaver.durable_run_id"],
+            "run_execution_identity"
+        );
+    }
 
     #[test]
     fn sync_run_request_metadata_sets_durable_session_and_run_metadata() {

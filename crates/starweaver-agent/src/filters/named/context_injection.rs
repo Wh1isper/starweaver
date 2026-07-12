@@ -145,7 +145,7 @@ pub(super) fn handoff_filter(
 ) -> Vec<ModelMessage> {
     // The handoff processor owns this flag and clears it at the start
     // of every filter pipeline pass, then sets it again only after a handoff restore.
-    context.force_inject_context = false;
+    context.runtime.force_inject_context = false;
 
     let handoff_message = context
         .handoff_message
@@ -158,7 +158,7 @@ pub(super) fn handoff_filter(
 
     if handoff_message.contains("<context-restored>") {
         context.handoff_message = None;
-        context.force_inject_context = true;
+        context.runtime.force_inject_context = true;
         return inject_instruction_text(messages, handoff_message, "handoff");
     }
 
@@ -193,7 +193,7 @@ pub(super) fn handoff_filter(
 
     context.handoff_message = None;
     context.steering_messages.clear();
-    context.force_inject_context = true;
+    context.runtime.force_inject_context = true;
     messages
 }
 
@@ -264,13 +264,13 @@ pub(super) async fn auto_load_files_filter(
             }
         }
     }
-    for path in &context.auto_load_files {
+    for path in &context.tools.auto_load_files {
         push_unique_file_path(&mut file_paths, path);
     }
 
     if file_paths.is_empty() {
         if finalize_after_compact {
-            context.auto_load_files.clear();
+            context.tools.auto_load_files.clear();
             if has_state_metadata {
                 state.metadata.remove(AUTO_LOAD_METADATA);
             }
@@ -290,7 +290,7 @@ pub(super) async fn auto_load_files_filter(
             .insert(AUTO_LOAD_STATE_METADATA_INJECTED.to_string(), json!(true));
     }
     if finalize_after_compact {
-        context.auto_load_files.clear();
+        context.tools.auto_load_files.clear();
         if has_state_metadata {
             state.metadata.remove(AUTO_LOAD_METADATA);
         }

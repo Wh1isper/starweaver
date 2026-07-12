@@ -130,19 +130,30 @@ class StreamAdapter:
         resolved_run_id = run_id or _infer_run_id(self.events)
         if not resolved_run_id:
             raise ValueError("run_id is required when stream records do not include one")
-        messages: list[dict[str, Any]] = []
-        for index, event in sorted(
+        ordered = sorted(
             enumerate(self.events),
             key=lambda item: (_event_sequence(item[1], item[0]), item[0]),
-        ):
-            messages.append(
-                _display_message(
-                    event,
-                    sequence=_event_sequence(event, index),
-                    session_id=session_id,
-                    run_id=event.run_id or resolved_run_id,
+        )
+        messages: list[dict[str, Any]] = []
+        for index, event in ordered:
+            if _is_unknown_extension(event):
+                # Unknown extension kinds remain lossless host events. Known canonical kinds are
+                # always decoded by Rust, so malformed canonical payloads propagate as errors.
+                messages.append(
+                    _display_message(
+                        event,
+                        sequence=_event_sequence(event, index),
+                        session_id=session_id,
+                        run_id=event.run_id or resolved_run_id,
+                    )
                 )
+                continue
+            projected = _native.project_stream_records_to_display(
+                [event.raw],
+                session_id,
+                event.run_id or resolved_run_id,
             )
+            messages.extend(dict(message) for message in projected)
         return messages
 
     def agui_events(
@@ -193,6 +204,32 @@ class StreamAdapter:
     @staticmethod
     def text_from(events: Iterable[StreamEvent | Mapping[str, Any]]) -> str:
         return StreamAdapter(events).text()
+
+
+_CANONICAL_STREAM_KINDS = frozenset(
+    {
+        "run_start",
+        "node_start",
+        "node_complete",
+        "custom",
+        "model_request",
+        "model_stream",
+        "model_response",
+        "checkpoint",
+        "suspended",
+        "tool_call",
+        "tool_return",
+        "output_retry",
+        "steering_guard",
+        "run_complete",
+        "run_cancelled",
+        "run_failed",
+    }
+)
+
+
+def _is_unknown_extension(event: StreamEvent) -> bool:
+    return event.kind not in _CANONICAL_STREAM_KINDS
 
 
 def _event_sequence(event: StreamEvent, fallback: int) -> int:

@@ -1,6 +1,6 @@
 use chrono::Utc;
 use starweaver_core::{RunId, SessionId};
-use starweaver_runtime::AgentStreamRecord;
+use starweaver_stream::{AgentStreamRecord, ReplayCursor, ReplayScope};
 
 use crate::{
     error::{SessionStoreError, SessionStoreResult},
@@ -24,6 +24,24 @@ impl InMemorySessionStore {
             )));
         }
         let stream = inner.streams.entry(key.clone()).or_default();
+        for (index, record) in records.iter().enumerate() {
+            let existing = stream
+                .iter()
+                .find(|existing| existing.sequence == record.sequence)
+                .or_else(|| {
+                    records[..index]
+                        .iter()
+                        .find(|existing| existing.sequence == record.sequence)
+                });
+            if existing.is_some_and(|existing| existing != record) {
+                return Err(SessionStoreError::Failed(format!(
+                    "stream record conflict for session {} run {} at sequence {}",
+                    session_id.as_str(),
+                    run_id.as_str(),
+                    record.sequence
+                )));
+            }
+        }
         for record in records {
             if stream
                 .iter()
@@ -36,13 +54,12 @@ impl InMemorySessionStore {
         let last_sequence = stream.last().map(|record| record.sequence);
         if let Some(run) = inner.runs.get_mut(&key) {
             if let Some(sequence) = last_sequence {
-                let cursor = StreamCursorRef::new(
-                    "raw_runtime",
-                    format!("run:{}", run_id.as_str()),
+                let cursor = StreamCursorRef::new(ReplayCursor::raw_runtime(
+                    ReplayScope::run(run_id.as_str()),
                     sequence,
-                );
+                ));
                 run.stream_cursors
-                    .retain(|existing| existing.family != cursor.family);
+                    .retain(|existing| !existing.same_stream(&cursor));
                 run.stream_cursors.push(cursor);
             }
             run.updated_at = Utc::now();
@@ -69,21 +86,39 @@ impl InMemorySessionStore {
         run_id: &RunId,
         cursor: StreamCursorRef,
     ) -> SessionStoreResult<()> {
+        cursor
+            .validate_for_run(run_id)
+            .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
         let mut inner = self.inner.lock().map_err(store_failed)?;
         let run_key = run_key(session_id, run_id);
         let updated_at = Utc::now();
+        let existing_run = inner
+            .runs
+            .get(&run_key)
+            .ok_or_else(|| SessionStoreError::NotFound(run_key_label(session_id, run_id)))?;
+        for existing in existing_run.stream_cursors.iter().chain(
+            inner
+                .sessions
+                .get(session_id)
+                .into_iter()
+                .flat_map(|session| &session.stream_cursors),
+        ) {
+            cursor
+                .validate_progression(existing)
+                .map_err(|error| SessionStoreError::Failed(error.to_string()))?;
+        }
         let run = inner
             .runs
             .get_mut(&run_key)
             .ok_or_else(|| SessionStoreError::NotFound(run_key_label(session_id, run_id)))?;
         run.stream_cursors
-            .retain(|existing| existing.family != cursor.family || existing.scope != cursor.scope);
+            .retain(|existing| !existing.same_stream(&cursor));
         run.stream_cursors.push(cursor.clone());
         run.updated_at = updated_at;
         if let Some(session) = inner.sessions.get_mut(session_id) {
-            session.stream_cursors.retain(|existing| {
-                existing.family != cursor.family || existing.scope != cursor.scope
-            });
+            session
+                .stream_cursors
+                .retain(|existing| !existing.same_stream(&cursor));
             session.stream_cursors.push(cursor);
             session.updated_at = updated_at;
         }

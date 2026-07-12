@@ -1,0 +1,19 @@
+{
+  "runtime": [
+    "starting",
+    "running",
+    "waiting",
+    "completed",
+    "failed",
+    "cancelled"
+  ],
+  "durable": [
+    "queued",
+    "starting",
+    "running",
+    "waiting",
+    "completed",
+    "failed",
+    "cancelled"
+  ]
+}

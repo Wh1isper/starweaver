@@ -10,6 +10,8 @@ use std::{
 
 use serde_json::{Value, json};
 
+mod common;
+
 #[test]
 fn standalone_stdio_process_handles_initialize_and_shutdown() {
     let temp = tempfile::tempdir().expect("temp dir");
@@ -39,9 +41,27 @@ fn standalone_stdio_process_handles_initialize_and_shutdown() {
     assert_eq!(initialized["result"]["capabilities"]["sessions"], true);
     assert_eq!(
         initialized["result"]["capabilities"]["streamSubscribe"],
-        true
+        false
     );
     assert_eq!(initialized["result"]["capabilities"]["steering"], true);
+    assert_eq!(
+        initialized["result"]["capabilities"]["environmentAttachments"],
+        true
+    );
+
+    for (index, vector) in common::conformance_vectors().iter().enumerate() {
+        let response = rpc_round_trip(
+            &mut stdin,
+            &mut stdout,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 100 + index,
+                "method": vector.method,
+                "params": vector.params,
+            }),
+        );
+        common::assert_conformance_response(vector, &response);
+    }
 
     let shutdown = rpc_round_trip(
         &mut stdin,

@@ -15,6 +15,9 @@ use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
 };
+use starweaver_tools::{
+    TOOL_METADATA_DEPENDENCIES_KEY, ToolDependencyProfile, tool_dependency_requirements,
+};
 use starweaver_usage::Usage;
 
 fn delegation_tool_context(parent: &AgentContext, handle: AgentContextHandle) -> ToolContext {
@@ -30,6 +33,42 @@ fn visible_tool_names(tools: &ToolRegistry) -> Vec<String> {
         .into_iter()
         .map(|definition| definition.name)
         .collect()
+}
+
+#[test]
+fn delegation_tools_declare_dependency_profiles_explicitly() {
+    let registry = Arc::new(SubagentRegistry::new());
+    let monitor = Arc::new(BackgroundSubagentMonitor::new());
+    let legacy_tools = [
+        registry.delegate_tool(),
+        registry.delegate_tool_named("custom_delegate"),
+        registry.hidden_delegate_backend_tool(),
+        registry.async_delegate_tool(Arc::clone(&monitor)),
+        registry.spawn_delegate_tool(Arc::clone(&monitor)),
+        registry.wait_subagent_tool(monitor),
+    ];
+    for tool in legacy_tools {
+        let metadata = tool.metadata();
+        assert!(
+            metadata.contains_key(TOOL_METADATA_DEPENDENCIES_KEY),
+            "{} must declare dependency metadata",
+            tool.name()
+        );
+        assert_eq!(
+            tool_dependency_requirements(&metadata).profile,
+            ToolDependencyProfile::Legacy,
+            "{} must explicitly retain Legacy compatibility",
+            tool.name()
+        );
+    }
+
+    let info = registry.subagent_info_tool();
+    let metadata = info.metadata();
+    assert!(metadata.contains_key(TOOL_METADATA_DEPENDENCIES_KEY));
+    assert_eq!(
+        tool_dependency_requirements(&metadata).profile,
+        ToolDependencyProfile::Filtered
+    );
 }
 
 #[tokio::test]

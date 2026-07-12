@@ -52,6 +52,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install Rust API compatibility checker
+        run: cargo install cargo-semver-checks --version 0.48.0 --locked
+
       - name: Validate requested version
         run: |
           version="${{ github.event.inputs.version }}"
@@ -67,6 +70,7 @@ jobs:
         run: |
           make fmt-check
           make py-check
+          make release-api-check
           make docs-build
           make publish-dry-run
 

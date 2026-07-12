@@ -35,7 +35,8 @@ async with create_agent(model=model, tools=[deploy]) as agent:
 ```
 
 The Rust runtime still owns model requests, tool scheduling, retries, stream
-records, message bus semantics, session state, usage, and durable evidence.
+emission, message bus semantics, session state, usage, and durable evidence; the
+shared Rust stream crate owns the typed raw stream record protocol.
 Python owns ergonomic names, decorators, context managers, dataclasses, Pydantic
 helpers, callback dispatch, and application-facing composition.
 

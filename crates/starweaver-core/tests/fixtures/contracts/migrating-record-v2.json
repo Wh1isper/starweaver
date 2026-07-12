@@ -1,0 +1,8 @@
+{
+  "schema": "starweaver.fixture.migrating_record",
+  "version": 2,
+  "payload": {
+    "value": "fixture",
+    "generation": 2
+  }
+}

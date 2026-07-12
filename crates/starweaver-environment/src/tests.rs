@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::{
     collections::BTreeMap,
@@ -451,6 +451,81 @@ async fn virtual_provider_search_respects_root_hidden_limits_and_invalid_pattern
 }
 
 #[tokio::test]
+async fn local_provider_range_reads_seek_without_materializing_the_prefix() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+
+    let root = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("sparse.bin");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let marker_offset = 16usize * 1024 * 1024;
+    file.seek(SeekFrom::Start(u64::try_from(marker_offset).unwrap()))
+        .unwrap();
+    file.write_all(b"MARK").unwrap();
+    drop(file);
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy::default(),
+    });
+
+    assert_eq!(
+        provider
+            .read_bytes("sparse.bin", marker_offset, Some(4))
+            .await
+            .unwrap(),
+        b"MARK"
+    );
+    assert!(
+        provider
+            .read_bytes("sparse.bin", marker_offset + 4, Some(4))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn local_provider_rejects_reads_above_the_configured_byte_limit() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("large.bin"), b"12345678").unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::default(),
+        })
+        .with_max_read_bytes(4);
+
+    let explicit = provider
+        .read_bytes("large.bin", 0, Some(5))
+        .await
+        .expect_err("oversized range must fail");
+    assert!(explicit.to_string().contains("4 byte limit"));
+    let unbounded = provider
+        .read_bytes("large.bin", 0, None)
+        .await
+        .expect_err("oversized full read must fail");
+    assert!(unbounded.to_string().contains("bounded range"));
+    let text = provider
+        .read_text("large.bin")
+        .await
+        .expect_err("oversized text read must fail");
+    assert!(text.to_string().contains("4 byte limit"));
+    assert_eq!(
+        provider.read_bytes("large.bin", 4, Some(4)).await.unwrap(),
+        b"5678"
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn local_provider_search_respects_gitignore_hidden_and_policy() {
     let root = unique_test_dir();
     std::fs::create_dir_all(root.join("src/nested")).unwrap();
@@ -702,6 +777,252 @@ async fn local_provider_runs_background_shell_processes() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn local_provider_kills_descendants_that_hold_output_pipes() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy::allow_all(),
+    });
+
+    let started_at = std::time::Instant::now();
+    let output = provider
+        .run_program(ProgramCommand {
+            program: "/bin/sh".to_string(),
+            arguments: vec![
+                "-c".to_string(),
+                "sleep 30 & child=$!; printf '%s' \"$child\"; exit 0".to_string(),
+            ],
+            timeout_seconds: Some(3),
+            ..ProgramCommand::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(output.status, 0);
+    assert!(started_at.elapsed() < std::time::Duration::from_secs(3));
+    assert!(!output.metadata.contains_key("timed_out"));
+    let descendant_pid = output.stdout.parse::<u32>().unwrap();
+    let descendant_gone = (0..40).any(|_| {
+        let gone = !std::process::Command::new("kill")
+            .args(["-0", &descendant_pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !gone {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        gone
+    });
+    assert!(
+        descendant_gone,
+        "descendant {descendant_pid} survived group cleanup"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropping_foreground_shell_future_terminates_process_tree() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    let process_ids_path = root.join("process-ids.txt");
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        })
+        .with_max_concurrent_processes(1);
+    let command = format!(
+        "printf '%s\\n' $$ > '{}'; sleep 30 & printf '%s\\n' $! >> '{}'; wait",
+        process_ids_path.display(),
+        process_ids_path.display()
+    );
+    let task = tokio::spawn({
+        let provider = provider.clone();
+        async move { provider.run_shell(ShellCommand::shell(command)).await }
+    });
+
+    let mut process_ids = Vec::new();
+    for _ in 0..100 {
+        process_ids = std::fs::read_to_string(&process_ids_path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.parse::<u32>().ok())
+            .collect();
+        if process_ids.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    if process_ids.len() != 2 {
+        task.abort();
+        let task_result = task.await;
+        panic!("shell did not report its process tree: {task_result:?}");
+    }
+
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    for pid in process_ids {
+        let gone = async {
+            for _ in 0..100 {
+                let alive = std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success());
+                if !alive {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            false
+        }
+        .await;
+        assert!(gone, "process {pid} survived cancellation");
+    }
+    let mut follow_up = None;
+    for _ in 0..100 {
+        match provider
+            .run_program(ProgramCommand::new("/bin/printf", ["released"]))
+            .await
+        {
+            Ok(output) => {
+                follow_up = Some(output);
+                break;
+            }
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(20)).await,
+        }
+    }
+    assert_eq!(
+        follow_up.expect("foreground permit released").stdout,
+        "released"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_provider_bounds_infinite_output_and_reports_capture_metadata() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_max_output_bytes(4096)
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        });
+
+    let output = provider
+        .run_shell(ShellCommand {
+            command: "while :; do printf 0123456789abcdef; done".to_string(),
+            timeout_seconds: Some(1),
+            ..ShellCommand::default()
+        })
+        .await
+        .unwrap();
+
+    assert!(output.stdout.len() <= 4096);
+    assert_eq!(output.metadata["stdout_captured_bytes"], 4096);
+    assert_eq!(output.metadata["stdout_truncated"], true);
+    assert!(output.metadata["stdout_bytes"].as_u64().unwrap() > 4096);
+    assert_eq!(output.metadata["timed_out"], true);
+
+    let started = provider
+        .start_process(ShellCommand {
+            command: "while :; do printf abcdefghijklmnop; done".to_string(),
+            timeout_seconds: Some(1),
+            ..ShellCommand::default()
+        })
+        .await
+        .unwrap();
+    let completed = provider.wait_process(&started.process_id, 5).await.unwrap();
+    assert_eq!(completed.status, ShellProcessStatus::Killed);
+    assert!(completed.stdout.len() <= 4096);
+    assert_eq!(completed.metadata["stdout_captured_bytes"], 4096);
+    assert_eq!(completed.metadata["stdout_truncated"], true);
+    assert!(completed.metadata["stdout_bytes"].as_u64().unwrap() > 4096);
+    assert_eq!(completed.metadata["timed_out"], true);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_provider_shares_concurrency_limit_and_reaps_retained_processes() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    let provider = LocalEnvironmentProvider::new(&root)
+        .with_max_concurrent_processes(1)
+        .with_completed_process_retention(1)
+        .with_policy(EnvironmentPolicy {
+            files: FilePolicy::read_only(),
+            shell: ShellPolicy::allow_all(),
+        });
+
+    let running = provider
+        .start_program(ProgramCommand::new("/bin/sh", ["-c", "sleep 30"]))
+        .await
+        .unwrap();
+    let foreground_exhausted = provider
+        .run_program(ProgramCommand::new("/bin/printf", ["blocked"]))
+        .await;
+    assert!(matches!(
+        foreground_exhausted,
+        Err(EnvironmentError::Provider(message)) if message.contains("concurrency limit exhausted")
+    ));
+    let background_exhausted = provider
+        .start_process(ShellCommand::shell("printf blocked"))
+        .await;
+    assert!(matches!(
+        background_exhausted,
+        Err(EnvironmentError::Provider(message)) if message.contains("concurrency limit exhausted")
+    ));
+
+    let killed = provider.kill_process(&running.process_id).await.unwrap();
+    assert_eq!(killed.status, ShellProcessStatus::Killed);
+
+    let unobserved = provider
+        .start_process(ShellCommand::shell("printf unobserved"))
+        .await
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let foreground_after_reap = provider
+        .run_program(ProgramCommand::new("/bin/printf", ["reaped"]))
+        .await
+        .unwrap();
+    assert_eq!(foreground_after_reap.stdout, "reaped");
+    assert!(
+        provider
+            .list_processes()
+            .await
+            .unwrap()
+            .iter()
+            .any(|process| process.process_id == unobserved.process_id)
+    );
+
+    let first = provider
+        .start_process(ShellCommand::shell("printf first"))
+        .await
+        .unwrap();
+    provider.wait_process(&first.process_id, 5).await.unwrap();
+    let second = provider
+        .start_process(ShellCommand::shell("printf second"))
+        .await
+        .unwrap();
+    provider.wait_process(&second.process_id, 5).await.unwrap();
+
+    let retained = provider.list_processes().await.unwrap();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].process_id, second.process_id);
+    assert!(matches!(
+        provider.wait_process(&first.process_id, 0).await,
+        Err(EnvironmentError::NotFound(_))
+    ));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[tokio::test]
 async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     let root = unique_test_dir();
@@ -754,6 +1075,113 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     let _ = std::fs::remove_file(unrelated_tmp);
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(external).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_provider_rejects_preexisting_symlink_escapes_for_file_shell_and_tmp_paths() {
+    let root = unique_test_dir();
+    let outside = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret.txt"), "secret").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy {
+            allow_read: true,
+            allow_write: true,
+            allowed_prefixes: vec!["escape".to_string()],
+        },
+        shell: ShellPolicy::allow_all(),
+    });
+
+    assert!(matches!(
+        provider.read_text("escape/secret.txt").await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider.write_text("escape/created.txt", "blocked").await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider.create_dir("escape/nested", true).await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider
+            .run_shell(ShellCommand {
+                command: "pwd".to_string(),
+                cwd: Some("escape".to_string()),
+                ..ShellCommand::default()
+            })
+            .await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert_eq!(
+        std::fs::read_to_string(outside.join("secret.txt")).unwrap(),
+        "secret"
+    );
+    assert!(!outside.join("created.txt").exists());
+    assert!(!outside.join("nested").exists());
+
+    let tmp_escape = provider.tmp_dir_path().unwrap().join("escape");
+    std::os::unix::fs::symlink(&outside, &tmp_escape).unwrap();
+    assert!(matches!(
+        provider
+            .write_tmp_file("escape/payload.txt", b"blocked")
+            .await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(!outside.join("payload.txt").exists());
+
+    std::fs::remove_dir_all(root).unwrap();
+    std::fs::remove_dir_all(outside).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn local_provider_rejects_writes_through_symlinks_inside_an_allowed_root() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::write(root.join("target/file.txt"), "original").unwrap();
+    std::os::unix::fs::symlink(root.join("target"), root.join("alias")).unwrap();
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_write(),
+        shell: ShellPolicy::default(),
+    });
+
+    assert_eq!(
+        provider.read_text("alias/file.txt").await.unwrap(),
+        "original"
+    );
+    assert!(matches!(
+        provider.write_text("alias/file.txt", "blocked").await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert_eq!(
+        std::fs::read_to_string(root.join("target/file.txt")).unwrap(),
+        "original"
+    );
+
+    provider
+        .move_path("alias", "moved-alias", false)
+        .await
+        .unwrap();
+    assert!(!root.join("alias").exists());
+    assert_eq!(
+        provider.read_text("moved-alias/file.txt").await.unwrap(),
+        "original"
+    );
+    provider.delete_path("moved-alias", true).await.unwrap();
+    assert!(!root.join("moved-alias").exists());
+    assert!(root.join("target/file.txt").exists());
+
+    std::os::unix::fs::symlink(root.join("missing-target"), root.join("dangling-alias")).unwrap();
+    provider.delete_path("dangling-alias", false).await.unwrap();
+    assert!(!root.join("dangling-alias").exists());
+
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]
@@ -1525,6 +1953,134 @@ async fn local_context_file_tree_keeps_deep_nested_allowed_roots() {
         display_local_path(&allowed_root)
     )));
     assert!(instructions.contains("SKILL.md"));
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn shell_command_json_and_struct_literal_remain_compatible() {
+    let command: ShellCommand = serde_json::from_value(serde_json::json!({
+        "command": "printf legacy",
+        "timeout_seconds": 5
+    }))
+    .unwrap();
+    let literal = ShellCommand {
+        command: "printf literal".to_string(),
+        timeout_seconds: None,
+        cwd: None,
+        environment: BTreeMap::new(),
+    };
+
+    assert_eq!(command.command, "printf legacy");
+    assert_eq!(command.timeout_seconds, Some(5));
+    assert_eq!(literal.command, "printf literal");
+}
+
+#[test]
+fn shell_process_metadata_does_not_snapshot_environment_values() {
+    let command = ShellCommand {
+        environment: BTreeMap::from([
+            ("ACCESS_TOKEN".to_string(), "super-secret-value".to_string()),
+            ("VISIBLE_NAME".to_string(), "another-secret".to_string()),
+        ]),
+        ..ShellCommand::shell("printf ready")
+    };
+
+    let metadata = shell_process_metadata(&command);
+    let serialized = serde_json::to_string(&metadata).unwrap();
+
+    assert_eq!(
+        metadata["environment_variables"],
+        serde_json::json!(["ACCESS_TOKEN", "VISIBLE_NAME"])
+    );
+    assert!(metadata.get("environment").is_none());
+    assert!(!serialized.contains("super-secret-value"));
+    assert!(!serialized.contains("another-secret"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn shell_allowlist_rejects_shell_operators_before_execution() {
+    let root = unique_test_dir();
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy {
+            allow_execute: true,
+            allowed_programs: vec!["printf".to_string()],
+        },
+    });
+    let marker = root.join("allowlist-bypass-marker");
+    let marker = marker.display();
+    let scripts = [
+        format!("printf safe; touch '{marker}'"),
+        format!("printf safe && touch '{marker}'"),
+        format!("printf safe | touch '{marker}'"),
+        format!("printf \"$(touch '{marker}')\""),
+        format!("printf safe\ntouch '{marker}'"),
+    ];
+
+    for script in scripts {
+        let result = provider.run_shell(ShellCommand::shell(&script)).await;
+        assert!(
+            matches!(result, Err(EnvironmentError::AccessDenied(_))),
+            "allowlisted shell script was not denied: {script:?}"
+        );
+        let background = provider.start_process(ShellCommand::shell(&script)).await;
+        assert!(
+            matches!(background, Err(EnvironmentError::AccessDenied(_))),
+            "allowlisted background shell script was not denied: {script:?}"
+        );
+        assert!(!root.join("allowlist-bypass-marker").exists());
+    }
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn allowlisted_program_executes_directly_with_literal_arguments() {
+    let root = unique_test_dir();
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_only(),
+        shell: ShellPolicy {
+            allow_execute: true,
+            allowed_programs: vec!["printf".to_string()],
+        },
+    });
+    let marker = root.join("direct-program-marker");
+    let literal = format!("; && | $(touch '{}')\nnot-a-command", marker.display());
+
+    let output = provider
+        .run_program(ProgramCommand::new("printf", ["%s", literal.as_str()]))
+        .await
+        .unwrap();
+
+    assert_eq!(output.status, 0);
+    assert_eq!(output.stdout, literal);
+    assert!(!marker.exists());
+
+    let started = provider
+        .start_program(ProgramCommand::new("printf", ["%s", literal.as_str()]))
+        .await
+        .unwrap();
+    let completed = provider.wait_process(&started.process_id, 5).await.unwrap();
+    assert_eq!(completed.status, ShellProcessStatus::Completed);
+    assert_eq!(completed.stdout, literal);
+    assert!(!marker.exists());
+
+    let denied = provider
+        .run_program(ProgramCommand::new("echo", ["not allowed"]))
+        .await;
+    assert!(matches!(denied, Err(EnvironmentError::AccessDenied(_))));
+
+    let path_override = ProgramCommand {
+        environment: BTreeMap::from([("PATH".to_string(), root.to_string_lossy().into_owned())]),
+        ..ProgramCommand::new("printf", ["not executed"])
+    };
+    let denied = provider.run_program(path_override.clone()).await;
+    assert!(matches!(denied, Err(EnvironmentError::InvalidRequest(_))));
+    let denied = provider.start_program(path_override).await;
+    assert!(matches!(denied, Err(EnvironmentError::InvalidRequest(_))));
 
     std::fs::remove_dir_all(root).unwrap();
 }

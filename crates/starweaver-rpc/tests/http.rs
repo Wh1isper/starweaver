@@ -10,6 +10,11 @@ use std::{
 };
 
 use serde_json::{Value, json};
+use starweaver_rpc_core::host_protocol_identity;
+
+mod common;
+
+const HTTP_TOKEN: &str = "test-token-0123456789abcdef-0123456789abcdef";
 
 #[test]
 fn standalone_http_process_serves_initialize_and_shutdown() {
@@ -20,6 +25,7 @@ fn standalone_http_process_serves_initialize_and_shutdown() {
         Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
             .current_dir(temp.path())
             .env("HOME", temp.path())
+            .env("STARWEAVER_RPC_TOKEN", HTTP_TOKEN)
             .arg("--store")
             .arg(&store)
             .arg("http")
@@ -29,7 +35,7 @@ fn standalone_http_process_serves_initialize_and_shutdown() {
             .arg(port.to_string()),
     );
 
-    wait_for_health(port, &mut child);
+    wait_for_health(port, &mut child, HTTP_TOKEN);
     let initialized = post_rpc(
         port,
         &json!({
@@ -38,6 +44,7 @@ fn standalone_http_process_serves_initialize_and_shutdown() {
             "method": "initialize",
             "params": {"clientInfo": {"name": "desktop-test"}}
         }),
+        HTTP_TOKEN,
     );
     assert_eq!(initialized["jsonrpc"], "2.0");
     assert_eq!(initialized["result"]["capabilities"]["sessions"], true);
@@ -48,14 +55,31 @@ fn standalone_http_process_serves_initialize_and_shutdown() {
     assert_eq!(initialized["result"]["capabilities"]["streamReplay"], true);
     assert_eq!(initialized["result"]["capabilities"]["liveDisplay"], false);
 
+    for (index, vector) in common::conformance_vectors().iter().enumerate() {
+        let response = post_rpc(
+            port,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 100 + index,
+                "method": vector.method,
+                "params": vector.params,
+                "protocol": host_protocol_identity(),
+            }),
+            HTTP_TOKEN,
+        );
+        common::assert_conformance_response(vector, &response);
+    }
+
     let shutdown = post_rpc(
         port,
         &json!({
             "jsonrpc": "2.0",
             "id": 2,
             "method": "shutdown",
-            "params": {}
+            "params": {},
+            "protocol": host_protocol_identity()
         }),
+        HTTP_TOKEN,
     );
     assert_eq!(shutdown["result"]["status"], "shutdown");
     child.wait_for_exit();
@@ -106,13 +130,15 @@ fn free_port() -> u16 {
         .port()
 }
 
-fn wait_for_health(port: u16, child: &mut ChildGuard) {
+fn wait_for_health(port: u16, child: &mut ChildGuard, token: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if let Some(status) = child.child.try_wait().expect("poll child") {
             panic!("starweaver-rpc exited before health check: {status}");
         }
-        if http_get(port, "/health").is_some_and(|body| body.contains(r#""status":"ok""#)) {
+        if http_get(port, "/health", Some(token))
+            .is_some_and(|response| response.contains(r#""status":"ok""#))
+        {
             return;
         }
         thread::sleep(Duration::from_millis(25));
@@ -120,9 +146,12 @@ fn wait_for_health(port: u16, child: &mut ChildGuard) {
     panic!("starweaver-rpc did not become healthy");
 }
 
-fn http_get(port: u16, path: &str) -> Option<String> {
+fn http_get(port: u16, path: &str, token: Option<&str>) -> Option<String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n");
+    let authorization = token.map_or_else(String::new, |token| {
+        format!("Authorization: Bearer {token}\r\n")
+    });
+    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{authorization}\r\n");
     stream.write_all(request.as_bytes()).ok()?;
     let mut response = String::new();
     stream.read_to_string(&mut response).ok()?;
@@ -131,11 +160,11 @@ fn http_get(port: u16, path: &str) -> Option<String> {
         .map(|(_, body)| body.to_string())
 }
 
-fn post_rpc(port: u16, body: &Value) -> Value {
+fn post_rpc(port: u16, body: &Value, token: &str) -> Value {
     let body = body.to_string();
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect rpc server");
     let request = format!(
-        "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).expect("write request");
@@ -147,4 +176,151 @@ fn post_rpc(port: u16, body: &Value) -> Value {
         "unexpected response: {response}"
     );
     serde_json::from_str(body).expect("json rpc response")
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn http_rejects_missing_credentials_browser_blind_writes_and_insufficient_scopes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let port = free_port();
+    let mut child = ChildGuard::spawn(
+        Command::new(env!("CARGO_BIN_EXE_starweaver-rpc"))
+            .current_dir(temp.path())
+            .env("HOME", temp.path())
+            .env("STARWEAVER_RPC_TOKEN", HTTP_TOKEN)
+            .env("STARWEAVER_RPC_SCOPES", "read")
+            .arg("http")
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg(port.to_string()),
+    );
+    wait_for_health(port, &mut child, HTTP_TOKEN);
+
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {}
+    })
+    .to_string();
+    let missing_auth = raw_http(
+        port,
+        &format!(
+            "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    assert!(missing_auth.starts_with("HTTP/1.1 401 Unauthorized"));
+    assert!(missing_auth.contains("WWW-Authenticate: Bearer"));
+
+    let invalid_auth = raw_http(
+        port,
+        &format!(
+            "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer invalid-token-that-is-long-enough-000000\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    assert!(invalid_auth.starts_with("HTTP/1.1 401 Unauthorized"));
+
+    let text_plain = raw_http(
+        port,
+        &format!(
+            "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {HTTP_TOKEN}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    assert!(text_plain.starts_with("HTTP/1.1 415 Unsupported Media Type"));
+
+    let hostile_host = raw_http(
+        port,
+        &format!(
+            "POST /rpc HTTP/1.1\r\nHost: attacker.example\r\nAuthorization: Bearer {HTTP_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    assert!(hostile_host.starts_with("HTTP/1.1 421 Misdirected Request"));
+
+    let browser_origin = raw_http(
+        port,
+        &format!(
+            "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: https://attacker.example\r\nAuthorization: Bearer {HTTP_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+    );
+    assert!(browser_origin.starts_with("HTTP/1.1 403 Forbidden"));
+
+    let run = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "run.start",
+        "params": {},
+        "protocol": host_protocol_identity()
+    })
+    .to_string();
+    let read_only_run = raw_http(
+        port,
+        &format!(
+            "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {HTTP_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{run}",
+            run.len()
+        ),
+    );
+    assert!(read_only_run.starts_with("HTTP/1.1 403 Forbidden"));
+
+    for (method, params) in [
+        (
+            "approval.decide",
+            json!({"approvalId": "approval_missing", "status": "approved"}),
+        ),
+        ("session.delete", json!({"sessionId": "session_missing"})),
+    ] {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": method,
+            "params": params,
+            "protocol": host_protocol_identity()
+        })
+        .to_string();
+        let denied = raw_http(
+            port,
+            &format!(
+                "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {HTTP_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{request_body}",
+                request_body.len()
+            ),
+        );
+        assert!(
+            denied.starts_with("HTTP/1.1 403 Forbidden"),
+            "read-only token unexpectedly called {method}: {denied}"
+        );
+    }
+
+    let shutdown = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "shutdown",
+        "params": {},
+        "protocol": host_protocol_identity()
+    })
+    .to_string();
+    let read_only_shutdown = raw_http(
+        port,
+        &format!(
+            "POST /rpc HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {HTTP_TOKEN}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{shutdown}",
+            shutdown.len()
+        ),
+    );
+    assert!(read_only_shutdown.starts_with("HTTP/1.1 403 Forbidden"));
+}
+
+fn raw_http(port: u16, request: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect rpc server");
+    stream
+        .write_all(request.as_bytes())
+        .expect("write raw http request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read raw http response");
+    response
 }

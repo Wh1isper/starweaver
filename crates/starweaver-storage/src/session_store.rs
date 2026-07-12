@@ -8,13 +8,10 @@ use std::{
 use rusqlite::Connection;
 use starweaver_session::{SessionStoreError, SessionStoreResult};
 
-use crate::{
-    migrations::apply_sqlite_migrations,
-    sqlite::{open_in_memory_sqlite_connection, open_sqlite_connection},
-};
+use crate::{SqliteStorage, sqlite::SharedSqliteConnection};
 
 mod impl_store;
-mod records;
+pub mod records;
 mod trace_helpers;
 
 /// SQLite-backed durable session store.
@@ -30,11 +27,7 @@ impl SqliteSessionStore {
     ///
     /// Returns a store error when SQLite cannot open or initialize the database.
     pub fn open(path: impl AsRef<Path>) -> SessionStoreResult<Self> {
-        let mut connection = open_sqlite_connection(path)?;
-        apply_sqlite_migrations(&mut connection)?;
-        Ok(Self {
-            connection: Arc::new(Mutex::new(connection)),
-        })
+        Ok(SqliteStorage::open(path)?.session_store())
     }
 
     /// Open an in-memory SQLite session store.
@@ -43,11 +36,11 @@ impl SqliteSessionStore {
     ///
     /// Returns a store error when SQLite cannot initialize the database.
     pub fn in_memory() -> SessionStoreResult<Self> {
-        let mut connection = open_in_memory_sqlite_connection()?;
-        apply_sqlite_migrations(&mut connection)?;
-        Ok(Self {
-            connection: Arc::new(Mutex::new(connection)),
-        })
+        Ok(SqliteStorage::in_memory()?.session_store())
+    }
+
+    pub(crate) const fn from_shared(connection: SharedSqliteConnection) -> Self {
+        Self { connection }
     }
 
     fn lock(&self) -> SessionStoreResult<MutexGuard<'_, Connection>> {

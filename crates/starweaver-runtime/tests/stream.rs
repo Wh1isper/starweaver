@@ -4,7 +4,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use async_trait::async_trait;
 use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
-use starweaver_core::{AgentId, RunId, TaskId};
+use starweaver_core::{AgentId, RunId, TaskId, TraceContext};
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelResponse, ModelResponsePart, ModelSettings, ProtocolFamily,
@@ -13,8 +13,8 @@ use starweaver_model::{
 use starweaver_runtime::{
     Agent, AgentCapability, AgentCheckpoint, AgentError, AgentExecutionDecision,
     AgentExecutionNode, AgentExecutor, AgentExecutorError, AgentSidebandEventCategory,
-    AgentStreamEvent, AgentStreamRecord, AgentStreamSource, CapabilityResult, OutputSchema,
-    StaticCapabilityBundle,
+    AgentStreamEvent, AgentStreamRecord, AgentStreamSource, CapabilityError, CapabilityResult,
+    OutputSchema, StaticCapabilityBundle,
 };
 use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
 
@@ -74,6 +74,26 @@ fn lookup_registry() -> ToolRegistry {
         |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
     );
     ToolRegistry::new().with_tool(Arc::new(tool))
+}
+
+#[test]
+fn stream_protocol_owner_types_preserve_runtime_and_context_compatibility_paths() {
+    let stream_record = starweaver_stream::AgentStreamRecord::new(
+        0,
+        starweaver_stream::AgentStreamEvent::ModelRequest { step: 0 },
+    );
+    let runtime_record: starweaver_runtime::AgentStreamRecord = stream_record;
+    let module_record: starweaver_runtime::stream::AgentStreamRecord = runtime_record;
+    assert_eq!(module_record.sequence, 0);
+
+    let core_node: starweaver_core::AgentExecutionNode =
+        starweaver_runtime::AgentExecutionNode::RunStart;
+    let module_node: starweaver_runtime::executor::AgentExecutionNode = core_node;
+    assert_eq!(module_node, starweaver_core::AgentExecutionNode::RunStart);
+
+    let context_event = starweaver_context::AgentEvent::new("compat", serde_json::json!({}));
+    let core_event: starweaver_core::AgentEvent = context_event;
+    assert_eq!(core_event.kind, "compat");
 }
 
 #[test]
@@ -250,7 +270,11 @@ async fn stream_events_include_output_retries() {
 
 #[tokio::test]
 async fn run_with_context_can_collect_stream_events() {
-    let mut context = AgentContext::default();
+    let original_trace = TraceContext::from_trace_id("trace-before-success");
+    let mut context = AgentContext {
+        trace_context: original_trace.clone(),
+        ..AgentContext::default()
+    };
     let mut events = Vec::new();
 
     let result = Agent::new(Arc::new(ScriptedModel::new(vec![ModelResponse::text(
@@ -280,6 +304,16 @@ async fn run_with_context_can_collect_stream_events() {
         events.last().unwrap().event,
         AgentStreamEvent::RunComplete { .. }
     ));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|record| matches!(record.event, AgentStreamEvent::RunComplete { .. }))
+            .count(),
+        1
+    );
+    assert!(!context.runtime.lifecycle.entered);
+    assert!(context.ended_at.is_some());
+    assert_eq!(context.trace_context, original_trace);
 }
 
 struct SuspendAtBeforeModelRequest;
@@ -301,7 +335,11 @@ impl AgentExecutor for SuspendAtBeforeModelRequest {
 
 #[tokio::test]
 async fn stream_events_include_checkpoints_and_suspension() {
-    let mut context = AgentContext::default();
+    let original_trace = TraceContext::from_trace_id("trace-before-suspension");
+    let mut context = AgentContext {
+        trace_context: original_trace.clone(),
+        ..AgentContext::default()
+    };
     let mut events = Vec::new();
     let error = Agent::new(Arc::new(ScriptedModel::new(vec![ModelResponse::text(
         "never reached",
@@ -345,6 +383,16 @@ async fn stream_events_include_checkpoints_and_suspension() {
             ..
         }
     )));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|record| matches!(record.event, AgentStreamEvent::Suspended { .. }))
+            .count(),
+        1
+    );
+    assert!(!context.runtime.lifecycle.entered);
+    assert!(context.ended_at.is_some());
+    assert_eq!(context.trace_context, original_trace);
 }
 
 #[tokio::test]
@@ -468,6 +516,91 @@ async fn capability_bundle_stream_observer_sees_recorded_events() {
     assert!(recorded_kinds.iter().any(|kind| kind == "run_complete"));
 }
 
+struct FailOnRunCompleteObserver;
+
+#[async_trait]
+impl AgentCapability for FailOnRunCompleteObserver {
+    async fn on_stream_event(
+        &self,
+        _state: &starweaver_runtime::AgentRunState,
+        event: &AgentStreamRecord,
+    ) -> CapabilityResult<()> {
+        if matches!(event.event, AgentStreamEvent::RunComplete { .. }) {
+            return Err(CapabilityError::Failed(
+                "terminal observer failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn failing_run_complete_observer_does_not_reverse_committed_success() {
+    let observed = Arc::new(Mutex::new(Vec::<String>::new()));
+    let bundle = StaticCapabilityBundle::new("failing-terminal-observer")
+        .with_stream_observer(Arc::new(StreamObserverRecorder {
+            events: observed.clone(),
+        }))
+        .with_stream_observer(Arc::new(FailOnRunCompleteObserver));
+    let mut context = AgentContext::default();
+    let mut events = Vec::new();
+
+    let result = Agent::new(Arc::new(ScriptedModel::new(vec![ModelResponse::text(
+        "committed",
+    )])))
+    .with_capability_bundle(&bundle)
+    .run_with_context_and_stream_events("hi", &mut context, &mut events)
+    .await
+    .unwrap();
+
+    assert_eq!(result.output, "committed");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|record| matches!(record.event, AgentStreamEvent::RunComplete { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|record| matches!(record.event, AgentStreamEvent::RunFailed { .. }))
+            .count(),
+        0
+    );
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "run_complete")
+    );
+    assert!(
+        !context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "run_failed")
+    );
+    assert!(
+        context
+            .events
+            .events()
+            .iter()
+            .any(|event| event.kind == "terminal_stream_observer_failed")
+    );
+    assert!(
+        observed
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|kind| kind == "run_complete")
+    );
+    assert!(!context.runtime.lifecycle.entered);
+    assert!(context.runtime.run_toolsets_closed);
+    assert!(context.ended_at.is_some());
+}
+
 struct StreamObserverRecorder {
     events: Arc<Mutex<Vec<String>>>,
 }
@@ -496,6 +629,7 @@ impl AgentCapability for StreamObserverRecorder {
                 AgentStreamEvent::SteeringGuard { .. } => "steering_guard",
                 AgentStreamEvent::RunComplete { .. } => "run_complete",
                 AgentStreamEvent::RunFailed { .. } => "run_failed",
+                AgentStreamEvent::RunCancelled { .. } => "run_cancelled",
             }
             .to_string(),
         );

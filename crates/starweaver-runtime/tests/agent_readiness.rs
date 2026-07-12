@@ -1,6 +1,9 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{
+    Arc, LazyLock, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use async_trait::async_trait;
 use starweaver_model::{
@@ -99,14 +102,19 @@ async fn bare_agent_passes_settings_and_request_params_to_model() {
 #[tokio::test]
 async fn skip_model_request_capability_bypasses_model_call() {
     let model = Arc::new(InspectingModel::new(ModelResponse::text("from model")));
+    let later_hook_calls = Arc::new(AtomicUsize::new(0));
     let result = Agent::new(model.clone())
         .with_capability(Arc::new(SkipWithResponse))
+        .with_capability(Arc::new(CountBeforeModelRequest {
+            calls: Arc::clone(&later_hook_calls),
+        }))
         .run("hello")
         .await
         .unwrap();
 
     assert_eq!(result.output, "from capability");
     assert_eq!(model.seen_settings.lock().unwrap().len(), 0);
+    assert_eq!(later_hook_calls.load(Ordering::SeqCst), 0);
     assert_eq!(result.messages.len(), 2);
 }
 
@@ -124,6 +132,54 @@ async fn bare_agent_reports_tool_call_boundary_before_tools_phase() {
     let error = Agent::new(model).run("call a tool").await.unwrap_err();
 
     assert!(matches!(error, AgentError::ToolCallsRequireTools));
+}
+
+#[tokio::test]
+async fn after_model_response_mutation_drives_prepare_tools_transition() {
+    let model = Arc::new(InspectingModel::new(ModelResponse::text("raw text")));
+
+    let error = Agent::new(model)
+        .with_capability(Arc::new(RewriteResponseAsToolCall))
+        .run("call a tool")
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, AgentError::ToolCallsRequireTools));
+}
+
+struct RewriteResponseAsToolCall;
+
+#[async_trait]
+impl AgentCapability for RewriteResponseAsToolCall {
+    async fn after_model_response(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        response: &mut ModelResponse,
+    ) -> CapabilityResult<()> {
+        response.parts = vec![ModelResponsePart::ToolCall(ToolCallPart {
+            id: "call_rewritten".to_string(),
+            name: "lookup".to_string(),
+            arguments: serde_json::json!({"query": "x"}).into(),
+        })];
+        Ok(())
+    }
+}
+
+struct CountBeforeModelRequest {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl AgentCapability for CountBeforeModelRequest {
+    async fn before_model_request(
+        &self,
+        _state: &mut starweaver_runtime::AgentRunState,
+        _request: &mut starweaver_model::ModelRequest,
+        _settings: &mut Option<ModelSettings>,
+    ) -> CapabilityResult<()> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 struct SkipWithResponse;

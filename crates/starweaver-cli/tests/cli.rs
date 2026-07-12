@@ -2,11 +2,33 @@
 
 use std::{fs, process::Command, thread};
 
+use starweaver_session::SessionStore as _;
+
 fn cli(temp: &tempfile::TempDir) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_starweaver-cli"));
     command.env("STARWEAVER_PROJECT_DIR", temp.path().join(".starweaver"));
     command.env("STARWEAVER_CONFIG_DIR", temp.path().join("global"));
     command
+}
+
+fn count_json_files(path: &std::path::Path) -> usize {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .map(|path| {
+            if path.is_dir() {
+                count_json_files(&path)
+            } else {
+                usize::from(
+                    path.extension()
+                        .is_some_and(|extension| extension == "json"),
+                )
+            }
+        })
+        .sum()
 }
 
 #[test]
@@ -766,41 +788,70 @@ fn cli_persists_restore_environment_control_flow_and_storage_artifacts() {
     );
 
     let db = temp.path().join(".starweaver/starweaver.sqlite");
-    let conn = rusqlite::Connection::open(db).unwrap();
-    let approvals: i64 = conn
-        .query_row("SELECT COUNT(*) FROM approvals", [], |row| row.get(0))
-        .unwrap();
-    let deferred_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM deferred_tools", [], |row| row.get(0))
-        .unwrap();
-    let contexts: i64 = conn
-        .query_row("SELECT COUNT(*) FROM context_states", [], |row| row.get(0))
-        .unwrap();
-    let envs: i64 = conn
-        .query_row("SELECT COUNT(*) FROM environment_states", [], |row| {
-            row.get(0)
+    let storage = starweaver_storage::SqliteStorage::open(&db).unwrap();
+    let sessions = storage.list_sessions().unwrap();
+    let runs = sessions
+        .iter()
+        .flat_map(|session| storage.list_runs(&session.session_id).unwrap())
+        .collect::<Vec<_>>();
+    let approvals = storage.list_approvals(None, None).unwrap().len();
+    let deferred_count = storage.list_deferred_tools(None, None).unwrap().len();
+    let contexts = runs
+        .iter()
+        .filter(|run| {
+            storage
+                .load_run_context(&run.session_id, &run.run_id)
+                .unwrap()
+                .is_some()
         })
-        .unwrap();
-    let cursors: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stream_cursors", [], |row| row.get(0))
-        .unwrap();
-    let checkpoints: i64 = conn
-        .query_row("SELECT COUNT(*) FROM checkpoints", [], |row| row.get(0))
-        .unwrap();
-    let file_refs_with_metadata: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM file_refs WHERE checksum IS NOT NULL AND content_type = 'application/json'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(approvals >= 0);
+        .count();
+    let envs = runs
+        .iter()
+        .filter(|run| {
+            storage
+                .load_run_environment(&run.session_id, &run.run_id)
+                .unwrap()
+                .is_some()
+        })
+        .count();
+    let cursors = runs
+        .iter()
+        .map(|run| run.stream_cursors.len())
+        .sum::<usize>();
+    let session_store = storage.session_store();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let checkpoints = runs
+        .iter()
+        .map(|run| {
+            runtime
+                .block_on(session_store.load_checkpoints(&run.session_id, &run.run_id))
+                .unwrap()
+                .len()
+        })
+        .sum::<usize>();
+    let checkpoint_events = runs
+        .iter()
+        .flat_map(|run| {
+            storage
+                .load_stream_records(&run.session_id, &run.run_id)
+                .unwrap()
+        })
+        .filter(|record| {
+            matches!(
+                record.event,
+                starweaver_runtime::AgentStreamEvent::Checkpoint { .. }
+            )
+        })
+        .count();
+    let json_files = count_json_files(&temp.path().join(".starweaver/store"));
+    assert!(approvals <= runs.len());
     assert!(deferred_count >= 1);
     assert!(contexts >= 2);
     assert!(envs >= 2);
     assert!(cursors >= 4);
-    assert!(checkpoints >= 1);
-    assert!(file_refs_with_metadata >= 4);
+    assert!(checkpoint_events >= 1);
+    assert!(checkpoints <= checkpoint_events);
+    assert!(json_files >= 4);
 }
 
 #[test]

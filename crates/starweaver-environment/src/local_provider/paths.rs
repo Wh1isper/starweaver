@@ -1,12 +1,15 @@
 //! Local provider path resolution helpers.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::ErrorKind,
+    path::{Path, PathBuf},
+};
 
 use crate::{
-    DEFAULT_TMP_DIR, EnvironmentError, EnvironmentResult, display_local_path,
-    is_absolute_request_path, is_tmp_path, normalize_absolute_request_path,
-    normalize_local_config_path, normalize_path, normalize_requested_path, normalize_str_path,
-    push_unique_path,
+    DEFAULT_TMP_DIR, EnvironmentError, EnvironmentResult, absolute_request_path,
+    display_local_path, is_absolute_request_path, is_tmp_path, map_io_error,
+    normalize_absolute_request_path, normalize_local_config_path, normalize_path,
+    normalize_requested_path, normalize_str_path, push_unique_path,
 };
 
 use super::LocalEnvironmentProvider;
@@ -17,13 +20,91 @@ impl LocalEnvironmentProvider {
         path: &str,
         write: bool,
     ) -> EnvironmentResult<PathBuf> {
+        let (_, filesystem_path) = self.resolve_authorized_request_path(path, write)?;
+        self.resolve_physical_path(&filesystem_path, write, path)
+    }
+
+    /// Resolve a path entry for operations that mutate the entry itself instead
+    /// of following it to mutate its target (for example unlink or rename).
+    pub(super) fn resolve_provider_entry_path(&self, path: &str) -> EnvironmentResult<PathBuf> {
+        let (_, filesystem_path) = self.resolve_authorized_request_path(path, true)?;
+        self.resolve_entry_path(&filesystem_path, path)
+    }
+
+    fn resolve_authorized_request_path(
+        &self,
+        path: &str,
+        write: bool,
+    ) -> EnvironmentResult<(String, PathBuf)> {
         let (visible_path, filesystem_path) = self.resolve_request_path_with_logical_path(path)?;
         if !self.path_is_managed_tmp(&filesystem_path)
             && !self.policy.files.permits(&visible_path, write)
         {
             return Err(EnvironmentError::AccessDenied(path.to_string()));
         }
-        Ok(filesystem_path)
+        Ok((visible_path, filesystem_path))
+    }
+
+    pub(super) fn resolve_tmp_relative_path(
+        &self,
+        relative_path: &str,
+        write: bool,
+    ) -> EnvironmentResult<PathBuf> {
+        let tmp_dir = self.tmp_dir_path().ok_or_else(|| {
+            EnvironmentError::Provider("local temporary directory is unavailable".to_string())
+        })?;
+        let path = tmp_dir.join(relative_path);
+        self.resolve_physical_path(&path, write, &display_local_path(&path))
+    }
+
+    fn resolve_physical_path(
+        &self,
+        path: &Path,
+        write: bool,
+        requested_path: &str,
+    ) -> EnvironmentResult<PathBuf> {
+        if write {
+            Self::reject_existing_symlink_components(path, requested_path)?;
+        }
+        let resolved_path = normalize_local_config_path(path.to_path_buf());
+        if !self.is_under_allowed_roots(&resolved_path) {
+            return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
+        }
+        Ok(resolved_path)
+    }
+
+    fn resolve_entry_path(&self, path: &Path, requested_path: &str) -> EnvironmentResult<PathBuf> {
+        let parent = path.parent().ok_or_else(|| {
+            EnvironmentError::InvalidRequest(format!("path has no parent: {requested_path}"))
+        })?;
+        let file_name = path.file_name().ok_or_else(|| {
+            EnvironmentError::InvalidRequest(format!("path has no file name: {requested_path}"))
+        })?;
+        Self::reject_existing_symlink_components(parent, requested_path)?;
+        let resolved_parent = normalize_local_config_path(parent.to_path_buf());
+        if !self.is_under_allowed_roots(&resolved_parent) {
+            return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
+        }
+        Ok(resolved_parent.join(file_name))
+    }
+
+    fn reject_existing_symlink_components(
+        path: &Path,
+        requested_path: &str,
+    ) -> EnvironmentResult<()> {
+        let mut current = PathBuf::new();
+        for component in path.components() {
+            current.push(component.as_os_str());
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(map_io_error(&current, &error)),
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn resolve_request_path_with_logical_path(
@@ -32,11 +113,12 @@ impl LocalEnvironmentProvider {
     ) -> EnvironmentResult<(String, PathBuf)> {
         let requested = Path::new(path);
         if is_absolute_request_path(requested) {
-            let filesystem_path = normalize_absolute_request_path(requested)?;
-            if !self.is_under_allowed_roots(&filesystem_path) {
+            let filesystem_path = absolute_request_path(requested)?;
+            let resolved_path = normalize_absolute_request_path(requested)?;
+            if !self.is_under_allowed_roots(&resolved_path) {
                 return Err(EnvironmentError::AccessDenied(path.to_string()));
             }
-            let visible_path = self.logical_provider_path(&filesystem_path)?;
+            let visible_path = self.logical_provider_path(&resolved_path)?;
             return Ok((visible_path, filesystem_path));
         }
 

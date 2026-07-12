@@ -5,8 +5,8 @@ use serde::de::DeserializeOwned;
 use starweaver_core::Metadata;
 use starweaver_environment::EnvironmentError;
 use starweaver_tools::{
-    DynTool, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY, ToolContext, ToolError, ToolResult,
-    typed_json_tool,
+    DynTool, TOOL_METADATA_DEPENDENCIES_KEY, ToolContext, ToolDependencyRequirements, ToolError,
+    ToolResult, typed_json_tool,
 };
 
 pub fn static_tool<Args, F, Fut>(
@@ -19,11 +19,10 @@ where
     F: Send + Sync + 'static + Fn(ToolContext, Args) -> Fut,
     Fut: Send + Future<Output = Result<ToolResult, ToolError>> + 'static,
 {
-    Arc::new(typed_json_tool::<Args, _, _>(
-        name,
-        Some(description.to_string()),
-        function,
-    ))
+    Arc::new(
+        typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function)
+            .with_metadata(first_party_dependency_metadata()),
+    )
 }
 
 pub fn static_sequential_tool<Args, F, Fut>(
@@ -38,6 +37,7 @@ where
 {
     Arc::new(
         typed_json_tool::<Args, _, _>(name, Some(description.to_string()), function)
+            .with_metadata(first_party_dependency_metadata())
             .with_sequential(true),
     )
 }
@@ -78,7 +78,7 @@ where
 }
 
 pub fn tool_metadata(bundle: &str, inherit: bool, approval_required: bool) -> Metadata {
-    let mut metadata = Metadata::default();
+    let mut metadata = first_party_dependency_metadata();
     metadata.insert("bundle".to_string(), serde_json::json!(bundle));
     metadata.insert("auto_inherit".to_string(), serde_json::json!(inherit));
     if approval_required {
@@ -87,15 +87,25 @@ pub fn tool_metadata(bundle: &str, inherit: bool, approval_required: bool) -> Me
     metadata
 }
 
-pub fn context_management_tool_metadata(
+pub fn tool_metadata_with_dependencies(
     bundle: &str,
     inherit: bool,
     approval_required: bool,
+    requirements: &ToolDependencyRequirements,
 ) -> Metadata {
     let mut metadata = tool_metadata(bundle, inherit, approval_required);
     metadata.insert(
-        TOOL_METADATA_CONTEXT_MANAGEMENT_KEY.to_string(),
-        serde_json::json!(true),
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        requirements.to_metadata_value(),
+    );
+    metadata
+}
+
+fn first_party_dependency_metadata() -> Metadata {
+    let mut metadata = Metadata::default();
+    metadata.insert(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        ToolDependencyRequirements::filtered(Vec::<String>::new(), false).to_metadata_value(),
     );
     metadata
 }

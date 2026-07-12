@@ -75,15 +75,14 @@ Provider replay coverage is accepted when:
 
 ## Feature Coverage
 
-Domain specs own implementation status for the contracts they define. Alignment
-specs own evidence and remaining gap analysis for:
+`spec/capabilities.toml` exclusively owns release-level capability implementation status, and `spec/capability-status.md` is its generated human-readable view. Domain specs own contracts and evidence descriptions. Alignment specs own evidence review and remaining gap analysis for:
 
 - agent framework docs features
 - provider behavior tests
 - first-party SDK modules and tests
 - Starweaver specs
-- current implementation status
-- active implementation batch status
+- current evidence against the generated capability status
+- active implementation batch scope
 
 ## Release Gate
 
@@ -93,7 +92,7 @@ Before a release candidate:
 - coverage gate passes
 - script smoke tests pass
 - docs examples pass
-- feature matrix has status for every agent foundation docs page
-- feature matrix has status for every first-party SDK module family
+- generated capability status is current and every registered capability has evidence
+- non-normative feature and SDK maps reference registry capability IDs instead of duplicating status
 - replay matrix includes supported provider families and known gaps
 - specs reflect all public crate boundaries

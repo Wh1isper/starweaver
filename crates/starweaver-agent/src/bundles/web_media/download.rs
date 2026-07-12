@@ -1,5 +1,5 @@
 use serde_json::Value;
-use starweaver_context::AgentContext;
+use starweaver_context::HostCapabilities;
 use starweaver_environment::DynEnvironmentProvider;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 use uuid::Uuid;
@@ -114,12 +114,15 @@ fn environment_provider(
     context: &ToolContext,
     tool: &str,
 ) -> Result<DynEnvironmentProvider, ToolError> {
-    let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
-        tool_user_error(tool, "AgentContext dependency is missing from ToolContext")
-    })?;
-    let environment = agent_context
-        .dependencies
-        .get::<EnvironmentHandle>()
-        .ok_or_else(|| tool_user_error(tool, "EnvironmentHandle is missing from AgentContext"))?;
+    let environment = context
+        .dependency::<HostCapabilities>()
+        .and_then(|capabilities| capabilities.get::<EnvironmentHandle>())
+        .or_else(|| context.dependency::<EnvironmentHandle>())
+        .ok_or_else(|| {
+            tool_user_error(
+                tool,
+                "EnvironmentHandle host capability is missing from ToolContext",
+            )
+        })?;
     Ok(environment.provider())
 }
