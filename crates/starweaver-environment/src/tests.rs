@@ -886,7 +886,7 @@ async fn dropping_foreground_shell_future_terminates_process_tree() {
     let mut follow_up = None;
     for _ in 0..100 {
         match provider
-            .run_program(ProgramCommand::new("/bin/printf", ["released"]))
+            .run_program(ProgramCommand::new("printf", ["released"]))
             .await
         {
             Ok(output) => {
@@ -966,7 +966,7 @@ async fn local_provider_shares_concurrency_limit_and_reaps_retained_processes() 
         .await
         .unwrap();
     let foreground_exhausted = provider
-        .run_program(ProgramCommand::new("/bin/printf", ["blocked"]))
+        .run_program(ProgramCommand::new("printf", ["blocked"]))
         .await;
     assert!(matches!(
         foreground_exhausted,
@@ -990,7 +990,7 @@ async fn local_provider_shares_concurrency_limit_and_reaps_retained_processes() 
     let mut foreground_after_reap = None;
     for _ in 0..100 {
         match provider
-            .run_program(ProgramCommand::new("/bin/printf", ["reaped"]))
+            .run_program(ProgramCommand::new("printf", ["reaped"]))
             .await
         {
             Ok(output) => {
