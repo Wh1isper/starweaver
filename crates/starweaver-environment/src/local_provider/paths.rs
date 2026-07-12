@@ -76,7 +76,7 @@ impl LocalEnvironmentProvider {
         requested_path: &str,
     ) -> EnvironmentResult<PathBuf> {
         if write {
-            Self::reject_existing_symlink_components(path, requested_path)?;
+            self.reject_existing_symlink_components(path, requested_path)?;
         }
         let resolved_path = normalize_local_config_path(path.to_path_buf());
         if !self.is_under_allowed_roots(&resolved_path) {
@@ -92,7 +92,7 @@ impl LocalEnvironmentProvider {
         let file_name = path.file_name().ok_or_else(|| {
             EnvironmentError::InvalidRequest(format!("path has no file name: {requested_path}"))
         })?;
-        Self::reject_existing_symlink_components(parent, requested_path)?;
+        self.reject_existing_symlink_components(parent, requested_path)?;
         let resolved_parent = normalize_local_config_path(parent.to_path_buf());
         if !self.is_under_allowed_roots(&resolved_parent) {
             return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
@@ -101,6 +101,7 @@ impl LocalEnvironmentProvider {
     }
 
     fn reject_existing_symlink_components(
+        &self,
         path: &Path,
         requested_path: &str,
     ) -> EnvironmentResult<()> {
@@ -114,7 +115,15 @@ impl LocalEnvironmentProvider {
             }
             match std::fs::symlink_metadata(&current) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
+                    let resolved_component = normalize_local_config_path(current.clone());
+                    let is_trusted_allowed_root_ancestor =
+                        self.allowed_paths.iter().any(|allowed_root| {
+                            allowed_root != &resolved_component
+                                && allowed_root.starts_with(&resolved_component)
+                        });
+                    if !is_trusted_allowed_root_ancestor {
+                        return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
+                    }
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
