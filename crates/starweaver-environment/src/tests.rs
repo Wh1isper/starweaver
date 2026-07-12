@@ -987,12 +987,30 @@ async fn local_provider_shares_concurrency_limit_and_reaps_retained_processes() 
         .start_process(ShellCommand::shell("printf unobserved"))
         .await
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    let foreground_after_reap = provider
-        .run_program(ProgramCommand::new("/bin/printf", ["reaped"]))
-        .await
-        .unwrap();
-    assert_eq!(foreground_after_reap.stdout, "reaped");
+    let mut foreground_after_reap = None;
+    for _ in 0..100 {
+        match provider
+            .run_program(ProgramCommand::new("/bin/printf", ["reaped"]))
+            .await
+        {
+            Ok(output) => {
+                foreground_after_reap = Some(output);
+                break;
+            }
+            Err(EnvironmentError::Provider(message))
+                if message.contains("concurrency limit exhausted") =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("unexpected foreground reaping failure: {error}"),
+        }
+    }
+    assert_eq!(
+        foreground_after_reap
+            .expect("completed background process was reaped")
+            .stdout,
+        "reaped"
+    );
     assert!(
         provider
             .list_processes()
@@ -1077,6 +1095,27 @@ async fn local_provider_manages_tmp_files_as_allowed_absolute_paths() {
     std::fs::remove_dir_all(external).unwrap();
 }
 
+#[tokio::test]
+async fn local_provider_writes_relative_file_under_absolute_root() {
+    let root = unique_test_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    let provider = LocalEnvironmentProvider::new(&root).with_policy(EnvironmentPolicy {
+        files: FilePolicy::read_write(),
+        shell: ShellPolicy::default(),
+    });
+
+    provider
+        .write_text("nested/file.txt", "content")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        provider.read_text("nested/file.txt").await.unwrap(),
+        "content"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn local_provider_rejects_preexisting_symlink_escapes_for_file_shell_and_tmp_paths() {
@@ -1134,6 +1173,15 @@ async fn local_provider_rejects_preexisting_symlink_escapes_for_file_shell_and_t
         Err(EnvironmentError::AccessDenied(_))
     ));
     assert!(!outside.join("payload.txt").exists());
+
+    let tmp_dir = provider.tmp_dir_path().unwrap().to_path_buf();
+    std::fs::remove_dir_all(&tmp_dir).unwrap();
+    std::os::unix::fs::symlink(&root, &tmp_dir).unwrap();
+    assert!(matches!(
+        provider.write_tmp_file("protected.txt", b"blocked").await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(!root.join("protected.txt").exists());
 
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(outside).unwrap();

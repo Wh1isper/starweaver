@@ -2,7 +2,7 @@
 
 use std::{
     io::ErrorKind,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use crate::{
@@ -53,7 +53,19 @@ impl LocalEnvironmentProvider {
         let tmp_dir = self.tmp_dir_path().ok_or_else(|| {
             EnvironmentError::Provider("local temporary directory is unavailable".to_string())
         })?;
-        let path = tmp_dir.join(relative_path);
+        // `tempfile` can return a path beneath a platform-owned symlink (such
+        // as macOS `/var`). Normalize only the managed directory's parent so
+        // the managed directory itself remains visible to the containment
+        // check if it has been replaced with a symlink.
+        let parent = tmp_dir.parent().ok_or_else(|| {
+            EnvironmentError::InvalidRequest("local temporary directory has no parent".to_string())
+        })?;
+        let file_name = tmp_dir.file_name().ok_or_else(|| {
+            EnvironmentError::InvalidRequest("local temporary directory has no name".to_string())
+        })?;
+        let path = normalize_local_config_path(parent.to_path_buf())
+            .join(file_name)
+            .join(relative_path);
         self.resolve_physical_path(&path, write, &display_local_path(&path))
     }
 
@@ -95,6 +107,11 @@ impl LocalEnvironmentProvider {
         let mut current = PathBuf::new();
         for component in path.components() {
             current.push(component.as_os_str());
+            // On Windows, a prefix alone (for example `C:` or `\\?\C:`) is
+            // not a complete path and cannot be queried for metadata.
+            if matches!(component, Component::Prefix(_)) {
+                continue;
+            }
             match std::fs::symlink_metadata(&current) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
