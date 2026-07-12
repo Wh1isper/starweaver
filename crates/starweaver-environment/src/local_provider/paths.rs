@@ -21,7 +21,13 @@ impl LocalEnvironmentProvider {
         write: bool,
     ) -> EnvironmentResult<PathBuf> {
         let (_, filesystem_path) = self.resolve_authorized_request_path(path, write)?;
-        self.resolve_physical_path(&filesystem_path, write, path, true)
+        let allow_trusted_allowed_root_ancestors = !self.path_targets_managed_tmp(&filesystem_path);
+        self.resolve_physical_path(
+            &filesystem_path,
+            write,
+            path,
+            allow_trusted_allowed_root_ancestors,
+        )
     }
 
     /// Resolve a path entry for operations that mutate the entry itself instead
@@ -37,7 +43,7 @@ impl LocalEnvironmentProvider {
         write: bool,
     ) -> EnvironmentResult<(String, PathBuf)> {
         let (visible_path, filesystem_path) = self.resolve_request_path_with_logical_path(path)?;
-        if !self.path_is_managed_tmp(&filesystem_path)
+        if !self.path_targets_managed_tmp(&filesystem_path)
             && !self.policy.files.permits(&visible_path, write)
         {
             return Err(EnvironmentError::AccessDenied(path.to_string()));
@@ -74,13 +80,13 @@ impl LocalEnvironmentProvider {
         path: &Path,
         write: bool,
         requested_path: &str,
-        allow_trusted_allowed_root: bool,
+        allow_trusted_allowed_root_ancestors: bool,
     ) -> EnvironmentResult<PathBuf> {
         if write {
             self.reject_existing_symlink_components(
                 path,
                 requested_path,
-                allow_trusted_allowed_root,
+                allow_trusted_allowed_root_ancestors,
             )?;
         }
         let resolved_path = normalize_local_config_path(path.to_path_buf());
@@ -97,7 +103,11 @@ impl LocalEnvironmentProvider {
         let file_name = path.file_name().ok_or_else(|| {
             EnvironmentError::InvalidRequest(format!("path has no file name: {requested_path}"))
         })?;
-        self.reject_existing_symlink_components(parent, requested_path, true)?;
+        self.reject_existing_symlink_components(
+            parent,
+            requested_path,
+            !self.path_targets_managed_tmp(path),
+        )?;
         let resolved_parent = normalize_local_config_path(parent.to_path_buf());
         if !self.is_under_allowed_roots(&resolved_parent) {
             return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
@@ -109,7 +119,7 @@ impl LocalEnvironmentProvider {
         &self,
         path: &Path,
         requested_path: &str,
-        allow_trusted_allowed_root: bool,
+        allow_trusted_allowed_root_ancestors: bool,
     ) -> EnvironmentResult<()> {
         let mut current = PathBuf::new();
         for component in path.components() {
@@ -122,12 +132,12 @@ impl LocalEnvironmentProvider {
             match std::fs::symlink_metadata(&current) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     let resolved_component = normalize_local_config_path(current.clone());
-                    let is_trusted_allowed_root = allow_trusted_allowed_root
-                        && self
-                            .allowed_paths
-                            .iter()
-                            .any(|allowed_root| allowed_root.starts_with(&resolved_component));
-                    if !is_trusted_allowed_root {
+                    let is_trusted_allowed_root_ancestor = allow_trusted_allowed_root_ancestors
+                        && self.allowed_paths.iter().any(|allowed_root| {
+                            allowed_root != &resolved_component
+                                && allowed_root.starts_with(&resolved_component)
+                        });
+                    if !is_trusted_allowed_root_ancestor {
                         return Err(EnvironmentError::AccessDenied(requested_path.to_string()));
                     }
                 }
@@ -244,6 +254,11 @@ impl LocalEnvironmentProvider {
             return Ok(Some(tmp_dir.to_path_buf()));
         }
         Ok(Some(tmp_dir.join(normalize_requested_path(relative)?)))
+    }
+
+    fn path_targets_managed_tmp(&self, path: &Path) -> bool {
+        self.tmp_dir_path()
+            .is_some_and(|tmp_dir| path == tmp_dir || path.starts_with(tmp_dir))
     }
 
     pub(crate) fn path_is_managed_tmp(&self, path: &Path) -> bool {

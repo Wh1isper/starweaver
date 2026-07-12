@@ -1118,21 +1118,22 @@ async fn local_provider_writes_relative_file_under_absolute_root() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn local_provider_allows_trusted_allowed_root_symlink_aliases() {
+async fn local_provider_allows_platform_symlink_ancestors_of_allowed_roots() {
     let root = unique_test_dir();
-    let allowed = unique_test_dir();
-    let alias = unique_test_dir();
+    let real_parent = unique_test_dir();
+    let alias_parent = unique_test_dir();
+    let allowed = real_parent.join("allowed");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&allowed).unwrap();
-    std::fs::remove_dir(&alias).unwrap();
-    std::os::unix::fs::symlink(&allowed, &alias).unwrap();
+    std::fs::remove_dir(&alias_parent).unwrap();
+    std::os::unix::fs::symlink(&real_parent, &alias_parent).unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
         .with_allowed_paths([allowed.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_write(),
             shell: ShellPolicy::default(),
         });
-    let requested = alias.join("file.txt");
+    let requested = alias_parent.join("allowed/file.txt");
 
     provider
         .write_text(&requested.display().to_string(), "content")
@@ -1144,8 +1145,8 @@ async fn local_provider_allows_trusted_allowed_root_symlink_aliases() {
         "content"
     );
     std::fs::remove_dir_all(root).unwrap();
-    std::fs::remove_file(alias).unwrap();
-    std::fs::remove_dir_all(allowed).unwrap();
+    std::fs::remove_file(alias_parent).unwrap();
+    std::fs::remove_dir_all(real_parent).unwrap();
 }
 
 #[cfg(unix)]
@@ -1209,11 +1210,45 @@ async fn local_provider_rejects_preexisting_symlink_escapes_for_file_shell_and_t
     let tmp_dir = provider.tmp_dir_path().unwrap().to_path_buf();
     std::fs::remove_dir_all(&tmp_dir).unwrap();
     std::os::unix::fs::symlink(&root, &tmp_dir).unwrap();
+    std::fs::write(root.join("protected.txt"), "original").unwrap();
+    std::fs::write(root.join("existing.txt"), "existing").unwrap();
+
     assert!(matches!(
         provider.write_tmp_file("protected.txt", b"blocked").await,
         Err(EnvironmentError::AccessDenied(_))
     ));
-    assert!(!root.join("protected.txt").exists());
+    assert!(matches!(
+        provider
+            .write_text(".starweaver/tmp/protected.txt", "blocked")
+            .await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider.create_dir(".starweaver/tmp/protected", true).await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider
+            .delete_path(".starweaver/tmp/existing.txt", false)
+            .await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert!(matches!(
+        provider
+            .move_path(".starweaver/tmp/existing.txt", "moved.txt", false)
+            .await,
+        Err(EnvironmentError::AccessDenied(_))
+    ));
+    assert_eq!(
+        std::fs::read_to_string(root.join("protected.txt")).unwrap(),
+        "original"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("existing.txt")).unwrap(),
+        "existing"
+    );
+    assert!(!root.join("protected").exists());
+    assert!(!root.join("moved.txt").exists());
 
     std::fs::remove_dir_all(root).unwrap();
     std::fs::remove_dir_all(outside).unwrap();
