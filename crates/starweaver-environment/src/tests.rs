@@ -1118,22 +1118,21 @@ async fn local_provider_writes_relative_file_under_absolute_root() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn local_provider_allows_platform_symlink_ancestors_of_allowed_roots() {
+async fn local_provider_allows_trusted_allowed_root_symlink_aliases() {
     let root = unique_test_dir();
-    let real_parent = unique_test_dir();
-    let alias_parent = unique_test_dir();
-    let allowed = real_parent.join("allowed");
+    let allowed = unique_test_dir();
+    let alias = unique_test_dir();
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(&allowed).unwrap();
-    std::fs::remove_dir(&alias_parent).unwrap();
-    std::os::unix::fs::symlink(&real_parent, &alias_parent).unwrap();
+    std::fs::remove_dir(&alias).unwrap();
+    std::os::unix::fs::symlink(&allowed, &alias).unwrap();
     let provider = LocalEnvironmentProvider::new(&root)
         .with_allowed_paths([allowed.clone()])
         .with_policy(EnvironmentPolicy {
             files: FilePolicy::read_write(),
             shell: ShellPolicy::default(),
         });
-    let requested = alias_parent.join("allowed/file.txt");
+    let requested = alias.join("file.txt");
 
     provider
         .write_text(&requested.display().to_string(), "content")
@@ -1145,8 +1144,8 @@ async fn local_provider_allows_platform_symlink_ancestors_of_allowed_roots() {
         "content"
     );
     std::fs::remove_dir_all(root).unwrap();
-    std::fs::remove_file(alias_parent).unwrap();
-    std::fs::remove_dir_all(real_parent).unwrap();
+    std::fs::remove_file(alias).unwrap();
+    std::fs::remove_dir_all(allowed).unwrap();
 }
 
 #[cfg(unix)]
