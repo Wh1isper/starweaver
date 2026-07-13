@@ -2,8 +2,7 @@
 
 use serde_json::json;
 use starweaver_core::RunId;
-use starweaver_model::{ModelResponse, ModelResponsePart, StreamDelta};
-use starweaver_runtime::ModelResponseStreamEvent;
+use starweaver_model::{ModelResponse, ModelResponsePart, ModelResponseStreamEvent, StreamDelta};
 
 use super::super::{DisplayMessage, DisplayMessageKind, DisplayProjectionContext};
 use super::tool::project_tool_call_messages;

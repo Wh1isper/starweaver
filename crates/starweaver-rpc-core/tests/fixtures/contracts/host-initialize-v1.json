@@ -1,0 +1,38 @@
+{
+  "identity": {
+    "name": "starweaver.host",
+    "major": 1,
+    "revision": "2026-07-11",
+    "features": [
+      "sessions",
+      "runs",
+      "stream.replay",
+      "environment.attachments",
+      "environment.active_mounts",
+      "hitl"
+    ]
+  },
+  "legacy": {},
+  "current": {
+    "protocol": {
+      "name": "starweaver.host",
+      "major": 1,
+      "revision": "client-fixture",
+      "features": ["sessions"]
+    }
+  },
+  "wrong_name": {
+    "protocol": {
+      "name": "starweaver.other",
+      "major": 1,
+      "revision": "client-fixture"
+    }
+  },
+  "wrong_major": {
+    "protocol": {
+      "name": "starweaver.host",
+      "major": 2,
+      "revision": "client-fixture"
+    }
+  }
+}

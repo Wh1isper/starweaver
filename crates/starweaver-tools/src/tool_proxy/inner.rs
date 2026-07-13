@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
+use starweaver_context::{AgentContext, AgentEvent, ToolSearchContextHandle};
 
 use super::format::{format_search_results, format_tool_call_error, xml_escape, xml_result};
 use super::index::{IndexedTool, SearchEntry, ToolProxyIndex, score_entry};
@@ -314,7 +314,7 @@ impl ToolProxyInner {
         context: &ToolContext,
         tools: impl IntoIterator<Item = &'a IndexedTool>,
     ) {
-        let Some(handle) = context.dependency::<AgentContextHandle>() else {
+        let Some(handle) = context.dependency::<ToolSearchContextHandle>() else {
             return;
         };
         let mut tool_names = Vec::new();
@@ -325,16 +325,14 @@ impl ToolProxyInner {
                 namespaces.insert(namespace.clone());
             }
         }
-        handle.update(|agent_context| {
-            agent_context.record_tool_search_loaded(tool_names.clone(), namespaces.clone());
-            agent_context.publish_event(AgentEvent::new(
-                "tool_search_loaded",
-                serde_json::json!({
-                    "loaded_tools": tool_names,
-                    "loaded_namespaces": namespaces,
-                }),
-            ));
-        });
+        handle.record_loaded(tool_names.clone(), namespaces.clone());
+        handle.publish_event(AgentEvent::new(
+            "tool_search_loaded",
+            serde_json::json!({
+                "loaded_tools": tool_names,
+                "loaded_namespaces": namespaces,
+            }),
+        ));
     }
 
     fn namespace_description(&self, namespace: &str) -> String {

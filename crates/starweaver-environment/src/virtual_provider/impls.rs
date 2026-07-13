@@ -11,7 +11,7 @@ use starweaver_core::Metadata;
 use crate::{
     DEFAULT_FILE_TREE_MAX_DEPTH, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
     EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileListOptions,
-    FileListResult, FileStat, FileTreeBlock, PathGlob, ShellCommand, ShellOutput,
+    FileListResult, FileStat, FileTreeBlock, PathGlob, ProgramCommand, ShellCommand, ShellOutput,
     ShellReviewEnvironmentContext, include_path, list_ignore_match, logical_ancestors,
     normalize_requested_path, parent_path, path_contains, render_environment_context_xml,
     render_virtual_file_tree_listing, replace_logical_prefix, strip_path_prefix,
@@ -565,7 +565,7 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
     }
 
     async fn run_shell(&self, command: ShellCommand) -> EnvironmentResult<ShellOutput> {
-        if !self.policy.shell.permits(&command.command) {
+        if !self.policy.shell.permits_shell() {
             return Err(EnvironmentError::AccessDenied(command.command));
         }
         self.shell_outputs
@@ -574,6 +574,26 @@ impl EnvironmentProvider for VirtualEnvironmentProvider {
             .get(&command.command)
             .cloned()
             .ok_or(EnvironmentError::NotFound(command.command))
+    }
+
+    async fn run_program(&self, command: ProgramCommand) -> EnvironmentResult<ShellOutput> {
+        let display_command = command.display_command();
+        if !self.policy.shell.permits_program(&command.program) {
+            return Err(EnvironmentError::AccessDenied(display_command));
+        }
+        if !command.environment.is_empty()
+            && !self.policy.shell.permits_program_environment_overrides()
+        {
+            return Err(EnvironmentError::InvalidRequest(
+                "environment overrides are not allowed for allowlisted direct programs".to_string(),
+            ));
+        }
+        self.shell_outputs
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+            .get(&display_command)
+            .cloned()
+            .ok_or(EnvironmentError::NotFound(display_command))
     }
 
     async fn render_environment_context(&self) -> EnvironmentResult<Option<String>> {

@@ -5,7 +5,8 @@ mod run;
 mod tool;
 
 use async_trait::async_trait;
-use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, AgentStreamSource};
+
+use crate::{AgentStreamEvent, AgentStreamRecord, AgentStreamSource};
 
 use super::custom::project_custom_event;
 use super::{DisplayMessage, DisplayMessageProjector, DisplayProjectionContext};
@@ -14,9 +15,10 @@ use super::{DisplayMessage, DisplayMessageProjector, DisplayProjectionContext};
 #[derive(Clone, Debug, Default)]
 pub struct DefaultDisplayMessageProjector;
 
-#[async_trait]
-impl DisplayMessageProjector for DefaultDisplayMessageProjector {
-    async fn project(
+impl DefaultDisplayMessageProjector {
+    /// Project one canonical raw stream record synchronously.
+    #[must_use]
+    pub fn project_record(
         &self,
         context: &DisplayProjectionContext,
         record: &AgentStreamRecord,
@@ -32,6 +34,30 @@ impl DisplayMessageProjector for DefaultDisplayMessageProjector {
             apply_source_attribution(&mut messages, source);
         }
         messages
+    }
+
+    /// Project canonical raw stream records in input order.
+    #[must_use]
+    pub fn project_records(
+        &self,
+        context: &DisplayProjectionContext,
+        records: &[AgentStreamRecord],
+    ) -> Vec<DisplayMessage> {
+        records
+            .iter()
+            .flat_map(|record| self.project_record(context, record))
+            .collect()
+    }
+}
+
+#[async_trait]
+impl DisplayMessageProjector for DefaultDisplayMessageProjector {
+    async fn project(
+        &self,
+        context: &DisplayProjectionContext,
+        record: &AgentStreamRecord,
+    ) -> Vec<DisplayMessage> {
+        self.project_record(context, record)
     }
 }
 
@@ -105,6 +131,14 @@ fn project_record_event(
             run_id,
             output,
         )],
+        AgentStreamEvent::RunCancelled { reason, .. } => {
+            vec![run::project_run_terminal_cancelled(
+                context,
+                record.sequence,
+                run_id,
+                reason,
+            )]
+        }
         AgentStreamEvent::RunFailed {
             error_kind,
             message,

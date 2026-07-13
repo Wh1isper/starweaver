@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_context::AgentContext;
+use starweaver_context::ToolRuntimeSnapshot;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use super::{
@@ -201,14 +201,15 @@ pub(super) async fn fetch(
     } else {
         Method::GET
     };
-    let max_fetch_bytes = context
-        .dependency::<AgentContext>()
-        .map_or(MAX_FETCH_BYTES, |context| {
-            context
-                .tool_config
-                .fetch_max_inline_binary_bytes
-                .max(MAX_FETCH_BYTES)
-        });
+    let max_fetch_bytes =
+        context
+            .dependency::<ToolRuntimeSnapshot>()
+            .map_or(MAX_FETCH_BYTES, |runtime| {
+                runtime
+                    .tool_config()
+                    .fetch_max_inline_binary_bytes
+                    .max(MAX_FETCH_BYTES)
+            });
     let resource =
         fetch_http_resource(&context, "fetch", &arguments.url, method, max_fetch_bytes).await?;
     if arguments.head_only {

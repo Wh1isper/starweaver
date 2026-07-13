@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,11 +17,11 @@ use starweaver_usage::{
 };
 
 use crate::{
-    AgentEvent, AgentInfo, AgentStreamQueueRegistry, BusMessage, ContextLifecycleState,
-    DependencyStore, EventBus, MessageBus, ModelConfig, NoteStore, ResumableExportOptions,
-    ResumableState, SecurityConfig, StateStore, TASK_SNAPSHOT_EVENT_KIND, Task, TaskManager,
-    TaskSnapshot, ToolConfig, ToolIdWrapper, ToolSearchInvalidation, ToolSearchState,
-    WrapperMetadata, runtime_context,
+    AgentEvent, AgentInfo, AgentStreamQueueRegistry, AgentToolState, BusMessage, DependencyStore,
+    EventBus, HostCapabilities, MessageBus, ModelConfig, NoteStore, ResumableExportOptions,
+    ResumableState, RuntimeEphemeralState, SecurityConfig, ShellEnvironmentSnapshot, StateStore,
+    TASK_SNAPSHOT_EVENT_KIND, Task, TaskManager, TaskSnapshot, ToolCapabilityGrant, ToolConfig,
+    ToolIdWrapper, ToolRuntimeSnapshot, ToolSearchInvalidation, ToolSearchState, runtime_context,
 };
 
 /// Lifecycle-wide agent context.
@@ -61,59 +64,16 @@ pub struct AgentContext {
     /// Rendered handoff message for post-compact or post-handoff restore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_message: Option<String>,
-    /// Force environment/runtime context injection on the next filter pass.
-    #[serde(default)]
-    pub force_inject_context: bool,
-    /// Extra environment variables for shell command execution.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub shell_env: BTreeMap<String, String>,
-    /// Metadata for deferred tool calls.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub deferred_tool_metadata: BTreeMap<String, Metadata>,
+    /// Runtime-only state, flattened to preserve the established serialized context shape.
+    #[serde(flatten)]
+    pub runtime: RuntimeEphemeralState,
+    /// Agent-owned durable state used by tool bundles.
+    #[serde(flatten)]
+    pub tools: AgentToolState,
     /// Agent registry keyed by agent id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agent_registry: BTreeMap<String, AgentInfo>,
-    /// Tool names requiring approval.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub approval_required_tools: Vec<String>,
-    /// MCP server names requiring approval.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub approval_required_mcp_servers: Vec<String>,
-    /// File paths to mention for on-demand inspection on the next request.
-    ///
-    /// The legacy field name is retained for serialized-state compatibility.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub auto_load_files: Vec<String>,
-    /// Typed task manager.
-    #[serde(default, skip_serializing_if = "TaskManager::is_empty")]
-    pub task_manager: TaskManager,
-    /// Tool names loaded via tool search.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_search_loaded_tools: Vec<String>,
-    /// Namespace IDs loaded via tool search.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_search_loaded_namespaces: Vec<String>,
-    /// Context-injection tag names that should be stripped or refreshed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub injected_context_tags: Vec<String>,
-    /// Active context management tool names.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub context_manage_tool_names: Vec<String>,
-    /// Active tool capability tags.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tool_tags: Vec<String>,
-    /// Tool call ID wrapper for provider-normalized tool IDs.
-    #[serde(default, skip_serializing_if = "ToolIdWrapper::is_empty")]
-    pub tool_id_wrapper: ToolIdWrapper,
-    /// Runtime stream queue registry placeholder.
-    #[serde(default, skip_serializing_if = "AgentStreamQueueRegistry::is_empty")]
-    pub agent_stream_queues: AgentStreamQueueRegistry,
-    /// Wrapper metadata carried by the context.
-    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
-    pub wrapper_metadata: WrapperMetadata,
-    /// Runtime lifecycle state.
-    #[serde(default, skip_serializing_if = "ContextLifecycleState::is_default")]
-    pub lifecycle: ContextLifecycleState,
+
     /// Accumulated usage.
     #[serde(default)]
     pub usage: Usage,
@@ -150,9 +110,6 @@ pub struct AgentContext {
     /// Trace correlation context.
     #[serde(default, skip_serializing_if = "TraceContext::is_empty")]
     pub trace_context: TraceContext,
-    /// Current runtime run step for context-aware preparation.
-    #[serde(skip)]
-    pub current_run_step: usize,
     /// Context metadata.
     #[serde(default, skip_serializing_if = "Metadata::is_empty")]
     pub metadata: Metadata,
@@ -186,26 +143,9 @@ impl AgentContext {
             previous_assistant_response_reference: None,
             steering_messages: Vec::new(),
             handoff_message: None,
-            force_inject_context: false,
-            shell_env: BTreeMap::new(),
-            deferred_tool_metadata: BTreeMap::new(),
+            runtime: RuntimeEphemeralState::default(),
+            tools: AgentToolState::default(),
             agent_registry,
-            approval_required_tools: Vec::new(),
-            approval_required_mcp_servers: Vec::new(),
-            auto_load_files: Vec::new(),
-            task_manager: TaskManager::new(),
-            tool_search_loaded_tools: Vec::new(),
-            tool_search_loaded_namespaces: Vec::new(),
-            injected_context_tags: vec![
-                "runtime-context".to_string(),
-                "environment-context".to_string(),
-            ],
-            context_manage_tool_names: Vec::new(),
-            tool_tags: Vec::new(),
-            tool_id_wrapper: ToolIdWrapper::default(),
-            agent_stream_queues: AgentStreamQueueRegistry::default(),
-            wrapper_metadata: Metadata::default(),
-            lifecycle: ContextLifecycleState::default(),
             usage: Usage::default(),
             usage_snapshot_entries: BTreeMap::new(),
             model_config: ModelConfig::default(),
@@ -218,7 +158,6 @@ impl AgentContext {
             notes: NoteStore::new(),
             messages,
             trace_context: TraceContext::default(),
-            current_run_step: 0,
             metadata: Metadata::default(),
             dependencies: DependencyStore::new(),
         }
@@ -240,8 +179,8 @@ impl AgentContext {
         context.previous_assistant_response_reference = state.previous_assistant_response_reference;
         context.steering_messages = state.steering_messages;
         context.handoff_message = state.handoff_message;
-        context.shell_env = state.shell_env;
-        context.deferred_tool_metadata = state.deferred_tool_metadata;
+        context.tools.shell_environment = state.shell_env;
+        context.tools.deferred_call_metadata = state.deferred_tool_metadata;
         context.agent_registry = state.agent_registry;
         if context.agent_registry.is_empty() {
             context.agent_registry.insert(
@@ -249,14 +188,12 @@ impl AgentContext {
                 AgentInfo::new(context.agent_id.as_str(), context.agent_id.as_str()),
             );
         }
-        context.approval_required_tools = state.approval_required_tools;
-        context.approval_required_mcp_servers = state.approval_required_mcp_servers;
         context.security = state.security;
-        context.auto_load_files = state.auto_load_files;
-        context.task_manager = TaskManager::from_exported(state.tasks);
+        context.tools.auto_load_files = state.auto_load_files;
+        context.tools.tasks = TaskManager::from_exported(state.tasks);
         context.notes = NoteStore::from_map(state.notes);
-        context.tool_search_loaded_tools = state.tool_search_loaded_tools;
-        context.tool_search_loaded_namespaces = state.tool_search_loaded_namespaces;
+        context.tools.loaded_tool_names = state.tool_search_loaded_tools;
+        context.tools.loaded_tool_namespaces = state.tool_search_loaded_namespaces;
         context.usage = state.usage;
         context.usage_snapshot_entries = state.usage_snapshot_entries;
         context.model_config = state.model_config;
@@ -359,25 +296,25 @@ impl AgentContext {
                 .clone(),
             steering_messages: self.steering_messages.clone(),
             handoff_message: self.handoff_message.clone(),
-            shell_env: self.shell_env.clone(),
-            deferred_tool_metadata: self.deferred_tool_metadata.clone(),
+            shell_env: BTreeMap::new(),
+            deferred_tool_metadata: self.tools.deferred_call_metadata.clone(),
             agent_registry: if options.include_subagent() {
                 self.agent_registry.clone()
             } else {
                 BTreeMap::new()
             },
-            approval_required_tools: self.approval_required_tools.clone(),
-            approval_required_mcp_servers: self.approval_required_mcp_servers.clone(),
+            approval_required_tools: Vec::new(),
+            approval_required_mcp_servers: Vec::new(),
             security: if options.include_runtime_policy() {
                 self.security.clone()
             } else {
                 SecurityConfig::default()
             },
-            auto_load_files: self.auto_load_files.clone(),
-            tasks: self.task_manager.export_tasks(),
+            auto_load_files: self.tools.auto_load_files.clone(),
+            tasks: self.tools.tasks.export_tasks(),
             notes: self.notes.to_map(),
-            tool_search_loaded_tools: self.tool_search_loaded_tools.clone(),
-            tool_search_loaded_namespaces: self.tool_search_loaded_namespaces.clone(),
+            tool_search_loaded_tools: self.tools.loaded_tool_names.clone(),
+            tool_search_loaded_namespaces: self.tools.loaded_tool_namespaces.clone(),
             usage: if options.include_starweaver_extensions() {
                 self.usage.clone()
             } else {
@@ -454,16 +391,17 @@ impl AgentContext {
         self.run_id = Some(RunId::new());
         self.started_at = Utc::now();
         self.ended_at = None;
-        self.lifecycle.entered = true;
-        self.lifecycle.stream_queue_enabled = false;
-        self.lifecycle.compact_depth = 0;
-        self.tool_id_wrapper.clear();
-        self.agent_stream_queues = AgentStreamQueueRegistry::default();
+        self.runtime.lifecycle.entered = true;
+        self.runtime.lifecycle.stream_queue_enabled = false;
+        self.runtime.lifecycle.compact_depth = 0;
+        self.runtime.run_toolsets_closed = false;
+        self.runtime.tool_id_wrapper.clear();
+        self.runtime.agent_stream_queues = AgentStreamQueueRegistry::default();
         if self.parent_run_id.is_none() && !self.metadata.contains_key("parent_agent_id") {
             self.usage_snapshot_entries.clear();
         }
-        self.deferred_tool_metadata.clear();
-        self.force_inject_context = false;
+        self.tools.deferred_call_metadata.clear();
+        self.runtime.force_inject_context = false;
         self.previous_assistant_response_reference = None;
         self.messages.subscribe(self.agent_id.as_str());
     }
@@ -471,7 +409,7 @@ impl AgentContext {
     /// Mark the active run as finished.
     pub fn finish_run(&mut self) {
         self.ended_at = Some(Utc::now());
-        self.lifecycle.entered = false;
+        self.runtime.lifecycle.entered = false;
     }
 
     /// Create a child context for subagent execution using the same value for id and name.
@@ -504,8 +442,8 @@ impl AgentContext {
         child.previous_assistant_response_reference = None;
         child.steering_messages = Vec::new();
         child.handoff_message = None;
-        child.tool_id_wrapper = ToolIdWrapper::default();
-        child.tool_tags = Vec::new();
+        child.runtime.tool_id_wrapper = ToolIdWrapper::default();
+        child.runtime.tool_tags = Vec::new();
         child.started_at = Utc::now();
         child.ended_at = None;
         child.security = self.security.clone();
@@ -539,7 +477,7 @@ impl AgentContext {
         self.usage_snapshot_entries
             .clone_from(&child.usage_snapshot_entries);
         self.notes = child.notes.clone();
-        self.task_manager = child.task_manager.clone();
+        self.tools.tasks = child.tools.tasks.clone();
         self.state = child.state.clone();
         self.messages = child.messages.clone();
         self.agent_registry = child.agent_registry.clone();
@@ -571,12 +509,12 @@ impl AgentContext {
 
     /// Record a tool name loaded through dynamic tool search.
     pub fn record_tool_search_loaded_tool(&mut self, tool_name: impl Into<String>) {
-        push_unique(&mut self.tool_search_loaded_tools, tool_name.into());
+        push_unique(&mut self.tools.loaded_tool_names, tool_name.into());
     }
 
     /// Record a namespace loaded through dynamic tool search.
     pub fn record_tool_search_loaded_namespace(&mut self, namespace: impl Into<String>) {
-        push_unique(&mut self.tool_search_loaded_namespaces, namespace.into());
+        push_unique(&mut self.tools.loaded_tool_namespaces, namespace.into());
     }
 
     /// Record loaded tool-search state in one update.
@@ -596,8 +534,8 @@ impl AgentContext {
     /// Clear all loaded tool-search state and return the removed values.
     pub fn clear_tool_search_loaded(&mut self) -> ToolSearchInvalidation {
         ToolSearchInvalidation {
-            removed_tools: std::mem::take(&mut self.tool_search_loaded_tools),
-            removed_namespaces: std::mem::take(&mut self.tool_search_loaded_namespaces),
+            removed_tools: std::mem::take(&mut self.tools.loaded_tool_names),
+            removed_namespaces: std::mem::take(&mut self.tools.loaded_tool_namespaces),
         }
     }
 
@@ -608,11 +546,11 @@ impl AgentContext {
         mut keep_namespace: impl FnMut(&str) -> bool,
     ) -> ToolSearchInvalidation {
         ToolSearchInvalidation {
-            removed_tools: retain_matching(&mut self.tool_search_loaded_tools, |tool| {
+            removed_tools: retain_matching(&mut self.tools.loaded_tool_names, |tool| {
                 keep_tool(tool)
             }),
             removed_namespaces: retain_matching(
-                &mut self.tool_search_loaded_namespaces,
+                &mut self.tools.loaded_tool_namespaces,
                 |namespace| keep_namespace(namespace),
             ),
         }
@@ -622,8 +560,8 @@ impl AgentContext {
     #[must_use]
     pub fn tool_search_state(&self) -> ToolSearchState {
         ToolSearchState {
-            loaded_tools: self.tool_search_loaded_tools.clone(),
-            loaded_namespaces: self.tool_search_loaded_namespaces.clone(),
+            loaded_tools: self.tools.loaded_tool_names.clone(),
+            loaded_namespaces: self.tools.loaded_tool_namespaces.clone(),
         }
     }
 
@@ -873,12 +811,12 @@ impl AgentContext {
     /// Return all tasks from the typed task manager.
     #[must_use]
     pub fn tasks(&self) -> Vec<Task> {
-        self.task_manager.list_all()
+        self.tools.tasks.list_all()
     }
 
     /// Replace all tasks in the typed task manager.
     pub fn set_tasks(&mut self, tasks: Vec<Task>) {
-        self.task_manager.replace_all(tasks);
+        self.tools.tasks.replace_all(tasks);
     }
 
     /// Return a full task snapshot.
@@ -954,10 +892,97 @@ impl AgentContext {
             "agent_id".to_string(),
             serde_json::json!(self.agent_id.as_str()),
         );
-        for (key, value) in &self.wrapper_metadata {
+        for (key, value) in &self.runtime.wrapper_metadata {
             metadata.insert(key.clone(), value.clone());
         }
         metadata
+    }
+
+    /// Build the typed dependency store supplied to one tool call.
+    ///
+    /// Host capability handles are cloned from the context dependency store, while
+    /// model/tool limits and shell environment values are exposed through a narrow,
+    /// immutable snapshot instead of cloning the complete `AgentContext`.
+    #[must_use]
+    pub fn tool_dependency_store(&self) -> DependencyStore {
+        let mut dependencies = self.dependencies.clone();
+        dependencies.insert(self.host_capabilities());
+        dependencies.insert(self.tool_runtime_snapshot());
+        dependencies
+    }
+
+    /// Build an opt-in filtered dependency store for one tool call.
+    ///
+    /// Direct application dependencies remain available for compatibility. Generated host
+    /// capabilities are filtered, the generated runtime snapshot omits shell values, and the
+    /// runtime-generated broad context handle is assembled by the caller rather than here.
+    #[must_use]
+    pub fn filtered_tool_dependency_store(
+        &self,
+        host_capability_names: &BTreeSet<String>,
+        shell_environment: bool,
+    ) -> DependencyStore {
+        let mut dependencies = self.dependencies.clone();
+        dependencies.insert(self.host_capabilities_subset(host_capability_names));
+        dependencies.insert(self.filtered_tool_runtime_snapshot());
+        if shell_environment {
+            dependencies.insert(self.shell_environment_snapshot());
+        }
+        dependencies
+    }
+
+    /// Build a strict least-authority dependency store for one tool call.
+    ///
+    /// Unlike the compatibility-oriented filtered profile, application dependencies are not
+    /// copied directly. The tool can reach only the named host capability subset and generated
+    /// immutable projections explicitly requested in its metadata.
+    #[must_use]
+    pub fn strict_tool_dependency_store(
+        &self,
+        host_capability_names: &BTreeSet<String>,
+        shell_environment: bool,
+    ) -> DependencyStore {
+        let mut dependencies = DependencyStore::new();
+        dependencies.insert(self.host_capabilities_subset(host_capability_names));
+        dependencies.insert(self.filtered_tool_runtime_snapshot());
+        if shell_environment {
+            dependencies.insert(self.shell_environment_snapshot());
+        }
+        dependencies
+    }
+
+    /// Capture the read-only host capabilities supplied to tool calls.
+    #[must_use]
+    pub fn host_capabilities(&self) -> HostCapabilities {
+        HostCapabilities::new(self.dependencies.clone())
+    }
+
+    /// Capture a filtered read-only host capability subset.
+    #[must_use]
+    pub fn host_capabilities_subset(&self, names: &BTreeSet<String>) -> HostCapabilities {
+        HostCapabilities::new(self.dependencies.subset(names))
+    }
+
+    /// Capture the read-only runtime configuration supplied to tool calls.
+    #[must_use]
+    pub fn tool_runtime_snapshot(&self) -> ToolRuntimeSnapshot {
+        ToolRuntimeSnapshot::new(
+            self.model_config.clone(),
+            self.tool_config.clone(),
+            self.tools.shell_environment.clone(),
+        )
+    }
+
+    /// Capture runtime configuration without configured shell environment values.
+    #[must_use]
+    pub fn filtered_tool_runtime_snapshot(&self) -> ToolRuntimeSnapshot {
+        ToolRuntimeSnapshot::filtered(self.model_config.clone(), self.tool_config.clone())
+    }
+
+    /// Capture configured shell environment values in a dedicated projection.
+    #[must_use]
+    pub fn shell_environment_snapshot(&self) -> ShellEnvironmentSnapshot {
+        ShellEnvironmentSnapshot::new(self.tools.shell_environment.clone())
     }
 
     /// Insert a typed dependency.
@@ -974,6 +999,27 @@ impl AgentContext {
         T: Send + Sync + 'static,
     {
         self.dependencies.insert_named(name, value);
+    }
+
+    /// Authorize dependency grants for one Strict tool name.
+    pub fn grant_tool_capabilities(
+        &mut self,
+        tool_name: impl Into<String>,
+        grant: ToolCapabilityGrant,
+    ) {
+        self.runtime
+            .tool_capability_grants
+            .insert(tool_name.into(), grant);
+    }
+
+    /// Return host-authorized dependency grants for one Strict tool name.
+    #[must_use]
+    pub fn tool_capability_grant(&self, tool_name: &str) -> ToolCapabilityGrant {
+        self.runtime
+            .tool_capability_grants
+            .get(tool_name)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Get a typed dependency.

@@ -18,11 +18,28 @@ name = "starweaver-rpc"
 path = "src/main.rs"
 
 [dependencies]
+chrono.workspace = true
 clap.workspace = true
-starweaver-cli.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+starweaver-agent.workspace = true
+starweaver-context.workspace = true
+starweaver-core.workspace = true
+starweaver-environment.workspace = true
+starweaver-envd-client.workspace = true
+starweaver-envd-core.workspace = true
+starweaver-model.workspace = true
+starweaver-rpc-core.workspace = true
+starweaver-runtime.workspace = true
+starweaver-session.workspace = true
+starweaver-storage.workspace = true
+starweaver-stream.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

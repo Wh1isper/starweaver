@@ -1,0 +1,7 @@
+{
+  "schema": "starweaver.fixture.record",
+  "version": 2,
+  "payload": {
+    "value": "fixture"
+  }
+}

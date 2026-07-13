@@ -1,0 +1,209 @@
+schema_version = 1
+last_verified_release = "0.7.0"
+
+[[capability]]
+id = "core.versioned_contracts"
+owner = "starweaver-core"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/07-versioned-protocol-contracts.md"
+implementation = ["crates/starweaver-core/src/protocol.rs", "crates/starweaver-core/src/lifecycle.rs"]
+contract_tests = ["crates/starweaver-core/tests/protocol_contracts.rs", "crates/starweaver-core/tests/fixtures/contracts"]
+
+[[capability]]
+id = "runtime.agent_loop"
+owner = "starweaver-runtime"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/01-agent-loop.md"
+implementation = ["crates/starweaver-runtime/src/agent/run_loop.rs"]
+contract_tests = ["crates/starweaver-runtime/tests/agent.rs"]
+
+[[capability]]
+id = "context.versioned_checkpoints"
+owner = "starweaver-context"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/07-versioned-protocol-contracts.md"
+implementation = ["crates/starweaver-context/src/checkpoint.rs", "crates/starweaver-runtime/src/executor.rs", "crates/starweaver-storage/src/sqlite.rs"]
+contract_tests = ["crates/starweaver-context/tests/checkpoint_contracts.rs", "crates/starweaver-context/tests/fixtures/contracts", "crates/starweaver-storage/src/contract_fixtures_tests.rs"]
+
+[[capability]]
+id = "model.canonical_content"
+owner = "starweaver-model"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/06-message-request-abstractions.md"
+implementation = ["crates/starweaver-model/src/message/request_parts.rs"]
+contract_tests = ["crates/starweaver-model/tests/message_ast.rs"]
+
+[[capability]]
+id = "model.wrappers"
+owner = "starweaver-model"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/02-model-provider-replay.md"
+implementation = ["crates/starweaver-model/src/wrappers.rs"]
+contract_tests = ["crates/starweaver-model/tests/model_wrappers.rs"]
+
+[[capability]]
+id = "runtime.capability_middleware"
+owner = "starweaver-runtime"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/03-tools-output-capabilities.md"
+implementation = ["crates/starweaver-runtime/src/capability.rs"]
+contract_tests = ["crates/starweaver-runtime/tests/capability_bundle.rs"]
+
+[[capability]]
+id = "session.durable_input"
+owner = "starweaver-session"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/07-versioned-protocol-contracts.md"
+implementation = ["crates/starweaver-session/src/input.rs"]
+contract_tests = ["crates/starweaver-session/tests/protocol_contracts.rs", "crates/starweaver-session/tests/fixtures/contracts"]
+
+[[capability]]
+id = "session.lifecycle"
+owner = "starweaver-session"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/07-versioned-protocol-contracts.md"
+implementation = ["crates/starweaver-core/src/lifecycle.rs", "crates/starweaver-session/src/records.rs"]
+contract_tests = ["crates/starweaver-session/tests/protocol_contracts.rs", "crates/starweaver-session/tests/fixtures/contracts"]
+
+[[capability]]
+id = "session.atomic_storage"
+owner = "starweaver-storage"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/ops/02-shared-execution-components.md"
+implementation = ["crates/starweaver-storage/src/domain.rs"]
+contract_tests = ["crates/starweaver-storage/src/domain_tests.rs"]
+
+[[capability]]
+id = "storage.stream_family_isolation"
+owner = "starweaver-storage"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/ops/02-shared-execution-components.md"
+implementation = ["crates/starweaver-storage/src/stream_archive.rs", "crates/starweaver-storage/src/replay_log.rs", "crates/starweaver-storage/src/schema.rs"]
+contract_tests = ["crates/starweaver-storage/src/domain_tests.rs", "crates/starweaver-storage/tests/fixtures/contracts"]
+
+[[capability]]
+id = "stream.replay"
+owner = "starweaver-stream"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/ops/02-shared-execution-components.md"
+implementation = ["crates/starweaver-stream/src/replay.rs"]
+contract_tests = ["crates/starweaver-stream/tests/protocol_contracts.rs", "crates/starweaver-stream/tests/fixtures/contracts"]
+
+[[capability]]
+id = "stream.versioned_records"
+owner = "starweaver-stream"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/core/07-versioned-protocol-contracts.md"
+implementation = ["crates/starweaver-stream/src/raw.rs", "crates/starweaver-stream/src/replay.rs", "crates/starweaver-storage/src/replay_log.rs"]
+contract_tests = ["crates/starweaver-stream/tests/protocol_contracts.rs", "crates/starweaver-stream/tests/fixtures/contracts"]
+
+[[capability]]
+id = "stream.ui_projection"
+owner = "starweaver-stream"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/ops/02-shared-execution-components.md"
+implementation = ["crates/starweaver-stream/src/adapters.rs"]
+contract_tests = ["crates/starweaver-stream/tests/ui_adapters.rs"]
+
+[[capability]]
+id = "environment.provider"
+owner = "starweaver-environment"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/environment/01-sdk-provider-contract.md"
+implementation = ["crates/starweaver-environment/src/provider.rs"]
+contract_tests = ["crates/starweaver-environment/src/tests.rs"]
+
+[[capability]]
+id = "environment.envd_adapter"
+owner = "starweaver-environment"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/environment/02-tool-binding-and-envd-adapter.md"
+implementation = ["crates/starweaver-environment/src/envd_provider/mod.rs"]
+contract_tests = ["crates/starweaver-environment/src/tests.rs"]
+
+[[capability]]
+id = "envd.protocol_v1"
+owner = "starweaver-envd-core"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/envd/03-rpc-protocol.md"
+implementation = ["crates/starweaver-envd-core/src/lib.rs", "crates/starweaver-envd-core/src/request.rs"]
+contract_tests = ["crates/starweaver-envd-core/tests/protocol_contracts.rs", "crates/starweaver-envd-core/tests/fixtures/contracts"]
+
+[[capability]]
+id = "rpc.host_protocol_v1"
+owner = "starweaver-rpc-core"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
+implementation = ["crates/starweaver-rpc-core/src/lib.rs"]
+contract_tests = ["crates/starweaver-rpc-core/tests/protocol_contracts.rs", "crates/starweaver-rpc-core/tests/fixtures/contracts"]
+
+[[capability]]
+id = "rpc.structured_input"
+owner = "starweaver-rpc"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
+implementation = ["crates/starweaver-rpc-core/src/lib.rs", "crates/starweaver-rpc/src/service.rs"]
+contract_tests = ["crates/starweaver-rpc/src/service.rs", "crates/starweaver-session/tests/fixtures/contracts"]
+
+[[capability]]
+id = "rpc.independent_product"
+owner = "starweaver-rpc"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/ops/00-product-boundaries.md"
+implementation = ["crates/starweaver-rpc/src/service.rs", "crates/starweaver-rpc/src/coordinator.rs"]
+contract_tests = ["crates/starweaver-rpc/tests/stdio.rs", "crates/starweaver-rpc/tests/http.rs"]
+
+[[capability]]
+id = "rpc.pre_run_environment_attachments"
+owner = "starweaver-rpc"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
+implementation = ["crates/starweaver-rpc/src/environment_manager.rs"]
+contract_tests = ["crates/starweaver-rpc/src/environment_manager.rs"]
+
+[[capability]]
+id = "rpc.active_environment_mounts"
+owner = "starweaver-rpc"
+stability = "provisional"
+status = "implemented"
+normative_spec = "spec/ops/06-json-rpc-host-protocol.md"
+implementation = ["crates/starweaver-rpc/src/environment_manager.rs", "crates/starweaver-rpc/src/coordinator.rs"]
+contract_tests = ["crates/starweaver-rpc/src/environment_manager.rs", "crates/starweaver-rpc/src/coordinator.rs"]
+
+[[capability]]
+id = "cli.independent_product"
+owner = "starweaver-cli"
+stability = "stable"
+status = "implemented"
+normative_spec = "spec/ops/00-product-boundaries.md"
+implementation = ["crates/starweaver-cli/src/service.rs", "crates/starweaver-cli/src/runtime_coordinator.rs"]
+contract_tests = ["crates/starweaver-cli/tests/cli.rs"]
+
+[[capability]]
+id = "platform.external_protocols"
+owner = "starweaver-platform"
+stability = "planned"
+status = "planned"
+normative_spec = "spec/ops/00-product-boundaries.md"
+implementation = []
+contract_tests = []

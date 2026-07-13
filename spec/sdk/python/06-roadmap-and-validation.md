@@ -133,7 +133,7 @@ Exit criteria:
 - Typed HITL helpers can resume approval and deferred flows.
 - Raw result and raw stream escape hatches remain available.
 
-Status: implemented with Python tests in `packages/starweaver-py/tests`.
+Delivery evidence: Python tests in `packages/starweaver-py/tests` cover this milestone outcome.
 
 ## Milestone B: Pythonic Active-Run Control
 
@@ -185,7 +185,7 @@ Exit criteria:
 - Active message writes do not require taking the session busy lock.
 - Terminal runs reject new control input with `StateError`.
 
-Status: implemented for the Python SDK path. Python tests cover active
+Delivery evidence: Python tests cover the delivered Python SDK path, including active
 steering/control receipts and idle message-bus subscriber, target, broadcast,
 idempotency, and unsubscribe semantics. CLI reuse of the shared Rust seam
 remains a follow-up migration item.
@@ -213,7 +213,7 @@ make py-check
 git diff --check
 ```
 
-Status: implemented for raw-state archive persistence, Python record/store
+Delivery evidence: raw-state archive persistence and Python record/store
 facades, native `SqliteSessionStore`, Python-to-Rust `SessionStore` trait
 callback bridge, and `create_agent_runtime(..., session_store=...)` binding
 into `AgentRuntimeBuilder`.
@@ -258,7 +258,7 @@ Exit criteria:
 - Python callables and live objects are not serialized.
 - Custom Python stores can be adapted into the native Rust `SessionStore` trait.
 
-Status: implemented for Python record/store facades with `InMemorySessionStore`,
+Delivery evidence: Python record/store facades include `InMemorySessionStore`,
 `JsonSessionStore`, native `SqliteSessionStore`, and callback-backed
 `PythonSessionStore`.
 
@@ -295,7 +295,7 @@ Exit criteria:
 - Search and proxy state persists serializable IDs/namespaces.
 - Search and proxy remain distinct APIs.
 
-Status: implemented for runtime config, static toolsets, dynamic
+Delivery evidence: runtime config, static toolsets, and dynamic
 `AbstractToolset` preparation, `FunctionToolset`, tool libraries, direct tool
 search, tool proxy, typed MCP toolset config construction, per-agent toolsets,
 per-run toolsets, and per-run trace metadata that enters model request tracing
@@ -343,7 +343,7 @@ Exit criteria:
 - Approval, deferred, retry, timeout, cancellation, and stream evidence remain
   native Starweaver behavior.
 
-Status: implemented. Current Python exposes `AbstractToolset`,
+Delivery evidence: the current Python surface exposes `AbstractToolset`,
 `FunctionToolset`, decorator registration, Python dynamic preparation,
 toolset-level defaults, dynamic instructions, and native wrappers for prefix,
 rename, static include/exclude filtering, predicate filtering, prepared
@@ -423,7 +423,7 @@ Exit criteria:
 - Usage and trace evidence can be inspected without raw JSON path walking.
 - Environment/resource helpers respect Starweaver policy and restore rules.
 
-Status: implemented for the current SDK boundary. Current Python exposes
+Delivery evidence: the current SDK boundary exposes
 Rust-owned virtual/local environment providers through both the
 `EnvironmentProvider` factories and named facades: `Environment`,
 `VirtualEnvironment`, `LocalEnvironment`, and `EnvdEnvironment`. It also
@@ -479,7 +479,7 @@ Exit criteria:
 - Claw or an equivalent Python app can run the intended library path without
   MCP, JSON-RPC, or a sidecar binary.
 
-Status: implemented for the SDK/library path. `examples/python/claw_like_runtime.py`
+Delivery evidence: the SDK/library path is exercised by `examples/python/claw_like_runtime.py`
 and the Python package smoke test exercise an equivalent product library path
 with `AbstractToolset`, active steering, typed HITL approval resume, native
 SQLite session storage, raw stream archive, and replay log without `sw`,
@@ -536,7 +536,7 @@ Exit criteria:
 - Schedules, workflows, memory, agency, and bridges reuse the same execution
   coordinator instead of creating parallel runtime loops.
 
-Status: partially implemented as a product-layer example.
+Delivery evidence and remaining work: a product-layer example exists, with the remaining scope listed below.
 `examples/python/claw_product_runtime.py` proves the minimal service runtime
 shape without importing product policy into `starweaver-py`: product-owned
 SQLite tables for sessions, runs, runtime instances, and notifications; a

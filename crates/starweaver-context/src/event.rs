@@ -1,40 +1,8 @@
-//! Runtime event records and append-only event bus.
+//! Runtime event compatibility export and append-only event bus.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use starweaver_core::Metadata;
 
-/// Runtime event.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct AgentEvent {
-    /// Event type.
-    pub kind: String,
-    /// Event payload.
-    #[serde(default)]
-    pub payload: Value,
-    /// Event metadata.
-    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
-    pub metadata: Metadata,
-}
-
-impl AgentEvent {
-    /// Create an event.
-    #[must_use]
-    pub fn new(kind: impl Into<String>, payload: Value) -> Self {
-        Self {
-            kind: kind.into(),
-            payload,
-            metadata: Metadata::default(),
-        }
-    }
-
-    /// Attach event metadata.
-    #[must_use]
-    pub fn with_metadata(mut self, metadata: Metadata) -> Self {
-        self.metadata = metadata;
-        self
-    }
-}
+pub use starweaver_core::AgentEvent;
 
 /// Append-only in-memory event bus.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

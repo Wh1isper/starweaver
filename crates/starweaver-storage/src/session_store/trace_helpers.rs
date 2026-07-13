@@ -1,6 +1,6 @@
 use rusqlite::{Connection, params};
+use starweaver_context::AgentCheckpoint;
 use starweaver_core::{CheckpointId, RunId, SessionId};
-use starweaver_runtime::AgentCheckpoint;
 use starweaver_session::{ApprovalRecord, ApprovalStatus, SessionStoreResult};
 
 use crate::sqlite::{
@@ -31,7 +31,7 @@ pub(super) fn load_checkpoint_ids(
 ) -> SessionStoreResult<Vec<CheckpointId>> {
     let mut statement = connection
         .prepare(
-            "SELECT record FROM checkpoints
+            "SELECT record FROM checkpoint_records
              WHERE session_id = ?1 AND run_id = ?2
              ORDER BY sequence_no ASC, checkpoint_id ASC",
         )
@@ -55,7 +55,7 @@ pub(super) fn count_pending_approvals(
 ) -> SessionStoreResult<usize> {
     let approvals = {
         let mut statement = connection
-            .prepare("SELECT record FROM approvals WHERE session_id = ?1 AND run_id = ?2")
+            .prepare("SELECT record FROM approval_records WHERE session_id = ?1 AND run_id = ?2")
             .map_err(map_sqlite_session_error)?;
         let rows = statement
             .query_map(params![session_id.as_str(), run_id.as_str()], |row| {
@@ -77,7 +77,7 @@ pub(super) fn count_deferred_tools(
 ) -> SessionStoreResult<usize> {
     let count = connection
         .query_row(
-            "SELECT COUNT(*) FROM deferred_tools WHERE session_id = ?1 AND run_id = ?2",
+            "SELECT COUNT(*) FROM deferred_tool_records WHERE session_id = ?1 AND run_id = ?2",
             params![session_id.as_str(), run_id.as_str()],
             |row| row.get::<_, i64>(0),
         )

@@ -6,7 +6,8 @@ use serde_json::{Value, json};
 
 use crate::{
     display::{DisplayMessage, DisplayMessageKind},
-    replay::{ReplayCursor, ReplayScope, ReplaySnapshot},
+    error::ReplayResult,
+    replay::{ReplayCursor, ReplayCursorFamily, ReplayScope, ReplaySnapshot},
 };
 
 fn text_part_key(message: &DisplayMessage) -> String {
@@ -63,7 +64,7 @@ impl RealtimeCompactionBuffer {
     pub fn snapshot(&self) -> ReplaySnapshot {
         let cursor = self
             .max_sequence_seen
-            .map(|sequence| ReplayCursor::new(self.scope.clone(), sequence));
+            .map(|sequence| ReplayCursor::display(self.scope.clone(), sequence));
         ReplaySnapshot {
             scope: Some(self.scope.clone()),
             revision: self.revision,
@@ -73,15 +74,22 @@ impl RealtimeCompactionBuffer {
         }
     }
 
-    /// Return compacted messages after a cursor.
-    #[must_use]
-    pub fn tail_after(&self, cursor: Option<ReplayCursor>) -> Vec<DisplayMessage> {
+    /// Return compacted messages after a display cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-cursor error for another family or scope.
+    pub fn tail_after(&self, cursor: Option<ReplayCursor>) -> ReplayResult<Vec<DisplayMessage>> {
+        if let Some(cursor) = cursor.as_ref() {
+            cursor.validate(ReplayCursorFamily::Display, &self.scope)?;
+        }
         let after = cursor.map_or(0, |cursor| cursor.sequence.saturating_add(1));
-        self.items
+        Ok(self
+            .items
             .iter()
             .filter(|message| message.sequence >= after)
             .cloned()
-            .collect()
+            .collect())
     }
 
     fn push_text_delta(&mut self, message: DisplayMessage) {

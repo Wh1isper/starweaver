@@ -1,10 +1,14 @@
 use std::sync::Arc;
 
-use starweaver_tools::{DynToolset, StaticToolset, ToolInstruction};
+use starweaver_context::CONTEXT_HANDOFF_CAPABILITY;
+use starweaver_tools::{
+    DynToolset, StaticToolset, TOOL_METADATA_CONTEXT_MANAGEMENT_KEY, ToolDependencyRequirements,
+    ToolInstruction,
+};
 
 use super::helpers::{
-    context_management_tool_metadata, static_sequential_tool_with_metadata,
-    static_tool_with_metadata, tool_metadata,
+    static_sequential_tool_with_metadata, static_tool_with_metadata, tool_metadata,
+    tool_metadata_with_dependencies,
 };
 
 mod args;
@@ -129,7 +133,20 @@ fn context_tool_definitions() -> Vec<starweaver_tools::DynTool> {
         static_sequential_tool_with_metadata(
             "summarize",
             "Summarize current work and clear context to start fresh.",
-            context_management_tool_metadata("context", true, false),
+            {
+                let mut metadata = tool_metadata_with_dependencies(
+                    "context",
+                    true,
+                    false,
+                    &ToolDependencyRequirements::filtered(Vec::<String>::new(), false)
+                        .with_context_capabilities([CONTEXT_HANDOFF_CAPABILITY]),
+                );
+                metadata.insert(
+                    TOOL_METADATA_CONTEXT_MANAGEMENT_KEY.to_string(),
+                    serde_json::json!(true),
+                );
+                metadata
+            },
             summarize,
         ),
         static_tool_with_metadata(

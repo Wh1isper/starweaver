@@ -1,5 +1,9 @@
 # Envd RPC Protocol
 
+Status: implemented normative profile
+
+Revision: 2026-07-11
+
 Envd RPC exposes `EnvdService` over JSON-RPC. Stdio and HTTP are initial
 transports. The protocol must match the service semantics exactly.
 
@@ -7,19 +11,21 @@ transports. The protocol must match the service semantics exactly.
 
 ```json
 {
-  "name": "envd",
+  "name": "starweaver.envd",
   "major": 1,
-  "revision": "2026-06-26",
+  "revision": "2026-07-11",
   "features": [
     "environment.lifecycle",
     "files",
-    "command",
-    "process",
-    "state.snapshot",
-    "http.bearer_auth"
+    "commands",
+    "processes"
   ]
 }
 ```
+
+`InitializeEnvdRequest.protocol` carries this typed identity. Omission remains readable for legacy local clients. Services and clients validate the exact name and major through `starweaver-envd-core`; revision is fixture/documentation identity rather than an ordered compatibility gate. `InitializeEnvdResult.protocol` is the only protocol-version field, and implementations must not emit a duplicate `protocolVersion` or `protocol_version` string.
+
+Wrong names and unsupported majors fail initialization as invalid requests. The release fixture under `crates/starweaver-envd-core/tests/fixtures/contracts/` fixes the identity, feature vocabulary, legacy omission, and rejection behavior.
 
 ## Transport Profiles
 
@@ -77,9 +83,9 @@ A future typed method can expose the same readiness shape over every transport:
 {
   "status": "ready",
   "protocol": {
-    "name": "envd",
+    "name": "starweaver.envd",
     "major": 1,
-    "revision": "2026-06-26"
+    "revision": "2026-07-11"
   },
   "environments": [{
     "environmentId": "env_cli_default",

@@ -35,6 +35,7 @@ flowchart TD
 | `06-subagents-environments-skills-media.md` | subagent, environment/resource, and media workflow gaps                  |
 | `07-cli-concise-mode-ux.md`                 | CLI/TUI concise mode semantic-compression UX plan                        |
 | `08-starweaver-claw-sdk-additions.md`       | Starweaver Claw layering map and non-blocking Rust/Python SDK additions  |
+| `09-architecture-review.md`                 | Architecture, security, durability, API, and consolidation review        |
 
 ## Remaining Theme
 

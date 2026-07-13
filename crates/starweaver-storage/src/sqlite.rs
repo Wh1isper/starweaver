@@ -1,11 +1,16 @@
 //! Shared SQLite connection, JSON, and error mapping helpers.
 
-use std::path::Path;
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use rusqlite::Connection;
-use starweaver_core::{RunId, SessionId};
+use starweaver_core::{RunId, SessionId, VersionedRecord, from_versioned_json, to_versioned_json};
 use starweaver_session::{SessionStoreError, SessionStoreResult};
 use starweaver_stream::ReplayError;
+
+pub type SharedSqliteConnection = Arc<Mutex<Connection>>;
 
 pub fn open_sqlite_connection(path: impl AsRef<Path>) -> SessionStoreResult<Connection> {
     Connection::open(path).map_err(map_sqlite_session_error)
@@ -19,7 +24,7 @@ pub fn collect_json_record_rows<T>(
     rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<String>>,
 ) -> SessionStoreResult<Vec<T>>
 where
-    T: serde::de::DeserializeOwned,
+    T: serde::de::DeserializeOwned + VersionedRecord,
 {
     let mut values = Vec::new();
     for row in rows {
@@ -32,6 +37,13 @@ where
 
 pub fn serialize_json_record<T>(value: &T) -> SessionStoreResult<String>
 where
+    T: serde::Serialize + VersionedRecord,
+{
+    to_versioned_json(value).map_err(|error| SessionStoreError::Failed(error.to_string()))
+}
+
+pub fn serialize_opaque_json<T>(value: &T) -> SessionStoreResult<String>
+where
     T: serde::Serialize,
 {
     serde_json::to_string(value).map_err(|error| SessionStoreError::Failed(error.to_string()))
@@ -39,9 +51,9 @@ where
 
 pub fn deserialize_json_record<T>(payload: &str) -> SessionStoreResult<T>
 where
-    T: serde::de::DeserializeOwned,
+    T: serde::de::DeserializeOwned + VersionedRecord,
 {
-    serde_json::from_str(payload).map_err(|error| SessionStoreError::Failed(error.to_string()))
+    from_versioned_json(payload).map_err(|error| SessionStoreError::Failed(error.to_string()))
 }
 
 pub fn map_sqlite_session_error(error: rusqlite::Error) -> SessionStoreError {

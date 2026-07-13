@@ -1,0 +1,92 @@
+{
+  "schema": "starweaver.fixture.raw-display-replay.v1",
+  "session_id": "session-golden",
+  "run_id": "run-golden",
+  "raw_records": [
+    {
+      "sequence": 0,
+      "event": {
+        "kind": "run_start",
+        "run_id": "run-golden",
+        "conversation_id": "conversation-golden"
+      }
+    },
+    {
+      "sequence": 1,
+      "source": {
+        "kind": "subagent",
+        "agent_id": "agent-researcher",
+        "agent_name": "researcher",
+        "task_id": "task-golden",
+        "run_id": "run-child-golden",
+        "parent_run_id": "run-golden",
+        "source_sequence": 7
+      },
+      "event": {
+        "kind": "custom",
+        "event": {
+          "kind": "subagent_started",
+          "payload": {
+            "agent_name": "researcher",
+            "child_run_id": "run-child-golden",
+            "task": "inspect fixtures"
+          }
+        }
+      }
+    },
+    {
+      "sequence": 2,
+      "event": {
+        "kind": "run_complete",
+        "run_id": "run-golden",
+        "output": "fixture complete"
+      }
+    }
+  ],
+  "display": {
+    "sequences": [0, 1, 2],
+    "types": ["RUN_STARTED", "SUBAGENT_STARTED", "RUN_FINISHED"],
+    "payloads": [
+      {"conversation_id": "conversation-golden"},
+      {
+        "agent_name": "researcher",
+        "child_run_id": "run-child-golden",
+        "task": "inspect fixtures"
+      },
+      {"output": "fixture complete"}
+    ],
+    "terminal_type": "RUN_FINISHED",
+    "source": {
+      "display_index": 1,
+      "agent_id": "agent-researcher",
+      "agent_name": "researcher",
+      "run_id": "run-child-golden",
+      "source_sequence": 7
+    }
+  },
+  "replay": {
+    "sequences": [0, 1, 2, 3],
+    "kinds": ["raw", "raw", "raw", "terminal"],
+    "scope": "run:run-golden",
+    "terminal": {"kind": "run_completed"}
+  },
+  "cancelled": {
+    "raw_record": {
+      "sequence": 4,
+      "event": {
+        "kind": "run_cancelled",
+        "run_id": "run-golden",
+        "reason": "cancelled by fixture"
+      }
+    },
+    "display": {
+      "sequence": 4,
+      "type": "RUN_CANCELLED",
+      "payload": {"reason": "cancelled by fixture"}
+    },
+    "replay_terminal": {
+      "kind": "run_cancelled",
+      "reason": "cancelled by fixture"
+    }
+  }
+}

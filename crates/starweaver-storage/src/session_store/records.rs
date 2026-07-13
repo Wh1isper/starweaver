@@ -9,14 +9,18 @@ use crate::sqlite::{
     map_sqlite_session_error, serialize_json_record,
 };
 
-pub(super) fn save_session_record(
+pub fn save_session_record(
     connection: &Connection,
     session: &SessionRecord,
 ) -> SessionStoreResult<()> {
     connection
         .execute(
-            "INSERT OR REPLACE INTO session_records (session_id, record, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO session_records (session_id, record, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_id) DO UPDATE SET
+               record = excluded.record,
+               created_at = excluded.created_at,
+               updated_at = excluded.updated_at",
             params![
                 session.session_id.as_str(),
                 serialize_json_record(session)?,
@@ -28,7 +32,7 @@ pub(super) fn save_session_record(
     Ok(())
 }
 
-pub(super) fn load_session_record(
+pub fn load_session_record(
     connection: &Connection,
     session_id: &SessionId,
 ) -> SessionStoreResult<SessionRecord> {
@@ -44,12 +48,57 @@ pub(super) fn load_session_record(
     deserialize_json_record(&payload)
 }
 
-pub(super) fn save_run_record(connection: &Connection, run: &RunRecord) -> SessionStoreResult<()> {
+pub fn allocate_or_reuse_run_sequence(
+    connection: &Connection,
+    run: &mut RunRecord,
+) -> SessionStoreResult<Option<RunRecord>> {
+    let existing = connection
+        .query_row(
+            "SELECT record FROM run_records WHERE session_id = ?1 AND run_id = ?2",
+            params![run.session_id.as_str(), run.run_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(map_sqlite_session_error)?
+        .map(|payload| deserialize_json_record::<RunRecord>(&payload))
+        .transpose()?;
+    if let Some(persisted) = existing {
+        if run.sequence_no != 0 && run.sequence_no != persisted.sequence_no {
+            return Err(SessionStoreError::Failed(format!(
+                "run sequence is immutable for session {} and run {}: persisted {}, received {}",
+                run.session_id.as_str(),
+                run.run_id.as_str(),
+                persisted.sequence_no,
+                run.sequence_no
+            )));
+        }
+        run.sequence_no = persisted.sequence_no;
+        return Ok(Some(persisted));
+    }
+    if run.sequence_no == 0 {
+        let next_sequence: i64 = connection
+            .query_row(
+                "SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM run_records WHERE session_id = ?1",
+                params![run.session_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_session_error)?;
+        run.sequence_no = usize::try_from(next_sequence).map_err(map_display_session_error)?;
+    }
+    Ok(None)
+}
+
+pub fn save_run_record(connection: &Connection, run: &RunRecord) -> SessionStoreResult<()> {
     connection
         .execute(
-            "INSERT OR REPLACE INTO run_records
+            "INSERT INTO run_records
              (session_id, run_id, record, sequence_no, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id, run_id) DO UPDATE SET
+               record = excluded.record,
+               sequence_no = excluded.sequence_no,
+               created_at = excluded.created_at,
+               updated_at = excluded.updated_at",
             params![
                 run.session_id.as_str(),
                 run.run_id.as_str(),
@@ -63,7 +112,7 @@ pub(super) fn save_run_record(connection: &Connection, run: &RunRecord) -> Sessi
     Ok(())
 }
 
-pub(super) fn load_run_record(
+pub fn load_run_record(
     connection: &Connection,
     session_id: &SessionId,
     run_id: &RunId,
@@ -80,7 +129,7 @@ pub(super) fn load_run_record(
     deserialize_json_record(&payload)
 }
 
-pub(super) fn list_run_records(
+pub fn list_run_records(
     connection: &Connection,
     session_id: &SessionId,
 ) -> SessionStoreResult<Vec<RunRecord>> {
@@ -93,22 +142,16 @@ pub(super) fn list_run_records(
     collect_json_record_rows(rows)
 }
 
-pub(super) fn apply_run_to_session(session: &mut SessionRecord, run: &RunRecord) {
+pub fn apply_run_to_session(session: &mut SessionRecord, run: &RunRecord) {
     session.head_run_id = Some(run.run_id.clone());
-    match run.status {
-        RunStatus::Queued | RunStatus::Running | RunStatus::Waiting => {
-            session.active_run_id = Some(run.run_id.clone());
-        }
-        RunStatus::Completed => {
+    if run.status.is_active() {
+        session.active_run_id = Some(run.run_id.clone());
+    } else {
+        if run.status == RunStatus::Completed {
             session.head_success_run_id = Some(run.run_id.clone());
-            if session.active_run_id.as_ref() == Some(&run.run_id) {
-                session.active_run_id = None;
-            }
         }
-        RunStatus::Failed | RunStatus::Cancelled => {
-            if session.active_run_id.as_ref() == Some(&run.run_id) {
-                session.active_run_id = None;
-            }
+        if session.active_run_id.as_ref() == Some(&run.run_id) {
+            session.active_run_id = None;
         }
     }
     session.updated_at = run.updated_at;

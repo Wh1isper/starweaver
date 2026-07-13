@@ -158,9 +158,11 @@ sessions, runs, stream records, approvals, deferred tools, checkpoints, and
 resume snapshots.
 
 `InMemorySessionStore` is the deterministic test store. `JsonSessionStore` is a
-single-file local development store. `SqliteSessionStore`,
-`SqliteReplayEventLog`, and `SqliteStreamArchive` are backed by the native
-`starweaver-storage` SQLite migrations:
+single-process, single-file local development store; it is not a production or
+multi-process concurrency backend. Production applications should use
+`SqliteSessionStore`. `SqliteSessionStore`, `SqliteReplayEventLog`, and
+`SqliteStreamArchive` are backed by the native `starweaver-storage` SQLite
+migrations:
 
 ```python
 from starweaver import SqliteReplayEventLog, SqliteSessionStore, SqliteStreamArchive
@@ -188,7 +190,10 @@ async def persist_with_sqlite(session) -> None:
 `save_current_session(session)` always captures full runtime state. Use
 `append_run(...)`, `append_stream_records(...)`, `append_approval(...)`, and
 `append_deferred_tool(...)` when the product stores run evidence separately
-from the current session snapshot.
+from the current session snapshot. For runtime/executor durability, prefer
+`commit_run_evidence(...)` and `commit_checkpoint(...)`: the native SQLite
+facade applies each complete operation atomically, makes exact retries
+idempotent, and rejects conflicting retries.
 `replay_stream_records(..., after_sequence=...)` returns canonical stream
 records in sequence order.
 

@@ -17,19 +17,46 @@ impl InMemorySessionStore {
                 run.session_id.as_str().to_string(),
             ));
         }
-        inner
-            .runs
-            .insert(run_key(&run.session_id, &run.run_id), run.clone());
+        let key = run_key(&run.session_id, &run.run_id);
+        if let Some(persisted) = inner.runs.get(&key) {
+            if run.sequence_no != 0 && run.sequence_no != persisted.sequence_no {
+                return Err(SessionStoreError::Failed(format!(
+                    "run sequence is immutable for session {} and run {}: persisted {}, received {}",
+                    run.session_id.as_str(),
+                    run.run_id.as_str(),
+                    persisted.sequence_no,
+                    run.sequence_no
+                )));
+            }
+            run.sequence_no = persisted.sequence_no;
+        } else if run.sequence_no == 0 {
+            run.sequence_no = inner
+                .runs
+                .values()
+                .filter(|persisted| persisted.session_id == run.session_id)
+                .map(|persisted| persisted.sequence_no)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| SessionStoreError::Failed("run sequence overflow".to_string()))?;
+        } else if inner.runs.values().any(|persisted| {
+            persisted.session_id == run.session_id && persisted.sequence_no == run.sequence_no
+        }) {
+            return Err(SessionStoreError::Failed(format!(
+                "run sequence conflict for session {} at sequence {}",
+                run.session_id.as_str(),
+                run.sequence_no
+            )));
+        }
+        inner.runs.insert(key, run.clone());
         if let Some(session) = inner.sessions.get_mut(&run.session_id) {
             session.head_run_id = Some(run.run_id.clone());
-            if matches!(
-                run.status,
-                RunStatus::Queued | RunStatus::Running | RunStatus::Waiting
-            ) {
+            if run.status.is_active() {
                 session.active_run_id = Some(run.run_id.clone());
-            }
-            if run.status == RunStatus::Completed {
-                session.head_success_run_id = Some(run.run_id.clone());
+            } else {
+                if run.status == RunStatus::Completed {
+                    session.head_success_run_id = Some(run.run_id.clone());
+                }
                 if session.active_run_id.as_ref() == Some(&run.run_id) {
                     session.active_run_id = None;
                 }
@@ -64,7 +91,7 @@ impl InMemorySessionStore {
             .filter(|((stored_session_id, _run_id), _run)| stored_session_id == session_id)
             .map(|(_key, run)| run.clone())
             .collect::<Vec<_>>();
-        runs.sort_by_key(|run| run.created_at);
+        runs.sort_by_key(|run| run.sequence_no);
         Ok(runs)
     }
 
@@ -87,20 +114,14 @@ impl InMemorySessionStore {
         run.updated_at = updated_at;
         if let Some(session) = inner.sessions.get_mut(session_id) {
             session.head_run_id = Some(run_id.clone());
-            match status {
-                RunStatus::Queued | RunStatus::Running | RunStatus::Waiting => {
-                    session.active_run_id = Some(run_id.clone());
-                }
-                RunStatus::Completed => {
+            if status.is_active() {
+                session.active_run_id = Some(run_id.clone());
+            } else {
+                if status == RunStatus::Completed {
                     session.head_success_run_id = Some(run_id.clone());
-                    if session.active_run_id.as_ref() == Some(run_id) {
-                        session.active_run_id = None;
-                    }
                 }
-                RunStatus::Failed | RunStatus::Cancelled => {
-                    if session.active_run_id.as_ref() == Some(run_id) {
-                        session.active_run_id = None;
-                    }
+                if session.active_run_id.as_ref() == Some(run_id) {
+                    session.active_run_id = None;
                 }
             }
             session.updated_at = updated_at;

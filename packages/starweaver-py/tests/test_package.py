@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import copy
 import importlib.util
 import json
 import os
@@ -138,6 +139,12 @@ def test_public_api_compatibility_checklist_matches_starweaver_exports() -> None
         assert hasattr(starweaver, name), name
         if name != "__version__":
             assert not name.startswith("_"), name
+    assert set(starweaver.API_STABILITY) == set(starweaver.__all__)
+    assert starweaver.STABLE_API.isdisjoint(starweaver.PROVISIONAL_API)
+    assert set(starweaver.__all__) == starweaver.STABLE_API | starweaver.PROVISIONAL_API
+    assert starweaver.api_stability("create_agent") == "stable"
+    assert starweaver.api_stability("SqliteSessionStore") == "provisional"
+    assert starweaver.api_stability("_native") == "internal"
 
 
 def test_python_stability_docs_cover_public_api_checklist() -> None:
@@ -148,17 +155,21 @@ def test_python_stability_docs_cover_public_api_checklist() -> None:
     start = content.index("<!-- stable-public-api:start -->")
     end = content.index("<!-- stable-public-api:end -->")
     block = content[start:end]
-    valid_tokens = set(groups)
-
-    for group, names in groups.items():
-        assert f"`{group}`" in block
-        valid_tokens.add(group)
-        for name in names:
-            assert f"`{name}`" in block, name
-            valid_tokens.add(name)
+    public_names = {name for names in groups.values() for name in names}
+    for name in starweaver.STABLE_API:
+        assert f"`{name}`" in block, name
+    for name in starweaver.PROVISIONAL_API:
+        assert f"`{name}`" not in block, name
 
     documented_tokens = set(re.findall(r"`([^`]+)`", block))
-    assert documented_tokens <= valid_tokens
+    area_tokens = {
+        "agent_runtime",
+        "models_output",
+        "tools",
+        "stream_errors_version",
+        "api_stability",
+    }
+    assert documented_tokens <= public_names | area_tokens
 
 
 def test_python_markdown_snippets_compile() -> None:
@@ -4033,7 +4044,13 @@ def test_stream_adapter_projects_canonical_records() -> None:
                 "sequence": 1,
                 "event": {
                     "kind": "model_stream",
-                    "event": {"text_delta": "he"},
+                    "step": 0,
+                    "event": {
+                        "kind": "part_delta",
+                        "index": 0,
+                        "delta_kind": "text",
+                        "text": "he",
+                    },
                 },
             }
         ),
@@ -4052,7 +4069,13 @@ def test_stream_adapter_projects_canonical_records() -> None:
                 "sequence": 2,
                 "event": {
                     "kind": "model_stream",
-                    "event": {"text_delta": "llo"},
+                    "step": 0,
+                    "event": {
+                        "kind": "part_delta",
+                        "index": 0,
+                        "delta_kind": "text",
+                        "text": "llo",
+                    },
                 },
             }
         ),
@@ -4081,7 +4104,11 @@ def test_stream_adapter_projects_canonical_records() -> None:
         starweaver.StreamEvent(
             {
                 "sequence": 5,
-                "event": {"kind": "run_complete", "run_id": "run_stream"},
+                "event": {
+                    "kind": "run_complete",
+                    "run_id": "run_stream",
+                    "output": "hello",
+                },
             }
         ),
     ]
@@ -4102,16 +4129,18 @@ def test_stream_adapter_projects_canonical_records() -> None:
         "TEXT_MESSAGE_CONTENT",
         "TEXT_MESSAGE_CONTENT",
         "TOOL_CALL_START",
+        "TOOL_CALL_ARGS",
         "TOOLSET_INITIALIZED",
         "RUN_FINISHED",
     ]
-    assert display[1]["payload"]["text_delta"] == "he"
-    assert display[3]["payload"]["call"]["name"] == "lookup"
-    assert display[4]["payload"]["payload"]["name"] == "workspace"
+    assert display[1]["payload"]["delta"] == "he"
+    assert display[3]["payload"]["name"] == "lookup"
+    assert display[4]["payload"]["arguments"] == {}
+    assert display[5]["payload"]["name"] == "workspace"
 
     agui = adapter.agui_events(session_id="session_stream")
     assert agui[0]["type"] == "RUN_STARTED"
-    assert agui[1]["payload"]["text_delta"] == "he"
+    assert agui[1]["payload"]["delta"] == "he"
     assert '"type":"RUN_STARTED"' in adapter.agui_jsonl(session_id="session_stream")
 
     frames = adapter.sse_frames(scope="run:run_stream")
@@ -4122,7 +4151,12 @@ def test_stream_adapter_projects_canonical_records() -> None:
 
     buffer = adapter.replay_buffer(session_id="session_stream")
     assert buffer["cursor_range"]["last"]["sequence"] == 5
-    assert buffer["display_messages"] == display
+    assert [message["type"] for message in buffer["display_messages"]] == [
+        message["type"] for message in display
+    ]
+    assert [message["payload"] for message in buffer["display_messages"]] == [
+        message["payload"] for message in display
+    ]
     assert buffer["raw_records"][0]["sequence"] == 0
 
 
@@ -4130,6 +4164,15 @@ def test_stream_adapter_replay_buffer_preserves_subagent_and_unknown_records() -
     subagent_record = {
         "sequence": 8,
         "timestamp": "2026-01-01T00:00:08+00:00",
+        "source": {
+            "kind": "subagent",
+            "agent_id": "agent_researcher",
+            "agent_name": "researcher",
+            "task_id": "task_research",
+            "run_id": "run_child",
+            "parent_run_id": "run_stream",
+            "source_sequence": 2,
+        },
         "event": {
             "kind": "custom",
             "run_id": "run_stream",
@@ -4168,9 +4211,81 @@ def test_stream_adapter_replay_buffer_preserves_subagent_and_unknown_records() -
 
     display = buffer["display_messages"]
     assert [message["type"] for message in display] == ["SUBAGENT_STARTED", "HOST_EVENT"]
-    assert display[0]["payload"]["payload"]["child_run_id"] == "run_child"
+    assert display[0]["payload"]["child_run_id"] == "run_child"
+    assert display[0]["agent_id"] == "agent_researcher"
+    assert display[0]["metadata"]["source_sequence"] == 2
     assert display[1]["payload"]["kind"] == "provider_experimental"
     assert display[1]["payload"]["event"]["opaque"] == {"nested": True}
+
+
+def test_stream_adapter_consumes_shared_raw_display_replay_golden_corpus() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[3] / "spec/fixtures/stream/raw-display-replay-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    adapter = StreamAdapter(fixture["raw_records"])
+
+    assert [record["sequence"] for record in adapter.ordered_records()] == fixture["display"][
+        "sequences"
+    ]
+    display = adapter.display_messages(
+        session_id=fixture["session_id"],
+        run_id=fixture["run_id"],
+    )
+    assert [message["sequence"] for message in display] == fixture["display"]["sequences"]
+    assert [message["type"] for message in display] == fixture["display"]["types"]
+    assert [message["payload"] for message in display] == fixture["display"]["payloads"]
+    assert display[-1]["type"] == fixture["display"]["terminal_type"]
+
+    source = fixture["display"]["source"]
+    sourced = display[source["display_index"]]
+    assert sourced["agent_id"] == source["agent_id"]
+    assert sourced["agent_name"] == source["agent_name"]
+    assert sourced["run_id"] == source["run_id"]
+    assert sourced["metadata"]["source_sequence"] == source["source_sequence"]
+
+    replay = adapter.replay_buffer(
+        session_id=fixture["session_id"],
+        run_id=fixture["run_id"],
+        scope=fixture["replay"]["scope"],
+    )
+    assert replay["raw_records"] == fixture["raw_records"]
+    assert replay["terminal"] == fixture["raw_records"][-1]
+    assert replay["cursor_range"] == {
+        "first": {"scope": fixture["replay"]["scope"], "sequence": 0},
+        "last": {"scope": fixture["replay"]["scope"], "sequence": 2},
+    }
+
+    cancelled_adapter = StreamAdapter([fixture["cancelled"]["raw_record"]])
+    cancelled = cancelled_adapter.display_messages(
+        session_id=fixture["session_id"],
+        run_id=fixture["run_id"],
+    )
+    assert cancelled[0]["sequence"] == fixture["cancelled"]["display"]["sequence"]
+    assert cancelled[0]["type"] == fixture["cancelled"]["display"]["type"]
+    assert cancelled[0]["payload"] == fixture["cancelled"]["display"]["payload"]
+    cancelled_terminal = cancelled_adapter.terminal()
+    assert cancelled_terminal is not None
+    assert cancelled_terminal.kind == "run_cancelled"
+
+
+def test_stream_adapter_propagates_malformed_known_canonical_records() -> None:
+    malformed = {
+        "sequence": 1,
+        "event": {
+            "kind": "run_complete",
+            "run_id": "run_stream",
+            # Canonical run_complete requires a string output. This must not be downgraded to a
+            # HOST_EVENT merely because the native decoder rejects it.
+            "output": {"unexpected": "object"},
+        },
+    }
+
+    with pytest.raises(ValueError, match="invalid stream records"):
+        StreamAdapter([malformed]).display_messages(
+            session_id="session_stream",
+            run_id="run_stream",
+        )
 
 
 def test_async_and_sync_python_tools_execute_in_runtime_loop() -> None:
@@ -4384,29 +4499,28 @@ def test_base_tool_subclass_and_raw_callable_are_registered() -> None:
     asyncio.run(run())
 
 
-def test_python_tools_run_in_parallel_by_default() -> None:
+def test_python_legacy_tools_run_sequentially_by_default() -> None:
     current = 0
     max_seen = 0
-    both_started = asyncio.Event()
+    order: list[str] = []
 
-    async def enter() -> None:
+    async def enter(name: str) -> None:
         nonlocal current, max_seen
+        order.append(f"{name}:start")
         current += 1
         max_seen = max(max_seen, current)
-        if current == 2:
-            both_started.set()
-        await both_started.wait()
         await asyncio.sleep(0.01)
         current -= 1
+        order.append(f"{name}:end")
 
     @tool
     async def alpha(args: dict[str, object]) -> dict[str, str]:
-        await enter()
+        await enter("alpha")
         return {"tool": "alpha"}
 
     @tool
     async def beta(args: dict[str, object]) -> dict[str, str]:
-        await enter()
+        await enter("beta")
         return {"tool": "beta"}
 
     model = StarweaverTestModel.responses(
@@ -4422,9 +4536,10 @@ def test_python_tools_run_in_parallel_by_default() -> None:
     )
 
     async def run() -> None:
-        result = await create_agent(model=model, tools=[alpha, beta]).run("parallel")
+        result = await create_agent(model=model, tools=[alpha, beta]).run("sequential")
         assert result.output == "done"
-        assert max_seen == 2
+        assert max_seen == 1
+        assert order == ["alpha:start", "alpha:end", "beta:start", "beta:end"]
 
     asyncio.run(run())
 
@@ -5943,7 +6058,7 @@ def test_python_session_store_to_native_adapts_python_backend() -> None:
         source_run = next(iter(source_runs.values()))
         source_session_id = str(source_session["session_id"])
         source_run_id = str(source_run["run_id"])
-        source_key = f"{source_session_id}:{source_run_id}"
+        source_key = json.dumps([source_session_id, source_run_id], separators=(",", ":"))
         source_stream = source_streams[source_key]
         source_checkpoints = source_checkpoint_records[source_key]
         assert source_stream
@@ -6028,20 +6143,30 @@ def test_python_session_store_to_native_adapts_python_backend() -> None:
 
         timestamp = str(source_session["created_at"])
         cursor = {
-            "family": "raw_runtime",
-            "scope": f"run:{source_run_id}",
-            "sequence": replay_sequences[-1],
+            "position": {
+                "family": "raw_runtime",
+                "scope": f"run:{source_run_id}",
+                "sequence": replay_sequences[-1],
+            },
             "created_at": timestamp,
             "metadata": {"bridge": True},
         }
         await native.save_stream_cursor(source_session_id, source_run_id, cursor)
         loaded_run = await native.load_run(source_session_id, source_run_id)
         stream_cursors = cast(list[dict[str, Any]], loaded_run["stream_cursors"])
-        assert stream_cursors[-1]["scope"] == f"run:{source_run_id}"
+        position = cast(dict[str, Any], stream_cursors[-1]["position"])
+        assert position["family"] == "raw_runtime"
+        assert position["scope"] == f"run:{source_run_id}"
 
         await native.append_checkpoint(source_session_id, source_checkpoints[0])
+        await native.append_checkpoint(source_session_id, source_checkpoints[0])
         checkpoints = await native.load_checkpoints(source_session_id, source_run_id)
+        assert len(checkpoints) == 1
         assert checkpoints[0]["checkpoint_id"] == source_checkpoints[0]["checkpoint_id"]
+        conflicting_checkpoint = dict(source_checkpoints[0])
+        conflicting_checkpoint["run_step"] = int(conflicting_checkpoint["run_step"]) + 1
+        with pytest.raises(StateError, match="checkpoint conflict"):
+            await native.append_checkpoint(source_session_id, conflicting_checkpoint)
 
         approval = {
             "approval_id": "approval_bridge",
@@ -6140,6 +6265,505 @@ def test_agent_runtime_binds_python_session_store_to_durable_runs() -> None:
     asyncio.run(run())
 
 
+def test_python_in_memory_store_clears_active_run_for_terminal_statuses() -> None:
+    async def run() -> None:
+        for status in ("completed", "failed", "cancelled"):
+            store = starweaver.InMemorySessionStore()
+            session_id = f"memory-session-{status}"
+            run_id = f"memory-run-{status}"
+            session = starweaver.SessionRecord.from_state(
+                {
+                    "agent_id": "main",
+                    "session_id": session_id,
+                    "conversation_id": f"conversation-{status}",
+                }
+            )
+            await store.save_session(session)
+            timestamp = session.to_dict()["created_at"]
+            active_run = {
+                "session_id": session_id,
+                "run_id": run_id,
+                "conversation_id": f"conversation-{status}",
+                "status": "queued",
+                "sequence_no": 0,
+                "created_at": timestamp,
+                "updated_at": timestamp,
+            }
+            await store.append_run(active_run)
+            assert (await store.load_session(session_id)).to_dict()["active_run_id"] == run_id
+
+            terminal_run = {**active_run, "status": status}
+            await store.append_run(terminal_run)
+            persisted_session = (await store.load_session(session_id)).to_dict()
+            assert persisted_session["active_run_id"] is None
+            assert persisted_session.get("head_success_run_id") == (
+                run_id if status == "completed" else None
+            )
+
+    asyncio.run(run())
+
+
+def test_python_json_store_persists_resume_claim_and_stream_publication_outbox(
+    tmp_path: Path,
+) -> None:
+    async def run() -> None:
+        path = tmp_path / "durability-v2.json"
+        store = starweaver.JsonSessionStore(path)
+        session_id = "python-durability-v2-session"
+        source_run_id = "python-durability-v2-source"
+        target_run_id = "python-durability-v2-target"
+        conversation_id = "python-durability-v2-conversation"
+        session = starweaver.SessionRecord.from_state(
+            {
+                "agent_id": "main",
+                "session_id": session_id,
+                "conversation_id": conversation_id,
+            }
+        )
+        await store.save_session(session)
+        timestamp = session.to_dict()["created_at"]
+        source_run = {
+            "session_id": session_id,
+            "run_id": source_run_id,
+            "conversation_id": conversation_id,
+            "status": "waiting",
+            "sequence_no": 0,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        await store.append_run(source_run)
+        claim = {
+            "claim_id": "python-resume-claim",
+            "session_id": session_id,
+            "run_id": source_run_id,
+            "created_at": timestamp,
+        }
+        with pytest.raises(StateError, match="does not support durable HITL resume claims"):
+            await store.claim_hitl_resume(claim)
+
+        target_run = {
+            "session_id": session_id,
+            "run_id": target_run_id,
+            "conversation_id": conversation_id,
+            "status": "completed",
+            "sequence_no": 0,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        commit = {
+            "run": target_run,
+            "context_state": {
+                "agent_id": "main",
+                "session_id": session_id,
+                "run_id": target_run_id,
+                "conversation_id": conversation_id,
+            },
+            "environment_state": None,
+            "stream_records": [],
+            "checkpoints": [],
+            "approvals": [],
+            "deferred_tools": [],
+            "stream_cursors": [],
+            "display_messages": [],
+            "replay_events": [],
+            "display_snapshot": None,
+            "publication_targets": {"archive": True, "replay": True},
+            "related_run_updates": [],
+        }
+        await store.commit_run_evidence(commit)
+        reopened = starweaver.JsonSessionStore(path)
+        assert (await reopened.load_run(session_id, source_run_id)).to_dict()["status"] == "waiting"
+        assert (await reopened.load_run(session_id, target_run_id)).to_dict()[
+            "status"
+        ] == "completed"
+        pending = await reopened.pending_stream_publications(session_id)
+        assert len(pending) == 1
+        assert pending[0]["archive_pending"] is True
+        assert pending[0]["replay_pending"] is True
+        await reopened.acknowledge_stream_publication(pending[0]["publication_id"], "archive")
+        pending = await reopened.pending_stream_publications(session_id)
+        assert pending[0]["archive_pending"] is False
+        assert pending[0]["replay_pending"] is True
+        await reopened.acknowledge_stream_publication(pending[0]["publication_id"], "replay")
+        assert not await starweaver.JsonSessionStore(path).pending_stream_publications(session_id)
+
+    asyncio.run(run())
+
+
+def test_python_in_memory_evidence_validation_and_per_run_resume_state() -> None:
+    async def run() -> None:
+        store = starweaver.InMemorySessionStore()
+        session_id = "python-per-run-context"
+        timestamp = "2026-07-12T00:00:00+00:00"
+        session = starweaver.SessionRecord.from_state(
+            {
+                "agent_id": "main",
+                "session_id": session_id,
+                "conversation_id": "conversation-session-head",
+            }
+        )
+        await store.save_session(session)
+
+        def evidence(run_id: str, marker: str) -> dict[str, Any]:
+            conversation_id = f"conversation-{run_id}"
+            return {
+                "run": {
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "conversation_id": conversation_id,
+                    "status": "completed",
+                    "sequence_no": 0,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                },
+                "context_state": {
+                    "agent_id": "main",
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "conversation_id": conversation_id,
+                    "metadata": {"marker": marker},
+                },
+                "environment_state": None,
+                "stream_records": [],
+                "checkpoints": [],
+                "approvals": [],
+                "deferred_tools": [],
+                "stream_cursors": [],
+                "display_messages": [],
+                "replay_events": [],
+                "display_snapshot": None,
+                "publication_targets": {"archive": False, "replay": False},
+                "related_run_updates": [],
+            }
+
+        bad_context = evidence("run-invalid-context", "invalid")
+        bad_context["context_state"]["metadata"] = {"starweaver.durable_run_id": "foreign-run"}
+        with pytest.raises(StateError, match="identity mismatch"):
+            await store.commit_run_evidence(bad_context)
+
+        reserved_metadata = evidence("run-reserved-metadata", "invalid")
+        reserved_metadata["run"]["metadata"] = {
+            "starweaver.run_evidence_sha256": "caller-controlled"
+        }
+        with pytest.raises(StateError, match="reserved run metadata key"):
+            await store.commit_run_evidence(reserved_metadata)
+
+        duplicate_sequences = evidence("run-duplicate-stream", "invalid")
+        duplicate_sequences["stream_records"] = [
+            {"sequence": 1, "event": {"kind": "heartbeat"}},
+            {"sequence": 1, "event": {"kind": "heartbeat"}},
+        ]
+        with pytest.raises(StateError, match="duplicate raw stream sequence"):
+            await store.commit_run_evidence(duplicate_sequences)
+
+        wrong_owner = evidence("run-wrong-owner", "invalid")
+        wrong_owner["approvals"] = [
+            {
+                "approval_id": "approval-wrong-owner",
+                "session_id": "foreign-session",
+                "run_id": "run-wrong-owner",
+            }
+        ]
+        with pytest.raises(StateError, match="approval identity mismatch"):
+            await store.commit_run_evidence(wrong_owner)
+
+        wrong_cursor = evidence("run-wrong-cursor", "invalid")
+        wrong_cursor["stream_cursors"] = [
+            {
+                "position": {
+                    "family": "raw_runtime",
+                    "scope": "run:foreign-run",
+                    "sequence": 1,
+                },
+                "created_at": timestamp,
+            }
+        ]
+        with pytest.raises(StateError, match="stream cursor scope mismatch"):
+            await store.commit_run_evidence(wrong_cursor)
+
+        wrong_environment = evidence("run-wrong-environment", "invalid")
+        wrong_environment["environment_state"] = {"provider": "unversioned"}
+        with pytest.raises(StateError, match="environment state must use"):
+            await store.commit_run_evidence(wrong_environment)
+        for index, version in enumerate((True, "1", -1, 1.0)):
+            wrong_environment_version = evidence(
+                f"run-wrong-environment-version-{index}", "invalid"
+            )
+            wrong_environment_version["environment_state"] = {
+                "schema": "starweaver.environment.state",
+                "version": version,
+                "payload": {},
+            }
+            with pytest.raises(StateError, match="environment state must use"):
+                await store.commit_run_evidence(wrong_environment_version)
+        assert not await store.list_runs(session_id)
+
+        run_a = evidence("run-context-a", "run-a")
+        run_a["stream_cursors"] = [
+            {
+                "position": {
+                    "family": family,
+                    "scope": "run:run-context-a",
+                    "sequence": sequence,
+                },
+                "created_at": timestamp,
+            }
+            for family, sequence in (
+                ("raw_runtime", 7),
+                ("display", 8),
+                ("replay_event", 9),
+            )
+        ]
+        run_b = evidence("run-context-b", "run-b")
+        run_b["stream_cursors"] = [
+            {
+                "position": {
+                    "family": "raw_runtime",
+                    "scope": "run:run-context-b",
+                    "sequence": 11,
+                },
+                "created_at": timestamp,
+            }
+        ]
+        await store.commit_run_evidence(run_a)
+        await store.commit_run_evidence(run_b)
+        snapshot = await store.resume_snapshot(session_id, "run-context-a")
+        assert snapshot.state["metadata"]["marker"] == "run-a"
+        assert snapshot.state["run_id"] == "run-context-a"
+        run_a_cursors = [
+            cursor["position"]
+            for cursor in snapshot.stream_cursors
+            if cursor["position"]["scope"] == "run:run-context-a"
+        ]
+        assert {(cursor["family"], cursor["sequence"]) for cursor in run_a_cursors} == {
+            ("raw_runtime", 7),
+            ("display", 8),
+            ("replay_event", 9),
+        }
+        assert any(
+            cursor["position"]["scope"] == "run:run-context-b" for cursor in snapshot.stream_cursors
+        )
+        compact_trace = await store.compact_run_trace(session_id, "run-context-a")
+        assert compact_trace["stream_cursor"] == 7
+
+    asyncio.run(run())
+
+
+def test_python_store_ids_claims_legacy_seals_and_existing_evidence(tmp_path: Path) -> None:
+    async def run() -> None:
+        timestamp = "2026-07-12T00:00:00+00:00"
+
+        def session_record(session_id: str) -> starweaver.SessionRecord:
+            return starweaver.SessionRecord.from_state(
+                {
+                    "agent_id": "main",
+                    "session_id": session_id,
+                    "conversation_id": f"conversation-{session_id}",
+                }
+            )
+
+        def evidence(
+            session_id: str,
+            run_id: str,
+            *,
+            stream_records: list[dict[str, Any]] | None = None,
+            publish: bool = False,
+        ) -> dict[str, Any]:
+            conversation_id = f"conversation-{session_id}"
+            return {
+                "run": {
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "conversation_id": conversation_id,
+                    "status": "completed",
+                    "sequence_no": 0,
+                    "created_at": timestamp,
+                    "updated_at": timestamp,
+                },
+                "context_state": {
+                    "agent_id": "main",
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "conversation_id": conversation_id,
+                },
+                "environment_state": None,
+                "stream_records": stream_records or [],
+                "checkpoints": [],
+                "approvals": [],
+                "deferred_tools": [],
+                "stream_cursors": [],
+                "display_messages": [],
+                "replay_events": [],
+                "display_snapshot": None,
+                "publication_targets": {"archive": publish, "replay": False},
+                "related_run_updates": [],
+            }
+
+        collision_store = starweaver.InMemorySessionStore()
+        for session_id in ("a:b", "a"):
+            await collision_store.save_session(session_record(session_id))
+        await collision_store.commit_run_evidence(evidence("a:b", "c", publish=True))
+        await collision_store.commit_run_evidence(evidence("a", "b:c", publish=True))
+        first_pending = await collision_store.pending_stream_publications("a:b")
+        second_pending = await collision_store.pending_stream_publications("a")
+        assert len(first_pending) == len(second_pending) == 1
+        assert first_pending[0]["publication_id"] != second_pending[0]["publication_id"]
+
+        claim_store = starweaver.InMemorySessionStore()
+        await claim_store.save_session(session_record("claim-session"))
+        waiting = evidence("claim-session", "claim-run")["run"]
+        waiting["status"] = "waiting"
+        await claim_store.append_run(waiting)
+        invalid_claim = {
+            "claim_id": "invalid-started",
+            "session_id": "claim-session",
+            "run_id": "claim-run",
+            "state": "started",
+            "created_at": timestamp,
+        }
+        with pytest.raises(StateError, match="invalid HITL preflight claim"):
+            await claim_store.claim_hitl_resume(invalid_claim)
+        valid_claim = {**invalid_claim, "claim_id": "valid-claim", "state": "preflight"}
+        await claim_store.claim_hitl_resume(valid_claim)
+        await claim_store.mark_hitl_resume_started("claim-session", "claim-run", "valid-claim")
+        await claim_store.mark_hitl_resume_started("claim-session", "claim-run", "valid-claim")
+
+        conflict_store = starweaver.InMemorySessionStore()
+        await conflict_store.save_session(session_record("conflict-session"))
+        existing_run = evidence("conflict-session", "conflict-run")["run"]
+        existing_run["status"] = "running"
+        await conflict_store.append_run(existing_run)
+        existing_stream = {"sequence": 1, "event": {"kind": "original"}}
+        await conflict_store.append_stream_records(
+            "conflict-session", "conflict-run", [existing_stream]
+        )
+        conflicting_commit = evidence(
+            "conflict-session",
+            "conflict-run",
+            stream_records=[{"sequence": 1, "event": {"kind": "different"}}],
+        )
+        with pytest.raises(StateError, match="stream record conflict"):
+            await conflict_store.commit_run_evidence(conflicting_commit)
+        exact_commit = evidence(
+            "conflict-session", "conflict-run", stream_records=[existing_stream]
+        )
+        await conflict_store.commit_run_evidence(exact_commit)
+
+        legacy_source = starweaver.InMemorySessionStore()
+        await legacy_source.save_session(session_record("legacy-json-session"))
+        legacy_run = evidence("legacy-json-session", "legacy-json-run")["run"]
+        await legacy_source.append_run(legacy_run)
+        legacy_payload = legacy_source.to_dict()
+        legacy_payload.pop("format")
+        legacy_payload.pop("version")
+        legacy_path = tmp_path / "legacy-store.json"
+        legacy_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+        legacy_store = starweaver.JsonSessionStore(legacy_path)
+        with pytest.raises(StateError, match="run evidence conflict"):
+            await legacy_store.commit_run_evidence(
+                evidence("legacy-json-session", "legacy-json-run")
+            )
+
+        current_payload = collision_store.to_dict()
+        unsupported_payloads = (
+            {**current_payload, "version": 999, "future_field": {"keep": True}},
+            {**current_payload, "format": "other.session_store"},
+            {key: value for key, value in current_payload.items() if key != "version"},
+            {key: value for key, value in current_payload.items() if key != "format"},
+        )
+        for index, unsupported in enumerate(unsupported_payloads):
+            unsupported_path = tmp_path / f"unsupported-store-{index}.json"
+            unsupported_path.write_text(json.dumps(unsupported), encoding="utf-8")
+            with pytest.raises(StateError, match="unsupported session-store"):
+                starweaver.JsonSessionStore(unsupported_path)
+            assert json.loads(unsupported_path.read_text(encoding="utf-8")) == unsupported
+
+    asyncio.run(run())
+
+
+def test_python_sqlite_atomic_commit_and_checkpoint_apis(tmp_path: Path) -> None:
+    async def run() -> None:
+        source_store = starweaver.InMemorySessionStore()
+        runtime = create_agent_runtime(
+            model=StarweaverTestModel.text("native evidence"),
+            session_store=source_store,
+            durable_session_id="python-native-evidence-source",
+        )
+        await runtime.run("build canonical evidence")
+        raw = source_store.to_dict()
+        sessions = cast(dict[str, dict[str, Any]], raw["sessions"])
+        runs = cast(dict[str, dict[str, Any]], raw["runs"])
+        run_context = cast(dict[str, dict[str, Any]], raw["run_context"])
+        streams = cast(dict[str, list[dict[str, Any]]], raw["streams"])
+        checkpoints = cast(dict[str, list[dict[str, Any]]], raw["checkpoints"])
+        displays = cast(dict[str, list[dict[str, Any]]], raw["display_messages"])
+        replay_events = cast(dict[str, list[dict[str, Any]]], raw["replay_events"])
+        session = sessions["python-native-evidence-source"]
+        source_run = next(iter(runs.values()))
+        session_id = str(source_run["session_id"])
+        run_id = str(source_run["run_id"])
+        key = json.dumps([session_id, run_id], separators=(",", ":"))
+        environment_ref = {
+            "provider": "virtual",
+            "reference": "env://python-native-evidence",
+            "revision": "rev-1",
+        }
+        source_run["environment_state"] = environment_ref
+        commit = {
+            "run": source_run,
+            "context_state": run_context[key],
+            "environment_state": {
+                "schema": "starweaver.environment.state",
+                "version": 1,
+                "payload": {"provider": "virtual", "revision": "rev-1"},
+            },
+            "stream_records": streams[key],
+            "checkpoints": checkpoints[key],
+            "approvals": [],
+            "deferred_tools": [],
+            "stream_cursors": source_run.get("stream_cursors", []),
+            "display_messages": displays.get(key, []),
+            "replay_events": replay_events.get(key, []),
+            "display_snapshot": None,
+            "publication_targets": {"archive": False, "replay": False},
+            "related_run_updates": [],
+        }
+
+        evidence_path = tmp_path / "native-evidence.sqlite3"
+        evidence_store = starweaver.SqliteSessionStore(evidence_path)
+        await evidence_store.save_session(session)
+        committed = await evidence_store.commit_run_evidence(commit)
+        assert committed.run_id == run_id
+        retried = await evidence_store.commit_run_evidence(commit)
+        assert retried.to_dict() == committed.to_dict()
+        conflicting = json.loads(json.dumps(commit))
+        conflicting["context_state"]["metadata"] = {"conflict": True}
+        with pytest.raises(StateError, match="run evidence conflict"):
+            await evidence_store.commit_run_evidence(conflicting)
+        snapshot = await evidence_store.resume_snapshot(session_id, run_id)
+        assert snapshot.state["run_id"] == run_id
+        assert snapshot.environment_state == environment_ref
+        assert snapshot.to_dict()["environment_state"] == environment_ref
+        assert snapshot.stream_records
+
+        checkpoint_path = tmp_path / "native-checkpoint.sqlite3"
+        checkpoint_store = starweaver.SqliteSessionStore(checkpoint_path)
+        await checkpoint_store.save_session(session)
+        checkpoint = checkpoints[key][0]
+        await checkpoint_store.commit_checkpoint(session_id, checkpoint)
+        await checkpoint_store.commit_checkpoint(session_id, checkpoint)
+        loaded = await checkpoint_store.load_checkpoints(session_id, run_id)
+        assert len(loaded) == 1
+        conflicting_checkpoint = json.loads(json.dumps(checkpoint))
+        conflicting_checkpoint["state"]["run_step"] = (
+            int(conflicting_checkpoint["state"]["run_step"]) + 1
+        )
+        with pytest.raises(StateError, match="checkpoint conflict"):
+            await checkpoint_store.commit_checkpoint(session_id, conflicting_checkpoint)
+
+    asyncio.run(run())
+
+
 def test_sqlite_session_store_wraps_native_storage(tmp_path: Path) -> None:
     async def run() -> None:
         database_path = tmp_path / "sessions.sqlite3"
@@ -6167,9 +6791,18 @@ def test_sqlite_session_store_wraps_native_storage(tmp_path: Path) -> None:
         run_record = starweaver.RunRecord.from_result(
             session_record.session_id,
             stream_result.result,
-            sequence_no=1,
+            sequence_no=0,
         )
-        await store.append_run(run_record)
+        run_record = await store.append_run_allocated(run_record)
+        assert run_record.to_dict()["sequence_no"] == 1
+        retry = run_record.to_dict()
+        retry["sequence_no"] = 0
+        retried_run = await store.append_run_allocated(retry)
+        assert retried_run.to_dict()["sequence_no"] == 1
+        conflict = run_record.to_dict()
+        conflict["sequence_no"] = 2
+        with pytest.raises(StateError, match="run sequence is immutable"):
+            await store.append_run_allocated(conflict)
         await store.append_stream_records(
             session_record.session_id,
             run_record.run_id,
@@ -6235,7 +6868,11 @@ def test_sqlite_session_store_wraps_native_storage(tmp_path: Path) -> None:
         assert snapshot.deferred_tools[0].to_dict()["deferred_id"] == "deferred_py"
 
         scope = f"run:{run_record.run_id}"
-        run_cursor = {"scope": scope, "sequence": replay[0].sequence}
+        run_cursor = {
+            "family": "raw_runtime",
+            "scope": scope,
+            "sequence": replay[0].sequence,
+        }
         archive_store = starweaver.SqliteStreamArchive(database_path)
         await archive_store.append_raw_records(
             session_record.session_id,
@@ -6271,7 +6908,7 @@ def test_sqlite_session_store_wraps_native_storage(tmp_path: Path) -> None:
         assert (
             await archive_store.replay_display_after(
                 scope,
-                {"scope": scope, "sequence": 0},
+                {"family": "display", "scope": scope, "sequence": 0},
             )
             == []
         )
@@ -6279,7 +6916,7 @@ def test_sqlite_session_store_wraps_native_storage(tmp_path: Path) -> None:
         archive_snapshot = {
             "scope": scope,
             "revision": 1,
-            "cursor": {"scope": scope, "sequence": 0},
+            "cursor": {"family": "display", "scope": scope, "sequence": 0},
             "display_messages": [display_message],
             "metadata": {"source": "pytest"},
         }
@@ -6305,11 +6942,15 @@ def test_sqlite_session_store_wraps_native_storage(tmp_path: Path) -> None:
         assert (
             await replay_log.replay_after(
                 scope,
-                {"scope": scope, "sequence": 1},
+                {"family": "replay_event", "scope": scope, "sequence": 1},
             )
             == []
         )
-        await replay_log.save_snapshot(scope, archive_snapshot)
+        replay_snapshot = {
+            **archive_snapshot,
+            "cursor": {"family": "replay_event", "scope": scope, "sequence": 1},
+        }
+        await replay_log.save_snapshot(scope, replay_snapshot)
         assert (await replay_log.compact_snapshot(scope))["revision"] == 1
         sqlite_url_archive = starweaver.SqliteStreamArchive.open(sqlite_url)
         assert (await sqlite_url_archive.cursor_range(scope)) is not None
@@ -7232,6 +7873,8 @@ def test_claw_product_runtime_example_covers_service_state_machine(tmp_path: Pat
         assert result["steered_behavior"] == "steered"
         assert result["suspended_status"] == "hitl"
         assert result["completed_status"] == "completed"
+        assert result["native_run_identity_preserved_after_hitl"] is True
+        assert result["native_sequence_preserved_after_hitl"] is True
         assert result["output"] == "deployment complete"
         assert result["bridge_hitl_message_status"] == "completed"
         assert result["bridge_hitl_approval_id_preserved"] is True
@@ -7545,5 +8188,120 @@ def test_live_run_no_active_state_errors_have_stable_code() -> None:
         with pytest.raises(StateError) as native_interrupt_error:
             native_session.interrupt()
         assert native_interrupt_error.value.code == "no_active_run"
+
+    asyncio.run(run())
+
+
+def test_python_store_accepts_provider_affinity_and_child_display_evidence() -> None:
+    async def run() -> None:
+        source = starweaver.InMemorySessionStore()
+        runtime = create_agent_runtime(
+            model=StarweaverTestModel.text("complete"),
+            session_store=source,
+            durable_session_id="durable-parent-session",
+        )
+        result = await runtime.run("create canonical evidence")
+        raw = source.to_dict()
+        sessions = cast(dict[str, dict[str, Any]], raw["sessions"])
+        runs = cast(dict[str, dict[str, Any]], raw["runs"])
+        contexts = cast(dict[str, dict[str, Any]], raw["run_context"])
+        streams = cast(dict[str, list[dict[str, Any]]], raw["streams"])
+        checkpoints = cast(dict[str, list[dict[str, Any]]], raw["checkpoints"])
+        replay_events = cast(dict[str, list[dict[str, Any]]], raw["replay_events"])
+        run_record = copy.deepcopy(next(iter(runs.values())))
+        session_id = str(run_record["session_id"])
+        run_id = str(run_record["run_id"])
+        key = json.dumps([session_id, run_id], separators=(",", ":"))
+        context_state = copy.deepcopy(contexts[key])
+        context_state["session_id"] = "provider-routing-affinity"
+        context_state["run_id"] = "runtime-run-affinity"
+        context_state.setdefault("metadata", {})["starweaver.durable_session_id"] = session_id
+        context_state["metadata"]["starweaver.durable_run_id"] = run_id
+        display_messages = [
+            {
+                "sequence": 0,
+                "session_id": session_id,
+                "run_id": "child-source-run",
+                "timestamp": "2026-07-12T00:00:00+00:00",
+                "type": "RUN_STARTED",
+                "payload": {"source": "child"},
+                "preview": "child run started",
+            }
+        ]
+
+        target = starweaver.InMemorySessionStore()
+        await target.save_session(copy.deepcopy(sessions[session_id]))
+        await target.commit_run_evidence(
+            {
+                "run": run_record,
+                "context_state": context_state,
+                "environment_state": None,
+                "stream_records": [copy.deepcopy(record) for record in streams[key]],
+                "checkpoints": [copy.deepcopy(record) for record in checkpoints[key]],
+                "approvals": [],
+                "deferred_tools": [],
+                "stream_cursors": [],
+                "display_messages": display_messages,
+                "replay_events": [copy.deepcopy(record) for record in replay_events[key]],
+                "display_snapshot": None,
+                "publication_targets": {"archive": False, "replay": False},
+                "related_run_updates": [],
+            }
+        )
+        snapshot = await target.resume_snapshot(session_id, run_id)
+        assert snapshot.state["session_id"] == "provider-routing-affinity"
+        restored_raw = target.to_dict()
+        restored_displays = cast(dict[str, list[dict[str, Any]]], restored_raw["display_messages"])
+        assert restored_displays[key][0]["run_id"] == "child-source-run"
+        assert result.output == "complete"
+
+    asyncio.run(run())
+
+
+def test_python_in_memory_stream_append_and_cursor_updates_are_idempotent() -> None:
+    async def run() -> None:
+        store = starweaver.InMemorySessionStore()
+        session_id = "stream-contract-session"
+        await store.save_session({"session_id": session_id})
+        run = {
+            "session_id": session_id,
+            "run_id": "stream-contract-run",
+            "conversation_id": "conversation-stream-contract",
+            "sequence_no": 0,
+            "status": "running",
+        }
+        await store.append_run(run)
+        event = {"sequence": 3, "event": {"kind": "run_started"}}
+        await store.append_stream_records(session_id, run["run_id"], [event, event])
+        replayed = await store.replay_stream_records(session_id, run["run_id"])
+        assert [record.raw["sequence"] for record in replayed] == [3]
+        with pytest.raises(StateError, match="stream record conflict"):
+            await store.append_stream_records(
+                session_id,
+                run["run_id"],
+                [{"sequence": 3, "event": {"kind": "different"}}],
+            )
+
+        cursor = {
+            "position": {
+                "family": "raw_runtime",
+                "scope": f"run:{run['run_id']}",
+                "sequence": 3,
+            }
+        }
+        await store.save_stream_cursor(session_id, run["run_id"], cursor)
+        await store.save_stream_cursor(session_id, run["run_id"], cursor)
+        advanced = {
+            "position": {
+                "family": "raw_runtime",
+                "scope": f"run:{run['run_id']}",
+                "sequence": 4,
+            }
+        }
+        await store.save_stream_cursor(session_id, run["run_id"], advanced)
+        with pytest.raises(StateError, match="regressed"):
+            await store.save_stream_cursor(session_id, run["run_id"], cursor)
+        persisted = await store.load_run(session_id, run["run_id"])
+        assert persisted.raw["stream_cursors"] == [advanced]
 
     asyncio.run(run())

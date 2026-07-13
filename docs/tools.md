@@ -55,7 +55,13 @@ Serde remains the execution-time validation contract. Use `#[serde(default)]`, a
 
 ## Tools with context dependencies
 
-`ToolContext` carries execution metadata such as run ids, retry counters, trace context, cooperative cancellation, and typed dependencies. Inside the agent runtime, the active `AgentContext` is injected as a typed dependency, matching the typed run-context dependency pattern.
+`ToolContext` carries execution metadata such as run ids, retry counters, trace context, cooperative cancellation, and typed dependencies. Legacy tools receive a read-only `ToolRuntimeSnapshot` for model/tool limits and shell configuration, a refreshable `HostCapabilities` view over explicitly attached host integrations, direct typed dependencies, and the compatibility `AgentContextHandle`. The runtime does not inject a second immutable clone of the complete `AgentContext`.
+
+Tools can opt into `starweaver_tools::ToolDependencyRequirements::filtered(...)` through the reserved `starweaver_tool_dependencies` metadata value. Filtered execution omits the runtime-generated broad `AgentContextHandle`, filters generated `HostCapabilities` by stable dependency name, and removes shell values from `ToolRuntimeSnapshot`. A filtered tool receives configured shell values only when it requests the dedicated `ShellEnvironmentSnapshot`; the first-party shell helper prefers that dedicated projection and falls back to the legacy runtime snapshot. The same effective, context-prepared registry profile applies to ordinary runtime execution, HITL user-input preprocessing, and approved-tool execution.
+
+Each requested host capability name must be a key registered by the application with `AgentContext::insert_named_dependency`. Names created by `insert_dependency` from Rust type names remain a compatibility convenience, not a stable cross-release capability identifier. Build the metadata value with `ToolDependencyRequirements::to_metadata_value()` rather than hand-writing its object shape. A missing reserved metadata key preserves the Legacy compatibility profile; a present but malformed value fails closed to Strict with no requested authority. Unknown extension fields are ignored. A tool-call batch mixing Legacy with Filtered or Strict profiles executes sequentially so a compatibility snapshot cannot overwrite narrowed lifecycle updates. Any tool requesting mutable context capabilities also executes sequentially.
+
+`ToolDependencyRequirements::strict(...)` is the least-authority profile. It does not copy ambient application dependencies into `ToolContext`; requested host capabilities, shell values, and mutable context capabilities are intersected with the per-tool `ToolCapabilityGrant` installed by the host through `AgentContext::grant_tool_capabilities`. Without an explicit host grant, Strict exposes none of those authorities. Unknown mutable grant names are ignored. Current mutable grants are `starweaver.context.handoff`, `starweaver.context.tasks`, `starweaver.context.usage`, and `starweaver.context.tool_search`, represented by `ContextHandoffHandle`, `TaskContextHandle`, `UsageContextHandle`, and `ToolSearchContextHandle`. The first-party SDK bundles now declare Filtered profiles; context, task, shell, and dynamic tool-search tools request these narrow handles instead of the broad `AgentContextHandle`. Third-party Rust, Python, and subagent tools retain the Legacy compatibility default unless their metadata opts into Filtered or Strict.
 
 ```rust
 use std::sync::Arc;
@@ -75,8 +81,11 @@ let read_note = typed_tool::<ReadNoteArgs, _, _>(
     "read_note",
     Some("Read one AgentContext note".to_string()),
     |ctx: ToolContext, args: ReadNoteArgs| async move {
-        let agent_context = ctx.dependency::<AgentContext>().expect("agent context");
-        let value = agent_context.notes.get(&args.key).unwrap_or_default();
+        let context_handle = ctx
+            .dependency::<starweaver_agent::AgentContextHandle>()
+            .expect("agent context handle");
+        let context = context_handle.snapshot();
+        let value = context.notes.get(&args.key).unwrap_or_default();
         Ok(ToolResult::new(serde_json::json!({"value": value})))
     },
 );
@@ -318,7 +327,7 @@ Model correction retry is separate from internal execution retry. `ToolError::Mo
 
 Expected conditions that the agent can reason about, such as a missing file, invalid path for the active environment, unsupported media format, HTTP 404, or an output-size limit, should be returned as `ToolError::Feedback`. Feedback is serialized as an agent-readable tool return with `success: false` and `is_error: false`; it does not consume model retry budget.
 
-Developer or integration mistakes, such as missing required runtime dependencies, direct calls to tools that require an `AgentContextHandle`, or dynamic tool-proxy calls before the proxy is loaded, should be returned as `ToolError::UserError`. User errors are `is_error: true`, but they are not model-retryable and are not unexpected execution failures, so they do not consume model retry budget or internal unexpected retry budget.
+Developer or integration mistakes, such as missing required runtime dependencies, direct calls to tools that require a declared context capability handle, or dynamic tool-proxy calls before the proxy is loaded, should be returned as `ToolError::UserError`. User errors are `is_error: true`, but they are not model-retryable and are not unexpected execution failures, so they do not consume model retry budget or internal unexpected retry budget.
 
 The runtime passes retry counters through `ToolContext` and records retry metadata on model-retryable tool returns and exhausted internal execution retries.
 
@@ -760,6 +769,20 @@ assert!(context
 ## Process-capable shell providers
 
 The shell bundle runs foreground commands through `EnvironmentProvider::run_shell`. Background commands use a `ProcessShellProvider` dependency attached with `attach_process_shell`, which lets durable hosts expose handles for `shell_wait`, `shell_status`, `shell_input`, `shell_signal`, and `shell_kill`.
+
+Shell scripts and structured direct-program execution use separate request paths. `ShellCommand::shell(script)` retains shell operators and expansion. `ProgramCommand::new(executable, args)` is passed to `EnvironmentProvider::run_program` (or `ProcessShellProvider::start_program`) without invoking a shell, so every argument remains literal. A non-empty `ShellPolicy::allowed_programs` list permits only exact executable matches through the program APIs; it rejects all `ShellCommand` requests rather than attempting to inspect a script's first token. Request-level environment overrides are also rejected in allowlist mode so callers cannot replace executable lookup paths or inject dynamic-loader behavior. An empty list retains the legacy allow-all behavior when `allow_execute` is true. Providers that do not implement direct programs, including the current envd adapter, return `Unsupported` rather than silently weakening the request to shell execution.
+
+`LocalEnvironmentProvider` isolates every foreground and background invocation in an OS process group (a Unix process group or a Windows Job Object). Timeout and kill paths send TERM then KILL to the Unix group; Windows group kill uses the Job Object, while arbitrary `shell_signal` remains an explicit Unix-only operation. On Unix this guarantee is process-group scoped: code granted arbitrary shell execution can deliberately create a new session or process group and therefore requires an external sandbox when it is not trusted. Stdout and stderr are continuously drained but retained only up to the configured per-stream byte bound; reader joins are time-bounded so an escaped process retaining an inherited pipe cannot indefinitely hold the provider's blocking worker or execution permit. Results report `<stream>_bytes`, `<stream>_captured_bytes`, and `<stream>_truncated` metadata, plus `<stream>_drain_timed_out` when safe pipe completion could not be confirmed and `<stream>_capture_failed` when a reader failed. `with_max_concurrent_processes` applies one shared allowance to foreground shell/program calls and background starts, and `with_completed_process_retention` bounds queryable completed snapshots.
+
+```rust
+# use starweaver_environment::{ProgramCommand, ShellPolicy};
+let policy = ShellPolicy {
+    allow_execute: true,
+    allowed_programs: vec!["git".to_string()],
+};
+let command = ProgramCommand::new("git", ["status", "--short"]);
+# let _ = (policy, command);
+```
 
 ```rust
 use std::sync::Arc;

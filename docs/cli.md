@@ -558,21 +558,18 @@ starweaver-cli resume --session <session-id> --prompt "continue after review"
 
 ## JSON-RPC host service
 
-`starweaver-rpc` and `starweaver-cli rpc` start the JSON-RPC 2.0 host service. `starweaver-rpc` is the dedicated Desktop/local host process with its own command-line entrypoint; `starweaver-cli rpc` exposes the same server for CLI-managed installs and launcher compatibility. TUI uses the same in-process runtime coordinator and local session store rather than launching through RPC.
+`starweaver-rpc` is the standalone JSON-RPC 2.0 host product. It owns its configuration, handlers, coordinator, and transports and does not depend on `starweaver-cli`; the CLI/TUI does not act as an RPC frontend.
 
 ```bash
-starweaver rpc stdio
 starweaver-rpc stdio
 starweaver-rpc http --host 127.0.0.1 --port 8765
-starweaver cli rpc
-starweaver-cli rpc
-starweaver-cli rpc stdio
-starweaver-cli rpc http --host 127.0.0.1 --port 8765
 ```
 
 The default `stdio` transport is newline-delimited JSON-RPC over stdin/stdout. It supports responses and live notifications on stdout, with diagnostics on stderr. JSON-RPC frame parsing, standard request validation, error envelopes, replay cursor parsing, and stream payload projection live in `starweaver-rpc-core` so the standalone RPC process and CLI adapter share the same protocol edge.
 
-The `http` transport serves JSON-RPC request/response calls at `POST /rpc` on the configured host and port. It is useful for local host integrations that prefer HTTP. Live server notifications are not streamed over the unary HTTP endpoint; HTTP `initialize` responses advertise `liveDisplay: false` and `streamSubscribe: false`. HTTP clients should use `run.await`, `run.status`, or `stream.replay` to observe progress.
+The `http` transport serves authenticated JSON-RPC request/response calls at `POST /rpc` on a loopback host. Every request, including `/health`, requires `Authorization: Bearer <token>`. Set a token of at least 32 non-whitespace bytes with `STARWEAVER_RPC_TOKEN`, configure `server.http_auth.token_env`/`token_file` in `rpc.toml`, or let first startup generate the private `$state_dir/http-token` file (mode 0600 on Unix). The token itself is never printed.
+
+`server.http_auth.scopes` (or `STARWEAVER_RPC_SCOPES`, comma-separated) grants any subset of `read`, `run`, `approval`, `admin`, and `shutdown`; scopes do not imply one another. HTTP requires JSON bodies to use `Content-Type: application/json`, validates `Host`, and rejects browser `Origin` headers unless listed in `server.http_auth.allowed_origins`. Live notifications are not streamed over unary HTTP; use `run.await`, `run.status`, or `stream.replay`.
 
 Example handshake and client model selection:
 

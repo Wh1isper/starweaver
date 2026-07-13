@@ -1,0 +1,11 @@
+{
+  "position": {
+    "family": "display",
+    "scope": "run:run-fixture",
+    "sequence": 7
+  },
+  "family": "replay_event",
+  "scope": "run:other-run",
+  "sequence": 99,
+  "created_at": "2026-07-11T00:00:00Z"
+}

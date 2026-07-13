@@ -4,24 +4,27 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use starweaver_context::{AgentContext, ModelConfig, ResumableState, SecurityConfig, ToolConfig};
-use starweaver_core::{RunId, SessionId};
+use starweaver_core::{Metadata, RunId, SessionId};
 use starweaver_environment::{
     DynEnvironmentProvider, EnvironmentError, EnvironmentProviderFactoryRegistry, EnvironmentState,
     ResourceRestoreFactoryRegistry,
 };
-use starweaver_model::{ContentPart, ModelAdapter, ModelRequestParameters, ModelSettings};
+use starweaver_model::{ModelAdapter, ModelRequestParameters, ModelSettings};
 use starweaver_runtime::{
     AgentCapability, AgentError, AgentExecutorError, AgentResult, AgentRuntimePolicy,
-    AgentStreamRecord, AgentStreamResult, OutputFunction, OutputPolicy, OutputSchema,
-    OutputValidator, RunStatus,
+    AgentStreamEvent, AgentStreamRecord, AgentStreamResult, OutputFunction, OutputPolicy,
+    OutputSchema, OutputValidator, RunStatus,
 };
 use starweaver_session::{
-    InputPart, RunRecord, RunStatus as SessionRunStatus, SessionRecord, SessionResumeSnapshot,
-    SessionStore, SessionStoreError, SessionStoreExecutor, ToolReturnRecordInput,
+    EnvironmentStateRef, HitlResumeClaim, InputPart, PendingStreamPublication, RelatedRunUpdate,
+    RunEvidenceCommit, RunRecord, RunStatus as SessionRunStatus, SessionRecord,
+    SessionResumeSnapshot, SessionStore, SessionStoreError, SessionStoreExecutor, StreamCursorRef,
+    StreamPublicationTarget, StreamPublicationTargets, ToolReturnRecordInput,
 };
 use starweaver_stream::{
-    DefaultDisplayMessageProjector, DisplayMessageProjector, DisplayProjectionContext, ReplayEvent,
-    ReplayEventKind, ReplayEventLog, ReplayScope, StreamArchive, StreamTerminalMarker,
+    DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageProjector,
+    DisplayProjectionContext, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog,
+    ReplayScope, StreamArchive, StreamTerminalMarker,
 };
 use starweaver_tools::{DynTool, DynToolset, ToolRegistry};
 use starweaver_usage::UsageLimits;
@@ -33,12 +36,44 @@ use crate::{
     SkillRegistry, SkillScanReport, SubagentConfig, SubagentDelegationMode, SubagentRegistry,
 };
 
+const DURABLE_SESSION_ID_METADATA_KEY: &str = "starweaver.durable_session_id";
+const DURABLE_RUN_ID_METADATA_KEY: &str = "starweaver.durable_run_id";
+
+fn durable_session_id_from_metadata(metadata: &Metadata) -> Option<SessionId> {
+    metadata
+        .get(DURABLE_SESSION_ID_METADATA_KEY)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(SessionId::from_string)
+}
+
+fn bind_durable_identity(metadata: &mut Metadata, session_id: &SessionId, run_id: Option<&RunId>) {
+    metadata.insert(
+        DURABLE_SESSION_ID_METADATA_KEY.to_string(),
+        serde_json::json!(session_id.as_str()),
+    );
+    if let Some(run_id) = run_id {
+        metadata.insert(
+            DURABLE_RUN_ID_METADATA_KEY.to_string(),
+            serde_json::json!(run_id.as_str()),
+        );
+    }
+}
+
 /// Errors returned by durable SDK runtime orchestration.
 #[derive(Debug, Error)]
 pub enum AgentDurabilityError {
     /// Runtime was not built with a session store.
     #[error("agent runtime is not bound to a durable session store")]
     MissingSessionStore,
+    /// Caller attempted to resume a session other than the runtime's bound durable session.
+    #[error("durable runtime is bound to session {bound_session_id}, not {requested_session_id}")]
+    SessionMismatch {
+        /// Runtime-bound session id.
+        bound_session_id: String,
+        /// Caller-requested session id.
+        requested_session_id: String,
+    },
     /// Resume snapshot did not contain a checkpointable waiting run state.
     #[error("resume snapshot for {session_id}:{run_id} has no checkpoint state")]
     MissingCheckpointState {
@@ -53,6 +88,14 @@ pub enum AgentDurabilityError {
     /// Stream archive or replay log failed.
     #[error(transparent)]
     Replay(#[from] starweaver_stream::ReplayError),
+    /// An outbox item requires a sink that is not configured on this runtime.
+    #[error("publication {publication_id} requires missing {target} sink")]
+    MissingPublicationSink {
+        /// Outbox publication identity.
+        publication_id: String,
+        /// Missing sink family.
+        target: &'static str,
+    },
     /// HITL resolution failed.
     #[error(transparent)]
     Hitl(#[from] AgentHitlError),
@@ -446,12 +489,12 @@ impl AgentRuntimeBuilder {
                 .or_else(|| {
                     self.context
                         .as_ref()
-                        .and_then(|context| context.session_id().cloned())
+                        .and_then(|context| durable_session_id_from_metadata(&context.metadata))
                 })
                 .or_else(|| {
                     self.state
                         .as_ref()
-                        .and_then(|state| state.session_id.clone())
+                        .and_then(|state| durable_session_id_from_metadata(&state.metadata))
                 })
                 .unwrap_or_default();
             self.builder = self.builder.executor(Arc::new(SessionStoreExecutor::new(
@@ -476,9 +519,11 @@ impl AgentRuntimeBuilder {
             (None, None) => app.session(),
         };
         if let Some(durability) = durability.as_ref() {
-            session
-                .context_mut()
-                .set_session_id(durability.session_id.clone());
+            bind_durable_identity(
+                &mut session.context_mut().metadata,
+                &durability.session_id,
+                None,
+            );
         }
         if let Some(security) = self.security {
             session.context_mut().security = security;
@@ -615,8 +660,8 @@ impl AgentRuntime {
         let input = prompt.into();
         if self.durability.is_some() {
             self.ensure_durable_session().await?;
-            let stream = self.session.run_stream(input.clone()).await?;
-            self.persist_stream_result(&input, &stream, None).await?;
+            let handle = self.session.stream(input.clone());
+            let stream = self.complete_durable_stream(&input, handle).await?;
             Ok(stream.result)
         } else {
             self.session.run(input).await
@@ -636,9 +681,8 @@ impl AgentRuntime {
         let input = prompt.into();
         if self.durability.is_some() {
             self.ensure_durable_session().await?;
-            let stream =
-                Box::pin(self.session.run_stream_with_options(input.clone(), options)).await?;
-            self.persist_stream_result(&input, &stream, None).await?;
+            let handle = self.session.stream_with_options(input.clone(), options);
+            let stream = self.complete_durable_stream(&input, handle).await?;
             Ok(stream.result)
         } else {
             Box::pin(self.session.run_with_options(input, options)).await
@@ -655,10 +699,13 @@ impl AgentRuntime {
         prompt: impl Into<starweaver_runtime::AgentInput>,
     ) -> Result<AgentStreamResult, AgentError> {
         let input = prompt.into();
-        self.ensure_durable_session().await?;
-        let stream = self.session.run_stream(input.clone()).await?;
-        self.persist_stream_result(&input, &stream, None).await?;
-        Ok(stream)
+        if self.durability.is_some() {
+            self.ensure_durable_session().await?;
+            let handle = self.session.stream(input.clone());
+            self.complete_durable_stream(&input, handle).await
+        } else {
+            self.session.run_stream(input).await
+        }
     }
 
     /// Load a durable resume snapshot by session and run id.
@@ -683,6 +730,19 @@ impl AgentRuntime {
             .map_err(AgentDurabilityError::from)
     }
 
+    /// Retry every pending external stream publication for this durable session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the runtime has no session store or a store/sink operation fails.
+    pub async fn flush_pending_stream_publications(&self) -> Result<(), AgentDurabilityError> {
+        let durability = self
+            .durability
+            .as_ref()
+            .ok_or(AgentDurabilityError::MissingSessionStore)?;
+        flush_pending_stream_publications(durability).await
+    }
+
     /// Resolve HITL decisions for a durable waiting run and continue execution.
     ///
     /// # Errors
@@ -699,6 +759,12 @@ impl AgentRuntime {
             .durability
             .clone()
             .ok_or(AgentDurabilityError::MissingSessionStore)?;
+        if session_id != &durability.session_id {
+            return Err(AgentDurabilityError::SessionMismatch {
+                bound_session_id: durability.session_id.as_str().to_string(),
+                requested_session_id: session_id.as_str().to_string(),
+            });
+        }
         let snapshot = durability
             .session_store
             .resume_snapshot(session_id, run_id)
@@ -710,35 +776,84 @@ impl AgentRuntime {
             }
         })?;
         let mut session = self.app.session_from_state(snapshot.state.clone());
-        session.context_mut().set_session_id(session_id.clone());
-        if results.is_empty() {
-            if session.context().pending_tool_returns.is_empty() {
-                return Err(AgentHitlError::NoWaitingRun.into());
-            }
-        } else {
+        // A resumed HITL continuation is a new durable run. The snapshot can retain the
+        // source run's metadata for evidence inspection, but it must not preallocate the
+        // source id for the continuation's runtime loop.
+        session
+            .context_mut()
+            .metadata
+            .remove(DURABLE_RUN_ID_METADATA_KEY);
+        bind_durable_identity(&mut session.context_mut().metadata, session_id, None);
+        if results.is_empty() && session.context().pending_tool_returns.is_empty() {
+            return Err(AgentHitlError::NoWaitingRun.into());
+        }
+        if !results.is_empty() {
+            session.validate_hitl_results_for_state(&checkpoint.state, &results)?;
+        }
+
+        // Claim before result injection: approved result injection executes the pending tool, so a
+        // post-execution source-run CAS is too late to prevent duplicate external effects.
+        let claim_id = acquire_started_hitl_claim(&durability, session_id, run_id).await?;
+
+        // From this point onward the claim deliberately remains fail-closed unless it is consumed
+        // by an atomic continuation evidence commit. Injection may already execute a tool.
+        if !results.is_empty() {
             session
                 .inject_hitl_results_for_state(&checkpoint.state, results.clone())
                 .await?;
-            persist_hitl_decisions(&durability, &snapshot, &results).await?;
         }
+        let (approvals, deferred_tools) = resolved_hitl_records(&snapshot, &results);
+        let fallback_pending_tool_returns = session.pending_hitl_tool_returns();
         let input = starweaver_runtime::AgentInput::text("");
-        let stream = session.run_stream(input.clone()).await?;
-        self.session = session;
-        self.persist_stream_result(&input, &stream, Some(run_id.clone()))
-            .await?;
-        durability
-            .session_store
-            .update_run_status(
-                session_id,
-                run_id,
+        let completion = session.stream(input.clone()).complete().await;
+        if let Some(result) = completion.result {
+            session.replace_context(result.context.clone());
+            session.record_result(&result.result);
+            let stream = result.into_stream_result();
+            self.session = session;
+            let mut source_update = RelatedRunUpdate::new(
+                run_id.clone(),
+                SessionRunStatus::Waiting,
                 SessionRunStatus::Completed,
-                Some(format!(
-                    "resumed in {}",
-                    stream.result.state.run_id.as_str()
-                )),
-            )
-            .await?;
-        Ok(stream.result)
+            );
+            source_update.resume_claim_id = Some(claim_id);
+            source_update.output_preview = Some(format!(
+                "resumed in {}",
+                stream.result.state.run_id.as_str()
+            ));
+            source_update.approvals = approvals;
+            source_update.deferred_tools = deferred_tools;
+            self.persist_stream_result(&input, &stream, Some(run_id.clone()), Some(source_update))
+                .await?;
+            return Ok(stream.result);
+        }
+
+        self.session = session;
+        let source_status = completion
+            .error
+            .as_ref()
+            .map_or(SessionRunStatus::Failed, |error| {
+                session_run_status(live_stream_error_run_status(error))
+            });
+        let mut source_update =
+            RelatedRunUpdate::new(run_id.clone(), SessionRunStatus::Waiting, source_status);
+        source_update.resume_claim_id = Some(claim_id);
+        source_update.output_preview = Some("continuation failed".to_string());
+        source_update.approvals = approvals;
+        source_update.deferred_tools = deferred_tools;
+        self.persist_stream_failure(
+            &input,
+            &completion,
+            &fallback_pending_tool_returns,
+            Some(run_id.clone()),
+            Some(source_update),
+        )
+        .await?;
+        Err(AgentDurabilityError::Stream(
+            completion.error.unwrap_or_else(|| {
+                AgentStreamError::Join("stream completed without result".to_string())
+            }),
+        ))
     }
 
     /// Start a live stream run.
@@ -857,24 +972,62 @@ impl AgentRuntime {
     ) -> Result<crate::AgentLiveStreamResult, AgentDurabilityError> {
         let input = input.into();
         self.ensure_durable_session().await?;
+        let fallback_pending_tool_returns = self.session.pending_hitl_tool_returns();
         let completion = handle.complete().await;
         if let Some(result) = completion.result {
             self.session.replace_context(result.context.clone());
             self.session.record_result(&result.result);
             let stream = result.into_stream_result();
-            self.persist_stream_result(&input, &stream, None).await?;
+            self.persist_stream_result(&input, &stream, None, None)
+                .await?;
             return Ok(crate::AgentLiveStreamResult {
                 result: stream.result,
                 context: self.session.context().clone(),
                 events: stream.events,
             });
         }
-        self.persist_stream_failure(&input, &completion).await?;
+        self.persist_stream_failure(
+            &input,
+            &completion,
+            &fallback_pending_tool_returns,
+            None,
+            None,
+        )
+        .await?;
         Err(AgentDurabilityError::Stream(
             completion.error.unwrap_or_else(|| {
                 AgentStreamError::Join("stream completed without result".into())
             }),
         ))
+    }
+
+    async fn complete_durable_stream(
+        &mut self,
+        input: &starweaver_runtime::AgentInput,
+        handle: AgentStreamHandle,
+    ) -> Result<AgentStreamResult, AgentError> {
+        let fallback_pending_tool_returns = self.session.pending_hitl_tool_returns();
+        let completion = handle.complete().await;
+        if let Some(result) = completion.result {
+            self.session.replace_context(result.context.clone());
+            self.session.record_result(&result.result);
+            let stream = result.into_stream_result();
+            self.persist_stream_result(input, &stream, None, None)
+                .await?;
+            return Ok(stream);
+        }
+        self.persist_stream_failure(
+            input,
+            &completion,
+            &fallback_pending_tool_returns,
+            None,
+            None,
+        )
+        .await
+        .map_err(|error| AgentError::Executor(AgentExecutorError::Failed(error.to_string())))?;
+        Err(agent_error_from_stream(completion.error.unwrap_or_else(
+            || AgentStreamError::Join("stream completed without result".to_string()),
+        )))
     }
 
     async fn ensure_durable_session(&self) -> Result<(), AgentError> {
@@ -913,7 +1066,11 @@ impl AgentRuntime {
             .session_store
             .save_session(record)
             .await
-            .map_err(|error| agent_error_from_session_store(&error))
+            .map_err(|error| agent_error_from_session_store(&error))?;
+        // Retry older publications before admitting another durable run. Sink outages do not
+        // invalidate already committed evidence, so unresolved batches remain queued.
+        let _ = flush_pending_stream_publications(durability).await;
+        Ok(())
     }
 
     async fn persist_stream_result(
@@ -921,16 +1078,19 @@ impl AgentRuntime {
         input: &starweaver_runtime::AgentInput,
         stream: &AgentStreamResult,
         restore_from_run_id: Option<RunId>,
+        related_run_update: Option<RelatedRunUpdate>,
     ) -> Result<(), AgentError> {
         let Some(durability) = self.durability.clone() else {
             return Ok(());
         };
         let result = &stream.result;
-        let mut run = RunRecord::new(
-            durability.session_id.clone(),
-            result.state.run_id.clone(),
-            result.state.conversation_id.clone(),
-        );
+        let mut run = completion_run_record(
+            &durability,
+            &result.state.run_id,
+            &result.state.conversation_id,
+        )
+        .await
+        .map_err(|error| agent_error_from_session_store(&error))?;
         run.input = input_parts_from_agent_input(input);
         run.status = session_run_status(result.state.status);
         run.output_preview = (!result.output.is_empty()).then(|| result.output.clone());
@@ -939,104 +1099,217 @@ impl AgentRuntime {
             .clone()
             .unwrap_or(serde_json::Value::Null);
         run.trace_context = self.session.context().trace_context.clone();
-        run.restore_from_run_id = restore_from_run_id;
+        if restore_from_run_id.is_some() {
+            run.restore_from_run_id = restore_from_run_id;
+        }
         run.parent_run_id = result.state.parent_run_id.clone();
         run.parent_task_id = result.state.parent_task_id.clone();
         run.metadata.insert(
             "run_step".to_string(),
             serde_json::json!(result.state.run_step),
         );
-        durability
-            .session_store
-            .append_run(run)
+        let environment_state = self
+            .session
+            .export_environment_state()
             .await
-            .map_err(|error| agent_error_from_session_store(&error))?;
-        durability
-            .session_store
-            .save_context_state(&durability.session_id, self.session.export_full_state())
-            .await
-            .map_err(|error| agent_error_from_session_store(&error))?;
-        if !stream.events.is_empty() {
-            durability
-                .session_store
-                .append_stream_records(
-                    &durability.session_id,
-                    &result.state.run_id,
-                    stream.events.clone(),
-                )
-                .await
-                .map_err(|error| agent_error_from_session_store(&error))?;
-            persist_stream_archive_and_replay(
-                &durability,
-                self.session.context(),
-                &result.state.run_id,
-                result.state.status,
-                &stream.events,
-            )
-            .await
-            .map_err(|error| agent_error_from_replay(&error))?;
+            .map_err(|error| AgentError::Capability(error.to_string()))?;
+        if let Some(state) = environment_state.as_ref() {
+            run.environment_state = Some(EnvironmentStateRef {
+                provider: state.provider_id.clone(),
+                reference: format!("run:{}:environment", result.state.run_id.as_str()),
+                revision: Some("1".to_string()),
+                metadata: Metadata::default(),
+            });
         }
-        persist_pending_hitl_records(&durability, self.session.context(), &result.state)
+        let projection = project_stream_evidence(
+            &durability,
+            self.session.context(),
+            &result.state.run_id,
+            result.state.status,
+            &stream.events,
+        )
+        .await;
+        let (approvals, deferred_tools) =
+            pending_hitl_records(&durability, self.session.context(), &result.state);
+        let mut context_state = self.session.export_full_state();
+        bind_durable_identity(
+            &mut context_state.metadata,
+            &durability.session_id,
+            Some(&result.state.run_id),
+        );
+        let mut commit = RunEvidenceCommit::new(run, context_state);
+        commit.environment_state = environment_state.map(|state| state.to_json());
+        commit.stream_records.clone_from(&stream.events);
+        commit.checkpoints = load_existing_checkpoints(&durability, &result.state.run_id)
             .await
-            .map_err(|error| agent_error_from_session_store(&error))
+            .map_err(|error| agent_error_from_session_store(&error))?;
+        commit.approvals = approvals;
+        commit.deferred_tools = deferred_tools;
+        commit.stream_cursors =
+            stream_cursors_for_evidence(&result.state.run_id, &stream.events, &projection);
+        commit
+            .display_messages
+            .clone_from(&projection.display_messages);
+        commit.replay_events.clone_from(&projection.replay_events);
+        commit.publication_targets = StreamPublicationTargets::new(
+            durability.stream_archive.is_some(),
+            durability.replay_event_log.is_some(),
+        );
+        commit.related_run_updates.extend(related_run_update);
+        durability
+            .session_store
+            .commit_run_evidence(commit)
+            .await
+            .map_err(|error| agent_error_from_session_store(&error))?;
+        // Evidence is complete once the transaction commits. External sink delivery is an
+        // idempotent outbox concern and must not make callers repeat model or tool side effects.
+        let _ = flush_pending_stream_publications(&durability).await;
+        Ok(())
     }
 
     async fn persist_stream_failure(
         &mut self,
         input: &starweaver_runtime::AgentInput,
         completion: &AgentStreamCompletion,
+        fallback_pending_tool_returns: &[starweaver_model::ToolReturnPart],
+        restore_from_run_id: Option<RunId>,
+        related_run_update: Option<RelatedRunUpdate>,
     ) -> Result<(), AgentDurabilityError> {
         let Some(durability) = self.durability.clone() else {
             return Ok(());
         };
         let mut context = AgentContext::from_state(completion.state.clone());
-        context.set_session_id(durability.session_id.clone());
+        bind_durable_identity(&mut context.metadata, &durability.session_id, None);
+        if context.pending_tool_returns.is_empty() {
+            context
+                .pending_tool_returns
+                .extend_from_slice(fallback_pending_tool_returns);
+        }
         self.session.replace_context(context);
-        self.ensure_durable_session().await?;
         let Some(run_id) = completion.state.run_id.clone() else {
             return Ok(());
         };
         let conversation_id = completion.state.conversation_id.clone().unwrap_or_default();
         let fallback_error = AgentStreamError::Join("stream completed without result".to_string());
-        let status =
-            live_stream_error_run_status(completion.error.as_ref().unwrap_or(&fallback_error));
-        let mut run = RunRecord::new(
-            durability.session_id.clone(),
-            run_id.clone(),
-            conversation_id,
-        );
+        let stream_error = completion.error.as_ref().unwrap_or(&fallback_error);
+        let status = live_stream_error_run_status(stream_error);
+        let mut durable_events = completion.events.clone();
+        if status == RunStatus::Cancelled
+            && !durable_events
+                .iter()
+                .any(|record| matches!(&record.event, AgentStreamEvent::RunCancelled { .. }))
+        {
+            let sequence = durable_events
+                .last()
+                .map_or(0, |record| record.sequence.saturating_add(1));
+            durable_events.push(AgentStreamRecord::new(
+                sequence,
+                AgentStreamEvent::RunCancelled {
+                    run_id: run_id.clone(),
+                    reason: live_stream_cancellation_reason(stream_error),
+                },
+            ));
+        }
+        let mut run = completion_run_record(&durability, &run_id, &conversation_id).await?;
         run.input = input_parts_from_agent_input(input);
         run.status = session_run_status(status);
         run.structured_output = serde_json::Value::Null;
         run.trace_context = self.session.context().trace_context.clone();
         run.parent_run_id = completion.state.parent_run_id.clone();
         run.parent_task_id = completion.state.parent_task_id.clone();
+        run.restore_from_run_id = restore_from_run_id;
         if let Some(error) = completion.error.as_ref() {
             run.metadata.insert(
                 "live_stream_error".to_string(),
                 serde_json::json!(error.to_string()),
             );
         }
-        durability.session_store.append_run(run).await?;
-        durability
-            .session_store
-            .save_context_state(&durability.session_id, self.session.export_full_state())
-            .await?;
-        if !completion.events.is_empty() {
-            durability
-                .session_store
-                .append_stream_records(&durability.session_id, &run_id, completion.events.clone())
-                .await?;
+        let environment_state = self
+            .session
+            .export_environment_state()
+            .await
+            .map_err(|error| AgentError::Capability(error.to_string()))?;
+        if let Some(state) = environment_state.as_ref() {
+            run.environment_state = Some(EnvironmentStateRef {
+                provider: state.provider_id.clone(),
+                reference: format!("run:{}:environment", run_id.as_str()),
+                revision: Some("1".to_string()),
+                metadata: Metadata::default(),
+            });
         }
-        persist_stream_archive_and_replay(
+        let projection = project_stream_evidence(
             &durability,
             self.session.context(),
             &run_id,
             status,
-            &completion.events,
+            &durable_events,
         )
-        .await?;
+        .await;
+        let mut context_state = self.session.export_full_state();
+        bind_durable_identity(
+            &mut context_state.metadata,
+            &durability.session_id,
+            Some(&run_id),
+        );
+        let mut commit = RunEvidenceCommit::new(run, context_state);
+        commit.environment_state = environment_state.map(|state| state.to_json());
+        commit.stream_records.clone_from(&durable_events);
+        commit.checkpoints = load_existing_checkpoints(&durability, &run_id).await?;
+        let (approvals, deferred_tools) =
+            pending_hitl_records_from_context(&durability, self.session.context(), &run_id);
+        commit.approvals = approvals;
+        commit.deferred_tools = deferred_tools;
+        commit.stream_cursors = stream_cursors_for_evidence(&run_id, &durable_events, &projection);
+        commit
+            .display_messages
+            .clone_from(&projection.display_messages);
+        commit.replay_events.clone_from(&projection.replay_events);
+        commit.publication_targets = StreamPublicationTargets::new(
+            durability.stream_archive.is_some(),
+            durability.replay_event_log.is_some(),
+        );
+        commit.related_run_updates.extend(related_run_update);
+        durability.session_store.commit_run_evidence(commit).await?;
+        let _ = flush_pending_stream_publications(&durability).await;
         Ok(())
+    }
+}
+
+async fn load_existing_checkpoints(
+    durability: &AgentDurability,
+    run_id: &RunId,
+) -> Result<Vec<starweaver_context::AgentCheckpoint>, SessionStoreError> {
+    match durability
+        .session_store
+        .load_checkpoints(&durability.session_id, run_id)
+        .await
+    {
+        Ok(checkpoints) => Ok(checkpoints),
+        Err(SessionStoreError::NotFound(_)) => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
+}
+
+async fn completion_run_record(
+    durability: &AgentDurability,
+    run_id: &RunId,
+    conversation_id: &starweaver_core::ConversationId,
+) -> Result<RunRecord, SessionStoreError> {
+    match durability
+        .session_store
+        .load_run(&durability.session_id, run_id)
+        .await
+    {
+        Ok(mut run) => {
+            run.conversation_id = conversation_id.clone();
+            Ok(run)
+        }
+        Err(SessionStoreError::NotFound(_)) => Ok(RunRecord::new(
+            durability.session_id.clone(),
+            run_id.clone(),
+            conversation_id.clone(),
+        )),
+        Err(error) => Err(error),
     }
 }
 
@@ -1044,23 +1317,31 @@ fn agent_error_from_session_store(error: &SessionStoreError) -> AgentError {
     AgentError::Executor(AgentExecutorError::Failed(error.to_string()))
 }
 
-fn agent_error_from_replay(error: &starweaver_stream::ReplayError) -> AgentError {
-    AgentError::Executor(AgentExecutorError::Failed(error.to_string()))
+fn agent_error_from_stream(error: AgentStreamError) -> AgentError {
+    match error {
+        AgentStreamError::Agent(error) => error,
+        error => AgentError::Executor(AgentExecutorError::Failed(error.to_string())),
+    }
 }
 
-const fn session_run_status(status: RunStatus) -> SessionRunStatus {
-    match status {
-        RunStatus::Starting | RunStatus::Running => SessionRunStatus::Running,
-        RunStatus::Waiting => SessionRunStatus::Waiting,
-        RunStatus::Completed => SessionRunStatus::Completed,
-        RunStatus::Failed => SessionRunStatus::Failed,
-        RunStatus::Cancelled => SessionRunStatus::Cancelled,
+fn session_run_status(status: RunStatus) -> SessionRunStatus {
+    status.into()
+}
+
+fn live_stream_cancellation_reason(error: &AgentStreamError) -> String {
+    match error {
+        AgentStreamError::Interrupted { reason }
+        | AgentStreamError::Agent(AgentError::Cancelled { reason }) => reason.clone(),
+        AgentStreamError::RuntimeUnavailable(_)
+        | AgentStreamError::Join(_)
+        | AgentStreamError::Agent(_) => "agent run cancelled".to_string(),
     }
 }
 
 const fn live_stream_error_run_status(error: &AgentStreamError) -> RunStatus {
     match error {
-        AgentStreamError::Interrupted { .. } => RunStatus::Cancelled,
+        AgentStreamError::Interrupted { .. }
+        | AgentStreamError::Agent(AgentError::Cancelled { .. }) => RunStatus::Cancelled,
         AgentStreamError::RuntimeUnavailable(_)
         | AgentStreamError::Join(_)
         | AgentStreamError::Agent(_) => RunStatus::Failed,
@@ -1068,118 +1349,138 @@ const fn live_stream_error_run_status(error: &AgentStreamError) -> RunStatus {
 }
 
 fn input_parts_from_agent_input(input: &starweaver_runtime::AgentInput) -> Vec<InputPart> {
-    input
-        .content
-        .iter()
-        .map(|part| match part {
-            ContentPart::Text { text } => InputPart::text(text.clone()),
-            ContentPart::ImageUrl { url } | ContentPart::FileUrl { url, .. } => {
-                InputPart::url(url.clone())
-            }
-            ContentPart::CachePoint { .. }
-            | ContentPart::Binary { .. }
-            | ContentPart::ResourceRef { .. }
-            | ContentPart::DataUrl { .. } => InputPart::Mode {
-                mode: "content_part".to_string(),
-                config: serde_json::to_value(part).unwrap_or(serde_json::Value::Null),
-                metadata: starweaver_core::Metadata::default(),
-            },
-        })
-        .collect()
+    input.content.iter().cloned().map(InputPart::from).collect()
 }
 
-async fn persist_pending_hitl_records(
+fn pending_hitl_records(
     durability: &AgentDurability,
     context: &AgentContext,
     state: &starweaver_runtime::AgentRunState,
-) -> Result<(), SessionStoreError> {
-    for tool_return in &state.pending_approval_tool_returns {
+) -> (
+    Vec<starweaver_session::ApprovalRecord>,
+    Vec<starweaver_session::DeferredToolRecord>,
+) {
+    let approvals = state
+        .pending_approval_tool_returns
+        .iter()
+        .filter_map(|tool_return| {
+            let input = ToolReturnRecordInput::new(
+                &durability.session_id,
+                &state.run_id,
+                &tool_return.tool_call_id,
+                &tool_return.name,
+                &tool_return.metadata,
+            )
+            .with_trace_context(&context.trace_context);
+            starweaver_session::ApprovalRecord::from_tool_return(&input)
+        })
+        .collect();
+    let deferred_tools = state
+        .deferred_tool_returns
+        .iter()
+        .filter_map(|tool_return| {
+            let input = ToolReturnRecordInput::new(
+                &durability.session_id,
+                &state.run_id,
+                &tool_return.tool_call_id,
+                &tool_return.name,
+                &tool_return.metadata,
+            )
+            .with_trace_context(&context.trace_context);
+            starweaver_session::DeferredToolRecord::from_tool_return(&input)
+        })
+        .collect();
+    (approvals, deferred_tools)
+}
+
+fn pending_hitl_records_from_context(
+    durability: &AgentDurability,
+    context: &AgentContext,
+    run_id: &RunId,
+) -> (
+    Vec<starweaver_session::ApprovalRecord>,
+    Vec<starweaver_session::DeferredToolRecord>,
+) {
+    let mut approvals = Vec::new();
+    let mut deferred_tools = Vec::new();
+    for tool_return in &context.pending_tool_returns {
         let input = ToolReturnRecordInput::new(
             &durability.session_id,
-            &state.run_id,
+            run_id,
             &tool_return.tool_call_id,
             &tool_return.name,
             &tool_return.metadata,
         )
         .with_trace_context(&context.trace_context);
         if let Some(record) = starweaver_session::ApprovalRecord::from_tool_return(&input) {
-            durability.session_store.append_approval(record).await?;
+            approvals.push(record);
         }
-    }
-    for tool_return in &state.deferred_tool_returns {
-        let input = ToolReturnRecordInput::new(
-            &durability.session_id,
-            &state.run_id,
-            &tool_return.tool_call_id,
-            &tool_return.name,
-            &tool_return.metadata,
-        )
-        .with_trace_context(&context.trace_context);
         if let Some(record) = starweaver_session::DeferredToolRecord::from_tool_return(&input) {
-            durability
-                .session_store
-                .append_deferred_tool(record)
-                .await?;
+            deferred_tools.push(record);
         }
     }
-    Ok(())
+    (approvals, deferred_tools)
 }
 
-async fn persist_hitl_decisions(
-    durability: &AgentDurability,
+fn resolved_hitl_records(
     snapshot: &SessionResumeSnapshot,
     results: &AgentHitlResults,
-) -> Result<(), AgentDurabilityError> {
+) -> (
+    Vec<starweaver_session::ApprovalRecord>,
+    Vec<starweaver_session::DeferredToolRecord>,
+) {
     let now = Utc::now();
-    for mut record in snapshot.approvals.clone() {
-        let Some(decision) = results
-            .approvals
-            .get(&record.action_id)
-            .or_else(|| results.approvals.get(&record.approval_id))
-        else {
-            continue;
-        };
-        let approval_decision = decision.clone().into_approval_decision();
-        record.status = approval_decision.status;
-        record.decision = Some(approval_decision);
-        record.updated_at = now;
-        durability.session_store.append_approval(record).await?;
-    }
-    for mut record in snapshot.deferred_tools.clone() {
-        let Some(result) = results
-            .deferred_results
-            .results
-            .iter()
-            .find(|result| result.deferred_id == record.deferred_id)
-        else {
-            continue;
-        };
-        record.status = result.status;
-        record.response = result.response.clone();
-        record.metadata.extend(result.metadata.clone());
-        record.updated_at = now;
-        durability
-            .session_store
-            .append_deferred_tool(record)
-            .await?;
-    }
-    Ok(())
+    let approvals = snapshot
+        .approvals
+        .iter()
+        .filter_map(|record| {
+            let decision = results
+                .approvals
+                .get(&record.action_id)
+                .or_else(|| results.approvals.get(&record.approval_id))?;
+            let mut record = record.clone();
+            let approval_decision = decision.clone().into_approval_decision();
+            record.status = approval_decision.status;
+            record.decision = Some(approval_decision);
+            record.updated_at = now;
+            Some(record)
+        })
+        .collect();
+    let deferred_tools = snapshot
+        .deferred_tools
+        .iter()
+        .filter_map(|record| {
+            let result = results
+                .deferred_results
+                .results
+                .iter()
+                .find(|result| result.deferred_id == record.deferred_id)?;
+            let mut record = record.clone();
+            record.status = result.status;
+            record.response = result.response.clone();
+            record.metadata.extend(result.metadata.clone());
+            record.updated_at = now;
+            Some(record)
+        })
+        .collect();
+    (approvals, deferred_tools)
 }
 
-async fn persist_stream_archive_and_replay(
+#[derive(Clone, Debug, Default)]
+struct DurableStreamEvidence {
+    display_messages: Vec<DisplayMessage>,
+    replay_events: Vec<ReplayEvent>,
+}
+
+async fn project_stream_evidence(
     durability: &AgentDurability,
     context: &AgentContext,
     run_id: &RunId,
     status: RunStatus,
     records: &[AgentStreamRecord],
-) -> Result<(), starweaver_stream::ReplayError> {
-    if let Some(archive) = durability.stream_archive.as_ref() {
-        archive
-            .append_raw_records(&durability.session_id, run_id, records.to_vec())
-            .await?;
-    }
+) -> DurableStreamEvidence {
     if durability.stream_archive.is_none() && durability.replay_event_log.is_none() {
-        return Ok(());
+        return DurableStreamEvidence::default();
     }
     let scope = ReplayScope::run(run_id.as_str());
     let mut projection_context =
@@ -1199,28 +1500,185 @@ async fn persist_stream_archive_and_replay(
         );
     }
     resequence_display_messages(&mut display_messages);
-    if let Some(archive) = durability.stream_archive.as_ref() {
-        archive
-            .append_display_messages(scope.clone(), display_messages.clone())
-            .await?;
-    }
-    if let Some(log) = durability.replay_event_log.as_ref() {
-        for message in display_messages {
-            log.append(scope.clone(), ReplayEvent::display(scope.clone(), message))
-                .await?;
-        }
+    let mut replay_events = Vec::new();
+    if durability.replay_event_log.is_some() {
+        replay_events.extend(
+            display_messages
+                .iter()
+                .cloned()
+                .map(|message| ReplayEvent::display(scope.clone(), message)),
+        );
+        let terminal_sequence = display_messages
+            .last()
+            .map_or(0, |message| message.sequence.saturating_add(1));
         if let Some(marker) = terminal_marker(status) {
-            let sequence = records
-                .last()
-                .map_or(0, |record| record.sequence.saturating_add(1));
-            log.append(
-                scope.clone(),
-                ReplayEvent::new(scope, sequence, ReplayEventKind::Terminal { marker }),
-            )
-            .await?;
+            replay_events.push(ReplayEvent::new(
+                scope,
+                terminal_sequence,
+                ReplayEventKind::Terminal { marker },
+            ));
         }
     }
-    Ok(())
+    DurableStreamEvidence {
+        display_messages,
+        replay_events,
+    }
+}
+
+async fn publish_stream_publication(
+    durability: &AgentDurability,
+    publication: &PendingStreamPublication,
+) -> Result<(), AgentDurabilityError> {
+    let scope = ReplayScope::run(publication.run_id.as_str());
+    let mut first_error = None;
+    if publication.archive_pending {
+        let archive_result = if let Some(archive) = durability.stream_archive.as_ref() {
+            async {
+                archive
+                    .append_raw_records(
+                        &publication.session_id,
+                        &publication.run_id,
+                        publication.stream_records.clone(),
+                    )
+                    .await?;
+                archive
+                    .append_display_messages(scope.clone(), publication.display_messages.clone())
+                    .await?;
+                if let Some(snapshot) = publication.display_snapshot.clone() {
+                    archive.append_snapshot(scope.clone(), snapshot).await?;
+                }
+                durability
+                    .session_store
+                    .acknowledge_stream_publication(
+                        &publication.publication_id,
+                        StreamPublicationTarget::Archive,
+                    )
+                    .await?;
+                Ok::<(), AgentDurabilityError>(())
+            }
+            .await
+        } else {
+            Err(AgentDurabilityError::MissingPublicationSink {
+                publication_id: publication.publication_id.clone(),
+                target: "archive",
+            })
+        };
+        if let Err(error) = archive_result {
+            first_error = Some(error);
+        }
+    }
+    if publication.replay_pending {
+        let replay_result = if let Some(log) = durability.replay_event_log.as_ref() {
+            async {
+                for event in &publication.replay_events {
+                    log.append(scope.clone(), event.clone()).await?;
+                }
+                durability
+                    .session_store
+                    .acknowledge_stream_publication(
+                        &publication.publication_id,
+                        StreamPublicationTarget::Replay,
+                    )
+                    .await?;
+                Ok::<(), AgentDurabilityError>(())
+            }
+            .await
+        } else {
+            Err(AgentDurabilityError::MissingPublicationSink {
+                publication_id: publication.publication_id.clone(),
+                target: "replay",
+            })
+        };
+        if let Err(error) = replay_result
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+async fn acquire_started_hitl_claim(
+    durability: &AgentDurability,
+    session_id: &SessionId,
+    run_id: &RunId,
+) -> Result<String, AgentDurabilityError> {
+    let claim_id = format!("hitl-resume-{}", RunId::new().as_str());
+    durability
+        .session_store
+        .claim_hitl_resume(HitlResumeClaim::new(
+            claim_id.clone(),
+            session_id.clone(),
+            run_id.clone(),
+            Utc::now(),
+        ))
+        .await?;
+    if let Err(error) = durability
+        .session_store
+        .mark_hitl_resume_started(session_id, run_id, &claim_id)
+        .await
+    {
+        let _ = durability
+            .session_store
+            .release_hitl_resume_claim(session_id, run_id, &claim_id)
+            .await;
+        return Err(error.into());
+    }
+    Ok(claim_id)
+}
+
+async fn flush_pending_stream_publications(
+    durability: &AgentDurability,
+) -> Result<(), AgentDurabilityError> {
+    let publications = durability
+        .session_store
+        .pending_stream_publications(&durability.session_id)
+        .await?;
+    let mut first_error = None;
+    for publication in &publications {
+        if let Err(error) = publish_stream_publication(durability, publication).await
+            && first_error.is_none()
+        {
+            first_error = Some(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn stream_cursors_for_evidence(
+    run_id: &RunId,
+    records: &[AgentStreamRecord],
+    evidence: &DurableStreamEvidence,
+) -> Vec<StreamCursorRef> {
+    let scope = ReplayScope::run(run_id.as_str());
+    let mut cursors = Vec::new();
+    if let Some(record) = records.iter().max_by_key(|record| record.sequence) {
+        cursors.push(StreamCursorRef::new(ReplayCursor::raw_runtime(
+            scope.clone(),
+            record.sequence,
+        )));
+    }
+    if let Some(message) = evidence
+        .display_messages
+        .iter()
+        .max_by_key(|message| message.sequence)
+    {
+        cursors.push(StreamCursorRef::new(ReplayCursor::display(
+            scope.clone(),
+            message.sequence,
+        )));
+    }
+    if let Some(event) = evidence
+        .replay_events
+        .iter()
+        .max_by_key(|event| event.sequence)
+    {
+        cursors.push(StreamCursorRef::new(ReplayCursor::replay_event(
+            scope,
+            event.sequence,
+        )));
+    }
+    cursors
 }
 
 fn resequence_display_messages(messages: &mut [starweaver_stream::DisplayMessage]) {

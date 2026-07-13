@@ -1,18 +1,20 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
 use async_trait::async_trait;
+use starweaver_context::{AgentContext, BusMessage};
 use starweaver_model::{
-    ModelMessage, ModelResponse, ModelResponsePart, TestModel, ToolCallPart, tool_call_response,
+    ContentPart, ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, TestModel,
+    ToolCallPart, tool_call_response,
 };
 use starweaver_runtime::{
-    Agent, AgentEndStrategy, AgentRunState, AgentRuntimePolicy, FunctionOutputFunction,
-    OutputFunctionContext, OutputFunctionDefinition, OutputValidationError, OutputValidationResult,
-    OutputValidator, OutputValue,
+    Agent, AgentCapability, AgentEndStrategy, AgentRunState, AgentRuntimePolicy, AgentStreamEvent,
+    CapabilityError, FunctionOutputFunction, OutputFunctionContext, OutputFunctionDefinition,
+    OutputValidationError, OutputValidationResult, OutputValidator, OutputValue,
 };
 
 struct RequiresParis;
@@ -211,6 +213,108 @@ async fn output_function_retry_sends_retry_prompt_and_accepts_next_call() {
     assert_eq!(result.structured_output.unwrap()["answer"], "Paris");
     assert_eq!(model.captured_messages().len(), 2);
     assert!(format!("{:?}", model.captured_messages()[1]).contains("answer must be Paris"));
+}
+
+#[derive(Default)]
+struct InjectSteeringOnFirstOutput {
+    injected: Mutex<bool>,
+}
+
+#[async_trait]
+impl AgentCapability for InjectSteeringOnFirstOutput {
+    async fn validate_output_with_context(
+        &self,
+        _state: &mut AgentRunState,
+        context: &mut AgentContext,
+        _output: &str,
+    ) -> Result<(), CapabilityError> {
+        let mut injected = self.injected.lock().unwrap();
+        if !*injected {
+            context.enqueue_message(BusMessage::new(
+                "steering",
+                serde_json::json!({"id": "late", "text": "reconsider the final answer"}),
+            ));
+            *injected = true;
+        }
+        drop(injected);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn output_function_steering_transition_reenters_request_without_output_retry() {
+    let model = Arc::new(TestModel::with_responses(vec![
+        tool_call_response(
+            "call_1",
+            "final_answer",
+            serde_json::json!({"answer": "Paris"}),
+        ),
+        tool_call_response(
+            "call_2",
+            "final_answer",
+            serde_json::json!({"answer": "Paris"}),
+        ),
+    ]));
+    let mut context = AgentContext::default();
+    let mut events = Vec::new();
+
+    let result = Agent::new(model.clone())
+        .with_output_function(Arc::new(final_answer_function()))
+        .with_capability(Arc::new(InjectSteeringOnFirstOutput::default()))
+        .run_with_context_and_stream_events("answer", &mut context, &mut events)
+        .await
+        .unwrap();
+
+    assert_eq!(result.output, r#"{"answer":"Paris"}"#);
+    let captured_messages = model.captured_messages();
+    assert_eq!(captured_messages.len(), 2);
+    let Some(second_request) =
+        captured_messages[1]
+            .iter()
+            .rev()
+            .find_map(|message| match message {
+                ModelMessage::Request(request) => Some(request),
+                ModelMessage::Response(_) => None,
+            })
+    else {
+        panic!("missing second model request");
+    };
+    let expected_guard = ModelRequestPart::Instruction {
+        text: "<system-reminder>There are pending steering messages. Continue and incorporate them before finalizing.</system-reminder>".to_string(),
+        metadata: serde_json::json!({
+            "starweaver.kind": "steering_guard",
+            "starweaver_instruction_dynamic": true,
+            "starweaver_instruction_origin": "dynamic_instruction",
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+    };
+    let expected_steering = ModelRequestPart::UserPrompt {
+        content: vec![ContentPart::Text {
+            text: "Steering update from the user:\nreconsider the final answer".to_string(),
+        }],
+        name: Some("steering".to_string()),
+        metadata: serde_json::json!({
+            "starweaver.topic": "steering",
+            "starweaver.steering_id": "late",
+        })
+        .as_object()
+        .cloned()
+        .unwrap_or_default(),
+    };
+    assert!(second_request.parts.contains(&expected_guard));
+    assert!(second_request.parts.contains(&expected_steering));
+    assert!(
+        events
+            .iter()
+            .any(|record| matches!(record.event, AgentStreamEvent::SteeringGuard { .. }))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|record| matches!(record.event, AgentStreamEvent::OutputRetry { .. }))
+    );
 }
 
 #[tokio::test]

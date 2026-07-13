@@ -10,14 +10,18 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_context::{AgentContext, AgentContextHandle, AgentEvent};
+use starweaver_context::{
+    AgentContext, AgentEvent, CONTEXT_TOOL_SEARCH_CAPABILITY, ToolSearchContextHandle,
+    ToolSearchState,
+};
 use starweaver_core::Metadata;
 use starweaver_model::ToolDefinition;
 use thiserror::Error;
 
 use crate::{
-    DynTool, DynToolset, Tool, ToolContext, ToolError, ToolInstruction, ToolResult,
-    ToolUserInputPreprocessResult, Toolset, typed_json_tool,
+    DynTool, DynToolset, TOOL_METADATA_DEPENDENCIES_KEY, Tool, ToolContext, ToolDependencyProfile,
+    ToolDependencyRequirements, ToolError, ToolInstruction, ToolResult,
+    ToolUserInputPreprocessResult, Toolset, tool_dependency_requirements, typed_json_tool,
 };
 
 use inner::ToolProxyInner;
@@ -42,6 +46,36 @@ pub const TOOL_SEARCH_INVALIDATED_EVENT_KIND: &str = "tool_search_invalidated";
 pub const TOOL_SEARCH_REFRESHED_EVENT_KIND: &str = "tool_search_refreshed";
 const TOOL_SEARCH_INITIALIZED_EVENT_KIND: &str = "tool_search_initialized";
 const TOOL_SEARCH_LOADED_EVENT_KIND: &str = "tool_search_loaded";
+
+fn tool_search_metadata(mut requirements: ToolDependencyRequirements) -> Metadata {
+    requirements
+        .context_capabilities
+        .insert(CONTEXT_TOOL_SEARCH_CAPABILITY.to_string());
+    Metadata::from_iter([(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        requirements.to_metadata_value(),
+    )])
+}
+
+fn direct_loaded_tool_requirements(metadata: &Metadata) -> ToolDependencyRequirements {
+    let requirements = tool_dependency_requirements(metadata);
+    let mut projected = if requirements.profile == ToolDependencyProfile::Legacy {
+        let mut projected = ToolDependencyRequirements::filtered(
+            requirements.host_capabilities,
+            requirements.shell_environment,
+        );
+        projected
+            .context_capabilities
+            .extend(requirements.context_capabilities);
+        projected
+    } else {
+        requirements
+    };
+    projected
+        .context_capabilities
+        .insert(CONTEXT_TOOL_SEARCH_CAPABILITY.to_string());
+    projected
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub(super) struct SearchToolsArgs {
@@ -105,8 +139,8 @@ pub fn dynamic_tool_proxy(toolsets: Vec<DynToolset>) -> DynToolset {
 ///
 /// The returned toolset initially exposes only `tool_search`. Wrapped tools are
 /// registered in the tool registry but hidden by context-aware availability until
-/// `tool_search` records them in `AgentContext.tool_search_loaded_tools` or
-/// `AgentContext.tool_search_loaded_namespaces`.
+/// `tool_search` records them in `AgentContext.tools.loaded_tool_names` or
+/// `AgentContext.tools.loaded_tool_namespaces`.
 #[must_use]
 pub fn dynamic_tool_search(toolsets: Vec<DynToolset>) -> DynToolset {
     Arc::new(ToolSearchToolset::new(toolsets))
@@ -649,22 +683,34 @@ impl Toolset for ToolProxyToolset {
         let search_inner = self.inner.clone();
         let call_inner = self.inner.clone();
         vec![
-            Arc::new(typed_json_tool::<SearchToolsArgs, _, _>(
-                self.inner.search_tool_name().to_string(),
-                Some("Search for available tools by keyword, description, namespace, or parameter schema. Returns XML with full parameter schemas.".to_string()),
-                move |context, arguments| {
-                    let inner = search_inner.clone();
-                    async move { Ok(inner.search_tools(&context, &arguments)) }
-                },
-            )),
-            Arc::new(typed_json_tool::<CallToolArgs, _, _>(
-                self.inner.call_tool_name().to_string(),
-                Some("Invoke an available tool by name with arguments matching the tool's parameter schema.".to_string()),
-                move |context, arguments| {
-                    let inner = call_inner.clone();
-                    async move { inner.call_tool(context, arguments).await }
-                },
-            )),
+            Arc::new(
+                typed_json_tool::<SearchToolsArgs, _, _>(
+                    self.inner.search_tool_name().to_string(),
+                    Some("Search for available tools by keyword, description, namespace, or parameter schema. Returns XML with full parameter schemas.".to_string()),
+                    move |context, arguments| {
+                        let inner = search_inner.clone();
+                        async move { Ok(inner.search_tools(&context, &arguments)) }
+                    },
+                )
+                .with_metadata(tool_search_metadata(
+                    ToolDependencyRequirements::filtered(std::iter::empty::<String>(), false),
+                )),
+            ),
+            Arc::new(
+                typed_json_tool::<CallToolArgs, _, _>(
+                    self.inner.call_tool_name().to_string(),
+                    Some("Invoke an available tool by name with arguments matching the tool's parameter schema.".to_string()),
+                    move |context, arguments| {
+                        let inner = call_inner.clone();
+                        async move { inner.call_tool(context, arguments).await }
+                    },
+                )
+                .with_metadata(tool_search_metadata(
+                    ToolDependencyRequirements::legacy_with_context_capabilities([
+                        CONTEXT_TOOL_SEARCH_CAPABILITY,
+                    ]),
+                )),
+            ),
         ]
     }
 
@@ -863,25 +909,31 @@ impl Toolset for ToolSearchToolset {
         let hidden_search_name = self.search_tool_name.clone();
         let mut tools = Vec::new();
         let search_inner = self.inner.clone();
-        tools.push(Arc::new(typed_json_tool::<SearchToolsArgs, _, _>(
-            self.search_tool_name.clone(),
-            Some(
-                "Search for available tools and load matching tools for the next model turn."
-                    .to_string(),
-            ),
-            move |context, arguments| {
-                let inner = search_inner.clone();
-                let hidden_search_name = hidden_search_name.clone();
-                async move {
-                    Ok(search_direct_tools(
-                        &inner,
-                        &context,
-                        &arguments,
-                        &hidden_search_name,
-                    ))
-                }
-            },
-        )) as DynTool);
+        tools.push(Arc::new(
+            typed_json_tool::<SearchToolsArgs, _, _>(
+                self.search_tool_name.clone(),
+                Some(
+                    "Search for available tools and load matching tools for the next model turn."
+                        .to_string(),
+                ),
+                move |context, arguments| {
+                    let inner = search_inner.clone();
+                    let hidden_search_name = hidden_search_name.clone();
+                    async move {
+                        Ok(search_direct_tools(
+                            &inner,
+                            &context,
+                            &arguments,
+                            &hidden_search_name,
+                        ))
+                    }
+                },
+            )
+            .with_metadata(tool_search_metadata(ToolDependencyRequirements::filtered(
+                std::iter::empty::<String>(),
+                false,
+            ))),
+        ) as DynTool);
 
         let index = self
             .inner
@@ -944,6 +996,11 @@ impl Tool for SearchLoadedTool {
 
     fn metadata(&self) -> Metadata {
         let mut metadata = self.inner.tool.metadata();
+        let requirements = direct_loaded_tool_requirements(&metadata);
+        metadata.insert(
+            TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+            requirements.to_metadata_value(),
+        );
         metadata.insert("tool_search_direct".to_string(), serde_json::json!(true));
         if let Some(namespace) = self.inner.namespace.as_ref() {
             metadata.insert(
@@ -987,13 +1044,13 @@ impl Tool for SearchLoadedTool {
     }
 
     async fn call(&self, context: ToolContext, arguments: Value) -> Result<ToolResult, ToolError> {
-        let Some(handle) = context.dependency::<AgentContextHandle>() else {
+        let Some(handle) = context.dependency::<ToolSearchContextHandle>() else {
             return Err(ToolError::UserError {
                 tool: self.inner.name.clone(),
-                message: "direct tool-search calls require AgentContextHandle".to_string(),
+                message: "direct tool-search calls require ToolSearchContextHandle".to_string(),
             });
         };
-        if !self.is_loaded(&handle.snapshot()) {
+        if !self.is_loaded_state(&handle.state()) {
             return Err(ToolError::UserError {
                 tool: self.inner.name.clone(),
                 message: format!(
@@ -1019,7 +1076,10 @@ impl Tool for SearchLoadedTool {
 
 impl SearchLoadedTool {
     fn is_loaded(&self, context: &AgentContext) -> bool {
-        let state = context.tool_search_state();
+        self.is_loaded_state(&context.tool_search_state())
+    }
+
+    fn is_loaded_state(&self, state: &ToolSearchState) -> bool {
         state
             .loaded_tools
             .iter()
@@ -1103,14 +1163,14 @@ fn publish_tool_search_initialization_event(
     toolset_name: &str,
     search_tool_name: &str,
 ) {
-    let Some(handle) = context.dependency::<AgentContextHandle>() else {
+    let Some(handle) = context.dependency::<ToolSearchContextHandle>() else {
         return;
     };
-    handle.update(|agent_context| {
-        let report =
-            inner.initialization_report(toolset_name, search_tool_name, Some(agent_context));
-        publish_tool_search_report(agent_context, TOOL_SEARCH_INITIALIZED_EVENT_KIND, &report);
-    });
+    let report = inner.initialization_report(toolset_name, search_tool_name, None);
+    handle.publish_event(AgentEvent::new(
+        TOOL_SEARCH_INITIALIZED_EVENT_KIND,
+        serde_json::to_value(&report).unwrap_or_else(|_| serde_json::json!({})),
+    ));
 }
 
 pub(super) fn publish_tool_search_query_event(
@@ -1121,20 +1181,18 @@ pub(super) fn publish_tool_search_query_event(
     error_kind: &str,
     message: &str,
 ) {
-    let Some(handle) = context.dependency::<AgentContextHandle>() else {
+    let Some(handle) = context.dependency::<ToolSearchContextHandle>() else {
         return;
     };
-    handle.update(|agent_context| {
-        agent_context.publish_event(AgentEvent::new(
-            kind,
-            serde_json::json!({
-                "search_tool_name": search_tool_name,
-                "query": query,
-                "error_kind": error_kind,
-                "message": message,
-            }),
-        ));
-    });
+    handle.publish_event(AgentEvent::new(
+        kind,
+        serde_json::json!({
+            "search_tool_name": search_tool_name,
+            "query": query,
+            "error_kind": error_kind,
+            "message": message,
+        }),
+    ));
 }
 
 fn record_tool_search_load_event(context: &mut AgentContext, result: &ToolSearchLoadResult) {
@@ -1172,8 +1230,8 @@ fn invalidate_tool_search_state(
         reason,
         removed_loaded_tools: removed.removed_tools,
         removed_loaded_namespaces: removed.removed_namespaces,
-        retained_loaded_tools: context.tool_search_loaded_tools.clone(),
-        retained_loaded_namespaces: context.tool_search_loaded_namespaces.clone(),
+        retained_loaded_tools: context.tools.loaded_tool_names.clone(),
+        retained_loaded_namespaces: context.tools.loaded_tool_namespaces.clone(),
     };
     context.publish_event(AgentEvent::new(
         TOOL_SEARCH_INVALIDATED_EVENT_KIND,
@@ -1229,8 +1287,8 @@ fn refresh_tool_search_state_with_metadata(
         report,
         removed_loaded_tools: removed.removed_tools,
         removed_loaded_namespaces: removed.removed_namespaces,
-        retained_loaded_tools: context.tool_search_loaded_tools.clone(),
-        retained_loaded_namespaces: context.tool_search_loaded_namespaces.clone(),
+        retained_loaded_tools: context.tools.loaded_tool_names.clone(),
+        retained_loaded_namespaces: context.tools.loaded_tool_namespaces.clone(),
     };
     publish_tool_search_refresh_result(context, &result, event_metadata);
     result

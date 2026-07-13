@@ -27,8 +27,9 @@ flowchart TD
     session[Shared session contracts]
     stream[Shared stream contracts]
     storage[Shared SQLite storage]
-    cli[CLI product]
-    hostrpc[JSON-RPC host protocol]
+    cli[CLI and TUI product]
+    rpc[Standalone RPC product]
+    hostrpc[Typed JSON-RPC host protocol]
     service[Future service adapters]
     observability[Observability]
     platform[Platform]
@@ -42,9 +43,10 @@ flowchart TD
     storage --> cli
     session --> cli
     stream --> cli
-    cli --> hostrpc
-    session --> hostrpc
-    stream --> hostrpc
+    storage --> rpc
+    session --> rpc
+    stream --> rpc
+    hostrpc --> rpc
     hostrpc --> service
     session --> service
     stream --> service
@@ -56,12 +58,13 @@ flowchart TD
 
 ## Spec Map
 
+- `00-product-boundaries.md` — normative independence and shared-library boundaries for CLI/TUI, standalone RPC, and envd
 - `01-ci-readiness.md` — replay CI, docs examples, feature coverage matrix, and release acceptance gates
 - `02-shared-execution-components.md` — shared session storage and stream protocol contracts
 - `03-durable-service-runtime.md` — durable sessions, `SessionStore`, stream archive, resume, interruption, service transports, display-message replay, and storage contracts
-- `04-cli-product.md` — CLI-first product surface with CLI commands as a shell-friendly subset, TUI as the terminal client, standalone JSON-RPC host process for Desktop/local clients, headless stdio display streams, session restore from display messages, DisplayMessage rendering with AGUI display adapters, launcher dispatch, and GitHub install/update flow
+- `04-cli-product.md` — independent CLI/TUI product surface with headless stdio display streams, session restore, direct envd connectivity, launcher dispatch, and install/update flow
 - `05-observability.md` — OpenTelemetry GenAI tracing, Langfuse-friendly OTLP export, nested agent/model/tool spans, and trace-to-session correlation
-- `06-json-rpc-host-protocol.md` — Starweaver-owned JSON-RPC host-control protocol, stdio/HTTP/socket/WebSocket transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
+- `06-json-rpc-host-protocol.md` — independent standalone RPC product protocol, transport profiles, typed method/event/error contracts, stream replay/subscription semantics, projections, idempotency, and acceptance gates
 
 ## Readiness Model
 

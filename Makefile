@@ -1,6 +1,6 @@
 XTASK = cargo run -p xtask --locked --
 PY_PACKAGE = packages/starweaver-py
-PY_SOURCES = $(PY_PACKAGE)/python $(PY_PACKAGE)/tests scripts/python_wheel_smoke.py examples/python
+PY_SOURCES = $(PY_PACKAGE)/python $(PY_PACKAGE)/tests scripts/check_python_api.py scripts/python_wheel_smoke.py examples/python
 PY_DIST_DIR ?= dist/python
 CORE_COVERAGE_MIN_LINES ?= 95
 AGENT_COVERAGE_MIN_LINES ?= 90
@@ -41,8 +41,23 @@ clippy: ## Run clippy for all targets and features
 	@echo "Running clippy"
 	@cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+.PHONY: architecture-check
+architecture-check: ## Enforce product dependency and storage ownership boundaries
+	@echo "Checking architecture boundaries"
+	@$(XTASK) check-architecture
+
+.PHONY: capability-check
+capability-check: ## Validate the capability registry and its implementation evidence
+	@echo "Checking capability registry"
+	@$(XTASK) check-capabilities
+
+.PHONY: agent-api-check
+agent-api-check: ## Validate the reviewed starweaver-agent root/prelude/advanced API snapshot
+	@echo "Checking starweaver-agent API snapshot"
+	@$(XTASK) check-agent-api
+
 .PHONY: check
-check: ## Run repository quality checks
+check: agent-api-check architecture-check capability-check ## Run repository quality checks
 	@echo "Checking Rust workspace"
 	@cargo check --workspace --all-targets --all-features --locked
 	@echo "Running clippy"
@@ -113,8 +128,13 @@ py-fmt: py-sync ## Format Python package files with ruff
 	@uv run ruff format $(PY_SOURCES)
 	@uv run ruff check --fix $(PY_SOURCES)
 
+.PHONY: py-api-check
+py-api-check: ## Validate classified Python top-level API snapshot
+	@echo "Checking Python API snapshot"
+	@python3 scripts/check_python_api.py
+
 .PHONY: py-lint
-py-lint: ## Lint and type-check Python package files with uv, ruff, and pyright
+py-lint: py-api-check ## Lint and type-check Python package files with uv, ruff, and pyright
 	@echo "Checking Python lock file"
 	@uv lock --locked
 	@echo "Syncing Python workspace"
@@ -200,7 +220,7 @@ install-script-check: ## Validate GitHub install and update script semantics
 	@$(XTASK) check-install-script
 
 .PHONY: scripts-check
-scripts-check: cli-examples-check install-script-check ## Validate repository automation scripts through xtask
+scripts-check: architecture-check capability-check cli-examples-check install-script-check ## Validate repository automation scripts through xtask
 	@echo "Checking repository scripts"
 	@$(XTASK) check-repository-scripts
 
@@ -226,6 +246,15 @@ upversion: ## Update workspace version; pass VERSION=x.y.z
 	@$(XTASK) upversion $(VERSION)
 	@uv lock
 	@cargo check --workspace --all-targets --all-features --locked
+
+.PHONY: semver-check
+semver-check: ## Check Rust public API compatibility against the latest release
+	@command -v cargo-semver-checks >/dev/null || { echo "cargo-semver-checks is required"; exit 1; }
+	@# starweaver-storage has no published 0.6 baseline; include it after the first 0.7 release.
+	@cargo semver-checks check-release --workspace --exclude starweaver-storage
+
+.PHONY: release-api-check
+release-api-check: agent-api-check py-api-check semver-check py-wheel-smoke ## Validate reviewed Rust/Python APIs and the built wheel before release
 
 .PHONY: publish-dry-run
 publish-dry-run: ## Dry-run first-wave crate publish packages

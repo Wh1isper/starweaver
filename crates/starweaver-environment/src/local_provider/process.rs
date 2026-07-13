@@ -1,22 +1,25 @@
 //! Local background process provider implementation.
 
 use std::{
+    collections::BTreeMap,
     io,
-    process::{Child, Stdio},
+    process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
-#[cfg(unix)]
-use std::process::Command;
-
 use async_trait::async_trait;
+use command_group::GroupChild;
 use starweaver_core::Metadata;
 
+#[cfg(unix)]
+use crate::signal_process_group;
 use crate::{
-    EnvironmentError, EnvironmentResult, ProcessShellProvider, ShellCommand, ShellProcessSnapshot,
-    ShellProcessStatus, local_shell_command, read_child_pipe, refresh_local_shell_process,
-    shell_process_metadata,
+    CapturedPipe, EnvironmentError, EnvironmentResult, LocalExecutionPermit, ProcessShellProvider,
+    ProgramCommand, ShellCommand, ShellProcessSnapshot, ShellProcessStatus,
+    checked_timeout_deadline, kill_remaining_process_group, local_program_command,
+    local_shell_command, program_process_metadata, read_child_pipe, refresh_local_shell_process,
+    shell_process_metadata, spawn_group,
 };
 
 use super::LocalEnvironmentProvider;
@@ -24,11 +27,116 @@ use super::LocalEnvironmentProvider;
 #[derive(Debug)]
 pub struct LocalShellProcess {
     pub(crate) command: String,
-    pub(crate) child: Child,
-    pub(crate) stdout_handle: Option<thread::JoinHandle<io::Result<String>>>,
-    pub(crate) stderr_handle: Option<thread::JoinHandle<io::Result<String>>>,
+    pub(crate) child: GroupChild,
+    pub(crate) stdout_handle: Option<thread::JoinHandle<io::Result<CapturedPipe>>>,
+    pub(crate) stderr_handle: Option<thread::JoinHandle<io::Result<CapturedPipe>>>,
     pub(crate) metadata: Metadata,
+    pub(crate) deadline: Option<Instant>,
+    pub(crate) completed_at: Option<Instant>,
     pub(crate) completed: Option<ShellProcessSnapshot>,
+    pub(crate) execution_permit: Option<LocalExecutionPermit>,
+}
+
+impl Drop for LocalShellProcess {
+    fn drop(&mut self) {
+        if self.completed.is_none() {
+            // Drop can run on an async worker when the last provider clone is
+            // released. Signal the whole group, but never wait or join here;
+            // the detached readers finish after the killed process closes its
+            // pipes.
+            let _ = kill_remaining_process_group(&mut self.child);
+        }
+        drop(self.stdout_handle.take());
+        drop(self.stderr_handle.take());
+    }
+}
+
+impl LocalEnvironmentProvider {
+    fn spawn_local_process(
+        &self,
+        mut process: Command,
+        display_command: String,
+        mut metadata: Metadata,
+        timeout_seconds: Option<u64>,
+        execution_permit: LocalExecutionPermit,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        let deadline = timeout_seconds.map(checked_timeout_deadline).transpose()?;
+        self.reap_local_processes()?;
+        metadata.insert(
+            "output_limit_bytes_per_stream".to_string(),
+            serde_json::json!(self.max_output_bytes),
+        );
+        process
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = spawn_group(process)?;
+        let stdout_reader = child.inner().stdout.take();
+        let stderr_reader = child.inner().stderr.take();
+        let max_output_bytes = self.max_output_bytes;
+        let stdout_handle = thread::spawn(move || read_child_pipe(stdout_reader, max_output_bytes));
+        let stderr_handle = thread::spawn(move || read_child_pipe(stderr_reader, max_output_bytes));
+        let process_id = format!("process_{}", child.id());
+        let snapshot = ShellProcessSnapshot {
+            process_id: process_id.clone(),
+            command: display_command.clone(),
+            status: ShellProcessStatus::Running,
+            stdout: String::new(),
+            stderr: String::new(),
+            return_code: None,
+            metadata: metadata.clone(),
+        };
+        let local_process = LocalShellProcess {
+            command: display_command,
+            child,
+            stdout_handle: Some(stdout_handle),
+            stderr_handle: Some(stderr_handle),
+            metadata,
+            deadline,
+            completed_at: None,
+            completed: None,
+            execution_permit: Some(execution_permit),
+        };
+        self.processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
+            .insert(process_id, local_process);
+        Ok(snapshot)
+    }
+
+    pub(super) fn reap_local_processes(&self) -> EnvironmentResult<()> {
+        let mut processes = self
+            .processes
+            .lock()
+            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+        let ids = processes.keys().cloned().collect::<Vec<_>>();
+        for process_id in ids {
+            if let Some(process) = processes.get_mut(&process_id) {
+                refresh_local_shell_process(&process_id, process, false)?;
+            }
+        }
+        prune_completed_processes(&mut processes, self.completed_process_retention);
+        Ok(())
+    }
+}
+
+fn prune_completed_processes(
+    processes: &mut BTreeMap<String, LocalShellProcess>,
+    retention: usize,
+) {
+    let mut completed = processes
+        .iter()
+        .filter_map(|(process_id, process)| {
+            process
+                .completed_at
+                .map(|completed_at| (completed_at, process_id.clone()))
+        })
+        .collect::<Vec<_>>();
+    completed.sort_by_key(|(completed_at, _)| *completed_at);
+    let remove_count = completed.len().saturating_sub(retention);
+    for (_, process_id) in completed.into_iter().take(remove_count) {
+        processes.remove(&process_id);
+    }
 }
 
 #[async_trait]
@@ -38,50 +146,65 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         &self,
         command: ShellCommand,
     ) -> EnvironmentResult<ShellProcessSnapshot> {
-        if !self.policy.shell.permits(&command.command) {
-            return Err(EnvironmentError::AccessDenied(command.command));
-        }
-        let cwd = self.resolve_shell_cwd(command.cwd.as_deref())?;
-        let environment = self.shell_environment(&command.environment)?;
-        let mut process = local_shell_command(&command.command);
-        let mut child = process
-            .current_dir(cwd)
-            .envs(&environment)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-        let mut stdout_reader = child.stdout.take();
-        let mut stderr_reader = child.stderr.take();
-        let stdout_handle = thread::spawn(move || read_child_pipe(stdout_reader.take()));
-        let stderr_handle = thread::spawn(move || read_child_pipe(stderr_reader.take()));
-        let process_id = format!("process_{}", child.id());
-        let metadata = shell_process_metadata(&command);
-        let snapshot = ShellProcessSnapshot {
-            process_id: process_id.clone(),
-            command: command.command.clone(),
-            status: ShellProcessStatus::Running,
-            stdout: String::new(),
-            stderr: String::new(),
-            return_code: None,
-            metadata: metadata.clone(),
-        };
-        self.processes
-            .lock()
-            .map_err(|error| EnvironmentError::Provider(error.to_string()))?
-            .insert(
-                process_id,
-                LocalShellProcess {
-                    command: command.command,
-                    child,
-                    stdout_handle: Some(stdout_handle),
-                    stderr_handle: Some(stderr_handle),
-                    metadata,
-                    completed: None,
-                },
-            );
-        Ok(snapshot)
+        let provider = self.clone();
+        crate::blocking::run(move || {
+            if !provider.policy.shell.permits_shell() {
+                return Err(EnvironmentError::AccessDenied(command.command));
+            }
+            let cwd = provider.resolve_shell_cwd(command.cwd.as_deref())?;
+            let environment = provider.shell_environment(&command.environment)?;
+            provider.reap_local_processes()?;
+            let execution_permit = provider.execution_limiter.try_acquire()?;
+            let mut process = local_shell_command(&command.command);
+            process.current_dir(cwd).envs(&environment);
+            provider.spawn_local_process(
+                process,
+                command.command.clone(),
+                shell_process_metadata(&command),
+                command.timeout_seconds,
+                execution_permit,
+            )
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
+    }
+
+    async fn start_program(
+        &self,
+        command: ProgramCommand,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        let provider = self.clone();
+        crate::blocking::run(move || {
+            if !provider.policy.shell.permits_program(&command.program) {
+                return Err(EnvironmentError::AccessDenied(command.display_command()));
+            }
+            if !command.environment.is_empty()
+                && !provider
+                    .policy
+                    .shell
+                    .permits_program_environment_overrides()
+            {
+                return Err(EnvironmentError::InvalidRequest(
+                    "environment overrides are not allowed for allowlisted direct programs"
+                        .to_string(),
+                ));
+            }
+            let cwd = provider.resolve_shell_cwd(command.cwd.as_deref())?;
+            let environment = provider.shell_environment(&command.environment)?;
+            provider.reap_local_processes()?;
+            let execution_permit = provider.execution_limiter.try_acquire()?;
+            let mut process = local_program_command(&command)?;
+            process.current_dir(cwd).envs(&environment);
+            provider.spawn_local_process(
+                process,
+                command.display_command(),
+                program_process_metadata(&command),
+                command.timeout_seconds,
+                execution_permit,
+            )
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn wait_process(
@@ -89,41 +212,63 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         process_id: &str,
         timeout_seconds: u64,
     ) -> EnvironmentResult<ShellProcessSnapshot> {
-        let deadline = Instant::now() + Duration::from_secs(timeout_seconds);
-        loop {
-            let snapshot = {
-                let mut processes = self
-                    .processes
-                    .lock()
-                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-                let process = processes
-                    .get_mut(process_id)
-                    .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
-                refresh_local_shell_process(process_id, process, false)?
-            };
-            if snapshot.status != ShellProcessStatus::Running || timeout_seconds == 0 {
-                return Ok(snapshot);
+        let provider = self.clone();
+        let process_id = process_id.to_string();
+        crate::blocking::run_cancellable(move |cancelled| {
+            let deadline = checked_timeout_deadline(timeout_seconds)?;
+            loop {
+                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(EnvironmentError::Provider(
+                        "process wait cancelled".to_string(),
+                    ));
+                }
+                let snapshot = {
+                    let mut processes = provider
+                        .processes
+                        .lock()
+                        .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                    let process = processes
+                        .get_mut(&process_id)
+                        .ok_or_else(|| EnvironmentError::NotFound(process_id.clone()))?;
+                    let snapshot = refresh_local_shell_process(&process_id, process, false)?;
+                    prune_completed_processes(&mut processes, provider.completed_process_retention);
+                    snapshot
+                };
+                if snapshot.status != ShellProcessStatus::Running || timeout_seconds == 0 {
+                    return Ok(snapshot);
+                }
+                if Instant::now() >= deadline {
+                    return Ok(snapshot);
+                }
+                thread::sleep(Duration::from_millis(25));
             }
-            if Instant::now() >= deadline {
-                return Ok(snapshot);
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn list_processes(&self) -> EnvironmentResult<Vec<ShellProcessSnapshot>> {
-        let snapshots = {
-            let mut processes = self
-                .processes
-                .lock()
-                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            let mut snapshots = Vec::new();
-            for (process_id, process) in processes.iter_mut() {
-                snapshots.push(refresh_local_shell_process(process_id, process, false)?);
-            }
-            snapshots
-        };
-        Ok(snapshots)
+        let provider = self.clone();
+        crate::blocking::run(move || {
+            let snapshots = {
+                let mut processes = provider
+                    .processes
+                    .lock()
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                let ids = processes.keys().cloned().collect::<Vec<_>>();
+                let mut snapshots = Vec::with_capacity(ids.len());
+                for process_id in ids {
+                    if let Some(process) = processes.get_mut(&process_id) {
+                        snapshots.push(refresh_local_shell_process(&process_id, process, false)?);
+                    }
+                }
+                prune_completed_processes(&mut processes, provider.completed_process_retention);
+                snapshots
+            };
+            Ok(snapshots)
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn input_process(
@@ -132,33 +277,40 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         text: &str,
         close_stdin: bool,
     ) -> EnvironmentResult<ShellProcessSnapshot> {
-        let snapshot = {
-            let mut processes = self
-                .processes
-                .lock()
-                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            let process = processes
-                .get_mut(process_id)
-                .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
-            if let Some(stdin) = process.child.stdin.as_mut() {
-                use std::io::Write as _;
-                stdin
-                    .write_all(text.as_bytes())
+        let provider = self.clone();
+        let process_id = process_id.to_string();
+        let text = text.to_string();
+        crate::blocking::run(move || {
+            let snapshot = {
+                let mut processes = provider
+                    .processes
+                    .lock()
                     .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-                stdin
-                    .write_all(b"\n")
-                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-                if close_stdin {
-                    process.child.stdin.take();
+                let process = processes
+                    .get_mut(&process_id)
+                    .ok_or_else(|| EnvironmentError::NotFound(process_id.clone()))?;
+                if let Some(stdin) = process.child.inner().stdin.as_mut() {
+                    use std::io::Write as _;
+                    stdin
+                        .write_all(text.as_bytes())
+                        .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                    stdin
+                        .write_all(b"\n")
+                        .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                    if close_stdin {
+                        process.child.inner().stdin.take();
+                    }
+                } else {
+                    return Err(EnvironmentError::InvalidRequest(format!(
+                        "stdin is closed for process: {process_id}"
+                    )));
                 }
-            } else {
-                return Err(EnvironmentError::InvalidRequest(format!(
-                    "stdin is closed for process: {process_id}"
-                )));
-            }
-            refresh_local_shell_process(process_id, process, false)?
-        };
-        Ok(snapshot)
+                refresh_local_shell_process(&process_id, process, false)?
+            };
+            Ok(snapshot)
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn signal_process(
@@ -166,52 +318,58 @@ impl ProcessShellProvider for LocalEnvironmentProvider {
         process_id: &str,
         signal: i32,
     ) -> EnvironmentResult<ShellProcessSnapshot> {
-        #[cfg(unix)]
-        {
+        let provider = self.clone();
+        let process_id = process_id.to_string();
+        crate::blocking::run(move || {
+            #[cfg(unix)]
+            {
+                let snapshot = {
+                    let mut processes = provider
+                        .processes
+                        .lock()
+                        .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                    let process = processes
+                        .get_mut(&process_id)
+                        .ok_or_else(|| EnvironmentError::NotFound(process_id.clone()))?;
+                    signal_process_group(&process.child, signal)?;
+                    refresh_local_shell_process(&process_id, process, false)?
+                };
+                Ok(snapshot)
+            }
+
+            #[cfg(not(unix))]
+            {
+                let _ = (provider, process_id, signal);
+                Err(EnvironmentError::InvalidRequest(
+                    "shell_signal is only supported on Unix local providers; shell_kill uses the \
+                     platform process-group fallback"
+                        .to_string(),
+                ))
+            }
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
+    }
+
+    async fn kill_process(&self, process_id: &str) -> EnvironmentResult<ShellProcessSnapshot> {
+        let provider = self.clone();
+        let process_id = process_id.to_string();
+        crate::blocking::run(move || {
             let snapshot = {
-                let mut processes = self
+                let mut processes = provider
                     .processes
                     .lock()
                     .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
                 let process = processes
-                    .get_mut(process_id)
-                    .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
-                let pid = process.child.id().to_string();
-                let status = Command::new("kill")
-                    .arg(format!("-{signal}"))
-                    .arg(pid)
-                    .status()
-                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-                if !status.success() {
-                    return Err(EnvironmentError::Provider(format!(
-                        "failed to signal process {process_id} with signal {signal}"
-                    )));
-                }
-                refresh_local_shell_process(process_id, process, false)?
+                    .get_mut(&process_id)
+                    .ok_or_else(|| EnvironmentError::NotFound(process_id.clone()))?;
+                let snapshot = refresh_local_shell_process(&process_id, process, true)?;
+                prune_completed_processes(&mut processes, provider.completed_process_retention);
+                snapshot
             };
             Ok(snapshot)
-        }
-
-        #[cfg(not(unix))]
-        {
-            let _ = (process_id, signal);
-            Err(EnvironmentError::InvalidRequest(
-                "shell_signal is only supported on Unix local providers".to_string(),
-            ))
-        }
-    }
-
-    async fn kill_process(&self, process_id: &str) -> EnvironmentResult<ShellProcessSnapshot> {
-        let snapshot = {
-            let mut processes = self
-                .processes
-                .lock()
-                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            let process = processes
-                .get_mut(process_id)
-                .ok_or_else(|| EnvironmentError::NotFound(process_id.to_string()))?;
-            refresh_local_shell_process(process_id, process, true)?
-        };
-        Ok(snapshot)
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 }

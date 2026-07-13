@@ -11,8 +11,9 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
 use starweaver_session::{
     ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord, EnvironmentStateRef,
-    RunRecord, RunStatus, SessionFilter, SessionRecord, SessionResumeSnapshot, SessionStatus,
-    SessionStore, SessionStoreError, SessionStoreResult, StreamCursorRef,
+    HitlResumeClaim, PendingStreamPublication, RunEvidenceCommit, RunRecord, RunStatus,
+    SessionFilter, SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore,
+    SessionStoreError, SessionStoreResult, StreamCursorRef, StreamPublicationTarget,
 };
 use starweaver_storage::{
     SqliteMigrationStatus, SqliteReplayEventLog, SqliteSessionStore, SqliteStreamArchive,
@@ -634,6 +635,104 @@ impl PyPythonSessionStore {
 
 #[async_trait]
 impl SessionStore for PythonSessionStore {
+    async fn commit_run_evidence(
+        &self,
+        commit: RunEvidenceCommit,
+    ) -> SessionStoreResult<RunRecord> {
+        self.call_json("commit_run_evidence", move |py, store| {
+            let commit = serialize_to_py(py, &commit)?;
+            store.call_method1(py, "commit_run_evidence", (commit,))
+        })
+        .await
+    }
+
+    async fn claim_hitl_resume(&self, claim: HitlResumeClaim) -> SessionStoreResult<()> {
+        self.call_unit("claim_hitl_resume", move |py, store| {
+            let claim = serialize_to_py(py, &claim)?;
+            store.call_method1(py, "claim_hitl_resume", (claim,))
+        })
+        .await
+    }
+
+    async fn mark_hitl_resume_started(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        claim_id: &str,
+    ) -> SessionStoreResult<()> {
+        let session_id = session_id.as_str().to_string();
+        let run_id = run_id.as_str().to_string();
+        let claim_id = claim_id.to_string();
+        self.call_unit("mark_hitl_resume_started", move |py, store| {
+            store.call_method1(
+                py,
+                "mark_hitl_resume_started",
+                (session_id, run_id, claim_id),
+            )
+        })
+        .await
+    }
+
+    async fn release_hitl_resume_claim(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        claim_id: &str,
+    ) -> SessionStoreResult<()> {
+        let session_id = session_id.as_str().to_string();
+        let run_id = run_id.as_str().to_string();
+        let claim_id = claim_id.to_string();
+        self.call_unit("release_hitl_resume_claim", move |py, store| {
+            store.call_method1(
+                py,
+                "release_hitl_resume_claim",
+                (session_id, run_id, claim_id),
+            )
+        })
+        .await
+    }
+
+    async fn pending_stream_publications(
+        &self,
+        session_id: &SessionId,
+    ) -> SessionStoreResult<Vec<PendingStreamPublication>> {
+        let session_id = session_id.as_str().to_string();
+        self.call_json("pending_stream_publications", move |py, store| {
+            store.call_method1(py, "pending_stream_publications", (session_id,))
+        })
+        .await
+    }
+
+    async fn acknowledge_stream_publication(
+        &self,
+        publication_id: &str,
+        target: StreamPublicationTarget,
+    ) -> SessionStoreResult<()> {
+        let publication_id = publication_id.to_string();
+        self.call_unit("acknowledge_stream_publication", move |py, store| {
+            let target = serialize_to_py(py, &target)?;
+            store.call_method1(
+                py,
+                "acknowledge_stream_publication",
+                (publication_id, target),
+            )
+        })
+        .await
+    }
+
+    async fn commit_checkpoint(
+        &self,
+        session_id: &SessionId,
+        checkpoint: AgentCheckpoint,
+    ) -> SessionStoreResult<()> {
+        let session_id = session_id.as_str().to_string();
+        self.call_unit("commit_checkpoint", move |py, store| {
+            let checkpoint = serialize_to_py(py, &checkpoint)?;
+            store.call_method1(py, "commit_checkpoint", (session_id, checkpoint))
+        })
+        .await
+    }
+
     async fn save_session(&self, session: SessionRecord) -> SessionStoreResult<()> {
         self.call_unit("save_session", move |py, store| {
             let session = serialize_to_py(py, &session)?;
@@ -962,6 +1061,145 @@ impl PySqliteSessionStore {
         serialize_to_py(py, &migration_status_json(status))
     }
 
+    fn commit_run_evidence(
+        &self,
+        py: Python<'_>,
+        commit: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let commit = parse_record::<RunEvidenceCommit>(py, commit, "run evidence commit")?;
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .commit_run_evidence(commit)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, run| serialize_to_py(py, &run),
+        )
+    }
+
+    fn commit_checkpoint(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        checkpoint: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let session_id = SessionId::from_string(session_id);
+        let checkpoint = parse_record::<AgentCheckpoint>(py, checkpoint, "checkpoint")?;
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .commit_checkpoint(&session_id, checkpoint)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, ()| Ok(py.None()),
+        )
+    }
+
+    fn claim_hitl_resume(&self, py: Python<'_>, claim: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        let claim = parse_record::<HitlResumeClaim>(py, claim, "HITL resume claim")?;
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .claim_hitl_resume(claim)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, ()| Ok(py.None()),
+        )
+    }
+
+    fn mark_hitl_resume_started(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        run_id: String,
+        claim_id: String,
+    ) -> PyResult<Py<PyAny>> {
+        let session_id = SessionId::from_string(session_id);
+        let run_id = RunId::from_string(run_id);
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .mark_hitl_resume_started(&session_id, &run_id, &claim_id)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, ()| Ok(py.None()),
+        )
+    }
+
+    fn release_hitl_resume_claim(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+        run_id: String,
+        claim_id: String,
+    ) -> PyResult<Py<PyAny>> {
+        let session_id = SessionId::from_string(session_id);
+        let run_id = RunId::from_string(run_id);
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .release_hitl_resume_claim(&session_id, &run_id, &claim_id)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, ()| Ok(py.None()),
+        )
+    }
+
+    fn pending_stream_publications(
+        &self,
+        py: Python<'_>,
+        session_id: String,
+    ) -> PyResult<Py<PyAny>> {
+        let session_id = SessionId::from_string(session_id);
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .pending_stream_publications(&session_id)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, publications| serialize_to_py(py, &publications),
+        )
+    }
+
+    fn acknowledge_stream_publication(
+        &self,
+        py: Python<'_>,
+        publication_id: String,
+        target: String,
+    ) -> PyResult<Py<PyAny>> {
+        let target =
+            parse_json_value::<StreamPublicationTarget>(json!(target), "publication target")?;
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .acknowledge_stream_publication(&publication_id, target)
+                    .await
+                    .map_err(store_error_to_future)
+            },
+            |py, ()| Ok(py.None()),
+        )
+    }
+
     fn save_session(&self, py: Python<'_>, record: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let record = parse_record::<SessionRecord>(py, record, "session record")?;
         let store = self.inner.clone();
@@ -1093,6 +1331,24 @@ impl PySqliteSessionStore {
                 Ok(())
             },
             |py, ()| Ok(py.None()),
+        )
+    }
+
+    fn append_run_allocated(
+        &self,
+        py: Python<'_>,
+        record: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyAny>> {
+        let record = parse_record::<RunRecord>(py, record, "run record")?;
+        let store = self.inner.clone();
+        spawn_py_future(
+            py,
+            async move {
+                store
+                    .append_run_allocated(record)
+                    .map_err(store_error_to_future)
+            },
+            |py, record| serialize_to_py(py, &record),
         )
     }
 

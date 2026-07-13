@@ -5,7 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use starweaver_core::{AgentId, Metadata, RunId, SessionId, TraceContext};
-use starweaver_runtime::AgentStreamRecord;
+
+use crate::AgentStreamRecord;
 
 /// Display event type consumed by product renderers and AGUI adapters.
 ///
@@ -157,7 +158,7 @@ pub enum DisplayMessageKind {
     #[serde(rename = "MEDIA_EVENT")]
     MediaEvent,
     /// Host event workflow event.
-    #[serde(rename = "HOST_EVENT")]
+    #[serde(rename = "HOST_EVENT", alias = "HOST_OPERATION")]
     HostEvent,
     /// Run completed successfully.
     #[serde(rename = "RUN_FINISHED")]

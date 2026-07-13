@@ -7,14 +7,23 @@ pub type Metadata = Map<String, Value>;
 
 mod attachments;
 mod cancellation;
+mod events;
 mod ids;
+mod lifecycle;
+mod protocol;
 mod subagent;
 mod trace;
 mod xml;
 
 pub use attachments::RunAttachments;
 pub use cancellation::CancellationToken;
+pub use events::{AgentEvent, TASK_SNAPSHOT_EVENT_KIND};
 pub use ids::{AgentId, CheckpointId, ConversationId, RunId, SessionId, TaskId};
+pub use lifecycle::{AgentExecutionNode, RunLifecycle};
+pub use protocol::{
+    ProtocolError, ProtocolIdentity, VersionedEnvelope, VersionedRecord, VersionedRecordError,
+    from_versioned_json, from_versioned_value, to_versioned_json, to_versioned_value,
+};
 pub use subagent::{SubagentLifecycleEvent, SubagentLifecycleKind, SubagentSpec};
 pub use trace::TraceContext;
 pub use xml::{XmlWriter, escape_xml_attribute, escape_xml_text};
@@ -29,13 +38,65 @@ pub const fn sdk_name() -> &'static str {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use serde::{Deserialize, Serialize};
     use serde_json::Value;
 
     #[test]
     fn exposes_sdk_name() {
         assert_eq!(sdk_name(), "starweaver-agent-sdk");
+    }
+
+    #[test]
+    fn exposes_stable_task_snapshot_event_kind() {
+        assert_eq!(TASK_SNAPSHOT_EVENT_KIND, "task_snapshot");
+    }
+
+    #[test]
+    fn validates_protocol_identity() {
+        let identity =
+            ProtocolIdentity::new("starweaver.test", 1, "2026-07-11").with_features(["one", "two"]);
+        assert_eq!(identity.features, ["one", "two"]);
+        identity.validate("starweaver.test", 1).unwrap();
+        assert!(matches!(
+            identity.validate("starweaver.other", 1),
+            Err(ProtocolError::UnexpectedProtocol { .. })
+        ));
+        assert!(matches!(
+            identity.validate("starweaver.test", 2),
+            Err(ProtocolError::UnsupportedMajor { .. })
+        ));
+    }
+
+    #[test]
+    fn versioned_records_read_legacy_and_reject_unknown_versions() {
+        #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+        struct Fixture {
+            value: String,
+        }
+
+        impl VersionedRecord for Fixture {
+            const SCHEMA: &'static str = "starweaver.test.fixture";
+            const ALLOW_BARE_V0: bool = true;
+        }
+
+        let expected = Fixture {
+            value: "hello".to_string(),
+        };
+        let encoded = to_versioned_json(&expected).unwrap();
+        assert_eq!(from_versioned_json::<Fixture>(&encoded).unwrap(), expected);
+        assert_eq!(
+            from_versioned_json::<Fixture>(r#"{"value":"hello"}"#).unwrap(),
+            expected
+        );
+        let unknown =
+            r#"{"schema":"starweaver.test.fixture","version":2,"payload":{"value":"hello"}}"#;
+        assert!(matches!(
+            from_versioned_json::<Fixture>(unknown),
+            Err(VersionedRecordError::UnsupportedVersion { actual: 2, .. })
+        ));
     }
 
     #[test]

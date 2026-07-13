@@ -1,6 +1,6 @@
 //! CLI environment provider resolution.
 
-use std::{ffi::OsString, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use starweaver_envd::LocalEnvd;
 use starweaver_envd_client::EnvdRpcClient;
@@ -8,8 +8,7 @@ use starweaver_envd_core::DEFAULT_ENVIRONMENT_ID;
 use starweaver_environment::{
     CompositeEnvironmentProvider, DynEnvironmentProvider, DynProcessShellProvider,
     EnvdEnvironmentProvider, EnvironmentMount, EnvironmentMountMode, EnvironmentPolicy, FilePolicy,
-    LocalEnvironmentProvider, ShellPolicy, SwitchableEnvironmentProvider,
-    SwitchableEnvironmentTarget, VirtualEnvironmentProvider,
+    LocalEnvironmentProvider, ShellPolicy, VirtualEnvironmentProvider,
 };
 use starweaver_rpc_core::{
     EnvironmentAttachmentAccessMode, EnvironmentAttachmentRef, LOCAL_ENVIRONMENT_ATTACHMENT_ID,
@@ -25,8 +24,6 @@ pub struct ResolvedEnvironment {
     pub provider: DynEnvironmentProvider,
     /// Optional process-capable provider override for background shell tools.
     pub process_provider: Option<DynProcessShellProvider>,
-    /// Switchable provider handle used by active-run host mutations.
-    pub switchable: Option<Arc<SwitchableEnvironmentProvider>>,
     /// Effective run-local attachment refs backing this environment.
     pub attachments: Vec<EnvironmentAttachmentRef>,
 }
@@ -57,23 +54,7 @@ pub fn resolve_environment_for_session_with_attachments(
     session_id: &str,
     attachments: &[EnvironmentAttachmentRef],
 ) -> CliResult<ResolvedEnvironment> {
-    let target =
-        resolve_environment_target_for_session_with_attachments(config, session_id, attachments)?;
-    let switchable = Arc::new(SwitchableEnvironmentProvider::new(
-        "cli-active-environment",
-        SwitchableEnvironmentTarget::new(target.provider.clone(), target.process_provider.clone()),
-    ));
-    let provider: DynEnvironmentProvider = switchable.clone();
-    let process_provider = target
-        .process_provider
-        .is_some()
-        .then(|| switchable.clone() as DynProcessShellProvider);
-    Ok(ResolvedEnvironment {
-        provider,
-        process_provider,
-        switchable: Some(switchable),
-        attachments: target.attachments,
-    })
+    resolve_environment_target_for_session_with_attachments(config, session_id, attachments)
 }
 
 /// Build a non-switchable target for a session and attachment list.
@@ -113,7 +94,6 @@ pub fn resolve_environment_target_for_session_with_attachments(
     Ok(ResolvedEnvironment {
         provider,
         process_provider,
-        switchable: None,
         attachments: effective_attachments,
     })
 }
@@ -181,7 +161,6 @@ fn resolve_environment_with_tmp_namespace(
     Ok(ResolvedEnvironment {
         provider,
         process_provider,
-        switchable: None,
         attachments: vec![default_local_attachment()],
     })
 }
@@ -238,7 +217,6 @@ fn resolve_envd_attachment(
     Ok(ResolvedEnvironment {
         provider,
         process_provider,
-        switchable: None,
         attachments: vec![attachment.clone()],
     })
 }
@@ -249,163 +227,8 @@ pub fn envd_client_for_attachment(
     let endpoint = attachment
         .requested_endpoint_ref()
         .ok_or_else(|| "envd attachment requires endpointRef".to_string())?;
-    if endpoint.starts_with("http://") {
-        validate_envd_http_endpoint(endpoint)?;
-        let auth_token = attachment
-            .requested_auth_token()
-            .ok_or_else(|| "envd HTTP attachment requires authToken".to_string())?;
-        validate_envd_http_auth_token(Some(auth_token))?;
-        return EnvdRpcClient::http_with_token(endpoint, auth_token)
-            .map_err(|error| error.to_string());
-    }
-    if endpoint.starts_with("stdio://") {
-        let (program, args) = parse_stdio_envd_endpoint(endpoint)?;
-        return EnvdRpcClient::spawn_stdio(program, args).map_err(|error| error.to_string());
-    }
-    Err("envd attachment supports http:// and stdio:// endpoint refs".to_string())
-}
-
-pub fn validate_envd_attachment_transport(
-    attachment: &EnvironmentAttachmentRef,
-) -> Result<(), String> {
-    let endpoint = attachment
-        .requested_endpoint_ref()
-        .ok_or_else(|| "envd environment attachment requires endpointRef".to_string())?;
-    if endpoint.starts_with("http://") {
-        validate_envd_http_endpoint(endpoint)?;
-        validate_envd_http_auth_token(attachment.requested_auth_token())?;
-        return Ok(());
-    }
-    if endpoint.starts_with("stdio://") {
-        parse_stdio_envd_endpoint(endpoint).map(|_| ())?;
-        return Ok(());
-    }
-    Err("envd environment attachment supports http:// and stdio:// endpoint refs".to_string())
-}
-
-pub fn redacted_envd_endpoint_ref(attachment: &EnvironmentAttachmentRef) -> Option<String> {
-    let endpoint = attachment.requested_endpoint_ref()?;
-    if endpoint.starts_with("stdio://") {
-        return Some("stdio://<redacted>".to_string());
-    }
-    if endpoint.starts_with("http://") {
-        return Some(endpoint.to_string());
-    }
-    None
-}
-
-fn validate_envd_http_endpoint(endpoint: &str) -> Result<(), String> {
-    let rest = endpoint
-        .strip_prefix("http://")
-        .ok_or_else(|| "envd HTTP endpoint must start with http://".to_string())?;
-    if rest.is_empty() {
-        return Err("envd HTTP endpoint host cannot be empty".to_string());
-    }
-    if endpoint.contains('?') || endpoint.contains('#') {
-        return Err("envd HTTP endpoint cannot contain query strings or fragments".to_string());
-    }
-    let authority = rest.split('/').next().unwrap_or(rest);
-    if authority.contains('@') {
-        return Err("envd HTTP endpoint cannot contain userinfo".to_string());
-    }
-    let host = http_authority_host(authority)?;
-    if is_loopback_http_host(host) {
-        Ok(())
-    } else {
-        Err(
-            "envd HTTP endpoint must be loopback unless configured by a future host policy"
-                .to_string(),
-        )
-    }
-}
-
-fn http_authority_host(authority: &str) -> Result<&str, String> {
-    if authority.is_empty() {
-        return Err("envd HTTP endpoint host cannot be empty".to_string());
-    }
-    if let Some(rest) = authority.strip_prefix('[') {
-        let Some((host, _)) = rest.split_once(']') else {
-            return Err("envd HTTP endpoint has invalid IPv6 host".to_string());
-        };
-        return Ok(host);
-    }
-    Ok(authority
-        .split_once(':')
-        .map_or(authority, |(host, _)| host))
-}
-
-fn is_loopback_http_host(host: &str) -> bool {
-    host.eq_ignore_ascii_case("localhost") || host == "::1" || host.starts_with("127.")
-}
-
-fn validate_envd_http_auth_token(auth_token: Option<&str>) -> Result<(), String> {
-    let Some(auth_token) = auth_token else {
-        return Err("envd HTTP attachment requires authToken".to_string());
-    };
-    if auth_token.trim().is_empty() {
-        return Err("envd HTTP attachment authToken cannot be empty".to_string());
-    }
-    if auth_token.bytes().any(|byte| matches!(byte, b'\r' | b'\n')) {
-        return Err("envd HTTP attachment authToken cannot contain newlines".to_string());
-    }
-    Ok(())
-}
-
-fn parse_stdio_envd_endpoint(endpoint: &str) -> Result<(PathBuf, Vec<OsString>), String> {
-    let rest = endpoint
-        .strip_prefix("stdio://")
-        .ok_or_else(|| "envd stdio endpoint must start with stdio://".to_string())?;
-    let (program, query) = rest.split_once('?').unwrap_or((rest, ""));
-    if program.trim().is_empty() {
-        return Err("envd stdio endpoint program cannot be empty".to_string());
-    }
-    let mut args = Vec::new();
-    if !query.is_empty() {
-        for part in query.split('&').filter(|part| !part.is_empty()) {
-            let Some(value) = part.strip_prefix("arg=") else {
-                return Err(
-                    "envd stdio endpoint query supports only repeated arg= values".to_string(),
-                );
-            };
-            args.push(OsString::from(percent_decode_component(value)?));
-        }
-    }
-    Ok((PathBuf::from(percent_decode_component(program)?), args))
-}
-
-fn percent_decode_component(value: &str) -> Result<String, String> {
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'%' if index + 2 < bytes.len() => {
-                let high = hex_value(bytes[index + 1])?;
-                let low = hex_value(bytes[index + 2])?;
-                decoded.push((high << 4) | low);
-                index += 3;
-            }
-            b'%' => return Err("envd stdio endpoint has incomplete percent escape".to_string()),
-            b'+' => {
-                decoded.push(b' ');
-                index += 1;
-            }
-            byte => {
-                decoded.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8(decoded).map_err(|error| error.to_string())
-}
-
-fn hex_value(byte: u8) -> Result<u8, String> {
-    match byte {
-        b'0'..=b'9' => Ok(byte - b'0'),
-        b'a'..=b'f' => Ok(byte - b'a' + 10),
-        b'A'..=b'F' => Ok(byte - b'A' + 10),
-        _ => Err("envd stdio endpoint has invalid percent escape".to_string()),
-    }
+    EnvdRpcClient::from_local_endpoint_ref(endpoint, attachment.requested_auth_token())
+        .map_err(|error| error.to_string())
 }
 
 const fn environment_mount_mode(mode: EnvironmentAttachmentAccessMode) -> EnvironmentMountMode {
@@ -763,8 +586,7 @@ additional_dirs = ["../custom-skills"]
             resolve_environment_for_session_with_attachments(&config, "session_123", &attachments)
                 .unwrap();
 
-        assert_eq!(environment.provider.id(), "cli-active-environment");
-        assert!(environment.switchable.is_some());
+        assert_eq!(environment.provider.id(), "composite");
         assert_eq!(environment.attachments[0].id, "workspace");
         assert!(environment.attachments[0].is_default);
         assert!(!environment.attachments[0].is_default_for_shell);
@@ -833,8 +655,7 @@ additional_dirs = ["../custom-skills"]
             resolve_environment_for_session_with_attachments(&config, "session_123", &attachments)
                 .unwrap();
 
-        assert_eq!(environment.provider.id(), "cli-active-environment");
-        assert!(environment.switchable.is_some());
+        assert_eq!(environment.provider.id(), "composite");
         assert!(environment.attachments[0].is_default);
         assert!(environment.attachments[0].is_default_for_shell);
         assert!(!environment.attachments[1].is_default);

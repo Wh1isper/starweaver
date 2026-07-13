@@ -40,12 +40,6 @@ pub enum CliError {
     Serialization(String),
 }
 
-impl From<rusqlite::Error> for CliError {
-    fn from(error: rusqlite::Error) -> Self {
-        Self::Storage(error.to_string())
-    }
-}
-
 impl From<serde_json::Error> for CliError {
     fn from(error: serde_json::Error) -> Self {
         Self::Serialization(error.to_string())

@@ -11,12 +11,14 @@ flowchart TD
     model[starweaver-model]
     tools[starweaver-tools]
     context[starweaver-context]
+    stream[starweaver-stream]
     runtime[starweaver-runtime]
     agent[starweaver-agent]
     cli[starweaver-cli]
 
     model --> usage
     context --> usage
+    stream --> usage
     runtime --> usage
     agent --> usage
     cli --> usage
@@ -24,11 +26,14 @@ flowchart TD
     model --> core
     tools --> core
     context --> core
+    stream --> core
     runtime --> core
 
+    stream --> model
     runtime --> model
     runtime --> tools
     runtime --> context
+    runtime --> stream
     agent --> runtime
     agent --> tools
     cli --> agent
@@ -44,16 +49,17 @@ flowchart TD
 - tool execution through `starweaver-tools`
 - output validation, output functions, retries, and steering guards
 - capability hooks and capability bundles
-- stream records, trace spans, and executor checkpoints
+- raw stream emission, collection-based `AgentStreamResult`, trace spans, checkpoint emission, and direct executor behavior
 - usage-limit enforcement and usage snapshot event publication
 
-The runtime should not own SDK product behavior such as first-party environment bundles, skill loading, media preprocessing policy, subagent file formats, CLI restore UI, or host-specific tool implementations.
+The runtime should not own SDK product behavior such as first-party environment bundles, skill loading, media preprocessing policy, subagent file formats, CLI restore UI, or host-specific tool implementations. `starweaver-stream` owns typed raw stream events and records, source attribution, sinks, and display/replay contracts; runtime consumes and compatibility-re-exports the raw protocol while owning its emission behavior.
 
 ## Context Boundary
 
 `starweaver-context` owns neutral run and session evidence:
 
 - agent, run, parent run, conversation, and optional logical session-affinity identifiers
+- checkpointable `AgentRunState`, versioned `AgentCheckpoint`/resume records, and the `AgentExecutor` callback contract
 - canonical model history
 - typed dependencies
 - state, notes, events, and message bus
@@ -65,10 +71,13 @@ The runtime should not own SDK product behavior such as first-party environment 
 
 Context may carry `AgentContext.session_id` as a logical affinity value, but provider wire-format routing belongs to `starweaver-model` typed `ModelSettings` and provider mappers. Durable local session ids belong to `starweaver-session`/CLI storage metadata; they are not generic model HTTP headers.
 
-Context exports use neutral profiles:
+Context separates resumable evidence from execution-only state:
 
-- `ResumableExportOptions::curated()` for portable session restoration fields
-- `ResumableExportOptions::full()` for full Starweaver runtime state
+- `ResumableExportOptions::curated()` exports portable session restoration fields.
+- `ResumableExportOptions::full()` adds Starweaver runtime extensions that are safe to resume.
+- `RuntimeEphemeralState` owns active lifecycle, context-injection, tool-ID normalization, wrapper metadata, and current-step fields. It is flattened into `AgentContext` JSON for compatibility but is never copied into `ResumableState`.
+- `AgentToolState` owns shell projection input, deferred-call metadata, auto-load files, task state, and dynamic tool-search state. It is an explicit `AgentContext.tools` component, while Serde flattening preserves the released context JSON keys. Shell environment values are accepted from legacy state but are never serialized.
+- Tool dependency assembly has Legacy, Filtered, and Strict profiles. Legacy remains the third-party compatibility default. Filtered omits the runtime-generated broad `AgentContextHandle`, filters generated `HostCapabilities`, and separates shell values into an explicitly requested `ShellEnvironmentSnapshot`; ambient application dependencies remain available for compatibility. Strict starts with an empty dependency store and intersects requested named host capabilities, shell projection, and mutable context capabilities with the per-tool `ToolCapabilityGrant` installed by the host. Without an explicit host grant those authorities are empty; unknown mutable grants fail closed. `ContextHandoffHandle`, `TaskContextHandle`, `UsageContextHandle`, and `ToolSearchContextHandle` are capability-specific mutable handles for `starweaver.context.handoff`, `starweaver.context.tasks`, `starweaver.context.usage`, and `starweaver.context.tool_search`. First-party SDK bundles declare Filtered profiles and request only the narrow mutable grants they need; dynamic tool-search tools request the tool-search grant. Runtime execution and SDK HITL preprocessing/approved execution resolve the same requirements. Mixed Legacy/narrowed batches and any mutable-grant batch execute sequentially to prevent stale whole-snapshot overwrite; immutable uniform Filtered or Strict batches remain parallel-capable. Stable host capability names are application keys registered with `insert_named_dependency`; Rust type names are compatibility keys rather than stable identifiers.
 
 The context crate must not expose external project names in public symbols, module names, IDs, or tests.
 

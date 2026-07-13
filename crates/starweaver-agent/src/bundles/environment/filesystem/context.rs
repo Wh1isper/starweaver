@@ -1,6 +1,6 @@
 //! Filesystem tool context helpers.
 
-use starweaver_context::{AgentContext, ToolConfig};
+use starweaver_context::{ToolConfig, ToolRuntimeSnapshot};
 use starweaver_environment::{EnvironmentProvider, matches_path_pattern};
 use starweaver_tools::{ToolContext, ToolError};
 
@@ -10,10 +10,13 @@ pub(super) fn tool_config_from_context(
     context: &ToolContext,
     tool: &str,
 ) -> Result<ToolConfig, ToolError> {
-    let agent_context = context.dependency::<AgentContext>().ok_or_else(|| {
-        tool_user_error(tool, "AgentContext dependency is missing from ToolContext")
+    let runtime = context.dependency::<ToolRuntimeSnapshot>().ok_or_else(|| {
+        tool_user_error(
+            tool,
+            "ToolRuntimeSnapshot dependency is missing from ToolContext",
+        )
     })?;
-    Ok(agent_context.tool_config.clone())
+    Ok(runtime.tool_config().clone())
 }
 
 pub(super) fn uses_relaxed_text_limits(

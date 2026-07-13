@@ -465,7 +465,7 @@ fn spawn_tui_run(
                     }));
                     break;
                 }
-                RunStreamEvent::Status(_) | RunStreamEvent::Output(_) => {}
+                RunStreamEvent::Status(_) => {}
             }
         }
     });

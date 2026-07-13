@@ -138,8 +138,8 @@ pub struct ResumableState {
     /// Rendered handoff message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff_message: Option<String>,
-    /// Extra shell environment variables.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Legacy shell environment accepted on restore but never emitted by current exports.
+    #[serde(default, skip_serializing)]
     pub shell_env: BTreeMap<String, String>,
     /// Metadata for deferred tool calls.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -147,11 +147,11 @@ pub struct ResumableState {
     /// Serialized agent registry.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub agent_registry: BTreeMap<String, AgentInfo>,
-    /// Tool names requiring approval.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Legacy agent-owned approval selector accepted for wire compatibility but never applied.
+    #[serde(default, skip_serializing)]
     pub approval_required_tools: Vec<String>,
-    /// MCP server names requiring approval.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Legacy MCP approval selector accepted for wire compatibility but never applied.
+    #[serde(default, skip_serializing)]
     pub approval_required_mcp_servers: Vec<String>,
     /// Security-related runtime configuration.
     #[serde(default, skip_serializing_if = "SecurityConfig::is_default")]
@@ -204,6 +204,11 @@ pub struct ResumableState {
     /// Host extension data preserved across state export and restore.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl starweaver_core::VersionedRecord for ResumableState {
+    const SCHEMA: &'static str = "starweaver.context.resumable_state";
+    const ALLOW_BARE_V0: bool = true;
 }
 
 const fn is_default_started_at(value: &DateTime<Utc>) -> bool {

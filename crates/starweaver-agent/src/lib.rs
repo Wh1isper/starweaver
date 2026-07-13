@@ -12,6 +12,25 @@ pub mod streaming;
 pub mod subagent;
 pub mod subagent_config;
 
+/// Curated stable imports for common SDK applications.
+pub mod prelude {
+    pub use crate::{
+        AgentBuilder, AgentError, AgentResult, AgentRuntime, AgentRuntimeBuilder, AgentSession,
+        AgentStreamResult, ContentPart, DynModelAdapter, FunctionTool, ModelSettings, OutputSchema,
+        OutputValue, TestModel, ToolContext, ToolError, ToolResult, typed_tool,
+    };
+}
+
+/// Advanced protocol crates re-exported only at their explicit owning-layer namespaces.
+pub mod advanced {
+    pub use starweaver_context as context;
+    pub use starweaver_model as model;
+    pub use starweaver_runtime as runtime;
+    pub use starweaver_session as session;
+    pub use starweaver_stream as stream;
+    pub use starweaver_tools as tools;
+}
+
 use std::{collections::BTreeSet, sync::Arc};
 
 use starweaver_model::{ModelAdapter, ModelProfile, ToolDefinition};
@@ -60,8 +79,9 @@ pub use session::{
     AgentRunOptions, AgentSession, HITL_DECISION_DIAGNOSTIC_EVENT_KIND, ResolvedHitlToolReturns,
 };
 pub use starweaver_context::{
-    AgentContext, AgentContextHandle, BusMessage, MessageBus, ModelCapability, ModelConfig,
-    PerThousandRatio, ResumableState, SecurityConfig, ToolAvailabilityPolicy, ToolConfig,
+    AgentContext, AgentContextHandle, BusMessage, HostCapabilities, MessageBus, ModelCapability,
+    ModelConfig, PerThousandRatio, ResumableState, SecurityConfig, ToolAvailabilityPolicy,
+    ToolConfig, ToolRuntimeSnapshot,
 };
 pub use starweaver_core::{
     AgentId, CheckpointId, ConversationId, RunAttachments, RunId, SessionId,

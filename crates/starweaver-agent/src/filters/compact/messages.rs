@@ -160,7 +160,7 @@ pub(super) fn build_trimmed_compact_messages(
             .iter()
             .skip(messages.len().saturating_sub(keep))
             .filter_map(|message| {
-                trim_message_for_compact(message.clone(), &context.injected_context_tags)
+                trim_message_for_compact(message.clone(), &context.runtime.injected_context_tags)
             }),
     );
 

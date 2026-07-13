@@ -15,10 +15,9 @@ categories.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-starweaver-stream.workspace = true
-
-[dev-dependencies]
 starweaver-core.workspace = true
+starweaver-session.workspace = true
+starweaver-stream.workspace = true
 
 [lints]
 workspace = true

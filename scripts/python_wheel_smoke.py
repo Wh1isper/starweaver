@@ -110,6 +110,28 @@ async def main() -> None:
     result = await create_agent(model=model, tools=[add]).run("Add two numbers")
     assert result.output == "wheel-ok"
     assert starweaver.__version__ == starweaver.version()
+    for name in starweaver.__all__:
+        assert getattr(starweaver, name) is not None, name
+    assert set(starweaver.API_STABILITY) == set(starweaver.__all__)
+    adapter = starweaver.StreamAdapter(
+        [
+            {
+                "sequence": 0,
+                "event": {
+                    "kind": "model_stream",
+                    "step": 0,
+                    "event": {
+                        "kind": "part_delta",
+                        "index": 0,
+                        "delta_kind": "text",
+                        "text": "wheel-stream",
+                    },
+                },
+            }
+        ]
+    )
+    display = adapter.display_messages(session_id="wheel-session", run_id="wheel-run")
+    assert display[0]["payload"]["delta"] == "wheel-stream"
 
 
 asyncio.run(main())

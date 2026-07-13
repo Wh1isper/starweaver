@@ -7,18 +7,20 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Agent context, state, message bus, and event bus primitives for Starweaver"
+description = "Agent context, checkpoint state, and runtime evidence contracts for Starweaver"
 readme = "../../README.md"
 keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 starweaver-core.workspace = true
 starweaver-usage.workspace = true
 starweaver-model.workspace = true
+thiserror.workspace = true
 uuid.workspace = true
 
 [lints]

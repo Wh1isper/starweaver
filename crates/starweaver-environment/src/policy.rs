@@ -53,9 +53,13 @@ impl FilePolicy {
 /// Shell execution policy.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ShellPolicy {
-    /// Whether shell execution is allowed.
+    /// Whether shell or direct-program execution is allowed.
     pub allow_execute: bool,
-    /// Allowed program names. Empty means any program accepted by the provider.
+    /// Allowed direct-program executable names or paths.
+    ///
+    /// Empty means shell scripts and direct programs are both accepted by the
+    /// provider. A non-empty list disables arbitrary shell-script execution and
+    /// only permits exact executable matches through the structured program APIs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_programs: Vec<String>,
 }
@@ -70,16 +74,21 @@ impl ShellPolicy {
         }
     }
 
-    pub(crate) fn permits(&self, command: &str) -> bool {
-        if !self.allow_execute {
-            return false;
-        }
-        self.allowed_programs.is_empty()
-            || command.split_whitespace().next().is_some_and(|program| {
-                self.allowed_programs
+    pub(crate) const fn permits_shell(&self) -> bool {
+        self.allow_execute && self.allowed_programs.is_empty()
+    }
+
+    pub(crate) fn permits_program(&self, program: &str) -> bool {
+        self.allow_execute
+            && (self.allowed_programs.is_empty()
+                || self
+                    .allowed_programs
                     .iter()
-                    .any(|allowed| allowed == program)
-            })
+                    .any(|allowed| allowed == program))
+    }
+
+    pub(crate) const fn permits_program_environment_overrides(&self) -> bool {
+        self.allowed_programs.is_empty()
     }
 }
 

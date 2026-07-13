@@ -30,11 +30,54 @@ pub use types::{
     ResourceRef,
 };
 
-/// Current envd protocol identity.
-pub const ENVD_PROTOCOL: &str = "starweaver.envd";
+/// Stable envd protocol family name.
+pub const ENVD_PROTOCOL_NAME: &str = "starweaver.envd";
 
-/// Current envd protocol version.
-pub const ENVD_PROTOCOL_VERSION: &str = "0.1.0";
+/// Supported breaking envd protocol generation.
+pub const ENVD_PROTOCOL_MAJOR: u32 = 1;
+
+/// Current envd protocol documentation and fixture revision.
+pub const ENVD_PROTOCOL_REVISION: &str = "2026-07-11";
+
+/// Implemented envd protocol features.
+pub const ENVD_PROTOCOL_FEATURES: &[&str] =
+    &["environment.lifecycle", "files", "commands", "processes"];
+
+/// Return the current typed envd protocol identity.
+#[must_use]
+pub fn envd_protocol_identity() -> starweaver_core::ProtocolIdentity {
+    starweaver_core::ProtocolIdentity::new(
+        ENVD_PROTOCOL_NAME,
+        ENVD_PROTOCOL_MAJOR,
+        ENVD_PROTOCOL_REVISION,
+    )
+    .with_features(ENVD_PROTOCOL_FEATURES.iter().copied())
+}
+
+/// Validate an envd protocol identity against the supported family and major.
+///
+/// # Errors
+///
+/// Returns an invalid-request error for another protocol name or major.
+pub fn validate_envd_protocol(protocol: &starweaver_core::ProtocolIdentity) -> EnvdResult<()> {
+    protocol
+        .validate(ENVD_PROTOCOL_NAME, ENVD_PROTOCOL_MAJOR)
+        .map_err(|error| EnvdError::invalid_request(error.to_string()))
+}
+
+/// Validate an initialize request when it carries an explicit protocol identity.
+///
+/// Omission remains readable for pre-v1 local clients.
+///
+/// # Errors
+///
+/// Returns an invalid-request error for another protocol name or major.
+pub fn validate_envd_initialize(request: &InitializeEnvdRequest) -> EnvdResult<()> {
+    request
+        .protocol
+        .as_ref()
+        .map_or(Ok(()), validate_envd_protocol)
+}
 
 /// Default environment id used by direct local mode.
 pub const DEFAULT_ENVIRONMENT_ID: &str = "env_cli_default";

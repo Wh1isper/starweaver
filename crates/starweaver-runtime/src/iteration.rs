@@ -40,6 +40,8 @@ pub enum AgentIterationKind {
     SteeringGuard,
     /// The run completed.
     RunComplete,
+    /// The run was cooperatively cancelled.
+    RunCancelled,
     /// The run failed after preserving recoverable context state.
     RunFailed,
 }
@@ -98,6 +100,7 @@ impl AgentIterationStep {
                 (AgentIterationKind::SteeringGuard, Some(*step), None)
             }
             AgentStreamEvent::RunComplete { .. } => (AgentIterationKind::RunComplete, None, None),
+            AgentStreamEvent::RunCancelled { .. } => (AgentIterationKind::RunCancelled, None, None),
             AgentStreamEvent::RunFailed { .. } => (AgentIterationKind::RunFailed, None, None),
         };
         Self {

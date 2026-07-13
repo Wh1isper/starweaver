@@ -1,7 +1,7 @@
 //! Shared helpers for keeping model-visible tool outputs within hard limits.
 
 use serde_json::Value;
-use starweaver_context::AgentContext;
+use starweaver_context::HostCapabilities;
 use starweaver_environment::{DynEnvironmentProvider, EnvironmentProvider};
 use starweaver_tools::ToolContext;
 use uuid::Uuid;
@@ -26,12 +26,11 @@ pub fn tool_output_size(value: &Value) -> usize {
 /// Return the active environment provider from a tool context, when available.
 #[must_use]
 pub fn environment_provider_from_context(context: &ToolContext) -> Option<DynEnvironmentProvider> {
-    if let Some(handle) = context.dependency::<EnvironmentHandle>() {
-        return Some(handle.provider());
-    }
-    let agent_context = context.dependency::<AgentContext>()?;
-    let environment = agent_context.dependencies.get::<EnvironmentHandle>()?;
-    Some(environment.provider())
+    context
+        .dependency::<HostCapabilities>()
+        .and_then(|capabilities| capabilities.get::<EnvironmentHandle>())
+        .or_else(|| context.dependency::<EnvironmentHandle>())
+        .map(|handle| handle.provider())
 }
 
 /// Build consistent guidance for oversized tool outputs.

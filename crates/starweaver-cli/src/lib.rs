@@ -13,7 +13,6 @@ mod local_store;
 mod oauth;
 mod profiles;
 mod prompt_input;
-mod rpc;
 mod runner;
 pub(crate) mod runtime_coordinator;
 pub(crate) mod service;
@@ -23,7 +22,7 @@ mod update_check;
 
 use std::env;
 
-pub use args::{Cli, CliCommand, OutputMode, RpcCommand, RpcTransport, SessionCommand};
+pub use args::{Cli, CliCommand, OutputMode, SessionCommand};
 pub use config::{CliConfig, ConfigResolver};
 pub use error::{CliError, CliResult};
 pub use local_store::{
@@ -48,19 +47,9 @@ pub fn run(args: impl IntoIterator<Item = String>) -> CliResult<()> {
         Err(error) => return Err(error),
     };
     let config = ConfigResolver::default().resolve(&cli)?;
-    if let Some(CliCommand::Rpc(command)) = &cli.command {
-        return rpc::run(&config, command);
-    }
     let output = command_output_from_parts(cli, config)?;
     print!("{output}");
     Ok(())
-}
-
-/// Run the JSON-RPC host service from a standalone RPC process.
-pub fn run_rpc_server(command: &RpcCommand, store: Option<String>) -> CliResult<()> {
-    let cli = rpc_cli(store, command.clone());
-    let config = ConfigResolver::default().resolve(&cli)?;
-    rpc::run(&config, command)
 }
 
 /// Return command output for tests and host integrations.
@@ -72,27 +61,6 @@ pub fn command_output(args: impl IntoIterator<Item = String>) -> CliResult<Strin
     };
     let config = ConfigResolver::default().resolve(&cli)?;
     command_output_from_parts(cli, config)
-}
-
-const fn rpc_cli(store: Option<String>, command: RpcCommand) -> Cli {
-    Cli {
-        prompt: None,
-        session: None,
-        continue_session: false,
-        new_session: false,
-        run: None,
-        branch_from: None,
-        profile: None,
-        worker: None,
-        worker_label: None,
-        worktree: None,
-        worktree_name: None,
-        branch: None,
-        output: None,
-        hitl: None,
-        store,
-        command: Some(CliCommand::Rpc(command)),
-    }
 }
 
 fn command_output_from_parts(cli: Cli, config: CliConfig) -> CliResult<String> {
@@ -242,19 +210,28 @@ all_sessions_interval_hours = 1
     fn mark_session_as_retention_eligible(config: &CliConfig, session_id: &str) {
         let old = chrono::DateTime::parse_from_rfc3339("2000-01-01T00:00:00+00:00")
             .unwrap()
-            .to_rfc3339();
-        let conn = rusqlite::Connection::open(&config.database_path).unwrap();
-        conn.execute(
-            "UPDATE runs SET updated_at = ?1 WHERE session_id = ?2",
-            rusqlite::params![old, session_id],
-        )
-        .unwrap();
-        conn.execute(
-            "UPDATE sessions SET updated_at = ?1 WHERE session_id = ?2",
-            rusqlite::params![old, session_id],
-        )
-        .unwrap();
-        drop(conn);
+            .to_utc();
+        let storage = starweaver_storage::SqliteStorage::open(&config.database_path).unwrap();
+        let session_id = starweaver_core::SessionId::from_string(session_id);
+        let runs = storage.list_runs(&session_id).unwrap();
+        let run_ids = runs
+            .iter()
+            .map(|run| run.run_id.clone())
+            .collect::<Vec<_>>();
+        storage.prune_runs(&session_id, &run_ids).unwrap();
+        for mut run in runs {
+            run.metadata
+                .remove(starweaver_storage::RunEvidenceCommit::DIGEST_METADATA_KEY);
+            run.created_at = old;
+            run.updated_at = old;
+            storage.begin_run(run.clone()).unwrap();
+            storage
+                .commit_run_evidence(starweaver_storage::RunEvidenceCommit::new(
+                    run,
+                    starweaver_context::ResumableState::default(),
+                ))
+                .unwrap();
+        }
 
         let state_path = config.project_dir.join("state.json");
         let mut state = serde_json::from_str::<serde_json::Value>(
@@ -765,7 +742,8 @@ prompt = "Review carefully."
             assert_eq!(event.sequence, sequence);
         }
 
-        let session_cursor = starweaver_stream::ReplayCursor::new(session_window.scope.clone(), 0);
+        let session_cursor =
+            starweaver_stream::ReplayCursor::display(session_window.scope.clone(), 0);
         let session_tail = store
             .replay_display_window(session_id, None, Some(&session_cursor))
             .unwrap();
@@ -810,7 +788,7 @@ prompt = "Review carefully."
             .unwrap();
         let store = LocalStore::open(&config).unwrap();
         let run = store.list_runs(session_id, 10).unwrap().remove(0);
-        let archive = LocalStreamArchive::new(config);
+        let archive = LocalStreamArchive::new(config).unwrap();
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let run_scope = starweaver_stream::ReplayScope::run(&run.run_id);
         let session_scope = starweaver_stream::ReplayScope::session(session_id);
@@ -825,7 +803,7 @@ prompt = "Review carefully."
         let session_messages = runtime
             .block_on(archive.replay_display_after(
                 &session_scope,
-                Some(starweaver_stream::ReplayCursor::new(
+                Some(starweaver_stream::ReplayCursor::display(
                     session_scope.clone(),
                     0,
                 )),
@@ -851,7 +829,10 @@ prompt = "Review carefully."
         let appended = runtime
             .block_on(archive.replay_display_after(
                 &run_scope,
-                Some(starweaver_stream::ReplayCursor::new(run_scope.clone(), 998)),
+                Some(starweaver_stream::ReplayCursor::display(
+                    run_scope.clone(),
+                    998,
+                )),
             ))
             .unwrap();
         assert_eq!(appended.len(), 1);
@@ -863,7 +844,10 @@ prompt = "Review carefully."
         let snapshot = starweaver_stream::ReplaySnapshot {
             scope: Some(run_scope.clone()),
             revision: 7,
-            cursor: Some(starweaver_stream::ReplayCursor::new(run_scope.clone(), 999)),
+            cursor: Some(starweaver_stream::ReplayCursor::display(
+                run_scope.clone(),
+                999,
+            )),
             display_messages: appended,
             metadata: serde_json::Map::default(),
         };
@@ -903,8 +887,8 @@ prompt = "Review carefully."
             .resolve(&cli)
             .unwrap();
         let session_id = starweaver_core::SessionId::from_string("session_local_runtime");
-        let session_store = Arc::new(LocalSessionStore::new(config.clone()));
-        let stream_archive = Arc::new(LocalStreamArchive::new(config));
+        let session_store = Arc::new(LocalSessionStore::new(config.clone()).unwrap());
+        let stream_archive = Arc::new(LocalStreamArchive::new(config).unwrap());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let mut agent_runtime = starweaver_agent::AgentRuntimeBuilder::new(Arc::new(
             starweaver_agent::TestModel::with_text("ok"),

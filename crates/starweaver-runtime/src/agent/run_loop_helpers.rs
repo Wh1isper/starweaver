@@ -38,7 +38,7 @@ impl Agent {
             };
             result.map_err(|error| AgentError::Capability(error.to_string()))?;
         }
-        context.context_manage_tool_names = tools
+        context.runtime.context_manage_tool_names = tools
             .tools()
             .into_iter()
             .filter(|tool| {
@@ -78,6 +78,24 @@ impl Agent {
                 }
             }
         }
+    }
+}
+
+pub(in crate::agent) fn agent_error_public_message(error: &AgentError) -> String {
+    match error {
+        AgentError::Model(error) => error.public_message(),
+        AgentError::Capability(_)
+        | AgentError::Cancelled { .. }
+        | AgentError::CapabilityOrder(_)
+        | AgentError::StructuredOutput(_)
+        | AgentError::DynamicInstruction(_)
+        | AgentError::OutputRetryLimitExceeded { .. }
+        | AgentError::ToolRetryLimitExceeded { .. }
+        | AgentError::StepLimitExceeded { .. }
+        | AgentError::UsageLimit(_)
+        | AgentError::ExecutionSuspended { .. }
+        | AgentError::Executor(_)
+        | AgentError::ToolCallsRequireTools => error.to_string(),
     }
 }
 
@@ -161,4 +179,25 @@ pub(in crate::agent) fn preserve_pending_tool_returns_for_resume(state: &mut Age
         }));
     state.pending_tool_returns.clear();
     state.pending_tool_calls.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use starweaver_model::ModelError;
+
+    use super::{AgentError, agent_error_public_message};
+
+    #[test]
+    fn agent_error_public_message_redacts_provider_response_body() {
+        let error = AgentError::Model(ModelError::ProviderStatus {
+            status: 403,
+            body: json!({"echoed_credential": "provider-secret"}),
+            retryable: false,
+        });
+
+        let message = agent_error_public_message(&error);
+        assert_eq!(message, "provider status 403");
+        assert!(!message.contains("provider-secret"));
+    }
 }

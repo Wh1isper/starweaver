@@ -20,9 +20,9 @@ serde.workspace = true
 serde_json.workspace = true
 starweaver-context.workspace = true
 starweaver-core.workspace = true
-starweaver-runtime.workspace = true
 starweaver-session.workspace = true
 starweaver-stream.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 starweaver-agent.workspace = true

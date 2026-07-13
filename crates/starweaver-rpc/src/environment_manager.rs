@@ -5,9 +5,10 @@ use std::{
 };
 
 use serde_json::{Value, json};
+use starweaver_envd_client::EnvdRpcClient;
 use starweaver_envd_core::{
     DEFAULT_ENVIRONMENT_ID, EnvdService, EnvironmentRequest, InitializeEnvdRequest,
-    OpenEnvironmentRequest,
+    OpenEnvironmentRequest, envd_protocol_identity,
 };
 use starweaver_rpc_core::{
     ALREADY_EXISTS, ENVIRONMENT_UNAVAILABLE, EnvironmentAttachParams,
@@ -23,14 +24,33 @@ use starweaver_rpc_core::{
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use crate::environment::{
-    envd_client_for_attachment, redacted_envd_endpoint_ref, validate_envd_attachment_transport,
-};
-
 const DEFAULT_READINESS_TIMEOUT_MS: u64 = 5_000;
 
+fn envd_client_for_attachment(
+    attachment: &EnvironmentAttachmentRef,
+) -> Result<EnvdRpcClient, String> {
+    let endpoint = attachment
+        .requested_endpoint_ref()
+        .ok_or_else(|| "envd attachment requires endpointRef".to_string())?;
+    EnvdRpcClient::from_local_endpoint_ref(endpoint, attachment.requested_auth_token())
+        .map_err(|error| error.to_string())
+}
+
+fn validate_envd_attachment_transport(attachment: &EnvironmentAttachmentRef) -> Result<(), String> {
+    let endpoint = attachment
+        .requested_endpoint_ref()
+        .ok_or_else(|| "envd environment attachment requires endpointRef".to_string())?;
+    starweaver_envd_client::validate_local_endpoint_ref(endpoint, attachment.requested_auth_token())
+        .map_err(|error| error.to_string())
+}
+
+fn redacted_envd_endpoint_ref(attachment: &EnvironmentAttachmentRef) -> Option<String> {
+    starweaver_envd_client::redacted_endpoint_ref(attachment.requested_endpoint_ref()?)
+}
+
+/// RPC-owned environment attachment leases and active-run usage accounting.
 #[derive(Clone)]
-pub(super) struct EnvironmentAttachmentManager {
+pub struct EnvironmentAttachmentManager {
     leases: Arc<Mutex<BTreeMap<String, LeaseRecord>>>,
     attach_idempotency: Arc<Mutex<BTreeMap<String, String>>>,
     active_runs: Arc<Mutex<BTreeMap<String, BTreeMap<String, usize>>>>,
@@ -524,6 +544,7 @@ impl EnvironmentAttachmentManager {
         let probe = async {
             client
                 .initialize(InitializeEnvdRequest {
+                    protocol: Some(envd_protocol_identity()),
                     client_name: Some("starweaver-rpc".to_string()),
                     metadata: starweaver_core::Metadata::default(),
                 })

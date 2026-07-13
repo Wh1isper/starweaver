@@ -45,8 +45,7 @@ Current seams:
 - Runtime steering consumes bus messages with topic `steering` before model
   requests and before final output completion. `source="user"` is audit
   metadata only and does not trigger steering by itself.
-- CLI/RPC active steering uses a pending queue and drains it into context at
-  runtime boundaries.
+- CLI and RPC each own an independent pending queue and active-run registry; both can drain control messages through the same product-neutral runtime seam.
 
 Implemented seam:
 
@@ -56,8 +55,7 @@ Implemented seam:
 - control drain capability installed on live stream startup
 - `steering_submitted` sideband event when queued steering reaches context
 
-Remaining migration work: CLI/RPC active steering can move onto the shared
-drain seam when that host-control surface is next touched.
+Remaining migration work: CLI and RPC active steering can independently adopt the shared drain seam without sharing coordinators, queues, handlers, or product state.
 
 ## Target User Shape
 
@@ -306,8 +304,7 @@ The handle integrates with `AgentStreamController`:
 - `send_message` and `steer` enqueue active control messages.
 - stream startup installs the drain capability.
 
-The drain capability should be neutral enough for CLI reuse. CLI active-run
-registry, display messages, and RPC payloads stay in `starweaver-cli`.
+The drain capability must remain product-neutral. CLI active-run and display state stay in `starweaver-cli`; RPC active-run state and payload mapping belong to `starweaver-rpc` and `starweaver-rpc-core`. Only the control queue/drain runtime contract is shared.
 
 ## Why Snapshot Mutation Is Wrong
 

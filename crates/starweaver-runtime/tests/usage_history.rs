@@ -525,6 +525,10 @@ async fn message_prepare_capability_filters_messages_sent_to_model() {
         .unwrap();
 
     assert_eq!(result.all_messages().len(), 4);
+    assert!(result.all_messages().iter().any(|message| matches!(
+        message,
+        ModelMessage::Response(response) if response.text_output() == "old answer"
+    )));
     let provider_messages = captured.lock().unwrap()[0].clone();
     assert_eq!(provider_messages.len(), 1);
     assert!(matches!(
@@ -828,11 +832,13 @@ async fn tool_calls_limit_is_checked_before_executing_tools() {
     let model = Arc::new(TestModel::with_responses(vec![tool_call_response(
         "call_1", "echo",
     )]));
+    let mut context = AgentContext::default();
+    let mut events = Vec::new();
 
     let error = Agent::new(model)
         .with_tools(echo_registry())
         .with_usage_limits(UsageLimits::new().with_tool_calls_limit(0))
-        .run("call echo")
+        .run_with_context_and_stream_events("call echo", &mut context, &mut events)
         .await
         .unwrap_err();
 
@@ -843,6 +849,34 @@ async fn tool_calls_limit_is_checked_before_executing_tools() {
             tool_calls: 1
         })
     ));
+    let Some(model_response_complete) = events.iter().position(|record| {
+        matches!(
+            record.event,
+            AgentStreamEvent::NodeComplete {
+                node: starweaver_runtime::AgentExecutionNode::ModelResponse,
+                ..
+            }
+        )
+    }) else {
+        panic!("missing model response completion");
+    };
+    let Some(run_failed) = events
+        .iter()
+        .position(|record| matches!(record.event, AgentStreamEvent::RunFailed { .. }))
+    else {
+        panic!("missing terminal run failure");
+    };
+    assert!(model_response_complete < run_failed);
+    assert!(!events.iter().any(|record| matches!(
+        record.event,
+        AgentStreamEvent::NodeStart {
+            node: starweaver_runtime::AgentExecutionNode::ToolCall,
+            ..
+        } | AgentStreamEvent::NodeComplete {
+            node: starweaver_runtime::AgentExecutionNode::ToolCall,
+            ..
+        } | AgentStreamEvent::ToolCall { .. }
+    )));
 }
 
 #[tokio::test]

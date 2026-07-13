@@ -1,0 +1,38 @@
+[
+  {
+    "kind": "cache_point",
+    "ttl": "1h"
+  },
+  {
+    "kind": "text",
+    "text": "hello"
+  },
+  {
+    "kind": "image_url",
+    "url": "https://example.test/image.png"
+  },
+  {
+    "kind": "file_url",
+    "url": "https://example.test/document.pdf",
+    "media_type": "application/pdf"
+  },
+  {
+    "kind": "inline_binary",
+    "data": [1, 2, 3],
+    "media_type": "audio/wav"
+  },
+  {
+    "kind": "resource_ref",
+    "uri": "resource://fixture/video",
+    "media_type": "video/mp4",
+    "resource_type": "video",
+    "resource_metadata": {
+      "sha256": "fixture"
+    }
+  },
+  {
+    "kind": "data_url",
+    "data_url": "data:text/plain;base64,aGVsbG8=",
+    "media_type": "text/plain"
+  }
+]

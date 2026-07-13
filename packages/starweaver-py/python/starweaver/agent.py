@@ -633,7 +633,7 @@ class StreamEvent:
 
     @property
     def is_terminal(self) -> bool:
-        return self.kind in {"run_complete", "run_failed", "suspended"}
+        return self.kind in {"run_complete", "run_cancelled", "run_failed", "suspended"}
 
 
 class RunResult:

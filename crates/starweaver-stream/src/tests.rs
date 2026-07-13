@@ -1,15 +1,13 @@
 #![allow(clippy::unwrap_used)]
 
+use super::*;
 use serde_json::json;
+use starweaver_core::SessionId;
 use starweaver_core::{AgentId, RunId, TaskId};
 use starweaver_model::{
     ModelResponse, ModelResponsePart, ModelResponseStreamEvent, PartDelta, PartEnd, PartStart,
     ProviderPartInfo, ToolCallPart, ToolReturnPart,
 };
-use starweaver_runtime::{AgentStreamEvent, AgentStreamRecord, AgentStreamSource};
-
-use super::*;
-use starweaver_core::SessionId;
 
 fn custom_stream_record(
     sequence: usize,
@@ -57,6 +55,29 @@ fn display_message_serializes_with_agui_event_name() {
         serde_json::from_value::<DisplayMessage>(value).unwrap(),
         message
     );
+}
+
+#[test]
+fn legacy_host_operation_deserializes_as_host_event() {
+    let message = display_message(1, DisplayMessageKind::HostEvent, json!({"action": "open"}));
+    let mut legacy = serde_json::to_value(&message).unwrap();
+    legacy["type"] = json!("HOST_OPERATION");
+
+    let decoded = serde_json::from_value::<DisplayMessage>(legacy).unwrap();
+
+    assert_eq!(decoded.kind, DisplayMessageKind::HostEvent);
+    assert_eq!(
+        serde_json::to_value(decoded).unwrap()["type"],
+        json!("HOST_EVENT")
+    );
+}
+
+#[test]
+fn replay_display_event_preserves_message_timestamp() {
+    let message = display_message(7, DisplayMessageKind::RunCompleted, serde_json::Value::Null);
+    let timestamp = message.timestamp;
+    let event = ReplayEvent::display(ReplayScope::run("run-1"), message);
+    assert_eq!(event.timestamp, timestamp);
 }
 
 #[test]
@@ -523,10 +544,20 @@ async fn replay_log_orders_replays_after_cursor_and_is_idempotent() {
     let event_one = ReplayEvent::new(scope.clone(), 1, ReplayEventKind::Raw(json!({"n": 1})));
     log.append(scope.clone(), event_two.clone()).await.unwrap();
     log.append(scope.clone(), event_one.clone()).await.unwrap();
-    log.append(scope.clone(), event_two).await.unwrap();
+    log.append(scope.clone(), event_two.clone()).await.unwrap();
+    let conflict = ReplayEvent {
+        event: ReplayEventKind::Raw(json!({"n": 99})),
+        ..event_two
+    };
+    let error = log.append(scope.clone(), conflict).await.unwrap_err();
+    assert!(error.to_string().contains("replay event conflict"));
 
     let replay = log
-        .replay_after(&scope, Some(ReplayCursor::new(scope.clone(), 1)), None)
+        .replay_after(
+            &scope,
+            Some(ReplayCursor::replay_event(scope.clone(), 1)),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(replay.len(), 1);
@@ -544,7 +575,10 @@ async fn replay_subscription_receives_live_tail_after_cursor() {
     .await
     .unwrap();
     let mut subscription = log
-        .subscribe(scope.clone(), Some(ReplayCursor::new(scope.clone(), 1)))
+        .subscribe(
+            scope.clone(),
+            Some(ReplayCursor::replay_event(scope.clone(), 1)),
+        )
         .await
         .unwrap();
     log.append(
@@ -615,7 +649,11 @@ fn realtime_compaction_merges_text_and_tool_deltas_and_retains_terminal() {
     );
     assert_eq!(
         buffer
-            .tail_after(Some(ReplayCursor::new(ReplayScope::run("run-compact"), 4)))
+            .tail_after(Some(ReplayCursor::display(
+                ReplayScope::run("run-compact"),
+                4,
+            )))
+            .unwrap()
             .len(),
         1
     );
@@ -638,6 +676,18 @@ async fn stream_archive_replays_raw_display_snapshots_and_cursor_range() {
         )
         .await
         .unwrap();
+    let error = archive
+        .append_raw_records(
+            &session_id,
+            &run_id,
+            vec![
+                AgentStreamRecord::new(2, AgentStreamEvent::ModelRequest { step: 2 }),
+                AgentStreamRecord::new(1, AgentStreamEvent::ModelRequest { step: 99 }),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("raw stream conflict"));
     archive
         .append_display_messages(
             scope.clone(),
@@ -651,7 +701,7 @@ async fn stream_archive_replays_raw_display_snapshots_and_cursor_range() {
     let snapshot = ReplaySnapshot {
         scope: Some(scope.clone()),
         revision: 1,
-        cursor: Some(ReplayCursor::new(scope.clone(), 1)),
+        cursor: Some(ReplayCursor::display(scope.clone(), 1)),
         display_messages: vec![display_message(
             1,
             DisplayMessageKind::RunCompleted,
@@ -668,12 +718,12 @@ async fn stream_archive_replays_raw_display_snapshots_and_cursor_range() {
         .replay_raw_after(
             &session_id,
             &run_id,
-            Some(ReplayCursor::new(scope.clone(), 0)),
+            Some(ReplayCursor::raw_runtime(scope.clone(), 0)),
         )
         .await
         .unwrap();
     let display = archive
-        .replay_display_after(&scope, Some(ReplayCursor::new(scope.clone(), 0)))
+        .replay_display_after(&scope, Some(ReplayCursor::display(scope.clone(), 0)))
         .await
         .unwrap();
     let range = archive.cursor_range(&scope).await.unwrap().unwrap();
@@ -1125,4 +1175,45 @@ async fn default_projector_maps_thinking_and_tool_calls_from_model_response() {
     assert!(messages.iter().any(|message| {
         message.kind == DisplayMessageKind::AssistantTextDelta && message.payload["delta"] == "done"
     }));
+}
+
+#[tokio::test]
+async fn replay_subscription_refills_broadcast_lag_from_durable_events() {
+    let log = InMemoryReplayEventLog::new();
+    let scope = ReplayScope::run("lag-refill");
+    let mut subscription = log.subscribe(scope.clone(), None).await.unwrap();
+    for sequence in 0..300 {
+        log.append(
+            scope.clone(),
+            ReplayEvent::new(scope.clone(), sequence, ReplayEventKind::Heartbeat),
+        )
+        .await
+        .unwrap();
+    }
+
+    for expected in 0..300 {
+        let event = subscription.recv().await.unwrap();
+        assert_eq!(event.sequence, expected);
+    }
+}
+
+#[tokio::test]
+async fn replay_subscription_orders_concurrent_out_of_order_live_publication() {
+    let log = InMemoryReplayEventLog::new();
+    let scope = ReplayScope::run("concurrent-refill");
+    let mut subscription = log.subscribe(scope.clone(), None).await.unwrap();
+    let high = log.append(
+        scope.clone(),
+        ReplayEvent::new(scope.clone(), 1, ReplayEventKind::Heartbeat),
+    );
+    let low = log.append(
+        scope.clone(),
+        ReplayEvent::new(scope.clone(), 0, ReplayEventKind::Heartbeat),
+    );
+    let (high_result, low_result) = tokio::join!(high, low);
+    high_result.unwrap();
+    low_result.unwrap();
+
+    assert_eq!(subscription.recv().await.unwrap().sequence, 0);
+    assert_eq!(subscription.recv().await.unwrap().sequence, 1);
 }

@@ -1,0 +1,48 @@
+{
+  "schema": "starweaver.runtime.checkpoint",
+  "version": 1,
+  "payload": {
+    "checkpoint_id": "checkpoint-fixture",
+    "run_id": "run-fixture",
+    "conversation_id": "conversation-fixture",
+    "node": "run_start",
+    "run_step": 0,
+    "resume": {
+      "node": "run_start",
+      "status": "starting",
+      "run_step": 0,
+      "cursor": {
+        "model_request_attempt": 0,
+        "output_validation_attempt": 0,
+        "message_cursor": 0
+      },
+      "usage": {
+        "requests": 0,
+        "input_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "tool_calls": 0
+      },
+      "pending_approval_count": 0,
+      "deferred_tool_count": 0
+    },
+    "state": {
+      "run_id": "run-fixture",
+      "conversation_id": "conversation-fixture",
+      "message_history": [],
+      "usage": {
+        "requests": 0,
+        "input_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "tool_calls": 0
+      },
+      "run_step": 0,
+      "status": "starting"
+    }
+  }
+}

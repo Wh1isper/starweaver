@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod prefixed;
 pub mod registry;
 pub mod tool;
+pub mod tool_dependency;
 pub mod tool_proxy;
 pub mod toolset;
 
@@ -35,6 +36,10 @@ pub use tool::{
     extend_tool_metadata_hidden_by_tags, extend_tool_metadata_tags, json_tool,
     set_tool_metadata_kind, tool_metadata_hidden_by_tags, tool_metadata_kind, tool_metadata_tags,
     typed_json_tool,
+};
+pub use tool_dependency::{
+    TOOL_METADATA_DEPENDENCIES_KEY, ToolDependencyProfile, ToolDependencyRequirements,
+    tool_dependency_requirements,
 };
 pub use tool_proxy::{
     TOOL_SEARCH_FAILED_EVENT_KIND, TOOL_SEARCH_INVALIDATED_EVENT_KIND,

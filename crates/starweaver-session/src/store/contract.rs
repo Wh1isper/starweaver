@@ -1,13 +1,16 @@
 //! Durable session store contract.
 
 use async_trait::async_trait;
-use starweaver_context::ResumableState;
+use starweaver_context::{AgentCheckpoint, ResumableState};
 use starweaver_core::{RunId, SessionId};
-use starweaver_runtime::{AgentCheckpoint, AgentStreamRecord};
+use starweaver_stream::AgentStreamRecord;
 
 use crate::{
     approval::{ApprovalRecord, DeferredToolRecord},
-    error::SessionStoreResult,
+    claim::HitlResumeClaim,
+    error::{SessionStoreError, SessionStoreResult},
+    evidence::RunEvidenceCommit,
+    publication::{PendingStreamPublication, StreamPublicationTarget},
     records::{
         EnvironmentStateRef, RunRecord, RunStatus, SessionRecord, SessionStatus, StreamCursorRef,
     },
@@ -31,6 +34,79 @@ pub struct SessionFilter {
 /// Durable session store contract.
 #[async_trait]
 pub trait SessionStore: Send + Sync {
+    /// Atomically persist a complete run evidence bundle.
+    ///
+    /// Implementations must leave either the complete previous state or the complete committed
+    /// state visible. Identical retries are idempotent and conflicting retries must fail.
+    async fn commit_run_evidence(&self, commit: RunEvidenceCommit)
+    -> SessionStoreResult<RunRecord>;
+
+    /// Atomically bootstrap missing session/run records and persist one runtime checkpoint.
+    ///
+    /// This is the executor write path. Implementations must not expose a session or run without
+    /// the checkpoint when the operation fails. Exact checkpoint retries are idempotent and
+    /// conflicting retries fail.
+    async fn commit_checkpoint(
+        &self,
+        session_id: &SessionId,
+        checkpoint: AgentCheckpoint,
+    ) -> SessionStoreResult<()>;
+
+    /// Acquire exclusive ownership of a waiting run before any continuation side effect.
+    ///
+    /// A run may have at most one active claim. Claims are consumed by the related-run update in
+    /// [`Self::commit_run_evidence`].
+    async fn claim_hitl_resume(&self, _claim: HitlResumeClaim) -> SessionStoreResult<()> {
+        Err(SessionStoreError::Failed(
+            "session store does not support exclusive HITL resume claims".to_string(),
+        ))
+    }
+
+    /// Mark a claim started immediately before the first continuation hook or tool executes.
+    async fn mark_hitl_resume_started(
+        &self,
+        _session_id: &SessionId,
+        _run_id: &RunId,
+        _claim_id: &str,
+    ) -> SessionStoreResult<()> {
+        Err(SessionStoreError::Failed(
+            "session store does not support exclusive HITL resume claims".to_string(),
+        ))
+    }
+
+    /// Release a preflight claim. Stores must reject release after execution has started.
+    async fn release_hitl_resume_claim(
+        &self,
+        _session_id: &SessionId,
+        _run_id: &RunId,
+        _claim_id: &str,
+    ) -> SessionStoreResult<()> {
+        Err(SessionStoreError::Failed(
+            "session store does not support exclusive HITL resume claims".to_string(),
+        ))
+    }
+
+    /// List transactionally enqueued stream publications still awaiting at least one sink.
+    async fn pending_stream_publications(
+        &self,
+        _session_id: &SessionId,
+    ) -> SessionStoreResult<Vec<PendingStreamPublication>> {
+        Err(SessionStoreError::Failed(
+            "session store does not support transactional stream publication".to_string(),
+        ))
+    }
+
+    /// Acknowledge one sink only after its complete idempotent delivery succeeds.
+    async fn acknowledge_stream_publication(
+        &self,
+        _publication_id: &str,
+        _target: StreamPublicationTarget,
+    ) -> SessionStoreResult<()> {
+        Err(SessionStoreError::Failed(
+            "session store does not support transactional stream publication".to_string(),
+        ))
+    }
+
     /// Save a session record.
     async fn save_session(&self, session: SessionRecord) -> SessionStoreResult<()>;
 
@@ -62,6 +138,9 @@ pub trait SessionStore: Send + Sync {
     ) -> SessionStoreResult<()>;
 
     /// Append or replace a run record.
+    ///
+    /// A zero `sequence_no` requests atomic session-local allocation. Replacing an existing run
+    /// must preserve its assigned sequence; an explicit attempt to change that sequence fails.
     async fn append_run(&self, run: RunRecord) -> SessionStoreResult<()>;
 
     /// Load a run record.
@@ -167,37 +246,12 @@ pub trait SessionStore: Send + Sync {
     /// Load a resume snapshot from session, checkpoint, and stream evidence.
     async fn resume_snapshot(
         &self,
-        session_id: &SessionId,
-        run_id: &RunId,
+        _session_id: &SessionId,
+        _run_id: &RunId,
     ) -> SessionStoreResult<SessionResumeSnapshot> {
-        let session = self.load_session(session_id).await?;
-        let run = self.load_run(session_id, run_id).await?;
-        let latest_checkpoint = self.latest_checkpoint(session_id, run_id).await?;
-        let after_sequence = latest_checkpoint
-            .as_ref()
-            .and_then(|checkpoint| checkpoint.resume.cursor.stream_cursor);
-        let stream_records = self
-            .replay_stream_records_after(session_id, run_id, after_sequence)
-            .await?;
-        let approvals = self.load_approvals(session_id, run_id).await?;
-        let deferred_tools = self.load_deferred_tools(session_id, run_id).await?;
-        let environment_state = run
-            .environment_state
-            .clone()
-            .or_else(|| session.environment_state.clone());
-        let mut stream_cursors = session.stream_cursors.clone();
-        stream_cursors.extend(run.stream_cursors.clone());
-        Ok(SessionResumeSnapshot {
-            state: session.state.clone(),
-            session,
-            run,
-            environment_state,
-            latest_checkpoint,
-            stream_records,
-            approvals,
-            deferred_tools,
-            stream_cursors,
-        })
+        Err(SessionStoreError::Failed(
+            "session store does not support per-run resume snapshots".to_string(),
+        ))
     }
 
     /// Return compact run trace projection.

@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use starweaver_core::Metadata;
+use starweaver_core::{
+    Metadata, VersionedRecord, VersionedRecordError, from_versioned_value, to_versioned_value,
+};
 
 /// Glob options for provider-backed filesystem searches.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -133,7 +135,7 @@ pub struct ResourceRef {
 /// Shell execution request.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ShellCommand {
-    /// Shell command string.
+    /// Script interpreted by the provider's shell.
     pub command: String,
     /// Optional timeout in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -144,6 +146,62 @@ pub struct ShellCommand {
     /// Environment variables to set for the command.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub environment: BTreeMap<String, String>,
+}
+
+impl ShellCommand {
+    /// Create a shell-script request.
+    #[must_use]
+    pub fn shell(script: impl Into<String>) -> Self {
+        Self {
+            command: script.into(),
+            ..Self::default()
+        }
+    }
+}
+
+/// Structured direct-program execution request.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProgramCommand {
+    /// Executable name or path passed directly to the operating system.
+    pub program: String,
+    /// Explicit argv entries. They are never interpreted by a shell.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arguments: Vec<String>,
+    /// Optional timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    /// Optional provider-scoped working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Environment variables to set for the program.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, String>,
+}
+
+impl ProgramCommand {
+    /// Create a structured direct-program request.
+    #[must_use]
+    pub fn new<I, S>(program: impl Into<String>, arguments: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            program: program.into(),
+            arguments: arguments.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// Return a human-readable command representation for process snapshots.
+    #[must_use]
+    pub fn display_command(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.arguments.iter().map(String::as_str))
+            .map(|part| format!("{part:?}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 /// Shell review workspace context exposed by environment providers.
@@ -337,11 +395,25 @@ pub struct EnvironmentState {
     pub metadata: Metadata,
 }
 
+impl VersionedRecord for EnvironmentState {
+    const SCHEMA: &'static str = "starweaver.environment.state";
+    const ALLOW_BARE_V0: bool = true;
+}
+
 impl EnvironmentState {
-    /// Convert the snapshot into JSON for `AgentContext` state domains.
+    /// Convert the snapshot into a versioned JSON envelope for durable state domains.
     #[must_use]
     pub fn to_json(&self) -> Value {
-        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({}))
+        to_versioned_value(self).unwrap_or_else(|_| serde_json::json!({}))
+    }
+
+    /// Decode a current envelope or an explicitly supported previous-release bare snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a compatibility error for malformed, mismatched, or unknown versions.
+    pub fn from_json(value: Value) -> Result<Self, VersionedRecordError> {
+        from_versioned_value(value)
     }
 }
 

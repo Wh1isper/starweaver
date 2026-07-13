@@ -14,8 +14,7 @@ use super::*;
 fn review_tool_context(handle: &ShellReviewHandle, tool_call_id: &str) -> ToolContext {
     let mut agent_context = AgentContext::default();
     attach_shell_review_handle(&mut agent_context, handle.clone());
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let mut context = ToolContext::new(
         RunId::from_string("run_shell_review"),
         ConversationId::from_string("conversation_shell_review"),
@@ -290,8 +289,7 @@ async fn shell_exec_runs_review_before_provider_execution() {
     let mut agent_context = AgentContext::default();
     crate::bundles::environment::attach_environment(&mut agent_context, provider);
     attach_shell_review_handle(&mut agent_context, handle);
-    let mut dependencies = agent_context.dependencies.clone();
-    dependencies.insert(agent_context);
+    let dependencies = agent_context.tool_dependency_store();
     let context = ToolContext::new(
         RunId::from_string("run_shell_exec_review"),
         ConversationId::from_string("conversation_shell_exec_review"),

@@ -282,21 +282,25 @@ existing HITL paths after the adapter is in place.
 
 ## Dependency Boundary
 
-Allowed:
+Allowed dependency direction:
 
-```text
-starweaver-agent -> starweaver-environment
-starweaver-environment -> starweaver-envd-core
-starweaver-rpc -> host service -> envd service/client
-starweaver-cli -> host service -> envd service
+```mermaid
+flowchart TD
+    agent[starweaver-agent] --> environment[starweaver-environment]
+    environment --> envd_core[starweaver-envd-core]
+    cli[starweaver-cli] --> environment
+    cli --> envd_client[starweaver-envd-client]
+    rpc[starweaver-rpc] --> environment
+    rpc --> envd_client
 ```
 
-Avoid:
+CLI/TUI and RPC independently own their provider resolution, attachment state, and active-run bindings. They can reuse `EnvironmentProvider` factories and `EnvdRpcClient`, but neither product depends on or calls the other.
 
-```text
-starweaver-runtime -> envd RPC DTOs
-starweaver-rpc-core -> envd file/process DTOs
-starweaver-storage -> full envd state schema
-```
+Forbidden dependencies:
+
+- `starweaver-runtime` must not depend on envd RPC DTOs.
+- `starweaver-rpc-core` must not depend on envd file/process DTOs.
+- `starweaver-storage` must not persist the full envd state schema.
+- `starweaver-cli` and `starweaver-rpc` must not depend on each other.
 
 `starweaver-storage` can store refs. Envd owns environment state.

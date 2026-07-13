@@ -1,5 +1,5 @@
 use serde_json::Map;
-use starweaver_context::AgentContext;
+use starweaver_context::ToolRuntimeSnapshot;
 use starweaver_tools::{ToolContext, ToolError, ToolResult};
 
 use crate::{
@@ -30,9 +30,9 @@ pub(super) fn fetch_image_result(
         .to_string();
     let original_bytes = body.len();
     let mut compressed_for_model = false;
-    if let Some(agent_context) = context.dependency::<AgentContext>() {
-        let max_image_bytes = agent_context.model_config.max_image_bytes;
-        let max_image_dimension = agent_context.model_config.max_image_dimension;
+    if let Some(runtime) = context.dependency::<ToolRuntimeSnapshot>() {
+        let max_image_bytes = runtime.model_config().max_image_bytes;
+        let max_image_dimension = runtime.model_config().max_image_dimension;
         if image_exceeds_model_limits(&body, max_image_bytes, max_image_dimension) {
             match compress_image_to_model_limit(
                 &body,

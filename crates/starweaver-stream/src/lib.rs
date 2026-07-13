@@ -1,6 +1,6 @@
 #![allow(clippy::significant_drop_tightening)]
 
-//! Shared display and replay stream contracts for Starweaver.
+//! Typed raw execution, display, and replay stream contracts for Starweaver.
 
 mod adapters;
 mod archive;
@@ -8,6 +8,7 @@ mod compaction;
 mod display;
 mod envelope;
 mod error;
+mod raw;
 mod replay;
 mod sanitizer;
 mod transport;
@@ -24,9 +25,14 @@ pub use display::{
 };
 pub use envelope::{JsonlEnvelope, ReplayEnvelope, SseEnvelope};
 pub use error::{ReplayError, ReplayResult};
+pub use raw::{
+    AgentSidebandEvent, AgentSidebandEventCategory, AgentStreamEvent, AgentStreamRecord,
+    AgentStreamSink, AgentStreamSource, AgentStreamSourceKind,
+};
 pub use replay::{
-    EnvironmentLifecycleEvent, InMemoryReplayEventLog, ReplayCursor, ReplayEvent, ReplayEventKind,
-    ReplayEventLog, ReplayScope, ReplaySnapshot, ReplaySubscription, StreamTerminalMarker,
+    EnvironmentLifecycleEvent, InMemoryReplayEventLog, ReplayCatchupSource, ReplayCursor,
+    ReplayCursorFamily, ReplayEvent, ReplayEventKind, ReplayEventLog, ReplayScope, ReplaySnapshot,
+    ReplaySubscription, StreamTerminalMarker,
 };
 pub use sanitizer::{
     ClientHistorySanitizerConfig, ClientHistoryTrust, SanitizedClientHistory, SanitizerDecision,

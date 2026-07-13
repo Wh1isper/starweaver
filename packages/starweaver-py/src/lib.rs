@@ -56,6 +56,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<output::PyOutputValidator>()?;
     m.add_class::<output::PyOutputValue>()?;
     m.add_class::<stream::PyStreamEvent>()?;
+    m.add_function(wrap_pyfunction!(
+        stream::project_stream_records_to_display,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(stream::display_to_agui, m)?)?;
     m.add_function(wrap_pyfunction!(stream::display_to_agui_jsonl_py, m)?)?;
     m.add_class::<skills::PySkillPackage>()?;

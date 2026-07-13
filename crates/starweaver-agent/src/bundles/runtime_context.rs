@@ -46,7 +46,7 @@ impl AgentCapability for RuntimeContextCapability {
 fn inject_runtime_context(context: &AgentContext, messages: &mut [ModelMessage]) {
     let is_user_prompt = latest_request(messages)
         .is_none_or(|request| !request_has_tool_return_or_retry(request))
-        || context.force_inject_context;
+        || context.runtime.force_inject_context;
     let Some(text) = context.render_runtime_context(is_user_prompt) else {
         return;
     };

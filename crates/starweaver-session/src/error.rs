@@ -19,7 +19,7 @@ pub enum SessionStoreError {
 /// Result alias for session store operations.
 pub type SessionStoreResult<T> = Result<T, SessionStoreError>;
 
-impl From<SessionStoreError> for starweaver_runtime::AgentExecutorError {
+impl From<SessionStoreError> for starweaver_context::AgentExecutorError {
     fn from(error: SessionStoreError) -> Self {
         Self::Failed(error.to_string())
     }

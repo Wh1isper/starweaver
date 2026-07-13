@@ -1,6 +1,9 @@
-#![allow(missing_docs, clippy::unwrap_used)]
+#![allow(missing_docs, clippy::expect_used, clippy::unwrap_used)]
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -12,15 +15,17 @@ use starweaver_agent::{
     DeferredToolResults, DynToolset, FunctionModel, FunctionModelInfo, FunctionTool,
     HITL_DECISION_DIAGNOSTIC_EVENT_KIND, InMemoryReplayEventLog, InMemorySessionStore,
     InMemoryStreamArchive, ModelConfig, ModelRequestParameters, ModelSettings, OutputPolicy,
-    PerThousandRatio, ReplayEventKind, ReplayEventLog, ReplayScope, RunStatus, SessionRunStatus,
-    SessionStore, StaticToolset, StreamArchive, ToolApprovalDecision, ToolContext, ToolError,
-    ToolResult, ToolUserInputPreprocessResult, TraceContext,
+    PerThousandRatio, ReplayEventKind, ReplayEventLog, ReplayScope, ResumableState, RunRecord,
+    RunStatus, SessionRecord, SessionRunStatus, SessionStore, StaticToolset, StreamArchive,
+    TestModel, ToolApprovalDecision, ToolApprovalState, ToolContext, ToolError, ToolResult,
+    ToolUserInputPreprocessResult, TraceContext,
 };
 use starweaver_agent::{
     LiveMcpClient, LiveMcpError, LiveMcpServerSnapshot, McpToolSpec, McpTransport,
     RmcpLiveMcpClient, live_mcp_toolset,
 };
-use starweaver_core::{AgentId, CancellationToken, Metadata};
+use starweaver_context::{AgentContextHandle, CONTEXT_HANDOFF_CAPABILITY, ContextHandoffHandle};
+use starweaver_core::{AgentId, CancellationToken, ConversationId, Metadata, RunId, SessionId};
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequest, ModelRequestContext,
     ModelRequestPart, ModelResponse, ModelResponseEventStream, ModelResponsePart,
@@ -28,7 +33,59 @@ use starweaver_model::{
     tool_call_response,
 };
 use starweaver_stream::{InMemoryReplayTransport, ReplayCursor, ReplayEnvelope, ReplayTransport};
+use starweaver_tools::{
+    DynTool, TOOL_METADATA_DEPENDENCIES_KEY, ToolDependencyRequirements, Toolset,
+    ToolsetLifecycleError, ToolsetLifecyclePolicy, ToolsetLifecycleReport, ToolsetLifecycleState,
+    ToolsetPreparation,
+};
 use starweaver_usage::Usage;
+
+struct PreparedOnlyFilteredToolset {
+    static_tool: DynTool,
+    prepared_tool: DynTool,
+    closed: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Toolset for PreparedOnlyFilteredToolset {
+    fn name(&self) -> &'static str {
+        "prepared-only-filtered"
+    }
+
+    fn get_tools(&self) -> Vec<DynTool> {
+        vec![self.static_tool.clone()]
+    }
+
+    fn lifecycle_policy(&self) -> ToolsetLifecyclePolicy {
+        ToolsetLifecyclePolicy::default().with_exit_after_run(true)
+    }
+
+    async fn prepare_with_context(
+        &self,
+        _context: &AgentContext,
+    ) -> Result<ToolsetPreparation, ToolsetLifecycleError> {
+        Ok(ToolsetPreparation::initialized(
+            self.name(),
+            None,
+            vec![self.prepared_tool.clone()],
+            Vec::new(),
+        ))
+    }
+
+    async fn exit_with_context(
+        &self,
+        _context: &AgentContext,
+    ) -> Result<ToolsetLifecycleReport, ToolsetLifecycleError> {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolsetLifecycleReport::new(
+            self.name(),
+            None,
+            ToolsetLifecycleState::Closed,
+            0,
+            0,
+        ))
+    }
+}
 
 fn reusable_text_model(text: &'static str) -> FunctionModel {
     FunctionModel::new(move |_messages, _settings, _info| {
@@ -324,14 +381,20 @@ async fn session_resume_after_hitl_approval_executes_tool_and_continues() {
         "dangerous",
         Some("Dangerous operation".to_string()),
         serde_json::json!({"type": "object"}),
-        move |_ctx: ToolContext, args: serde_json::Value| {
+        move |ctx: ToolContext, args: serde_json::Value| {
             let executed = executed_for_tool.clone();
             async move {
+                assert!(ctx.dependency::<AgentContextHandle>().is_none());
                 *executed.lock().unwrap() += 1;
                 Ok(ToolResult::new(serde_json::json!({"executed": args})))
             }
         },
-    );
+    )
+    .with_metadata(Metadata::from_iter([(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        ToolDependencyRequirements::filtered(std::iter::empty::<String>(), false)
+            .to_metadata_value(),
+    )]));
     let base: DynToolset =
         Arc::new(StaticToolset::new("dangerous-tools").with_tool(Arc::new(tool)));
     let app = AgentBuilder::new(Arc::new(model))
@@ -359,6 +422,7 @@ async fn session_resume_after_hitl_approval_executes_tool_and_continues() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn session_preprocesses_hitl_user_input_before_approved_execution() {
     let model_calls = Arc::new(Mutex::new(0usize));
     let model_calls_for_model = model_calls.clone();
@@ -376,18 +440,8 @@ async fn session_preprocesses_hitl_user_input_before_approved_execution() {
             ));
         }
 
-        let tool_return = latest_tool_return(&messages, "dangerous");
-        assert!(!tool_return.is_error);
-        assert_eq!(tool_return.content["executed"]["path"], "target/safe.txt");
-        assert_eq!(tool_return.metadata["approval_state"], "approved");
-        assert_eq!(
-            tool_return.metadata["approval_metadata"]["host"],
-            "review-ui"
-        );
-        assert_eq!(
-            tool_return.metadata["approval_metadata"]["source"],
-            "user-edit"
-        );
+        let rendered = format!("{messages:?}");
+        assert!(rendered.contains("approved handoff"));
         Ok(ModelResponse::text("resumed"))
     });
     let executed = Arc::new(Mutex::new(0usize));
@@ -396,15 +450,37 @@ async fn session_preprocesses_hitl_user_input_before_approved_execution() {
         "dangerous",
         Some("Dangerous operation".to_string()),
         serde_json::json!({"type": "object"}),
-        move |_ctx: ToolContext, args: serde_json::Value| {
+        move |ctx: ToolContext, args: serde_json::Value| {
             let executed = executed_for_tool.clone();
             async move {
+                assert!(ctx.dependency::<AgentContextHandle>().is_none());
+                assert_eq!(args["path"], "target/safe.txt");
+                let Some(ToolApprovalState::Approved {
+                    override_arguments,
+                    metadata,
+                }) = &ctx.approval
+                else {
+                    panic!("approved tool context is required");
+                };
+                assert_eq!(
+                    override_arguments.as_ref().unwrap()["path"],
+                    "target/safe.txt"
+                );
+                assert_eq!(metadata["host"], "review-ui");
+                assert_eq!(metadata["source"], "user-edit");
+                ctx.dependency::<ContextHandoffHandle>()
+                    .unwrap()
+                    .set_handoff(
+                        "approved handoff".to_string(),
+                        &["src/approved.rs".to_string()],
+                    );
                 *executed.lock().unwrap() += 1;
                 Ok(ToolResult::new(serde_json::json!({"executed": args})))
             }
         },
     )
     .with_user_input_preprocessor(|context, user_input| async move {
+        assert!(context.dependency::<AgentContextHandle>().is_none());
         assert!(
             context
                 .metadata
@@ -426,7 +502,13 @@ async fn session_preprocesses_hitl_user_input_before_approved_execution() {
                 "path": user_input["path"].clone(),
             }))
             .with_metadata(metadata))
-    });
+    })
+    .with_metadata(Metadata::from_iter([(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        ToolDependencyRequirements::filtered(std::iter::empty::<String>(), false)
+            .with_context_capabilities([CONTEXT_HANDOFF_CAPABILITY])
+            .to_metadata_value(),
+    )]));
     let base: DynToolset =
         Arc::new(StaticToolset::new("dangerous-tools").with_tool(Arc::new(tool)));
     let app = AgentBuilder::new(Arc::new(model))
@@ -454,6 +536,119 @@ async fn session_preprocesses_hitl_user_input_before_approved_execution() {
     assert_eq!(result.output, "resumed");
     assert_eq!(*executed.lock().unwrap(), 1);
     assert_eq!(*model_calls.lock().unwrap(), 2);
+    assert!(session.context().handoff_message.is_none());
+    assert!(session.context().tools.auto_load_files.is_empty());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn session_hitl_preprocessing_uses_context_prepared_dependency_metadata() {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let model_calls_for_model = Arc::clone(&model_calls);
+    let model = FunctionModel::new(move |_messages, _settings, _info| {
+        if model_calls_for_model.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(tool_call_response(
+                "call_dynamic_edit",
+                "dynamic_dangerous",
+                serde_json::json!({"path": "target/unsafe.txt"}),
+            ))
+        } else {
+            Ok(ModelResponse::text("resumed"))
+        }
+    });
+    let static_execution_called = Arc::new(AtomicBool::new(false));
+    let static_execution = Arc::clone(&static_execution_called);
+    let static_preprocessor_called = Arc::new(AtomicBool::new(false));
+    let static_called = Arc::clone(&static_preprocessor_called);
+    let static_tool: DynTool = Arc::new(
+        FunctionTool::new(
+            "dynamic_dangerous",
+            Some("Static legacy view".to_string()),
+            serde_json::json!({"type": "object"}),
+            move |_context: ToolContext, args: serde_json::Value| {
+                let static_execution = Arc::clone(&static_execution);
+                async move {
+                    static_execution.store(true, Ordering::SeqCst);
+                    Ok(ToolResult::new(args))
+                }
+            },
+        )
+        .with_user_input_preprocessor(move |_context, user_input| {
+            let static_called = Arc::clone(&static_called);
+            async move {
+                static_called.store(true, Ordering::SeqCst);
+                Ok(ToolUserInputPreprocessResult::new().with_override_arguments(user_input))
+            }
+        }),
+    );
+    let prepared_execution_called = Arc::new(AtomicBool::new(false));
+    let prepared_execution = Arc::clone(&prepared_execution_called);
+    let prepared_preprocessor_called = Arc::new(AtomicBool::new(false));
+    let prepared_called = Arc::clone(&prepared_preprocessor_called);
+    let prepared_tool: DynTool = Arc::new(
+        FunctionTool::new(
+            "dynamic_dangerous",
+            Some("Context-prepared filtered view".to_string()),
+            serde_json::json!({"type": "object"}),
+            move |context: ToolContext, args: serde_json::Value| {
+                let prepared_execution = Arc::clone(&prepared_execution);
+                async move {
+                    assert!(context.dependency::<AgentContextHandle>().is_none());
+                    prepared_execution.store(true, Ordering::SeqCst);
+                    Ok(ToolResult::new(args))
+                }
+            },
+        )
+        .with_user_input_preprocessor(move |context, user_input| {
+            let prepared_called = Arc::clone(&prepared_called);
+            async move {
+                assert!(context.dependency::<AgentContextHandle>().is_none());
+                prepared_called.store(true, Ordering::SeqCst);
+                Ok(ToolUserInputPreprocessResult::new().with_override_arguments(user_input))
+            }
+        })
+        .with_metadata(Metadata::from_iter([(
+            TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+            ToolDependencyRequirements::filtered(std::iter::empty::<String>(), false)
+                .to_metadata_value(),
+        )])),
+    );
+    let toolset_closed = Arc::new(AtomicUsize::new(0));
+    let toolset: DynToolset = Arc::new(PreparedOnlyFilteredToolset {
+        static_tool,
+        prepared_tool,
+        closed: Arc::clone(&toolset_closed),
+    });
+    let app = AgentBuilder::new(Arc::new(model))
+        .approval_required_tools(["dynamic_dangerous"])
+        .toolset(&toolset)
+        .build_app();
+    let mut session = app.session();
+
+    let waiting = session.run("try it").await.unwrap();
+    assert_eq!(waiting.state.status, RunStatus::Waiting);
+    toolset_closed.store(0, Ordering::SeqCst);
+    let results = session
+        .preprocess_hitl_user_interactions([AgentHitlUserInteraction::approved(
+            "call_dynamic_edit",
+        )
+        .with_user_input(serde_json::json!({"path": "target/safe.txt"}))])
+        .await
+        .unwrap();
+
+    assert_eq!(results.approvals.len(), 1);
+    assert!(prepared_preprocessor_called.load(Ordering::SeqCst));
+    assert!(!static_preprocessor_called.load(Ordering::SeqCst));
+    assert_eq!(toolset_closed.load(Ordering::SeqCst), 1);
+
+    toolset_closed.store(0, Ordering::SeqCst);
+    let result = session.resume_after_hitl(results).await.unwrap();
+
+    assert_eq!(result.output, "resumed");
+    assert!(prepared_execution_called.load(Ordering::SeqCst));
+    assert!(!static_execution_called.load(Ordering::SeqCst));
+    assert_eq!(toolset_closed.load(Ordering::SeqCst), 2);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test]
@@ -833,6 +1028,298 @@ async fn runtime_durable_store_resumes_hitl_and_replays_streams_by_id() {
             }
         )
     }));
+}
+
+#[tokio::test]
+async fn concurrent_durable_hitl_resume_claim_executes_approved_tool_once() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = SessionId::from_string("session-concurrent-hitl-claim");
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executions_for_tool = executions.clone();
+    let dangerous = FunctionTool::new(
+        "dangerous_once",
+        Some("Requires approval".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, _arguments| {
+            let executions = executions_for_tool.clone();
+            async move {
+                executions.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok(ToolResult::new(serde_json::json!({"executed": true})))
+            }
+        },
+    );
+    let toolset: DynToolset =
+        Arc::new(StaticToolset::new("claim-tools").with_tool(Arc::new(dangerous)));
+    let initial_model = TestModel::with_responses(vec![tool_call_response(
+        "claim-call",
+        "dangerous_once",
+        serde_json::json!({}),
+    )]);
+    let mut initial = AgentRuntimeBuilder::new(Arc::new(initial_model))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .approval_required_tools(["dangerous_once"])
+        .toolset(&toolset)
+        .build();
+    let waiting = initial.run("request execution").await.unwrap();
+    assert_eq!(waiting.state.status, RunStatus::Waiting);
+    let waiting_run_id = waiting.state.run_id.clone();
+    let approval_id = waiting.state.pending_approval_tool_returns[0]
+        .tool_call_id
+        .clone();
+
+    let mut first = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("resumed")))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .approval_required_tools(["dangerous_once"])
+        .toolset(&toolset)
+        .build();
+    let mut second = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("resumed")))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .approval_required_tools(["dangerous_once"])
+        .toolset(&toolset)
+        .build();
+    let first_results =
+        AgentHitlResults::new().approval(approval_id.clone(), ToolApprovalDecision::approved());
+    let second_results =
+        AgentHitlResults::new().approval(approval_id, ToolApprovalDecision::approved());
+    let (first_result, second_result) = tokio::join!(
+        first.resume_after_hitl_by_id(&session_id, &waiting_run_id, first_results),
+        second.resume_after_hitl_by_id(&session_id, &waiting_run_id, second_results),
+    );
+
+    assert_eq!(
+        usize::from(first_result.is_ok()) + usize::from(second_result.is_ok()),
+        1
+    );
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    let loser = match first_result {
+        Err(error) => error,
+        Ok(_) => second_result.unwrap_err(),
+    };
+    assert!(loser.to_string().contains("active resume claim"));
+}
+
+#[tokio::test]
+async fn invalid_durable_hitl_results_do_not_claim_and_can_be_retried() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = SessionId::from_string("session-invalid-hitl-preflight");
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executions_for_tool = executions.clone();
+    let dangerous = FunctionTool::new(
+        "validated_once",
+        Some("Requires approval".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, _arguments| {
+            let executions = executions_for_tool.clone();
+            async move {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolResult::new(serde_json::json!({"executed": true})))
+            }
+        },
+    );
+    let toolset: DynToolset =
+        Arc::new(StaticToolset::new("preflight-tools").with_tool(Arc::new(dangerous)));
+    let mut initial = AgentRuntimeBuilder::new(Arc::new(TestModel::with_responses(vec![
+        tool_call_response("preflight-call", "validated_once", serde_json::json!({})),
+    ])))
+    .durable_session_id(session_id.clone())
+    .session_store(store.clone())
+    .approval_required_tools(["validated_once"])
+    .toolset(&toolset)
+    .build();
+    let waiting = initial.run("request validation").await.unwrap();
+    let waiting_run_id = waiting.state.run_id.clone();
+    let approval_id = waiting.state.pending_approval_tool_returns[0]
+        .tool_call_id
+        .clone();
+
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("resumed")))
+        .durable_session_id(session_id.clone())
+        .session_store(store)
+        .approval_required_tools(["validated_once"])
+        .toolset(&toolset)
+        .build();
+    let error = Box::pin(runtime.resume_after_hitl_by_id(
+        &session_id,
+        &waiting_run_id,
+        AgentHitlResults::new().approval("not-pending", ToolApprovalDecision::approved()),
+    ))
+    .await
+    .expect_err("unknown approval must fail before claiming");
+    assert!(error.to_string().contains("unknown approval"));
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+    let resumed = Box::pin(runtime.resume_after_hitl_by_id(
+        &session_id,
+        &waiting_run_id,
+        AgentHitlResults::new().approval(approval_id, ToolApprovalDecision::approved()),
+    ))
+    .await
+    .expect("valid retry must still acquire the claim");
+    assert_eq!(resumed.output, "resumed");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cross_session_durable_resume_fails_before_claim_or_tool_execution() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let source_session_id = SessionId::from_string("session-resume-source");
+    let other_session_id = SessionId::from_string("session-resume-other");
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executions_for_tool = executions.clone();
+    let dangerous = FunctionTool::new(
+        "session_bound_once",
+        Some("Requires approval".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, _arguments| {
+            let executions = executions_for_tool.clone();
+            async move {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolResult::new(serde_json::json!({"executed": true})))
+            }
+        },
+    );
+    let toolset: DynToolset =
+        Arc::new(StaticToolset::new("session-bound-tools").with_tool(Arc::new(dangerous)));
+    let mut initial = AgentRuntimeBuilder::new(Arc::new(TestModel::with_responses(vec![
+        tool_call_response(
+            "session-bound-call",
+            "session_bound_once",
+            serde_json::json!({}),
+        ),
+    ])))
+    .durable_session_id(source_session_id.clone())
+    .session_store(store.clone())
+    .approval_required_tools(["session_bound_once"])
+    .toolset(&toolset)
+    .build();
+    let waiting = initial
+        .run("request session-bound execution")
+        .await
+        .unwrap();
+    let waiting_run_id = waiting.state.run_id.clone();
+    let approval_id = waiting.state.pending_approval_tool_returns[0]
+        .tool_call_id
+        .clone();
+
+    let mut wrong_runtime = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("wrong")))
+        .durable_session_id(other_session_id)
+        .session_store(store.clone())
+        .approval_required_tools(["session_bound_once"])
+        .toolset(&toolset)
+        .build();
+    let error = Box::pin(wrong_runtime.resume_after_hitl_by_id(
+        &source_session_id,
+        &waiting_run_id,
+        AgentHitlResults::new().approval(approval_id.clone(), ToolApprovalDecision::approved()),
+    ))
+    .await
+    .expect_err("runtime must reject a foreign durable session");
+    assert!(error.to_string().contains("is bound to session"));
+    assert_eq!(executions.load(Ordering::SeqCst), 0);
+
+    let mut correct_runtime = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("resumed")))
+        .durable_session_id(source_session_id.clone())
+        .session_store(store)
+        .approval_required_tools(["session_bound_once"])
+        .toolset(&toolset)
+        .build();
+    Box::pin(correct_runtime.resume_after_hitl_by_id(
+        &source_session_id,
+        &waiting_run_id,
+        AgentHitlResults::new().approval(approval_id, ToolApprovalDecision::approved()),
+    ))
+    .await
+    .expect("foreign attempt must not leave a claim");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn failed_durable_hitl_continuation_seals_source_and_prevents_tool_reexecution() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = SessionId::from_string("session-failed-hitl-continuation");
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executions_for_tool = executions.clone();
+    let dangerous = FunctionTool::new(
+        "dangerous_failure",
+        Some("Requires approval".to_string()),
+        serde_json::json!({"type": "object"}),
+        move |_context: ToolContext, _arguments| {
+            let executions = executions_for_tool.clone();
+            async move {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolResult::new(serde_json::json!({"executed": true})))
+            }
+        },
+    );
+    let toolset: DynToolset =
+        Arc::new(StaticToolset::new("failure-claim-tools").with_tool(Arc::new(dangerous)));
+    let mut initial = AgentRuntimeBuilder::new(Arc::new(TestModel::with_responses(vec![
+        tool_call_response(
+            "failure-claim-call",
+            "dangerous_failure",
+            serde_json::json!({}),
+        ),
+    ])))
+    .durable_session_id(session_id.clone())
+    .session_store(store.clone())
+    .approval_required_tools(["dangerous_failure"])
+    .toolset(&toolset)
+    .build();
+    let waiting = initial.run("request execution").await.unwrap();
+    let waiting_run_id = waiting.state.run_id.clone();
+    let approval_id = waiting.state.pending_approval_tool_returns[0]
+        .tool_call_id
+        .clone();
+
+    let mut failing = AgentRuntimeBuilder::new(Arc::new(TestModel::with_responses(vec![])))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .approval_required_tools(["dangerous_failure"])
+        .toolset(&toolset)
+        .build();
+    Box::pin(failing.resume_after_hitl_by_id(
+        &session_id,
+        &waiting_run_id,
+        AgentHitlResults::new().approval(approval_id.clone(), ToolApprovalDecision::approved()),
+    ))
+    .await
+    .expect_err("continuation model failure");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        store
+            .load_run(&session_id, &waiting_run_id)
+            .await
+            .unwrap()
+            .status,
+        SessionRunStatus::Failed
+    );
+    let continuation = store
+        .list_runs(&session_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|run| run.restore_from_run_id.as_ref() == Some(&waiting_run_id))
+        .expect("failed continuation evidence");
+    assert_eq!(continuation.status, SessionRunStatus::Failed);
+
+    let mut retry = AgentRuntimeBuilder::new(Arc::new(TestModel::with_text("must not run")))
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .approval_required_tools(["dangerous_failure"])
+        .toolset(&toolset)
+        .build();
+    Box::pin(retry.resume_after_hitl_by_id(
+        &session_id,
+        &waiting_run_id,
+        AgentHitlResults::new().approval(approval_id, ToolApprovalDecision::approved()),
+    ))
+    .await
+    .expect_err("terminal source cannot be resumed again");
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -1231,6 +1718,60 @@ async fn runtime_finish_stream_persists_live_stream_records() {
 }
 
 #[tokio::test]
+async fn runtime_completion_preserves_preallocated_run_identity_metadata() {
+    let store = Arc::new(InMemorySessionStore::new());
+    let session_id = SessionId::from_string("session-preallocated-run");
+    let run_id = RunId::from_string("run-preallocated");
+    let conversation_id = ConversationId::from_string("conversation-preallocated");
+    let restore_run_id = RunId::from_string("run-restore-source");
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .unwrap();
+    let mut preallocated =
+        RunRecord::new(session_id.clone(), run_id.clone(), conversation_id.clone());
+    preallocated.sequence_no = 7;
+    preallocated.status = SessionRunStatus::Running;
+    preallocated.profile = Some("rpc-profile".to_string());
+    preallocated.trigger_type = Some("rpc".to_string());
+    preallocated.restore_from_run_id = Some(restore_run_id.clone());
+    preallocated
+        .metadata
+        .insert("rpc.request_id".to_string(), serde_json::json!("request-1"));
+    let created_at = preallocated.created_at;
+    store.append_run(preallocated).await.unwrap();
+
+    let mut state = ResumableState {
+        agent_id: AgentId::from_string("preallocated-agent"),
+        session_id: Some(session_id.clone()),
+        conversation_id: Some(conversation_id),
+        ..ResumableState::default()
+    };
+    state.metadata.insert(
+        "starweaver.durable_run_id".to_string(),
+        serde_json::json!(run_id.as_str()),
+    );
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(reusable_text_model("completed")))
+        .state(state)
+        .durable_session_id(session_id.clone())
+        .session_store(store.clone())
+        .build();
+
+    let result = runtime.run_stream("preserve identity").await.unwrap();
+
+    assert_eq!(result.result.state.run_id, run_id);
+    let persisted = store.load_run(&session_id, &run_id).await.unwrap();
+    assert_eq!(persisted.status, SessionRunStatus::Completed);
+    assert_eq!(persisted.sequence_no, 7);
+    assert_eq!(persisted.profile.as_deref(), Some("rpc-profile"));
+    assert_eq!(persisted.trigger_type.as_deref(), Some("rpc"));
+    assert_eq!(persisted.restore_from_run_id, Some(restore_run_id));
+    assert_eq!(persisted.metadata["rpc.request_id"], "request-1");
+    assert_eq!(persisted.created_at, created_at);
+    assert_eq!(persisted.output_preview.as_deref(), Some("completed"));
+}
+
+#[tokio::test]
 async fn runtime_finish_stream_persists_interrupted_live_stream_recovery() {
     let store = Arc::new(InMemorySessionStore::new());
     let archive = Arc::new(InMemoryStreamArchive::new());
@@ -1282,6 +1823,16 @@ async fn runtime_finish_stream_persists_interrupted_live_stream_recovery() {
         .await
         .unwrap();
     assert!(!stored_records.is_empty());
+    assert!(
+        stored_records
+            .iter()
+            .any(|record| matches!(&record.event, AgentStreamEvent::RunCancelled { .. }))
+    );
+    assert!(
+        !stored_records
+            .iter()
+            .any(|record| matches!(&record.event, AgentStreamEvent::RunFailed { .. }))
+    );
     assert_eq!(
         archive
             .replay_raw_after(&session_id, &run_id, None)
@@ -1362,7 +1913,7 @@ async fn runtime_durable_store_persists_provider_stream_resume_replay() {
     let transport = InMemoryReplayTransport::sse((*replay).clone());
     let all_frames = transport.replay(scope.clone(), None).await.unwrap();
     let tail_frames = transport
-        .replay(scope.clone(), Some(ReplayCursor::new(scope, 0)))
+        .replay(scope.clone(), Some(ReplayCursor::replay_event(scope, 0)))
         .await
         .unwrap();
     assert_eq!(tail_frames.len(), all_frames.len().saturating_sub(1));
@@ -2113,4 +2664,48 @@ fn session_helpers_update_metadata_notes_state_and_bus() {
     assert_eq!(session.context().notes.get("language"), Some("Chinese"));
     assert_eq!(session.context().messages.len(), 1);
     assert_eq!(session.context().metadata["owner"], "sdk");
+}
+
+#[tokio::test]
+async fn durable_identity_preserves_provider_routing_affinity() {
+    let durable_session_id = SessionId::from_string("session-durable-identity");
+    let provider_session_id = SessionId::from_string("provider-routing-affinity");
+    let store = Arc::new(InMemorySessionStore::new());
+    let mut context = AgentContext::new(AgentId::from_string("agent-durable-identity"));
+    context.set_session_id(provider_session_id.clone());
+
+    let mut runtime = AgentRuntimeBuilder::new(Arc::new(reusable_text_model("complete")))
+        .context(context)
+        .durable_session_id(durable_session_id.clone())
+        .session_store(store.clone())
+        .build();
+
+    assert_eq!(runtime.durable_session_id(), Some(&durable_session_id));
+    assert_eq!(
+        runtime.session().context().session_id(),
+        Some(&provider_session_id)
+    );
+    assert_eq!(
+        runtime.session().context().metadata["starweaver.durable_session_id"],
+        durable_session_id.as_str()
+    );
+
+    let result = runtime.run("preserve routing affinity").await.unwrap();
+    assert_eq!(
+        runtime.session().context().session_id(),
+        Some(&provider_session_id)
+    );
+    let snapshot = store
+        .resume_snapshot(&durable_session_id, &result.state.run_id)
+        .await
+        .unwrap();
+    assert_eq!(snapshot.state.session_id, Some(provider_session_id));
+    assert_eq!(
+        snapshot.state.metadata["starweaver.durable_session_id"],
+        durable_session_id.as_str()
+    );
+    assert_eq!(
+        snapshot.state.metadata["starweaver.durable_run_id"],
+        result.state.run_id.as_str()
+    );
 }

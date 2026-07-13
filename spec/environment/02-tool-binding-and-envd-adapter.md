@@ -123,6 +123,30 @@ Routing rules:
 This keeps shell as an optional command/process capability. Interactive
 terminal state is not part of the SDK routing contract.
 
+### Local process resource contract
+
+The local provider treats one invocation and its descendants as one resource:
+
+- Foreground and background shell and structured-program calls share one
+  configurable concurrency allowance. Exhaustion rejects a new invocation
+  rather than creating an unbounded queue.
+- Each invocation starts in an isolated Unix process group or Windows Job
+  Object. Unix timeout/kill performs group TERM followed by KILL after a short
+  grace period; Windows kill terminates the Job Object. Arbitrary process
+  signals are explicitly Unix-only. Unix containment is process-group scoped:
+  an arbitrary shell command can deliberately create a new session or process
+  group, so untrusted shell authority still requires an external sandbox.
+- Completion closes out remaining in-group descendants before joining
+  stdout/stderr readers. Reader joins have a fixed deadline; an escaped process
+  that retains an inherited pipe can cause output loss but cannot indefinitely
+  hold the provider's blocking worker or execution permit.
+- Readers drain both streams continuously while retaining a configurable byte
+  prefix. Snapshots and foreground output metadata expose total bytes, captured
+  bytes, truncation, and any drain timeout independently for stdout and stderr.
+- Child leaders are waited/reaped, execution permits are released on terminal
+  state, and only a configurable number of completed background snapshots are
+  retained. Evicted process ids return `NotFound`.
+
 Example model-facing context:
 
 ```xml
@@ -247,15 +271,15 @@ CLI direct mode should be an optimization over the same envd service interface.
 ```mermaid
 sequenceDiagram
     participant CLI
-    participant Host as HeadlessHostService
+    participant Coordinator as CLI-owned coordinator
     participant Envd as LocalEnvd
     participant Provider as EnvdEnvironmentProvider
     participant Runtime
 
-    CLI->>Host: prepare run
-    Host->>Envd: create or open environment
-    Host->>Provider: wrap Arc<dyn EnvdService>
-    Host->>Runtime: run AgentSession
+    CLI->>Coordinator: prepare run
+    Coordinator->>Envd: create or open environment
+    Coordinator->>Provider: wrap Arc<dyn EnvdService>
+    Coordinator->>Runtime: run AgentSession
     Runtime->>Provider: tool call
     Provider->>Envd: direct service call
     Envd-->>Provider: result
@@ -436,22 +460,26 @@ Direct mode can use an in-process ref:
 
 ## Boundary Rules
 
-Allowed:
+Allowed dependency direction:
 
-```text
-starweaver-agent -> starweaver-environment
-starweaver-environment -> starweaver-envd-core
-starweaver-rpc -> host service -> environment resolver
-starweaver-cli -> host service -> environment resolver
+```mermaid
+flowchart TD
+    agent[starweaver-agent] --> environment[starweaver-environment]
+    environment --> envd_core[starweaver-envd-core]
+    cli[starweaver-cli] --> environment
+    cli --> envd_client[starweaver-envd-client]
+    rpc[starweaver-rpc] --> environment
+    rpc --> envd_client
 ```
 
-Avoid:
+CLI/TUI and RPC independently own their environment attachment or mount state. They may reuse product-neutral resolver and provider factories, but neither calls the other product or a shared product host service.
 
-```text
-starweaver-runtime -> envd RPC DTOs
-starweaver-rpc-core -> envd file/process DTOs
-starweaver-storage -> full envd state schema
-```
+Forbidden dependencies:
+
+- `starweaver-runtime` must not depend on envd RPC DTOs.
+- `starweaver-rpc-core` must not depend on envd file/process DTOs.
+- `starweaver-storage` must not persist the full envd state schema.
+- `starweaver-cli` and `starweaver-rpc` must not depend on each other.
 
 Session storage can keep environment refs and SDK provider snapshots. Envd owns
 full envd state.

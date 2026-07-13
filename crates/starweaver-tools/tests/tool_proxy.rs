@@ -3,22 +3,25 @@
 use std::sync::Arc;
 
 use serde_json::json;
-use starweaver_context::{AgentContext, AgentContextHandle, DependencyStore};
+use starweaver_context::{
+    AgentContext, CONTEXT_TOOL_SEARCH_CAPABILITY, DependencyStore, ToolSearchContextHandle,
+};
 use starweaver_core::{ConversationId, RunId};
 use starweaver_tools::{
-    FunctionTool, StaticToolset, TOOL_SEARCH_FAILED_EVENT_KIND, TOOL_SEARCH_INVALIDATED_EVENT_KIND,
-    TOOL_SEARCH_NO_MATCH_EVENT_KIND, TOOL_SEARCH_REFRESHED_EVENT_KIND, ToolContext, ToolError,
+    FunctionTool, StaticToolset, TOOL_METADATA_DEPENDENCIES_KEY, TOOL_SEARCH_FAILED_EVENT_KIND,
+    TOOL_SEARCH_INVALIDATED_EVENT_KIND, TOOL_SEARCH_NO_MATCH_EVENT_KIND,
+    TOOL_SEARCH_REFRESHED_EVENT_KIND, ToolContext, ToolDependencyProfile, ToolError,
     ToolInstruction, ToolProxyToolset, ToolRegistry, ToolResult, ToolSearchNamespaceStatus,
     ToolSearchRefreshBinding, ToolSearchRefreshReason, ToolSearchRefreshSchedule,
     ToolSearchRefreshScheduleState, ToolSearchToolset, Toolset, dynamic_tool_proxy,
-    dynamic_tool_search, json_tool,
+    dynamic_tool_search, json_tool, tool_dependency_requirements,
 };
 
 fn context() -> ToolContext {
     ToolContext::new(RunId::from_string("run_test"), ConversationId::new(), 0)
 }
 
-fn context_with_handle(handle: &AgentContextHandle) -> ToolContext {
+fn context_with_handle(handle: &ToolSearchContextHandle) -> ToolContext {
     let mut dependencies = DependencyStore::new();
     dependencies.insert(handle.clone());
     context().with_dependencies(dependencies)
@@ -163,7 +166,7 @@ async fn proxy_searches_namespaces_and_calls_tools() {
         .with_instruction(ToolInstruction::new("docs", "Documentation tools."));
     let proxy = dynamic_tool_proxy(vec![Arc::new(toolset)]);
     let tools = proxy.get_tools();
-    let handle = AgentContextHandle::new(AgentContext::default());
+    let handle = ToolSearchContextHandle::from_context(&AgentContext::default());
     assert_eq!(tools.len(), 2);
     assert_eq!(proxy.max_retries(), Some(3));
     assert!(
@@ -177,6 +180,18 @@ async fn proxy_searches_namespaces_and_calls_tools() {
         .iter()
         .find(|tool| tool.name() == "search_tools")
         .unwrap();
+    assert!(
+        search
+            .metadata()
+            .contains_key(TOOL_METADATA_DEPENDENCIES_KEY)
+    );
+    let search_requirements = tool_dependency_requirements(&search.metadata());
+    assert_eq!(search_requirements.profile, ToolDependencyProfile::Filtered);
+    assert!(
+        search_requirements
+            .context_capabilities
+            .contains(CONTEXT_TOOL_SEARCH_CAPABILITY)
+    );
     let search_output = result_content(
         &search
             .call(context_with_handle(&handle), json!({"query":"docs"}))
@@ -186,7 +201,7 @@ async fn proxy_searches_namespaces_and_calls_tools() {
     assert!(search_output.contains("lookup_docs"));
     assert!(search_output.contains("namespace=\"docs_ns\""));
     assert!(!search_output.contains("wrapped proxy helper name"));
-    let search_state = handle.snapshot().tool_search_state();
+    let search_state = handle.state();
     assert_eq!(search_state.loaded_tools, vec!["lookup_docs".to_string()]);
     assert_eq!(search_state.loaded_namespaces, vec!["docs_ns".to_string()]);
 
@@ -194,6 +209,14 @@ async fn proxy_searches_namespaces_and_calls_tools() {
         .iter()
         .find(|tool| tool.name() == "call_tool")
         .unwrap();
+    assert!(call.metadata().contains_key(TOOL_METADATA_DEPENDENCIES_KEY));
+    let call_requirements = tool_dependency_requirements(&call.metadata());
+    assert_eq!(call_requirements.profile, ToolDependencyProfile::Legacy);
+    assert!(
+        call_requirements
+            .context_capabilities
+            .contains(CONTEXT_TOOL_SEARCH_CAPABILITY)
+    );
     let called = call
         .call(
             context_with_handle(&handle),
@@ -202,7 +225,7 @@ async fn proxy_searches_namespaces_and_calls_tools() {
         .await
         .unwrap();
     assert_eq!(called.content["looked_up"], "agents");
-    let call_state = handle.snapshot().tool_search_state();
+    let call_state = handle.state();
     assert_eq!(call_state.loaded_tools, vec!["lookup_docs".to_string()]);
     assert_eq!(call_state.loaded_namespaces, vec!["docs_ns".to_string()]);
 }
@@ -224,10 +247,11 @@ async fn direct_tool_search_loads_tools_for_next_turn_and_restores_state() {
     let search = dynamic_tool_search(vec![Arc::new(toolset)]);
     let mut registry = ToolRegistry::new();
     registry.insert_toolset(&search);
-    let handle = AgentContextHandle::new(AgentContext::default());
+    let mut loaded_context = AgentContext::default();
+    let handle = ToolSearchContextHandle::from_context(&loaded_context);
 
     let initial_defs = registry
-        .definitions_for_context(&handle.snapshot())
+        .definitions_for_context(&loaded_context)
         .into_iter()
         .map(|definition| definition.name)
         .collect::<Vec<_>>();
@@ -238,6 +262,18 @@ async fn direct_tool_search_loads_tools_for_next_turn_and_restores_state() {
         .iter()
         .find(|tool| tool.name() == "lookup_docs")
         .unwrap();
+    assert!(
+        direct_lookup
+            .metadata()
+            .contains_key(TOOL_METADATA_DEPENDENCIES_KEY)
+    );
+    let direct_requirements = tool_dependency_requirements(&direct_lookup.metadata());
+    assert_eq!(direct_requirements.profile, ToolDependencyProfile::Filtered);
+    assert!(
+        direct_requirements
+            .context_capabilities
+            .contains(CONTEXT_TOOL_SEARCH_CAPABILITY)
+    );
     let unloaded = direct_lookup
         .call(
             context_with_handle(&handle),
@@ -250,6 +286,16 @@ async fn direct_tool_search_loads_tools_for_next_turn_and_restores_state() {
         .iter()
         .find(|tool| tool.name() == "tool_search")
         .unwrap();
+    let direct_search_requirements = tool_dependency_requirements(&search_tool.metadata());
+    assert_eq!(
+        direct_search_requirements.profile,
+        ToolDependencyProfile::Filtered
+    );
+    assert!(
+        direct_search_requirements
+            .context_capabilities
+            .contains(CONTEXT_TOOL_SEARCH_CAPABILITY)
+    );
     let search_result = search_tool
         .call(context_with_handle(&handle), json!({"query":"docs"}))
         .await
@@ -260,7 +306,7 @@ async fn direct_tool_search_loads_tools_for_next_turn_and_restores_state() {
     );
     assert_eq!(search_result.content["loaded_namespaces"][0], "docs_ns");
 
-    let loaded_context = handle.snapshot();
+    handle.apply_to(&mut loaded_context);
     let loaded_defs = registry
         .definitions_for_context(&loaded_context)
         .into_iter()
@@ -303,7 +349,7 @@ async fn direct_tool_search_publishes_query_error_events() {
         .with_id("docs_ns")
         .with_tool(Arc::new(lookup));
     let search = dynamic_tool_search(vec![Arc::new(toolset)]);
-    let handle = AgentContextHandle::new(AgentContext::default());
+    let handle = ToolSearchContextHandle::from_context(&AgentContext::default());
     let search_tool = search
         .get_tools()
         .into_iter()
@@ -326,7 +372,8 @@ async fn direct_tool_search_publishes_query_error_events() {
             .is_empty()
     );
 
-    let snapshot = handle.snapshot();
+    let mut snapshot = AgentContext::default();
+    handle.apply_to(&mut snapshot);
     assert!(snapshot.events.events().iter().any(|event| {
         event.kind == TOOL_SEARCH_FAILED_EVENT_KIND
             && event.payload["search_tool_name"] == "tool_search"

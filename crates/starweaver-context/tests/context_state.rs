@@ -1,8 +1,11 @@
 #![allow(missing_docs, clippy::unwrap_used)]
 
+use std::collections::BTreeSet;
+
 use starweaver_context::{
-    AgentContext, AgentId, BusMessage, MessageBus, ModelConfig, PerThousandRatio, TaskManager,
-    TaskStatus, ToolIdWrapper,
+    AgentContext, AgentContextHandle, AgentId, BusMessage, HostCapabilities, MessageBus,
+    ModelConfig, PerThousandRatio, ResumableState, TaskManager, TaskStatus, ToolIdWrapper,
+    ToolRuntimeSnapshot,
 };
 use starweaver_core::{Metadata, RunId};
 use starweaver_model::{
@@ -164,13 +167,15 @@ fn curated_export_keeps_portable_fields_and_omits_runtime_extensions() {
         .set("domain", serde_json::json!({"value": true}));
     context.enqueue_message(BusMessage::text("queued", "system"));
     context.handoff_message = Some("handoff".to_string());
-    context.auto_load_files = vec!["src/lib.rs".to_string()];
+    context.tools.auto_load_files = vec!["src/lib.rs".to_string()];
     context
-        .shell_env
+        .tools
+        .shell_environment
         .insert("KEY".to_string(), "VALUE".to_string());
     context.notes.set("language", "Chinese");
     context
-        .task_manager
+        .tools
+        .tasks
         .create("Plan", "Plan work", None, Metadata::default());
 
     let exported = context.export_state();
@@ -184,7 +189,7 @@ fn curated_export_keeps_portable_fields_and_omits_runtime_extensions() {
     assert!(exported.message_bus.is_empty());
     assert_eq!(exported.handoff_message.as_deref(), Some("handoff"));
     assert_eq!(exported.auto_load_files, vec!["src/lib.rs".to_string()]);
-    assert_eq!(exported.shell_env["KEY"], "VALUE");
+    assert!(exported.shell_env.is_empty());
     assert_eq!(exported.notes.get("language"), Some(&"Chinese".to_string()));
     assert_eq!(exported.tasks.len(), 1);
     assert!(exported.agent_registry.contains_key("main"));
@@ -193,14 +198,41 @@ fn curated_export_keeps_portable_fields_and_omits_runtime_extensions() {
     assert!(value.get("run_id").is_none());
     assert!(value.get("message_history").is_none());
     assert!(value.get("message_bus").is_none());
-    assert_eq!(value["notes"]["language"], "Chinese");
+    assert!(value.get("shell_env").is_none());
+    assert!(value.get("approval_required_tools").is_none());
+    assert!(value.get("approval_required_mcp_servers").is_none());
     assert_eq!(value["auto_load_files"], serde_json::json!(["src/lib.rs"]));
     let restored = AgentContext::from_state(serde_json::from_value(value.clone()).unwrap());
-    assert_eq!(restored.auto_load_files, vec!["src/lib.rs".to_string()]);
+    assert_eq!(
+        restored.tools.auto_load_files,
+        vec!["src/lib.rs".to_string()]
+    );
+    assert_eq!(value["notes"]["language"], "Chinese");
     assert_eq!(value["tasks"].as_object().unwrap().len(), 1);
     assert!(value["tasks"]["1"].get("subject").is_some());
     assert!(value["tasks"]["1"].get("tasks").is_none());
     assert!(value["notes"].get("notes").is_none());
+}
+
+#[test]
+fn legacy_host_policy_fields_are_readable_but_never_reexported() {
+    let state: ResumableState = serde_json::from_value(serde_json::json!({
+        "agent_id": "main",
+        "shell_env": {"LEGACY_SECRET": "value"},
+        "approval_required_tools": ["shell"],
+        "approval_required_mcp_servers": ["legacy-server"]
+    }))
+    .unwrap();
+    assert_eq!(state.shell_env["LEGACY_SECRET"], "value");
+    assert_eq!(state.approval_required_tools, vec!["shell"]);
+    assert_eq!(state.approval_required_mcp_servers, vec!["legacy-server"]);
+
+    let restored = AgentContext::from_state(state);
+    assert_eq!(restored.tools.shell_environment["LEGACY_SECRET"], "value");
+    let exported = serde_json::to_value(restored.export_full_state()).unwrap();
+    assert!(exported.get("shell_env").is_none());
+    assert!(exported.get("approval_required_tools").is_none());
+    assert!(exported.get("approval_required_mcp_servers").is_none());
 }
 
 #[test]
@@ -274,16 +306,137 @@ fn tool_id_wrapper_normalizes_tool_ids_across_history_and_payloads() {
 }
 
 #[test]
+fn ephemeral_runtime_state_preserves_flat_context_json_and_stays_out_of_resume_state() {
+    let fresh = AgentContext::new(AgentId::from_string("fresh"));
+    assert_eq!(
+        fresh.runtime.injected_context_tags,
+        vec!["runtime-context", "environment-context"]
+    );
+
+    let mut legacy_value = serde_json::to_value(&fresh).unwrap();
+    legacy_value
+        .as_object_mut()
+        .unwrap()
+        .remove("injected_context_tags");
+    let legacy_restored: AgentContext = serde_json::from_value(legacy_value).unwrap();
+    assert!(legacy_restored.runtime.injected_context_tags.is_empty());
+
+    let mut empty_tags = fresh;
+    empty_tags.runtime.injected_context_tags.clear();
+    let empty_value = serde_json::to_value(&empty_tags).unwrap();
+    assert!(empty_value.get("injected_context_tags").is_none());
+    let empty_restored: AgentContext = serde_json::from_value(empty_value).unwrap();
+    assert!(empty_restored.runtime.injected_context_tags.is_empty());
+
+    let mut context = AgentContext::new(AgentId::from_string("main"));
+    context.runtime.force_inject_context = true;
+    context.runtime.current_run_step = 7;
+    context.runtime.lifecycle.entered = true;
+    context
+        .runtime
+        .injected_context_tags
+        .push("custom-context".to_string());
+    context
+        .runtime
+        .wrapper_metadata
+        .insert("wrapper".to_string(), serde_json::json!(true));
+
+    let value = serde_json::to_value(&context).unwrap();
+    assert!(value.get("runtime").is_none());
+    assert_eq!(value["force_inject_context"], true);
+    assert_eq!(value["lifecycle"]["entered"], true);
+    assert_eq!(value["wrapper_metadata"]["wrapper"], true);
+    assert!(value.get("current_run_step").is_none());
+
+    let restored: AgentContext = serde_json::from_value(value).unwrap();
+    assert!(restored.runtime.force_inject_context);
+    assert!(restored.runtime.lifecycle.entered);
+    assert_eq!(restored.runtime.current_run_step, 0);
+    assert!(
+        restored
+            .runtime
+            .injected_context_tags
+            .contains(&"custom-context".to_string())
+    );
+
+    let resume_value = serde_json::to_value(context.export_full_state()).unwrap();
+    assert!(resume_value.get("force_inject_context").is_none());
+    assert!(resume_value.get("lifecycle").is_none());
+    assert!(resume_value.get("wrapper_metadata").is_none());
+}
+
+#[test]
+fn agent_tool_state_restores_legacy_flat_wire_shape_and_redacts_secrets() {
+    const SECRET: &str = "STARWEAVER_CONTEXT_SECRET_SENTINEL_7f9c";
+
+    let mut legacy = serde_json::to_value(AgentContext::new(AgentId::from_string("main"))).unwrap();
+    legacy.as_object_mut().unwrap().extend(
+        serde_json::json!({
+            "shell_env": {"LEGACY_SECRET": SECRET},
+            "deferred_tool_metadata": {"call-1": {"legacy": true}},
+            "auto_load_files": ["AGENTS.md"],
+            "task_manager": {
+                "tasks": {
+                    "1": {
+                        "id": "1",
+                        "subject": "Audit",
+                        "description": "Audit boundaries",
+                        "status": "pending"
+                    }
+                }
+            },
+            "tool_search_loaded_tools": ["search"],
+            "tool_search_loaded_namespaces": ["host_io"]
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+
+    let restored: AgentContext = serde_json::from_value(legacy).unwrap();
+    assert_eq!(restored.tools.shell_environment["LEGACY_SECRET"], SECRET);
+    assert!(restored.tools.deferred_call_metadata.contains_key("call-1"));
+    assert_eq!(restored.tools.auto_load_files, vec!["AGENTS.md"]);
+    assert_eq!(restored.tools.loaded_tool_names, vec!["search"]);
+    assert_eq!(restored.tools.loaded_tool_namespaces, vec!["host_io"]);
+    assert_eq!(restored.tools.tasks.list_all().len(), 1);
+
+    let value = serde_json::to_value(&restored).unwrap();
+    assert!(value.get("tools").is_none());
+    assert!(value.get("shell_env").is_none());
+    assert!(value["deferred_tool_metadata"].get("call-1").is_some());
+    assert_eq!(value["auto_load_files"][0], "AGENTS.md");
+    assert_eq!(value["tool_search_loaded_tools"][0], "search");
+    assert_eq!(value["tool_search_loaded_namespaces"][0], "host_io");
+    assert_eq!(value["task_manager"]["tasks"].as_object().unwrap().len(), 1);
+
+    let secret_surfaces = [
+        serde_json::to_string(&restored).unwrap(),
+        serde_json::to_string(&restored.export_state()).unwrap(),
+        serde_json::to_string(&restored.export_full_state()).unwrap(),
+        format!("{:?}", restored.tools),
+        format!("{restored:?}"),
+        format!("{:?}", AgentContextHandle::new(restored.clone())),
+        format!("{:?}", restored.tool_runtime_snapshot()),
+        format!("{:?}", restored.shell_environment_snapshot()),
+    ];
+    for surface in secret_surfaces {
+        assert!(!surface.contains(SECRET), "secret leaked through {surface}");
+    }
+}
+
+#[test]
 fn context_run_helpers_prepare_lifecycle_and_wrapper_metadata() {
     let mut context = AgentContext::new(AgentId::from_string("main"));
     context.parent_run_id = Some(RunId::from_string("parent-run"));
     context
+        .runtime
         .wrapper_metadata
         .insert("trace_id".to_string(), serde_json::json!("trace-1"));
     context.prepare_new_run();
 
     assert!(context.run_id.is_some());
-    assert!(context.lifecycle.entered);
+    assert!(context.runtime.lifecycle.entered);
     assert!(context.ended_at.is_none());
 
     let metadata = context.get_wrapper_metadata();
@@ -292,7 +445,7 @@ fn context_run_helpers_prepare_lifecycle_and_wrapper_metadata() {
     assert_eq!(metadata["trace_id"], "trace-1");
 
     context.finish_run();
-    assert!(!context.lifecycle.entered);
+    assert!(!context.runtime.lifecycle.entered);
     assert!(context.ended_at.is_some());
 }
 
@@ -396,6 +549,72 @@ fn external_usage_snapshot_entries_are_idempotent_and_aggregated() {
         second.model_estimate_pricing["cache-model"],
         PricingEstimate::from_micros_usd(11)
     );
+}
+
+#[test]
+fn tool_dependency_store_exposes_a_narrow_read_only_snapshot() {
+    let mut context = AgentContext::default();
+    context.model_config.max_image_bytes = 123;
+    context.tool_config.fetch_stream_chunk_size = 456;
+    context
+        .tools
+        .shell_environment
+        .insert("STARWEAVER_TEST".to_string(), "before".to_string());
+    context.insert_dependency(17_u32);
+
+    let dependencies = context.tool_dependency_store();
+    assert_eq!(dependencies.get::<u32>().as_deref(), Some(&17));
+    assert!(dependencies.get::<AgentContext>().is_none());
+    let capabilities = dependencies.get::<HostCapabilities>().unwrap();
+    assert_eq!(capabilities.get::<u32>().as_deref(), Some(&17));
+
+    let runtime = dependencies.get::<ToolRuntimeSnapshot>().unwrap();
+    assert_eq!(runtime.model_config().max_image_bytes, 123);
+    assert_eq!(runtime.tool_config().fetch_stream_chunk_size, 456);
+    let runtime_debug = format!("{runtime:?}");
+    assert!(runtime_debug.contains("STARWEAVER_TEST"));
+    assert!(!runtime_debug.contains("before"));
+    assert_eq!(
+        runtime
+            .shell_environment()
+            .get("STARWEAVER_TEST")
+            .map(String::as_str),
+        Some("before")
+    );
+
+    context.model_config.max_image_bytes = 999;
+    context
+        .tools
+        .shell_environment
+        .insert("STARWEAVER_TEST".to_string(), "after".to_string());
+    assert_eq!(runtime.model_config().max_image_bytes, 123);
+    assert_eq!(
+        runtime
+            .shell_environment()
+            .get("STARWEAVER_TEST")
+            .map(String::as_str),
+        Some("before")
+    );
+}
+
+#[test]
+fn strict_tool_dependencies_expose_only_named_host_grants() {
+    let mut context = AgentContext::default();
+    context.insert_named_dependency("allowed", 17_u32);
+    context.insert_named_dependency("hidden", 23_u64);
+
+    let dependencies =
+        context.strict_tool_dependency_store(&BTreeSet::from(["allowed".to_string()]), false);
+
+    assert!(dependencies.get::<u32>().is_none());
+    assert!(dependencies.get::<u64>().is_none());
+    let capabilities = dependencies.get::<HostCapabilities>().unwrap();
+    assert_eq!(capabilities.keys(), vec!["allowed".to_string()]);
+    assert_eq!(
+        capabilities.get_named::<u32>("allowed").as_deref(),
+        Some(&17)
+    );
+    assert!(capabilities.get_named::<u64>("hidden").is_none());
 }
 
 #[test]

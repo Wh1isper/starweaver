@@ -1,8 +1,7 @@
 //! Custom runtime event display projection.
 
 use serde_json::Value;
-use starweaver_context::TASK_SNAPSHOT_EVENT_KIND;
-use starweaver_core::{Metadata, RunId};
+use starweaver_core::{Metadata, RunId, TASK_SNAPSHOT_EVENT_KIND};
 
 use super::{DisplayMessage, DisplayMessageKind, DisplayProjectionContext};
 
@@ -173,7 +172,7 @@ fn custom_display_kind(normalized: &str) -> Option<DisplayMessageKind> {
         Some(DisplayMessageKind::SubagentCompleted)
     } else if custom_event_kind_matches(normalized, &["subagent_failed", "subagent_fail"]) {
         Some(DisplayMessageKind::SubagentFailed)
-    } else if custom_event_kind_matches(normalized, &[TASK_SNAPSHOT_EVENT_KIND, "task_snapshot"]) {
+    } else if custom_event_kind_matches(normalized, &[TASK_SNAPSHOT_EVENT_KIND]) {
         Some(DisplayMessageKind::TaskSnapshot)
     } else if normalized.starts_with("task_") {
         Some(DisplayMessageKind::TaskEvent)

@@ -1,0 +1,8 @@
+{
+  "sequence": 0,
+  "event": {
+    "kind": "run_start",
+    "run_id": "run-fixture",
+    "conversation_id": "conversation-fixture"
+  }
+}

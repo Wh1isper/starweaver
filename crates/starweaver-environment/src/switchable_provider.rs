@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use crate::{
     DynEnvironmentProvider, DynProcessShellProvider, EnvironmentError, EnvironmentProvider,
     EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions, FileGrepMatch,
-    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProcessShellProvider, ShellCommand,
-    ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
+    FileGrepOptions, FileListOptions, FileListResult, FileStat, ProcessShellProvider,
+    ProgramCommand, ShellCommand, ShellOutput, ShellProcessSnapshot, ShellReviewEnvironmentContext,
     path_match_candidates as default_path_match_candidates,
 };
 
@@ -189,6 +189,10 @@ impl EnvironmentProvider for SwitchableEnvironmentProvider {
         self.current_provider()?.run_shell(command).await
     }
 
+    async fn run_program(&self, command: ProgramCommand) -> EnvironmentResult<ShellOutput> {
+        self.current_provider()?.run_program(command).await
+    }
+
     fn process_shell_provider(self: Arc<Self>) -> Option<DynProcessShellProvider> {
         Some(self)
     }
@@ -218,6 +222,16 @@ impl ProcessShellProvider for SwitchableEnvironmentProvider {
         self.current_process_provider()?
             .ok_or_else(shell_unavailable)?
             .start_process(command)
+            .await
+    }
+
+    async fn start_program(
+        &self,
+        command: ProgramCommand,
+    ) -> EnvironmentResult<ShellProcessSnapshot> {
+        self.current_process_provider()?
+            .ok_or_else(shell_unavailable)?
+            .start_program(command)
             .await
     }
 

@@ -2,6 +2,8 @@
 
 use std::{
     collections::{BTreeMap, BinaryHeap},
+    fs::File,
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::UNIX_EPOCH,
@@ -10,22 +12,33 @@ use std::{
 use starweaver_core::Metadata;
 
 use crate::{
-    DEFAULT_FILE_TREE_MAX_DEPTH, DynProcessShellProvider, EnvironmentError, EnvironmentPolicy,
-    EnvironmentProvider, EnvironmentResult, EnvironmentState, FileGlobMatch, FileGlobOptions,
-    FileGrepMatch, FileGrepOptions, FileListOptions, FileListResult, FilePolicy, FileStat,
-    FileTreeBlock, LocalGrepSink, PathGlob, ShellCommand, ShellOutput, ShellPolicy,
+    DEFAULT_FILE_TREE_MAX_DEPTH, DEFAULT_LOCAL_COMPLETED_PROCESS_RETENTION,
+    DEFAULT_LOCAL_OUTPUT_BYTES, DEFAULT_LOCAL_PROCESS_CONCURRENCY, DynProcessShellProvider,
+    EnvironmentError, EnvironmentPolicy, EnvironmentProvider, EnvironmentResult, EnvironmentState,
+    FileGlobMatch, FileGlobOptions, FileGrepMatch, FileGrepOptions, FileListOptions,
+    FileListResult, FilePolicy, FileStat, FileTreeBlock, LocalExecutionLimiter, LocalGrepSink,
+    PathGlob, ProgramCommand, ShellCommand, ShellOutput, ShellPolicy,
     ShellReviewEnvironmentContext, copy_local_dir, create_local_tmp_dir, display_local_path,
     file_tree_directory_depth_increment, file_tree_directory_is_visible, list_ignore_match,
     local_grep_file_match_limit, local_search_walk_builder, local_shell_metadata, map_io_error,
     normalize_local_config_path, normalize_match_path, normalize_path, normalize_tmp_namespace,
     path_match_candidates, prepare_local_destination, push_unique_candidate, push_unique_path,
-    render_environment_context_xml, render_local_file_tree_listing, run_local_shell_command,
+    render_environment_context_xml, render_local_file_tree_listing,
 };
 use async_trait::async_trait;
 use grep_regex::RegexMatcher;
 use grep_searcher::{BinaryDetection, SearcherBuilder};
 
-/// Local provider skeleton with policy-aware filesystem access.
+/// Default maximum bytes returned by one local file read.
+pub const DEFAULT_LOCAL_READ_BYTES: usize = 8 * 1024 * 1024;
+
+/// Local provider with policy-aware filesystem access.
+///
+/// Physical-path containment rejects pre-existing symlink escapes, but this
+/// provider is not an operating-system sandbox. Hosts that require resistance
+/// to a concurrent untrusted filesystem writer must use a sandboxed provider
+/// or keep allowed roots exclusively controlled for the duration of an
+/// operation.
 #[derive(Clone, Debug)]
 pub struct LocalEnvironmentProvider {
     id: String,
@@ -36,6 +49,10 @@ pub struct LocalEnvironmentProvider {
     tmp_namespace: Option<String>,
     policy: EnvironmentPolicy,
     processes: Arc<Mutex<BTreeMap<String, LocalShellProcess>>>,
+    execution_limiter: Arc<LocalExecutionLimiter>,
+    max_read_bytes: usize,
+    max_output_bytes: usize,
+    completed_process_retention: usize,
 }
 
 mod paths;
@@ -69,6 +86,12 @@ impl LocalEnvironmentProvider {
                 shell: ShellPolicy::default(),
             },
             processes: Arc::new(Mutex::new(BTreeMap::new())),
+            execution_limiter: Arc::new(LocalExecutionLimiter::new(
+                DEFAULT_LOCAL_PROCESS_CONCURRENCY,
+            )),
+            max_read_bytes: DEFAULT_LOCAL_READ_BYTES,
+            max_output_bytes: DEFAULT_LOCAL_OUTPUT_BYTES,
+            completed_process_retention: DEFAULT_LOCAL_COMPLETED_PROCESS_RETENTION,
         }
     }
 
@@ -192,6 +215,44 @@ impl LocalEnvironmentProvider {
         self
     }
 
+    /// Set the shared foreground/background local process concurrency limit.
+    ///
+    /// Values below one are clamped to one. The setting should be applied before
+    /// cloning the provider.
+    #[must_use]
+    pub fn with_max_concurrent_processes(mut self, maximum: usize) -> Self {
+        self.execution_limiter = Arc::new(LocalExecutionLimiter::new(maximum));
+        self
+    }
+
+    /// Set the maximum bytes returned by one file read.
+    ///
+    /// Explicit larger ranges and unbounded reads whose result exceeds this
+    /// limit fail rather than allocating an attacker-controlled buffer.
+    #[must_use]
+    pub const fn with_max_read_bytes(mut self, maximum: usize) -> Self {
+        self.max_read_bytes = maximum;
+        self
+    }
+
+    /// Set the maximum bytes retained independently for stdout and stderr.
+    ///
+    /// Readers continue draining after reaching this bound so a chatty child
+    /// cannot block on a full pipe. Zero captures no output while preserving
+    /// total byte and truncation metadata.
+    #[must_use]
+    pub const fn with_max_output_bytes(mut self, maximum: usize) -> Self {
+        self.max_output_bytes = maximum;
+        self
+    }
+
+    /// Set how many completed background process snapshots remain queryable.
+    #[must_use]
+    pub const fn with_completed_process_retention(mut self, retention: usize) -> Self {
+        self.completed_process_retention = retention;
+        self
+    }
+
     /// Return configured local filesystem roots.
     #[must_use]
     pub fn allowed_paths(&self) -> &[PathBuf] {
@@ -241,9 +302,32 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
     }
 
     async fn read_text(&self, path: &str) -> EnvironmentResult<String> {
-        let path = self.resolve_provider_path(path, false)?;
-        std::fs::read_to_string(&path)
-            .map_err(|error| EnvironmentError::Provider(error.to_string()))
+        let provider = self.clone();
+        let path = path.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let path = provider.resolve_provider_path(path, false)?;
+            let file = File::open(&path).map_err(|error| map_io_error(&path, &error))?;
+            let probe = provider.max_read_bytes.saturating_add(1);
+            let limit = u64::try_from(probe).map_err(|_| {
+                EnvironmentError::InvalidRequest(
+                    "file read length exceeds platform limits".to_string(),
+                )
+            })?;
+            let mut bytes = Vec::with_capacity(provider.max_read_bytes.min(64 * 1024));
+            file.take(limit)
+                .read_to_end(&mut bytes)
+                .map_err(|error| map_io_error(&path, &error))?;
+            if bytes.len() > provider.max_read_bytes {
+                return Err(EnvironmentError::InvalidRequest(format!(
+                    "file read exceeds configured {} byte limit; request a bounded byte range",
+                    provider.max_read_bytes
+                )));
+            }
+            String::from_utf8(bytes).map_err(|error| EnvironmentError::Provider(error.to_string()))
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn read_bytes(
@@ -252,154 +336,252 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         offset: usize,
         length: Option<usize>,
     ) -> EnvironmentResult<Vec<u8>> {
-        let path = self.resolve_provider_path(path, false)?;
-        let bytes =
-            std::fs::read(&path).map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-        if offset >= bytes.len() {
-            return Ok(Vec::new());
-        }
-        let end = length.map_or(bytes.len(), |length| {
-            offset.saturating_add(length).min(bytes.len())
-        });
-        Ok(bytes[offset..end].to_vec())
+        let provider = self.clone();
+        let path = path.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let path = provider.resolve_provider_path(path, false)?;
+            let mut file = File::open(&path).map_err(|error| map_io_error(&path, &error))?;
+            let offset = u64::try_from(offset).map_err(|_| {
+                EnvironmentError::InvalidRequest(
+                    "file read offset exceeds platform limits".to_string(),
+                )
+            })?;
+            file.seek(SeekFrom::Start(offset))
+                .map_err(|error| map_io_error(&path, &error))?;
+            if length.is_some_and(|length| length > provider.max_read_bytes) {
+                return Err(EnvironmentError::InvalidRequest(format!(
+                    "requested file read exceeds configured {} byte limit",
+                    provider.max_read_bytes
+                )));
+            }
+            let requested = length.unwrap_or(provider.max_read_bytes);
+            let probe = if length.is_some() {
+                requested
+            } else {
+                requested.saturating_add(1)
+            };
+            let limit = u64::try_from(probe).map_err(|_| {
+                EnvironmentError::InvalidRequest(
+                    "file read length exceeds platform limits".to_string(),
+                )
+            })?;
+            let mut bytes = Vec::with_capacity(requested.min(64 * 1024));
+            file.take(limit)
+                .read_to_end(&mut bytes)
+                .map_err(|error| map_io_error(&path, &error))?;
+            if length.is_none() && bytes.len() > provider.max_read_bytes {
+                return Err(EnvironmentError::InvalidRequest(format!(
+                    "file read exceeds configured {} byte limit; request a bounded range",
+                    provider.max_read_bytes
+                )));
+            }
+            Ok(bytes)
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn write_text(&self, path: &str, content: &str) -> EnvironmentResult<()> {
-        let path = self.resolve_provider_path(path, true)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-        }
-        std::fs::write(&path, content).map_err(|error| map_io_error(&path, &error))
+        let provider = self.clone();
+        let path = path.to_string();
+        let content = content.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let content = content.as_str();
+            let path = provider.resolve_provider_path(path, true)?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+            }
+            std::fs::write(&path, content).map_err(|error| map_io_error(&path, &error))
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn create_dir(&self, path: &str, parents: bool) -> EnvironmentResult<()> {
-        let path = self.resolve_provider_path(path, true)?;
-        if self.is_exact_allowed_root(&path) && path.exists() {
-            return Ok(());
-        }
-        let result = if parents {
-            std::fs::create_dir_all(&path)
-        } else {
-            std::fs::create_dir(&path)
-        };
-        result.map_err(|error| map_io_error(&path, &error))
+        let provider = self.clone();
+        let path = path.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let path = provider.resolve_provider_path(path, true)?;
+            if provider.is_exact_allowed_root(&path) && path.exists() {
+                return Ok(());
+            }
+            let result = if parents {
+                std::fs::create_dir_all(&path)
+            } else {
+                std::fs::create_dir(&path)
+            };
+            result.map_err(|error| map_io_error(&path, &error))
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn delete_path(&self, path: &str, recursive: bool) -> EnvironmentResult<()> {
-        let path = self.resolve_provider_path(path, true)?;
-        if self.is_exact_allowed_root(&path) {
-            return Err(EnvironmentError::InvalidRequest(
-                "refusing to delete an allowed environment root".to_string(),
-            ));
-        }
-        let metadata = std::fs::metadata(&path).map_err(|error| map_io_error(&path, &error))?;
-        if metadata.is_dir() {
-            if recursive {
-                std::fs::remove_dir_all(&path)
-            } else {
-                std::fs::remove_dir(&path)
+        let provider = self.clone();
+        let path = path.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let path = provider.resolve_provider_entry_path(path)?;
+            if provider.is_exact_allowed_root(&path) {
+                return Err(EnvironmentError::InvalidRequest(
+                    "refusing to delete an allowed environment root".to_string(),
+                ));
             }
-        } else {
-            std::fs::remove_file(&path)
-        }
-        .map_err(|error| map_io_error(&path, &error))
+            let metadata =
+                std::fs::symlink_metadata(&path).map_err(|error| map_io_error(&path, &error))?;
+            if metadata.file_type().is_symlink() {
+                std::fs::remove_file(&path)
+            } else if metadata.is_dir() {
+                if recursive {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_dir(&path)
+                }
+            } else {
+                std::fs::remove_file(&path)
+            }
+            .map_err(|error| map_io_error(&path, &error))
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn move_path(&self, src: &str, dst: &str, overwrite: bool) -> EnvironmentResult<()> {
-        let src = self.resolve_provider_path(src, true)?;
-        let dst = self.resolve_provider_path(dst, true)?;
-        if self.is_exact_allowed_root(&src) {
-            return Err(EnvironmentError::InvalidRequest(
-                "refusing to move an allowed environment root".to_string(),
-            ));
-        }
-        if self.is_exact_allowed_root(&dst) {
-            return Err(EnvironmentError::InvalidRequest(
-                "destination must not be an allowed environment root".to_string(),
-            ));
-        }
-        if src == dst {
-            return Err(EnvironmentError::InvalidRequest(
-                "source and destination must differ".to_string(),
-            ));
-        }
-        prepare_local_destination(&dst, overwrite)?;
-        std::fs::rename(&src, &dst).map_err(|error| map_io_error(&src, &error))
+        let provider = self.clone();
+        let src = src.to_string();
+        let dst = dst.to_string();
+        crate::blocking::run(move || {
+            let src = src.as_str();
+            let dst = dst.as_str();
+            let src = provider.resolve_provider_entry_path(src)?;
+            let dst = provider.resolve_provider_path(dst, true)?;
+            if provider.is_exact_allowed_root(&src) {
+                return Err(EnvironmentError::InvalidRequest(
+                    "refusing to move an allowed environment root".to_string(),
+                ));
+            }
+            if provider.is_exact_allowed_root(&dst) {
+                return Err(EnvironmentError::InvalidRequest(
+                    "destination must not be an allowed environment root".to_string(),
+                ));
+            }
+            if src == dst {
+                return Err(EnvironmentError::InvalidRequest(
+                    "source and destination must differ".to_string(),
+                ));
+            }
+            prepare_local_destination(&dst, overwrite)?;
+            std::fs::rename(&src, &dst).map_err(|error| map_io_error(&src, &error))
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn copy_path(&self, src: &str, dst: &str, overwrite: bool) -> EnvironmentResult<()> {
-        let src = self.resolve_provider_path(src, false)?;
-        let dst = self.resolve_provider_path(dst, true)?;
-        if self.is_exact_allowed_root(&src) {
-            return Err(EnvironmentError::InvalidRequest(
-                "refusing to copy an allowed environment root".to_string(),
-            ));
-        }
-        if self.is_exact_allowed_root(&dst) {
-            return Err(EnvironmentError::InvalidRequest(
-                "destination must not be an allowed environment root".to_string(),
-            ));
-        }
-        if src == dst {
-            return Err(EnvironmentError::InvalidRequest(
-                "source and destination must differ".to_string(),
-            ));
-        }
-        let metadata = std::fs::metadata(&src).map_err(|error| map_io_error(&src, &error))?;
-        prepare_local_destination(&dst, overwrite)?;
-        if metadata.is_dir() {
-            copy_local_dir(&src, &dst)
-        } else {
-            std::fs::copy(&src, &dst)
-                .map(|_| ())
-                .map_err(|error| map_io_error(&src, &error))
-        }
+        let provider = self.clone();
+        let src = src.to_string();
+        let dst = dst.to_string();
+        crate::blocking::run(move || {
+            let src = src.as_str();
+            let dst = dst.as_str();
+            let src = provider.resolve_provider_path(src, false)?;
+            let dst = provider.resolve_provider_path(dst, true)?;
+            if provider.is_exact_allowed_root(&src) {
+                return Err(EnvironmentError::InvalidRequest(
+                    "refusing to copy an allowed environment root".to_string(),
+                ));
+            }
+            if provider.is_exact_allowed_root(&dst) {
+                return Err(EnvironmentError::InvalidRequest(
+                    "destination must not be an allowed environment root".to_string(),
+                ));
+            }
+            if src == dst {
+                return Err(EnvironmentError::InvalidRequest(
+                    "source and destination must differ".to_string(),
+                ));
+            }
+            let metadata = std::fs::metadata(&src).map_err(|error| map_io_error(&src, &error))?;
+            prepare_local_destination(&dst, overwrite)?;
+            if metadata.is_dir() {
+                copy_local_dir(&src, &dst)
+            } else {
+                std::fs::copy(&src, &dst)
+                    .map(|_| ())
+                    .map_err(|error| map_io_error(&src, &error))
+            }
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn write_tmp_file(&self, filename: &str, content: &[u8]) -> EnvironmentResult<String> {
-        let normalized = self.tmp_file_relative_path(filename)?;
-        let tmp_dir = self.tmp_dir_path().ok_or_else(|| {
-            EnvironmentError::Provider("local temporary directory is unavailable".to_string())
-        })?;
-        let path = tmp_dir.join(&normalized);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-        }
-        std::fs::write(&path, content).map_err(|error| map_io_error(&path, &error))?;
-        Ok(display_local_path(&normalize_local_config_path(path)))
+        let provider = self.clone();
+        let filename = filename.to_string();
+        let content = content.to_vec();
+        crate::blocking::run(move || {
+            let filename = filename.as_str();
+            let content = content.as_slice();
+            let normalized = provider.tmp_file_relative_path(filename)?;
+            let path = provider.resolve_tmp_relative_path(&normalized, true)?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| map_io_error(parent, &error))?;
+            }
+            let path = provider.resolve_tmp_relative_path(&normalized, true)?;
+            std::fs::write(&path, content).map_err(|error| map_io_error(&path, &error))?;
+            Ok(display_local_path(&path))
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn stat(&self, path: &str) -> EnvironmentResult<FileStat> {
-        let path = self.resolve_provider_path(path, false)?;
-        let metadata = std::fs::metadata(&path).map_err(|error| map_io_error(&path, &error))?;
-        let modified_unix_seconds = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs());
-        Ok(FileStat {
-            size: if metadata.is_file() {
-                metadata.len()
-            } else {
-                0
-            },
-            is_file: metadata.is_file(),
-            is_dir: metadata.is_dir(),
-            modified_unix_seconds,
+        let provider = self.clone();
+        let path = path.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let path = provider.resolve_provider_path(path, false)?;
+            let metadata = std::fs::metadata(&path).map_err(|error| map_io_error(&path, &error))?;
+            let modified_unix_seconds = metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_secs());
+            Ok(FileStat {
+                size: if metadata.is_file() {
+                    metadata.len()
+                } else {
+                    0
+                },
+                is_file: metadata.is_file(),
+                is_dir: metadata.is_dir(),
+                modified_unix_seconds,
+            })
         })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn list(&self, path: &str) -> EnvironmentResult<Vec<String>> {
-        let path = self.resolve_provider_path(path, false)?;
-        let mut entries = Vec::new();
-        for entry in std::fs::read_dir(&path).map_err(|error| map_io_error(&path, &error))? {
-            let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            entries.push(entry.file_name().to_string_lossy().to_string());
-        }
-        entries.sort_unstable();
-        Ok(entries)
+        let provider = self.clone();
+        let path = path.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let path = provider.resolve_provider_path(path, false)?;
+            let mut entries = Vec::new();
+            for entry in std::fs::read_dir(&path).map_err(|error| map_io_error(&path, &error))? {
+                let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                entries.push(entry.file_name().to_string_lossy().to_string());
+            }
+            entries.sort_unstable();
+            Ok(entries)
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn list_with_options(
@@ -407,47 +589,57 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         path: &str,
         options: FileListOptions,
     ) -> EnvironmentResult<FileListResult> {
-        let path = self.resolve_provider_path(path, false)?;
-        if options.max_entries == 0 {
-            let mut entries = Vec::new();
+        let provider = self.clone();
+        let path = path.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let path = provider.resolve_provider_path(path, false)?;
+            if options.max_entries == 0 {
+                let mut entries = Vec::new();
+                for entry in
+                    std::fs::read_dir(&path).map_err(|error| map_io_error(&path, &error))?
+                {
+                    let entry =
+                        entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !list_ignore_match(&options.ignore_patterns, &name) {
+                        entries.push(name);
+                    }
+                }
+                entries.sort_unstable();
+                let total_entries = entries.len();
+                return Ok(FileListResult {
+                    entries,
+                    truncated: false,
+                    total_entries,
+                });
+            }
+
+            let mut entries = BinaryHeap::new();
+            let mut total_entries = 0usize;
             for entry in std::fs::read_dir(&path).map_err(|error| map_io_error(&path, &error))? {
                 let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
                 let name = entry.file_name().to_string_lossy().to_string();
-                if !list_ignore_match(&options.ignore_patterns, &name) {
+                if list_ignore_match(&options.ignore_patterns, &name) {
+                    continue;
+                }
+                total_entries = total_entries.saturating_add(1);
+                if entries.len() < options.max_entries {
+                    entries.push(name);
+                } else if entries.peek().is_some_and(|largest| name < *largest) {
+                    entries.pop();
                     entries.push(name);
                 }
             }
-            entries.sort_unstable();
-            let total_entries = entries.len();
-            return Ok(FileListResult {
-                entries,
-                truncated: false,
+            let entries = entries.into_sorted_vec();
+            Ok(FileListResult {
+                truncated: total_entries > entries.len(),
                 total_entries,
-            });
-        }
-
-        let mut entries = BinaryHeap::new();
-        let mut total_entries = 0usize;
-        for entry in std::fs::read_dir(&path).map_err(|error| map_io_error(&path, &error))? {
-            let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if list_ignore_match(&options.ignore_patterns, &name) {
-                continue;
-            }
-            total_entries = total_entries.saturating_add(1);
-            if entries.len() < options.max_entries {
-                entries.push(name);
-            } else if entries.peek().is_some_and(|largest| name < *largest) {
-                entries.pop();
-                entries.push(name);
-            }
-        }
-        let entries = entries.into_sorted_vec();
-        Ok(FileListResult {
-            truncated: total_entries > entries.len(),
-            total_entries,
-            entries,
+                entries,
+            })
         })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn glob(
@@ -456,42 +648,51 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         pattern: &str,
         options: FileGlobOptions,
     ) -> EnvironmentResult<Vec<FileGlobMatch>> {
-        let path_glob = PathGlob::new(pattern)?;
-        let search_root = self.resolve_provider_path(path, false)?;
-        let builder = local_search_walk_builder(
-            &search_root,
-            options.include_hidden,
-            options.include_ignored,
-        );
-        let mut glob_matches = Vec::new();
-        for entry in builder.build() {
-            let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            if !entry
-                .file_type()
-                .is_some_and(|file_type| file_type.is_file() || file_type.is_dir())
-            {
-                continue;
-            }
-            if entry.path() == search_root {
-                continue;
-            }
-            let logical = self.logical_provider_path(entry.path())?;
-            if !self.policy.files.permits(&logical, false) {
-                continue;
-            }
-            let candidate = entry
-                .path()
-                .strip_prefix(&search_root)
-                .map(normalize_path)
-                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            if path_glob.is_match(&candidate) {
-                glob_matches.push(FileGlobMatch { path: logical });
-                if options.max_results > 0 && glob_matches.len() >= options.max_results {
-                    break;
+        let provider = self.clone();
+        let path = path.to_string();
+        let pattern = pattern.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let pattern = pattern.as_str();
+            let path_glob = PathGlob::new(pattern)?;
+            let search_root = provider.resolve_provider_path(path, false)?;
+            let builder = local_search_walk_builder(
+                &search_root,
+                options.include_hidden,
+                options.include_ignored,
+            );
+            let mut glob_matches = Vec::new();
+            for entry in builder.build() {
+                let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                if !entry
+                    .file_type()
+                    .is_some_and(|file_type| file_type.is_file() || file_type.is_dir())
+                {
+                    continue;
+                }
+                if entry.path() == search_root {
+                    continue;
+                }
+                let logical = provider.logical_provider_path(entry.path())?;
+                if !provider.policy.files.permits(&logical, false) {
+                    continue;
+                }
+                let candidate = entry
+                    .path()
+                    .strip_prefix(&search_root)
+                    .map(normalize_path)
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                if path_glob.is_match(&candidate) {
+                    glob_matches.push(FileGlobMatch { path: logical });
+                    if options.max_results > 0 && glob_matches.len() >= options.max_results {
+                        break;
+                    }
                 }
             }
-        }
-        Ok(glob_matches)
+            Ok(glob_matches)
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn grep(
@@ -500,120 +701,195 @@ impl EnvironmentProvider for LocalEnvironmentProvider {
         pattern: &str,
         options: FileGrepOptions,
     ) -> EnvironmentResult<Vec<FileGrepMatch>> {
-        let matcher = RegexMatcher::new_line_matcher(pattern)
-            .map_err(|error| EnvironmentError::InvalidRequest(error.to_string()))?;
-        let include = options
-            .include
-            .clone()
-            .unwrap_or_else(|| "**/*".to_string());
-        let path_glob = PathGlob::new(&include)?;
-        let search_root = self.resolve_provider_path(path, false)?;
-        let builder = local_search_walk_builder(
-            &search_root,
-            options.include_hidden,
-            options.include_ignored,
-        );
-        let mut grep_matches = Vec::new();
-        let mut searched_files = 0;
-        for entry in builder.build() {
-            if options.max_results > 0 && grep_matches.len() >= options.max_results {
-                break;
-            }
-            if options.max_files > 0 && searched_files >= options.max_files {
-                break;
-            }
-            let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            if !entry
-                .file_type()
-                .is_some_and(|file_type| file_type.is_file())
-            {
-                continue;
-            }
-            let logical = self.logical_provider_path(entry.path())?;
-            if !self.policy.files.permits(&logical, false) {
-                continue;
-            }
-            let candidate = entry
-                .path()
-                .strip_prefix(&search_root)
-                .map(normalize_path)
-                .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
-            if !path_glob.is_match(&candidate) {
-                continue;
-            }
-
-            searched_files += 1;
-            let max_matches = local_grep_file_match_limit(&options, grep_matches.len());
-            let mut searcher = SearcherBuilder::new()
-                .line_number(true)
-                .before_context(options.context_lines)
-                .after_context(options.context_lines)
-                .binary_detection(BinaryDetection::quit(b'\x00'))
-                .max_matches(max_matches)
-                .build();
-            let mut sink = LocalGrepSink::new(
-                &logical,
-                &mut grep_matches,
-                options.context_lines,
-                options.max_results,
+        let provider = self.clone();
+        let path = path.to_string();
+        let pattern = pattern.to_string();
+        crate::blocking::run(move || {
+            let path = path.as_str();
+            let pattern = pattern.as_str();
+            let matcher = RegexMatcher::new_line_matcher(pattern)
+                .map_err(|error| EnvironmentError::InvalidRequest(error.to_string()))?;
+            let include = options
+                .include
+                .clone()
+                .unwrap_or_else(|| "**/*".to_string());
+            let path_glob = PathGlob::new(&include)?;
+            let search_root = provider.resolve_provider_path(path, false)?;
+            let builder = local_search_walk_builder(
+                &search_root,
+                options.include_hidden,
+                options.include_ignored,
             );
-            let _ = searcher.search_path(&matcher, entry.path(), &mut sink);
-        }
-        Ok(grep_matches)
+            let mut grep_matches = Vec::new();
+            let mut searched_files = 0;
+            for entry in builder.build() {
+                if options.max_results > 0 && grep_matches.len() >= options.max_results {
+                    break;
+                }
+                if options.max_files > 0 && searched_files >= options.max_files {
+                    break;
+                }
+                let entry = entry.map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                if !entry
+                    .file_type()
+                    .is_some_and(|file_type| file_type.is_file())
+                {
+                    continue;
+                }
+                let logical = provider.logical_provider_path(entry.path())?;
+                if !provider.policy.files.permits(&logical, false) {
+                    continue;
+                }
+                let candidate = entry
+                    .path()
+                    .strip_prefix(&search_root)
+                    .map(normalize_path)
+                    .map_err(|error| EnvironmentError::Provider(error.to_string()))?;
+                if !path_glob.is_match(&candidate) {
+                    continue;
+                }
+
+                searched_files += 1;
+                let max_matches = local_grep_file_match_limit(&options, grep_matches.len());
+                let mut searcher = SearcherBuilder::new()
+                    .line_number(true)
+                    .before_context(options.context_lines)
+                    .after_context(options.context_lines)
+                    .binary_detection(BinaryDetection::quit(b'\x00'))
+                    .max_matches(max_matches)
+                    .build();
+                let mut sink = LocalGrepSink::new(
+                    &logical,
+                    &mut grep_matches,
+                    options.context_lines,
+                    options.max_results,
+                );
+                let _ = searcher.search_path(&matcher, entry.path(), &mut sink);
+            }
+            Ok(grep_matches)
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn run_shell(&self, command: ShellCommand) -> EnvironmentResult<ShellOutput> {
-        if !self.policy.shell.permits(&command.command) {
-            return Err(EnvironmentError::AccessDenied(command.command));
-        }
-        let cwd = match command.cwd.as_deref() {
-            Some(cwd) => self.resolve_provider_path(cwd, false)?,
-            None => self.root.clone(),
-        };
-        if !cwd.is_dir() {
-            return Err(EnvironmentError::InvalidRequest(format!(
-                "shell cwd is not a directory: {}",
-                cwd.display()
-            )));
-        }
-        let environment = self.shell_environment(&command.environment)?;
-        run_local_shell_command(
-            &command.command,
-            &cwd,
-            &environment,
-            command.timeout_seconds,
-        )
+        let provider = self.clone();
+        crate::blocking::run_cancellable(move |cancelled| {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(EnvironmentError::Provider(
+                    "shell command cancelled before start".to_string(),
+                ));
+            }
+            if !provider.policy.shell.permits_shell() {
+                return Err(EnvironmentError::AccessDenied(command.command));
+            }
+            let cwd = match command.cwd.as_deref() {
+                Some(cwd) => provider.resolve_provider_path(cwd, false)?,
+                None => provider.root.clone(),
+            };
+            if !cwd.is_dir() {
+                return Err(EnvironmentError::InvalidRequest(format!(
+                    "shell cwd is not a directory: {}",
+                    cwd.display()
+                )));
+            }
+            let environment = provider.shell_environment(&command.environment)?;
+            provider.reap_local_processes()?;
+            let _execution_permit = provider.execution_limiter.try_acquire()?;
+            crate::shell::run_local_shell_command(
+                &command.command,
+                &cwd,
+                &environment,
+                command.timeout_seconds,
+                provider.max_output_bytes,
+                &cancelled,
+            )
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
+    }
+
+    async fn run_program(&self, command: ProgramCommand) -> EnvironmentResult<ShellOutput> {
+        let provider = self.clone();
+        crate::blocking::run_cancellable(move |cancelled| {
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(EnvironmentError::Provider(
+                    "program cancelled before start".to_string(),
+                ));
+            }
+            if !provider.policy.shell.permits_program(&command.program) {
+                return Err(EnvironmentError::AccessDenied(command.display_command()));
+            }
+            if !command.environment.is_empty()
+                && !provider
+                    .policy
+                    .shell
+                    .permits_program_environment_overrides()
+            {
+                return Err(EnvironmentError::InvalidRequest(
+                    "environment overrides are not allowed for allowlisted direct programs"
+                        .to_string(),
+                ));
+            }
+            let cwd = match command.cwd.as_deref() {
+                Some(cwd) => provider.resolve_provider_path(cwd, false)?,
+                None => provider.root.clone(),
+            };
+            if !cwd.is_dir() {
+                return Err(EnvironmentError::InvalidRequest(format!(
+                    "program cwd is not a directory: {}",
+                    cwd.display()
+                )));
+            }
+            let environment = provider.shell_environment(&command.environment)?;
+            provider.reap_local_processes()?;
+            let _execution_permit = provider.execution_limiter.try_acquire()?;
+            crate::shell::run_local_program_command(
+                &command,
+                &cwd,
+                &environment,
+                provider.max_output_bytes,
+                &cancelled,
+            )
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn render_environment_context(&self) -> EnvironmentResult<Option<String>> {
-        let mut file_trees = Vec::new();
-        let file_tree_roots = self
-            .context_file_tree_roots
-            .as_deref()
-            .unwrap_or(&self.allowed_paths);
-        for allowed_path in context_file_tree_roots(file_tree_roots) {
-            let visible_root = self.logical_root_for_allowed_path(allowed_path);
-            let tree = render_local_file_tree_listing(
-                allowed_path,
-                &visible_root,
-                &self.policy,
-                DEFAULT_FILE_TREE_MAX_DEPTH,
-            )?;
-            if !tree.is_empty() && !tree.starts_with("Directory not found") {
-                file_trees.push(FileTreeBlock {
-                    path: display_local_path(allowed_path),
-                    listing_text: tree,
-                });
+        let provider = self.clone();
+        crate::blocking::run(move || {
+            let mut file_trees = Vec::new();
+            let file_tree_roots = provider
+                .context_file_tree_roots
+                .as_deref()
+                .unwrap_or(&provider.allowed_paths);
+            for allowed_path in context_file_tree_roots(file_tree_roots) {
+                let visible_root = provider.logical_root_for_allowed_path(allowed_path);
+                let tree = render_local_file_tree_listing(
+                    allowed_path,
+                    &visible_root,
+                    &provider.policy,
+                    DEFAULT_FILE_TREE_MAX_DEPTH,
+                )?;
+                if !tree.is_empty() && !tree.starts_with("Directory not found") {
+                    file_trees.push(FileTreeBlock {
+                        path: display_local_path(allowed_path),
+                        listing_text: tree,
+                    });
+                }
             }
-        }
-        Ok(Some(render_environment_context_xml(
-            self.id(),
-            &display_local_path(&self.root),
-            self.tmp_dir_path().map(display_local_path),
-            &file_trees,
-            self.policy.shell.allow_execute,
-            Some(local_shell_metadata()),
-        )))
+            Ok(Some(render_environment_context_xml(
+                provider.id(),
+                &display_local_path(&provider.root),
+                provider.tmp_dir_path().map(display_local_path),
+                &file_trees,
+                provider.policy.shell.allow_execute,
+                Some(local_shell_metadata()),
+            )))
+        })
+        .await
+        .map_err(EnvironmentError::Provider)?
     }
 
     async fn export_state(&self) -> EnvironmentResult<EnvironmentState> {

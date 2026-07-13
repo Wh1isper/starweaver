@@ -296,6 +296,11 @@ impl InteractiveTuiState {
                 self.finish_current_model_item();
                 self.reproject_body();
             }
+            AgentStreamEvent::RunCancelled { reason, .. } => {
+                self.status = "CANCELLED".to_string();
+                self.phase = "cancelled".to_string();
+                self.push_system_notice(NoticeLevel::Warning, format!("Run cancelled: {reason}"));
+            }
             AgentStreamEvent::RunFailed { message, .. } => {
                 self.status = "FAILED".to_string();
                 self.phase = "failed".to_string();

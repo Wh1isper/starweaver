@@ -7,6 +7,41 @@ commit promotes that version to the public release version `X.Y.Z`.
 Publishing a GitHub Release for a `vX.Y.Z` tag is the publishing trigger. The tag must point at a
 commit whose workspace version is exactly `X.Y.Z`.
 
+## 0.7 boundary migration
+
+The architecture consolidation intentionally changes released 0.6 contracts: CLI and standalone RPC are independent products, protocol and durable DTOs use their new typed/versioned owners, runtime checkpoint/stream contracts moved to lower owning crates, and `AgentContext` fields moved under explicit components. These are accepted as a pre-1.0 minor-version break, so the unified workspace and Python distribution version advances to `0.7.0`; prohibited CLI/RPC coupling and broad mutable context fields are not restored as compatibility shims.
+
+## Current context migration notes
+
+The Phase 3 context decomposition includes intentional Rust source changes:
+
+- execution-only fields moved below `AgentContext.runtime`: `force_inject_context`,
+  `injected_context_tags`, `context_manage_tool_names`, `tool_tags`, `tool_id_wrapper`,
+  `agent_stream_queues`, `wrapper_metadata`, `lifecycle`, and `current_run_step`;
+- agent-owned tool state moved below `AgentContext.tools`: `shell_env` became
+  `shell_environment`, `deferred_tool_metadata` became `deferred_call_metadata`,
+  `auto_load_files` retained its name, `task_manager` became `tasks`,
+  `tool_search_loaded_tools` became `loaded_tool_names`, and
+  `tool_search_loaded_namespaces` became `loaded_tool_namespaces`;
+- tool calls no longer receive `Arc<AgentContext>` as an immutable typed dependency;
+- tools that read model/tool limits or shell configuration should use `ToolRuntimeSnapshot`;
+- tools that read attached host integrations should use `HostCapabilities` or their explicit typed
+  dependency;
+- first-party tools that mutate handoff, task, usage, or dynamic tool-search state use the
+  capability-specific `ContextHandoffHandle`, `TaskContextHandle`, `UsageContextHandle`, or
+  `ToolSearchContextHandle`; broad `AgentContextHandle` injection remains only in the Legacy
+  compatibility profile;
+- Filtered is the first-party structural-narrowing default, while Strict omits ambient application
+  dependencies and intersects requested host, shell, and mutable context capabilities with the
+  per-tool `ToolCapabilityGrant` explicitly installed by the host.
+
+Non-secret fields retain the flattened serialized `AgentContext` key layout, and legacy flat JSON
+input remains readable. `shell_env` is intentionally input-compatible only: its values are restored
+into `context.tools.shell_environment` but are never emitted by context or resumable-state
+serialization. Direct Rust field access must be updated to `context.runtime.<execution_field>` or
+`context.tools.<tool_state_field>`. These changes must be called out in release notes and reviewed
+under the workspace semver policy.
+
 ## Prepare release
 
 Prepare a release branch from the repository root:
@@ -18,10 +53,11 @@ gh workflow run prepare-release.yml -f version=X.Y.Z
 The workflow:
 
 1. validates the requested semver version,
-2. runs `make upversion VERSION=X.Y.Z`,
-3. runs fast release preparation checks,
-4. pushes `release/vX.Y.Z`,
-5. writes the manual pull request URL to the workflow summary.
+2. installs the pinned `cargo-semver-checks` `0.48.0`,
+3. runs `make upversion VERSION=X.Y.Z`,
+4. runs the fast preparation checks plus `make release-api-check`,
+5. pushes `release/vX.Y.Z`,
+6. writes the manual pull request URL to the workflow summary.
 
 After the release pull request is merged into `main`, publish the GitHub Release:
 
@@ -33,11 +69,22 @@ gh release create vX.Y.Z --target "$merge_commit" --title "Starweaver vX.Y.Z" --
 Use the release pull request merge commit as the release target, not the mutable `main` branch, so
 the tag always points at the reviewed release commit.
 
-For fully local preparation:
+`make release-api-check` verifies three reviewed boundaries: the `starweaver-agent` root,
+`prelude`, and `advanced` allowlist snapshot; the classified Python top-level export snapshot; and
+Rust semver compatibility against the latest release. `starweaver-storage` is excluded from the
+registry comparison for 0.7 because no 0.6 crate was published; remove that first-publication
+exception after 0.7 becomes its baseline. The gate also smoke-tests the built Python wheel.
+Intentional Rust facade changes are accepted with `cargo run -p xtask -- check-agent-api --bless`
+after review; intentional Python changes update `tests/fixtures/api/top-level-v1.json` in the same
+review.
+
+For fully local preparation, install the same checker version used by CI first:
 
 ```bash
+cargo install cargo-semver-checks --version 0.48.0 --locked
 make upversion VERSION=X.Y.Z
 make ci
+make release-api-check
 make cli-smoke
 make py-wheel-smoke
 make publish-dry-run

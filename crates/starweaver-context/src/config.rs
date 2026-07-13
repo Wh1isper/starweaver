@@ -11,6 +11,7 @@ pub use tool::{ToolAvailabilityPolicy, ToolConfig};
 /// Fixed-point ratio stored as parts per thousand.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct PerThousandRatio {
+    #[serde(alias = "parts_per_thousand")]
     per_thousand: u16,
 }
 
@@ -37,6 +38,24 @@ impl PerThousandRatio {
 impl Default for PerThousandRatio {
     fn default() -> Self {
         Self::from_per_thousand(1000)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PerThousandRatio;
+
+    #[test]
+    fn legacy_parts_per_thousand_deserializes_to_the_canonical_ratio()
+    -> Result<(), serde_json::Error> {
+        let ratio = serde_json::from_str::<PerThousandRatio>(r#"{"parts_per_thousand": 900}"#)?;
+
+        assert_eq!(ratio.per_thousand(), 900);
+        assert_eq!(
+            serde_json::to_value(ratio)?["per_thousand"],
+            serde_json::json!(900)
+        );
+        Ok(())
     }
 }
 

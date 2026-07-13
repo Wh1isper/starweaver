@@ -1,0 +1,12 @@
+{
+  "sequence": 9,
+  "event": {
+    "kind": "custom",
+    "event": {
+      "kind": "usage_snapshot",
+      "payload": {
+        "requests": 1
+      }
+    }
+  }
+}

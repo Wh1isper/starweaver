@@ -51,7 +51,10 @@ impl SseEnvelope {
             id: event.sequence.to_string(),
             event: event_name(&event.event).to_string(),
             data: event_data(&event.event),
-            cursor: Some(ReplayCursor::new(event.scope.clone(), event.sequence)),
+            cursor: Some(ReplayCursor::replay_event(
+                event.scope.clone(),
+                event.sequence,
+            )),
         }
     }
 
@@ -73,7 +76,10 @@ impl JsonlEnvelope {
             sequence: event.sequence,
             kind: event_name(&event.event).to_string(),
             data: event_data(&event.event),
-            cursor: Some(ReplayCursor::new(event.scope.clone(), event.sequence)),
+            cursor: Some(ReplayCursor::replay_event(
+                event.scope.clone(),
+                event.sequence,
+            )),
         }
     }
 

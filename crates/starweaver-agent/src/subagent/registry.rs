@@ -17,7 +17,8 @@ use starweaver_runtime::{
     AgentStreamSource, CapabilityBundle, CapabilityResult, CapabilitySpec, TraceRecorderHandle,
 };
 use starweaver_tools::{
-    DynTool, EmptyToolArgs, ToolContext, ToolError, ToolInstruction, ToolRegistry, ToolResult,
+    DynTool, EmptyToolArgs, TOOL_METADATA_DEPENDENCIES_KEY, ToolContext,
+    ToolDependencyRequirements, ToolError, ToolInstruction, ToolRegistry, ToolResult,
     typed_json_tool,
 };
 use uuid::Uuid;
@@ -41,6 +42,26 @@ pub const SPAWN_DELEGATE_TOOL_NAME: &str = "spawn_delegate";
 pub const WAIT_SUBAGENT_TOOL_NAME: &str = "wait_subagent";
 
 const BACKGROUND_SUBAGENT_CAPABILITY_ID: &str = "starweaver.subagent.background";
+
+fn dependency_metadata(requirements: &ToolDependencyRequirements) -> Metadata {
+    Metadata::from_iter([(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        requirements.to_metadata_value(),
+    )])
+}
+
+fn explicit_delegation_legacy_metadata() -> Metadata {
+    dependency_metadata(
+        &ToolDependencyRequirements::legacy_with_context_capabilities(std::iter::empty::<String>()),
+    )
+}
+
+fn filtered_read_only_metadata() -> Metadata {
+    dependency_metadata(&ToolDependencyRequirements::filtered(
+        std::iter::empty::<String>(),
+        false,
+    ))
+}
 
 /// Model-visible subagent delegation topology.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -629,6 +650,7 @@ impl SubagentRegistry {
                     }
                 },
             )
+            .with_metadata(explicit_delegation_legacy_metadata())
             .with_tag("delegation")
             .with_prepare_definition(|context, definition| {
                 let monitor = context.dependency::<BackgroundSubagentMonitor>()?;
@@ -645,37 +667,40 @@ impl SubagentRegistry {
     #[must_use]
     pub fn subagent_info_tool(self: &Arc<Self>) -> DynTool {
         let registry = self.clone();
-        Arc::new(typed_json_tool::<EmptyToolArgs, _, _>(
-            "subagent_info",
-            Some("List all known subagents and their metadata.".to_string()),
-            move |context: ToolContext, _arguments: EmptyToolArgs| {
-                let registry = registry.clone();
-                async move {
-                    let parent_tools = context.dependency::<SubagentParentTools>();
-                    let subagents = registry
-                        .subagents
-                        .iter()
-                        .map(|subagent| {
-                            let mut payload = serde_json::json!({
-                                "name": &subagent.name,
-                                "description": &subagent.description,
-                            });
-                            if let Some(parent_tools) = parent_tools.as_ref() {
-                                attach_subagent_availability(
-                                    &mut payload,
-                                    subagent,
-                                    &parent_tools.0,
-                                );
-                            }
-                            payload
-                        })
-                        .collect::<Vec<_>>();
-                    Ok(ToolResult::new(serde_json::json!({
-                        "subagents": subagents,
-                    })))
-                }
-            },
-        ))
+        Arc::new(
+            typed_json_tool::<EmptyToolArgs, _, _>(
+                "subagent_info",
+                Some("List all known subagents and their metadata.".to_string()),
+                move |context: ToolContext, _arguments: EmptyToolArgs| {
+                    let registry = registry.clone();
+                    async move {
+                        let parent_tools = context.dependency::<SubagentParentTools>();
+                        let subagents = registry
+                            .subagents
+                            .iter()
+                            .map(|subagent| {
+                                let mut payload = serde_json::json!({
+                                    "name": &subagent.name,
+                                    "description": &subagent.description,
+                                });
+                                if let Some(parent_tools) = parent_tools.as_ref() {
+                                    attach_subagent_availability(
+                                        &mut payload,
+                                        subagent,
+                                        &parent_tools.0,
+                                    );
+                                }
+                                payload
+                            })
+                            .collect::<Vec<_>>();
+                        Ok(ToolResult::new(serde_json::json!({
+                            "subagents": subagents,
+                        })))
+                    }
+                },
+            )
+            .with_metadata(filtered_read_only_metadata()),
+        )
     }
 
     /// Create a typed delegation tool bound to this registry with a caller-provided name.
@@ -748,6 +773,7 @@ impl SubagentRegistry {
                 }
             },
         )
+        .with_metadata(explicit_delegation_legacy_metadata())
         .with_tag("delegation");
         if visible {
             Arc::new(tool)
@@ -833,6 +859,7 @@ impl SubagentRegistry {
                     }
                 },
             )
+            .with_metadata(explicit_delegation_legacy_metadata())
             .with_tag("delegation"),
         )
     }

@@ -145,8 +145,6 @@ pub enum CliCommand {
     Reset(ResetCommand),
     /// Print diagnostics.
     Diagnostics,
-    /// Run the JSON-RPC host service.
-    Rpc(RpcCommand),
     /// Print replay-check guidance.
     ReplayCheck,
     /// Update installed Starweaver components.
@@ -595,31 +593,6 @@ pub struct ResetCommand {
     /// Output mode.
     #[arg(long, default_value = "text")]
     pub output: OutputMode,
-}
-
-/// RPC runtime command.
-#[derive(Clone, Debug, Args)]
-pub struct RpcCommand {
-    /// Runtime transport.
-    #[arg(default_value = "stdio")]
-    pub transport: RpcTransport,
-    /// HTTP bind host.
-    #[arg(long, default_value = "127.0.0.1")]
-    pub host: String,
-    /// HTTP bind port.
-    #[arg(long, default_value_t = 8765)]
-    pub port: u16,
-}
-
-/// RPC runtime transport.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum RpcTransport {
-    /// Newline-delimited JSON-RPC over stdin/stdout.
-    #[default]
-    Stdio,
-    /// JSON-RPC request/response over HTTP.
-    Http,
 }
 
 /// Update command.

@@ -1,0 +1,12 @@
+{
+  "schema": "starweaver.stream.replay_event",
+  "version": 1,
+  "payload": {
+    "scope": "run:run-fixture",
+    "sequence": 3,
+    "timestamp": "2026-07-11T00:00:00Z",
+    "event": {
+      "kind": "heartbeat"
+    }
+  }
+}

@@ -6,13 +6,17 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use starweaver_core::Metadata;
 use starweaver_model::{
     ModelAdapter, ModelError, ModelMessage, ModelProfile, ModelRequestContext,
     ModelRequestParameters, ModelRequestPart, ModelResponse, ModelResponseEventStream,
     ModelResponsePart, ModelRunSession, ModelSettings, ProtocolFamily, ToolCallPart,
 };
 use starweaver_runtime::{Agent, AgentRuntimePolicy, AgentToolExecutionMode};
-use starweaver_tools::{FunctionTool, ToolContext, ToolRegistry, ToolResult};
+use starweaver_tools::{
+    FunctionTool, TOOL_METADATA_DEPENDENCIES_KEY, ToolContext, ToolDependencyRequirements,
+    ToolRegistry, ToolResult,
+};
 
 #[derive(Clone)]
 struct ScriptedModel {
@@ -253,7 +257,7 @@ async fn agent_executes_tool_calls_and_continues_model_loop() {
 }
 
 #[tokio::test]
-async fn agent_executes_distinct_tool_calls_in_parallel_by_default_and_preserves_order() {
+async fn agent_executes_distinct_filtered_tool_calls_in_parallel_and_preserves_order() {
     let model = Arc::new(ScriptedModel::new(vec![
         ModelResponse {
             parts: vec![
@@ -275,6 +279,11 @@ async fn agent_executes_distinct_tool_calls_in_parallel_by_default_and_preserves
     let current = Arc::new(AtomicUsize::new(0));
     let max_seen = Arc::new(AtomicUsize::new(0));
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let metadata = Metadata::from_iter([(
+        TOOL_METADATA_DEPENDENCIES_KEY.to_string(),
+        ToolDependencyRequirements::filtered(std::iter::empty::<String>(), false)
+            .to_metadata_value(),
+    )]);
 
     let alpha = {
         let current = Arc::clone(&current);
@@ -297,6 +306,7 @@ async fn agent_executes_distinct_tool_calls_in_parallel_by_default_and_preserves
                 }
             },
         )
+        .with_metadata(metadata.clone())
     };
     let beta = {
         let current = Arc::clone(&current);
@@ -319,6 +329,7 @@ async fn agent_executes_distinct_tool_calls_in_parallel_by_default_and_preserves
                 }
             },
         )
+        .with_metadata(metadata)
     };
 
     let result = tokio::time::timeout(

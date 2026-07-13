@@ -187,9 +187,9 @@ fn context_pressure_reminder(
         format_u64_with_commas(total_tokens),
         format_u64_with_commas(context_window),
     );
-    if !context.context_manage_tool_names.is_empty() {
+    if !context.runtime.context_manage_tool_names.is_empty() {
         reminder.push_str(" Available context management tools: ");
-        reminder.push_str(&context.context_manage_tool_names.join(", "));
+        reminder.push_str(&context.runtime.context_manage_tool_names.join(", "));
         reminder.push('.');
     }
     if !context.notes.is_empty() {

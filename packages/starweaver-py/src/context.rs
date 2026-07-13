@@ -3,7 +3,7 @@
 use pyo3::{prelude::*, types::PyBool};
 use serde_json::Value;
 use starweaver_agent::EnvironmentHandle;
-use starweaver_context::{AgentContext, AgentContextHandle};
+use starweaver_context::{AgentContext, AgentContextHandle, HostCapabilities};
 use starweaver_core::Metadata;
 use starweaver_environment::{DynEnvironmentProvider, EnvironmentState};
 use starweaver_tools::ToolContext;
@@ -66,11 +66,6 @@ impl PyToolContext {
         self.inner
             .dependency::<AgentContextHandle>()
             .map(|handle| handle.snapshot())
-            .or_else(|| {
-                self.inner
-                    .dependency::<AgentContext>()
-                    .map(|context| context.as_ref().clone())
-            })
     }
 
     fn context_handle_snapshot(&self) -> Option<AgentContextHandle> {
@@ -81,16 +76,10 @@ impl PyToolContext {
 
     fn environment_provider(&self) -> Option<DynEnvironmentProvider> {
         self.inner
-            .dependency::<EnvironmentHandle>()
+            .dependency::<HostCapabilities>()
+            .and_then(|capabilities| capabilities.get::<EnvironmentHandle>())
+            .or_else(|| self.inner.dependency::<EnvironmentHandle>())
             .map(|handle| handle.provider())
-            .or_else(|| {
-                self.context_snapshot().and_then(|context| {
-                    context
-                        .dependencies
-                        .get::<EnvironmentHandle>()
-                        .map(|handle| handle.provider())
-                })
-            })
     }
 
     fn public_metadata(&self) -> Metadata {
@@ -306,7 +295,7 @@ impl PyToolsetContext {
 
     #[getter]
     const fn run_step(&self) -> usize {
-        self.inner.current_run_step
+        self.inner.runtime.current_run_step
     }
 
     #[getter]
