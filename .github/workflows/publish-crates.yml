@@ -1,0 +1,50 @@
+name: Publish Crates
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact workspace version to publish, for example 0.7.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-crates-${{ github.event.inputs.version }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Publish crates v${{ github.event.inputs.version }}
+    runs-on: ubuntu-latest
+    environment: Release
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify workspace version
+        env:
+          EXPECTED_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          actual_version="$(cargo run -p xtask --locked -- workspace-version)"
+          if [[ "$actual_version" != "$EXPECTED_VERSION" ]]; then
+            echo "workspace version mismatch: expected $EXPECTED_VERSION, got $actual_version" >&2
+            exit 1
+          fi
+
+      - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: make publish

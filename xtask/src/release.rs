@@ -1,9 +1,11 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
     process::Command,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+use serde::Deserialize;
 
 use crate::common::{root, run_capture, run_command};
 
@@ -36,19 +38,37 @@ const PUBLISH_PACKAGES: [&str; 18] = [
     "starweaver-model",
     "starweaver-context",
     "starweaver-tools",
-    "starweaver-runtime",
+    "starweaver-stream",
     "starweaver-envd-core",
     "starweaver-environment",
     "starweaver-envd-client",
     "starweaver-envd",
     "starweaver-session",
-    "starweaver-stream",
+    "starweaver-runtime",
     "starweaver-rpc-core",
     "starweaver-oauth-provider",
-    "starweaver-agent",
     "starweaver-storage",
+    "starweaver-agent",
     "starweaver-cli",
 ];
+
+#[derive(Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoPackage>,
+}
+
+#[derive(Deserialize)]
+struct CargoPackage {
+    name: String,
+    dependencies: Vec<CargoDependency>,
+}
+
+#[derive(Deserialize)]
+struct CargoDependency {
+    name: String,
+    kind: Option<String>,
+    path: Option<String>,
+}
 
 pub fn upversion(args: &[String]) -> Result<(), String> {
     let version = args
@@ -518,6 +538,8 @@ fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> 
             "publish package list must match publishable crates/* workspace members: expected {workspace_crates:?}, got {publish_packages:?}"
         ));
     }
+    let publish_dependencies = workspace_publish_dependencies(root, &publish_packages)?;
+    validate_publish_dependency_order(&PUBLISH_PACKAGES, &publish_dependencies)?;
     for krate in WORKSPACE_DEPENDENCIES {
         let needle = format!("{krate} = {{ path = \"crates/{krate}\", version = \"");
         if !manifest_text.contains(&needle) {
@@ -540,6 +562,94 @@ fn validate_release_package_lists(root: &std::path::Path) -> Result<(), String> 
             if !python_manifest_text.contains(&needle) {
                 return Err(format!(
                     "Python package workspace dependency {krate} must use a path plus version entry"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn workspace_publish_dependencies(
+    root: &std::path::Path,
+    publish_packages: &BTreeSet<&str>,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let output = Command::new("cargo")
+        .arg("metadata")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--no-deps")
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("failed to run cargo metadata: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("cargo metadata returned invalid JSON: {error}"))?;
+    publish_dependencies_from_metadata(metadata, publish_packages)
+}
+
+fn publish_dependencies_from_metadata(
+    metadata: CargoMetadata,
+    publish_packages: &BTreeSet<&str>,
+) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
+    let mut dependencies = BTreeMap::new();
+
+    for package in metadata.packages {
+        if !publish_packages.contains(package.name.as_str()) {
+            continue;
+        }
+        let mut package_dependencies = BTreeSet::new();
+        for dependency in package.dependencies {
+            if dependency.kind.as_deref() == Some("dev") || dependency.path.is_none() {
+                continue;
+            }
+            if !publish_packages.contains(dependency.name.as_str()) {
+                return Err(format!(
+                    "publish package {} has local dependency {} that is not in the publish package list",
+                    package.name, dependency.name
+                ));
+            }
+            package_dependencies.insert(dependency.name);
+        }
+        dependencies.insert(package.name, package_dependencies);
+    }
+
+    for package in publish_packages {
+        if !dependencies.contains_key(*package) {
+            return Err(format!(
+                "cargo metadata did not return publish package {package}"
+            ));
+        }
+    }
+    Ok(dependencies)
+}
+
+fn validate_publish_dependency_order(
+    publish_packages: &[&str],
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+) -> Result<(), String> {
+    let positions: BTreeMap<_, _> = publish_packages
+        .iter()
+        .enumerate()
+        .map(|(position, package)| (*package, position))
+        .collect();
+
+    for (package, package_dependencies) in dependencies {
+        let package_position = positions
+            .get(package.as_str())
+            .ok_or_else(|| format!("missing publish package {package}"))?;
+        for dependency in package_dependencies {
+            let dependency_position = positions.get(dependency.as_str()).ok_or_else(|| {
+                format!("publish package {package} depends on missing package {dependency}")
+            })?;
+            if dependency_position >= package_position {
+                return Err(format!(
+                    "publish package {package} must come after its workspace dependency {dependency}"
                 ));
             }
         }
@@ -655,6 +765,117 @@ tokio = { version = "1", features = ["sync"] }
                 "starweaver-agent".to_string(),
                 "starweaver-context".to_string(),
             ])
+        );
+    }
+
+    #[test]
+    fn checked_in_publish_order_respects_workspace_dependencies() {
+        let root = match root() {
+            Ok(root) => root,
+            Err(error) => panic!("workspace root should resolve: {error}"),
+        };
+        let publish_packages = BTreeSet::from(PUBLISH_PACKAGES);
+        let dependencies = match workspace_publish_dependencies(&root, &publish_packages) {
+            Ok(dependencies) => dependencies,
+            Err(error) => panic!("workspace dependencies should load: {error}"),
+        };
+        assert!(dependencies["starweaver-runtime"].contains("starweaver-stream"));
+        if let Err(error) = validate_release_package_lists(&root) {
+            panic!("publish package list should be dependency ordered: {error}");
+        }
+    }
+
+    #[test]
+    fn metadata_dependencies_include_normal_and_build_dependencies_but_not_dev_dependencies() {
+        let metadata: CargoMetadata = match serde_json::from_str(
+            r#"{
+                "packages": [
+                    {
+                        "name": "starweaver-runtime",
+                        "dependencies": [
+                            {"name": "starweaver-stream", "kind": null, "path": "crates/starweaver-stream"},
+                            {"name": "starweaver-build", "kind": "build", "path": "crates/starweaver-build"},
+                            {"name": "starweaver-dev", "kind": "dev", "path": "crates/starweaver-dev"},
+                            {"name": "serde", "kind": null, "path": null}
+                        ]
+                    },
+                    {"name": "starweaver-stream", "dependencies": []},
+                    {"name": "starweaver-build", "dependencies": []},
+                    {"name": "starweaver-dev", "dependencies": []}
+                ]
+            }"#,
+        ) {
+            Ok(metadata) => metadata,
+            Err(error) => panic!("metadata fixture should parse: {error}"),
+        };
+        let publish_packages = BTreeSet::from([
+            "starweaver-runtime",
+            "starweaver-stream",
+            "starweaver-build",
+            "starweaver-dev",
+        ]);
+        let dependencies = match publish_dependencies_from_metadata(metadata, &publish_packages) {
+            Ok(dependencies) => dependencies,
+            Err(error) => panic!("metadata dependencies should load: {error}"),
+        };
+
+        assert_eq!(
+            dependencies["starweaver-runtime"],
+            BTreeSet::from([
+                "starweaver-build".to_string(),
+                "starweaver-stream".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn metadata_dependencies_reject_local_dependencies_outside_the_publish_list() {
+        let metadata: CargoMetadata = match serde_json::from_str(
+            r#"{
+                "packages": [
+                    {
+                        "name": "starweaver-runtime",
+                        "dependencies": [
+                            {"name": "starweaver-rpc", "kind": null, "path": "crates/starweaver-rpc"}
+                        ]
+                    }
+                ]
+            }"#,
+        ) {
+            Ok(metadata) => metadata,
+            Err(error) => panic!("metadata fixture should parse: {error}"),
+        };
+        let publish_packages = BTreeSet::from(["starweaver-runtime"]);
+
+        let Err(error) = publish_dependencies_from_metadata(metadata, &publish_packages) else {
+            panic!("local dependencies outside the publish list should be rejected");
+        };
+        assert_eq!(
+            error,
+            "publish package starweaver-runtime has local dependency starweaver-rpc that is not in the publish package list"
+        );
+    }
+
+    #[test]
+    fn publish_dependency_order_rejects_a_dependency_after_its_dependent() {
+        let dependencies = BTreeMap::from([
+            (
+                "starweaver-agent".to_string(),
+                BTreeSet::from(["starweaver-runtime".to_string()]),
+            ),
+            ("starweaver-runtime".to_string(), BTreeSet::new()),
+        ]);
+
+        let error = match validate_publish_dependency_order(
+            &["starweaver-agent", "starweaver-runtime"],
+            &dependencies,
+        ) {
+            Ok(()) => panic!("invalid publish order should be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            "publish package starweaver-agent must come after its workspace dependency starweaver-runtime"
         );
     }
 
