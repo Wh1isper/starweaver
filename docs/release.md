@@ -162,12 +162,28 @@ Manual publish after validation and approval:
 make publish
 ```
 
+## Recover interrupted crate publishing
+
+If the release workflow published release assets or Python distributions but failed before all crates
+reached crates.io, do not rerun the original release workflow from an outdated release tag. First
+merge a reviewed publishing fix, then dispatch the dedicated crate-publish workflow from that commit:
+
+```bash
+gh workflow run publish-crates.yml -f version=X.Y.Z
+```
+
+The workflow requires the `Release` environment approval, verifies that the checked-out workspace
+has exactly the requested version, and runs the idempotent `make publish` command. Already-published
+crate versions are skipped; remaining crates are published in dependency order. Preserve the existing
+GitHub Release tag during recovery; do not move, delete, or recreate it.
+
 ## Required repository settings
 
 - `CARGO_REGISTRY_TOKEN` secret is configured.
 - `PYPI_API_TOKEN` secret is configured with a PyPI API token for the `starweaver` package.
 - The `Release` environment exists and requires the intended approval policy.
-- The target tag, such as `vX.Y.Z`, does not already exist.
+- Before the initial GitHub Release is created, the target tag, such as `vX.Y.Z`, does not already
+  exist. Recovery publishing reuses the existing release tag without changing it.
 - GitHub Actions has `contents: write` permission so release assets can be uploaded.
 
 The release workflow maps `PYPI_API_TOKEN` to `UV_PUBLISH_TOKEN` for `uv publish`.
