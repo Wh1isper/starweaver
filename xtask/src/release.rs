@@ -47,8 +47,8 @@ const PUBLISH_PACKAGES: [&str; 18] = [
     "starweaver-runtime",
     "starweaver-rpc-core",
     "starweaver-oauth-provider",
-    "starweaver-storage",
     "starweaver-agent",
+    "starweaver-storage",
     "starweaver-cli",
 ];
 
@@ -66,7 +66,6 @@ struct CargoPackage {
 #[derive(Deserialize)]
 struct CargoDependency {
     name: String,
-    kind: Option<String>,
     path: Option<String>,
 }
 
@@ -605,7 +604,7 @@ fn publish_dependencies_from_metadata(
         }
         let mut package_dependencies = BTreeSet::new();
         for dependency in package.dependencies {
-            if dependency.kind.as_deref() == Some("dev") || dependency.path.is_none() {
+            if dependency.path.is_none() {
                 continue;
             }
             if !publish_packages.contains(dependency.name.as_str()) {
@@ -780,13 +779,14 @@ tokio = { version = "1", features = ["sync"] }
             Err(error) => panic!("workspace dependencies should load: {error}"),
         };
         assert!(dependencies["starweaver-runtime"].contains("starweaver-stream"));
+        assert!(dependencies["starweaver-storage"].contains("starweaver-agent"));
         if let Err(error) = validate_release_package_lists(&root) {
             panic!("publish package list should be dependency ordered: {error}");
         }
     }
 
     #[test]
-    fn metadata_dependencies_include_normal_and_build_dependencies_but_not_dev_dependencies() {
+    fn metadata_dependencies_include_all_local_dependencies() {
         let metadata: CargoMetadata = match serde_json::from_str(
             r#"{
                 "packages": [
@@ -823,6 +823,7 @@ tokio = { version = "1", features = ["sync"] }
             dependencies["starweaver-runtime"],
             BTreeSet::from([
                 "starweaver-build".to_string(),
+                "starweaver-dev".to_string(),
                 "starweaver-stream".to_string(),
             ])
         );
