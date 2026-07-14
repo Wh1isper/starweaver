@@ -10,10 +10,11 @@ use std::{
 use serde::Serialize;
 use serde_json::json;
 use starweaver_agent::{
-    AgentBuilder, AgentSpec, AgentSpecRegistry, ApprovalRequiredToolset, DynToolset,
-    HostMediaUnderstandingClient, ShellReviewAction, ShellReviewConfig, ShellReviewHandle,
-    ShellReviewRiskLevel, SkillPackage, SkillRegistry, StaticToolset, SubagentConfig,
-    SubagentToolInheritancePolicy, core_toolsets, load_subagents_from_dir, parse_skill_markdown,
+    AgentBuilder, AgentSpec, AgentSpecRegistry, ApprovalRequiredToolset,
+    BackgroundSubagentSupervisor, DynToolset, HostMediaUnderstandingClient, ShellReviewAction,
+    ShellReviewConfig, ShellReviewHandle, ShellReviewRiskLevel, SkillPackage, SkillRegistry,
+    StaticToolset, SubagentConfig, SubagentDelegationMode, SubagentToolInheritancePolicy,
+    core_toolsets, load_subagents_from_dir, parse_skill_markdown,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ModelSettings, OpenAiResponsesSettings,
@@ -112,11 +113,24 @@ impl ProfileSource {
 
 impl ResolvedProfile {
     /// Build the runtime agent from the profile.
+    #[allow(dead_code)]
     pub fn build_agent(&self) -> CliResult<starweaver_runtime::Agent> {
+        self.build_agent_with_delegation(SubagentDelegationMode::Blocking, None)
+    }
+
+    pub(crate) fn build_agent_with_delegation(
+        &self,
+        mode: SubagentDelegationMode,
+        supervisor: Option<Arc<BackgroundSubagentSupervisor>>,
+    ) -> CliResult<starweaver_runtime::Agent> {
         let mut builder = self
             .spec
             .builder(&self.registry)
-            .map_err(|error| CliError::Config(error.to_string()))?;
+            .map_err(|error| CliError::Config(error.to_string()))?
+            .subagent_delegation_mode(mode);
+        if let Some(supervisor) = supervisor {
+            builder = builder.background_subagent_supervisor(supervisor);
+        }
         if let Some(client) = self.media_client.as_ref() {
             builder = builder.capability(Arc::new(CliMediaUnderstandingCapability::new(
                 client.clone(),

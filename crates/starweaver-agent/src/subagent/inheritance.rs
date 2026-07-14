@@ -123,6 +123,8 @@ fn remove_delegation_tools(registry: &mut ToolRegistry) {
         "delegate",
         "subagent_info",
         "spawn_delegate",
+        "steer_subagent",
+        "cancel_subagent",
         "wait_subagent",
         "__delegate_backend",
     ] {

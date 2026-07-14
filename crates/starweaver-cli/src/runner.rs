@@ -12,8 +12,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use starweaver_agent::{
-    AgentError, AgentSession, AgentStreamRecord, ResumableState, attach_process_shell,
-    attach_shell_review_handle,
+    AgentError, AgentSession, AgentStreamRecord, BackgroundSubagentSupervisor, ResumableState,
+    SubagentDelegationMode, attach_process_shell, attach_shell_review_handle,
 };
 use starweaver_context::{AgentContext, BusMessage};
 use starweaver_core::{CancellationToken, SessionId};
@@ -77,6 +77,48 @@ pub struct CliSteeringMessage {
     pub text: String,
 }
 
+#[derive(Clone)]
+pub struct CliAgentExecutionHost {
+    delegation_mode: SubagentDelegationMode,
+    background_subagent_supervisor: Option<Arc<BackgroundSubagentSupervisor>>,
+    runtime: Option<Arc<tokio::runtime::Runtime>>,
+}
+
+impl CliAgentExecutionHost {
+    pub const fn blocking() -> Self {
+        Self {
+            delegation_mode: SubagentDelegationMode::Blocking,
+            background_subagent_supervisor: None,
+            runtime: None,
+        }
+    }
+
+    pub const fn disabled() -> Self {
+        Self {
+            delegation_mode: SubagentDelegationMode::Disabled,
+            background_subagent_supervisor: None,
+            runtime: None,
+        }
+    }
+
+    pub const fn interactive(
+        supervisor: Arc<BackgroundSubagentSupervisor>,
+        runtime: Arc<tokio::runtime::Runtime>,
+    ) -> Self {
+        Self {
+            delegation_mode: SubagentDelegationMode::Async,
+            background_subagent_supervisor: Some(supervisor),
+            runtime: Some(runtime),
+        }
+    }
+}
+
+impl Default for CliAgentExecutionHost {
+    fn default() -> Self {
+        Self::blocking()
+    }
+}
+
 /// CLI execution output and durable artifacts.
 pub struct CliRunExecution {
     /// Final output preview.
@@ -86,6 +128,7 @@ pub struct CliRunExecution {
 }
 
 /// Execute a resolved profile through `AgentSession`.
+#[allow(dead_code)]
 pub fn execute_agent_session(
     input: PromptInput,
     run: &RunRecord,
@@ -108,7 +151,7 @@ pub fn execute_agent_session(
 }
 
 /// Execute a resolved profile and forward live stream records to a caller-owned channel.
-#[allow(clippy::too_many_arguments)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub fn execute_agent_session_with_stream_sender(
     input: PromptInput,
     run: &RunRecord,
@@ -134,7 +177,7 @@ pub fn execute_agent_session_with_stream_sender(
 }
 
 /// Execute a resolved profile, forward live stream records, and poll caller-owned steering messages.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(dead_code, clippy::too_many_arguments)]
 pub fn execute_agent_session_with_channels(
     input: PromptInput,
     run: &RunRecord,
@@ -147,7 +190,39 @@ pub fn execute_agent_session_with_channels(
     steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
     cancel_receiver: Option<mpsc::Receiver<()>>,
 ) -> CliResult<CliRunExecution> {
-    let mut agent = profile.build_agent()?;
+    execute_agent_session_with_host(
+        input,
+        run,
+        profile,
+        environment,
+        process_environment,
+        restore_state,
+        policy,
+        stream_sender,
+        steering_receiver,
+        cancel_receiver,
+        CliAgentExecutionHost::blocking(),
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn execute_agent_session_with_host(
+    input: PromptInput,
+    run: &RunRecord,
+    profile: &ResolvedProfile,
+    environment: &DynEnvironmentProvider,
+    process_environment: Option<&DynProcessShellProvider>,
+    restore_state: Option<ResumableState>,
+    policy: &CliRunPolicy,
+    stream_sender: Option<mpsc::Sender<AgentStreamRecord>>,
+    steering_receiver: Option<mpsc::Receiver<CliSteeringMessage>>,
+    cancel_receiver: Option<mpsc::Receiver<()>>,
+    host: CliAgentExecutionHost,
+) -> CliResult<CliRunExecution> {
+    let mut agent = profile.build_agent_with_delegation(
+        host.delegation_mode,
+        host.background_subagent_supervisor.clone(),
+    )?;
     let cancellation_token = cancel_receiver.as_ref().map(|_| CancellationToken::new());
     if let Some(goal) = policy.goal.as_ref() {
         let options = GoalRunOptions::new(goal.objective.clone(), goal.max_iterations);
@@ -197,15 +272,26 @@ pub fn execute_agent_session_with_channels(
         session.set_metadata("cli.profile_path", json!(path));
     }
     session.set_metadata("cli.run_id", json!(run.run_id.as_str()));
-    let runtime =
-        tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?;
+    let runtime = match host.runtime {
+        Some(runtime) => runtime,
+        None => Arc::new(
+            tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?,
+        ),
+    };
+    if let Some(supervisor) = host.background_subagent_supervisor.as_ref() {
+        supervisor.begin_parent_run(run.run_id.clone());
+    }
     let run_outcome = run_session_stream(
         &runtime,
         &mut session,
         prompt_text,
         cancel_receiver,
         cancellation_token,
-    )?;
+    );
+    if let Some(supervisor) = host.background_subagent_supervisor.as_ref() {
+        supervisor.end_parent_run(&run.run_id);
+    }
+    let run_outcome = run_outcome?;
     let environment_state = runtime
         .block_on(environment.export_state())
         .map_err(|error| CliError::Run(error.to_string()))?;

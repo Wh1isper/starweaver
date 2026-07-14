@@ -30,8 +30,8 @@ use crate::{
     profiles::{ResolvedProfile, list_profiles, resolve_profile},
     prompt_input::PromptInput,
     runner::{
-        CliRunPolicy, CliSteeringMessage, execute_agent_session,
-        execute_agent_session_with_channels, failed_display_message,
+        CliAgentExecutionHost, CliRunPolicy, CliSteeringMessage, execute_agent_session_with_host,
+        failed_display_message,
     },
     slash_commands::expand_slash_command,
 };
@@ -72,6 +72,13 @@ pub(super) struct PreparedPromptRun {
     pub(super) environment: ResolvedEnvironment,
     restore_state: Option<ResumableState>,
     policy: CliRunPolicy,
+    execution_host: CliAgentExecutionHost,
+}
+
+impl PreparedPromptRun {
+    pub(super) fn set_execution_host(&mut self, execution_host: CliAgentExecutionHost) {
+        self.execution_host = execution_host;
+    }
 }
 
 pub(super) struct ExecutedPromptRun {
@@ -269,6 +276,7 @@ impl CliService {
         self.complete_prompt_run(executed)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) fn prepare_prompt_run(
         &mut self,
         command: &RunCommand,
@@ -373,6 +381,11 @@ impl CliService {
             environment,
             restore_state,
             policy: CliRunPolicy { hitl, goal },
+            execution_host: if command.worker.is_some() || command.worker_label.is_some() {
+                CliAgentExecutionHost::disabled()
+            } else {
+                CliAgentExecutionHost::blocking()
+            },
         })
     }
 
@@ -390,35 +403,22 @@ impl CliService {
             environment,
             restore_state,
             policy,
+            execution_host,
             ..
         } = prepared;
-        let result = if stream_sender.is_some()
-            || steering_receiver.is_some()
-            || cancel_receiver.is_some()
-        {
-            execute_agent_session_with_channels(
-                run_input,
-                &run,
-                &resolved_profile,
-                &environment.provider,
-                environment.process_provider.as_ref(),
-                restore_state,
-                &policy,
-                stream_sender,
-                steering_receiver,
-                cancel_receiver,
-            )
-        } else {
-            execute_agent_session(
-                run_input,
-                &run,
-                &resolved_profile,
-                &environment.provider,
-                environment.process_provider.as_ref(),
-                restore_state,
-                &policy,
-            )
-        };
+        let result = execute_agent_session_with_host(
+            run_input,
+            &run,
+            &resolved_profile,
+            &environment.provider,
+            environment.process_provider.as_ref(),
+            restore_state,
+            &policy,
+            stream_sender,
+            steering_receiver,
+            cancel_receiver,
+            execution_host,
+        );
         result.map(|execution| ExecutedPromptRun {
             run,
             output_mode,

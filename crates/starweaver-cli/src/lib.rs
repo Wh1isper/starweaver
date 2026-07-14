@@ -583,6 +583,36 @@ You are a helper.
         assert!(tools.contains(&"delegate".to_string()));
         assert!(tools.contains(&"subagent_info".to_string()));
 
+        let worker_agent = profile
+            .build_agent_with_delegation(starweaver_agent::SubagentDelegationMode::Disabled, None)
+            .unwrap();
+        assert!(
+            !worker_agent
+                .tools()
+                .names()
+                .contains(&"delegate".to_string())
+        );
+        assert!(
+            !worker_agent
+                .tools()
+                .names()
+                .contains(&"subagent_info".to_string())
+        );
+
+        let supervisor = std::sync::Arc::new(starweaver_agent::BackgroundSubagentSupervisor::new());
+        let interactive_agent = profile
+            .build_agent_with_delegation(
+                starweaver_agent::SubagentDelegationMode::Async,
+                Some(supervisor),
+            )
+            .unwrap();
+        let interactive_tools = interactive_agent.tools().names();
+        assert!(interactive_tools.contains(&"delegate".to_string()));
+        assert!(interactive_tools.contains(&"steer_subagent".to_string()));
+        assert!(interactive_tools.contains(&"cancel_subagent".to_string()));
+        assert!(interactive_tools.contains(&"wait_subagent".to_string()));
+        assert!(interactive_tools.contains(&"__delegate_backend".to_string()));
+
         let run = output(
             temp.path(),
             &[

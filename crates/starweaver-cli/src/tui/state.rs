@@ -531,6 +531,21 @@ impl InteractiveTuiState {
 
     /// Begin rendering one submitted prompt.
     pub fn begin_run(&mut self, prompt: &str) {
+        self.prepare_run_rendering();
+        self.timeline.push_user_prompt(prompt);
+        self.reproject_body();
+    }
+
+    pub(crate) fn begin_background_continuation(&mut self) {
+        self.prepare_run_rendering();
+        self.timeline.push_system_lines(
+            NoticeLevel::Info,
+            vec!["Background subagent result received; continuing session.".to_string()],
+        );
+        self.reproject_body();
+    }
+
+    fn prepare_run_rendering(&mut self) {
         self.running = true;
         self.cancel_requested = false;
         self.status = "RUNNING".to_string();
@@ -561,8 +576,6 @@ impl InteractiveTuiState {
         self.scroll_to_bottom();
         self.finish_current_model_item();
         self.active_model_segment = None;
-        self.timeline.push_user_prompt(prompt);
-        self.reproject_body();
     }
 
     /// Mark a run finished with durable ids.

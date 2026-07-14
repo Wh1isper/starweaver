@@ -178,10 +178,15 @@ pub use streaming::{
     AgentStreamStatus, AgentStreamStatusSnapshot,
 };
 pub use subagent::{
-    AgentApp, BackgroundSubagentCapability, BackgroundSubagentMonitor, BackgroundSubagentTaskInfo,
-    BackgroundSubagentTaskResult, BackgroundSubagentTaskStatus, DELEGATE_BACKEND_TOOL_NAME,
-    DynSubagentExecutionHook, SPAWN_DELEGATE_TOOL_NAME, SubagentCapabilityInheritancePolicy,
-    SubagentConfig, SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
+    AgentApp, BackgroundSubagentCancellationReceipt, BackgroundSubagentCapability,
+    BackgroundSubagentCompletionCallback, BackgroundSubagentDeliveryClaim,
+    BackgroundSubagentDeliveryStatus, BackgroundSubagentError, BackgroundSubagentExecutionStatus,
+    BackgroundSubagentLimits, BackgroundSubagentMonitor, BackgroundSubagentRetentionStatus,
+    BackgroundSubagentSteeringReceipt, BackgroundSubagentSupervisor, BackgroundSubagentTaskInfo,
+    BackgroundSubagentTaskResult, BackgroundSubagentTaskStatus, CANCEL_SUBAGENT_TOOL_NAME,
+    DELEGATE_BACKEND_TOOL_NAME, DynSubagentExecutionHook, SPAWN_DELEGATE_TOOL_NAME,
+    STEER_SUBAGENT_TOOL_NAME, SubagentCapabilityInheritancePolicy, SubagentConfig,
+    SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
     SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentResult, SubagentTask,
     SubagentToolInheritanceError, SubagentToolInheritancePolicy, WAIT_SUBAGENT_TOOL_NAME,
 };
@@ -319,6 +324,7 @@ pub struct AgentBuilder {
     capability_bundles: Vec<Arc<dyn CapabilityBundle>>,
     subagents: SubagentRegistry,
     subagent_delegation_mode: SubagentDelegationMode,
+    background_subagent_supervisor: Option<Arc<BackgroundSubagentSupervisor>>,
     executor: Option<starweaver_runtime::DynAgentExecutor>,
     trace_recorder: Option<starweaver_runtime::DynTraceRecorder>,
     media_uploader: Option<Arc<dyn MediaUploader>>,
@@ -355,6 +361,7 @@ impl AgentBuilder {
             capability_bundles: Vec::new(),
             subagents: SubagentRegistry::new(),
             subagent_delegation_mode: SubagentDelegationMode::default(),
+            background_subagent_supervisor: None,
             executor: None,
             trace_recorder: None,
             media_uploader: None,
@@ -640,6 +647,16 @@ impl AgentBuilder {
         self
     }
 
+    /// Inject a host-owned supervisor that may outlive individual parent runtimes.
+    #[must_use]
+    pub fn background_subagent_supervisor(
+        mut self,
+        supervisor: Arc<BackgroundSubagentSupervisor>,
+    ) -> Self {
+        self.background_subagent_supervisor = Some(supervisor);
+        self
+    }
+
     /// Set runtime trace recorder.
     #[must_use]
     pub fn trace_recorder(mut self, recorder: starweaver_runtime::DynTraceRecorder) -> Self {
@@ -696,7 +713,11 @@ impl AgentBuilder {
         let subagents = (!subagents.is_empty()).then(|| Arc::new(subagents));
         let background_subagents = subagent_delegation_mode
             .needs_background_monitor()
-            .then(|| Arc::new(BackgroundSubagentMonitor::new()));
+            .then(|| {
+                self.background_subagent_supervisor
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(BackgroundSubagentSupervisor::new()))
+            });
         let model_profile_capabilities = model_capabilities_from_profile(self.model.profile());
         let mut configured_model_config = self.model_config;
         if !model_profile_capabilities.is_empty() {
@@ -720,7 +741,9 @@ impl AgentBuilder {
         let media_capability_hook = Arc::new(HostMediaCapabilityHook { media_capabilities });
         let mut tools = self.tools;
         let trace_recorder = self.trace_recorder.clone();
-        if let Some(subagents) = &subagents {
+        if let Some(subagents) = &subagents
+            && subagent_delegation_mode.is_enabled()
+        {
             if subagent_delegation_mode.exposes_blocking_delegate() {
                 tools.insert(subagents.delegate_tool());
             }
@@ -728,6 +751,8 @@ impl AgentBuilder {
                 tools.insert(subagents.hidden_delegate_backend_tool());
                 if let Some(monitor) = &background_subagents {
                     tools.insert(subagents.async_delegate_tool(monitor.clone()));
+                    tools.insert(subagents.steer_subagent_tool(monitor.clone()));
+                    tools.insert(subagents.cancel_subagent_tool(monitor.clone()));
                     tools.insert(subagents.wait_subagent_tool(monitor.clone()));
                 }
             }
@@ -735,6 +760,8 @@ impl AgentBuilder {
                 && let Some(monitor) = &background_subagents
             {
                 tools.insert(subagents.spawn_delegate_tool(monitor.clone()));
+                tools.insert(subagents.steer_subagent_tool(monitor.clone()));
+                tools.insert(subagents.cancel_subagent_tool(monitor.clone()));
                 tools.insert(subagents.wait_subagent_tool(monitor.clone()));
             }
             tools.insert(subagents.subagent_info_tool());
@@ -747,6 +774,7 @@ impl AgentBuilder {
         let parent_tools = tool_preview.clone();
         if let Some(subagents) = &subagents {
             match subagent_delegation_mode {
+                SubagentDelegationMode::Disabled => {}
                 SubagentDelegationMode::Blocking => {
                     if let Some(instruction) = subagents.delegate_instruction(Some(&parent_tools)) {
                         tools.insert_instruction(instruction);

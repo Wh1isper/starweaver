@@ -6,10 +6,11 @@ use async_trait::async_trait;
 use starweaver_agent::{
     AgentBuilder, AgentCapability, AgentContext, AgentContextHandle, AgentRunState,
     AgentRuntimePolicy, AgentStreamEvent, AgentStreamSourceKind, BackgroundSubagentCapability,
-    BackgroundSubagentMonitor, DELEGATE_BACKEND_TOOL_NAME, FunctionTool, SPAWN_DELEGATE_TOOL_NAME,
-    SubagentConfig, SubagentDelegationMode, SubagentExecutionHook, SubagentExecutionMetadata,
-    SubagentExecutionOutcome, SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy,
-    TestModel, ToolContext, ToolError, ToolRegistry, ToolResult, WAIT_SUBAGENT_TOOL_NAME,
+    BackgroundSubagentMonitor, CANCEL_SUBAGENT_TOOL_NAME, DELEGATE_BACKEND_TOOL_NAME, FunctionTool,
+    SPAWN_DELEGATE_TOOL_NAME, STEER_SUBAGENT_TOOL_NAME, SubagentConfig, SubagentDelegationMode,
+    SubagentExecutionHook, SubagentExecutionMetadata, SubagentExecutionOutcome,
+    SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy, TestModel, ToolContext,
+    ToolError, ToolRegistry, ToolResult, WAIT_SUBAGENT_TOOL_NAME,
 };
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
@@ -45,6 +46,8 @@ fn delegation_tools_declare_dependency_profiles_explicitly() {
         registry.hidden_delegate_backend_tool(),
         registry.async_delegate_tool(Arc::clone(&monitor)),
         registry.spawn_delegate_tool(Arc::clone(&monitor)),
+        registry.steer_subagent_tool(Arc::clone(&monitor)),
+        registry.cancel_subagent_tool(Arc::clone(&monitor)),
         registry.wait_subagent_tool(monitor),
     ];
     for tool in legacy_tools {
@@ -99,8 +102,7 @@ async fn subagent_registry_exports_typed_delegate_tool() {
             context,
             serde_json::json!({
                 "name": "child",
-                "prompt": "help",
-                "metadata": {"source": "tool-test"}
+                "prompt": "help"
             }),
         )
         .await
@@ -111,7 +113,7 @@ async fn subagent_registry_exports_typed_delegate_tool() {
     assert!(schema["properties"].get("subagent_name").is_some());
     assert!(schema["properties"].get("prompt").is_some());
     assert!(schema["properties"].get("agent_id").is_some());
-    assert!(schema["properties"].get("metadata").is_none());
+    assert!(schema["properties"].get("metadata").is_some());
     assert_eq!(result.content["name"], "child");
     assert_eq!(result.content["output"], "child output");
     assert!(result.content["usage"]["requests"].as_u64().unwrap() >= 1);
@@ -208,10 +210,24 @@ fn subagent_tool_inheritance_never_exposes_delegation_tools_to_children() {
         serde_json::json!({"type": "object"}),
         |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
     ));
+    let steer_subagent = Arc::new(FunctionTool::new(
+        STEER_SUBAGENT_TOOL_NAME,
+        Some("Steer subagent".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
+    let cancel_subagent = Arc::new(FunctionTool::new(
+        CANCEL_SUBAGENT_TOOL_NAME,
+        Some("Cancel subagent".to_string()),
+        serde_json::json!({"type": "object"}),
+        |_ctx: ToolContext, args: serde_json::Value| async move { Ok(ToolResult::new(args)) },
+    ));
     let parent = ToolRegistry::new()
         .with_tool(ordinary)
         .with_tool(delegate)
-        .with_tool(wait_subagent);
+        .with_tool(wait_subagent)
+        .with_tool(steer_subagent)
+        .with_tool(cancel_subagent);
 
     let inherited = SubagentToolInheritancePolicy::default()
         .with_inherit_all_when_empty(true)
@@ -259,6 +275,18 @@ fn subagent_registry_reports_names_and_availability() {
 }
 
 #[test]
+fn disabled_delegation_mode_installs_no_subagent_tools() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+    let agent = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
+        .subagent(SubagentConfig::new("child", child))
+        .subagent_delegation_mode(SubagentDelegationMode::Disabled)
+        .build();
+
+    assert!(agent.tools().names().is_empty());
+    assert!(agent.tools().get_instructions().is_empty());
+}
+
+#[test]
 fn async_delegation_mode_makes_delegate_async_and_hides_backend() {
     let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
     let agent = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
@@ -271,7 +299,9 @@ fn async_delegation_mode_makes_delegate_async_and_hides_backend() {
         tools.names(),
         vec![
             DELEGATE_BACKEND_TOOL_NAME.to_string(),
+            CANCEL_SUBAGENT_TOOL_NAME.to_string(),
             "delegate".to_string(),
+            STEER_SUBAGENT_TOOL_NAME.to_string(),
             "subagent_info".to_string(),
             WAIT_SUBAGENT_TOOL_NAME.to_string()
         ]
@@ -282,6 +312,8 @@ fn async_delegation_mode_makes_delegate_async_and_hides_backend() {
     );
     let instructions = tools.get_instructions().join("\n");
     assert!(instructions.contains("delegate is asynchronous"));
+    assert!(instructions.contains("per-attempt attempt ID"));
+    assert!(instructions.contains("steer_subagent, cancel_subagent, and wait_subagent"));
     assert!(instructions.contains("do not manually poll or loop"));
     assert!(instructions.contains("wait_subagent once with a bounded timeout"));
     assert!(instructions.contains("let the Starweaver host notify you"));
@@ -301,8 +333,10 @@ fn dual_delegation_mode_keeps_blocking_delegate_and_adds_spawn_delegate() {
     assert_eq!(
         tools.names(),
         vec![
+            CANCEL_SUBAGENT_TOOL_NAME.to_string(),
             "delegate".to_string(),
             SPAWN_DELEGATE_TOOL_NAME.to_string(),
+            STEER_SUBAGENT_TOOL_NAME.to_string(),
             "subagent_info".to_string(),
             WAIT_SUBAGENT_TOOL_NAME.to_string()
         ]
@@ -318,7 +352,7 @@ fn dual_delegation_mode_keeps_blocking_delegate_and_adds_spawn_delegate() {
     let instructions = tools.get_instructions().join("\n");
     assert!(instructions.contains("Delegate calls are blocking"));
     assert!(instructions.contains("Use this to run a subagent asynchronously"));
-    assert!(instructions.contains("do not manually poll or loop"));
+    assert!(instructions.contains("Do not manually poll or loop"));
     assert!(instructions.contains("automatically notify you"));
 }
 
@@ -377,19 +411,20 @@ async fn async_delegate_delivers_result_to_subscribed_parent_bus() {
             delegation_tool_context(&parent, context_handle.clone()),
             serde_json::json!({
                 "name": "child",
-                "prompt": "help",
-                "agent_id": "child-bg-test"
+                "prompt": "help"
             }),
         )
         .await
         .unwrap();
 
-    assert_eq!(result.content["status"], "spawned");
-    assert_eq!(result.content["agent_id"], "child-bg-test");
+    assert_eq!(result.content["status"], "accepted");
+    let agent_id = result.content["agent_id"].as_str().unwrap().to_string();
+    let attempt_id = result.content["attempt_id"].as_str().unwrap();
+    assert!(agent_id.starts_with("child-bg-"));
+    assert!(attempt_id.starts_with("subattempt_"));
     let message = result.content["message"].as_str().unwrap();
-    assert!(message.contains("Do not manually poll or loop"));
-    assert!(message.contains("finish your current response now"));
-    assert!(message.contains("automatically notify you"));
+    assert!(message.contains("Do not manually poll"));
+    assert!(message.contains("Use one bounded wait only when blocked"));
 
     let mut delivered = None;
     for _ in 0..50 {
@@ -406,7 +441,7 @@ async fn async_delegate_delivers_result_to_subscribed_parent_bus() {
         panic!("background delegate message");
     };
     assert!(!monitor.has_pending_messages());
-    assert_eq!(delivered[0].source, "child-bg-test");
+    assert_eq!(delivered[0].source, agent_id);
     assert_eq!(delivered[0].target.as_deref(), Some("main"));
     assert_eq!(delivered[0].content_text(), "child output");
 }
@@ -422,17 +457,21 @@ async fn wait_subagent_returns_cached_result_and_marks_bus_message_consumed() {
     let parent = AgentContext::default();
     let context_handle = AgentContextHandle::new(parent.clone());
 
-    delegate
+    let delegated = delegate
         .call(
             delegation_tool_context(&parent, context_handle.clone()),
             serde_json::json!({
                 "name": "child",
-                "prompt": "help",
-                "agent_id": "child-bg-wait"
+                "prompt": "help"
             }),
         )
         .await
         .unwrap();
+    let attempt_id = delegated.content["attempt_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent_id = delegated.content["agent_id"].as_str().unwrap().to_string();
 
     for _ in 0..50 {
         if !monitor.has_active_tasks() && !monitor.task_results().is_empty() {
@@ -444,13 +483,13 @@ async fn wait_subagent_returns_cached_result_and_marks_bus_message_consumed() {
     let result = wait
         .call(
             delegation_tool_context(&context_handle.snapshot(), context_handle.clone()),
-            serde_json::json!({"agent_id": "child-bg-wait", "timeout_seconds": 0}),
+            serde_json::json!({"attempt_id": attempt_id, "timeout_seconds": 0}),
         )
         .await
         .unwrap();
 
     assert_eq!(result.content["status"], "completed");
-    assert_eq!(result.content["agent_id"], "child-bg-wait");
+    assert_eq!(result.content["agent_id"], agent_id);
     assert_eq!(result.content["subagent_name"], "child");
     assert_eq!(result.content["result"], "child output");
     assert_eq!(result.content["timed_out"], false);
@@ -468,17 +507,20 @@ async fn wait_subagent_unknown_agent_reports_known_ids() {
     let parent = AgentContext::default();
     let context_handle = AgentContextHandle::new(parent.clone());
 
-    delegate
+    let delegated = delegate
         .call(
             delegation_tool_context(&parent, context_handle.clone()),
             serde_json::json!({
                 "name": "child",
-                "prompt": "help",
-                "agent_id": "child-bg-known"
+                "prompt": "help"
             }),
         )
         .await
         .unwrap();
+    let known_attempt_id = delegated.content["attempt_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     for _ in 0..50 {
         if !monitor.has_active_tasks() && !monitor.task_results().is_empty() {
@@ -490,17 +532,75 @@ async fn wait_subagent_unknown_agent_reports_known_ids() {
     let result = wait
         .call(
             delegation_tool_context(&context_handle.snapshot(), context_handle),
-            serde_json::json!({"agent_id": "missing-bg-id", "timeout_seconds": 0}),
+            serde_json::json!({"attempt_id": "subattempt_missing", "timeout_seconds": 0}),
         )
         .await
         .unwrap();
 
     assert_eq!(result.content["status"], "not_found");
-    assert_eq!(result.content["agent_id"], "missing-bg-id");
+    assert_eq!(result.content["attempt_id"], "subattempt_missing");
     assert_eq!(
-        result.content["known_agent_ids"],
-        serde_json::json!(["child-bg-known"])
+        result.content["known_attempt_ids"],
+        serde_json::json!([known_attempt_id])
     );
+}
+
+#[tokio::test]
+async fn async_delegate_rejects_unknown_model_metadata() {
+    let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+    let registry =
+        Arc::new(SubagentRegistry::new().with_subagent(SubagentConfig::new("child", child)));
+    let delegate = registry.async_delegate_tool(Arc::new(BackgroundSubagentMonitor::new()));
+    let parent = AgentContext::default();
+    let context_handle = AgentContextHandle::new(parent.clone());
+
+    let unknown_identity = delegate
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help",
+                "agent_id": "unowned-agent"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        unknown_identity
+            .to_string()
+            .contains("unknown agent_id for this supervisor scope")
+    );
+
+    let unknown_task = delegate
+        .call(
+            delegation_tool_context(&parent, context_handle.clone()),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help",
+                "linked_task_id": "task-missing"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        unknown_task
+            .to_string()
+            .contains("linked_task_id is not present in the parent task scope")
+    );
+
+    assert_eq!(delegate.parameters_schema()["additionalProperties"], false);
+    let error = delegate
+        .call(
+            delegation_tool_context(&parent, context_handle),
+            serde_json::json!({
+                "name": "child",
+                "prompt": "help",
+                "metadata": {"parent_run_id": "spoofed"}
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("unknown field `metadata`"));
 }
 
 #[tokio::test]
@@ -600,17 +700,17 @@ async fn wait_subagent_without_agent_id_reports_empty_and_completed() {
     assert_eq!(empty.content["timed_out"], false);
     assert_eq!(empty.content["results"], serde_json::json!([]));
 
-    delegate
+    let delegated = delegate
         .call(
             delegation_tool_context(&parent, context_handle.clone()),
             serde_json::json!({
                 "name": "child",
-                "prompt": "help",
-                "agent_id": "child-bg-all"
+                "prompt": "help"
             }),
         )
         .await
         .unwrap();
+    let delegated_agent_id = delegated.content["agent_id"].as_str().unwrap().to_string();
 
     for _ in 0..50 {
         if !monitor.has_active_tasks() && !monitor.task_results().is_empty() {
@@ -629,7 +729,10 @@ async fn wait_subagent_without_agent_id_reports_empty_and_completed() {
     assert_eq!(completed.content["status"], "completed");
     assert_eq!(completed.content["timed_out"], false);
     assert_eq!(completed.content["results"][0]["status"], "completed");
-    assert_eq!(completed.content["results"][0]["agent_id"], "child-bg-all");
+    assert_eq!(
+        completed.content["results"][0]["agent_id"],
+        delegated_agent_id
+    );
     assert_eq!(completed.content["results"][0]["result"], "child output");
 }
 
@@ -666,17 +769,17 @@ async fn wait_subagent_without_agent_id_reports_running_timeout() {
     let slow_parent = AgentContext::default();
     let slow_handle = AgentContextHandle::new(slow_parent.clone());
 
-    slow_delegate
+    let delegated = slow_delegate
         .call(
             delegation_tool_context(&slow_parent, slow_handle.clone()),
             serde_json::json!({
                 "name": "slow_child",
-                "prompt": "help",
-                "agent_id": "child-bg-running"
+                "prompt": "help"
             }),
         )
         .await
         .unwrap();
+    let delegated_agent_id = delegated.content["agent_id"].as_str().unwrap().to_string();
 
     let running = slow_wait
         .call(
@@ -690,7 +793,7 @@ async fn wait_subagent_without_agent_id_reports_running_timeout() {
     assert_eq!(running.content["results"][0]["status"], "running");
     assert_eq!(
         running.content["results"][0]["agent_id"],
-        "child-bg-running"
+        delegated_agent_id
     );
 
     for _ in 0..50 {
@@ -722,7 +825,7 @@ async fn async_delegate_reports_generated_agent_id_and_resume_status() {
         )
         .await
         .unwrap();
-    assert_eq!(generated.content["status"], "spawned");
+    assert_eq!(generated.content["status"], "accepted");
     assert!(
         generated.content["agent_id"]
             .as_str()
@@ -741,7 +844,7 @@ async fn async_delegate_reports_generated_agent_id_and_resume_status() {
         )
         .await
         .unwrap();
-    assert_eq!(resumed.content["status"], "resumed");
+    assert_eq!(resumed.content["status"], "continued");
     assert_eq!(resumed.content["agent_id"], "child-bg-resume");
 
     for _ in 0..50 {
@@ -764,17 +867,17 @@ async fn async_delegate_redelivers_pending_result_when_parent_is_not_subscribed(
     parent.messages.unsubscribe(parent.agent_id.as_str());
     let context_handle = AgentContextHandle::new(parent.clone());
 
-    delegate
+    let delegated = delegate
         .call(
             delegation_tool_context(&parent, context_handle),
             serde_json::json!({
                 "name": "child",
-                "prompt": "help",
-                "agent_id": "child-bg-pending"
+                "prompt": "help"
             }),
         )
         .await
         .unwrap();
+    let delegated_agent_id = delegated.content["agent_id"].as_str().unwrap().to_string();
 
     for _ in 0..50 {
         if !monitor.has_active_tasks() && monitor.has_pending_messages() {
@@ -823,7 +926,7 @@ async fn async_delegate_redelivers_pending_result_when_parent_is_not_subscribed(
 
     assert!(!monitor.has_pending_messages());
     let pending = resumed.messages.peek(resumed.agent_id.as_str());
-    assert_eq!(pending[0].source, "child-bg-pending");
+    assert_eq!(pending[0].source, delegated_agent_id);
     assert_eq!(pending[0].target.as_deref(), Some("main"));
     assert_eq!(pending[0].content_text(), "child output");
 }

@@ -138,6 +138,42 @@ assert_eq!(result.content["output"], "child");
 # }
 ```
 
+## Asynchronous Delegation
+
+The SDK keeps blocking delegation as its compatibility default. Long-lived hosts can opt into async-only model delegation by injecting one `BackgroundSubagentSupervisor` that outlives individual parent runtimes:
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use starweaver_agent::{
+    AgentBuilder, BackgroundSubagentSupervisor, SubagentConfig, SubagentDelegationMode, TestModel,
+};
+
+# async fn example() -> Result<(), starweaver_agent::AgentError> {
+let child = Arc::new(AgentBuilder::new(Arc::new(TestModel::with_text("child"))).build());
+let supervisor = Arc::new(BackgroundSubagentSupervisor::new());
+let agent = AgentBuilder::new(Arc::new(TestModel::with_text("parent")))
+    .subagent(SubagentConfig::new("research", child))
+    .subagent_delegation_mode(SubagentDelegationMode::Async)
+    .background_subagent_supervisor(supervisor.clone())
+    .build();
+
+let names = agent.tools().names();
+assert!(names.contains(&"delegate".to_string()));
+assert!(names.contains(&"steer_subagent".to_string()));
+assert!(names.contains(&"cancel_subagent".to_string()));
+assert!(names.contains(&"wait_subagent".to_string()));
+
+supervisor.shutdown(Some(Duration::from_secs(1))).await;
+# Ok(())
+# }
+```
+
+Async `delegate` returns a stable background `agent_id` and a new `attempt_id` for each execution attempt. Use the attempt ID for `steer_subagent`, `cancel_subagent`, and one bounded `wait_subagent`; do not implement polling loops. A post-terminal continuation may reuse its known `agent_id`, but receives a fresh attempt ID. Unknown caller-supplied agent IDs and arbitrary model-supplied host metadata are rejected.
+
+A host that enables this mode must also keep the task runtime alive, serialize parent continuations, deliver the supervisor completion callback, and call `shutdown` before dropping its runtime. Interactive CLI/TUI uses async-only delegation with a session-scoped supervisor. One-shot CLI runs remain blocking, while worker mode uses `SubagentDelegationMode::Disabled` and installs no delegation tools.
+
 ## Lifecycle Events
 
 Delegation publishes typed lifecycle payloads through the parent context event bus. Applications can observe `subagent_started`, `subagent_completed`, and `subagent_failed` records and deserialize the payload as `SubagentLifecycleEvent`.
@@ -175,7 +211,7 @@ assert_eq!(started.task_id.as_str(), "research-1");
 
 When the `delegate` tool runs inside a parent agent stream, child stream records are merged into the parent stream with `AgentStreamRecord.source` set to subagent attribution. The source records the child agent id, child agent name, task id, child run id, parent run id, and the original child sequence before rebasing into the parent sequence.
 
-Delegation is still blocking: the parent waits for the child run to finish, then emits the attributed child records before the parent tool return. This preserves durable ordering and lets live handles, stream archives, and replay consumers identify child records without changing the top-level stream event enum.
+In blocking mode, the parent waits for the child run to finish and emits attributed child records before the parent tool return. In async mode, child records retain the same source attribution while the supervisor owns the attempt independently of the accepting parent turn. Both modes let live handles, stream archives, and replay consumers identify child records without changing the top-level stream event enum.
 
 ## Markdown Configuration
 
