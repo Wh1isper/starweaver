@@ -125,6 +125,38 @@ Tools:
 
 Backed by `AgentContext` task state or an SDK host task service. Notes and arbitrary state stay on `AgentContext` as SDK data accessed through typed dependencies by custom tools.
 
+### Session Query Bundle
+
+The session query bundle exposes bounded, prompt-safe views of durable sessions through a narrow host-provided `AgentSessionQuery` capability. It never gives tools direct access to `SessionStore`, `StreamArchive`, storage adapters, product handlers, or coordinators.
+
+Baseline tools:
+
+- `list_sessions`: paginated canonical session summaries;
+- `search_sessions`: optional discovery through an installed `SessionSearchProvider`;
+- `get_session`: one authorized redacted session view;
+- `list_session_runs`: paginated run summaries under one session;
+- `get_session_run`: one compact run view using composite session/run identity;
+- `replay_session_run`: bounded user-visible display projection after a family-aware cursor.
+
+CLI/TUI installs this query-only bundle over its selected local-store namespace. Search absence does not disable list/get/replay. Results treat all historical text as untrusted evidence and exclude raw checkpoints, context/environment state, internal diagnostics, credentials, arbitrary metadata, and complete tool payloads.
+
+### Session Control Bundle
+
+The session control bundle is opt-in and requires a separately injected `AgentSessionControl` capability plus per-operation grants. It is intended first for RPC-hosted agents and is not installed for CLI/TUI agents.
+
+Baseline tools:
+
+- `create_session`;
+- `update_session` with typed patch and expected revision;
+- `delete_session` as approval-gated tombstone, never model-visible evidence purge;
+- `start_session_run` as non-blocking durable admission;
+- `steer_session_run` for an active authorized composite target;
+- `interrupt_session_run` for cooperative cancellation.
+
+Control tools call typed product application operations, never loop back through JSON-RPC and never patch raw `SessionRecord` or `RunRecord` values. Effective authority is the intersection of application/server policy, agent profile policy, initiating caller authority, target ownership/delegation, and the installed `ToolCapabilityGrant`. Self-targeted mutation/control is denied by default, and inherited control authority is fail-closed for subagents and managed runs.
+
+The complete identity, ownership, idempotency, admission, fencing, durability, CLI/RPC composition, and acceptance contract is `../ops/08-agent-session-management.md`. Optional historical discovery remains separately specified in `../ops/07-session-search.md`.
+
 ### Skill Bundle
 
 The skill bundle follows the environment-backed `SkillToolset` design and loads skills through the active `EnvironmentProvider` file operations. Skills are markdown packages with a `SKILL.md` entrypoint and YAML frontmatter. The SDK scans provider-visible skill directories, loads frontmatter for prompt summaries, and loads full markdown content when a skill is activated.

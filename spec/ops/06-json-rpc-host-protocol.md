@@ -6,7 +6,7 @@ Revision: 2026-07-11
 
 The Starweaver host protocol is implemented by the standalone `starweaver-rpc` product. It is a local control plane for durable sessions, non-blocking runs, replay, HITL records, RPC-owned model profiles, and RPC-owned environment attachments.
 
-This document describes only implemented v1 behavior. Proposed long-connection subscriptions, additional authorization roles, pagination tokens, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md` and are not part of v1 conformance.
+This document describes only implemented v1 behavior. Proposed long-connection subscriptions, additional authorization roles, pagination tokens, richer idempotency, sockets, WebSocket, and hosted deployment semantics live in `rfcs/host-protocol-future.md` and are not part of v1 conformance. Proposed pluggable historical session discovery and a future `session.search` method live in `07-session-search.md`. Proposed model-facing session query/control composition, resource ownership, composite targets, revisions, fenced admission, and durable control receipts live in `08-agent-session-management.md`. Neither proposal enters this implemented method profile until code and conformance coverage land.
 
 ## Product Boundary
 
@@ -253,6 +253,24 @@ Envd remains the environment data/effect plane. Host attachment leases do not tr
 Approval and deferred records are canonical `starweaver-session` durable records. Decisions persist before success is returned. Terminal conflicts fail rather than overwrite prior evidence.
 
 Current v1 does not promise a general cross-method idempotency store. Active environment mutation uses operation-specific idempotency to prevent duplicate binding versions, lifecycle events, and steering injection. Richer method-wide idempotency remains an RFC.
+
+## Proposed Agent-Facing Composition
+
+The implemented external methods already provide much of the storage/coordinator behavior needed by a future RPC-hosted agent session-control bundle, but model tools are a separate trust boundary and are not JSON-RPC loopback clients.
+
+The proposed design in `08-agent-session-management.md` requires:
+
+- typed in-process application operations below wire DTO dispatch;
+- host-derived namespace/owner/resource authorization in addition to method-level HTTP scopes;
+- composite namespace/session/run targets rather than globally unique run-id assumptions;
+- one-active-run admission, revisions, idempotency receipts, control fencing, and orphan reconciliation;
+- query-safe redacted projections rather than returning complete durable records;
+- self-target denial and approval/grant policy for destructive mutations;
+- CLI query-only and RPC grant-gated control product profiles.
+
+These are future conformance requirements. They do not change the implemented v1 method table above. `run.cancel` remains the current wire name and means cooperative interruption; a future model tool may be named `interrupt_session_run` without adding a synonymous RPC method.
+
+Async subagent execution is separately specified in `../sdk/06-async-subagent-execution.md`. It uses parent-owned child attempt identities and must not be projected as session CRUD.
 
 ## Security
 

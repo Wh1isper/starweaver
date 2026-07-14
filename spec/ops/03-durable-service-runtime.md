@@ -11,7 +11,8 @@ The durable service runtime spec records product-neutral contracts for persistin
 - Publish live replay events through `ReplayEventLog`.
 - Serve replay transports with replay-after-cursor and live tail.
 - Persist trace correlation ids for external observability systems.
-- Handle interruption, cancellation, approval, and deferred tool calls.
+- Handle interruption, cancellation, approval, deferred tool calls, and idempotent control receipts.
+- Enforce composite namespace/session/run identity, host-derived resource authority, and fenced active-run admission for service control.
 - Restore typed dependencies and environment providers through application configuration.
 - Resume from checkpoints when supported by the runtime state.
 - Provide concrete session store, stream archive, event-log, and transport adapters.
@@ -181,6 +182,29 @@ A product host coordinator owns per-run durable execution:
 - update compaction snapshots through `RealtimeCompactionBuffer`
 - update run status and stream cursor refs in `SessionStore`
 - persist terminal session state and compact projections
+- expose narrow query/control application operations to host adapters without giving model tools direct store or coordinator access
+- own run task/finalizer handles and remove terminal controls from the active registry after durable finalization
+
+## Durable Run Admission and Control
+
+Service-hosted run creation uses a durable admission/control record rather than treating a `running` row or process-local handle as sufficient ownership.
+
+Required evidence includes:
+
+- namespace, session id, and run id;
+- owner/principal and initiating run/tool-call provenance;
+- host instance id, lease expiry/heartbeat, and fencing generation;
+- idempotency key, normalized command digest, and durable receipt;
+- active control status plus queued steer/interruption event ids;
+- terminal outcome, cleanup status, and reconciliation reason.
+
+The initial session model permits at most one non-terminal admitted run per session. Admission, active pointer update, and durable run creation are one atomic domain operation. A coordinator applies controls only when its host lease and fencing generation still match; an older worker or delayed retry cannot steer, interrupt, or finalize a newer owner.
+
+A durable control inbox/outbox or equivalent transactional record accepts steering/interruption before applying it through the current `AgentControlHandle`. Receipts distinguish accepted, delivered/observed when available, terminal, stale owner, and failed. Process-local handles remain execution adapters, not durable truth.
+
+Startup reconciliation scans non-terminal runs, validates host leases, and either restores a supported checkpoint under a new fenced owner or writes an explicit interrupted/failed terminal state. It never leaves an orphan `running` row indefinitely and never silently reruns side-effecting work from the original prompt.
+
+These service guarantees are prerequisites for grant-gated agent session control in `08-agent-session-management.md` and durable RPC async-subagent continuations in `../sdk/06-async-subagent-execution.md`.
 
 ## Raw Evidence, Display Projection, and Replay
 

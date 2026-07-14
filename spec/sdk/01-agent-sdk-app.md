@@ -61,6 +61,12 @@ Session guarantees:
 - stream events work through the same context
 - restored sessions preserve serializable state and rely on the app to rehydrate process-local dependencies
 
+## Async Execution Ownership
+
+A bare `RuntimeAgent` or per-turn `AgentSession` does not implicitly own fire-and-forget work. Model-visible async `delegate` is available only when an `AgentApp` or product host injects the execution-scope supervisor defined in `06-async-subagent-execution.md`.
+
+The supervisor outlives individual parent turns and owns child task/control handles, cancellation, bounded wait, result retention, message delivery, and shutdown. Restoring serializable session state does not recreate process-local children; a durable host reconciles persisted child records explicitly. Apps without this owner use the programmatic/blocking delegation backend or expose no delegation tools.
+
 ## Policy Presets
 
 SDK policy presets configure common app behavior while runtime semantics remain owned by core crates:

@@ -43,7 +43,8 @@ flowchart TD
 - Treat envd as a standalone service/protocol consumed through an SDK adapter,
   not as the SDK environment layer itself.
 - Load serializable subagent and skill specs.
-- Provide unified delegation and lifecycle events.
+- Provide blocking programmatic delegation plus host-supervised async-only model delegation, steering, cancellation, bounded fan-in, and lifecycle events.
+- Provide first-party session query/control bundles only through narrow host-injected capabilities and product-specific grants.
 - Expose docs and examples for application developers.
 
 ## Reference Feature Families
@@ -57,12 +58,15 @@ flowchart TD
 | lifecycle extensions | capabilities and runtime hooks                            |
 | policy filters       | capability bundles with context-aware hooks               |
 | environment          | `EnvironmentProvider` and environment-backed tool bundles |
-| subagents            | `SubagentSpec`, registry, delegation lifecycle            |
+| subagents            | `SubagentSpec`, registry, async execution supervisor      |
+| session management   | query/control bundles over narrow host capabilities       |
 | notes/tasks/bus      | context stores and first-party tool bundles               |
 | skills               | serializable skill specs and tool bundles                 |
 | tool proxy           | first-party proxy toolset features                        |
 | Python SDK           | `starweaver-py` in-process bindings and Python tools      |
 | observability        | OTel GenAI spans, Langfuse metadata, trace propagation    |
+
+Async model delegation and its product lifetime contract are specified in `06-async-subagent-execution.md`; the base registry, inheritance, and skill contract remains in `04-subagents-skills.md`. Agent-facing durable session query/control is specified separately in `../ops/08-agent-session-management.md`.
 
 ## Python SDK Subspecs
 
