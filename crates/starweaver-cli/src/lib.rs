@@ -16,6 +16,7 @@ mod prompt_input;
 mod runner;
 pub(crate) mod runtime_coordinator;
 pub(crate) mod service;
+pub mod session_management;
 mod slash_commands;
 mod tui;
 mod update_check;

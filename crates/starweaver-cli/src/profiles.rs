@@ -10,11 +10,12 @@ use std::{
 use serde::Serialize;
 use serde_json::json;
 use starweaver_agent::{
-    AgentBuilder, AgentSpec, AgentSpecRegistry, ApprovalRequiredToolset,
+    AgentBuilder, AgentSessionQueryHandle, AgentSpec, AgentSpecRegistry, ApprovalRequiredToolset,
     BackgroundSubagentSupervisor, DynToolset, HostMediaUnderstandingClient, ShellReviewAction,
     ShellReviewConfig, ShellReviewHandle, ShellReviewRiskLevel, SkillPackage, SkillRegistry,
     StaticToolset, SubagentConfig, SubagentDelegationMode, SubagentToolInheritancePolicy,
-    core_toolsets, load_subagents_from_dir, parse_skill_markdown,
+    agent_session_query_tools, attach_agent_session_query, core_toolsets, load_subagents_from_dir,
+    parse_skill_markdown,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ModelSettings, OpenAiResponsesSettings,
@@ -67,6 +68,8 @@ pub struct ResolvedProfile {
     pub shell_review: Option<ShellReviewHandle>,
     /// Skill registry loaded from CLI skill directories.
     pub skills: SkillRegistry,
+    /// Query-only session capability. CLI never stores a control handle.
+    pub session_query: AgentSessionQueryHandle,
 }
 
 /// Source of a resolved profile.
@@ -142,6 +145,7 @@ impl ResolvedProfile {
     /// Apply profile-owned runtime context defaults to a session context.
     pub fn configure_context(&self, context: &mut AgentContext) {
         self.skills.register_relaxed_view_patterns(context);
+        attach_agent_session_query(context, self.session_query.clone());
     }
 }
 
@@ -250,6 +254,28 @@ pub fn resolve_profile(config: &CliConfig, requested: Option<&str>) -> CliResult
     let skills = configured_skill_registry(config);
     let media_client = configured_media_client(config)?;
     let shell_review = configured_shell_review(config)?;
+    crate::config::ensure_config_dirs(config)?;
+    let storage = starweaver_storage::SqliteStorage::open(&config.database_path)
+        .map_err(|error| CliError::Storage(error.to_string()))?;
+    let session_query = AgentSessionQueryHandle::new(
+        Arc::new(crate::session_management::CliAgentSessionQuery::new(
+            storage,
+        )),
+        starweaver_session::AgentSessionScope {
+            namespace_id: starweaver_session::LOCAL_SESSION_NAMESPACE.to_string(),
+            owner_id: None,
+            source_product: "cli".to_string(),
+            source_session_id: None,
+            source_run_id: None,
+            operations: BTreeSet::from([starweaver_session::AgentSessionOperation::Read]),
+            allowed_session_ids: BTreeSet::new(),
+            allow_self_query: true,
+            allow_self_control: false,
+            policy_fingerprint: "cli-query-only-v1".to_string(),
+            deadline: None,
+            max_page_size: 50,
+        },
+    );
     Ok(ResolvedProfile {
         name,
         source,
@@ -258,6 +284,7 @@ pub fn resolve_profile(config: &CliConfig, requested: Option<&str>) -> CliResult
         media_client,
         shell_review,
         skills,
+        session_query,
     })
 }
 
@@ -381,7 +408,10 @@ fn default_registry(config: &CliConfig, spec: &AgentSpec) -> CliResult<AgentSpec
 fn default_toolsets(config: &CliConfig) -> Vec<DynToolset> {
     let approval = tool_need_approval(config);
     let shell_review_approval = shell_review_adjusted_approval(config, &approval);
-    let mut toolsets = vec![Arc::new(control_flow_toolset()) as DynToolset];
+    let mut toolsets = vec![
+        Arc::new(control_flow_toolset()) as DynToolset,
+        agent_session_query_tools(),
+    ];
     for toolset in core_toolsets() {
         let selected_approval = if toolset.name() == "shell" {
             &shell_review_approval

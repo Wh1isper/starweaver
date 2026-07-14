@@ -758,6 +758,7 @@ const fn session_status_name(status: SessionStatus) -> &'static str {
         SessionStatus::Active => "active",
         SessionStatus::Archived => "archived",
         SessionStatus::Failed => "failed",
+        SessionStatus::Deleted => "deleted",
     }
 }
 

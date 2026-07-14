@@ -18,10 +18,12 @@ name = "starweaver-rpc"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
 chrono.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 starweaver-agent.workspace = true
 starweaver-context.workspace = true
 starweaver-core.workspace = true

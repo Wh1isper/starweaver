@@ -11,6 +11,15 @@ pub enum SessionStoreError {
     /// Record already exists.
     #[error("session record already exists: {0}")]
     AlreadyExists(String),
+    /// Optimistic revision or lifecycle conflict.
+    #[error("session record conflict: {0}")]
+    Conflict(String),
+    /// One idempotency key was reused for a different normalized command.
+    #[error("session idempotency conflict: {0}")]
+    IdempotencyConflict(String),
+    /// The session already owns a live run admission.
+    #[error("session run conflict: {0}")]
+    RunConflict(String),
     /// Store failed.
     #[error("session store failed: {0}")]
     Failed(String),

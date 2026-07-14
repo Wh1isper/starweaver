@@ -3,6 +3,11 @@
   "version": 1,
   "payload": {
     "session_id": "session-fixture",
+    "namespace_id": "local",
+    "revision": 1,
+    "deletion_fence": {
+      "state": "stable"
+    },
     "status": "active",
     "state": {
       "agent_id": "main",

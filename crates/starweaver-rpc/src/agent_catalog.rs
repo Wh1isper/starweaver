@@ -4,7 +4,8 @@ use std::{env, sync::Arc};
 
 use serde::Serialize;
 use starweaver_agent::{
-    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, core_toolsets,
+    AgentRuntimeBuilder, AgentSpec, AgentSpecRegistry, ModelPreset, agent_session_control_tools,
+    agent_session_query_tools, core_toolsets,
 };
 use starweaver_model::{
     HttpModelConfig, ModelAdapter, ModelProfile, ProtocolFamily, ProtocolModelClient,
@@ -98,11 +99,23 @@ impl RpcAgentCatalog {
         let model = self.materialize_model(profile)?;
         let spec = agent_spec(name, profile);
         let mut registry = AgentSpecRegistry::new().with_model(&profile.model_id, model);
-        for toolset in core_toolsets() {
+        for toolset in core_toolsets()
+            .into_iter()
+            .chain([agent_session_query_tools(), agent_session_control_tools()])
+        {
             registry = registry.with_toolset(toolset);
         }
         spec.runtime_builder(&registry)
             .map_err(|error| RpcHostError::Invalid(error.to_string()))
+    }
+
+    /// Return whether a profile explicitly grants one toolset.
+    #[must_use]
+    pub(crate) fn grants_toolset(&self, profile: &str, toolset: &str) -> bool {
+        self.config
+            .profiles
+            .get(profile)
+            .is_some_and(|profile| profile.toolsets.iter().any(|name| name == toolset))
     }
 
     fn validate(&self) -> RpcHostResult<()> {
@@ -118,6 +131,7 @@ impl RpcAgentCatalog {
         }
         let available_toolsets = core_toolsets()
             .into_iter()
+            .chain([agent_session_query_tools(), agent_session_control_tools()])
             .flat_map(|toolset| {
                 let mut keys = vec![toolset.name().to_string()];
                 if let Some(id) = toolset.id() {

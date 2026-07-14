@@ -4,10 +4,12 @@ use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use starweaver_context::{AgentCheckpoint, ResumableState};
 use starweaver_core::{RunId, RunLifecycle, SessionId};
 use starweaver_session::{
-    ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord, EnvironmentStateRef,
-    HitlResumeClaim, HitlResumeClaimState, PendingStreamPublication, RunEvidenceCommit, RunRecord,
-    RunStatus, SessionFilter, SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore,
-    SessionStoreError, SessionStoreResult, StreamCursorRef, StreamPublicationTarget,
+    AcquireRunAdmission, ApprovalRecord, CompactRunTrace, CompactSessionTrace, DeferredToolRecord,
+    DurableControlReceipt, EnvironmentStateRef, HitlResumeClaim, HitlResumeClaimState,
+    ManagedRunTarget, PendingStreamPublication, RunAdmissionLease, RunAdmissionReceipt,
+    RunEvidenceCommit, RunRecord, RunStatus, SessionContinuationFence, SessionFilter,
+    SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
+    SessionStoreResult, StreamCursorRef, StreamPublicationTarget, UpdateManagedSession,
 };
 use starweaver_stream::{AgentStreamRecord, InMemoryReplayEventLog, ReplayCursor, ReplayScope};
 
@@ -448,11 +450,190 @@ impl SessionStore for SqliteSessionStore {
         .map_err(SessionStoreError::Failed)?
     }
 
+    async fn create_session_idempotent(
+        &self,
+        session: SessionRecord,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let key = idempotency_key.to_string();
+        let fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.create_session_idempotent_sync(session, &key, &fingerprint)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn update_managed_session(
+        &self,
+        command: UpdateManagedSession,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || store.update_managed_session_sync(command, &fingerprint))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn acquire_session_deletion_fence(
+        &self,
+        session_id: &SessionId,
+        expected_revision: u64,
+        fence_id: &str,
+        requested_by: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let session_id = session_id.clone();
+        let fence_id = fence_id.to_string();
+        let requested_by = requested_by.to_string();
+        let idempotency_key = idempotency_key.to_string();
+        let fingerprint = command_fingerprint.to_string();
+        crate::blocking::run(move || {
+            store.acquire_session_deletion_fence_sync(
+                &session_id,
+                expected_revision,
+                &fence_id,
+                &requested_by,
+                &idempotency_key,
+                &fingerprint,
+            )
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn tombstone_session(
+        &self,
+        session_id: &SessionId,
+        fence_id: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let store = self.clone();
+        let session_id = session_id.clone();
+        let fence_id = fence_id.to_string();
+        crate::blocking::run(move || store.tombstone_session_sync(&session_id, &fence_id))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn session_continuation_fence(
+        &self,
+        namespace_id: &str,
+        session_id: &SessionId,
+    ) -> SessionStoreResult<SessionContinuationFence> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        let session_id = session_id.clone();
+        crate::blocking::run(move || {
+            store.session_continuation_fence_sync(&namespace_id, &session_id)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn acquire_run_admission(
+        &self,
+        request: AcquireRunAdmission,
+    ) -> SessionStoreResult<RunAdmissionReceipt> {
+        let store = self.clone();
+        crate::blocking::run(move || store.acquire_run_admission_sync(request))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn heartbeat_run_admission(
+        &self,
+        lease: &RunAdmissionLease,
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<RunAdmissionLease> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || store.heartbeat_run_admission_sync(&lease, lease_expires_at))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn release_run_admission(&self, lease: &RunAdmissionLease) -> SessionStoreResult<()> {
+        let store = self.clone();
+        let lease = lease.clone();
+        crate::blocking::run(move || store.release_run_admission_sync(&lease))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn load_run_admission(
+        &self,
+        target: &ManagedRunTarget,
+    ) -> SessionStoreResult<Option<RunAdmissionLease>> {
+        let store = self.clone();
+        let target = target.clone();
+        crate::blocking::run(move || store.load_run_admission_sync(&target))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn reconcile_expired_run_admissions(
+        &self,
+        namespace_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<Vec<ManagedRunTarget>> {
+        let store = self.clone();
+        let namespace_id = namespace_id.to_string();
+        crate::blocking::run(move || {
+            store.reconcile_expired_run_admissions_sync(&namespace_id, now)
+        })
+        .await
+        .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn load_control_receipt(
+        &self,
+        target: &ManagedRunTarget,
+        idempotency_key: &str,
+    ) -> SessionStoreResult<Option<DurableControlReceipt>> {
+        let store = self.clone();
+        let target = target.clone();
+        let idempotency_key = idempotency_key.to_string();
+        crate::blocking::run(move || store.load_control_receipt_sync(&target, &idempotency_key))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn reserve_control_receipt(
+        &self,
+        receipt: DurableControlReceipt,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        let store = self.clone();
+        crate::blocking::run(move || store.reserve_control_receipt_sync(receipt))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
+    async fn update_control_receipt_state(
+        &self,
+        receipt_id: &str,
+        state: &str,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        let store = self.clone();
+        let receipt_id = receipt_id.to_string();
+        let state = state.to_string();
+        crate::blocking::run(move || store.update_control_receipt_state_sync(&receipt_id, &state))
+            .await
+            .map_err(SessionStoreError::Failed)?
+    }
+
     async fn save_session(&self, mut session: SessionRecord) -> SessionStoreResult<()> {
         let store = self.clone();
         crate::blocking::run(move || {
             session.updated_at = Utc::now();
             let connection = store.lock()?;
+            if let Ok(current) = load_session_record(&connection, &session.session_id) {
+                session.revision = current.revision.saturating_add(1);
+            }
             save_session_record(&connection, &session)
         })
         .await
@@ -526,6 +707,7 @@ impl SessionStore for SqliteSessionStore {
             let connection = store.lock()?;
             let mut session = load_session_record(&connection, session_id)?;
             session.status = status;
+            session.revision = session.revision.saturating_add(1);
             session.updated_at = Utc::now();
             save_session_record(&connection, &session)
         })
@@ -545,6 +727,7 @@ impl SessionStore for SqliteSessionStore {
             let connection = store.lock()?;
             let mut session = load_session_record(&connection, session_id)?;
             session.state = state;
+            session.revision = session.revision.saturating_add(1);
             session.updated_at = Utc::now();
             save_session_record(&connection, &session)
         })
@@ -564,6 +747,7 @@ impl SessionStore for SqliteSessionStore {
             let connection = store.lock()?;
             let mut session = load_session_record(&connection, session_id)?;
             session.environment_state = Some(environment_state);
+            session.revision = session.revision.saturating_add(1);
             session.updated_at = Utc::now();
             save_session_record(&connection, &session)
         })

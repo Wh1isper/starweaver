@@ -5,6 +5,7 @@ mod environment;
 mod helpers;
 mod output;
 mod runtime_context;
+mod session_management;
 mod skills;
 mod task;
 mod web_media;
@@ -23,6 +24,11 @@ pub use environment::{
     process_shell_toolsets, shell_tools,
 };
 pub use runtime_context::RuntimeContextCapability;
+pub use session_management::{
+    AgentSessionControl, AgentSessionControlHandle, AgentSessionQuery, AgentSessionQueryHandle,
+    agent_session_control_tools, agent_session_query_tools, attach_agent_session_control,
+    attach_agent_session_query,
+};
 pub use skills::{
     SKILL_ACTIVATION_EVENT_KIND, SKILL_RELOAD_EVENT_KIND, SKILL_SCAN_EVENT_KIND,
     SkillDiscoveryCapability, SkillError, SkillPackage, SkillRegistry, SkillReloadBinding,

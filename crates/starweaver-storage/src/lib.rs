@@ -70,6 +70,7 @@ mod tests {
                 "20260711_000002_namespaced_evidence_tables",
                 "20260711_000003_split_display_and_replay_families",
                 "20260712_000004_evidence_outbox_and_resume_claims",
+                "20260714_000005_agent_session_management",
             ]
         );
         let second = migrate_sqlite_database(&database_path).expect("second migration");

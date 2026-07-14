@@ -61,6 +61,7 @@ impl InMemorySessionStore {
                     session.active_run_id = None;
                 }
             }
+            session.revision = session.revision.saturating_add(1);
             session.updated_at = run.updated_at;
         }
         Ok(())
@@ -124,6 +125,7 @@ impl InMemorySessionStore {
                     session.active_run_id = None;
                 }
             }
+            session.revision = session.revision.saturating_add(1);
             session.updated_at = updated_at;
         }
         Ok(())

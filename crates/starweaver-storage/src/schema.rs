@@ -248,4 +248,65 @@ pub const SQLITE_MIGRATIONS: &[SqliteMigration] = &[
     ",
         hook_version: Some("evidence-digest-backfill-v2"),
     },
+    SqliteMigration {
+        id: "20260714_000005_agent_session_management",
+        description: "add revision/idempotency, deletion fence, run admission lease, fencing, and control receipt storage",
+        sql: r"
+        CREATE TABLE IF NOT EXISTS session_mutation_receipts (
+            namespace_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            command_fingerprint TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (namespace_id, idempotency_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS run_admission_generations (
+            namespace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            PRIMARY KEY (namespace_id, session_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS run_admissions (
+            namespace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            host_instance_id TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL,
+            record TEXT NOT NULL,
+            PRIMARY KEY (namespace_id, session_id),
+            UNIQUE (namespace_id, session_id, run_id, generation)
+        );
+        CREATE INDEX IF NOT EXISTS ix_run_admissions_expiry
+            ON run_admissions(namespace_id, lease_expires_at);
+
+        CREATE TABLE IF NOT EXISTS run_admission_receipts (
+            namespace_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            command_fingerprint TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (namespace_id, idempotency_key)
+        );
+
+        CREATE TABLE IF NOT EXISTS run_control_receipts (
+            receipt_id TEXT PRIMARY KEY,
+            namespace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            command_fingerprint TEXT NOT NULL,
+            generation INTEGER NOT NULL,
+            record TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (namespace_id, session_id, run_id, idempotency_key)
+        );
+    ",
+        hook_version: None,
+    },
 ];

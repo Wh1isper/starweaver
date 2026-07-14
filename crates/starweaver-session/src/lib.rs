@@ -7,6 +7,7 @@ mod claim;
 mod error;
 mod evidence;
 mod input;
+mod management;
 mod publication;
 mod records;
 mod resume;
@@ -23,6 +24,17 @@ pub use claim::{HitlResumeClaim, HitlResumeClaimState};
 pub use error::{SessionStoreError, SessionStoreResult};
 pub use evidence::{RelatedRunUpdate, RunEvidenceCommit};
 pub use input::{BinaryRef, FileRef, InputConversionError, InputPart};
+pub use management::{
+    AcquireRunAdmission, AgentDisplayPage, AgentReplayQuery, AgentRunListQuery, AgentRunPage,
+    AgentRunView, AgentSessionControlError, AgentSessionControlErrorCode, AgentSessionInclude,
+    AgentSessionListQuery, AgentSessionOperation, AgentSessionPage, AgentSessionQueryError,
+    AgentSessionQueryErrorCode, AgentSessionScope, AgentSessionView, CreateManagedSession,
+    DeleteManagedSession, DurableControlReceipt, InterruptManagedRun, LOCAL_SESSION_NAMESPACE,
+    ManagedRunTarget, ManagedSessionPatch, ManagedSessionTarget, RunAdmissionLease,
+    RunAdmissionReceipt, RunControlReceipt, RunStartReceipt, SessionContinuationFence,
+    SessionDeletionFence, SessionMutationReceipt, StartManagedRun, SteerManagedRun,
+    UpdateManagedSession,
+};
 pub use publication::{
     PendingStreamPublication, StreamPublicationTarget, StreamPublicationTargets,
 };

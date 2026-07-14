@@ -1,14 +1,23 @@
 //! RPC-owned active-run coordination over the public Agent SDK.
 
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
+    collections::{BTreeSet, HashMap, VecDeque},
+    future::Future,
+    pin::Pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use starweaver_agent::{AgentControlHandle, AgentStreamDropPolicy, AgentStreamOptions};
+use starweaver_agent::{
+    AgentContext, AgentControlHandle, AgentSessionControlHandle, AgentSessionQueryHandle,
+    AgentStreamDropPolicy, AgentStreamOptions, attach_agent_session_control,
+    attach_agent_session_query,
+};
 use starweaver_core::{ConversationId, RunId, SessionId};
 use starweaver_environment::{
     ShellProcessStatus, SwitchableEnvironmentProvider, SwitchableEnvironmentTarget,
@@ -18,23 +27,33 @@ use starweaver_rpc_core::{
     EnvironmentAttachmentRef, INVALID_PARAMS, RUN_CONFLICT, RpcError,
 };
 use starweaver_runtime::{AgentInput, AgentStreamRecord};
-use starweaver_session::{InputPart, RunRecord, RunStatus, SessionStore};
+use starweaver_session::{
+    AcquireRunAdmission, AgentSessionOperation, AgentSessionScope, DurableControlReceipt,
+    InputPart, LOCAL_SESSION_NAMESPACE, ManagedRunTarget, RunAdmissionLease, RunRecord, RunStatus,
+    SessionStore,
+};
 use starweaver_storage::SqliteStorage;
 use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessageProjector, DisplayProjectionContext,
     EnvironmentLifecycleEvent, ReplayCursor, ReplayEvent, ReplayEventKind, ReplayEventLog,
     ReplayScope, StreamTerminalMarker,
 };
-use tokio::sync::Notify;
+use tokio::{sync::watch, task::JoinHandle};
 
 use crate::{
     RpcAgentCatalog, RpcConfig, RpcHostError, RpcHostResult,
     environment::{resolve_rpc_environment, resolve_rpc_environment_target},
     environment_manager::EnvironmentAttachmentManager,
+    session_management::{RpcAgentSessionAdapter, command_fingerprint},
 };
 
 const DURABLE_RUN_ID_METADATA_KEY: &str = "starweaver.durable_run_id";
 const RPC_PROFILE_METADATA_KEY: &str = "rpc.profile";
+const ACTIVE_LEASE_TTL: Duration = Duration::from_secs(30);
+const ACTIVE_LEASE_HEARTBEAT: Duration = Duration::from_secs(10);
+const TERMINAL_CACHE_LIMIT: usize = 64;
+
+type RpcBoxFuture<'a, T> = Pin<Box<dyn Future<Output = RpcHostResult<T>> + Send + 'a>>;
 
 /// RPC run request after wire parameters have been validated.
 #[derive(Clone, Debug)]
@@ -51,6 +70,12 @@ pub struct RpcRunRequest {
     pub profile: String,
     /// Materialized host environment attachments for this run.
     pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    /// Stable start idempotency key.
+    pub idempotency_key: String,
+    /// Normalized typed start command fingerprint.
+    pub command_fingerprint: String,
+    /// Install profile-granted session query/control handles for this run.
+    pub install_session_management: bool,
 }
 
 /// Stable status projection returned by RPC methods.
@@ -75,10 +100,7 @@ impl RpcRunStatus {
     /// Return whether this status is terminal for RPC await semantics.
     #[must_use]
     pub fn terminal(&self) -> bool {
-        matches!(
-            self.status.as_str(),
-            "completed" | "failed" | "cancelled" | "waiting"
-        )
+        matches!(self.status.as_str(), "completed" | "failed" | "cancelled")
     }
 }
 
@@ -91,20 +113,35 @@ pub struct RpcStartedRun {
     pub run_id: RunId,
     /// Effective environment attachments bound to the run.
     pub environment_attachments: Vec<EnvironmentAttachmentRef>,
+    /// Stable durable admission receipt id.
+    pub admission_id: String,
+    /// Fencing generation accepted for this run.
+    pub fencing_generation: u64,
+    /// Durable status observed when the receipt was returned.
+    pub status: RunStatus,
+    /// True when this is an exact same-key, same-command replay.
+    pub idempotent_replay: bool,
 }
 
 #[derive(Clone)]
 struct ActiveRun {
-    status: RpcRunStatus,
+    status_tx: watch::Sender<RpcRunStatus>,
     control: AgentControlHandle,
+    lease: RunAdmissionLease,
     events: Vec<ReplayEvent>,
     next_display_sequence: usize,
     next_event_sequence: usize,
-    notify: Arc<Notify>,
     environment: Arc<SwitchableEnvironmentProvider>,
     environment_attachments: Vec<EnvironmentAttachmentRef>,
     environment_binding_version: u64,
     environment_idempotency: HashMap<String, EnvironmentMutationRecord>,
+}
+
+#[derive(Clone)]
+struct TerminalRun {
+    target: ManagedRunTarget,
+    status: RpcRunStatus,
+    events: Vec<ReplayEvent>,
 }
 
 #[derive(Clone)]
@@ -139,7 +176,11 @@ pub struct RpcRuntimeCoordinator {
     catalog: RpcAgentCatalog,
     storage: SqliteStorage,
     environment_manager: EnvironmentAttachmentManager,
-    active: Arc<Mutex<HashMap<String, ActiveRun>>>,
+    active: Arc<Mutex<HashMap<ManagedRunTarget, ActiveRun>>>,
+    terminal: Arc<Mutex<VecDeque<TerminalRun>>>,
+    tasks: Arc<Mutex<HashMap<ManagedRunTarget, JoinHandle<()>>>>,
+    accepting: Arc<AtomicBool>,
+    host_instance_id: Arc<String>,
 }
 
 impl RpcRuntimeCoordinator {
@@ -157,6 +198,10 @@ impl RpcRuntimeCoordinator {
             storage,
             environment_manager,
             active: Arc::new(Mutex::new(HashMap::new())),
+            terminal: Arc::new(Mutex::new(VecDeque::with_capacity(TERMINAL_CACHE_LIMIT))),
+            tasks: Arc::new(Mutex::new(HashMap::new())),
+            accepting: Arc::new(AtomicBool::new(true)),
+            host_instance_id: Arc::new(format!("rpc-host-{}", uuid::Uuid::new_v4())),
         }
     }
 
@@ -165,25 +210,41 @@ impl RpcRuntimeCoordinator {
     /// # Errors
     ///
     /// Returns storage or runtime construction failures.
+    #[must_use]
+    pub fn start(&self, request: RpcRunRequest) -> RpcBoxFuture<'_, RpcStartedRun> {
+        Box::pin(self.start_inner(request))
+    }
+
     #[allow(clippy::too_many_lines)]
-    pub async fn start(&self, request: RpcRunRequest) -> RpcHostResult<RpcStartedRun> {
+    async fn start_inner(&self, request: RpcRunRequest) -> RpcHostResult<RpcStartedRun> {
+        if !self.accepting.load(Ordering::Acquire) {
+            return Err(RpcHostError::Runtime(
+                "RPC coordinator is shutting down and no longer accepts runs".to_string(),
+            ));
+        }
+        self.reap_finished_tasks().await?;
         let session = if let Some(session_id) = request.session_id.as_ref() {
             self.storage
                 .session_store()
                 .load_session(session_id)
                 .await?
         } else {
-            let storage = self.storage.clone();
-            let profile = request.profile.clone();
-            tokio::task::spawn_blocking(move || storage.create_session(Some(profile), None))
-                .await
-                .map_err(|error| RpcHostError::Runtime(format!("storage task failed: {error}")))??
+            let mut session = starweaver_session::SessionRecord::new(SessionId::new());
+            session.profile = Some(request.profile.clone());
+            self.storage
+                .session_store()
+                .create_session_idempotent(
+                    session,
+                    &format!("run-session:{}", request.idempotency_key),
+                    &format!("run-session:{}", request.command_fingerprint),
+                )
+                .await?
         };
         let session_id = session.session_id.clone();
         let run_id = RunId::new();
         let mut run = RunRecord::new(
             session_id.clone(),
-            run_id.clone(),
+            run_id,
             session
                 .state
                 .conversation_id
@@ -195,139 +256,315 @@ impl RpcRuntimeCoordinator {
         run.restore_from_run_id
             .clone_from(&request.restore_from_run_id);
         run.trigger_type = Some("rpc".to_string());
-        run.status = RunStatus::Running;
+        run.status = RunStatus::Queued;
         run.metadata
             .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
-        let storage = self.storage.clone();
-        let _run = tokio::task::spawn_blocking(move || storage.begin_run(run))
-            .await
-            .map_err(|error| RpcHostError::Runtime(format!("storage task failed: {error}")))??;
-
-        let mut state = match request.restore_from_run_id.as_ref() {
-            Some(restore_run_id) => {
-                let storage = self.storage.clone();
-                let storage_session_id = session_id.clone();
-                let restore_run_id_value = restore_run_id.clone();
-                let restore_run_id_text = restore_run_id.as_str().to_string();
-                tokio::task::spawn_blocking(move || {
-                    storage.load_run_context(&storage_session_id, &restore_run_id_value)
-                })
+        let admission = self
+            .storage
+            .session_store()
+            .acquire_run_admission(AcquireRunAdmission {
+                run,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: (*self.host_instance_id).clone(),
+                admission_id: format!("admission_{}", uuid::Uuid::new_v4()),
+                lease_expires_at: chrono::Utc::now()
+                    + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default(),
+                idempotency_key: request.idempotency_key.clone(),
+                command_fingerprint: request.command_fingerprint.clone(),
+            })
+            .await?;
+        let run_id = admission.run.run_id.clone();
+        let target = admission.lease.target.clone();
+        if admission.idempotent_replay {
+            let status = self
+                .storage
+                .session_store()
+                .load_run(&session_id, &run_id)
                 .await
-                .map_err(|error| RpcHostError::Runtime(format!("storage task failed: {error}")))??
-                .ok_or_else(|| {
-                    RpcHostError::NotFound(format!(
-                        "run context {}:{}",
-                        session_id.as_str(),
-                        restore_run_id_text
-                    ))
-                })?
-            }
-            None => session.state,
-        };
-        state.session_id = Some(session_id.clone());
-        state.metadata.insert(
-            DURABLE_RUN_ID_METADATA_KEY.to_string(),
-            json!(run_id.as_str()),
-        );
-        state
-            .metadata
-            .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
+                .map_or(admission.run.status, |run| run.status);
+            return Ok(RpcStartedRun {
+                session_id,
+                run_id,
+                environment_attachments: request.environment_attachments,
+                admission_id: admission.lease.admission_id,
+                fencing_generation: admission.lease.fencing_generation,
+                status,
+                idempotent_replay: true,
+            });
+        }
 
-        let resolved_environment = resolve_rpc_environment(
-            &self.config.workspace_root,
-            session_id.as_str(),
-            &request.environment_attachments,
-        )?;
-        let session_store = Arc::new(self.storage.session_store());
-        let stream_archive = Arc::new(self.storage.stream_archive());
-        let replay_log = self.storage.replay_event_log();
-        let mut runtime = self
-            .catalog
-            .runtime_builder(&request.profile)?
-            .state(state)
-            .environment(resolved_environment.provider.clone())
-            .durable_session_id(session_id.clone())
-            .session_store(session_store)
-            .stream_archive(stream_archive)
-            .build();
-        let input = request.input.clone();
-        let mut handle = runtime
-            .try_stream_with_stream_options(
-                input.clone(),
-                AgentStreamOptions::new().drop_policy(AgentStreamDropPolicy::Backpressure),
-            )
-            .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let prepared: RpcHostResult<_> = async {
+            let mut state = match request.restore_from_run_id.as_ref() {
+                Some(restore_run_id) => {
+                    let storage = self.storage.clone();
+                    let storage_session_id = session_id.clone();
+                    let restore_run_id_value = restore_run_id.clone();
+                    let restore_run_id_text = restore_run_id.as_str().to_string();
+                    tokio::task::spawn_blocking(move || {
+                        storage.load_run_context(&storage_session_id, &restore_run_id_value)
+                    })
+                    .await
+                    .map_err(|error| {
+                        RpcHostError::Runtime(format!("storage task failed: {error}"))
+                    })??
+                    .ok_or_else(|| {
+                        RpcHostError::NotFound(format!(
+                            "run context {}:{}",
+                            session_id.as_str(),
+                            restore_run_id_text
+                        ))
+                    })?
+                }
+                None => session.state.clone(),
+            };
+            state.session_id = Some(session_id.clone());
+            state.metadata.insert(
+                DURABLE_RUN_ID_METADATA_KEY.to_string(),
+                json!(run_id.as_str()),
+            );
+            state
+                .metadata
+                .insert(RPC_PROFILE_METADATA_KEY.to_string(), json!(request.profile));
+
+            let resolved_environment = resolve_rpc_environment(
+                &self.config.workspace_root,
+                session_id.as_str(),
+                &request.environment_attachments,
+            )?;
+            let session_store = Arc::new(self.storage.session_store());
+            let stream_archive = Arc::new(self.storage.stream_archive());
+            let mut context = AgentContext::from_state(state);
+            if request.install_session_management {
+                let query_granted = self
+                    .catalog
+                    .grants_toolset(&request.profile, "agent_session_query");
+                let control_granted = self
+                    .catalog
+                    .grants_toolset(&request.profile, "agent_session_control");
+                let mut operations = BTreeSet::new();
+                if query_granted {
+                    operations.insert(AgentSessionOperation::Read);
+                }
+                if control_granted {
+                    operations.extend([
+                        AgentSessionOperation::Create,
+                        AgentSessionOperation::Update,
+                        AgentSessionOperation::Control,
+                        AgentSessionOperation::Delete,
+                    ]);
+                }
+                let scope = AgentSessionScope {
+                    namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                    owner_id: None,
+                    source_product: "rpc".to_string(),
+                    source_session_id: Some(session_id.clone()),
+                    source_run_id: Some(run_id.clone()),
+                    operations,
+                    allowed_session_ids: BTreeSet::new(),
+                    allow_self_query: true,
+                    allow_self_control: false,
+                    policy_fingerprint: format!("rpc-profile:{}:v1", request.profile),
+                    deadline: None,
+                    max_page_size: 50,
+                };
+                let adapter = Arc::new(RpcAgentSessionAdapter::new(
+                    self.storage.clone(),
+                    self.clone(),
+                    self.catalog.clone(),
+                    self.config.workspace_root.clone(),
+                ));
+                if query_granted {
+                    attach_agent_session_query(
+                        &mut context,
+                        AgentSessionQueryHandle::new(adapter.clone(), scope.clone()),
+                    );
+                }
+                if control_granted {
+                    attach_agent_session_control(
+                        &mut context,
+                        AgentSessionControlHandle::new(adapter, scope),
+                    );
+                }
+            }
+            let mut runtime = self
+                .catalog
+                .runtime_builder(&request.profile)?
+                .context(context)
+                .environment(resolved_environment.provider.clone())
+                .durable_session_id(session_id.clone())
+                .session_store(session_store)
+                .stream_archive(stream_archive)
+                .build();
+            let input = request.input.clone();
+            let handle = runtime
+                .try_stream_with_stream_options(
+                    input.clone(),
+                    AgentStreamOptions::new().drop_policy(AgentStreamDropPolicy::Backpressure),
+                )
+                .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+            Ok((runtime, input, handle, resolved_environment))
+        }
+        .await;
+        let (mut runtime, input, mut handle, resolved_environment) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = self
+                    .storage
+                    .session_store()
+                    .update_run_status(
+                        &session_id,
+                        &run_id,
+                        RunStatus::Failed,
+                        Some("runtime preparation failed".to_string()),
+                    )
+                    .await;
+                let _ = self
+                    .storage
+                    .session_store()
+                    .release_run_admission(&admission.lease)
+                    .await;
+                return Err(error);
+            }
+        };
         let control = handle.control_handle();
-        let notify = Arc::new(Notify::new());
-        self.environment_manager
+        if let Err(error) = self
+            .environment_manager
             .mark_run_started(run_id.as_str(), &resolved_environment.attachments)
-            .map_err(|error| RpcHostError::Invalid(error.message))?;
+        {
+            let _ = control.interrupt(Some("environment lease registration failed".to_string()));
+            let _ = runtime.finish_stream(input, handle).await;
+            let _ = self
+                .storage
+                .session_store()
+                .update_run_status(
+                    &session_id,
+                    &run_id,
+                    RunStatus::Failed,
+                    Some("environment lease registration failed".to_string()),
+                )
+                .await;
+            let _ = self
+                .storage
+                .session_store()
+                .release_run_admission(&admission.lease)
+                .await;
+            return Err(RpcHostError::Invalid(error.message));
+        }
+        let initial_status = RpcRunStatus {
+            session_id: session_id.as_str().to_string(),
+            run_id: run_id.as_str().to_string(),
+            status: "running".to_string(),
+            output_preview: None,
+            error: None,
+        };
+        let (status_tx, _status_rx) = watch::channel(initial_status);
         let active_run = ActiveRun {
-            status: RpcRunStatus {
-                session_id: session_id.as_str().to_string(),
-                run_id: run_id.as_str().to_string(),
-                status: "running".to_string(),
-                output_preview: None,
-                error: None,
-            },
+            status_tx,
             control,
+            lease: admission.lease.clone(),
             events: Vec::new(),
             next_display_sequence: 0,
             next_event_sequence: 0,
-            notify: Arc::clone(&notify),
             environment: Arc::clone(&resolved_environment.switchable),
             environment_attachments: resolved_environment.attachments.clone(),
             environment_binding_version: 1,
             environment_idempotency: HashMap::new(),
         };
-        if let Err(error) = self
-            .active
+        self.active
             .lock()
-            .map_err(active_registry_error)
-            .map(|mut registry| {
-                registry.insert(run_id.as_str().to_string(), active_run);
-            })
+            .map_err(active_registry_error)?
+            .insert(target.clone(), active_run);
+        if let Err(error) = self
+            .storage
+            .session_store()
+            .update_run_status(&session_id, &run_id, RunStatus::Running, None)
+            .await
         {
-            if let Err(cleanup) = self.environment_manager.mark_run_finished(run_id.as_str()) {
-                return Err(RpcHostError::Runtime(format!(
-                    "{error}; environment lease cleanup failed: {}",
-                    cleanup.message
-                )));
+            let removed = self
+                .active
+                .lock()
+                .map_err(active_registry_error)?
+                .remove(&target);
+            if let Some(removed) = removed {
+                let _ = removed
+                    .control
+                    .interrupt(Some("durable running transition failed".to_string()));
             }
-            return Err(error);
+            let _ = runtime.finish_stream(input, handle).await;
+            let _ = self.environment_manager.mark_run_finished(run_id.as_str());
+            let _ = self
+                .storage
+                .session_store()
+                .release_run_admission(&admission.lease)
+                .await;
+            return Err(error.into());
         }
 
         let active = Arc::clone(&self.active);
+        let terminal = Arc::clone(&self.terminal);
         let environment_manager = self.environment_manager.clone();
+        let replay_log = self.storage.replay_event_log();
+        let store = self.storage.session_store();
         let worker_session_id = session_id.clone();
         let worker_run_id = run_id.clone();
-        tokio::spawn(async move {
+        let worker_target = target.clone();
+        let admission_id = admission.lease.admission_id.clone();
+        let fencing_generation = admission.lease.fencing_generation;
+        let mut worker_lease = admission.lease;
+        let task = tokio::spawn(async move {
             let projection_context =
                 DisplayProjectionContext::new(worker_session_id.clone(), worker_run_id.clone());
-            while let Some(record) = handle.recv().await {
-                publish_record(
-                    &active,
-                    &replay_log,
-                    &worker_run_id,
-                    &projection_context,
-                    &record,
-                )
-                .await;
+            let mut heartbeat = tokio::time::interval(ACTIVE_LEASE_HEARTBEAT);
+            heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    record = handle.recv() => {
+                        let Some(record) = record else { break; };
+                        publish_record(
+                            &active,
+                            &replay_log,
+                            &worker_target,
+                            &projection_context,
+                            &record,
+                        )
+                        .await;
+                    }
+                    _ = heartbeat.tick() => {
+                        let expires = chrono::Utc::now()
+                            + chrono::Duration::from_std(ACTIVE_LEASE_TTL).unwrap_or_default();
+                        match store.heartbeat_run_admission(&worker_lease, expires).await {
+                            Ok(renewed) => worker_lease = renewed,
+                            Err(_) => {
+                                if let Ok(registry) = active.lock()
+                                    && let Some(run) = registry.get(&worker_target)
+                                {
+                                    let _ = run.control.interrupt(Some("admission lease lost".to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
             }
             let completion = runtime.finish_stream(input, handle).await;
-            let (status, output_preview, error) = match completion {
+            let (status, durable_status, output_preview, error) = match completion {
                 Ok(result) => (
                     run_status_name(result.result.state.status).to_string(),
+                    durable_status_from_runtime(result.result.state.status),
                     (!result.result.output.is_empty()).then_some(result.result.output),
                     None,
                 ),
                 Err(error) => {
-                    let status = if error.to_string().contains("interrupted") {
-                        "cancelled"
-                    } else {
-                        "failed"
-                    };
-                    (status.to_string(), None, Some(error.to_string()))
+                    let cancelled = error.to_string().contains("interrupted");
+                    (
+                        if cancelled { "cancelled" } else { "failed" }.to_string(),
+                        if cancelled {
+                            RunStatus::Cancelled
+                        } else {
+                            RunStatus::Failed
+                        },
+                        None,
+                        Some(error.to_string()),
+                    )
                 }
             };
             let marker = match status.as_str() {
@@ -344,12 +581,16 @@ impl RpcRuntimeCoordinator {
                         .unwrap_or_else(|| "agent run failed".to_string()),
                 },
             };
-            let terminal_event = if let Ok(mut registry) = active.lock()
-                && let Some(active_run) = registry.get_mut(worker_run_id.as_str())
+            let (terminal_event, mut final_status) = if let Ok(mut registry) = active.lock()
+                && let Some(active_run) = registry.get_mut(&worker_target)
             {
-                active_run.status.status = status;
-                active_run.status.output_preview = output_preview;
-                active_run.status.error = error;
+                let final_status = RpcRunStatus {
+                    session_id: worker_session_id.as_str().to_string(),
+                    run_id: worker_run_id.as_str().to_string(),
+                    status,
+                    output_preview: output_preview.clone(),
+                    error,
+                };
                 let event = ReplayEvent::new(
                     ReplayScope::run(worker_run_id.as_str()),
                     active_run.next_event_sequence,
@@ -357,63 +598,138 @@ impl RpcRuntimeCoordinator {
                 );
                 active_run.next_event_sequence = active_run.next_event_sequence.saturating_add(1);
                 active_run.events.push(event.clone());
-                active_run.notify.notify_waiters();
-                Some(event)
+                (Some(event), final_status)
             } else {
-                None
+                (
+                    None,
+                    RpcRunStatus {
+                        session_id: worker_session_id.as_str().to_string(),
+                        run_id: worker_run_id.as_str().to_string(),
+                        status,
+                        output_preview: output_preview.clone(),
+                        error,
+                    },
+                )
             };
             if let Some(event) = terminal_event {
                 let scope = event.scope.clone();
-                if let Err(persist_error) = replay_log.append(scope, event).await
-                    && let Ok(mut registry) = active.lock()
-                    && let Some(active_run) = registry.get_mut(worker_run_id.as_str())
-                {
-                    active_run.status.error.get_or_insert_with(|| {
+                if let Err(persist_error) = replay_log.append(scope, event).await {
+                    final_status.error.get_or_insert_with(|| {
                         format!("failed to persist terminal replay event: {persist_error}")
                     });
                 }
             }
-            if let Err(cleanup) = environment_manager.mark_run_finished(worker_run_id.as_str())
-                && let Ok(mut registry) = active.lock()
-                && let Some(active_run) = registry.get_mut(worker_run_id.as_str())
+            let terminal_durable = store
+                .update_run_status(
+                    &worker_session_id,
+                    &worker_run_id,
+                    durable_status,
+                    output_preview,
+                )
+                .await
+                .is_ok();
+            if terminal_durable {
+                let _ = store.release_run_admission(&worker_lease).await;
+            } else {
+                final_status.status = "failed".to_string();
+                final_status.error.get_or_insert_with(|| {
+                    "failed to persist terminal durable run status".to_string()
+                });
+            }
+            if let Ok(registry) = active.lock()
+                && let Some(active_run) = registry.get(&worker_target)
             {
-                active_run.status.error.get_or_insert_with(|| {
+                let _ = active_run.status_tx.send(final_status.clone());
+            }
+            if let Err(cleanup) = environment_manager.mark_run_finished(worker_run_id.as_str()) {
+                final_status.error.get_or_insert_with(|| {
                     format!("environment lease cleanup failed: {}", cleanup.message)
                 });
             }
+            let removed = active
+                .lock()
+                .ok()
+                .and_then(|mut registry| registry.remove(&worker_target));
+            if let Some(removed) = removed
+                && let Ok(mut cache) = terminal.lock()
+            {
+                cache.push_back(TerminalRun {
+                    target: worker_target.clone(),
+                    status: final_status,
+                    events: removed.events,
+                });
+                while cache.len() > TERMINAL_CACHE_LIMIT {
+                    cache.pop_front();
+                }
+            }
         });
+        self.tasks
+            .lock()
+            .map_err(active_registry_error)?
+            .insert(target, task);
 
         Ok(RpcStartedRun {
             session_id,
             run_id,
             environment_attachments: resolved_environment.attachments,
+            admission_id,
+            fencing_generation,
+            status: RunStatus::Running,
+            idempotent_replay: false,
         })
     }
 
-    /// Return the current active or durable status.
+    fn take_finished_tasks(&self) -> RpcHostResult<Vec<JoinHandle<()>>> {
+        let mut tasks = self.tasks.lock().map_err(active_registry_error)?;
+        let all = std::mem::take(&mut *tasks);
+        let (finished, running): (HashMap<_, _>, HashMap<_, _>) =
+            all.into_iter().partition(|(_, task)| task.is_finished());
+        *tasks = running;
+        drop(tasks);
+        Ok(finished.into_values().collect())
+    }
+
+    async fn reap_finished_tasks(&self) -> RpcHostResult<()> {
+        for task in self.take_finished_tasks()? {
+            task.await
+                .map_err(|error| RpcHostError::Runtime(format!("RPC run task failed: {error}")))?;
+        }
+        Ok(())
+    }
+
+    /// Return the current process-local, bounded terminal-cache, or durable status.
     ///
     /// # Errors
     ///
-    /// Returns an error when the active registry or durable store cannot be read.
+    /// Returns an error when the registry is unavailable or durable status cannot be loaded.
     pub async fn status(
         &self,
         session_id: &SessionId,
         run_id: &RunId,
     ) -> RpcHostResult<RpcRunStatus> {
-        let active_status = self
-            .active
-            .lock()
-            .map_err(active_registry_error)?
-            .get(run_id.as_str())
-            .map(|run| run.status.clone());
+        let target = Self::target(session_id, run_id);
+        let active_status = {
+            let registry = self.active.lock().map_err(active_registry_error)?;
+            let status = registry
+                .get(&target)
+                .map(|run| run.status_tx.borrow().clone());
+            drop(registry);
+            status
+        };
         if let Some(status) = active_status {
-            if status.session_id != session_id.as_str() {
-                return Err(RpcHostError::NotFound(format!(
-                    "run {}:{}",
-                    session_id.as_str(),
-                    run_id.as_str()
-                )));
-            }
+            return Ok(status);
+        }
+        let terminal_status = {
+            let cache = self.terminal.lock().map_err(active_registry_error)?;
+            let status = cache
+                .iter()
+                .rev()
+                .find(|run| run.target == target)
+                .map(|run| run.status.clone());
+            drop(cache);
+            status
+        };
+        if let Some(status) = terminal_status {
             return Ok(status);
         }
         let run = self
@@ -424,33 +740,36 @@ impl RpcRuntimeCoordinator {
         Ok(status_from_record(&run))
     }
 
-    /// Wait until a run is terminal or the optional timeout elapses.
+    /// Wait on a state-carrying watch channel, avoiding the check/notification lost-wakeup race.
     ///
     /// # Errors
     ///
-    /// Returns an error when status cannot be read or the wait times out.
+    /// Returns an error when status cannot be loaded or the requested timeout elapses.
     pub async fn await_terminal(
         &self,
         session_id: &SessionId,
         run_id: &RunId,
         timeout: Option<Duration>,
     ) -> RpcHostResult<RpcRunStatus> {
+        let target = Self::target(session_id, run_id);
+        let receiver = self
+            .active
+            .lock()
+            .map_err(active_registry_error)?
+            .get(&target)
+            .map(|run| run.status_tx.subscribe());
         let wait = async {
+            let Some(mut receiver) = receiver else {
+                return self.status(session_id, run_id).await;
+            };
             loop {
-                let status = self.status(session_id, run_id).await?;
+                let status = receiver.borrow().clone();
                 if status.terminal() {
                     return Ok(status);
                 }
-                let notify = self
-                    .active
-                    .lock()
-                    .map_err(active_registry_error)?
-                    .get(run_id.as_str())
-                    .map(|run| Arc::clone(&run.notify));
-                let Some(notify) = notify else {
-                    return Ok(status);
-                };
-                notify.notified().await;
+                if receiver.changed().await.is_err() {
+                    return self.status(session_id, run_id).await;
+                }
             }
         };
         match timeout {
@@ -461,55 +780,242 @@ impl RpcRuntimeCoordinator {
         }
     }
 
-    /// Queue a steering message through the SDK control handle.
+    /// Queue steering through the current composite target and matching fenced durable owner.
     ///
     /// # Errors
     ///
-    /// Returns an error when the run is not active or no longer accepts control input.
+    /// Returns an error when the target is not locally active or the fenced receipt is rejected.
     pub async fn steer(
         &self,
+        session_id: &SessionId,
         run_id: &RunId,
         steering_id: String,
         text: String,
     ) -> RpcHostResult<Value> {
-        let control = self.control(run_id)?;
+        self.steer_idempotent(session_id, run_id, steering_id, text, None)
+            .await
+    }
+
+    /// Queue steering with an explicit idempotency key for an agent-facing control command.
+    pub(crate) async fn steer_idempotent(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        steering_id: String,
+        text: String,
+        idempotency_key: Option<String>,
+    ) -> RpcHostResult<Value> {
+        let target = Self::target(session_id, run_id);
+        let idempotency_key = idempotency_key.unwrap_or_else(|| steering_id.clone());
+        let fingerprint = command_fingerprint("steer_session_run", &(&target, &steering_id, &text))
+            .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let store = self.storage.session_store();
+        let existing = store
+            .load_control_receipt(&target, &idempotency_key)
+            .await?;
+        if let Some(existing) = existing.as_ref()
+            && existing.command_fingerprint != fingerprint
+        {
+            return Err(starweaver_session::SessionStoreError::IdempotencyConflict(
+                idempotency_key,
+            )
+            .into());
+        }
+        if let Some(existing) = existing.as_ref()
+            && existing.state == "accepted"
+        {
+            return Ok(json!({
+                "sessionId": session_id.as_str(),
+                "runId": run_id.as_str(),
+                "steeringId": existing.operation_id,
+                "queued": true,
+                "receiptId": existing.receipt_id,
+                "fencingGeneration": existing.fencing_generation,
+                "idempotent": true,
+            }));
+        }
+        let (control, lease) = self.control(&target)?;
+        let reserved = if let Some(existing) = existing {
+            if existing.fencing_generation != lease.fencing_generation {
+                return Err(RpcHostError::NotFound(
+                    "control receipt belongs to a stale fencing generation".to_string(),
+                ));
+            }
+            existing
+        } else {
+            store
+                .reserve_control_receipt(DurableControlReceipt {
+                    receipt_id: format!("control_{}", uuid::Uuid::new_v4()),
+                    target: target.clone(),
+                    operation_id: steering_id.clone(),
+                    operation: "steer".to_string(),
+                    idempotency_key,
+                    command_fingerprint: fingerprint,
+                    fencing_generation: lease.fencing_generation,
+                    state: "reserved".to_string(),
+                    created_at: chrono::Utc::now(),
+                })
+                .await?
+        };
+        if reserved.state == "accepted" {
+            return Ok(json!({
+                "sessionId": session_id.as_str(),
+                "runId": run_id.as_str(),
+                "steeringId": reserved.operation_id,
+                "queued": true,
+                "receiptId": reserved.receipt_id,
+                "fencingGeneration": reserved.fencing_generation,
+                "idempotent": true,
+            }));
+        }
         let receipt = control
             .steer(steering_id, text)
             .await
             .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let accepted = self
+            .storage
+            .session_store()
+            .update_control_receipt_state(&reserved.receipt_id, "accepted")
+            .await?;
         Ok(json!({
+            "sessionId": session_id.as_str(),
             "runId": run_id.as_str(),
             "steeringId": receipt.id,
             "queued": receipt.pending_delivery,
+            "receiptId": accepted.receipt_id,
+            "fencingGeneration": accepted.fencing_generation,
+            "idempotent": false,
         }))
     }
 
-    /// Cooperatively cancel a live run.
+    /// Cooperatively interrupt the current composite target and fenced durable owner.
     ///
     /// # Errors
     ///
-    /// Returns an error when the run is not active in this RPC process.
-    pub fn cancel(&self, run_id: &RunId, reason: Option<String>) -> RpcHostResult<Value> {
-        let control = self.control(run_id)?;
+    /// Returns an error when the target is not locally active or the fenced receipt is rejected.
+    pub async fn cancel(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        reason: Option<String>,
+    ) -> RpcHostResult<Value> {
+        self.cancel_idempotent(
+            session_id,
+            run_id,
+            format!("interrupt_{}", uuid::Uuid::new_v4()),
+            reason,
+            None,
+        )
+        .await
+    }
+
+    /// Cooperatively interrupt with stable operation and idempotency identities.
+    pub(crate) async fn cancel_idempotent(
+        &self,
+        session_id: &SessionId,
+        run_id: &RunId,
+        operation_id: String,
+        reason: Option<String>,
+        idempotency_key: Option<String>,
+    ) -> RpcHostResult<Value> {
+        let target = Self::target(session_id, run_id);
+        let idempotency_key = idempotency_key.unwrap_or_else(|| operation_id.clone());
+        let fingerprint =
+            command_fingerprint("interrupt_session_run", &(&target, &operation_id, &reason))
+                .map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        let store = self.storage.session_store();
+        let existing = store
+            .load_control_receipt(&target, &idempotency_key)
+            .await?;
+        if let Some(existing) = existing.as_ref()
+            && existing.command_fingerprint != fingerprint
+        {
+            return Err(starweaver_session::SessionStoreError::IdempotencyConflict(
+                idempotency_key,
+            )
+            .into());
+        }
+        if let Some(existing) = existing.as_ref()
+            && existing.state == "accepted"
+        {
+            return Ok(json!({
+                "sessionId": session_id.as_str(),
+                "runId": run_id.as_str(),
+                "cancelled": true,
+                "controlId": existing.operation_id,
+                "receiptId": existing.receipt_id,
+                "fencingGeneration": existing.fencing_generation,
+                "idempotent": true,
+            }));
+        }
+        let (control, lease) = self.control(&target)?;
+        let reserved = if let Some(existing) = existing {
+            if existing.fencing_generation != lease.fencing_generation {
+                return Err(RpcHostError::NotFound(
+                    "control receipt belongs to a stale fencing generation".to_string(),
+                ));
+            }
+            existing
+        } else {
+            store
+                .reserve_control_receipt(DurableControlReceipt {
+                    receipt_id: format!("control_{}", uuid::Uuid::new_v4()),
+                    target,
+                    operation_id: operation_id.clone(),
+                    operation: "interrupt".to_string(),
+                    idempotency_key,
+                    command_fingerprint: fingerprint,
+                    fencing_generation: lease.fencing_generation,
+                    state: "reserved".to_string(),
+                    created_at: chrono::Utc::now(),
+                })
+                .await?
+        };
+        if reserved.state == "accepted" {
+            return Ok(json!({
+                "sessionId": session_id.as_str(),
+                "runId": run_id.as_str(),
+                "cancelled": true,
+                "controlId": reserved.operation_id,
+                "receiptId": reserved.receipt_id,
+                "fencingGeneration": reserved.fencing_generation,
+                "idempotent": true,
+            }));
+        }
         let receipt = control.interrupt(reason);
+        let accepted = self
+            .storage
+            .session_store()
+            .update_control_receipt_state(&reserved.receipt_id, "accepted")
+            .await?;
         Ok(json!({
+            "sessionId": session_id.as_str(),
             "runId": run_id.as_str(),
             "cancelled": true,
             "controlId": receipt.id,
+            "receiptId": accepted.receipt_id,
+            "fencingGeneration": accepted.fencing_generation,
+            "idempotent": false,
         }))
     }
 
-    /// Replay persisted events plus the process-local live tail.
+    /// Replay persisted events plus the process-local live or bounded terminal tail.
     ///
     /// # Errors
     ///
-    /// Returns an error when durable replay or the active registry cannot be read.
+    /// Returns an error when the composite run or replay storage cannot be loaded.
     pub async fn replay(
         &self,
+        session_id: &SessionId,
         run_id: &RunId,
         cursor: Option<ReplayCursor>,
         limit: Option<usize>,
     ) -> RpcHostResult<Vec<ReplayEvent>> {
+        self.storage
+            .session_store()
+            .load_run(session_id, run_id)
+            .await?;
+        let target = Self::target(session_id, run_id);
         let scope = ReplayScope::run(run_id.as_str());
         let mut events = self
             .storage
@@ -520,8 +1026,18 @@ impl RpcRuntimeCoordinator {
             .active
             .lock()
             .map_err(active_registry_error)?
-            .get(run_id.as_str())
-            .map_or_else(Vec::new, |run| run.events.clone());
+            .get(&target)
+            .map(|run| run.events.clone())
+            .or_else(|| {
+                self.terminal.lock().ok().and_then(|cache| {
+                    cache
+                        .iter()
+                        .rev()
+                        .find(|run| run.target == target)
+                        .map(|run| run.events.clone())
+                })
+            })
+            .unwrap_or_default();
         for event in live {
             if cursor
                 .as_ref()
@@ -540,6 +1056,64 @@ impl RpcRuntimeCoordinator {
         Ok(events)
     }
 
+    /// Reconcile expired owners during host startup. Durable running alone is not controllable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when durable admission reconciliation fails.
+    pub async fn reconcile_startup(&self) -> RpcHostResult<Vec<ManagedRunTarget>> {
+        self.storage
+            .session_store()
+            .reconcile_expired_run_admissions(LOCAL_SESSION_NAMESPACE, chrono::Utc::now())
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Stop admission, cooperatively interrupt live runs, and join owned finalizers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registry is unavailable or finalizers exceed the timeout.
+    pub async fn shutdown(&self, timeout: Duration) -> RpcHostResult<()> {
+        self.accepting.store(false, Ordering::Release);
+        let controls = self
+            .active
+            .lock()
+            .map_err(active_registry_error)?
+            .values()
+            .map(|run| run.control.clone())
+            .collect::<Vec<_>>();
+        for control in controls {
+            let _ = control.interrupt(Some("RPC host shutdown".to_string()));
+        }
+        let tasks = self
+            .tasks
+            .lock()
+            .map_err(active_registry_error)?
+            .drain()
+            .map(|(_, task)| task)
+            .collect::<Vec<_>>();
+        let join_all = async {
+            for task in tasks {
+                let _ = task.await;
+            }
+        };
+        tokio::time::timeout(timeout, join_all)
+            .await
+            .map_err(|_| RpcHostError::Runtime("RPC run shutdown timed out".to_string()))?;
+        Ok(())
+    }
+
+    pub(crate) fn is_controllable(&self, target: &ManagedRunTarget) -> bool {
+        self.active
+            .lock()
+            .is_ok_and(|registry| registry.contains_key(target))
+    }
+
+    fn target(session_id: &SessionId, run_id: &RunId) -> ManagedRunTarget {
+        ManagedRunTarget::new(LOCAL_SESSION_NAMESPACE, session_id.clone(), run_id.clone())
+    }
+
     #[allow(clippy::significant_drop_tightening)]
     pub(crate) fn active_run_session_id(&self, run_id: &str) -> Result<String, RpcError> {
         let registry = self
@@ -547,7 +1121,7 @@ impl RpcRuntimeCoordinator {
             .lock()
             .map_err(|error| RpcError::new(RUN_CONFLICT, error.to_string()))?;
         let run = active_mutable_run(&registry, run_id)?;
-        Ok(run.status.session_id.clone())
+        Ok(run.lease.target.session_id.as_str().to_string())
     }
 
     #[allow(clippy::significant_drop_tightening)]
@@ -624,7 +1198,7 @@ impl RpcRuntimeCoordinator {
             normalize_default_flags(&mut updated)?;
             let target = resolve_rpc_environment_target(
                 &self.config.workspace_root,
-                &run.status.session_id,
+                run.lease.target.session_id.as_str(),
                 &updated,
             )
             .map_err(RpcError::from)?;
@@ -749,7 +1323,7 @@ impl RpcRuntimeCoordinator {
                 updated,
                 run.environment_binding_version,
                 Arc::clone(&run.environment),
-                run.status.session_id.clone(),
+                run.lease.target.session_id.as_str().to_string(),
                 run.control.clone(),
             )
         };
@@ -860,46 +1434,66 @@ impl RpcRuntimeCoordinator {
         })
     }
 
-    fn control(&self, run_id: &RunId) -> RpcHostResult<AgentControlHandle> {
+    fn control(
+        &self,
+        target: &ManagedRunTarget,
+    ) -> RpcHostResult<(AgentControlHandle, RunAdmissionLease)> {
         self.active
             .lock()
             .map_err(active_registry_error)?
-            .get(run_id.as_str())
-            .map(|run| run.control.clone())
-            .ok_or_else(|| RpcHostError::NotFound(format!("active run {}", run_id.as_str())))
+            .get(target)
+            .map(|run| (run.control.clone(), run.lease.clone()))
+            .ok_or_else(|| {
+                RpcHostError::NotFound(format!(
+                    "active run {}:{}",
+                    target.session_id.as_str(),
+                    target.run_id.as_str()
+                ))
+            })
     }
 }
 
 fn active_mutable_run<'a>(
-    registry: &'a HashMap<String, ActiveRun>,
+    registry: &'a HashMap<ManagedRunTarget, ActiveRun>,
     run_id: &str,
 ) -> Result<&'a ActiveRun, RpcError> {
-    let run = registry
-        .get(run_id)
+    let mut matches = registry
+        .iter()
+        .filter(|(target, _)| target.run_id.as_str() == run_id)
+        .map(|(_, run)| run);
+    let run = matches
+        .next()
         .ok_or_else(|| RpcError::new(RUN_CONFLICT, format!("active run not found: {run_id}")))?;
-    if run.status.terminal() {
+    if matches.next().is_some() {
         return Err(RpcError::new(
             RUN_CONFLICT,
-            format!("run is no longer active: {run_id}"),
+            format!("ambiguous run id requires composite session identity: {run_id}"),
         ));
     }
     Ok(run)
 }
 
 fn active_mutable_run_mut<'a>(
-    registry: &'a mut HashMap<String, ActiveRun>,
+    registry: &'a mut HashMap<ManagedRunTarget, ActiveRun>,
     run_id: &str,
 ) -> Result<&'a mut ActiveRun, RpcError> {
-    let run = registry
-        .get_mut(run_id)
-        .ok_or_else(|| RpcError::new(RUN_CONFLICT, format!("active run not found: {run_id}")))?;
-    if run.status.terminal() {
+    let keys = registry
+        .keys()
+        .filter(|target| target.run_id.as_str() == run_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    if keys.len() > 1 {
         return Err(RpcError::new(
             RUN_CONFLICT,
-            format!("run is no longer active: {run_id}"),
+            format!("ambiguous run id requires composite session identity: {run_id}"),
         ));
     }
-    Ok(run)
+    let key = keys
+        .first()
+        .ok_or_else(|| RpcError::new(RUN_CONFLICT, format!("active run not found: {run_id}")))?;
+    registry
+        .get_mut(key)
+        .ok_or_else(|| RpcError::new(RUN_CONFLICT, format!("active run not found: {run_id}")))
 }
 
 fn ensure_expected_binding(current: u64, expected: Option<u64>) -> Result<(), RpcError> {
@@ -1039,8 +1633,8 @@ fn append_environment_lifecycle_event(
     let extra = extra.as_object().cloned().unwrap_or_default();
     let lifecycle = EnvironmentLifecycleEvent {
         operation_kind: operation_kind.to_string(),
-        session_id: run.status.session_id.clone(),
-        run_id: run.status.run_id.clone(),
+        session_id: run.lease.target.session_id.as_str().to_string(),
+        run_id: run.lease.target.run_id.as_str().to_string(),
         binding_version: run.environment_binding_version,
         environment: environment_summary(
             run.environment_binding_version,
@@ -1050,12 +1644,11 @@ fn append_environment_lifecycle_event(
         extra,
     };
     let event = ReplayEvent::new(
-        ReplayScope::run(&run.status.run_id),
+        ReplayScope::run(run.lease.target.run_id.as_str()),
         sequence,
         ReplayEventKind::EnvironmentLifecycle(Box::new(lifecycle)),
     );
     run.events.push(event.clone());
-    run.notify.notify_waiters();
     event
 }
 
@@ -1106,9 +1699,9 @@ fn attachment_id_from_result(result: &Value) -> &str {
 }
 
 async fn publish_record(
-    active: &Arc<Mutex<HashMap<String, ActiveRun>>>,
+    active: &Arc<Mutex<HashMap<ManagedRunTarget, ActiveRun>>>,
     replay_log: &starweaver_storage::SqliteReplayEventLog,
-    run_id: &RunId,
+    target: &ManagedRunTarget,
     projection_context: &DisplayProjectionContext,
     record: &AgentStreamRecord,
 ) {
@@ -1118,12 +1711,12 @@ async fn publish_record(
     if messages.is_empty() {
         return;
     }
-    let scope = ReplayScope::run(run_id.as_str());
+    let scope = ReplayScope::run(target.run_id.as_str());
     let events = {
         let Ok(mut registry) = active.lock() else {
             return;
         };
-        let Some(active_run) = registry.get_mut(run_id.as_str()) else {
+        let Some(active_run) = registry.get_mut(target) else {
             return;
         };
         let mut events = Vec::with_capacity(messages.len());
@@ -1136,18 +1729,18 @@ async fn publish_record(
             active_run.events.push(event.clone());
             events.push(event);
         }
-        active_run.notify.notify_waiters();
         events
     };
     for event in events {
         if let Err(error) = replay_log.append(scope.clone(), event).await
             && let Ok(mut registry) = active.lock()
-            && let Some(active_run) = registry.get_mut(run_id.as_str())
+            && let Some(active_run) = registry.get_mut(target)
         {
-            active_run
-                .status
+            let mut status = active_run.status_tx.borrow().clone();
+            status
                 .error
                 .get_or_insert_with(|| format!("failed to persist replay event: {error}"));
+            let _ = active_run.status_tx.send(status);
         }
     }
 }
@@ -1168,6 +1761,17 @@ const fn durable_run_status_name(status: RunStatus) -> &'static str {
 
 const fn run_status_name(status: starweaver_runtime::RunStatus) -> &'static str {
     status.as_str()
+}
+
+const fn durable_status_from_runtime(status: starweaver_runtime::RunStatus) -> RunStatus {
+    match status {
+        starweaver_runtime::RunStatus::Starting => RunStatus::Starting,
+        starweaver_runtime::RunStatus::Running => RunStatus::Running,
+        starweaver_runtime::RunStatus::Waiting => RunStatus::Waiting,
+        starweaver_runtime::RunStatus::Completed => RunStatus::Completed,
+        starweaver_runtime::RunStatus::Failed => RunStatus::Failed,
+        starweaver_runtime::RunStatus::Cancelled => RunStatus::Cancelled,
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1202,6 +1806,9 @@ mod tests {
                 restore_from_run_id: None,
                 profile: "default".to_string(),
                 environment_attachments: Vec::new(),
+                idempotency_key: "test-start".to_string(),
+                command_fingerprint: "test-start-v1".to_string(),
+                install_session_management: false,
             })
             .await
             .unwrap();
@@ -1215,5 +1822,105 @@ mod tests {
             .unwrap();
         assert_eq!(status.status, "completed", "{status:?}");
         assert_eq!(status.output_preview.as_deref(), Some("ok"));
+        assert!(!coordinator.is_controllable(&ManagedRunTarget::new(
+            LOCAL_SESSION_NAMESPACE,
+            started.session_id,
+            started.run_id,
+        )));
+    }
+
+    #[tokio::test]
+    async fn exact_start_retry_replays_receipt_and_conflicting_retry_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage,
+            EnvironmentAttachmentManager::new(),
+        );
+        let request = RpcRunRequest {
+            durable_input: vec![InputPart::text("hello")],
+            input: AgentInput::text("hello"),
+            session_id: None,
+            restore_from_run_id: None,
+            profile: "default".to_string(),
+            environment_attachments: Vec::new(),
+            idempotency_key: "same-start".to_string(),
+            command_fingerprint: "same-fingerprint".to_string(),
+            install_session_management: false,
+        };
+        let first = coordinator.start(request.clone()).await.unwrap();
+        coordinator
+            .await_terminal(
+                &first.session_id,
+                &first.run_id,
+                Some(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+        let replay = coordinator.start(request.clone()).await.unwrap();
+        assert_eq!(replay.session_id, first.session_id);
+        assert_eq!(replay.run_id, first.run_id);
+        assert_eq!(replay.admission_id, first.admission_id);
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.status, RunStatus::Completed);
+
+        let conflict = coordinator
+            .start(RpcRunRequest {
+                command_fingerprint: "different-fingerprint".to_string(),
+                ..request
+            })
+            .await
+            .unwrap_err();
+        assert!(conflict.to_string().contains("idempotency"));
+    }
+
+    #[tokio::test]
+    async fn startup_reconciliation_preserves_unexpired_foreign_lease() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = RpcConfig::for_tests(temp.path());
+        std::fs::create_dir_all(&config.workspace_root).unwrap();
+        let storage = SqliteStorage::open(&config.database_path).unwrap();
+        let session = storage
+            .create_session(Some("default".to_string()), None)
+            .unwrap();
+        let run = RunRecord::new(
+            session.session_id.clone(),
+            RunId::new(),
+            ConversationId::new(),
+        );
+        let receipt = storage
+            .session_store()
+            .acquire_run_admission(AcquireRunAdmission {
+                run,
+                namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+                host_instance_id: "still-live-foreign-host".to_string(),
+                admission_id: "foreign-admission".to_string(),
+                lease_expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                idempotency_key: "foreign-start".to_string(),
+                command_fingerprint: "foreign-command".to_string(),
+            })
+            .await
+            .unwrap();
+        let catalog = RpcAgentCatalog::new(config.clone()).unwrap();
+        let coordinator = RpcRuntimeCoordinator::new(
+            config,
+            catalog,
+            storage.clone(),
+            EnvironmentAttachmentManager::new(),
+        );
+        assert!(coordinator.reconcile_startup().await.unwrap().is_empty());
+        assert!(
+            storage
+                .session_store()
+                .load_run_admission(&receipt.lease.target)
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

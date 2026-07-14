@@ -37,6 +37,7 @@ use starweaver_model::{ModelAdapter, ModelProfile, ToolDefinition};
 use starweaver_runtime::Agent as RuntimeAgent;
 
 pub use bundles::{
+    AgentSessionControl, AgentSessionControlHandle, AgentSessionQuery, AgentSessionQueryHandle,
     DEFAULT_SHELL_REVIEW_PROMPT, EnvironmentContextCapability, EnvironmentHandle,
     HostMediaCapabilities, HostMediaUnderstandingClient, HostMediaUnderstandingClientHandle,
     HostScrapeClient, HostScrapeClientHandle, HostSearchClient, HostSearchClientHandle,
@@ -50,10 +51,12 @@ pub use bundles::{
     SkillReloadDecision, SkillReloadReason, SkillReloadReport, SkillReloadSchedule,
     SkillReloadScheduleState, SkillScanDiagnostic, SkillScanDiagnosticKind, SkillScanReport,
     SkillScheduledReloadResult, SkillSourceKind, SkillSourceScope, ToolProxyNamePrefixError,
-    ToolProxyToolset, attach_environment, attach_process_shell, attach_shell_review,
-    attach_shell_review_handle, context_tools, core_toolsets, dynamic_tool_proxy,
-    environment_toolsets, filesystem_tools, host_io_tools, namespaced_toolset,
-    parse_skill_markdown, process_shell_toolsets, shell_tools, skill_tools, task_tools,
+    ToolProxyToolset, agent_session_control_tools, agent_session_query_tools,
+    attach_agent_session_control, attach_agent_session_query, attach_environment,
+    attach_process_shell, attach_shell_review, attach_shell_review_handle, context_tools,
+    core_toolsets, dynamic_tool_proxy, environment_toolsets, filesystem_tools, host_io_tools,
+    namespaced_toolset, parse_skill_markdown, process_shell_toolsets, shell_tools, skill_tools,
+    task_tools,
 };
 pub use filters::{
     CacheFriendlyCompactCapability, DEFAULT_FILTER_ORDER, MediaUploadRequest, MediaUploader,
@@ -128,12 +131,19 @@ pub use starweaver_runtime::{
     model_request_stream, resolve_capability_order, tool_call,
 };
 pub use starweaver_session::{
-    ApprovalDecision, ApprovalRecord, ApprovalStatus, DeferredToolRecord, DeferredToolRequest,
-    DeferredToolRequests, DeferredToolResult, DeferredToolResults, ExecutionStatus,
-    InMemorySessionStore, InputPart, RunRecord, RunStatus as SessionRunStatus, SessionFilter,
-    SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore, SessionStoreError,
-    SessionStoreExecutor, SessionStoreResult, StreamCursorRef, ToolApprovalDecision,
-    ToolReturnRecordInput,
+    AcquireRunAdmission, AgentDisplayPage, AgentReplayQuery, AgentRunListQuery, AgentRunPage,
+    AgentRunView, AgentSessionControlError, AgentSessionControlErrorCode, AgentSessionInclude,
+    AgentSessionListQuery, AgentSessionOperation, AgentSessionPage, AgentSessionQueryError,
+    AgentSessionQueryErrorCode, AgentSessionScope, AgentSessionView, ApprovalDecision,
+    ApprovalRecord, ApprovalStatus, CreateManagedSession, DeferredToolRecord, DeferredToolRequest,
+    DeferredToolRequests, DeferredToolResult, DeferredToolResults, DeleteManagedSession,
+    DurableControlReceipt, ExecutionStatus, InMemorySessionStore, InputPart, InterruptManagedRun,
+    ManagedRunTarget, ManagedSessionPatch, ManagedSessionTarget, RunAdmissionLease,
+    RunAdmissionReceipt, RunControlReceipt, RunRecord, RunStartReceipt,
+    RunStatus as SessionRunStatus, SessionContinuationFence, SessionDeletionFence, SessionFilter,
+    SessionMutationReceipt, SessionRecord, SessionResumeSnapshot, SessionStatus, SessionStore,
+    SessionStoreError, SessionStoreExecutor, SessionStoreResult, StartManagedRun, SteerManagedRun,
+    StreamCursorRef, ToolApprovalDecision, ToolReturnRecordInput, UpdateManagedSession,
 };
 pub use starweaver_stream::{
     DefaultDisplayMessageProjector, DisplayMessage, DisplayMessageKind, DisplayMessageProjector,

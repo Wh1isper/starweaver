@@ -29,10 +29,11 @@ use uuid::Uuid;
 use crate::{
     RpcAgentCatalog, RpcConfig, RpcHostError, RpcRunRequest, RpcRuntimeCoordinator,
     environment_manager::EnvironmentAttachmentManager,
+    session_management::command_fingerprint,
     state::{read_current_session, write_current_session},
 };
 
-const MAX_HTTP_RUN_AWAIT: Duration = Duration::from_secs(30);
+const MAX_RUN_AWAIT: Duration = Duration::from_secs(30);
 
 async fn run_storage<T, F>(storage: SqliteStorage, operation: F) -> Result<T, RpcError>
 where
@@ -163,6 +164,7 @@ impl RpcService {
             None
         };
         let runtime = Runtime::new().map_err(|error| RpcHostError::Runtime(error.to_string()))?;
+        runtime.block_on(coordinator.reconcile_startup())?;
         Ok(Self {
             config,
             catalog,
@@ -203,7 +205,13 @@ impl RpcService {
     async fn dispatch(&self, method: &str, params: &Value) -> Result<Value, RpcError> {
         match method {
             "initialize" => self.initialize_result(params),
-            "shutdown" => Ok(json!({"status": "shutdown"})),
+            "shutdown" => {
+                self.coordinator
+                    .shutdown(Duration::from_secs(10))
+                    .await
+                    .map_err(rpc_error)?;
+                Ok(json!({"status": "shutdown"}))
+            }
             "diagnostics.get" => Ok(json!({
                 "sdk": starweaver_core::sdk_name(),
                 "version": env!("CARGO_PKG_VERSION"),
@@ -377,15 +385,9 @@ impl RpcService {
                     .get("timeoutMs")
                     .and_then(Value::as_u64)
                     .map(Duration::from_millis);
-                let timeout = if self.notifications == RpcNotificationMode::ReplayOnly {
-                    Some(
-                        requested
-                            .unwrap_or(MAX_HTTP_RUN_AWAIT)
-                            .min(MAX_HTTP_RUN_AWAIT),
-                    )
-                } else {
-                    requested
-                };
+                // Both stdio and HTTP prohibit unbounded blocking so a control connection cannot
+                // be held forever by run.await.
+                let timeout = Some(requested.unwrap_or(MAX_RUN_AWAIT).min(MAX_RUN_AWAIT));
                 let status = self
                     .coordinator
                     .await_terminal(&session_id, &run_id, timeout)
@@ -394,19 +396,21 @@ impl RpcService {
                 Ok(json!({"status": status}))
             }
             "run.cancel" => {
-                let run_id = RunId::from_string(required_string(params, "runId")?);
+                let (session_id, run_id) = run_identity(params)?;
                 self.coordinator
                     .cancel(
+                        &session_id,
                         &run_id,
                         params
                             .get("reason")
                             .and_then(Value::as_str)
                             .map(ToString::to_string),
                     )
+                    .await
                     .map_err(rpc_error)
             }
             "run.steer" => {
-                let run_id = RunId::from_string(required_string(params, "runId")?);
+                let (session_id, run_id) = run_identity(params)?;
                 let text = required_string(params, "text")?;
                 let steering_id = params
                     .get("steeringId")
@@ -416,7 +420,7 @@ impl RpcService {
                         ToString::to_string,
                     );
                 self.coordinator
-                    .steer(&run_id, steering_id, text)
+                    .steer(&session_id, &run_id, steering_id, text)
                     .await
                     .map_err(rpc_error)
             }
@@ -622,8 +626,9 @@ impl RpcService {
 
     async fn run_prompt(&self, params: &Value) -> Result<Value, RpcError> {
         let started = self.start_run_from_params(params).await?;
-        let timeout =
-            (self.notifications == RpcNotificationMode::ReplayOnly).then_some(MAX_HTTP_RUN_AWAIT);
+        // run.prompt is bounded on every transport; clients use run.start plus status/replay for
+        // long-lived work.
+        let timeout = Some(MAX_RUN_AWAIT);
         let status = self
             .coordinator
             .await_terminal(&started.session_id, &started.run_id, timeout)
@@ -644,6 +649,9 @@ impl RpcService {
         params: &Value,
     ) -> Result<crate::RpcStartedRun, RpcError> {
         let mut request = run_request(&self.catalog, params)?;
+        // HTTP/replay-only callers do not acquire model-visible mutation authority merely by
+        // selecting a profile. A future typed HTTP session-management scope can opt in.
+        request.install_session_management = self.notifications == RpcNotificationMode::Live;
         let refs = starweaver_rpc_core::environment_attachment_refs(params)?;
         let materialized = self
             .environment_manager
@@ -661,10 +669,14 @@ impl RpcService {
             (Ok(started), Ok(())) => Ok(started),
             (Err(error), Ok(())) => Err(error),
             (Ok(started), Err(cleanup)) => {
-                let _receipt = self.coordinator.cancel(
-                    &started.run_id,
-                    Some("environment lease reservation cleanup failed".to_string()),
-                );
+                let _receipt = self
+                    .coordinator
+                    .cancel(
+                        &started.session_id,
+                        &started.run_id,
+                        Some("environment lease reservation cleanup failed".to_string()),
+                    )
+                    .await;
                 Err(RpcError::new(
                     starweaver_rpc_core::SERVER_ERROR,
                     format!(
@@ -689,7 +701,7 @@ impl RpcService {
         let cursor = replay_cursor_from_params(params, scope)?;
         let events = self
             .coordinator
-            .replay(&run_id, cursor, None)
+            .replay(&session_id, &run_id, cursor, None)
             .await
             .map_err(rpc_error)?;
         let status = self
@@ -713,7 +725,7 @@ impl RpcService {
         let limit = optional_usize(params, "limit")?;
         let events = self
             .coordinator
-            .replay(&run_id, cursor.clone(), limit)
+            .replay(&session_id, &run_id, cursor.clone(), limit)
             .await
             .map_err(rpc_error)?;
         let next_sequence = events.last().map_or_else(
@@ -839,17 +851,35 @@ fn run_request(catalog: &RpcAgentCatalog, params: &Value) -> Result<RpcRunReques
         .unwrap_or_else(|| catalog.default_profile())
         .to_string();
     catalog.profile(&profile)?;
+    let session_id = optional_session_id(params, "sessionId");
+    let idempotency_key = params
+        .get("idempotencyKey")
+        .and_then(Value::as_str)
+        .map_or_else(|| format!("run_{}", Uuid::new_v4()), ToString::to_string);
+    let restore_from_run_id = params
+        .get("restoreFromRunId")
+        .or_else(|| params.get("runId"))
+        .and_then(Value::as_str)
+        .map(|value| RunId::from_string(value.to_string()));
+    let fingerprint_input = json!({
+        "sessionId": session_id,
+        "profile": profile,
+        "input": durable_input,
+        "restoreFromRunId": restore_from_run_id,
+        "environmentAttachments": params.get("environmentAttachments"),
+    });
+    let command_fingerprint = command_fingerprint("rpc_run_start", &fingerprint_input)
+        .map_err(|error| RpcError::new(INVALID_PARAMS, error.to_string()))?;
     Ok(RpcRunRequest {
         durable_input,
         input,
-        session_id: optional_session_id(params, "sessionId"),
-        restore_from_run_id: params
-            .get("restoreFromRunId")
-            .or_else(|| params.get("runId"))
-            .and_then(Value::as_str)
-            .map(|value| RunId::from_string(value.to_string())),
+        session_id,
+        restore_from_run_id,
         profile,
         environment_attachments: Vec::new(),
+        idempotency_key,
+        command_fingerprint,
+        install_session_management: false,
     })
 }
 

@@ -6,6 +6,8 @@ use starweaver_core::{RunId, SessionId};
 use starweaver_stream::AgentStreamRecord;
 
 use crate::{
+    AcquireRunAdmission, DurableControlReceipt, RunAdmissionLease, RunAdmissionReceipt,
+    SessionContinuationFence, UpdateManagedSession,
     approval::{ApprovalRecord, DeferredToolRecord},
     claim::HitlResumeClaim,
     error::{SessionStoreError, SessionStoreResult},
@@ -17,6 +19,12 @@ use crate::{
     resume::SessionResumeSnapshot,
     trace::{CompactRunTrace, CompactSessionTrace},
 };
+
+fn management_unsupported<T>() -> SessionStoreResult<T> {
+    Err(SessionStoreError::Failed(
+        "session store does not support agent session management".to_string(),
+    ))
+}
 
 /// Query filters for listing sessions.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -105,6 +113,121 @@ pub trait SessionStore: Send + Sync {
         Err(SessionStoreError::Failed(
             "session store does not support transactional stream publication".to_string(),
         ))
+    }
+
+    /// Atomically create a session and bind an idempotency key to a normalized fingerprint.
+    async fn create_session_idempotent(
+        &self,
+        _session: SessionRecord,
+        _idempotency_key: &str,
+        _command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        management_unsupported()
+    }
+
+    /// Apply an allowlisted session patch with expected-revision and idempotency checks.
+    async fn update_managed_session(
+        &self,
+        _command: UpdateManagedSession,
+        _command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        management_unsupported()
+    }
+
+    /// Acquire a deletion fence that blocks run, continuation, and delegation admission.
+    async fn acquire_session_deletion_fence(
+        &self,
+        _session_id: &SessionId,
+        _expected_revision: u64,
+        _fence_id: &str,
+        _requested_by: &str,
+        _idempotency_key: &str,
+        _command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        management_unsupported()
+    }
+
+    /// Complete a fenced session tombstone. This never purges retained evidence.
+    async fn tombstone_session(
+        &self,
+        _session_id: &SessionId,
+        _fence_id: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        management_unsupported()
+    }
+
+    /// Load the deletion/continuation fence used by async supervisors before side effects.
+    async fn session_continuation_fence(
+        &self,
+        _namespace_id: &str,
+        _session_id: &SessionId,
+    ) -> SessionStoreResult<SessionContinuationFence> {
+        management_unsupported()
+    }
+
+    /// Atomically persist a queued run and acquire the session's single active lease.
+    async fn acquire_run_admission(
+        &self,
+        _request: AcquireRunAdmission,
+    ) -> SessionStoreResult<RunAdmissionReceipt> {
+        management_unsupported()
+    }
+
+    /// Extend a lease only for its current host and fencing generation.
+    async fn heartbeat_run_admission(
+        &self,
+        _lease: &RunAdmissionLease,
+        _lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<RunAdmissionLease> {
+        management_unsupported()
+    }
+
+    /// Release a lease after terminal run durability; stale generations cannot release a new owner.
+    async fn release_run_admission(&self, _lease: &RunAdmissionLease) -> SessionStoreResult<()> {
+        management_unsupported()
+    }
+
+    /// Load durable admission truth for a composite target.
+    async fn load_run_admission(
+        &self,
+        _target: &crate::ManagedRunTarget,
+    ) -> SessionStoreResult<Option<RunAdmissionLease>> {
+        management_unsupported()
+    }
+
+    /// Deterministically terminalize expired active leases owned by prior host instances.
+    async fn reconcile_expired_run_admissions(
+        &self,
+        _namespace_id: &str,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<Vec<crate::ManagedRunTarget>> {
+        management_unsupported()
+    }
+
+    /// Load a durable control receipt by composite target and idempotency key.
+    async fn load_control_receipt(
+        &self,
+        _target: &crate::ManagedRunTarget,
+        _idempotency_key: &str,
+    ) -> SessionStoreResult<Option<DurableControlReceipt>> {
+        management_unsupported()
+    }
+
+    /// Reserve or replay a durable fenced control receipt.
+    async fn reserve_control_receipt(
+        &self,
+        _receipt: DurableControlReceipt,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        management_unsupported()
+    }
+
+    /// Record the final accepted/failed effect state for a reserved receipt.
+    async fn update_control_receipt_state(
+        &self,
+        _receipt_id: &str,
+        _state: &str,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        management_unsupported()
     }
 
     /// Save a session record.

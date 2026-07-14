@@ -1192,7 +1192,7 @@ mod tests {
             .expect("legacy full checkpoint");
 
         let applied = apply_sqlite_migrations(&mut connection).expect("migrate legacy database");
-        assert_eq!(applied.len(), 4);
+        assert_eq!(applied.len(), 5);
         assert_eq!(
             scalar_string(&connection, "SELECT record FROM session_records"),
             r#"{"kind":"legacy-session"}"#
@@ -1447,6 +1447,7 @@ mod tests {
                 "20260711_000002_namespaced_evidence_tables",
                 "20260711_000003_split_display_and_replay_families",
                 "20260712_000004_evidence_outbox_and_resume_claims",
+                "20260714_000005_agent_session_management",
             ]
         );
         let migrated_checkpoint = from_versioned_json::<AgentCheckpoint>(&scalar_string(
@@ -1608,6 +1609,7 @@ mod tests {
             vec![
                 "20260711_000003_split_display_and_replay_families",
                 "20260712_000004_evidence_outbox_and_resume_claims",
+                "20260714_000005_agent_session_management",
             ]
         );
         let moved = from_versioned_json::<ReplaySnapshot>(&scalar_string(

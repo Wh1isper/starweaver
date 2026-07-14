@@ -2546,10 +2546,12 @@ dependencies = [
 name = "starweaver-rpc"
 version = "0.7.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "clap",
  "serde",
  "serde_json",
+ "sha2",
  "starweaver-agent",
  "starweaver-context",
  "starweaver-core",

@@ -563,3 +563,125 @@ async fn session_store_executor_persists_runtime_checkpoints() {
         1
     );
 }
+
+#[tokio::test]
+async fn managed_admission_is_single_active_fenced_and_idempotent() {
+    let store = InMemorySessionStore::new();
+    let session_id = SessionId::from_string("managed-session");
+    store
+        .save_session(SessionRecord::new(session_id.clone()))
+        .await
+        .unwrap();
+    let request = |run_id: &str, key: &str| AcquireRunAdmission {
+        run: RunRecord::new(
+            session_id.clone(),
+            RunId::from_string(run_id),
+            ConversationId::new(),
+        ),
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        host_instance_id: "host-a".to_string(),
+        admission_id: format!("admission-{run_id}"),
+        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+        idempotency_key: key.to_string(),
+        command_fingerprint: format!("fingerprint-{run_id}"),
+    };
+    let first = store
+        .acquire_run_admission(request("run-a", "key-a"))
+        .await
+        .unwrap();
+    assert_eq!(first.lease.fencing_generation, 1);
+    let replay = store
+        .acquire_run_admission(request("run-a", "key-a"))
+        .await
+        .unwrap();
+    assert!(replay.idempotent_replay);
+    assert!(matches!(
+        store.acquire_run_admission(request("run-b", "key-b")).await,
+        Err(SessionStoreError::RunConflict(_))
+    ));
+    let control = DurableControlReceipt {
+        receipt_id: "control-a".to_string(),
+        target: first.lease.target.clone(),
+        operation_id: "steer-a".to_string(),
+        operation: "steer".to_string(),
+        idempotency_key: "control-key".to_string(),
+        command_fingerprint: "control-fingerprint".to_string(),
+        fencing_generation: first.lease.fencing_generation,
+        state: "reserved".to_string(),
+        created_at: chrono::Utc::now(),
+    };
+    store
+        .reserve_control_receipt(control.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .load_control_receipt(&control.target, &control.idempotency_key)
+            .await
+            .unwrap(),
+        Some(control.clone())
+    );
+    assert!(matches!(
+        store
+            .reserve_control_receipt(DurableControlReceipt {
+                command_fingerprint: "different-control".to_string(),
+                ..control
+            })
+            .await,
+        Err(SessionStoreError::IdempotencyConflict(_))
+    ));
+    store
+        .update_run_status(&session_id, &first.run.run_id, RunStatus::Completed, None)
+        .await
+        .unwrap();
+    store.release_run_admission(&first.lease).await.unwrap();
+    let second = store
+        .acquire_run_admission(request("run-b", "key-b"))
+        .await
+        .unwrap();
+    assert_eq!(second.lease.fencing_generation, 2);
+}
+
+#[tokio::test]
+async fn deletion_fence_blocks_continuations_and_new_admission() {
+    let store = InMemorySessionStore::new();
+    let session_id = SessionId::from_string("deleting-session");
+    let session = SessionRecord::new(session_id.clone());
+    let revision = session.revision;
+    store.save_session(session).await.unwrap();
+    let fenced = store
+        .acquire_session_deletion_fence(
+            &session_id,
+            revision,
+            "fence-1",
+            "owner-a",
+            "delete-key",
+            "delete-fingerprint",
+        )
+        .await
+        .unwrap();
+    assert!(fenced.deletion_fence.blocks_continuation());
+    let continuation = store
+        .session_continuation_fence(LOCAL_SESSION_NAMESPACE, &session_id)
+        .await
+        .unwrap();
+    assert!(!continuation.continuation_allowed);
+    let admission = AcquireRunAdmission {
+        run: RunRecord::new(session_id.clone(), RunId::new(), ConversationId::new()),
+        namespace_id: LOCAL_SESSION_NAMESPACE.to_string(),
+        host_instance_id: "host-a".to_string(),
+        admission_id: "admission-blocked".to_string(),
+        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+        idempotency_key: "start-blocked".to_string(),
+        command_fingerprint: "start-blocked-v1".to_string(),
+    };
+    assert!(matches!(
+        store.acquire_run_admission(admission).await,
+        Err(SessionStoreError::Conflict(_))
+    ));
+    let deleted = store
+        .tombstone_session(&session_id, "fence-1")
+        .await
+        .unwrap();
+    assert_eq!(deleted.status, SessionStatus::Deleted);
+}

@@ -11,6 +11,7 @@ use starweaver_session::{SessionStoreError, SessionStoreResult};
 use crate::{SqliteStorage, sqlite::SharedSqliteConnection};
 
 mod impl_store;
+mod management;
 pub mod records;
 mod trace_helpers;
 

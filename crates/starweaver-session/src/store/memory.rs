@@ -18,6 +18,9 @@ use starweaver_core::{RunId, RunLifecycle, SessionId};
 use starweaver_stream::AgentStreamRecord;
 
 use crate::{
+    AcquireRunAdmission, DurableControlReceipt, ManagedRunTarget, ManagedSessionTarget,
+    RunAdmissionLease, RunAdmissionReceipt, SessionContinuationFence, SessionDeletionFence,
+    UpdateManagedSession,
     approval::{ApprovalRecord, ApprovalStatus, DeferredToolRecord},
     claim::{HitlResumeClaim, HitlResumeClaimState},
     error::{SessionStoreError, SessionStoreResult},
@@ -51,6 +54,12 @@ struct StoreInner {
     evidence_digests: BTreeMap<(SessionId, RunId), String>,
     hitl_resume_claims: BTreeMap<(SessionId, RunId), HitlResumeClaim>,
     stream_publication_outbox: BTreeMap<String, PendingStreamPublication>,
+    session_idempotency: BTreeMap<(String, String), (String, SessionRecord)>,
+    run_admission_idempotency: BTreeMap<(String, String), (String, RunAdmissionReceipt)>,
+    run_admissions: BTreeMap<ManagedSessionTarget, RunAdmissionLease>,
+    admission_generations: BTreeMap<ManagedSessionTarget, u64>,
+    control_receipts: BTreeMap<String, DurableControlReceipt>,
+    control_idempotency: BTreeMap<(ManagedRunTarget, String), String>,
 }
 
 impl InMemorySessionStore {
@@ -380,6 +389,7 @@ fn finalize_staged_evidence(
     Ok((inner.clone(), committed))
 }
 
+#[allow(clippy::too_many_lines)]
 #[async_trait]
 impl SessionStore for InMemorySessionStore {
     async fn commit_run_evidence(
@@ -551,6 +561,507 @@ impl SessionStore for InMemorySessionStore {
             inner.stream_publication_outbox.remove(publication_id);
         }
         Ok(())
+    }
+
+    async fn create_session_idempotent(
+        &self,
+        mut session: SessionRecord,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let key = (session.namespace_id.clone(), idempotency_key.to_string());
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        if let Some((fingerprint, existing)) = inner.session_idempotency.get(&key) {
+            if fingerprint == command_fingerprint {
+                return Ok(existing.clone());
+            }
+            return Err(SessionStoreError::IdempotencyConflict(
+                idempotency_key.to_string(),
+            ));
+        }
+        if inner.sessions.contains_key(&session.session_id) {
+            return Err(SessionStoreError::AlreadyExists(
+                session.session_id.as_str().to_string(),
+            ));
+        }
+        session.revision = session.revision.max(1);
+        session.updated_at = chrono::Utc::now();
+        inner
+            .sessions
+            .insert(session.session_id.clone(), session.clone());
+        inner
+            .session_idempotency
+            .insert(key, (command_fingerprint.to_string(), session.clone()));
+        Ok(session)
+    }
+
+    async fn update_managed_session(
+        &self,
+        command: UpdateManagedSession,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let namespace = inner
+            .sessions
+            .get(&command.session_id)
+            .ok_or_else(|| SessionStoreError::NotFound(command.session_id.as_str().to_string()))?
+            .namespace_id
+            .clone();
+        let idempotency_key = (namespace, command.idempotency_key.clone());
+        if let Some((fingerprint, existing)) = inner.session_idempotency.get(&idempotency_key) {
+            if fingerprint == command_fingerprint {
+                return Ok(existing.clone());
+            }
+            return Err(SessionStoreError::IdempotencyConflict(
+                command.idempotency_key,
+            ));
+        }
+        let session = inner
+            .sessions
+            .get_mut(&command.session_id)
+            .ok_or_else(|| SessionStoreError::NotFound(command.session_id.as_str().to_string()))?;
+        if session.revision != command.expected_revision {
+            return Err(SessionStoreError::Conflict(format!(
+                "expected revision {}, current {}",
+                command.expected_revision, session.revision
+            )));
+        }
+        if session.deletion_fence.blocks_continuation() || session.status == SessionStatus::Deleted
+        {
+            return Err(SessionStoreError::Conflict(
+                "session is deleting or deleted".to_string(),
+            ));
+        }
+        if let Some(title) = command.patch.title {
+            session.title = title.map(|value| value.chars().take(256).collect());
+        }
+        if let Some(profile) = command.patch.profile {
+            session.profile = profile;
+        }
+        if let Some(archived) = command.patch.archived {
+            session.status = if archived {
+                SessionStatus::Archived
+            } else {
+                SessionStatus::Active
+            };
+        }
+        for (key, value) in command.patch.metadata {
+            if value.is_null() {
+                session.metadata.remove(&key);
+            } else {
+                session.metadata.insert(key, value);
+            }
+        }
+        session.revision = session.revision.saturating_add(1);
+        session.updated_at = chrono::Utc::now();
+        let result = session.clone();
+        inner.session_idempotency.insert(
+            idempotency_key,
+            (command_fingerprint.to_string(), result.clone()),
+        );
+        Ok(result)
+    }
+
+    async fn acquire_session_deletion_fence(
+        &self,
+        session_id: &SessionId,
+        expected_revision: u64,
+        fence_id: &str,
+        requested_by: &str,
+        idempotency_key: &str,
+        command_fingerprint: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let namespace = inner
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?
+            .namespace_id
+            .clone();
+        let key = (namespace, idempotency_key.to_string());
+        if let Some((fingerprint, existing)) = inner.session_idempotency.get(&key) {
+            if fingerprint == command_fingerprint {
+                return Ok(existing.clone());
+            }
+            return Err(SessionStoreError::IdempotencyConflict(
+                idempotency_key.to_string(),
+            ));
+        }
+        let session = inner
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
+        if session.revision != expected_revision {
+            return Err(SessionStoreError::Conflict(format!(
+                "expected revision {expected_revision}, current {}",
+                session.revision
+            )));
+        }
+        if !matches!(session.deletion_fence, SessionDeletionFence::Stable) {
+            return Err(SessionStoreError::Conflict(
+                "session already has a deletion fence".to_string(),
+            ));
+        }
+        session.deletion_fence = SessionDeletionFence::Deleting {
+            fence_id: fence_id.to_string(),
+            expected_revision,
+            requested_by: requested_by.to_string(),
+            started_at: chrono::Utc::now(),
+        };
+        session.revision = session.revision.saturating_add(1);
+        session.updated_at = chrono::Utc::now();
+        let result = session.clone();
+        inner
+            .session_idempotency
+            .insert(key, (command_fingerprint.to_string(), result.clone()));
+        Ok(result)
+    }
+
+    async fn tombstone_session(
+        &self,
+        session_id: &SessionId,
+        fence_id: &str,
+    ) -> SessionStoreResult<SessionRecord> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        if inner
+            .runs
+            .values()
+            .any(|run| &run.session_id == session_id && run.status.is_active())
+        {
+            return Err(SessionStoreError::RunConflict(
+                "session still has an active run".to_string(),
+            ));
+        }
+        let session = inner
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
+        match &session.deletion_fence {
+            SessionDeletionFence::Deleted {
+                fence_id: current, ..
+            } if current == fence_id => {
+                return Ok(session.clone());
+            }
+            SessionDeletionFence::Deleting {
+                fence_id: current, ..
+            } if current == fence_id => {}
+            _ => {
+                return Err(SessionStoreError::Conflict(
+                    "deletion fence mismatch".to_string(),
+                ));
+            }
+        }
+        session.status = SessionStatus::Deleted;
+        session.active_run_id = None;
+        session.deletion_fence = SessionDeletionFence::Deleted {
+            fence_id: fence_id.to_string(),
+            deleted_at: chrono::Utc::now(),
+        };
+        session.revision = session.revision.saturating_add(1);
+        session.updated_at = chrono::Utc::now();
+        Ok(session.clone())
+    }
+
+    async fn session_continuation_fence(
+        &self,
+        namespace_id: &str,
+        session_id: &SessionId,
+    ) -> SessionStoreResult<SessionContinuationFence> {
+        let inner = self.inner.lock().map_err(store_failed)?;
+        let session = inner
+            .sessions
+            .get(session_id)
+            .filter(|session| session.namespace_id == namespace_id)
+            .ok_or_else(|| SessionStoreError::NotFound(session_id.as_str().to_string()))?;
+        let fence_id = match &session.deletion_fence {
+            SessionDeletionFence::Stable => None,
+            SessionDeletionFence::Deleting { fence_id, .. }
+            | SessionDeletionFence::Deleted { fence_id, .. } => Some(fence_id.clone()),
+        };
+        Ok(SessionContinuationFence {
+            target: ManagedSessionTarget::new(namespace_id, session_id.clone()),
+            revision: session.revision,
+            continuation_allowed: !session.deletion_fence.blocks_continuation()
+                && session.status != SessionStatus::Deleted,
+            fence_id,
+        })
+    }
+
+    async fn acquire_run_admission(
+        &self,
+        request: AcquireRunAdmission,
+    ) -> SessionStoreResult<RunAdmissionReceipt> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let idempotency_key = (
+            request.namespace_id.clone(),
+            request.idempotency_key.clone(),
+        );
+        if let Some((fingerprint, receipt)) = inner.run_admission_idempotency.get(&idempotency_key)
+        {
+            if fingerprint == &request.command_fingerprint {
+                let mut receipt = receipt.clone();
+                receipt.idempotent_replay = true;
+                return Ok(receipt);
+            }
+            return Err(SessionStoreError::IdempotencyConflict(
+                request.idempotency_key,
+            ));
+        }
+        let session_target =
+            ManagedSessionTarget::new(request.namespace_id.clone(), request.run.session_id.clone());
+        let now = chrono::Utc::now();
+        if let Some(active) = inner.run_admissions.get(&session_target).cloned() {
+            if !active.expired_at(now) {
+                return Err(SessionStoreError::RunConflict(format!(
+                    "session {} already has active run {}",
+                    request.run.session_id.as_str(),
+                    active.target.run_id.as_str()
+                )));
+            }
+            if let Some(run) = inner
+                .runs
+                .get_mut(&run_key(&active.target.session_id, &active.target.run_id))
+            {
+                run.status = RunStatus::Cancelled;
+                run.updated_at = now;
+            }
+            inner.run_admissions.remove(&session_target);
+        }
+        {
+            let session = inner.sessions.get(&request.run.session_id).ok_or_else(|| {
+                SessionStoreError::NotFound(request.run.session_id.as_str().to_string())
+            })?;
+            if session.namespace_id != request.namespace_id {
+                return Err(SessionStoreError::NotFound(
+                    request.run.session_id.as_str().to_string(),
+                ));
+            }
+            if session.status != SessionStatus::Active
+                || session.deletion_fence.blocks_continuation()
+            {
+                return Err(SessionStoreError::Conflict(
+                    "session cannot admit new work".to_string(),
+                ));
+            }
+        }
+        let mut run = request.run;
+        run.status = RunStatus::Queued;
+        if run.sequence_no == 0 {
+            run.sequence_no = inner
+                .runs
+                .values()
+                .filter(|current| current.session_id == run.session_id)
+                .map(|current| current.sequence_no)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+        }
+        run.updated_at = now;
+        let generation = inner
+            .admission_generations
+            .entry(session_target.clone())
+            .and_modify(|generation| *generation = generation.saturating_add(1))
+            .or_insert(1);
+        let lease = RunAdmissionLease {
+            target: ManagedRunTarget::new(
+                request.namespace_id,
+                run.session_id.clone(),
+                run.run_id.clone(),
+            ),
+            admission_id: request.admission_id,
+            host_instance_id: request.host_instance_id,
+            fencing_generation: *generation,
+            lease_expires_at: request.lease_expires_at,
+            heartbeat_at: now,
+            command_fingerprint: request.command_fingerprint.clone(),
+            idempotency_key: request.idempotency_key,
+        };
+        inner
+            .runs
+            .insert(run_key(&run.session_id, &run.run_id), run.clone());
+        let session = inner
+            .sessions
+            .get_mut(&run.session_id)
+            .ok_or_else(|| SessionStoreError::NotFound(run.session_id.as_str().to_string()))?;
+        session.head_run_id = Some(run.run_id.clone());
+        session.active_run_id = Some(run.run_id.clone());
+        session.revision = session.revision.saturating_add(1);
+        session.updated_at = now;
+        inner.run_admissions.insert(session_target, lease.clone());
+        let receipt = RunAdmissionReceipt {
+            run,
+            lease,
+            idempotent_replay: false,
+        };
+        inner.run_admission_idempotency.insert(
+            idempotency_key,
+            (request.command_fingerprint, receipt.clone()),
+        );
+        Ok(receipt)
+    }
+
+    async fn heartbeat_run_admission(
+        &self,
+        lease: &RunAdmissionLease,
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<RunAdmissionLease> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let key = ManagedSessionTarget::new(
+            lease.target.namespace_id.clone(),
+            lease.target.session_id.clone(),
+        );
+        let current = inner
+            .run_admissions
+            .get_mut(&key)
+            .ok_or_else(|| SessionStoreError::NotFound(lease.admission_id.clone()))?;
+        if current.host_instance_id != lease.host_instance_id
+            || current.fencing_generation != lease.fencing_generation
+            || current.target != lease.target
+        {
+            return Err(SessionStoreError::Conflict(
+                "stale admission owner".to_string(),
+            ));
+        }
+        current.heartbeat_at = chrono::Utc::now();
+        current.lease_expires_at = lease_expires_at;
+        Ok(current.clone())
+    }
+
+    async fn release_run_admission(&self, lease: &RunAdmissionLease) -> SessionStoreResult<()> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let key = ManagedSessionTarget::new(
+            lease.target.namespace_id.clone(),
+            lease.target.session_id.clone(),
+        );
+        if let Some(current) = inner.run_admissions.get(&key) {
+            if current.host_instance_id != lease.host_instance_id
+                || current.fencing_generation != lease.fencing_generation
+                || current.target != lease.target
+            {
+                return Err(SessionStoreError::Conflict(
+                    "stale admission owner".to_string(),
+                ));
+            }
+            inner.run_admissions.remove(&key);
+        }
+        Ok(())
+    }
+
+    async fn load_run_admission(
+        &self,
+        target: &ManagedRunTarget,
+    ) -> SessionStoreResult<Option<RunAdmissionLease>> {
+        let inner = self.inner.lock().map_err(store_failed)?;
+        Ok(inner
+            .run_admissions
+            .get(&ManagedSessionTarget::new(
+                target.namespace_id.clone(),
+                target.session_id.clone(),
+            ))
+            .filter(|lease| &lease.target == target)
+            .cloned())
+    }
+
+    async fn reconcile_expired_run_admissions(
+        &self,
+        namespace_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> SessionStoreResult<Vec<ManagedRunTarget>> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let expired = inner
+            .run_admissions
+            .iter()
+            .filter(|(session, lease)| {
+                session.namespace_id == namespace_id && lease.expired_at(now)
+            })
+            .map(|(session, lease)| (session.clone(), lease.target.clone()))
+            .collect::<Vec<_>>();
+        for (session_target, target) in &expired {
+            if let Some(run) = inner
+                .runs
+                .get_mut(&run_key(&target.session_id, &target.run_id))
+                && run.status.is_active()
+            {
+                run.status = RunStatus::Cancelled;
+                run.output_preview = Some("interrupted after host lease expired".to_string());
+                run.updated_at = now;
+            }
+            if let Some(session) = inner.sessions.get_mut(&target.session_id) {
+                if session.active_run_id.as_ref() == Some(&target.run_id) {
+                    session.active_run_id = None;
+                }
+                session.revision = session.revision.saturating_add(1);
+                session.updated_at = now;
+            }
+            inner.run_admissions.remove(session_target);
+        }
+        Ok(expired.into_iter().map(|(_, target)| target).collect())
+    }
+
+    async fn load_control_receipt(
+        &self,
+        target: &ManagedRunTarget,
+        idempotency_key: &str,
+    ) -> SessionStoreResult<Option<DurableControlReceipt>> {
+        let inner = self.inner.lock().map_err(store_failed)?;
+        let key = (target.clone(), idempotency_key.to_string());
+        Ok(inner
+            .control_idempotency
+            .get(&key)
+            .and_then(|receipt_id| inner.control_receipts.get(receipt_id))
+            .cloned())
+    }
+
+    async fn reserve_control_receipt(
+        &self,
+        receipt: DurableControlReceipt,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let key = (receipt.target.clone(), receipt.idempotency_key.clone());
+        if let Some(receipt_id) = inner.control_idempotency.get(&key)
+            && let Some(existing) = inner.control_receipts.get(receipt_id)
+        {
+            if existing.command_fingerprint == receipt.command_fingerprint {
+                return Ok(existing.clone());
+            }
+            return Err(SessionStoreError::IdempotencyConflict(
+                receipt.idempotency_key,
+            ));
+        }
+        let session_key = ManagedSessionTarget::new(
+            receipt.target.namespace_id.clone(),
+            receipt.target.session_id.clone(),
+        );
+        let lease = inner.run_admissions.get(&session_key).ok_or_else(|| {
+            SessionStoreError::Conflict("run has no active owner lease".to_string())
+        })?;
+        if lease.target != receipt.target || lease.fencing_generation != receipt.fencing_generation
+        {
+            return Err(SessionStoreError::Conflict(
+                "stale control generation".to_string(),
+            ));
+        }
+        inner
+            .control_idempotency
+            .insert(key, receipt.receipt_id.clone());
+        inner
+            .control_receipts
+            .insert(receipt.receipt_id.clone(), receipt.clone());
+        Ok(receipt)
+    }
+
+    async fn update_control_receipt_state(
+        &self,
+        receipt_id: &str,
+        state: &str,
+    ) -> SessionStoreResult<DurableControlReceipt> {
+        let mut inner = self.inner.lock().map_err(store_failed)?;
+        let receipt = inner
+            .control_receipts
+            .get_mut(receipt_id)
+            .ok_or_else(|| SessionStoreError::NotFound(receipt_id.to_string()))?;
+        receipt.state = state.to_string();
+        Ok(receipt.clone())
     }
 
     async fn save_session(&self, session: SessionRecord) -> SessionStoreResult<()> {
