@@ -813,8 +813,8 @@ impl SubagentRegistry {
                                 subagent_name: subagent_name.clone(),
                                 linked_task_id,
                                 prompt: arguments.prompt.clone(),
-                                parent_session_id: parent_context.session_id.clone(),
-                                parent_run_id: parent_context.run_id.clone(),
+                                parent_session_id: durable_parent_session_id(&parent_context),
+                                parent_run_id: durable_parent_run_id(&parent_context),
                                 is_resume,
                             })
                             .map_err(|error| background_tool_error(&tool_name, &error))?;
@@ -1746,6 +1746,25 @@ fn background_tool_error(tool_name: &str, error: &BackgroundSubagentError) -> To
         tool: tool_name.to_string(),
         message: error.to_string(),
     }
+}
+
+fn durable_parent_session_id(context: &AgentContext) -> Option<starweaver_core::SessionId> {
+    context
+        .metadata
+        .get("starweaver.durable_session_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(starweaver_core::SessionId::from_string)
+}
+
+fn durable_parent_run_id(context: &AgentContext) -> Option<starweaver_core::RunId> {
+    context
+        .metadata
+        .get("starweaver.durable_run_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(starweaver_core::RunId::from_string)
+        .or_else(|| context.run_id.clone())
 }
 
 fn validate_linked_task(
