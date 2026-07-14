@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap, VecDeque},
     env,
     io::IsTerminal as _,
     sync::mpsc,
@@ -203,19 +203,22 @@ impl CliService {
         };
         let mut active_run: Option<ActiveTuiRun> = None;
         let mut queued_prompt: Option<(PromptInput, String, Option<GoalCommandOptions>)> = None;
-        let mut pending_background_wake = false;
-        let mut suppress_background_wake = false;
+        let mut pending_background_wakes = HashMap::<String, VecDeque<String>>::new();
+        let mut suppressed_background_sessions = BTreeSet::<String>::new();
         let mut persisted_profile = state.profile.clone();
         let mut persisted_render_mode = initial_render_mode;
         let mut dirty = true;
         let now = Instant::now();
         let mut last_render = now.checked_sub(TUI_FRAME_INTERVAL).unwrap_or(now);
         loop {
-            for completion in coordinator.take_background_completions() {
-                if active_run.is_some()
-                    || state.session_id.as_deref() == Some(completion.session_id.as_str())
-                {
-                    pending_background_wake = true;
+            if let Some(session_id) = state.session_id.as_deref() {
+                for completion in coordinator.take_background_completions(session_id) {
+                    let attempts = pending_background_wakes
+                        .entry(completion.session_id)
+                        .or_default();
+                    if !attempts.contains(&completion.attempt_id) {
+                        attempts.push_back(completion.attempt_id);
+                    }
                 }
             }
             while let Some(run) = active_run.as_mut() {
@@ -228,7 +231,7 @@ impl CliService {
                         let was_cancelled = completed.status == "cancelled";
                         let failed = completed.status == "failed";
                         if was_cancelled {
-                            suppress_background_wake = true;
+                            suppressed_background_sessions.insert(completed.session_id.clone());
                             state.session_id = Some(completed.session_id.clone());
                             state.cancel_run("cancelled by user");
                         } else if failed {
@@ -244,7 +247,9 @@ impl CliService {
                             && !failed
                             && let Some((prompt, display_prompt, goal)) = queued_prompt.take()
                         {
-                            pending_background_wake = false;
+                            if let Some(session_id) = state.session_id.as_ref() {
+                                pending_background_wakes.remove(session_id);
+                            }
                             state.begin_run(&display_prompt);
                             active_run = Some(spawn_tui_run(
                                 &self.config,
@@ -255,6 +260,7 @@ impl CliService {
                                 prompt,
                                 Some(state.profile.clone()),
                                 goal,
+                                None,
                             ));
                         }
                         break;
@@ -276,23 +282,30 @@ impl CliService {
             }
 
             if active_run.is_none()
-                && pending_background_wake
-                && !suppress_background_wake
-                && state.session_id.is_some()
+                && let Some(session_id) = state.session_id.clone()
+                && !suppressed_background_sessions.contains(&session_id)
             {
-                pending_background_wake = false;
-                state.begin_background_continuation();
-                active_run = Some(spawn_tui_run(
-                    &self.config,
-                    coordinator.clone(),
-                    command,
-                    state.session_id.clone(),
-                    Some(state.session_affinity_id.clone()),
-                    PromptInput::text(""),
-                    Some(state.profile.clone()),
-                    None,
-                ));
-                dirty = true;
+                let next_attempt = pending_background_wakes
+                    .get_mut(&session_id)
+                    .and_then(VecDeque::pop_front)
+                    .filter(|attempt_id| {
+                        coordinator.background_completion_is_undelivered(&session_id, attempt_id)
+                    });
+                if let Some(attempt_id) = next_attempt {
+                    state.begin_background_continuation();
+                    active_run = Some(spawn_tui_run(
+                        &self.config,
+                        coordinator.clone(),
+                        command,
+                        Some(session_id),
+                        Some(state.session_affinity_id.clone()),
+                        PromptInput::text(""),
+                        Some(state.profile.clone()),
+                        None,
+                        Some(attempt_id),
+                    ));
+                    dirty = true;
+                }
             }
 
             if dirty && last_render.elapsed() >= TUI_FRAME_INTERVAL {
@@ -412,8 +425,10 @@ impl CliService {
                         dirty = true;
                         continue;
                     }
-                    suppress_background_wake = false;
-                    pending_background_wake = false;
+                    if let Some(session_id) = state.session_id.as_ref() {
+                        suppressed_background_sessions.remove(session_id);
+                        pending_background_wakes.remove(session_id);
+                    }
                     state.begin_run(&display_prompt);
                     active_run = Some(spawn_tui_run(
                         &self.config,
@@ -424,6 +439,7 @@ impl CliService {
                         prompt,
                         Some(state.profile.clone()),
                         goal,
+                        None,
                     ));
                     dirty = true;
                 }
@@ -450,6 +466,7 @@ fn spawn_tui_run(
     prompt_input: PromptInput,
     profile: Option<String>,
     goal: Option<GoalCommandOptions>,
+    background_attempt_id: Option<String>,
 ) -> ActiveTuiRun {
     let command = command.clone();
     let (ui_sender, receiver) = mpsc::channel::<TuiRunMessage>();
@@ -485,7 +502,11 @@ fn spawn_tui_run(
         session_affinity_id,
         environment_attachments,
     };
-    let started = match coordinator.start_run_with_raw(run_command, Some(prompt_input)) {
+    let started = match coordinator.start_run_with_raw(
+        run_command,
+        Some(prompt_input),
+        background_attempt_id,
+    ) {
         Ok(started) => started,
         Err(error) => {
             let _ = ui_sender.send(TuiRunMessage::Failed(error.to_string()));

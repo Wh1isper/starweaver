@@ -747,14 +747,13 @@ impl AgentBuilder {
             if subagent_delegation_mode.exposes_blocking_delegate() {
                 tools.insert(subagents.delegate_tool());
             }
-            if subagent_delegation_mode.exposes_async_delegate() {
-                tools.insert(subagents.hidden_delegate_backend_tool());
-                if let Some(monitor) = &background_subagents {
-                    tools.insert(subagents.async_delegate_tool(monitor.clone()));
-                    tools.insert(subagents.steer_subagent_tool(monitor.clone()));
-                    tools.insert(subagents.cancel_subagent_tool(monitor.clone()));
-                    tools.insert(subagents.wait_subagent_tool(monitor.clone()));
-                }
+            if subagent_delegation_mode.exposes_async_delegate()
+                && let Some(monitor) = &background_subagents
+            {
+                tools.insert(subagents.async_delegate_tool(monitor.clone()));
+                tools.insert(subagents.steer_subagent_tool(monitor.clone()));
+                tools.insert(subagents.cancel_subagent_tool(monitor.clone()));
+                tools.insert(subagents.wait_subagent_tool(monitor.clone()));
             }
             if subagent_delegation_mode.exposes_spawn_delegate()
                 && let Some(monitor) = &background_subagents

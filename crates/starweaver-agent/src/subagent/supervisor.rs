@@ -12,7 +12,7 @@ use starweaver_context::{AgentContext, AgentEvent, AgentInfo, BusMessage};
 use starweaver_core::{CancellationToken, RunId, SessionId, SubagentAttemptId, TaskId};
 use starweaver_model::ModelMessage;
 use starweaver_usage::{Usage, UsageSnapshotEntry};
-use tokio::task::AbortHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 const DEFAULT_MAX_ACTIVE_ATTEMPTS: usize = 8;
 const DEFAULT_MAX_RETAINED_RESULTS: usize = 128;
@@ -21,6 +21,8 @@ const DEFAULT_MAX_STEERING_BYTES: usize = 16 * 1024;
 const DEFAULT_MAX_PROMPT_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_CANCELLATION_REASON_BYTES: usize = 1024;
 const DEFAULT_MAX_RESULT_BYTES: usize = 64 * 1024;
+const DEFAULT_MAX_OPERATION_ID_BYTES: usize = 256;
+const DEFAULT_MAX_OPERATION_IDS: usize = 256;
 const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// Host limits applied by one background-subagent supervisor scope.
@@ -40,6 +42,10 @@ pub struct BackgroundSubagentLimits {
     pub max_cancellation_reason_bytes: usize,
     /// Maximum successful result/error bytes retained inline.
     pub max_inline_result_bytes: usize,
+    /// Maximum UTF-8 bytes accepted in an idempotency operation id.
+    pub max_operation_id_bytes: usize,
+    /// Maximum steering/cancellation operation ids retained per attempt.
+    pub max_operation_ids_per_attempt: usize,
     /// Cooperative cancellation grace period before task abort.
     pub cancellation_grace: Duration,
     /// Grace period used by default shutdown.
@@ -56,6 +62,8 @@ impl Default for BackgroundSubagentLimits {
             max_prompt_bytes: DEFAULT_MAX_PROMPT_BYTES,
             max_cancellation_reason_bytes: DEFAULT_MAX_CANCELLATION_REASON_BYTES,
             max_inline_result_bytes: DEFAULT_MAX_RESULT_BYTES,
+            max_operation_id_bytes: DEFAULT_MAX_OPERATION_ID_BYTES,
+            max_operation_ids_per_attempt: DEFAULT_MAX_OPERATION_IDS,
             cancellation_grace: DEFAULT_SHUTDOWN_GRACE,
             shutdown_grace: DEFAULT_SHUTDOWN_GRACE,
         }
@@ -218,6 +226,9 @@ pub struct BackgroundSubagentTaskResult {
     /// Current delivery claim, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_claim: Option<BackgroundSubagentDeliveryClaim>,
+    /// Claim id that completed delivery, retained for idempotent acknowledgement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_claim_id: Option<String>,
     /// Content-retention state.
     pub retention_status: BackgroundSubagentRetentionStatus,
     /// Completion timestamp.
@@ -254,6 +265,7 @@ impl BackgroundSubagentTaskResult {
             cancellation_reason: None,
             delivery_status: BackgroundSubagentDeliveryStatus::Undelivered,
             delivery_claim: None,
+            delivered_claim_id: None,
             retention_status: BackgroundSubagentRetentionStatus::Inline,
             completed_at: Utc::now(),
         }
@@ -316,6 +328,12 @@ pub enum BackgroundSubagentError {
     /// Steering queue is full.
     #[error("background subagent steering queue is full")]
     SteeringQueueFull,
+    /// Caller-supplied idempotency operation id exceeded configured bounds.
+    #[error("background subagent operation id exceeds configured bounds")]
+    OperationIdTooLarge,
+    /// Per-attempt idempotency history is full.
+    #[error("background subagent operation history is full")]
+    OperationHistoryFull,
     /// Delivery is already claimed by another consumer.
     #[error("background subagent result delivery is already claimed")]
     DeliveryClaimed,
@@ -353,6 +371,7 @@ struct ActiveAttempt {
     steering_ids: BTreeSet<String>,
     cancellation_ids: BTreeSet<String>,
     cancellation_reason: Option<String>,
+    cancellation_timer_started: bool,
 }
 
 #[derive(Clone)]
@@ -427,11 +446,12 @@ impl BackgroundSubagentContextDelta {
     }
 
     fn apply(&self, attempt_id: &SubagentAttemptId, target: &mut AgentContext) {
-        let marker = format!(
-            "starweaver.background_context_delta.{}",
-            attempt_id.as_str()
-        );
-        if target.metadata.contains_key(&marker) {
+        let operation_id = attempt_id.as_str().to_string();
+        if target
+            .tools
+            .background_context_delta_ids
+            .contains(&operation_id)
+        {
             return;
         }
         target.usage.add_assign(&self.usage);
@@ -442,25 +462,22 @@ impl BackgroundSubagentContextDelta {
                 .or_insert_with(|| entry.clone());
         }
         for (agent_id, info) in &self.agent_registry {
-            target
-                .agent_registry
-                .entry(agent_id.clone())
-                .or_insert_with(|| info.clone());
+            target.agent_registry.insert(agent_id.clone(), info.clone());
         }
         for (agent_id, history) in &self.subagent_history {
-            let target_history = target.subagent_history.entry(agent_id.clone()).or_default();
-            for message in history {
-                if !target_history.contains(message) {
-                    target_history.push(message.clone());
-                }
-            }
+            target
+                .subagent_history
+                .entry(agent_id.clone())
+                .or_default()
+                .extend(history.iter().cloned());
         }
         for event in &self.events {
-            if !target.events.events().contains(event) {
-                target.events.publish(event.clone());
-            }
+            target.events.publish(event.clone());
         }
-        target.metadata.insert(marker, serde_json::json!(true));
+        target
+            .tools
+            .background_context_delta_ids
+            .insert(operation_id);
     }
 }
 
@@ -468,6 +485,12 @@ impl BackgroundSubagentContextDelta {
 struct PendingResultMessage {
     attempt_id: SubagentAttemptId,
     message: BusMessage,
+}
+
+pub(super) struct ClaimedBackgroundSubagentMessage {
+    pub attempt_id: SubagentAttemptId,
+    pub claim_id: String,
+    pub message: BusMessage,
 }
 
 pub(super) struct BackgroundSubagentAcceptance {
@@ -493,6 +516,7 @@ struct BackgroundSubagentState {
     waiting_attempts: BTreeSet<SubagentAttemptId>,
     context_deltas: BTreeMap<SubagentAttemptId, BackgroundSubagentContextDelta>,
     pending_messages: VecDeque<PendingResultMessage>,
+    finalizer_handles: BTreeMap<SubagentAttemptId, JoinHandle<()>>,
 }
 
 /// Host-owned supervisor for asynchronous subagent attempts.
@@ -622,10 +646,11 @@ impl BackgroundSubagentSupervisor {
     }
 
     pub(crate) fn apply_context_deltas(&self, context: &mut AgentContext) {
-        let deltas = self.with_state(|state| state.context_deltas.clone());
+        let deltas = self.with_state(|state| std::mem::take(&mut state.context_deltas));
         for (attempt_id, delta) in deltas {
             delta.apply(&attempt_id, context);
         }
+        self.with_state(|state| trim_results(state, self.limits.max_retained_results));
     }
 
     /// Return whether a prior or active conversation identity is known.
@@ -680,7 +705,16 @@ impl BackgroundSubagentSupervisor {
             if state.closing {
                 return Err(BackgroundSubagentError::Closing);
             }
-            if state.active.len() >= self.limits.max_active_attempts {
+            if state.active.len() >= self.limits.max_active_attempts
+                || state
+                    .results
+                    .values()
+                    .filter(|result| {
+                        result.delivery_status != BackgroundSubagentDeliveryStatus::Delivered
+                    })
+                    .count()
+                    >= self.limits.max_retained_results
+            {
                 return Err(BackgroundSubagentError::QuotaExceeded);
             }
             if state.active_by_agent.contains_key(&agent_id) {
@@ -699,6 +733,7 @@ impl BackgroundSubagentSupervisor {
                     steering_ids: BTreeSet::new(),
                     cancellation_ids: BTreeSet::new(),
                     cancellation_reason: None,
+                    cancellation_timer_started: false,
                 },
             );
             Ok(info.clone())
@@ -717,6 +752,27 @@ impl BackgroundSubagentSupervisor {
                 .get(attempt_id)
                 .map(|active| active.control.clone())
         })
+    }
+
+    pub(super) fn attach_finalizer_handle(
+        &self,
+        attempt_id: &SubagentAttemptId,
+        handle: JoinHandle<()>,
+    ) {
+        let mut handle = Some(handle);
+        self.with_state(|state| {
+            if state.active.contains_key(attempt_id)
+                && let Some(handle) = handle.take()
+            {
+                state.finalizer_handles.insert(attempt_id.clone(), handle);
+            }
+        });
+    }
+
+    pub(super) fn detach_finalizer_handle(&self, attempt_id: &SubagentAttemptId) {
+        self.with_state(|state| {
+            state.finalizer_handles.remove(attempt_id);
+        });
     }
 
     pub(crate) fn attach_abort_handle(
@@ -877,12 +933,20 @@ impl BackgroundSubagentSupervisor {
         if message.len() > self.limits.max_steering_bytes {
             return Err(BackgroundSubagentError::SteeringTooLarge);
         }
+        if steering_id.len() > self.limits.max_operation_id_bytes {
+            return Err(BackgroundSubagentError::OperationIdTooLarge);
+        }
         let (agent_id, pending, duplicate) = self.with_state(|state| {
             let active = state
                 .active
                 .get_mut(attempt_id)
                 .ok_or(BackgroundSubagentError::NotFound)?;
-            let duplicate = !active.steering_ids.insert(steering_id.clone());
+            let duplicate = active.steering_ids.contains(&steering_id);
+            if !duplicate && active.steering_ids.len() >= self.limits.max_operation_ids_per_attempt
+            {
+                return Err(BackgroundSubagentError::OperationHistoryFull);
+            }
+            active.steering_ids.insert(steering_id.clone());
             Ok::<_, BackgroundSubagentError>((
                 active.info.agent_id.clone(),
                 active.control.pending_messages.clone(),
@@ -951,6 +1015,9 @@ impl BackgroundSubagentSupervisor {
         cancellation_id: String,
         reason: Option<String>,
     ) -> Result<BackgroundSubagentCancellationReceipt, BackgroundSubagentError> {
+        if cancellation_id.len() > self.limits.max_operation_id_bytes {
+            return Err(BackgroundSubagentError::OperationIdTooLarge);
+        }
         let reason = reason.filter(|value| !value.trim().is_empty());
         if reason
             .as_ref()
@@ -966,25 +1033,32 @@ impl BackgroundSubagentSupervisor {
                 status: result.status.as_str().to_string(),
             });
         }
-        let (agent_id, cancellation, abort_handle, duplicate) = self.with_state(|state| {
+        let (agent_id, cancellation, abort_handle, start_timer) = self.with_state(|state| {
             let active = state
                 .active
                 .get_mut(attempt_id)
                 .ok_or(BackgroundSubagentError::NotFound)?;
             let duplicate = active.cancellation_ids.contains(&cancellation_id);
+            if !duplicate
+                && active.cancellation_ids.len() >= self.limits.max_operation_ids_per_attempt
+            {
+                return Err(BackgroundSubagentError::OperationHistoryFull);
+            }
             active.cancellation_ids.insert(cancellation_id.clone());
             if !duplicate && active.cancellation_reason.is_none() {
                 active.cancellation_reason = reason;
             }
+            let start_timer = !active.cancellation_timer_started;
+            active.cancellation_timer_started = true;
             Ok::<_, BackgroundSubagentError>((
                 active.info.agent_id.clone(),
                 active.control.cancellation.clone(),
                 active.abort_handle.clone(),
-                duplicate,
+                start_timer,
             ))
         })?;
         cancellation.cancel();
-        if !duplicate && let Some(abort_handle) = abort_handle {
+        if start_timer && let Some(abort_handle) = abort_handle {
             let grace = self.limits.cancellation_grace;
             tokio::spawn(async move {
                 tokio::time::sleep(grace).await;
@@ -1079,7 +1153,11 @@ impl BackgroundSubagentSupervisor {
                 .get_mut(attempt_id)
                 .ok_or(BackgroundSubagentError::NotFound)?;
             if result.delivery_status == BackgroundSubagentDeliveryStatus::Delivered {
-                return Ok(());
+                return if result.delivered_claim_id.as_deref() == Some(claim_id) {
+                    Ok(())
+                } else {
+                    Err(BackgroundSubagentError::Delivered)
+                };
             }
             if result
                 .delivery_claim
@@ -1090,10 +1168,12 @@ impl BackgroundSubagentSupervisor {
             }
             result.delivery_status = BackgroundSubagentDeliveryStatus::Delivered;
             result.delivery_claim = None;
+            result.delivered_claim_id = Some(claim_id.to_string());
             let message_id = self.get_task_result_message_id(attempt_id);
             state
                 .pending_messages
                 .retain(|pending| pending.message.id != message_id);
+            trim_results(state, self.limits.max_retained_results);
             Ok(())
         })
     }
@@ -1117,6 +1197,9 @@ impl BackgroundSubagentSupervisor {
             if result.delivery_status == BackgroundSubagentDeliveryStatus::Delivered {
                 return Err(BackgroundSubagentError::Delivered);
             }
+            if result.delivery_status != BackgroundSubagentDeliveryStatus::Claimed {
+                return Err(BackgroundSubagentError::DeliveryClaimed);
+            }
             if result
                 .delivery_claim
                 .as_ref()
@@ -1127,7 +1210,10 @@ impl BackgroundSubagentSupervisor {
             result.delivery_status = BackgroundSubagentDeliveryStatus::Undelivered;
             result.delivery_claim = None;
             Ok(())
-        })
+        })?;
+        self.notify.notify_waiters();
+        self.notify_completion(attempt_id);
+        Ok(())
     }
 
     pub(crate) fn enqueue_message(&self, attempt_id: SubagentAttemptId, message: BusMessage) {
@@ -1153,22 +1239,59 @@ impl BackgroundSubagentSupervisor {
         self.with_state(|state| !state.pending_messages.is_empty())
     }
 
-    pub(crate) fn drain_pending_messages(&self) -> Vec<BusMessage> {
+    pub(super) fn claim_pending_messages(
+        &self,
+        claim_scope: &str,
+        continuation_run_id: Option<&RunId>,
+    ) -> Vec<ClaimedBackgroundSubagentMessage> {
         self.with_state(|state| {
-            let pending = std::mem::take(&mut state.pending_messages);
-            let mut messages = Vec::new();
-            for pending in pending {
+            let now = Utc::now();
+            let mut claimed = Vec::new();
+            for pending in &state.pending_messages {
                 let Some(result) = state.results.get_mut(&pending.attempt_id) else {
                     continue;
                 };
-                if result.delivery_status == BackgroundSubagentDeliveryStatus::Delivered {
+                let owned_claim = result.delivery_claim.as_ref().filter(|current| {
+                    result.delivery_status == BackgroundSubagentDeliveryStatus::Claimed
+                        && continuation_run_id.is_some()
+                        && current.continuation_run_id.as_ref() == continuation_run_id
+                });
+                if let Some(current) = owned_claim {
+                    claimed.push(ClaimedBackgroundSubagentMessage {
+                        attempt_id: pending.attempt_id.clone(),
+                        claim_id: current.claim_id.clone(),
+                        message: pending.message.clone(),
+                    });
                     continue;
                 }
-                result.delivery_status = BackgroundSubagentDeliveryStatus::Delivered;
-                result.delivery_claim = None;
-                messages.push(pending.message);
+                let claimable = result.delivery_status
+                    == BackgroundSubagentDeliveryStatus::Undelivered
+                    || (result.delivery_status == BackgroundSubagentDeliveryStatus::Claimed
+                        && result
+                            .delivery_claim
+                            .as_ref()
+                            .is_some_and(|current| current.deadline <= now));
+                if !claimable {
+                    continue;
+                }
+                let claim_id = format!(
+                    "bus:{claim_scope}:{}:{}",
+                    pending.attempt_id.as_str(),
+                    uuid::Uuid::new_v4()
+                );
+                result.delivery_status = BackgroundSubagentDeliveryStatus::Claimed;
+                result.delivery_claim = Some(BackgroundSubagentDeliveryClaim {
+                    claim_id: claim_id.clone(),
+                    continuation_run_id: continuation_run_id.cloned(),
+                    deadline: now + chrono::Duration::seconds(60),
+                });
+                claimed.push(ClaimedBackgroundSubagentMessage {
+                    attempt_id: pending.attempt_id.clone(),
+                    claim_id,
+                    message: pending.message.clone(),
+                });
             }
-            messages
+            claimed
         })
     }
 
@@ -1276,6 +1399,10 @@ impl BackgroundSubagentSupervisor {
         for abort_handle in abort_handles.into_iter().chain(late_abort_handles) {
             abort_handle.abort();
         }
+        let finalizers = self.with_state(|state| std::mem::take(&mut state.finalizer_handles));
+        for (_, finalizer) in finalizers {
+            let _ = tokio::time::timeout_at(final_deadline, finalizer).await;
+        }
         // The outer finalizer records terminal evidence after the owned worker is
         // aborted. Reserve the remainder of the same absolute shutdown deadline
         // for that finalizer rather than returning with detached active state.
@@ -1288,25 +1415,60 @@ impl BackgroundSubagentSupervisor {
                 break;
             }
         }
+        self.force_interrupt_active();
+        let late_finalizers = self.with_state(|state| std::mem::take(&mut state.finalizer_handles));
+        for (_, finalizer) in late_finalizers {
+            finalizer.abort();
+        }
+    }
+
+    fn force_interrupt_active(&self) {
+        let attempt_ids = self.with_state(|state| state.active.keys().cloned().collect::<Vec<_>>());
+        for attempt_id in attempt_ids {
+            let Some(result) = self.record_terminal(
+                &attempt_id,
+                BackgroundSubagentExecutionStatus::Cancelled,
+                None,
+                Some("background subagent interrupted during host shutdown".to_string()),
+            ) else {
+                continue;
+            };
+            let message = BusMessage::text(
+                format!(
+                    "Background delegate '{}' (agent_id: {}, attempt_id: {}) was interrupted during host shutdown",
+                    result.subagent_name,
+                    result.agent_id,
+                    result.attempt_id.as_str(),
+                ),
+                result.agent_id.clone(),
+            )
+            .with_id(self.get_task_result_message_id(&attempt_id))
+            .with_target("main");
+            self.enqueue_message(attempt_id.clone(), message);
+            self.notify_completion(&attempt_id);
+        }
     }
 }
 
 fn trim_results(state: &mut BackgroundSubagentState, max_results: usize) {
     while state.results.len() > max_results {
-        let Some(oldest) = state
+        let oldest = state
             .results
             .iter()
+            .filter(|(attempt_id, result)| {
+                result.delivery_status == BackgroundSubagentDeliveryStatus::Delivered
+                    && !state.context_deltas.contains_key(*attempt_id)
+                    && !state
+                        .pending_messages
+                        .iter()
+                        .any(|pending| &pending.attempt_id == *attempt_id)
+            })
             .min_by_key(|(_, result)| result.completed_at)
-            .map(|(attempt_id, _)| attempt_id.clone())
-        else {
+            .map(|(attempt_id, _)| attempt_id.clone());
+        let Some(oldest) = oldest else {
             break;
         };
-        let message_id = format!("background-subagent-result:{}", oldest.as_str());
         state.results.remove(&oldest);
-        state.context_deltas.remove(&oldest);
-        state
-            .pending_messages
-            .retain(|pending| pending.message.id != message_id);
     }
 }
 
@@ -1574,6 +1736,107 @@ mod tests {
         );
         supervisor.notify_completion(&attempt);
         assert_eq!(completions.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pending_delivery_never_steals_an_unexpired_claim() {
+        let supervisor = BackgroundSubagentSupervisor::new();
+        let attempt = SubagentAttemptId::from_string("subattempt_claimed_pending");
+        accept(&supervisor, &attempt, "child-bg-claimed", false).unwrap();
+        supervisor.record_terminal(
+            &attempt,
+            BackgroundSubagentExecutionStatus::Completed,
+            Some("done".to_string()),
+            None,
+        );
+        supervisor.enqueue_message(
+            attempt.clone(),
+            BusMessage::text("done", "child-bg-claimed")
+                .with_id(supervisor.get_task_result_message_id(&attempt))
+                .with_target("main"),
+        );
+        supervisor
+            .claim_delivery(
+                &attempt,
+                BackgroundSubagentDeliveryClaim {
+                    claim_id: "external-claim".to_string(),
+                    continuation_run_id: Some(RunId::from_string("run_external")),
+                    deadline: Utc::now() + chrono::Duration::seconds(30),
+                },
+            )
+            .unwrap();
+
+        assert!(
+            supervisor
+                .claim_pending_messages("run_other", Some(&RunId::from_string("run_other")))
+                .is_empty()
+        );
+        let result = supervisor.task_result(&attempt).unwrap();
+        assert_eq!(
+            result
+                .delivery_claim
+                .as_ref()
+                .map(|claim| claim.claim_id.as_str()),
+            Some("external-claim")
+        );
+        assert_eq!(
+            supervisor
+                .acknowledge_delivery(&attempt, "wrong-claim")
+                .unwrap_err(),
+            BackgroundSubagentError::DeliveryClaimed
+        );
+        supervisor
+            .acknowledge_delivery(&attempt, "external-claim")
+            .unwrap();
+        assert_eq!(
+            supervisor
+                .acknowledge_delivery(&attempt, "wrong-claim")
+                .unwrap_err(),
+            BackgroundSubagentError::Delivered
+        );
+    }
+
+    #[test]
+    fn undelivered_retention_applies_admission_backpressure() {
+        let supervisor = BackgroundSubagentSupervisor::with_limits(BackgroundSubagentLimits {
+            max_retained_results: 1,
+            ..BackgroundSubagentLimits::default()
+        });
+        let first = SubagentAttemptId::from_string("subattempt_retained_first");
+        accept(&supervisor, &first, "child-bg-retained-first", false).unwrap();
+        supervisor.record_terminal(
+            &first,
+            BackgroundSubagentExecutionStatus::Completed,
+            Some("must remain available".to_string()),
+            None,
+        );
+        let second = SubagentAttemptId::from_string("subattempt_retained_second");
+        assert_eq!(
+            accept(&supervisor, &second, "child-bg-retained-second", false).unwrap_err(),
+            BackgroundSubagentError::QuotaExceeded
+        );
+        assert_eq!(
+            supervisor.task_result(&first).unwrap().content.as_deref(),
+            Some("must remain available")
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_terminalizes_attempts_without_attached_workers() {
+        let supervisor = BackgroundSubagentSupervisor::new();
+        let attempt = SubagentAttemptId::from_string("subattempt_shutdown_forced");
+        accept(&supervisor, &attempt, "child-bg-shutdown", false).unwrap();
+
+        supervisor.shutdown(Some(Duration::ZERO)).await;
+
+        assert!(!supervisor.has_active_tasks());
+        let result = supervisor.task_result(&attempt).unwrap();
+        assert_eq!(result.status, BackgroundSubagentExecutionStatus::Cancelled);
+        assert_eq!(
+            result.delivery_status,
+            BackgroundSubagentDeliveryStatus::Undelivered
+        );
+        assert!(supervisor.has_pending_messages());
     }
 
     #[tokio::test]

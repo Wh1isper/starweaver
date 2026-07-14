@@ -611,7 +611,7 @@ You are a helper.
         assert!(interactive_tools.contains(&"steer_subagent".to_string()));
         assert!(interactive_tools.contains(&"cancel_subagent".to_string()));
         assert!(interactive_tools.contains(&"wait_subagent".to_string()));
-        assert!(interactive_tools.contains(&"__delegate_backend".to_string()));
+        assert!(!interactive_tools.contains(&"__delegate_backend".to_string()));
 
         let run = output(
             temp.path(),

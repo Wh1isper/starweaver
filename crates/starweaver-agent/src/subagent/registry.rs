@@ -205,10 +205,20 @@ impl BackgroundSubagentCapability {
 
     fn drain_into_context(&self, context: &mut AgentContext) {
         self.monitor.apply_context_deltas(context);
-        for message in self.monitor.drain_pending_messages() {
-            let agent_id = context.agent_id.as_str().to_string();
-            context.messages.subscribe(agent_id);
-            context.send_message(message);
+        let agent_id = context.agent_id.as_str().to_string();
+        context.messages.subscribe(agent_id);
+        let claim_scope = context
+            .run_id
+            .as_ref()
+            .map_or_else(|| context.agent_id.as_str(), starweaver_core::RunId::as_str);
+        for claimed in self
+            .monitor
+            .claim_pending_messages(claim_scope, context.run_id.as_ref())
+        {
+            context.send_message(claimed.message);
+            let _ = self
+                .monitor
+                .acknowledge_delivery(&claimed.attempt_id, &claimed.claim_id);
         }
     }
 }
@@ -763,16 +773,27 @@ impl SubagentRegistry {
                                 Uuid::new_v4().simple().to_string().chars().take(8).collect::<String>()
                             )
                         });
-                        let in_history = parent_context.subagent_history.contains_key(&agent_id);
+                        let persisted_binding = parent_context
+                            .agent_registry
+                            .get(&agent_id)
+                            .is_some_and(|info| {
+                                info.agent_name == subagent_name
+                                    && info.parent_agent_id.as_deref()
+                                        == Some(parent_context.agent_id.as_str())
+                            });
                         let known_conversation =
                             monitor.knows_conversation(&agent_id, &subagent_name);
-                        if supplied_agent_id.is_some() && !in_history && !known_conversation {
+                        if supplied_agent_id.is_some()
+                            && !persisted_binding
+                            && !known_conversation
+                        {
                             return Err(ToolError::UserError {
                                 tool: tool_name.clone(),
-                                message: "unknown agent_id for this supervisor scope".to_string(),
+                                message: "agent_id is unknown or bound to a different subagent in this supervisor scope"
+                                    .to_string(),
                             });
                         }
-                        let is_resume = in_history || known_conversation;
+                        let is_resume = persisted_binding || known_conversation;
                         let attempt_id = SubagentAttemptId::new();
                         let linked_task_id = arguments
                             .linked_task_id
@@ -799,16 +820,19 @@ impl SubagentRegistry {
                             .map_err(|error| background_tool_error(&tool_name, &error))?;
                         let target_agent_id = parent_context.agent_id.as_str().to_string();
                         let background_context = context.clone();
-                        tokio::spawn(run_background_delegate(BackgroundDelegateExecution {
-                            registry,
-                            monitor: monitor.clone(),
-                            context_handle,
-                            tool_context: background_context,
-                            arguments,
-                            attempt_id: attempt_id.clone(),
-                            agent_id: agent_id.clone(),
-                            target_agent_id,
-                        }));
+                        let finalizer = tokio::spawn(run_background_delegate(
+                            BackgroundDelegateExecution {
+                                registry,
+                                monitor: monitor.clone(),
+                                context_handle,
+                                tool_context: background_context,
+                                arguments,
+                                attempt_id: attempt_id.clone(),
+                                agent_id: agent_id.clone(),
+                                target_agent_id,
+                            },
+                        ));
+                        monitor.attach_finalizer_handle(&attempt_id, finalizer);
                         let status = if is_resume { "continued" } else { "accepted" };
                         Ok(ToolResult::new(serde_json::json!({
                             "status": status,
@@ -1310,6 +1334,7 @@ async fn run_background_delegate(execution: BackgroundDelegateExecution) {
     };
     monitor.set_child_run_id(&attempt_id, child_run_id);
     let Some(result) = monitor.record_terminal(&attempt_id, status, content, error) else {
+        monitor.detach_finalizer_handle(&attempt_id);
         return;
     };
     let message = background_result_message(&monitor, &result, &target_agent_id);
@@ -1321,6 +1346,7 @@ async fn run_background_delegate(execution: BackgroundDelegateExecution) {
         message,
     );
     monitor.notify_completion(&attempt_id);
+    monitor.detach_finalizer_handle(&attempt_id);
 }
 
 fn background_result_message(
@@ -1417,21 +1443,26 @@ async fn run_background_delegate_inner(
     if let Some(linked_task_id) = arguments.linked_task_id.as_ref() {
         metadata["linked_task_id"] = serde_json::json!(linked_task_id);
     }
-    let stream_sink = tool_context.dependency::<AgentStreamSink>();
     let task = SubagentTask::new(arguments.prompt).with_metadata(metadata);
     let control = monitor
         .child_control(&attempt_id)
         .ok_or_else(|| AgentError::Capability("background attempt control was lost".to_string()))?;
     monitor.transition(&attempt_id, BackgroundSubagentExecutionStatus::Running);
-    let result = Box::pin(registry.delegate_task_with_stream_sink(
+    // A model-tool-call stream sink is drained only for the lifetime of that
+    // tool future. Background execution therefore retains terminal/context
+    // evidence here and leaves live streaming to a host-owned sink.
+    let delegated = Box::pin(registry.delegate_task_with_stream_sink(
         &arguments.subagent_name,
         task,
         &mut parent_context,
-        stream_sink,
+        None,
         Some(control),
     ))
-    .await?;
-    let child_run_id = Some(result.result.state.run_id.clone());
+    .await;
+    let child_run_id = delegated
+        .as_ref()
+        .ok()
+        .map(|result| result.result.state.run_id.clone());
     let delta = BackgroundSubagentContextDelta::from_context(
         &parent_context,
         &base_usage,
@@ -1440,7 +1471,7 @@ async fn run_background_delegate_inner(
         &agent_id,
     );
     monitor.merge_or_stage_context_delta(&attempt_id, &context_handle, delta);
-    Ok((result.output().to_string(), child_run_id))
+    delegated.map(|result| (result.output().to_string(), child_run_id))
 }
 
 const MAX_WAIT_SUBAGENT_TIMEOUT_SECONDS: f64 = 300.0;
@@ -1491,8 +1522,10 @@ async fn wait_for_one_background_subagent(
             "message": "Subagent is still running.",
         });
     };
-    consume_background_result(monitor, context_handle, attempt_id, target);
-    format_background_result(&result)
+    match consume_background_result(monitor, context_handle, attempt_id, target) {
+        Ok(()) => format_background_result(&result),
+        Err(error) => format_unavailable_background_result(&result, &error),
+    }
 }
 
 async fn wait_for_all_background_subagents(
@@ -1527,8 +1560,12 @@ async fn wait_for_all_background_subagents(
     let mut formatted_results = Vec::new();
     for attempt_id in &attempt_ids {
         if let Some(result) = results_by_id.get(attempt_id).and_then(Clone::clone) {
-            consume_background_result(monitor, context_handle, attempt_id, target);
-            formatted_results.push(format_background_result(&result));
+            let formatted =
+                match consume_background_result(monitor, context_handle, attempt_id, target) {
+                    Ok(()) => format_background_result(&result),
+                    Err(error) => format_unavailable_background_result(&result, &error),
+                };
+            formatted_results.push(formatted);
         } else {
             timed_out = true;
             formatted_results.push(serde_json::json!({
@@ -1564,20 +1601,14 @@ fn consume_background_result(
     context_handle: &AgentContextHandle,
     attempt_id: &SubagentAttemptId,
     target: &str,
-) {
+) -> Result<(), BackgroundSubagentError> {
     let claim_id = format!("wait:{}", attempt_id.as_str());
     let claim = BackgroundSubagentDeliveryClaim {
         claim_id: claim_id.clone(),
         continuation_run_id: None,
         deadline: Utc::now() + chrono::Duration::seconds(60),
     };
-    match monitor.claim_delivery(attempt_id, claim) {
-        Ok(_) => {
-            let _ = monitor.acknowledge_delivery(attempt_id, &claim_id);
-        }
-        Err(BackgroundSubagentError::Delivered) => {}
-        Err(_) => return,
-    }
+    monitor.claim_delivery(attempt_id, claim)?;
     let message_id = monitor.get_task_result_message_id(attempt_id);
     context_handle.update(|context| {
         let mut message_ids = BTreeSet::new();
@@ -1586,6 +1617,25 @@ fn consume_background_result(
             .messages
             .mark_consumed(target.to_string(), &message_ids);
     });
+    monitor.acknowledge_delivery(attempt_id, &claim_id)
+}
+
+fn format_unavailable_background_result(
+    result: &BackgroundSubagentTaskResult,
+    error: &BackgroundSubagentError,
+) -> serde_json::Value {
+    let status = match error {
+        BackgroundSubagentError::DeliveryClaimed => "claimed",
+        BackgroundSubagentError::Delivered => "delivered",
+        _ => "unavailable",
+    };
+    serde_json::json!({
+        "status": status,
+        "attempt_id": result.attempt_id.as_str(),
+        "agent_id": result.agent_id,
+        "timed_out": false,
+        "message": "The result is owned by another delivery consumer and was not returned.",
+    })
 }
 
 fn format_background_result(result: &BackgroundSubagentTaskResult) -> serde_json::Value {

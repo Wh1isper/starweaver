@@ -12,10 +12,12 @@ use std::{
     time::Duration,
 };
 
+use chrono::Utc;
 use starweaver_agent::{
-    BackgroundSubagentDeliveryStatus, BackgroundSubagentSupervisor, BackgroundSubagentTaskResult,
+    BackgroundSubagentDeliveryClaim, BackgroundSubagentDeliveryStatus,
+    BackgroundSubagentSupervisor, BackgroundSubagentTaskResult,
 };
-use starweaver_core::SubagentAttemptId;
+use starweaver_core::{RunId, SubagentAttemptId};
 use starweaver_runtime::AgentStreamRecord;
 
 use crate::{
@@ -49,7 +51,7 @@ pub(super) struct StartedRun {
 pub(super) struct CliRuntimeCoordinator {
     config: CliConfig,
     active_runs: Arc<Mutex<HashMap<String, ActiveRunControl>>>,
-    worker_handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
+    worker_handles: Arc<Mutex<Vec<BackgroundWorkerHandle>>>,
     interactive_host: Arc<CliInteractiveExecutionHost>,
     closing: Arc<AtomicBool>,
 }
@@ -63,7 +65,12 @@ pub(super) struct BackgroundCompletion {
 struct CliInteractiveExecutionHost {
     runtime: Arc<tokio::runtime::Runtime>,
     supervisors: Mutex<HashMap<String, Arc<BackgroundSubagentSupervisor>>>,
-    completions: Arc<Mutex<VecDeque<BackgroundCompletion>>>,
+    completions: Arc<Mutex<HashMap<String, VecDeque<String>>>>,
+}
+
+struct BackgroundWorkerHandle {
+    join: thread::JoinHandle<()>,
+    completed: mpsc::Receiver<()>,
 }
 
 struct ActiveRunControl {
@@ -78,7 +85,7 @@ impl CliInteractiveExecutionHost {
                 tokio::runtime::Runtime::new().map_err(|error| CliError::Run(error.to_string()))?,
             ),
             supervisors: Mutex::new(HashMap::new()),
-            completions: Arc::new(Mutex::new(VecDeque::new())),
+            completions: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -99,16 +106,16 @@ impl CliInteractiveExecutionHost {
                                 let mut pending = completions
                                     .lock()
                                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                                if pending
+                                let attempts =
+                                    pending.entry(completion_session_id.clone()).or_default();
+                                if attempts
                                     .iter()
-                                    .any(|item| item.attempt_id == result.attempt_id.as_str())
+                                    .any(|attempt_id| attempt_id == result.attempt_id.as_str())
                                 {
                                     return;
                                 }
-                                pending.push_back(BackgroundCompletion {
-                                    session_id: completion_session_id.clone(),
-                                    attempt_id: result.attempt_id.as_str().to_string(),
-                                });
+                                attempts.push_back(result.attempt_id.as_str().to_string());
+                                drop(pending);
                             },
                         )),
                     )
@@ -118,30 +125,74 @@ impl CliInteractiveExecutionHost {
         CliAgentExecutionHost::interactive(supervisor, Arc::clone(&self.runtime))
     }
 
-    fn take_completions(&self) -> Vec<BackgroundCompletion> {
-        let completions = self.completions.lock().map_or_else(
-            |error| error.into_inner().drain(..).collect::<Vec<_>>(),
-            |mut queue| queue.drain(..).collect::<Vec<_>>(),
-        );
-        let supervisors = self
-            .supervisors
+    fn take_completions(&self, session_id: &str) -> Vec<BackgroundCompletion> {
+        let attempt_ids = self
+            .completions
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        completions
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id)
+            .unwrap_or_default();
+        attempt_ids
             .into_iter()
-            .filter(|completion| {
-                supervisors
-                    .get(&completion.session_id)
-                    .and_then(|supervisor| {
-                        supervisor.task_result(&SubagentAttemptId::from_string(
-                            completion.attempt_id.clone(),
-                        ))
-                    })
-                    .is_some_and(|result| {
-                        result.delivery_status == BackgroundSubagentDeliveryStatus::Undelivered
-                    })
+            .filter(|attempt_id| self.completion_is_undelivered(session_id, attempt_id))
+            .map(|attempt_id| BackgroundCompletion {
+                session_id: session_id.to_string(),
+                attempt_id,
             })
             .collect()
+    }
+
+    fn completion_is_undelivered(&self, session_id: &str, attempt_id: &str) -> bool {
+        self.supervisors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .and_then(|supervisor| {
+                supervisor.task_result(&SubagentAttemptId::from_string(attempt_id))
+            })
+            .is_some_and(|result| {
+                result.delivery_status == BackgroundSubagentDeliveryStatus::Undelivered
+            })
+    }
+
+    fn claim_continuation(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        continuation_run_id: &str,
+    ) -> CliResult<String> {
+        let supervisor = self
+            .supervisors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| CliError::NotFound(session_id.to_string()))?;
+        let claim_id = format!("tui:{continuation_run_id}:{attempt_id}");
+        supervisor
+            .claim_delivery(
+                &SubagentAttemptId::from_string(attempt_id),
+                BackgroundSubagentDeliveryClaim {
+                    claim_id: claim_id.clone(),
+                    continuation_run_id: Some(RunId::from_string(continuation_run_id)),
+                    deadline: Utc::now() + chrono::Duration::seconds(60),
+                },
+            )
+            .map_err(|error| CliError::Run(error.to_string()))?;
+        Ok(claim_id)
+    }
+
+    fn release_continuation(&self, session_id: &str, attempt_id: &str, claim_id: &str) {
+        let supervisor = self
+            .supervisors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .cloned();
+        if let Some(supervisor) = supervisor {
+            let _ = supervisor
+                .release_delivery_claim(&SubagentAttemptId::from_string(attempt_id), claim_id);
+        }
     }
 
     fn shutdown(&self, timeout: Duration) {
@@ -171,9 +222,11 @@ struct BackgroundRunWorker {
     steering_receiver: mpsc::Receiver<CliSteeringMessage>,
     cancel_sender: mpsc::Sender<()>,
     cancel_receiver: mpsc::Receiver<()>,
+    background_attempt_id: Option<String>,
 }
 
 impl BackgroundRunWorker {
+    #[allow(clippy::too_many_lines)]
     fn run(self) {
         let mut service = match CliService::open(self.config) {
             Ok(service) => service,
@@ -193,6 +246,21 @@ impl BackgroundRunWorker {
         let session_id = prepared.session_id.clone();
         prepared.set_execution_host(self.interactive_host.execution_host(&session_id));
         let run_id = prepared.run_id.clone();
+        let delivery_claim = if let Some(attempt_id) = self.background_attempt_id.as_deref() {
+            match self
+                .interactive_host
+                .claim_continuation(&session_id, attempt_id, &run_id)
+            {
+                Ok(claim_id) => Some((attempt_id.to_string(), claim_id)),
+                Err(error) => {
+                    let _ = service.fail_prepared_prompt_run(run_on_error, &error);
+                    let _ = self.started_sender.send(Err(error));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
         if let Ok(mut runs) = self.active_runs.lock() {
             runs.insert(
                 run_id.clone(),
@@ -215,6 +283,10 @@ impl BackgroundRunWorker {
             .send(Ok((session_id.clone(), run_id.clone())))
             .is_err()
         {
+            if let Some((attempt_id, claim_id)) = delivery_claim.as_ref() {
+                self.interactive_host
+                    .release_continuation(&session_id, attempt_id, claim_id);
+            }
             remove_active_run(&self.active_runs, &run_id);
             return;
         }
@@ -247,7 +319,7 @@ impl BackgroundRunWorker {
                     error: None,
                 },
                 Err(error) => RunStatusItem {
-                    session_id,
+                    session_id: session_id.clone(),
                     run_id: run_id.clone(),
                     status: "failed".to_string(),
                     error: Some(error.to_string()),
@@ -256,13 +328,17 @@ impl BackgroundRunWorker {
             Err(error) => {
                 let _ = service.fail_prepared_prompt_run(run_on_error, &error);
                 RunStatusItem {
-                    session_id,
+                    session_id: session_id.clone(),
                     run_id: run_id.clone(),
                     status: "failed".to_string(),
                     error: Some(error.to_string()),
                 }
             }
         };
+        if let Some((attempt_id, claim_id)) = delivery_claim {
+            self.interactive_host
+                .release_continuation(&session_id, &attempt_id, &claim_id);
+        }
         let _ = self.event_sender.send(RunStreamEvent::Status(status));
         remove_active_run(&self.active_runs, &run_id);
     }
@@ -283,6 +359,7 @@ impl CliRuntimeCoordinator {
         &self,
         command: RunCommand,
         prompt_input: Option<PromptInput>,
+        background_attempt_id: Option<String>,
     ) -> CliResult<StartedRun> {
         if self.closing.load(Ordering::Acquire) {
             return Err(CliError::Run(
@@ -305,12 +382,20 @@ impl CliRuntimeCoordinator {
             steering_receiver,
             cancel_sender,
             cancel_receiver,
+            background_attempt_id,
         };
-        let handle = thread::spawn(move || worker.run());
+        let (completed_sender, completed_receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            worker.run();
+            let _ = completed_sender.send(());
+        });
         self.worker_handles
             .lock()
             .map_err(|error| CliError::Run(error.to_string()))?
-            .push(handle);
+            .push(BackgroundWorkerHandle {
+                join: handle,
+                completed: completed_receiver,
+            });
         let (_session_id, run_id) = started_receiver
             .recv()
             .map_err(|error| CliError::Run(error.to_string()))??;
@@ -333,11 +418,24 @@ impl CliRuntimeCoordinator {
             .map_err(|error| CliError::Run(error.to_string()))
     }
 
-    pub(super) fn take_background_completions(&self) -> Vec<BackgroundCompletion> {
-        self.interactive_host.take_completions()
+    pub(super) fn take_background_completions(
+        &self,
+        session_id: &str,
+    ) -> Vec<BackgroundCompletion> {
+        self.interactive_host.take_completions(session_id)
+    }
+
+    pub(super) fn background_completion_is_undelivered(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+    ) -> bool {
+        self.interactive_host
+            .completion_is_undelivered(session_id, attempt_id)
     }
 
     pub(super) fn shutdown(&self, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
         self.closing.store(true, Ordering::Release);
         let foreground_cancellations = self.active_runs.lock().map_or_else(
             |error| {
@@ -356,13 +454,17 @@ impl CliRuntimeCoordinator {
         for sender in foreground_cancellations {
             let _ = sender.send(());
         }
-        self.interactive_host.shutdown(timeout);
+        self.interactive_host
+            .shutdown(deadline.saturating_duration_since(std::time::Instant::now()));
         let handles = self.worker_handles.lock().map_or_else(
             |error| std::mem::take(&mut *error.into_inner()),
             |mut handles| std::mem::take(&mut *handles),
         );
         for handle in handles {
-            let _ = handle.join();
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if handle.completed.recv_timeout(remaining).is_ok() {
+                let _ = handle.join.join();
+            }
         }
     }
 

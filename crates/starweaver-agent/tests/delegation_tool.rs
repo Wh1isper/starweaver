@@ -12,6 +12,7 @@ use starweaver_agent::{
     SubagentParentTools, SubagentRegistry, SubagentToolInheritancePolicy, TestModel, ToolContext,
     ToolError, ToolRegistry, ToolResult, WAIT_SUBAGENT_TOOL_NAME,
 };
+use starweaver_context::AgentInfo;
 use starweaver_core::{ConversationId, RunId};
 use starweaver_model::{
     ModelMessage, ModelRequestPart, ModelResponse, ModelResponsePart, ToolCallPart,
@@ -298,7 +299,6 @@ fn async_delegation_mode_makes_delegate_async_and_hides_backend() {
     assert_eq!(
         tools.names(),
         vec![
-            DELEGATE_BACKEND_TOOL_NAME.to_string(),
             CANCEL_SUBAGENT_TOOL_NAME.to_string(),
             "delegate".to_string(),
             STEER_SUBAGENT_TOOL_NAME.to_string(),
@@ -454,7 +454,8 @@ async fn wait_subagent_returns_cached_result_and_marks_bus_message_consumed() {
     let monitor = Arc::new(BackgroundSubagentMonitor::new());
     let delegate = registry.async_delegate_tool(monitor.clone());
     let wait = registry.wait_subagent_tool(monitor.clone());
-    let parent = AgentContext::default();
+    let mut parent = AgentContext::default();
+    parent.messages.unsubscribe(parent.agent_id.as_str());
     let context_handle = AgentContextHandle::new(parent.clone());
 
     let delegated = delegate
@@ -568,7 +569,7 @@ async fn async_delegate_rejects_unknown_model_metadata() {
     assert!(
         unknown_identity
             .to_string()
-            .contains("unknown agent_id for this supervisor scope")
+            .contains("agent_id is unknown or bound to a different subagent")
     );
 
     let unknown_task = delegate
@@ -686,7 +687,8 @@ async fn wait_subagent_without_agent_id_reports_empty_and_completed() {
     let monitor = Arc::new(BackgroundSubagentMonitor::new());
     let delegate = registry.async_delegate_tool(monitor.clone());
     let wait = registry.wait_subagent_tool(monitor.clone());
-    let parent = AgentContext::default();
+    let mut parent = AgentContext::default();
+    parent.messages.unsubscribe(parent.agent_id.as_str());
     let context_handle = AgentContextHandle::new(parent.clone());
 
     let empty = wait
@@ -816,6 +818,10 @@ async fn async_delegate_reports_generated_agent_id_and_resume_status() {
     parent
         .subagent_history
         .insert("child-bg-resume".to_string(), Vec::new());
+    parent.agent_registry.insert(
+        "child-bg-resume".to_string(),
+        AgentInfo::new("child-bg-resume", "child").with_parent_agent_id("main"),
+    );
     let context_handle = AgentContextHandle::new(parent.clone());
 
     let generated = delegate
